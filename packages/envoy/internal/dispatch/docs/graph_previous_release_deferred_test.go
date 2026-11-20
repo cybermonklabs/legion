@@ -72,7 +72,7 @@ func TestADeferredVersionThePreviousReleaseIndexesReachesTheStore(t *testing.T) 
 
 	// The previous release's block index takes the lease first and indexes the version, writing
 	// its rows with no node, as it does for a version some build left owed.
-	markdown, blocks, err := service.TextWithBlocks(ctx, document)
+	markdown, blocks, err := service.TextWithBlocks(ctx, serverReader, document)
 	if err != nil {
 		t.Fatalf("read the deferred document: %v", err)
 	}

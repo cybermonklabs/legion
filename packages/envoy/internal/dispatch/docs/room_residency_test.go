@@ -295,7 +295,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the room's durable appends: %v", err)
 	}
-	if text, err := service.Text(ctx, artifactID); err != nil || text != "second\n" {
+	if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != "second\n" {
 		t.Errorf("the room after both writes = %q (%v), want \"second\\n\"", text, err)
 	}
 	stored, err := service.persistence.Load(ctx, artifactID)
@@ -350,7 +350,7 @@ func TestARoomOnlyTheAPITouchesLeavesWithinTheIdleTimeout(t *testing.T) {
 	}
 	leaves("read outside any transaction")
 
-	if text, err := service.Text(ctx, artifactID); err != nil || text != written {
+	if text, err := service.Text(ctx, serverReader, artifactID); err != nil || text != written {
 		t.Errorf("the document after its room was evicted twice = %q (%v), want the agent's edit, %q", text, err, written)
 	}
 }
@@ -668,7 +668,7 @@ see [link](https://a.example/) here
 		t.Fatal(err)
 	}
 	// The answer's update made the room's replica, which the reads walk.
-	before, err := service.Text(ctx, artifactID)
+	before, err := service.Text(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -697,7 +697,7 @@ see [link](https://a.example/) here
 	if edited != 2 {
 		t.Fatalf("edited %d values of the read's tree, want the ask's choice and the link's target", edited)
 	}
-	after, err := service.Text(ctx, artifactID)
+	after, err := service.Text(ctx, serverReader, artifactID)
 	if err != nil {
 		t.Fatal(err)
 	}

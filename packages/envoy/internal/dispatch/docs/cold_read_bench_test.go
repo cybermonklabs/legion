@@ -29,7 +29,7 @@ func BenchmarkColdDocumentRead(b *testing.B) {
 				return err
 			}},
 			{"blocks", func(service *Service, artifactID string) error {
-				_, err := service.Blocks(context.Background(), artifactID)
+				_, err := service.Blocks(context.Background(), serverReader, artifactID)
 				return err
 			}},
 		} {

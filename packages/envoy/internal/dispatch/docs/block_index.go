@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -610,7 +611,7 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 // same way, as indexOwedDocument indexes one: its blocks came from its version's own markdown,
 // which is what is embedded.
 func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, error) {
-	markdown, blocks, err := s.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := s.TextWithBlocks(ctx, model.ServerReader, artifactID)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:
@@ -1072,7 +1073,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if document.version == 0 {
 		return false, false, nil
 	}
-	markdown, blocks, err := s.TextWithBlocks(ctx, document.id)
+	markdown, blocks, err := s.TextWithBlocks(ctx, model.ServerReader, document.id)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:

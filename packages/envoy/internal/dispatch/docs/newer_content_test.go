@@ -62,7 +62,7 @@ func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
 		read func() error
 	}{
 		{"text", func() error {
-			_, err := service.Text(context.Background(), artifactID)
+			_, err := service.Text(context.Background(), serverReader, artifactID)
 			return err
 		}},
 		{"text with token", func() error {
@@ -70,7 +70,7 @@ func TestADocumentHoldingAnUnknownElementReadsAsNewerContent(t *testing.T) {
 			return err
 		}},
 		{"blocks", func() error {
-			_, err := service.Blocks(context.Background(), artifactID)
+			_, err := service.Blocks(context.Background(), serverReader, artifactID)
 			return err
 		}},
 	}
@@ -120,7 +120,7 @@ func TestSettlementSkipsADocumentHoldingNewerContent(t *testing.T) {
 	if versions != 1 {
 		t.Fatalf("settlement wrote %d versions for a document holding newer content, want 1", versions)
 	}
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocNewerContent) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocNewerContent) {
 		t.Fatalf("read after the settlement: %v, want ErrDocNewerContent", err)
 	}
 	state.mu.Lock()
@@ -164,7 +164,7 @@ func TestAReplacementOverNewerContentIsRefusedAndKeepsTheElement(t *testing.T) {
 		t.Fatalf("load the document's room: %v", err)
 	}
 	replace(t, service, "resident")
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocNewerContent) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocNewerContent) {
 		t.Fatalf("read after the refused replacements: %v, want ErrDocNewerContent", err)
 	}
 }
@@ -201,7 +201,7 @@ func TestDocumentSocketClosesARoomHoldingNewerContentWithItsOwnCode(t *testing.T
 			if !errors.As(err, &closed) || closed.Code != documentNewerContentCloseCode {
 				t.Fatalf("first frame = %q (%v), want close %d before any sync", message, err, documentNewerContentCloseCode)
 			}
-			if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocNewerContent) {
+			if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocNewerContent) {
 				t.Fatalf("read after the refused socket: %v, want ErrDocNewerContent", err)
 			}
 		})

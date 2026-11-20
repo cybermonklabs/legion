@@ -168,7 +168,7 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 			if _, err := replaceDocumentText(rig.database, rig.documents, rig.artifactID, "written after the session ended", model.Actor{Kind: "user", ID: "bob@d.example"}); err != nil {
 				t.Fatalf("edit the document after the close: %v", err)
 			}
-			if text, err := rig.documents.Text(context.Background(), rig.artifactID); err != nil || !strings.Contains(text, "written after the session ended") {
+			if text, err := rig.documents.Text(context.Background(), everyReader, rig.artifactID); err != nil || !strings.Contains(text, "written after the session ended") {
 				t.Fatalf("room text after the edit = %q (%v)", text, err)
 			}
 			peer.assertTextLacks(t, "written after the session ended")

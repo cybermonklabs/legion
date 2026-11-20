@@ -528,7 +528,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			if err := ledger.Commit(ctx); err != nil {
 				t.Fatalf("commit the live edit: %v", err)
 			}
-			live, _, err := r.documents.TextWithBlocks(ctx, r.notes)
+			live, _, err := r.documents.TextWithBlocks(ctx, model.ServerReader, r.notes)
 			if err != nil {
 				t.Fatalf("read the notes' live text: %v", err)
 			}

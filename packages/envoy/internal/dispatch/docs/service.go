@@ -141,7 +141,9 @@ type VersionedStore interface {
 	AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string, update []byte, contentChanged bool) (persistence.Version, error)
 	RebuildTx(ctx context.Context, tx pgx.Tx, room string, loaded persistence.Version, seed []byte) (RebuildReport, error)
 	Head(ctx context.Context, room string) (persistence.Version, error)
-	DocumentStamp(ctx context.Context, room string) (DocumentStamp, error)
+	// DocumentStamp is the room's DocumentStamp for the reader whose viewer viewer is
+	// (refs.VisibilityArg): pgx.ErrNoRows where that reader may not read the document.
+	DocumentStamp(ctx context.Context, room string, viewer any) (DocumentStamp, error)
 	LoadDocument(ctx context.Context, room string) (LoadedDocument, error)
 	compactRoom(ctx context.Context, room string, rule compactRule, wait bool) (compactResult, error)
 	pgVersioned() *PgVersioned

@@ -845,7 +845,7 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 		t.Fatalf("ask %s has %d ask.resolved events after the settlement, want the repair's one", ask, count)
 	}
 
-	_, blocks, err := f.documents.TextWithBlocks(ctx, issue.PrimaryArtifactID)
+	_, blocks, err := f.documents.TextWithBlocks(ctx, everyReader, issue.PrimaryArtifactID)
 	if err != nil {
 		t.Fatalf("read the document's blocks: %v", err)
 	}

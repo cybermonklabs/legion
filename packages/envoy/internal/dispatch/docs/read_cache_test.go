@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -68,7 +69,7 @@ func appendUpdates(t *testing.T, versioned *PgVersioned, artifactID string, upda
 
 func readStamp(t *testing.T, versioned *PgVersioned, artifactID string) DocumentStamp {
 	t.Helper()
-	stamp, err := versioned.DocumentStamp(context.Background(), artifactID)
+	stamp, err := versioned.DocumentStamp(context.Background(), artifactID, refs.VisibilityArg(serverReader))
 	if err != nil {
 		t.Fatalf("read the document's stamp: %v", err)
 	}
@@ -273,7 +274,7 @@ func TestAnUndecodableHistoryLoadsAsDocumentUnloadable(t *testing.T) {
 	}
 	service := newSchemaRepairService(database)
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrDocumentUnloadable) || errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("read an over-cap history: %v, want ErrDocumentUnloadable and not ErrServiceUnavailable", err)
 	}
 }
@@ -367,7 +368,7 @@ func readCold(t *testing.T, service *Service, artifactID string) coldReading {
 	if service.srv.GetDoc(artifactID) != nil {
 		t.Fatal("the document is resident, want a cold read")
 	}
-	markdown, err := service.Text(context.Background(), artifactID)
+	markdown, err := service.Text(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read text: %v", err)
 	}
@@ -378,13 +379,13 @@ func readCold(t *testing.T, service *Service, artifactID string) coldReading {
 	if tokenMarkdown != markdown {
 		t.Fatalf("text = %q, text with token = %q", markdown, tokenMarkdown)
 	}
-	blocks, err := service.Blocks(context.Background(), artifactID)
+	blocks, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil {
 		t.Fatalf("read blocks: %v", err)
 	}
 	reading := coldReading{markdown: markdown, token: token, blocks: blocks}
 	if len(blocks) != 0 {
-		reading.path, err = service.BlockPath(context.Background(), artifactID, blocks[0].ID)
+		reading.path, err = service.BlockPath(context.Background(), serverReader, artifactID, blocks[0].ID)
 		if err != nil {
 			t.Fatalf("read first block's path: %v", err)
 		}
@@ -478,7 +479,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 	t.Cleanup(cancel)
 	leader := make(chan error, 1)
 	go func() {
-		_, err := service.Text(leaderCtx, artifactID)
+		_, err := service.Text(leaderCtx, serverReader, artifactID)
 		leader <- err
 	}()
 	select {
@@ -493,7 +494,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		followers.Add(1)
 		go func() {
 			defer followers.Done()
-			text, err := service.Text(context.Background(), artifactID)
+			text, err := service.Text(context.Background(), serverReader, artifactID)
 			if err == nil && text != "before\n" {
 				err = fmt.Errorf("follower read %q, want before", text)
 			}
@@ -535,7 +536,7 @@ func TestPanickingColdLoadFailsTheRoomAndRecovers(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before\n")
 	persistence.panics.Store(true)
 
-	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrServiceUnavailable) || !strings.Contains(err.Error(), "cold document read panicked") {
+	if _, err := service.Text(context.Background(), serverReader, artifactID); !errors.Is(err, ErrServiceUnavailable) || !strings.Contains(err.Error(), "cold document read panicked") {
 		t.Fatalf("panicking cold load = %v, want ErrServiceUnavailable naming the panic", err)
 	}
 	persistence.panics.Store(false)
@@ -553,7 +554,7 @@ func TestColdLoadTimeoutIsServiceUnavailable(t *testing.T) {
 	t.Cleanup(func() { coldReadTimeout = oldTimeout })
 
 	ctx := context.Background()
-	_, err := service.Text(ctx, artifactID)
+	_, err := service.Text(ctx, serverReader, artifactID)
 	if !errors.Is(err, ErrServiceUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timed-out cold load = %v, want ErrServiceUnavailable and not context.DeadlineExceeded", err)
 	}
@@ -575,7 +576,7 @@ func TestColdReadSeesTheNewContentAfterPruneAndReappend(t *testing.T) {
 	one, two, three := writer.write("one\n"), writer.write("two\n"), writer.write("three\n")
 	appendUpdates(t, versioned, artifactID, one, two, three)
 	service := newReadCacheService(t, database, versioned)
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "three\n" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "three\n" {
 		t.Fatalf("read before prune = %q (%v), want three", text, err)
 	}
 	if err := versioned.PruneAfter(context.Background(), artifactID, 2, nil); err != nil {
@@ -583,7 +584,7 @@ func TestColdReadSeesTheNewContentAfterPruneAndReappend(t *testing.T) {
 	}
 	four := newProofHistory(t, 202, one, two).write("four\n")
 	appendUpdates(t, versioned, artifactID, four)
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "four\n" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "four\n" {
 		t.Fatalf("read after prune and re-append = %q (%v), want four", text, err)
 	}
 }
@@ -595,7 +596,7 @@ func TestColdReadSeesRebuildAndDeleteBetweenReads(t *testing.T) {
 	artifactID := createDocument(t, database, "before\n")
 	service := newReadCacheService(t, database, persistence)
 	seedServiceText(t, service, artifactID, "before\n")
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "before\n" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "before\n" {
 		t.Fatalf("read before rebuild = %q (%v), want before", text, err)
 	}
 	persistence.invalid = true
@@ -603,16 +604,16 @@ func TestColdReadSeesRebuildAndDeleteBetweenReads(t *testing.T) {
 	if _, _, err := rebuildDocument(t, service, artifactID, &replacement); err != nil {
 		t.Fatalf("rebuild document: %v", err)
 	}
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "rebuilt\n" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "rebuilt\n" {
 		t.Fatalf("read after rebuild = %q (%v), want rebuilt", text, err)
 	}
 	if err := versioned.Delete(context.Background(), artifactID); err != nil {
 		t.Fatalf("delete rebuilt document: %v", err)
 	}
-	if text, err := service.Text(context.Background(), artifactID); err != nil || text != "" {
+	if text, err := service.Text(context.Background(), serverReader, artifactID); err != nil || text != "" {
 		t.Fatalf("read after delete = %q (%v), want no document", text, err)
 	}
-	if _, err := service.BlockPath(context.Background(), artifactID, "absent"); !errors.Is(err, pmdoc.ErrTargetNotFound) {
+	if _, err := service.BlockPath(context.Background(), serverReader, artifactID, "absent"); !errors.Is(err, pmdoc.ErrTargetNotFound) {
 		t.Fatalf("path after delete = %v, want ErrTargetNotFound", err)
 	}
 }
@@ -624,13 +625,13 @@ func TestColdReadOnOneServiceSeesAnotherServicesWrite(t *testing.T) {
 	writer := newReadCacheService(t, database, versioned)
 	reader := newReadCacheService(t, database, versioned)
 	seedServiceText(t, writer, artifactID, "# Heading\n\nbefore\n")
-	if text, err := reader.Text(context.Background(), artifactID); err != nil || text != "# Heading\n\nbefore\n" {
+	if text, err := reader.Text(context.Background(), serverReader, artifactID); err != nil || text != "# Heading\n\nbefore\n" {
 		t.Fatalf("reader before write = %q (%v), want before", text, err)
 	}
 	if _, err := joinedReplaceText(writer, artifactID, "# Heading\n\nafter\n", model.Actor{Kind: "user", ID: "alice"}); err != nil {
 		t.Fatalf("writer replace: %v", err)
 	}
-	if text, err := reader.Text(context.Background(), artifactID); err != nil || text != "# Heading\n\nafter\n" {
+	if text, err := reader.Text(context.Background(), serverReader, artifactID); err != nil || text != "# Heading\n\nafter\n" {
 		t.Fatalf("reader after another service's write = %q (%v), want after", text, err)
 	}
 }
@@ -640,11 +641,11 @@ func TestColdReadDoesNotLeakCallerMutations(t *testing.T) {
 	artifactID := createDocument(t, database, "before")
 	service := newReadCacheService(t, database, NewPgVersioned(database))
 	seedServiceText(t, service, artifactID, "# Heading\n\nbefore\n")
-	blocks, err := service.Blocks(context.Background(), artifactID)
+	blocks, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil || len(blocks) == 0 {
 		t.Fatalf("first blocks = %#v (%v), want blocks", blocks, err)
 	}
-	path, err := service.BlockPath(context.Background(), artifactID, blocks[0].ID)
+	path, err := service.BlockPath(context.Background(), serverReader, artifactID, blocks[0].ID)
 	if err != nil {
 		t.Fatalf("first path: %v", err)
 	}
@@ -654,14 +655,14 @@ func TestColdReadDoesNotLeakCallerMutations(t *testing.T) {
 	blocks[0].References = model.BlockReferences{Comments: 99, Asks: 99}
 	path.Path[0].ID = "caller-mutated"
 
-	again, err := service.Blocks(context.Background(), artifactID)
+	again, err := service.Blocks(context.Background(), serverReader, artifactID)
 	if err != nil || len(again) == 0 {
 		t.Fatalf("second blocks = %#v (%v), want blocks", again, err)
 	}
 	if again[0].ID != originalBlock.ID || again[0].References != originalBlock.References {
 		t.Fatalf("caller mutation leaked into blocks: got %#v, want %#v", again[0], originalBlock)
 	}
-	againPath, err := service.BlockPath(context.Background(), artifactID, originalBlock.ID)
+	againPath, err := service.BlockPath(context.Background(), serverReader, artifactID, originalBlock.ID)
 	if err != nil {
 		t.Fatalf("second path: %v", err)
 	}
@@ -694,7 +695,7 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 	// budget the next one need not fit.
 	weights := make([]int64, len(artifactIDs))
 	for index, artifactID := range artifactIDs {
-		if _, err := service.Text(context.Background(), artifactID); err != nil {
+		if _, err := service.Text(context.Background(), serverReader, artifactID); err != nil {
 			t.Fatalf("measure %s: %v", artifactID, err)
 		}
 		entry := cacheEntry(t, service, artifactID)
@@ -719,17 +720,17 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 	service.reads = newDocumentReads(budget)
 	persistence.loads.Store(0)
 	for _, artifactID := range artifactIDs[:8] {
-		if _, err := service.Text(context.Background(), artifactID); err != nil {
+		if _, err := service.Text(context.Background(), serverReader, artifactID); err != nil {
 			t.Fatalf("fill read %s: %v", artifactID, err)
 		}
 		if service.reads.bytes > service.reads.budget {
 			t.Fatalf("cache bytes = %d, budget = %d after %s", service.reads.bytes, service.reads.budget, artifactID)
 		}
 	}
-	if _, err := service.Text(context.Background(), artifactIDs[0]); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactIDs[0]); err != nil {
 		t.Fatalf("refresh most-recent document: %v", err)
 	}
-	if _, err := service.Text(context.Background(), artifactIDs[8]); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactIDs[8]); err != nil {
 		t.Fatalf("read ninth document: %v", err)
 	}
 	if service.reads.bytes > service.reads.budget {
@@ -739,20 +740,20 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 		t.Fatalf("cache membership after LRU eviction has doc0=%t doc1=%t doc8=%t, want true false true", cacheHas(service, artifactIDs[0]), cacheHas(service, artifactIDs[1]), cacheHas(service, artifactIDs[8]))
 	}
 	loadsBefore := persistence.loads.Load()
-	if _, err := service.Text(context.Background(), artifactIDs[0]); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactIDs[0]); err != nil {
 		t.Fatalf("read retained document: %v", err)
 	}
 	if got := persistence.loads.Load(); got != loadsBefore {
 		t.Fatalf("retained document reloaded: loads = %d, want %d", got, loadsBefore)
 	}
-	if _, err := service.Text(context.Background(), artifactIDs[1]); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactIDs[1]); err != nil {
 		t.Fatalf("read evicted document: %v", err)
 	}
 	if got := persistence.loads.Load(); got != loadsBefore+1 {
 		t.Fatalf("evicted document did not reload: loads = %d, want %d", got, loadsBefore+1)
 	}
 	service.reads = newDocumentReads(weights[2] * 4)
-	if _, err := service.Text(context.Background(), artifactIDs[2]); err != nil {
+	if _, err := service.Text(context.Background(), serverReader, artifactIDs[2]); err != nil {
 		t.Fatalf("read oversized-for-budget document: %v", err)
 	}
 	if cacheHas(service, artifactIDs[2]) {

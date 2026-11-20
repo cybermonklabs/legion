@@ -264,7 +264,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), thread[0].Anchor)
+	thread[0].AnchorPosition, err = s.anchorBlock(r.Context(), who, thread[0].Anchor)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

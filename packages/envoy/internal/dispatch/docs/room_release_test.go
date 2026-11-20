@@ -45,7 +45,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 		appendThroughAPI(t, service, id)
 	}
 	for _, id := range readIDs {
-		if _, err := service.Text(context.Background(), id); err != nil {
+		if _, err := service.Text(context.Background(), serverReader, id); err != nil {
 			t.Fatalf("read document %s: %v", id, err)
 		}
 	}
