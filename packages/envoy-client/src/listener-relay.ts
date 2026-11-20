@@ -11,26 +11,36 @@
 // a text frame of JSON, and the listener reads a socket's frames one at a time, handling each in
 // full before the next. The client sends `{"op":"sub","sid":<int>,"subject":<s>}`, which the
 // listener grants only for the session's own relay subject (`deliverSubject`) and otherwise answers
-// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`; a granted `sub` has no answer, so a
-// `sub` is held once no `err` names its sid; `{"op":"unsub","sid":<int>}`; and
-// `{"op":"pub","subject":<s>,"data":<base64>}`, and nothing more, which the listener takes only on
-// the reply of a frame this socket forwarded in the last 10 minutes and otherwise answers
-// `{"op":"err","code":"publish_not_granted"}`. So a session publishes nothing here but its relay
-// receipts (`RelayReply`), and neither the connection probe nor the agent stream is carried: a
-// host opens no live view over this socket. The listener sends
+// `{"op":"err","sid":<int>,"code":"subject_not_granted"}`, and grants at most four of on one
+// socket, answering a fifth `{"op":"err","sid":<int>,"code":"subscription_limit"}` and keeping the
+// socket open; either refusal ends that subscription alone, logged once. A granted `sub` has no
+// answer, so a `sub` is held once no `err` names its sid. It sends `{"op":"unsub","sid":<int>}`,
+// and `{"op":"pub","subject":<s>,"data":<base64>}`, and nothing more, which the listener takes only
+// on the reply of a frame this socket forwarded in the last 10 minutes and otherwise answers
+// `{"op":"err","code":"publish_not_granted"}`. A frame the listener cannot read (no JSON, an unknown
+// `op`, a `sub` or `unsub` naming no sid, a `sub` of a sid already held) it answers
+// `{"op":"err","code":"bad_frame"}` and closes the socket 1008 with reason `bad_frame`. So a session
+// publishes nothing here but its relay receipts (`RelayReply`), and neither the connection probe
+// nor the agent stream is carried: a host opens no live view over this socket. The listener sends
 // `{"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>}`, whose `headers` maps
 // each name as NATS carries it, case kept, to the list of its values in order (Go's `nats.Header`
 // as JSON, `{}` for none), and pings every 20 s.
 //
 // The listener checks the token again every 20 s and closes an open socket by why it stopped:
 // 4401 the token lapsed, 4403 it was revoked or no longer names what the socket was opened with,
-// 1013 the broker cannot be asked, 1012 the listener is stopping. The client opens again, taking
-// every live subscription again on the new socket: at once after 4401 and 1012, the first two with
-// a fresh trade; after 1 s doubling to a minute after 4403, with a fresh trade; after 5 s doubling
-// to a minute after 1013. A socket that never opened (an upgrade refused, a listener that cannot
-// be reached) and a trade that failed are tried again after 1 s doubling to a minute, the first
-// with a fresh trade, since an upgrade refused 401 is told apart from the rest by nothing a client
-// can read. A socket that stayed open a minute starts the doubling afresh. A trade that failed is
+// 1013 the broker or NATS cannot be asked, 1012 the listener is stopping. The client opens again,
+// taking every live subscription again on the new socket (`relayReopenDelay`): at once after 4401
+// and 1012, however often they come; after 1 s doubling to a minute after 4403; after 5 s doubling
+// to a minute after 1013; at once after a proxy's 1001 or a socket that ended with no close frame
+// (1006), then after 1 s doubling to a minute while they repeat; and after 1 s doubling to a
+// minute after any other close, 1008 `bad_frame` included. An upgrade the listener refuses names
+// its HTTP status in Bun's `error` event (`Expected 101 status code: <n>`): one refused 401 or 403
+// waits as after 4403, one refused 503 after a 1013 goes on with the 1013's waits, and one refused
+// any other status, an upgrade not answered within 20 s, a listener that cannot be reached and a
+// failed trade are tried again after 1 s doubling to a minute. Each cause doubles its own waits
+// (`relayRun`), and a socket that stayed open a minute starts every one afresh. Only 4401, 4403
+// and an upgrade refused 401 or 403 make the next open trade for a fresh token, since only there
+// was the token the cause; every open presents its token with a fresh proof. A trade that failed is
 // told to the session once per outage (`InboundUnavailable`), and a socket that opens ends it.
 //
 // The connection has the shape of the NATS connection a session plugin holds (`InboundConnection`),
@@ -50,24 +60,43 @@ import { FOLLOW_DEADLINE_MS, TRADE_DEADLINE_MS } from "./nats-credential";
 /** The subprotocol a relay socket speaks. */
 export const RELAY_SUBPROTOCOL = "envoy-relay.v1";
 
-/** How long a socket stays open before its next close starts the doubling afresh. */
+/** How long a socket stays open before its next close starts every run of waits afresh. */
 const RELAY_STABLE_MS = 60_000;
 /** The longest wait before a socket opens again. */
 const RELAY_LAST_WAIT_MS = 60_000;
-/** The first wait after a credential refusal (4403), a socket that never opened, a failed trade
- *  and a close this file has no rule of its own for. */
+/** The first wait after a credential refusal (4403, an upgrade refused 401 or 403), a socket that
+ *  never opened, a failed trade and a close this file has no rule of its own for. */
 const RELAY_FIRST_WAIT_MS = 1_000;
-/** The first wait after 1013: the listener could not ask the broker about the token. */
+/** The first wait after 1013: the listener could not ask the broker or NATS. */
 const RELAY_BROKER_FIRST_WAIT_MS = 5_000;
+/** How long an upgrade may go unanswered before its socket is dropped and opened again: Bun keeps
+ *  one a path took and never answered connecting, with no close, for as long as the path holds it. */
+const RELAY_HANDSHAKE_MS = 20_000;
 
 /** The close codes the listener closes an open relay socket with. */
 const CLOSE_EXPIRED = 4401;
 const CLOSE_REFUSED = 4403;
 const CLOSE_TRY_AGAIN_LATER = 1013;
-/** Opened again at once: the listener is stopping (1012), a proxy in front of it is (1001), or the
- *  socket ended with no close frame at all (1006), as a path that froze does once this file stops
- *  waiting for its pings. */
-const AT_ONCE: ReadonlySet<number> = new Set([CLOSE_EXPIRED, 1012, 1001, 1006]);
+const CLOSE_STOPPING = 1012;
+/** Opened again at once however often they come: the token lapsed (4401) or the listener is
+ *  stopping (1012), which the listener sends at most once a check and once a stop. */
+const AT_ONCE: ReadonlySet<number> = new Set([CLOSE_EXPIRED, CLOSE_STOPPING]);
+/** Opened again at once, then after a wait while they repeat: a proxy in front of the listener is
+ *  stopping (1001), or the socket ended with no close frame at all (1006), as a path that froze
+ *  does once this file stops waiting for its pings. Either can come as fast as a socket opens. */
+const AT_ONCE_FIRST: ReadonlySet<number> = new Set([1001, 1006]);
+/** The upgrade statuses that say the token was the cause, so the next open trades for another. */
+const TOKEN_REFUSED: ReadonlySet<number> = new Set([401, 403]);
+/** The upgrade status of a listener that cannot ask the broker, as after its 1013. */
+const UPGRADE_UNAVAILABLE = 503;
+/** Where Bun's `error` event names the status an upgrade was answered with. */
+const UPGRADE_STATUS = /Expected 101 status code: (\d{3})\b/;
+/** The `err` codes that refuse one subscription and leave the socket open: a subject the socket
+ *  does not carry, and a subscription past the four a socket holds. */
+const SUBSCRIPTION_REFUSALS: Readonly<Record<string, true>> = {
+  subject_not_granted: true,
+  subscription_limit: true,
+};
 
 /** How long a drain waits for the listener to have taken its unsubscribes. */
 const DRAIN_BOUND_MS = 1_000;
@@ -123,16 +152,43 @@ export function relaySocketUrl(url: string, session: string): string {
   return `${withoutTrailingSlashes(url)}/v1/sessions/${encodeURIComponent(session)}/relay`;
 }
 
-/** How long to wait before opening again after a socket closed with `code` (`opened` false: it
- *  never opened), the `streak`th close in a row with no socket that stayed open a minute between. */
-export function relayReopenDelay(code: number, opened: boolean, streak: number): number {
+/**
+ * How one open of a relay socket ended: a socket that opened closed with the code `closed`; or
+ * none opened, its upgrade refused with the HTTP status `refused`, undefined where none was read
+ * (the listener could not be reached, the upgrade went unanswered, the trade failed), in a run of
+ * such opens that a close of code `after` began, undefined where no close did.
+ */
+export type RelayEnd =
+  | { readonly closed: number }
+  | { readonly refused: number | undefined; readonly after: number | undefined };
+
+/** The run of the broker's absence: a 1013, and the upgrades refused 503 after it. */
+const BROKER_RUN = `closed ${CLOSE_TRY_AGAIN_LATER}`;
+
+/**
+ * The run of waits `end` counts in, each doubling apart from every other: one per close code, an
+ * upgrade refused 401 or 403 counted with 4403 (the token was the cause of each), one refused 503
+ * after a 1013 with that 1013, and every other open that never opened together.
+ */
+function relayRun(end: RelayEnd): string {
+  if ("closed" in end) return end.closed === CLOSE_REFUSED ? "token" : `closed ${end.closed}`;
+  if (end.refused !== undefined && TOKEN_REFUSED.has(end.refused)) return "token";
+  if (end.refused === UPGRADE_UNAVAILABLE && end.after === CLOSE_TRY_AGAIN_LATER) return BROKER_RUN;
+  return "unopened";
+}
+
+/** How long to wait before opening again after `end`, the `streak`th end of its run (`relayRun`)
+ *  with no socket between that stayed open a minute. */
+export function relayReopenDelay(end: RelayEnd, streak: number): number {
   const doubling = (first: number, times: number): number =>
     Math.min(first * 2 ** times, RELAY_LAST_WAIT_MS);
-  if (!opened) return doubling(RELAY_FIRST_WAIT_MS, streak);
+  if ("closed" in end && AT_ONCE.has(end.closed)) return 0;
   // At once for the first; a socket that keeps closing so right after it opened waits as a refusal
   // does, so it costs the broker and the listener one trade and one upgrade a minute at most.
-  if (AT_ONCE.has(code)) return streak === 0 ? 0 : doubling(RELAY_FIRST_WAIT_MS, streak - 1);
-  if (code === CLOSE_TRY_AGAIN_LATER) return doubling(RELAY_BROKER_FIRST_WAIT_MS, streak);
+  if ("closed" in end && AT_ONCE_FIRST.has(end.closed)) {
+    return streak === 0 ? 0 : doubling(RELAY_FIRST_WAIT_MS, streak - 1);
+  }
+  if (relayRun(end) === BROKER_RUN) return doubling(RELAY_BROKER_FIRST_WAIT_MS, streak);
   return doubling(RELAY_FIRST_WAIT_MS, streak);
 }
 
@@ -230,8 +286,9 @@ class RelaySubscription implements RelaySocketSubscription {
   }
 }
 
-/** A `msg` frame's `headers`, or undefined when it is not K-E2's map of names to lists of
- *  strings: such a frame is no relay frame, and is dropped and logged rather than read. */
+/** A `msg` frame's `headers`, or undefined when it is not the map of names to lists of strings
+ *  this file's header describes: such a frame is no relay frame, and is dropped and logged rather
+ *  than read. */
 function relayHeaders(raw: unknown): RelaySocketHeaders | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
   const values = new Map<string, readonly string[]>();
@@ -263,7 +320,8 @@ export interface ListenerRelayOptions {
    *  opens its socket under the new one (`ListenerRelay.follow`). */
   readonly session: BrokerSessionName;
   /** The session's broker credential (`brokerCredential`), which each upgrade presents with a
-   *  fresh proof, and whose token a credential close drops (`stale`) so the next open trades. */
+   *  fresh proof, and whose token is dropped (`stale`) where it was the cause of a close or a
+   *  refused upgrade, so the next open trades. */
   readonly credential: RequestCredential;
   /** Told a failed trade once per outage, and that it is over once a socket opens: the host's
    *  own report (`inboundUnavailable`), which its registrations share. */
@@ -277,6 +335,17 @@ interface Pong {
   readonly seq: number;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
+}
+
+/** How a socket ended, as its close event and the events before it said. */
+interface SocketEnd {
+  readonly end: RelayEnd;
+  /** The close's code and its reason, as a log line names them. */
+  readonly why: string;
+  /** Why it never opened, where this file knows better than its close code. */
+  readonly refusal: string | undefined;
+  /** What Bun's `error` event said of it, "" where it said nothing. */
+  readonly failure: string;
 }
 
 /**
@@ -293,8 +362,11 @@ export class ListenerRelay implements InboundConnection {
   /** Bumped at every open and at the close: an event of an earlier socket changes nothing. */
   #generation = 0;
   #everOpened = false;
-  /** Closes in a row with no socket that stayed open `RELAY_STABLE_MS` between. */
-  #streak = 0;
+  /** Each run's ends in a row (`relayRun`) with no socket between that stayed open
+   *  `RELAY_STABLE_MS`. */
+  readonly #streaks = new Map<string, number>();
+  /** The code of the close that began the run of opens that have not opened since, if one did. */
+  #closedWith: number | undefined;
   #stableTimer: ReturnType<typeof setTimeout> | undefined;
   #reopenTimer: ReturnType<typeof setTimeout> | undefined;
   #livenessTimer: ReturnType<typeof setInterval> | undefined;
@@ -311,7 +383,8 @@ export class ListenerRelay implements InboundConnection {
   readonly #statuses = new Set<Queue<InboundStatus>>();
   #closedForGood = false;
   readonly #closed = Promise.withResolvers<void>();
-  /** What has been logged once: a refused subject, by session and subject, and an error code. */
+  /** What has been logged once: a refused subscription, by session, code and subject, and any
+   *  other error code. */
   readonly #logged = new Set<string>();
 
   constructor(options: ListenerRelayOptions) {
@@ -352,11 +425,16 @@ export class ListenerRelay implements InboundConnection {
 
   /**
    * Waits for a socket to be open, then sends a ping and waits for its pong: the listener answers
-   * a ping after it has read every frame sent before it. Rejects when that socket closes first, as
-   * a NATS round trip does at a disconnect, or when the connection is closed for good.
+   * a ping after it has read every frame sent before it. Rejects when that socket closes first, or
+   * is dropped for another (`follow`), as a NATS round trip does at a disconnect, or when the
+   * connection is closed for good: only the socket a ping went out on can say what it took.
    */
   async flush(): Promise<void> {
     const socket = await this.#openSocket();
+    // The socket this waited for may have been dropped since, in the turn that woke it.
+    if (socket !== this.#socket) {
+      throw new LoggableError("the listener's relay socket closed before the flush was sent");
+    }
     this.#pingSeq += 1;
     const seq = this.#pingSeq;
     const answered = Promise.withResolvers<void>();
@@ -421,7 +499,8 @@ export class ListenerRelay implements InboundConnection {
     if (this.#closedForGood) throw new LoggableError("the listener's relay socket is closed");
     const session = sessionName(this.#options.session);
     if (session !== this.#socketSession) {
-      this.#streak = 0;
+      this.#streaks.clear();
+      this.#closedWith = undefined;
       this.#open();
     }
     const bound = AbortSignal.timeout(boundMs);
@@ -526,7 +605,8 @@ export class ListenerRelay implements InboundConnection {
     this.#livenessTimer = undefined;
   }
 
-  /** Opens a socket now, under the session the name reads now, dropping the socket there is. */
+  /** Opens a socket now, under the session the name reads now, dropping the socket there is and
+   *  every flush waiting on it, which no later socket can answer. */
   #open(): void {
     if (this.#closedForGood) return;
     clearTimeout(this.#reopenTimer);
@@ -537,47 +617,54 @@ export class ListenerRelay implements InboundConnection {
     this.#socket = undefined;
     this.#stopTimers();
     previous?.close(1000, "the session opens its relay socket again");
+    const dropped = new LoggableError(
+      "the listener's relay socket was opened again before it answered the flush"
+    );
+    for (const pong of this.#pongs.splice(0)) pong.reject(dropped);
     const session = sessionName(this.#options.session);
     this.#socketSession = session;
-    void this.#upgradeHeaders(session).then((headers) => {
+    void this.#upgradeHeaders(session).then((upgrade) => {
       if (generation !== this.#generation) return;
-      if (headers === undefined) {
-        this.#reopenAfter(relayReopenDelay(0, false, this.#streak));
+      if ("failed" in upgrade) {
+        const delay = this.#reopenAfter({ refused: undefined, after: this.#closedWith });
+        this.#failed(session, upgrade.failed, delay);
         return;
       }
-      this.#connect(generation, session, headers);
+      this.#connect(generation, session, upgrade.headers);
     });
   }
 
-  /** Records why an open failed, which a caller waiting for one is told, and logs it when it is
-   *  not what the last failure logged said: a listener or a broker away for an hour costs one line,
-   *  not one per attempt. A socket that opens ends the run. */
-  #failed(session: string, failure: string): void {
+  /** Records why an open failed, which a caller waiting for one is told, and logs it, with the wait
+   *  before the next, when it is not what the last failure logged said: a listener or a broker
+   *  away for an hour costs one line, not one per attempt. A socket that opens ends the run. */
+  #failed(session: string, failure: string, delay: number): void {
     this.#lastFailure = failure;
     if (failure === this.#loggedFailure) return;
     this.#loggedFailure = failure;
     this.#options.log(
-      `the listener's relay socket for ${session} could not be opened: ${failure}; it is tried again after 1 s, doubling to a minute`
+      `the listener's relay socket for ${session} could not be opened: ${failure}; it is tried again in ${delay} ms, the wait doubling to a minute while it fails`
     );
   }
 
-  /** The upgrade's `Authorization` and proof for `session`, or undefined when the trade failed,
-   *  which is told once per outage and logged. */
-  async #upgradeHeaders(session: string): Promise<Readonly<Record<string, string>> | undefined> {
+  /** The upgrade's `Authorization` and proof for `session`, or why they could not be had: a trade
+   *  that failed, which is told once per outage. */
+  async #upgradeHeaders(
+    session: string
+  ): Promise<{ readonly headers: Readonly<Record<string, string>> } | { readonly failed: string }> {
     try {
       if (session === "") {
         throw new LoggableError("this process names no session for its relay socket");
       }
-      return await this.#options.credential.headers(
+      const headers = await this.#options.credential.headers(
         "GET",
         relaySocketUrl(this.#options.url, session),
         session,
         AbortSignal.timeout(TRADE_DEADLINE_MS)
       );
+      return { headers };
     } catch (error) {
       this.#outage.refused(error);
-      this.#failed(session, `its token could not be had (${messageFor(error)})`);
-      return undefined;
+      return { failed: `its token could not be had (${messageFor(error)})` };
     }
   }
 
@@ -588,15 +675,26 @@ export class ListenerRelay implements InboundConnection {
     try {
       socket = new BunWebSocket(target, { headers, protocols: RELAY_SUBPROTOCOL });
     } catch (error) {
-      this.#failed(session, `the socket could not be made (${messageFor(error)})`);
-      this.#reopenAfter(relayReopenDelay(0, false, this.#streak));
+      const delay = this.#reopenAfter({ refused: undefined, after: this.#closedWith });
+      this.#failed(session, `the socket could not be made (${messageFor(error)})`, delay);
       return;
     }
     this.#socket = socket;
     let opened = false;
     // Why this socket closed before it opened, where this file knows better than its close code.
     let refusal: string | undefined;
+    // What Bun said of a socket that failed before it opened: the status an upgrade was refused
+    // with (`UPGRADE_STATUS`), or why it could not be made.
+    let failure = "";
+    // An upgrade a path took and never answered would stay connecting with no close at all.
+    const handshake = setTimeout(() => {
+      if (generation !== this.#generation || socket.readyState !== WebSocket.CONNECTING) return;
+      refusal = `the upgrade was not answered within ${RELAY_HANDSHAKE_MS / 1000} s`;
+      socket.close();
+    }, RELAY_HANDSHAKE_MS);
+    handshake.unref?.();
     socket.addEventListener("open", () => {
+      clearTimeout(handshake);
       if (generation !== this.#generation) return;
       if (socket.protocol !== RELAY_SUBPROTOCOL) {
         // Something that is not a relay socket answered the upgrade: it is no listener's.
@@ -607,8 +705,11 @@ export class ListenerRelay implements InboundConnection {
       opened = true;
       this.#opened(generation, session, socket);
     });
-    // Bun's event map names the DOM's `MessageEvent` value where its type is meant, so `data` is
-    // read through the guard rather than the declared type.
+    // Bun's event map names the DOM's `MessageEvent` and `ErrorEvent` values where their types are
+    // meant, so `data` and `message` are read through the guard rather than the declared type.
+    socket.addEventListener("error", (event: Event) => {
+      if ("message" in event && typeof event.message === "string") failure = event.message;
+    });
     socket.addEventListener("message", (event: Event) => {
       if (generation !== this.#generation) return;
       this.#message(session, "data" in event ? event.data : undefined);
@@ -618,7 +719,16 @@ export class ListenerRelay implements InboundConnection {
       this.#pong(pongText("data" in event ? event.data : undefined));
     });
     socket.addEventListener("close", (event) => {
-      this.#socketClosed(generation, session, socket, opened, event.code, event.reason, refusal);
+      clearTimeout(handshake);
+      const status = opened ? undefined : UPGRADE_STATUS.exec(failure)?.[1];
+      this.#socketClosed(generation, session, socket, {
+        end: opened
+          ? { closed: event.code }
+          : { refused: status === undefined ? undefined : Number(status), after: this.#closedWith },
+        why: event.reason === "" ? `${event.code}` : `${event.code} ${event.reason}`,
+        refusal,
+        failure,
+      });
     });
   }
 
@@ -629,9 +739,10 @@ export class ListenerRelay implements InboundConnection {
     this.#loggedFailure = "";
     this.#outage.accepted();
     this.#stableTimer = setTimeout(() => {
-      if (generation === this.#generation) this.#streak = 0;
+      if (generation === this.#generation) this.#streaks.clear();
     }, RELAY_STABLE_MS);
     this.#stableTimer.unref?.();
+    this.#closedWith = undefined;
     // A path that froze answers no ping, and nothing else would say so: two unanswered in a row,
     // as a NATS connection counts them (`nats-connection.ts`), end the socket, and it opens again.
     const pingsAtStart = this.#pingSeq;
@@ -681,8 +792,8 @@ export class ListenerRelay implements InboundConnection {
       if (subscription === undefined) return;
       const headers = "headers" in frame ? relayHeaders(frame.headers) : undefined;
       if (headers === undefined) {
-        // No relay frame: the listener always sends K-E2's header map. Left unanswered, the
-        // frame comes again after the session consumer's ack wait.
+        // No relay frame: the listener always sends the header map this file's header describes.
+        // Left unanswered, the frame comes again after the session consumer's ack wait.
         this.#logOnce(
           `${session}\u0000headers`,
           `the listener's relay socket for ${session} sent a msg whose headers are not a map of names to lists of strings; it is dropped`
@@ -701,13 +812,14 @@ export class ListenerRelay implements InboundConnection {
     if (frame.op !== "err" || !("code" in frame)) return;
     const code = String(frame.code);
     const subscription = "sid" in frame ? this.#subs.get(Number(frame.sid)) : undefined;
-    if (subscription !== undefined && code === "subject_not_granted") {
-      // A subject this socket does not carry: that subscription is closed, as a NATS server's
-      // permissions violation closes it, and every other one goes on.
+    if (subscription !== undefined && SUBSCRIPTION_REFUSALS[code] === true) {
+      // A subject this socket does not carry, or a subscription past the most a socket holds:
+      // that subscription is closed, as a NATS server's permissions violation closes it, and every
+      // other one goes on.
       this.#subs.delete(subscription.sid);
       subscription.end();
       this.#logOnce(
-        `${session}\u0000${subscription.subject}`,
+        `${session}\u0000${code}\u0000${subscription.subject}`,
         `the listener's relay socket for ${session} refused the subject ${subscription.subject} (${code}); that subscription is closed`
       );
       return;
@@ -722,38 +834,51 @@ export class ListenerRelay implements InboundConnection {
     generation: number,
     session: string,
     socket: Bun.WebSocket,
-    opened: boolean,
-    code: number,
-    reason: string,
-    refusal: string | undefined
+    { end, why, refusal, failure }: SocketEnd
   ): void {
     if (this.#socket === socket) this.#socket = undefined;
     if (generation !== this.#generation || this.#closedForGood) return;
     this.#stopTimers();
-    const dropped = new LoggableError(`the listener's relay socket closed (${code})`);
+    const dropped = new LoggableError(`the listener's relay socket closed (${why})`);
     for (const pong of this.#pongs.splice(0)) pong.reject(dropped);
-    if (opened) this.#emit("disconnect");
-    // The credential was the cause, or may have been: the next open trades for a fresh token. A
-    // fresher token the credential already holds is kept (`RequestCredential.stale`).
-    if (code === CLOSE_EXPIRED || code === CLOSE_REFUSED || !opened) {
-      this.#options.credential.stale?.(session, this.#presented);
-    }
-    const delay = relayReopenDelay(code, opened, this.#streak);
-    const why = reason === "" ? `${code}` : `${code} ${reason}`;
-    if (opened) {
+    if ("closed" in end) this.#emit("disconnect");
+    // Only where the token was the cause does the next open trade for a fresh one; every other
+    // presents the token in hand again, with a fresh proof. A fresher token the credential already
+    // holds is kept (`RequestCredential.stale`).
+    const tokenCaused =
+      "closed" in end
+        ? end.closed === CLOSE_EXPIRED || end.closed === CLOSE_REFUSED
+        : end.refused !== undefined && TOKEN_REFUSED.has(end.refused);
+    if (tokenCaused) this.#options.credential.stale?.(session, this.#presented);
+    const delay = this.#reopenAfter(end);
+    if ("closed" in end) {
+      this.#closedWith = end.closed;
       this.#options.log(
         `the listener's relay socket for ${session} closed (${why}); it opens again in ${delay} ms`
       );
-    } else {
-      this.#failed(session, refusal ?? `the upgrade was refused or never answered (${why})`);
+      return;
     }
-    this.#reopenAfter(delay);
+    const said = failure.replace(/^WebSocket connection to '[^']*' failed: /, "");
+    this.#failed(
+      session,
+      end.refused !== undefined
+        ? `the listener refused the upgrade with HTTP ${end.refused}`
+        : (refusal ??
+            `the socket closed before it opened (${why}${said === "" ? "" : `: ${said}`})`),
+      delay
+    );
   }
 
-  #reopenAfter(delay: number): void {
-    this.#streak += 1;
+  /** Opens again once `end`'s wait is over, counting `end` in its run (`relayRun`); answers the
+   *  wait. */
+  #reopenAfter(end: RelayEnd): number {
+    const run = relayRun(end);
+    const streak = this.#streaks.get(run) ?? 0;
+    this.#streaks.set(run, streak + 1);
+    const delay = relayReopenDelay(end, streak);
     clearTimeout(this.#reopenTimer);
     this.#reopenTimer = setTimeout(() => this.#open(), delay);
+    return delay;
   }
 }
 

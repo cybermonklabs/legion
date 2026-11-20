@@ -12,11 +12,15 @@
 // It reads a socket's frames one at a time and handles each in full before the next, a ping
 // included, whose pong Bun sends as it reads it: so a `sub` is held, and every frame before a ping
 // handled, by the time that ping's pong goes out, and a successful `sub` has no answer of its own.
-// A `sub` names exactly the session's relay subject, else `subject_not_granted`; a `pub` (`op`,
-// `subject`, `data` alone) names the reply of a frame this socket forwarded in the last 10
-// minutes, else `publish_not_granted`. A `msg` always carries `headers`: each name as NATS carries
-// it, case kept, to the list of its values in order, `{}` for none (Go's `nats.Header` as JSON).
-// A frame over 1 MiB closes the socket 1009. The server pings every 20 s.
+// A `sub` names exactly the session's relay subject, else `subject_not_granted`, and a socket
+// holds at most four, a fifth answered `subscription_limit` with the socket left open; a `pub`
+// (`op`, `subject`, `data` alone) names the reply of a frame this socket forwarded in the last 10
+// minutes, else `publish_not_granted`. A frame it cannot read (no JSON, an unknown `op`, a `sub` or
+// `unsub` naming no sid, a `sub` of a sid already held) is answered `bad_frame` and the socket
+// closed 1008 with reason `bad_frame`. A `msg` always carries `headers`: each name as NATS carries
+// it, case kept, to the list of its values in order, `{}` for none (Go's `nats.Header` as JSON),
+// and goes to every subscription of the relay subject, as a NATS message does. A frame over 1 MiB
+// closes the socket 1009. The server pings every 20 s.
 //
 // A test that drives the listener's HTTP routes beside the socket, as a session registers and
 // sends at the listener it opens its socket at, or the broker's other grants, as a device login
@@ -44,6 +48,8 @@ const DELIVER_PREFIX = "notifications.envoy.deliver.";
 const REPLY_WINDOW_MS = 10 * 60_000;
 /** The most sockets one session may hold open. */
 const MOST_SOCKETS = 4;
+/** The most subscriptions one socket may hold. */
+const MOST_SUBSCRIPTIONS = 4;
 /** The largest frame a socket takes. */
 const MOST_FRAME_BYTES = 1 << 20;
 /** How often the server pings an open socket. */
@@ -99,8 +105,13 @@ export interface RelaySocketStandIn {
   readonly minted: StandInToken[];
   /** Every upgrade asked for, opened or refused, in order. */
   readonly upgrades: StandInUpgrade[];
-  /** Every `sub` refused `subject_not_granted`, by the session its socket was for. */
-  readonly refusedSubs: { readonly session: string; readonly subject: string }[];
+  /** Every `sub` refused, `subject_not_granted` or `subscription_limit`, by the session its socket
+   *  was for. */
+  readonly refusedSubs: {
+    readonly session: string;
+    readonly subject: string;
+    readonly code: string;
+  }[];
   /** Every `sub` granted. */
   readonly subs: { readonly session: string; readonly subject: string }[];
   /** Every `pub` the stand-in took: a receipt on a reply it forwarded. */
@@ -109,7 +120,8 @@ export interface RelaySocketStandIn {
   readonly refusedPublishes: string[];
   /** Every frame each socket's reader handled, in order (`StandInHandled`). */
   readonly handled: StandInHandled[];
-  /** Every client frame whose members are not K-E2's for its `op`, as it was sent. */
+  /** Every client frame whose members are not the wire's for its `op` (the file's header), as it
+   *  was sent. */
   readonly malformed: string[];
   /** How the broker answers a trade: `mint` (the default), or `refuse`, as a broker that says no
    *  to the identity it was shown. */
@@ -123,9 +135,13 @@ export interface RelaySocketStandIn {
   refuseUpgrades: number | undefined;
   /** The open sockets of `session`. */
   sockets(session: string): number;
-  /** Sends `frame` to the socket of `session` that holds its relay subject, and answers the reply
-   *  it named; undefined when no socket of the session holds that subject. */
+  /** Sends `frame` to every subscription of `session`'s relay subject, on every socket of the
+   *  session, and answers the reply it named; undefined when no socket of the session holds that
+   *  subject. */
   deliver(session: string, frame: StandInFrame): string | undefined;
+  /** Answers every open socket of `session` as the listener answers a frame it cannot read: the
+   *  err frame `bad_frame`, then a close 1008 with reason `bad_frame`. */
+  refuseFrame(session: string): void;
   /** Closes every open socket of `session`, or of every session, with `code`. */
   close(code: number, reason: string, session?: string): void;
   /** Ends a token before it lapses, as a revoke does. */
@@ -151,8 +167,8 @@ function decoded(part: string): ProofPart {
   return JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as ProofPart;
 }
 
-/** A frame a client sent, before the handler checks it: K-E2's members, any of which may be
- *  missing or of the wrong type, and nothing else read. */
+/** A frame a client sent, before the handler checks it: the wire's members (the file's header),
+ *  any of which may be missing or of the wrong type, and nothing else read. */
 interface ClientFrame {
   readonly op?: unknown;
   readonly sid?: unknown;
@@ -240,11 +256,12 @@ export function startRelaySocketStandIn(
     sockets: (session) => [...open].filter((socket) => socket.data.session === session).length,
     deliver(session, frame) {
       const subject = standInDeliverSubject(session);
+      const reply = `notifications.envoy.relayreply.${randomBytes(8).toString("hex")}.${session}.${randomBytes(4).toString("hex")}`;
+      let sent = false;
       for (const socket of open) {
         if (socket.data.session !== session) continue;
         for (const [sid, held] of socket.data.subs) {
           if (held !== subject) continue;
-          const reply = `notifications.envoy.relayreply.${randomBytes(8).toString("hex")}.${session}.${randomBytes(4).toString("hex")}`;
           socket.data.replies.set(reply, Date.now());
           send(socket, {
             op: "msg",
@@ -254,10 +271,17 @@ export function startRelaySocketStandIn(
             headers: frame.headers,
             data: Buffer.from(frame.data).toString("base64"),
           });
-          return reply;
+          sent = true;
         }
       }
-      return undefined;
+      return sent ? reply : undefined;
+    },
+    refuseFrame(session) {
+      for (const socket of [...open]) {
+        if (socket.data.session !== session) continue;
+        send(socket, { op: "err", code: "bad_frame" });
+        socket.close(1008, "bad_frame");
+      }
     },
     close(code, reason, session) {
       for (const socket of [...open]) {
@@ -386,52 +410,81 @@ export function startRelaySocketStandIn(
         });
       },
       message(socket, raw) {
+        // A frame it cannot read: the err frame `bad_frame`, under the sid it named, and the close.
+        const badFrame = (sid?: number): void => {
+          send(socket, { op: "err", ...(sid === undefined ? {} : { sid }), code: "bad_frame" });
+          socket.close(1008, "bad_frame");
+        };
         // Its members as sent, each read and checked below; any other is counted in `malformed`.
-        let frame: ClientFrame;
+        // JSON that is no object (`null`, a number) reads as one with no members.
+        let frame: ClientFrame | null;
         try {
-          frame = JSON.parse(String(raw)) as ClientFrame;
+          frame = JSON.parse(String(raw)) as ClientFrame | null;
         } catch {
-          socket.close(1007, "a frame is no JSON");
+          standIn.malformed.push(String(raw));
+          badFrame();
           return;
         }
         const { session } = socket.data;
-        const members = Object.keys(frame).sort().join(",");
+        const members = Object.keys(frame ?? {})
+          .sort()
+          .join(",");
         const shaped = { sub: "op,sid,subject", unsub: "op,sid", pub: "data,op,subject" }[
-          String(frame.op)
+          String(frame?.op)
         ];
         if (members !== shaped) standIn.malformed.push(String(raw));
-        if (frame.op === "sub") {
-          const sid = Number(frame.sid);
+        const sid = Number.isInteger(frame?.sid) ? Number(frame?.sid) : undefined;
+        if (frame?.op === "sub") {
+          if (sid === undefined) {
+            badFrame();
+            return;
+          }
           const subject = String(frame.subject);
           standIn.handled.push({ session, frame: `sub ${sid} ${subject}` });
           if (subject !== standInDeliverSubject(session)) {
-            standIn.refusedSubs.push({ session, subject });
+            standIn.refusedSubs.push({ session, subject, code: "subject_not_granted" });
             send(socket, { op: "err", sid, code: "subject_not_granted" });
+            return;
+          }
+          if (socket.data.subs.has(sid)) {
+            badFrame(sid);
+            return;
+          }
+          if (socket.data.subs.size >= MOST_SUBSCRIPTIONS) {
+            // The socket stays open: its subscriptions up to the bound go on.
+            standIn.refusedSubs.push({ session, subject, code: "subscription_limit" });
+            send(socket, { op: "err", sid, code: "subscription_limit" });
             return;
           }
           socket.data.subs.set(sid, subject);
           standIn.subs.push({ session, subject });
           return;
         }
-        if (frame.op === "unsub") {
-          standIn.handled.push({ session, frame: `unsub ${Number(frame.sid)}` });
-          socket.data.subs.delete(Number(frame.sid));
-          return;
-        }
-        if (frame.op === "pub") {
-          const subject = String(frame.subject);
-          standIn.handled.push({ session, frame: `pub ${subject}` });
-          const at = socket.data.replies.get(subject);
-          if (at === undefined || Date.now() - at > REPLY_WINDOW_MS) {
-            standIn.refusedPublishes.push(subject);
-            send(socket, { op: "err", code: "publish_not_granted" });
+        if (frame?.op === "unsub") {
+          if (sid === undefined) {
+            badFrame();
             return;
           }
-          standIn.receipts.push({
-            reply: subject,
-            body: Buffer.from(String(frame.data), "base64").toString("utf8"),
-          });
+          standIn.handled.push({ session, frame: `unsub ${sid}` });
+          socket.data.subs.delete(sid);
+          return;
         }
+        if (frame?.op !== "pub") {
+          badFrame(sid);
+          return;
+        }
+        const subject = String(frame.subject);
+        standIn.handled.push({ session, frame: `pub ${subject}` });
+        const at = socket.data.replies.get(subject);
+        if (at === undefined || Date.now() - at > REPLY_WINDOW_MS) {
+          standIn.refusedPublishes.push(subject);
+          send(socket, { op: "err", code: "publish_not_granted" });
+          return;
+        }
+        standIn.receipts.push({
+          reply: subject,
+          body: Buffer.from(String(frame.data), "base64").toString("utf8"),
+        });
       },
     },
   });

@@ -293,16 +293,25 @@ a WebSocket of subprotocol `envoy-relay.v1`, with a fresh proof of the session's
 session sends `sub` of its own relay subject, `unsub`, and `pub` of a relay receipt on a frame's
 reply, which is all the socket takes; the listener sends `msg`, whose `headers` map each name, case
 kept, to the list of its values in order (`RelaySocketHeaders.get` and `values`), and `err`. A
-`sub` the listener refuses (`subject_not_granted`) ends that subscription alone and is logged once.
+`sub` the listener refuses (`subject_not_granted`, or `subscription_limit` past the four
+subscriptions a socket holds) ends that subscription alone and is logged once; a frame it cannot
+read it answers `bad_frame` and closes the socket 1008.
 The listener reads a socket's frames one at a time and answers no `sub` it grants, so `flush` sends
-a WebSocket ping and resolves at its pong, after every `sub` before it is held. The socket carries
+a WebSocket ping and resolves at its pong, after every `sub` before it is held; a flush whose
+socket closes or is replaced first rejects. The socket carries
 neither the connection probe nor the agent stream, so a host opens no live view over it, and the
 start notice says so. The listener closes an open socket by why: 4401 (the token lapsed) and 1012
-(it is stopping) open again at once, the first with a fresh trade; 4403 (the token was revoked or
-no longer names what the socket was opened with) after 1 s doubling to a minute, with a fresh
-trade; 1013 (the broker cannot be asked) after 5 s doubling to a minute (`relayReopenDelay`). An
-upgrade that never opened and a trade that failed are tried again after 1 s doubling to a minute;
-a trade that failed is told to the session once per outage (`inboundUnavailable`), and a repeated
+(it is stopping) open again at once however often they come, the first with a fresh trade; 4403
+(the token was revoked or no longer names what the socket was opened with) after 1 s doubling to a
+minute, with a fresh trade; 1013 (the broker or NATS cannot be asked) after 5 s doubling to a
+minute; 1001 and 1006 at once, then after 1 s doubling while they repeat; any other close, 1008
+included, after 1 s doubling (`relayReopenDelay`). An upgrade the listener refuses names its status
+in Bun's `error` event: 401 and 403 wait as 4403 does and trade a fresh token, 503 after a 1013
+goes on with the 1013's waits, and any other status, an upgrade not answered within 20 s, a
+listener that cannot be reached and a failed trade are tried again after 1 s doubling to a minute.
+Each cause doubles its own waits, and a socket open a minute starts them all afresh. Every other
+open presents the token in hand, with a fresh proof. A trade that failed is told to the session
+once per outage (`inboundUnavailable`), and a repeated
 failure is logged once until its words change. Each reopen takes every live subscription again and
 reports `reconnect`, so the host registers a new epoch and the listener redelivers what it never
 acknowledged. `follow()` opens the socket again for the session the name reads now, which a host
@@ -420,7 +429,12 @@ has nothing to retry either way.
 give no consumer is refused by name, and its reason is on `EnvoyApiError`, under the one canonical
 list of them (`ErrorWireSchema.reason` in `src/transport.ts`). The same list holds
 `sender_rate_limited`, the reason of the 429 a send or a publish gets when its agent session has
-sent faster than the listener lets one session send: the message was not stored.
+sent faster than the listener lets one session send: the message was not stored. A listener in
+edge mode refuses a whole registration that names a topic of no project of the session's token,
+403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
+registration carried it (`EnvoyApiError.refused`): `registerWithRelay` has the host drop exactly
+those (`drop`), logs one line naming them, and registers the rest at once, while its 503
+`repositories_unknown` and 403 `token_not_admitted` drop nothing.
 
 ## envoy.json
 

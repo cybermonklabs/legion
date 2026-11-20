@@ -11,16 +11,25 @@ body: |-
   (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`
   (subprotocol `envoy-relay.v1`) with a fresh DPoP proof of the session's broker token and answers a
   `ListenerRelay`, a connection of the shape a plugin holds over NATS (`InboundConnection`), so
-  consumer delivery runs on either. A `sub` the listener refuses (`subject_not_granted`) ends that
-  subscription alone and is logged once; `flush` waits on a WebSocket ping's pong, which the
-  listener sends after it handled every `sub` before it; a `msg`'s headers keep each name's case
-  and every value in order (`RelaySocketHeaders.values`). A close is opened again as the listener's
-  code says: 4401 and 1012 at once, 4403 after 1 s doubling to a minute and 1013 after 5 s doubling
-  to a minute, the first two codes of the credential with a fresh trade; a refused trade is told
-  to the session once per outage (`inboundUnavailable`). `test/relay-socket-stand-in`
-  (`@legion/envoy-client/test/relay-socket-stand-in`) serves the socket and a broker's token
-  exchange on one origin, and a test's own listener routes beside them (`routes`), for a plugin's
-  tests and an outside driver's.
+  consumer delivery runs on either. A `sub` the listener refuses (`subject_not_granted`, or
+  `subscription_limit` past four on one socket) ends that subscription alone and is logged once;
+  `flush` waits on a WebSocket ping's pong, which the listener sends after it handled every `sub`
+  before it, and rejects when its socket closes or is replaced first; a `msg`'s headers keep each
+  name's case and every value in order (`RelaySocketHeaders.values`). A close is opened again as
+  the listener's code says, each cause doubling its own waits: 4401 and 1012 at once however often
+  they come, 4403 after 1 s doubling to a minute and 1013 after 5 s doubling to a minute, 1001 and
+  1006 at once and then after 1 s doubling, and any other close, 1008 `bad_frame` included, after
+  1 s doubling. An upgrade refused 401 or 403 (its status read from Bun's `error` event) waits as
+  4403 does, one refused 503 after a 1013 goes on with the 1013's waits, and an upgrade not answered
+  within 20 s is dropped and tried again. Only 4401, 4403 and an upgrade refused 401 or 403 trade
+  for a fresh token; every open signs a fresh DPoP proof. A refused trade is told to the session
+  once per outage (`inboundUnavailable`). A registration an edge listener refuses for a topic of
+  no project of the session's token (403 `topic_not_in_project` or `repository_not_in_project`,
+  naming the topics in `refused`, `EnvoyApiError.refused`) has the host drop exactly those topics
+  (`registerWithRelay`'s `drop`), logs one line naming them, and registers the rest at once.
+  `test/relay-socket-stand-in` (`@legion/envoy-client/test/relay-socket-stand-in`) serves the
+  socket and a broker's token exchange on one origin, and a test's own listener routes beside them
+  (`routes`), for a plugin's tests and an outside driver's.
 time: 2026-11-20T09:58:42Z
 custom:
     Issue: feat-listener-relay-client
