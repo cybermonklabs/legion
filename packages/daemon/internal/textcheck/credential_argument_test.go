@@ -79,11 +79,16 @@ var cookieWord = regexp.MustCompile(`(?i)(?:^|[\s;"'])[\w.-]*(?:session|sid|auth
 // fixture-token`) is no secret, so neither matches.
 var tokenValue = regexp.MustCompile(`^\\?["']?(?:\\?\$\{?!?\w+\}?|\\?\$\([^)]*\)|<[^>]+>)\\?["']?(?:[\s;|&)]|$)`)
 
-// urlUserinfo matches a URL-like string with a user and a password before the host, as the proxy
-// flags give them: `http://user:$PASSWORD@host`, `socks5://ada:<pw>@host` and, for the SOCKS
-// flags that take no scheme, `user:$PASSWORD@host`. It matches the user:password@ wherever it
-// sits, so a string with no scheme and no user part (`127.0.0.1:1080`) matches nothing.
-var urlUserinfo = regexp.MustCompile(`(?:://)?[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
+// urlUserinfo matches a URL whose user's password is a variable, a command substitution or a
+// placeholder: `http://agent-secrets:$PROXY_PASSWORD@host`, `https://ada:<password>@proxy`,
+// `socks5://ada:${PW}@host`. It requires `://` before the user, so a line with no URL
+// (`docker pull "ghcr.io/acme/tool:${TAG}@sha256:${DIGEST}"`) matches nothing. A URL with no
+// user part (`http://$host:$port`) matches nothing.
+var urlUserinfo = regexp.MustCompile(`://[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
+
+// proxyUserinfo is urlUserinfo for proxy flags that may carry no scheme: the SOCKS flags give
+// `user:$PASSWORD@host:port` with no `://`. It matches the user:password@ wherever it sits.
+var proxyUserinfo = regexp.MustCompile(`(?:://)?[^\s/@"']*:(?:\\?\$\{?\w+\}?|\\?\$\([^)]*\)|<[^>]*>)[^\s/@"']*@`)
 
 // proxyVariable matches an expansion of a variable agent-secrets puts the proxy URL in, with the
 // grant's proxy password in its user part: `$HTTPS_PROXY`, `${https_proxy}`, and an expansion with
@@ -119,7 +124,7 @@ var (
 // proxyCarries says whether a proxy word carries the proxy's password: a URL with a password in it,
 // a name the script holds a credential in, or a proxy variable that keeps the password.
 func proxyCarries(word string, h held) bool {
-	return urlUserinfo.MatchString(word) || h.expands(word) || proxyPassword(word)
+	return proxyUserinfo.MatchString(word) || h.expands(word) || proxyPassword(word)
 }
 
 // A script can also hold a credential in a variable or a function whose name says nothing of it:

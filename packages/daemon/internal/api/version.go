@@ -2454,12 +2454,13 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 187: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
 // collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
 // deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
 // pane and container environments are as 178 has them. The number moves because
 // `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
 // change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
 // different numbers, so the two still move together.
-// (This entry takes 187, above main's 178: #4175 declares 185 and #4573 declares 186.)
-const DaemonAPIVersion = 187
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+const DaemonAPIVersion = 188

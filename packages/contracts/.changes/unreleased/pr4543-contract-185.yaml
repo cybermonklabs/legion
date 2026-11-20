@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The daemon API fixtures declare contract 187: `version.json`'s `daemonApiVersion` and
+  The daemon API fixtures declare contract 188: `version.json`'s `daemonApiVersion` and
   `state.json`'s `contract.daemon` and `contract.caller`. No schema changes.
 time: 2026-11-20T04:19:29Z
 custom:
