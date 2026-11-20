@@ -133,11 +133,12 @@ describe("envoyToolSpecs", () => {
       );
       expect(description).not.toContain("live only");
     }
-    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
-    // release for a holder that is not live (holder_lapsed).
+    // The ways a role publish ends in an error: the holder's refusal (403), the window the
+    // listener spends waiting for the stream (504), a keep the stream refuses for want of the kept
+    // lane's subject (503, with Retry-After), or a keep that failed for another reason (404). On a
+    // listener of this release whose keep succeeded, no live holder is not one of them: the
+    // listener keeps the message for the role's next live holder. An earlier release answers a
+    // holder that is not live with 404 holder_lapsed.
     expect(publish?.description).toContain(
       "the holder refuses the message, or the forward is not stored within four seconds"
     );
@@ -166,8 +167,12 @@ describe("envoyToolSpecs", () => {
     );
     // 404: nothing was kept. The tool sends no `keep: false`, so on a listener of this release
     // whose keep succeeded a holder that is not live never reaches it, and nothing tells the model
-    // that no copy waits for such a holder. A keep that failed, and a listener of an earlier
-    // release, answer such a holder 404 holder_lapsed.
+    // that no copy waits for such a holder. A keep that failed for another reason answers 404; a
+    // keep that the stream refuses for want of the kept lane's subject answers 503 with Retry-After
+    // instead; an earlier release answers 404 holder_lapsed.
+    expect(publish?.description).toContain(
+      "A keep that the stream refuses for want of the kept lane's subject answers 503 with Retry-After instead."
+    );
     expect(publish?.description).toContain("the listener keeps nothing and errs");
     expect(publish?.description).not.toContain("nothing waits for it");
     expect(publish?.description).not.toContain("in the hour that follows");

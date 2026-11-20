@@ -46,7 +46,8 @@ const (
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
 	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed - answered 404
+	// keep: false, a role token no claim can name, or a keep that failed for any reason but the
+	// stream lacking the kept lane's subject, which is a 503 (writeBusUnavailable) - answered 404
 	// (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
@@ -135,11 +136,13 @@ func (d *listenerDeps) confirm(dedupeKey, sessionID string) {
 //
 // Each answer marks the message's take from its sender's count (record.charge) before it is
 // written: a wake reported, a forward the stream stored, a forward that failed with no refusal,
-// which the stream may have stored for the holder it went to, and a window that ended cost one.
-// The mark of a forward that may have been stored stands whatever the send answers next
+// and a window that ended cost one. A forward that failed with no refusal is marked as one the
+// stream may have stored for the holder it went to, whether or not the server answered it, so the
+// charge errs toward a cost; which answer the send writes next reads the narrower fact
+// (unanswered). The mark of such a forward stands whatever the send answers next
 // (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
 // lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
-// mark alone, and every other answer marks nothing, so where no forward may have been stored the
+// mark alone, and every other answer marks nothing, so where no forward failed or was stored the
 // route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
@@ -165,6 +168,14 @@ type roleSend struct {
 	// unresponsive or gone (kept).
 	holderState session.State
 	attempts    int
+	// unanswered is whether an earlier forward of this send went out and got no answer
+	// (mayHaveStored: the bus marks such a forward bus.ErrUnacknowledged), so that the stream may
+	// hold the message for the holder it went to. Every bus failure the send answers reads it
+	// (refuseBus): a later refusal for want of a subject, a forward's or the keep's, is then the
+	// maybe-stored 503 rather than the missing-subject one that says nothing stored the message. A
+	// forward the server answered (no responders, or the stream's own error) stored nothing and
+	// does not set it.
+	unanswered bool
 }
 
 // settle counts and logs the send's outcome, the one delivery line a send writes, once its answer
@@ -201,11 +212,21 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // answered as a send that kept nothing is, since the sender's own fallback must run when the
 // message was not kept: writeRoleHolderError's 404 (unclaimed or holder_lapsed), which the Legion
 // daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
-// exception (publishRefusalException). The role lane counts an unclaimed role skipped and a lapsed
-// holder failed when its own keep fails. A keep whose publish went out and was never acknowledged
-// (bus.ErrUnacknowledged) is answered so too, as at main, although it may have stored the copy:
-// what each role route answers is unchanged here, and a sender that publishes again after the
-// 404 gives the role's next holder the message once more, which at-least-once delivery allows.
+// exception (publishRefusalException). The one keep that failed and is answered otherwise is one
+// the notifications stream did not take because, as the listener last read it, the stream
+// captures no subject of the role's kept lane (bus.ErrStreamLacksSubject): that is a 503 of the
+// bus's (writeBusUnavailable), as the send route and a role send's forward answer it. It is the
+// refusal's own 503, recorded stream_lacks_subject, so the sender learns that nothing stored the
+// message and why; or the 503 with listenerwire.CodeMaybeStored, recorded bus_unavailable, when an
+// earlier send may have stored the message: an earlier send of the same keep (storeKeptRoleCopy's
+// ownSend, which wraps the refusal in bus.ErrUnacknowledged), since that copy may be on the lane,
+// or an earlier forward of the same role send that got no answer (unanswered, which refuseBus
+// reads), since that forward may be on the stream for the holder it went to. The
+// role lane counts an unclaimed role skipped and a lapsed holder failed when its own keep fails.
+// Any other keep whose publish went out and was never acknowledged (bus.ErrUnacknowledged) is
+// answered with the 404 too, as at main, although it may have stored the copy: what each role
+// route answers is unchanged here, and a sender that publishes again after the 404 gives the
+// role's next holder the message once more, which at-least-once delivery allows.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither
@@ -220,8 +241,13 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 	// The wake is what this message costs its sender, whether it is kept or answered 404 below.
 	s.record.charge.woke()
 	if s.keep && roleKeepable(result) {
-		if kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item); err == nil {
+		kept, err := keepForNextHolder(*s.d.delivery, s.role, s.item)
+		if err == nil {
 			s.kept(result, kept)
+			return
+		}
+		if errors.Is(err, bus.ErrStreamLacksSubject) {
+			s.refuseBus(result.Holder, err)
 			return
 		}
 	}
@@ -249,13 +275,13 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 // (storeKeptRoleCopy), so the answer is that first copy's envelope and event id, and the request's
 // record line and the send's delivery line name it too: the send's envelope becomes the copy's.
 // Such a repeat is forgiven: it costs its sender nothing, though noHolder's wake report marked
-// its charge, unless an earlier forward of the same send failed with no refusal, which may have
-// stored the message for the holder it went to and marked the charge so (sendToRole).
+// its charge, unless an earlier forward of the same send failed with no refusal and so marked the
+// charge as one that may have stored the message for the holder it went to (sendToRole).
 //
-// 202 rather than 200, so a sender tells the three answers of a role send apart by status alone:
-// 200, the message is with a live holder; 202, no live session holds the role and the message
-// waits on the role's kept lane until kept_until; 404, nothing was kept and the sender's own
-// fallback must run. INFRA-514's architect decided it on 2026-10-31.
+// 202 rather than 200, so a sender tells the role send's answers apart by status alone: 200, the
+// message is with a live holder; 202, no live session holds the role and the message waits on the
+// role's kept lane until kept_until; 404, nothing was kept for a no-holder reason and the sender's
+// own fallback must run; or 503 when the stream refuses the kept lane for want of its subject.
 func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	if kept.repeat {
 		s.record.charge.forgive()
@@ -287,21 +313,40 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 // sendRequestBudget among them - the bus-unavailable 503, or the 413 or 400 a refused key gets.
 // Each is recorded under its own outcome.
 func (s *roleSend) unresolved(err error) {
-	switch {
-	case errors.Is(err, store.ErrMalformedRoleClaim):
-		s.record.refuseRoleClaimUnreadable(s.w, s.role, err)
-	default:
-		s.record.refuseBusUnavailable(s.w, err)
+	if !errors.Is(err, store.ErrMalformedRoleClaim) {
+		s.refuseBus(s.holder, err)
+		return
 	}
+	s.record.refuseRoleClaimUnreadable(s.w, s.role, err)
 	s.settle(sendFailed)
 }
 
 // refused answers a forward NATS refuses however often it is sent, or one the listener's grant
-// denies (forwardRefused), as requestRecord.refuseBusUnavailable maps it. The refused forward
-// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole).
+// denies (forwardRefused), or one the notifications stream did not take for want of the holder's
+// subject (bus.ErrStreamLacksSubject), through refuseBus: the 413, the 400, the 403, or the 503 of
+// a stream that does not capture the subject. The refused forward stored nothing, so it marks
+// nothing: an earlier forward of the same send that failed with no refusal has marked the charge
+// already (sendToRole), and one of them that got no answer makes a refusal for want of the subject
+// the maybe-stored 503 instead (unanswered), since that earlier forward may be on the stream.
 func (s *roleSend) refused(err error) {
-	s.record.holder = s.holder
+	s.refuseBus(s.holder, err)
+}
+
+// refuseBus answers the send with err, a failure of the bus, as requestRecord.refuseBusUnavailable
+// maps it, its record naming holder, and settles it failed. It is the one place the send writes
+// such an answer - the first resolution's failure (unresolved), a forward's refusal (refused) and
+// the keep's refusal for want of the kept lane's subject (noHolder) - so no answer of the send can
+// leave out what an earlier forward of it did: after one that got no answer (unanswered), a
+// refusal for want of a subject wraps bus.ErrUnacknowledged, so writeBusUnavailable answers the
+// maybe-stored 503, recorded bus_unavailable, and not the missing-subject one that says nothing
+// stored the message, since the forward may be on the stream. A refusal that already says the
+// message may be stored (mayHaveStored: an earlier send of the keep went unanswered) is answered
+// as it is.
+func (s *roleSend) refuseBus(holder string, err error) {
+	if s.unanswered && errors.Is(err, bus.ErrStreamLacksSubject) && !mayHaveStored(err) {
+		err = fmt.Errorf("%w: an earlier forward of this send went unanswered: %w", bus.ErrUnacknowledged, err)
+	}
+	s.record.holder = holder
 	s.record.refuseBusUnavailable(s.w, err)
 	s.settle(sendFailed)
 }
@@ -334,8 +379,8 @@ func (s *roleSend) timedOut() {
 // recorded capability_refused as sendHandler records it.
 //
 // None of those answers marks the charge: each stores nothing, and an earlier forward of the same
-// send that failed with no refusal, which may have stored the message for the holder it went to,
-// has marked the charge already (sendToRole).
+// send that failed with no refusal has marked the charge already, as one that may have stored the
+// message for the holder it went to (sendToRole).
 //
 // The dedupe check reads the route's own record (listenerDeps.confirmed), not the delivery
 // handlers' cache: agentSubjectDelivery and fanoutDelivery record a key there for every delivery
@@ -382,9 +427,19 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // the send's 200, since the holder answers nothing and reads the stored copy from its session
 // consumer (startRoleForward). The stream, which captures agent subjects, therefore keeps one copy
 // of the forward however many attempts there are. Every read takes ctx, the send's window, so
-// none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
-// its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
-// send forwards and keeps carries the envelope's own value.
+// none outlasts it: a send whose window ends is answered 504. A forward the notifications stream
+// did not take because, as the listener last read it, the stream captures no subject of the
+// holder's (bus.ErrStreamLacksSubject) ends the send at once with the 503 of that refusal
+// (refused): every attempt would forward to a subject the stream does not capture, so the
+// attempts left would store nothing either. After an earlier forward of the send that went out and
+// got no answer (unanswered: bus.ErrUnacknowledged, no acknowledgement within its window, or a
+// publish nats.go took and could not flush), which may have stored the message, that refusal wraps
+// bus.ErrUnacknowledged, so the 503 is the maybe-stored one (writeBusUnavailable) and does not say
+// that nothing stored it; so does a later keep's refusal for want of the kept lane's subject, once
+// the role turned unclaimed (noHolder, refuseBus). An earlier forward the server answered - no
+// responders, or the stream's own error - stored nothing, and the refusal keeps its own 503.
+// expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go), the request's
+// own dialect; the envelope this send forwards and keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
 	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
@@ -456,13 +511,16 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.delivered(sendDelivered)
 				return
 			}
-			if forwardRefused(err) {
+			if forwardRefused(err) || errors.Is(err, bus.ErrStreamLacksSubject) {
 				send.refused(err)
 				return
 			}
-			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next.
+			// A forward that failed with no refusal costs its sender one whatever this send
+			// answers next, as one the stream may have stored for its holder, whether or not the
+			// server answered it. Only one that got no answer may have been stored (mayHaveStored),
+			// and it makes the send's later refusals for want of a subject say so (refuseBus).
 			send.record.charge.stored()
+			send.unanswered = send.unanswered || mayHaveStored(err)
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.

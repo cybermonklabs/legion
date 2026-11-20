@@ -147,9 +147,11 @@ func RequireFirstStartAtOneCopyAndNoSecondWrite(t testing.TB, url string, stream
 
 // FillStream publishes messages of a kibibyte each through client, on subjects the stream captures
 // (notifications.github.fill.<n>), until the stream refuses one because it is full
-// (bus.ErrStreamFull). The test must start the client on a stream whose byte limit is small
-// (bus.WithStreamMaxBytes), or the fill never ends: most bounds the publishes, and a run that
-// reaches it fails the test. A publish that fails for any other reason fails the test too.
+// (bus.ErrStreamFull), and then tops off the room that refusal can leave (topOff), so the stream
+// takes no envelope a test publishes after it, whatever its size. The test must start the client
+// on a stream whose byte limit is small (bus.WithStreamMaxBytes), or the fill never ends: most
+// bounds the publishes, and a run that reaches it fails the test. A publish that fails for any
+// other reason fails the test too.
 //
 // internal/webhook's two full-stream tests call it: the one whose delivery is answered 503
 // (TestADeliveryToAFullStreamIsAnswered503) and the one whose delivery is stored on a redelivery
@@ -175,6 +177,38 @@ func FillStream(t testing.TB, client *bus.Client, most int) {
 		}
 		if !errors.Is(err, bus.ErrStreamFull) {
 			t.Fatalf("fill publish %d = %v, want nil or bus.ErrStreamFull", filled, err)
+		}
+		break
+	}
+	topOff(t, client, most)
+}
+
+// streamStoreFailed and maxBytesExceeded are nats-server's code and description for a message a
+// full stream refused (JSStreamStoreFailedF with ErrMaxBytes), as the bus reads them (streamFull).
+const (
+	streamStoreFailed = 10077
+	maxBytesExceeded  = "maximum bytes exceeded"
+)
+
+// topOff fills the room a refused kibibyte can leave in a full stream - up to a kibibyte, room
+// enough for a small envelope - with the smallest messages the stream takes: no body, on a short
+// subject, naming the notifications stream as every stored send does. It stops at the first the
+// stream refuses as full, which leaves less room than any envelope with its headers needs. A send
+// of a test that found the stream full otherwise turns on the sizes of the fill's last message and
+// of its own, which a header more on every stored copy changes.
+func topOff(t testing.TB, client *bus.Client, most int) {
+	t.Helper()
+	for filled := 0; ; filled++ {
+		if filled == most {
+			t.Fatalf("the stream took %d empty messages after a kibibyte was refused, want it full within %d", filled, most)
+		}
+		_, err := client.JS().Publish(fmt.Sprintf("notifications.github.f.%d", filled), nil, natsgo.ExpectStream(bus.Stream))
+		if err == nil {
+			continue
+		}
+		var apiErr *natsgo.APIError
+		if !errors.As(err, &apiErr) || apiErr.ErrorCode != streamStoreFailed || apiErr.Description != maxBytesExceeded {
+			t.Fatalf("top-off publish %d = %v, want nil or the full stream's refusal", filled, err)
 		}
 		return
 	}

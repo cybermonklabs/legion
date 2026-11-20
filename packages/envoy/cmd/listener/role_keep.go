@@ -639,14 +639,15 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 }
 
 // keepForNextHolder keeps item for role's next live holder and hands the lane to whoever holds the
-// role now (runKeptRoleDrain), and returns what it kept and whether it kept anything
-// (keepRoleMessage). It is the one keep both give-up paths take - the publish route's
-// (roleSend.noHolder) and the role lane's (keepRoleLaneMessage) - so no give-up path can store a
-// copy without offering it to the role's current holder: a holder whose claim landed, or who
-// answered again, while the keep's caller was resolving the holder it did not find. The handover
-// resolves that holder itself and, when the role has no live holder, walks the lane with no holder
-// and stops at the copy it finds still inside its hour, so a keep for a role nobody holds live
-// costs one resolution and one read of the lane past its cursor.
+// role now (runKeptRoleDrain), and returns what it kept, or the error that ended the keep: the
+// keep's failure (keepRoleMessage), or errRoleNotKeepable where it made no keep. It is
+// the one keep both give-up paths take - the publish route's (roleSend.noHolder) and the role
+// lane's (keepRoleLaneMessage) - so no give-up path can store a copy without offering it to the
+// role's current holder: a holder whose claim landed, or who answered again, while the keep's
+// caller was resolving the holder it did not find. The handover resolves that holder itself and,
+// when the role has no live holder, walks the lane with no holder and stops at the copy it finds
+// still inside its hour, so a keep for a role nobody holds live costs one resolution and one read
+// of the lane past its cursor.
 //
 // One message is not kept at all, and leaves its caller's give-up exactly as it was before the
 // kept lane: one whose role token no claim can name (roles.Valid, the pattern POST /v1/roles/set

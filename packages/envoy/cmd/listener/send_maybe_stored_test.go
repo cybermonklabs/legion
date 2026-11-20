@@ -142,7 +142,7 @@ func TestEveryBusUnavailableAnswerThatMayHaveStoredTheMessageSaysSo(t *testing.T
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			status := writeBusUnavailable(recorder, row.err)
+			status, _ := writeBusUnavailable(recorder, row.err)
 			var body listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
 				t.Fatalf("decode the answer %q: %v", recorder.Body.String(), err)

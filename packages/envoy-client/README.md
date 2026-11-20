@@ -300,13 +300,14 @@ message the listener kept for one hour because no live session holds the role, w
 milliseconds. The next session to hold the role live before `keptUntil` is handed the message. If
 none does, the listener drops it and sends the publishing session a dead letter, when the publish
 named that session as its source and the listener did not drop it more than an hour late. A
-listener of an earlier release sends no `keptUntil`. 404 is nothing kept, thrown as an
-`EnvoyApiError`, and the sender's own fallback must run. A sender that
-keeps a queue of its own passes `keep: false` to get the 404. Network failures, timeouts (5 s an
-attempt, the answer's body included) and 5xx responses retry once after 250 ms, under the same
-idempotency key; a 4xx whose body does not arrive is still a refusal. A send any attempt of which
-got no answer, an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later
-attempt was refused: the message may or may not have arrived. The error names its
+listener of an earlier release sends no `keptUntil`. A 404 is a no-holder answer, thrown as an
+`EnvoyApiError`, and the sender's own fallback must run. A sender that keeps a queue of its own
+passes `keep: false` to get the 404. A keep that the stream refuses for want of the kept lane's
+subject instead answers 503 with Retry-After. Network failures, timeouts (5 s an attempt, the
+answer's body included) and 5xx responses retry once after 250 ms, under the same idempotency key;
+a 4xx whose body does not arrive is still a refusal. A send any attempt of which got no answer,
+an unreadable 2xx or a 5xx throws `EnvoySendUnconfirmedError`, even when a later attempt was
+refused: the message may or may not have arrived. The error names its
 `idempotencyKey` and says in `resendSafe` whether the listener's dedupe key for it
 (`agent.<target>.<key>`) is one a repeat is recognised by (`MINTED_DEDUPE_KEY_PATTERN`); when it
 is, a resend under that key inside the 72-hour duplicate window is dropped as a repeat if the

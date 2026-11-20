@@ -52,10 +52,12 @@ type listenerDeliveryHandlerConfig struct {
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
-	// storing it, which is what its wait returns nil for. The wait's bus.ErrForwardNotStored means
-	// the stream did not acknowledge storing it inside timeout; any other error — a raw
-	// nats.ErrTimeout from the flush included, returned by the publish or the wait — means the
-	// forward is not known to have left this process.
+	// storing it, which is what its wait returns nil for. Every error of the wait is
+	// bus.ErrForwardNotStored: the stream did not store it as far as the listener knows, and the
+	// wait's error is also bus.ErrUnacknowledged unless the server answered that nothing stored it
+	// (no responders, or the stream's own error). An error of the publish - a raw nats.ErrTimeout
+	// from the flush included - means the forward is not known to have left this process; one
+	// nats.go took and could not flush is bus.ErrUnacknowledged too, since it may still go out.
 	forwardRole func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (wait func() error, err error)
 	// roleForwards runs the role lane's forwards off its handler (roleForwarder); every delivery
 	// path hands its forwards to it, so it is always set: wireRoleForwarder builds it from the
@@ -321,10 +323,11 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 // which keeps nothing: the report of a team message reached only a reader subscribed at that
 // moment, where the stream's copy reaches a session's consumer whenever that session comes back.
 // origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
-// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
-// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
-// stream keeps one copy however many listeners raise it for that message, each from its own
-// durable, a lane only a newer build's subjects capture among them.
+// an exception on a lane that takes JetStream (bus.Client.UsesCoreTransport, which judges the
+// subjects the deployed stream captures and those this build stores) then carries Nats-Msg-Id
+// exception.<reason>.<origin>, so the stream keeps one copy however many listeners raise it for
+// that message, each from its own durable, a lane only a newer build's subjects capture among
+// them, and one this build stores that the listener last read the deployed stream without.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -333,7 +336,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
+	if origin != "" && !client.UsesCoreTransport(exception.Topic) {
 		// The stream keeps one copy however many listeners raise it, each from its own durable.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
 			return fmt.Errorf("publish delivery exception: %w", err)

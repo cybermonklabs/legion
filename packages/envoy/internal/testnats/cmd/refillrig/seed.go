@@ -42,10 +42,11 @@ func connect(url string) (*nats.Conn, nats.JetStreamContext, error) {
 
 // put writes every record of sets into the bucket of kind as KV puts, with markers delete markers
 // on keys no record has spread evenly among them, all published asynchronously and each
-// acknowledged before it returns. A read streams past every delete marker and lists none, so
-// markers lengthen a read, and the time over which it delivers the records, without lengthening a
-// list answer: that is how polls land inside a read. With steps, it appends one step per set each
-// time records of that set are acknowledged: the records below Upto were all stored by Acked.
+// acknowledged by the bucket's own stream (nats.ExpectStream) before it returns. A read streams
+// past every delete marker and lists none, so markers lengthen a read, and the time over which it
+// delivers the records, without lengthening a list answer: that is how polls land inside a read.
+// With steps, it appends one step per set each time records of that set are acknowledged: the
+// records below Upto were all stored by Acked.
 func put(js nats.JetStreamContext, kind string, sets []recordSet, role string, markers int, steps *[]fillStep) (int, error) {
 	config, err := bucketConfig(kind)
 	if err != nil {
@@ -88,7 +89,7 @@ func put(js nats.JetStreamContext, kind string, sets []recordSet, role string, m
 		return nil
 	}
 	publish := func(msg *nats.Msg) error {
-		future, err := js.PublishMsgAsync(msg)
+		future, err := js.PublishMsgAsync(msg, nats.ExpectStream("KV_"+config.Bucket))
 		if err != nil {
 			return err
 		}

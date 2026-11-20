@@ -14,6 +14,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -21,7 +22,8 @@ import (
 // agent subjects (contracts.LegacyAgentSubject), as Dispatch's outbox publishes a message meant
 // for one session, so that a listener which is down builds up a backlog the sessions must get once
 // it is back (restart-step.sh). Every publish goes to the notification stream over JetStream under a
-// Nats-Msg-Id of its own, and every acknowledgement is waited for, so the summary counts the
+// Nats-Msg-Id of its own, naming that stream as the one whose acknowledgement it takes
+// (nats.ExpectStream), and every acknowledgement is waited for, so the summary counts the
 // publishes that failed as well as those the stream stored.
 
 // backlogIDBase is the first event id of a backlog run, far above any marker the event generator
@@ -212,7 +214,7 @@ func publishBacklog(url string, plans []backlogPlan, wait time.Duration) (backlo
 		if err != nil {
 			return sum, err
 		}
-		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.LegacyAgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)))
+		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.LegacyAgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)), nats.ExpectStream(bus.Stream))
 		if err != nil {
 			sum.PublishErrors++
 			if sum.FirstError == "" {

@@ -201,9 +201,11 @@ type NoLiveSessionRefusal struct {
 // from every other answer, a delivered role send's included. A role send has three answers and a
 // sender tells them apart by status: 200, a live holder took the message; 202, no live session
 // holds the role and the message waits on the role's kept lane until KeptUntil for the next
-// session that holds it live; 404, nothing was kept. Each field is left out when it is empty, so
-// a role send carries no recipient count and a publish to a topic the stream captures carries the
-// envelope and its counts alone.
+// session that holds it live; 404, nothing was kept. A keep the notifications stream refused
+// because it captures no subject of the role's kept lane is answered 503 rather than 404
+// (RoleRefusal says which). Each field is left out when it is empty, so a role send
+// carries no recipient count and a publish to a topic the stream captures carries the envelope and
+// its counts alone.
 type PublishResponse struct {
 	Envelope
 	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke,
@@ -522,7 +524,13 @@ type RoleHolder struct {
 }
 
 // RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a
-// role send through POST /v1/messages/publish that kept nothing answers. HolderState says which
+// role send through POST /v1/messages/publish that kept nothing answers, save one such send: a keep
+// the notifications stream refused because, as the listener last read it, the stream captures no
+// subject of the role's kept lane is answered 503 with Retry-After, an APIError whose words open
+// with the listener's stream-lacks-subject prefix, since nothing stored the message and the same
+// keep is stored once a build that stores the subject sets the stream; or, when an earlier send
+// may have stored the message - a send of the same keep, or a forward of the same role send, that
+// went out unanswered - the APIError with CodeMaybeStored. HolderState says which
 // of the three states the claim's holder is in, so a caller can tell a holder that is merely
 // unresponsive - stalled, still claiming, still being stored for - from one that is gone.
 // ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a

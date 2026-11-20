@@ -209,9 +209,12 @@ While a kept message has at least 20 minutes of its hour left and no live sessio
 role, the listener raises the role's wake report again every five minutes, so a released Legion
 role comes back to take it. A sender that keeps a queue of its own sends `keep: false`, and the
 publish is then refused `404` with the reason `unclaimed` or `holder_lapsed`, as it is when the
-keep itself fails. If the holder does not take the message's delivery mode, the refusal is
-`403`; and if the stream has not stored the forward to a live holder within four seconds, it is
-`504` naming the holder, with the reason `delivery_failed`, and that message is not kept. A role
+keep fails for a reason other than the stream lacking the kept lane's subject. A keep the stream
+refuses for want of that subject is refused at once with `503` and Retry-After. If the holder
+does not take the message's delivery mode, the refusal is `403`; if the stream refuses the
+forward for want of the holder's subject, it is an immediate `503` with Retry-After; and if the
+stream has not stored the forward to a live holder within four seconds, it is `504` naming the
+holder, with the reason `delivery_failed`, and that message is not kept. A role
 message published straight onto NATS, not through the API, is kept the same way when no live
 session holds the role, and also when the listener could not read the role's claim, in which
 case it is forwarded once a later read finds a `live` holder inside the message's hour, with no

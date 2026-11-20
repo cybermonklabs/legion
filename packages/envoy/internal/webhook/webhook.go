@@ -41,11 +41,19 @@ func failureLine(action, result string, err error) string {
 // so it is a 422 `refused`, and its answer is the error, which says why; Dispatch's redelivery
 // sweep asks for it again like any failed delivery. Any other failure may pass on a redelivery,
 // so it is a 503 `failed`. A stream at its byte limit (bus.ErrStreamFull) is such a failure: it
-// takes the redelivery once age has made room, and until then that is a 503 as well. The
-// listener's `webhook-refused` and `publish-failure` alarms count these lines.
+// takes the redelivery once age has made room, and until then that is a 503 as well. So is a
+// publish the notifications stream did not take because, as the listener last read it, the
+// stream captures no subject of the envelope's (bus.ErrStreamLacksSubject), which a redelivery
+// passes once a build that stores the subject sets the stream: its answer is the error, which
+// names the subject and the stream's generation, where every other failure's says only that the
+// service is unavailable. The listener's `webhook-refused` and `publish-failure` alarms count
+// these lines.
 func failureOutcome(err error) (result string, status int, answer string) {
-	if errors.Is(err, bus.ErrRefused) {
+	switch {
+	case errors.Is(err, bus.ErrRefused):
 		return "refused", http.StatusUnprocessableEntity, err.Error()
+	case errors.Is(err, bus.ErrStreamLacksSubject):
+		return "failed", http.StatusServiceUnavailable, err.Error()
 	}
 	return "failed", http.StatusServiceUnavailable, "service unavailable"
 }

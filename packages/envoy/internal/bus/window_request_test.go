@@ -184,6 +184,14 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 // its pending flushes as the connection turns reconnecting, so a flush begun after that waits out
 // its whole timeout - 30 s here - for a PONG no server sends. The loss is the answer either way,
 // and it is given the moment the loss is seen.
+//
+// No stream captures a role lane, so the server answers the request at once that nothing took it,
+// and that answer settles nothing on a subject this build never stores (lacksSubject). The server
+// stops only once the request has that answer in: the window's probe returns once the server has
+// answered a PING sent behind the request's publish, and the connection hands the client the
+// no-responders answer before that PONG. So every run reads the request passing that answer over
+// and answering the loss, and none depends on whether the server read the publish before it
+// stopped.
 func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	var client *bus.Client
 	server, _, client := requestClient(t, bus.WithBeforeRequestFlush(func() {
@@ -195,6 +203,9 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 	window := client.WindowUntil(nil)
 
 	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 30 * time.Second})
+	if err := window.Probe(10 * time.Second); err != nil {
+		t.Fatalf("the window's probe before the server stops answered %v, want nil: the request may not have the server's answer in", err)
+	}
 	server.Stop(t)
 	if err := answerOf(t, pending, 10*time.Second); !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrNotAcknowledged) {
 		t.Fatalf("a Request whose connection was lost returned %v, want ErrUnavailable", err)

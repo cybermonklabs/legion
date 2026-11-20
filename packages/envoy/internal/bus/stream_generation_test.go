@@ -117,12 +117,12 @@ func TestTheResumeLaneSurvivesTheBuildOfTheGenerationBefore(t *testing.T) {
 		t.Fatalf("stream subjects = %v, want this build's stream to carry %s", stamped.Subjects, resumeLane)
 	}
 
-	subjects, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream, atStart)
+	deployed, err := ensureStreamWithConfig(t.Context(), js, &older, capsAnUnsetStream, atStart)
 	if err != nil {
 		t.Fatalf("the build before this one starts: %v", err)
 	}
-	if !slices.Contains(subjects, resumeLane) {
-		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", subjects, resumeLane)
+	if !slices.Contains(deployed.subjects, resumeLane) {
+		t.Fatalf("the start of the build before this one leaves subjects %v, want %s among them", deployed.subjects, resumeLane)
 	}
 	if _, err := keepStream(t.Context(), js, &older, capsAnUnsetStream); err != nil {
 		t.Fatalf("the keeper of the build before this one: %v", err)
@@ -284,7 +284,7 @@ func TestAClientFollowsASubjectANewerBuildAddsWhileItRuns(t *testing.T) {
 			if _, err := js.AddStream(&current); err != nil {
 				t.Fatalf("create the stream: %v", err)
 			}
-			client, err := tc.connect([]string{uri}, withStreamSubjectsRefresh(50*time.Millisecond))
+			client, err := tc.connect([]string{uri}, WithStreamSubjectsReads(time.Tick(50*time.Millisecond)))
 			if err != nil {
 				t.Fatalf("connect: %v", err)
 			}
@@ -354,7 +354,8 @@ func TestABackgroundClientReadsTheDeployedSubjectsAtItsFirstConnection(t *testin
 			}
 			srv.Stop(t)
 
-			client, err := tc.connect([]string{uri}, WithConnectInBackground(), withStreamSubjectsRefresh(time.Hour))
+			// A read the test never sends: only the first connection's read can see the subject.
+			client, err := tc.connect([]string{uri}, WithConnectInBackground(), WithStreamSubjectsReads(make(chan time.Time)))
 			if err != nil {
 				t.Fatalf("connect while the server is down: %v", err)
 			}

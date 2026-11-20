@@ -134,8 +134,9 @@ export const RECORD_READ_BOUND_MS = 5_000;
  *
  * The notice sends no `keep` field, so a listener keeps it for a role no live session holds and
  * answers 202 kept rather than this (`tellArchitect`). This 404 comes when the listener's keep
- * failed, and from a listener of an earlier release for a holder that is not live, which such a
- * listener keeps nothing for.
+ * failed for a reason other than the stream lacking the kept lane's subject, which answers 503
+ * with Retry-After, and from a listener of an earlier release for a holder that is not live, which
+ * such a listener keeps nothing for.
  *
  * It stays a debug line rather than a warning because an architect that is away is not this
  * worker's doing, and the retry is already in hand.

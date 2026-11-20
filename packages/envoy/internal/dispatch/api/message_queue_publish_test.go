@@ -7,13 +7,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 
+	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -226,6 +231,62 @@ func TestATargetedMessageWhoseSendFindsNoLiveSessionIsQueuedByDispatch(t *testin
 			!strings.HasPrefix(*attempt[0].Error, "no live session s1") ||
 			!strings.Contains(*attempt[0].Error, refusal.Error()) || attempt[0].EnvelopeID != nil {
 			t.Fatalf("delivery whose publish failed = %#v, want it failed naming no live session and the publish's error", attempt)
+		}
+	})
+
+	// The bus refuses the queue when the deployed stream, a newer build's, captures no subject of
+	// the session's: the route still creates the message, which a 503 would deny, and its attempt
+	// settles failed at once, its error naming the subject and the stream's generation
+	// (bus.ErrStreamLacksSubject), so the person reads why nothing was queued and can retry it once
+	// a build that stores the subject sets the stream. Nothing is stored.
+	t.Run("a stream that lacks the session's subject settles failed naming the subject and the generation", func(t *testing.T) {
+		listener, _ := sendFindsNoSessionListener(t)
+		_, url := testnats.Start(t)
+		conn := testnats.Connect(t, url)
+		t.Cleanup(conn.Close)
+		js, err := conn.JetStream()
+		if err != nil {
+			t.Fatalf("open JetStream: %v", err)
+		}
+		subject := contracts.LegacyAgentSubject("s1")
+		var subjects []string
+		for _, carried := range bus.StreamCarriedSubjects() {
+			if !bus.SubjectContains(carried, subject) {
+				subjects = append(subjects, carried)
+			}
+		}
+		if _, err := js.AddStream(&natsgo.StreamConfig{
+			Name: bus.Stream, Subjects: subjects, Retention: natsgo.LimitsPolicy, Discard: natsgo.DiscardNew, Storage: natsgo.FileStorage,
+			Metadata: map[string]string{bus.StreamIDMetadataKey: "stream-of-a-newer-build", "dispatch.stream-generation": "1000000"},
+		}); err != nil {
+			t.Fatalf("the newer build creates %s without %s: %v", bus.Stream, subject, err)
+		}
+		client, err := bus.ConnectOwningStream([]string{url}, bus.WithReplicas(1))
+		if err != nil {
+			t.Fatalf("connect the bus: %v", err)
+		}
+		t.Cleanup(client.Close)
+		handler, _, _ := newTestServer(t, testServerOptions{envoyURL: listener.URL, agentPublisher: client})
+		issue := createInteractionIssue(t, handler, "TEST", "A queue the stream does not capture", "before")
+
+		message := createIssueMessage(t, handler, issue.Key, map[string]any{
+			"body": "Can this ship?", "target": "session:s1", "delivery": "steer",
+		}, "alice")
+		attempt := message.Deliveries
+		if len(attempt) != 1 || attempt[0].State != "failed" || attempt[0].Error == nil || attempt[0].EnvelopeID != nil {
+			t.Fatalf("delivery whose queue the stream refused = %#v, want one failed attempt naming no envelope", attempt)
+		}
+		for _, want := range []string{"no live session s1", bus.ErrStreamLacksSubject.Error(), strconv.Quote(subject), "generation 1000000"} {
+			if !strings.Contains(*attempt[0].Error, want) {
+				t.Fatalf("the attempt's error reads %q, want it to say %q", *attempt[0].Error, want)
+			}
+		}
+		info, err := js.StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject})
+		if err != nil {
+			t.Fatalf("read the stream: %v", err)
+		}
+		if held := info.State.Subjects[subject]; held != 0 {
+			t.Fatalf("the stream holds %d copies on %s, want none", held, subject)
 		}
 	})
 }

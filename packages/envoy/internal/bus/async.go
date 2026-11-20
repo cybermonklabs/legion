@@ -356,24 +356,25 @@ func (w *window) current() bool {
 }
 
 // sendJetStream publishes data, an envelope's encoding, to the stream on subject, under msgID as
-// its Nats-Msg-Id when that is not empty, and returns what waits for its acknowledgement. It
-// notes the time it put the message on the wire, which is what its acknowledgement reads a denial
-// of this send alone by (acknowledged). A failure is ErrUnavailable once the window's connection
-// is no longer current or nats.go reports the disconnect, and ErrNotAcknowledged when the
-// acknowledgement ran out of time or the server answered with no responders on a connection that
-// stayed current.
+// its Nats-Msg-Id when that is not empty, and returns what waits for its acknowledgement, which
+// only the notifications stream may give (expectNotificationsStream). It notes the time it put the
+// message on the wire, which is what its acknowledgement reads a denial of this send alone by
+// (acknowledged). A failure is ErrUnavailable once the window's connection is no longer current or
+// nats.go reports the disconnect, and ErrNotAcknowledged when the acknowledgement ran out of time
+// or the server answered with no responders on a connection that stayed current.
 func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error, error) {
-	var options []nats.PubOpt
+	options := []nats.PubOpt{expectNotificationsStream}
 	if msgID != "" {
 		options = append(options, nats.MsgId(msgID))
 	}
+	msg := &nats.Msg{Subject: subject, Data: data}
 	// The refusal signal is taken before the message goes out, so a violation of this send closes
 	// it whenever it is recorded (acknowledged).
 	signal := w.client.refusalSignal()
 	sentAt := time.Now()
-	future, err := w.js.PublishMsgAsync(&nats.Msg{Subject: subject, Data: data}, options...)
+	future, err := w.js.PublishMsgAsync(msg, options...)
 	if err != nil {
-		return nil, w.unsent(err, len(data))
+		return nil, w.unsent(err, msg)
 	}
 	return func() error { return w.acknowledged(future, subject, sentAt, signal) }, nil
 }
@@ -385,22 +386,31 @@ func (w *window) sendJetStream(subject, msgID string, data []byte) (func() error
 const requestReplies = 4
 
 // Request publishes item's encoding to subject over core NATS on the window's connection, with a
-// reply inbox it subscribes first and a Nats-Msg-Id header of opts.MsgID, which every request
-// carries: an empty one is refused ErrNoForwardMsgID before anything is sent. It is pinned and
-// refused as a send of the window is: a subject NATS would not accept answers
-// ErrRefused, and a window whose connection was lost or reconnected answers ErrUnavailable, both in
-// the channel when Request returns, before anything is sent. Otherwise the channel receives:
+// reply inbox it subscribes first, a Nats-Msg-Id header of opts.MsgID, which every request
+// carries, and a Nats-Expected-Stream header naming the notifications stream, so only that stream
+// stores and acknowledges it (expectNotificationsStream): an empty MsgID is refused
+// ErrNoForwardMsgID before anything is sent. It is pinned and refused as a send of the window is: a
+// subject NATS would not accept answers ErrRefused, and a window whose connection was lost or
+// reconnected answers ErrUnavailable, both in the channel when Request returns, before anything is
+// sent. Otherwise the channel receives:
 //
 //   - nil on the stream's acknowledgement of a copy it holds, at a sequence and without an error,
 //     a duplicate's included (outcome): the request is stored on a subject the stream captures,
 //     and that acknowledgement is its whole outcome, since no receiver answers a request. A reply
-//     that is neither an acknowledgement nor a refusal is passed over and the wait goes on: the
-//     server's no-responders answer, and anything a subscriber of the subject sends;
+//     that is neither an acknowledgement nor a refusal is passed over and the wait goes on:
+//     anything a subscriber of the subject sends, and the server's no-responders answer, save
+//     where the subject is one this build stores and the deployed stream, as the client last
+//     read it, leaves it out;
 //   - the stream's refusal of the copy, the moment it comes back: an acknowledgement that carries
 //     an error settles the request as that error, a full stream's as ErrStreamFull (outcome,
 //     streamFull). It never wraps ErrNotAcknowledged, which says the stream gave no answer at
 //     all, and the request does not wait out opts.Timeout for an answer that is already in, as a
 //     window's PublishAsync (acknowledged) and Client.StartRequestStoredTo's Wait do not;
+//   - ErrStreamLacksSubject, the moment the server answers, where the subject is one this build
+//     stores and the deployed stream, as the client last read it, leaves it out (lacksSubject):
+//     beside the refusal of another stream that captures the subject, and beside
+//     ErrNotAcknowledged where the server answered that nothing took the request, which nothing
+//     will store while the stream stays so;
 //   - ErrPublishDenied when the server denied the publish: the request's flush shows it
 //     (confirmFlushed), or, when a violation of another subject hid it there, the violation the
 //     connection recorded under this subject does (deniedPublish). The flush runs beside the wait
@@ -441,16 +451,16 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		return nil, err
 	}
 	inbox := nats.NewInbox()
-	replies := make(chan *nats.Msg, requestReplies)
-	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
-	if err != nil {
-		return nil, w.unsent(err, len(data))
-	}
 	msg := &nats.Msg{
 		Subject: subject,
 		Reply:   inbox,
 		Data:    data,
-		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}},
+		Header:  nats.Header{nats.MsgIdHdr: []string{opts.MsgID}, nats.ExpectedStreamHdr: []string{Stream}},
+	}
+	replies := make(chan *nats.Msg, requestReplies)
+	inboxSub, err := w.conn.ChanSubscribe(inbox, replies)
+	if err != nil {
+		return nil, w.unsent(err, msg)
 	}
 	deadline := time.Now().Add(cmp.Or(opts.Timeout, publishAcknowledgementTimeout))
 	before := observe(w.conn)
@@ -462,7 +472,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 	sentAt := time.Now()
 	if err := w.conn.PublishMsg(msg); err != nil {
 		_ = inboxSub.Unsubscribe()
-		return nil, w.unsent(err, len(data))
+		return nil, w.unsent(err, msg)
 	}
 	return func() error {
 		defer inboxSub.Unsubscribe()
@@ -522,17 +532,32 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// acknowledgement that carries an error is the stream's refusal of the copy, which
 		// settles the request as that refusal, since the stream answered and nothing later
 		// changes its answer; a full stream's reaches the caller as ErrStreamFull, which is how
-		// a window's PublishAsync hands that refusal over too. An acknowledgement at a sequence
-		// answers the request with the copy it asked for, a duplicate's included; one with no
-		// sequence settles nothing, and nats-server 2.15.1, the version the hub runs, gives
-		// none: it records no id for a message its stream refused.
+		// a window's PublishAsync hands that refusal over too, and another stream's refusal of a
+		// subject this build stores and the deployed stream leaves out as ErrStreamLacksSubject
+		// (lacksSubject). An acknowledgement at a sequence answers the request with the copy it
+		// asked for, a duplicate's included; one with no sequence settles nothing, and nats-server
+		// 2.15.1, the version the hub runs, gives none: it records no id for a message its stream
+		// refused.
+		//
+		// The server's no-responders answer settles the request only where the subject is one
+		// this build stores and the deployed stream, as the client last read it, leaves it out:
+		// nothing will store it, so the request is answered ErrStreamLacksSubject at once, beside
+		// the ErrNotAcknowledged the wait would have come to. Anywhere else, a role lane among
+		// them, it is passed over and the wait goes on, as nats.go's own publish retries that
+		// answer as a blip of a stream's leader change (js.go).
 		outcome := func(reply *nats.Msg) (bool, error) {
 			ack, ok := acknowledgement(reply)
 			if !ok {
+				if noResponders(reply) {
+					lacks := w.client.lacksSubject(subject, fmt.Errorf("bus: request to %q: %w: %w", subject, ErrNotAcknowledged, nats.ErrNoResponders))
+					if errors.Is(lacks, ErrStreamLacksSubject) {
+						return true, lacks
+					}
+				}
 				return false, nil
 			}
 			if ack.Error != nil {
-				return true, fmt.Errorf("bus: request to %q: the stream refused the copy: %w", subject, streamFull(ack.Error))
+				return true, w.client.lacksSubject(subject, fmt.Errorf("bus: request to %q: the stream refused the copy: %w", subject, streamFull(ack.Error)))
 			}
 			return ack.Sequence > 0, nil
 		}
@@ -628,6 +653,12 @@ func acknowledgement(reply *nats.Msg) (replyAck, bool) {
 	return ack, true
 }
 
+// noResponders reports whether reply is the server's answer that nothing took a request: a status
+// 503 with no data, which nats.go hands a channel subscription as a message of its own.
+func noResponders(reply *nats.Msg) bool {
+	return len(reply.Data) == 0 && reply.Header.Get("Status") == "503"
+}
+
 // Probe pins the window to the client's connection when nothing has yet, waiting up to timeout
 // for one, and flushes that connection within timeout. A flush that fails or runs out of time, and
 // a connection lost or reconnected since the window pinned it, answer an error wrapping
@@ -651,7 +682,9 @@ func (w *window) Probe(timeout time.Duration) error {
 // a publish the server refused under the connection's own publish permissions, ErrUnavailable when
 // the connection failed or nats.go reported the disconnect, ErrNotAcknowledged when the
 // acknowledgement ran out of time or the server answered with no responders on a connection that
-// stayed current, or the server's refusal, a full stream's as ErrStreamFull.
+// stayed current, or the server's refusal, a full stream's as ErrStreamFull. A no-responders
+// answer or another stream's refusal of a subject this build stores and the deployed stream leaves
+// out is named ErrStreamLacksSubject beside that (lacksSubject).
 //
 // A denied publish is acknowledged by nothing, so the violation the connection reported
 // (deniedPublish) is the only evidence of it, read under this send's own subject and its own send
@@ -678,9 +711,9 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 				return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
 			}
 			if errors.Is(err, nats.ErrAsyncPublishTimeout) || errors.Is(err, nats.ErrNoResponders) {
-				return fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err)
+				return w.client.lacksSubject(topic, fmt.Errorf("bus: %w: %w", ErrNotAcknowledged, err))
 			}
-			return streamFull(err)
+			return w.client.lacksSubject(topic, streamFull(err))
 		case <-signal:
 			signal = w.client.refusalSignal()
 			if denied := w.client.deniedPublish(topic, sentAt); denied != nil {
@@ -690,14 +723,14 @@ func (w *window) acknowledged(future nats.PubAckFuture, topic string, sentAt tim
 	}
 }
 
-// unsent names nats.go's refusal to send a message of size bytes: ErrUnavailable when the
-// connection is not connected (the client keeps no reconnect buffer, so nats.go sends nothing then)
-// or more acknowledgements are pending than nats.go takes, and otherwise as refused names it.
-func (w *window) unsent(err error, size int) error {
+// unsent names nats.go's refusal to send msg: ErrUnavailable when the connection is not connected
+// (the client keeps no reconnect buffer, so nats.go sends nothing then) or more acknowledgements
+// are pending than nats.go takes, and otherwise as refused names it.
+func (w *window) unsent(err error, msg *nats.Msg) error {
 	if !w.current() || errors.Is(err, nats.ErrConnectionClosed) || errors.Is(err, nats.ErrConnectionDraining) ||
 		errors.Is(err, nats.ErrConnectionReconnecting) || errors.Is(err, nats.ErrReconnectBufExceeded) ||
 		errors.Is(err, nats.ErrTooManyStalledMsgs) {
 		return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
 	}
-	return w.client.refused(err, size)
+	return w.client.refused(err, msg)
 }

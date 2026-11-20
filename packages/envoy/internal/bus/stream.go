@@ -437,14 +437,27 @@ func subjectsCapture(subjects []string, topic string) bool {
 	})
 }
 
-// readStreamSubjects reads the subjects the deployed stream carries, which may hold subjects this
-// build does not compile: a newer build adds its own, and reconciliation keeps them.
-func readStreamSubjects(js nats.JetStreamContext) ([]string, error) {
+// deployedRead is the notifications stream as a client last read it: the subjects it carries,
+// which may hold subjects this build does not compile (a newer build adds its own, and
+// reconciliation keeps them), and the generation of its settings (streamGenerationKey, 0 for a
+// stream no build stamped).
+type deployedRead struct {
+	subjects   []string
+	generation int
+}
+
+// deployedOf is the deployed stream cfg, a stream's configuration, describes.
+func deployedOf(cfg *nats.StreamConfig) deployedRead {
+	return deployedRead{subjects: cfg.Subjects, generation: MetadataGeneration(cfg.Metadata, streamGenerationKey)}
+}
+
+// readDeployedStream reads the subjects the deployed stream carries and its generation.
+func readDeployedStream(js nats.JetStreamContext) (deployedRead, error) {
 	info, err := js.StreamInfo(Stream)
 	if err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
-	return info.Config.Subjects, nil
+	return deployedOf(&info.Config), nil
 }
 
 // streamConfigGeneration is the generation of streamCfg's settings, stamped on the stream as its
@@ -813,7 +826,7 @@ const (
 // ensureStreamWithConfig ensures the stream for at, the caller that ensures it (streamEnsure): a
 // program's start (atStart) or the reconnect hook (atReconnect). It creates the stream with cfg,
 // under a fresh StreamIDMetadataKey, or reconciles the deployed one towards cfg, and returns the
-// subjects the stream carries afterwards.
+// stream it leaves deployed: the subjects it carries afterwards and the generation of its settings.
 // cfg's Replicas is the deployment's replica count and its MaxBytes the deployment's byte limit, 0
 // when it sets none. defaultsAnUnsetCap is what the connected server is, read from the version it
 // answers (serverDefaultsAnUnsetCap): whether a deployed stream with no consumer cap is one the
@@ -889,7 +902,7 @@ const (
 // after its second send at 10 s, and its first publish then failed "no response from stream"; a
 // start that raised the stream from one copy to three answered at once, and its first publish,
 // with no election held, drew no answer within its 5 s.
-func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) ([]string, error) {
+func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *nats.StreamConfig, defaultsAnUnsetCap bool, at streamEnsure) (deployedRead, error) {
 	ctx, cancel := hangGuard(ctx, startHangGuard)
 	defer cancel()
 	ctx = withReadLimit(ctx)
@@ -912,39 +925,39 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 				err = awaitStreamLeader(ctx, js, afterCreate, Stream)
 			}
 			if err != nil {
-				return nil, err
+				return deployedRead{}, err
 			}
-			return created.Subjects, nil
+			return deployedOf(&created), nil
 		}
 		if unanswered(err) || ctx.Err() != nil {
-			return nil, namedRequest(create, err)
+			return deployedRead{}, namedRequest(create, err)
 		}
 		if !errors.Is(err, nats.ErrStreamNameAlreadyInUse) {
-			return nil, refusedSettings(err, nil, &created)
+			return deployedRead{}, refusedSettings(err, nil, &created)
 		}
 		info, err = readAgain(ctx, read, readLimitOf(ctx), readStream)
 	}
 	if unanswered(err) || ctx.Err() != nil {
-		return nil, namedRequest(read, err)
+		return deployedRead{}, namedRequest(read, err)
 	}
 	if err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
 	if leaderless(info) && at == atStart {
 		// The stream another start created or raised a moment ago is still in its first election:
 		// that start's own wait does not reach this one, and a write sent now draws no answer.
 		if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
-			return nil, err
+			return deployedRead{}, err
 		}
 	}
 	if newerBuild(info) {
 		logLeftToNewerBuild(info)
-		return info.Config.Subjects, nil
+		return deployedOf(&info.Config), nil
 	}
 	desired, reconciliation := reconciledStream(info, cfg, defaultsAnUnsetCap)
 	if reflect.DeepEqual(desired, info.Config) {
 		reconciliation.log()
-		return info.Config.Subjects, nil
+		return deployedOf(&info.Config), nil
 	}
 	// The migrate and the purge below are requests a server can leave unanswered, and each is
 	// abandoned when ctx ends (Bounded), so the ensure ends at ctx or the start's hang guard like
@@ -959,7 +972,7 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	}
 	migratingRoleLanes := streamCapturesRoleLanes(info.Config.Subjects) && !streamCapturesRoleLanes(desired.Subjects)
 	if err := written("migrate", func() error { return migrateRoleLanesOffStream(js, &info.Config, &desired) }); err != nil {
-		return nil, err
+		return deployedRead{}, err
 	}
 	// An update sent again is reconciled from the stream as its read found it, and none is sent
 	// onto a stream a newer build stamped while this one's update went unanswered (updateStream).
@@ -977,33 +990,33 @@ func ensureStreamWithConfig(ctx context.Context, js nats.JetStreamContext, cfg *
 	switch {
 	case err != nil && ctx.Err() != nil:
 		// updateStream ends on a silence only when ctx does, and a silence refused no setting.
-		return nil, fmt.Errorf("update %s: %w", Stream, err)
+		return deployedRead{}, fmt.Errorf("update %s: %w", Stream, err)
 	case err != nil:
-		return nil, refusedSettings(err, &update.from.Config, &update.sent)
+		return deployedRead{}, refusedSettings(err, &update.from.Config, &update.sent)
 	case update.declined:
 		// A newer build's start wrote the stream while this one's update was unanswered: its
 		// settings stand, as on a first read that finds them, and so does its new election.
 		if leaderless(update.from) && at == atStart {
 			if err := awaitStreamLeader(ctx, js, afterOpen, Stream); err != nil {
-				return nil, err
+				return deployedRead{}, err
 			}
 		}
 		logLeftToNewerBuild(update.from)
-		return update.from.Config.Subjects, nil
+		return deployedOf(&update.from.Config), nil
 	}
 	_, reconciliation = reconciledStream(update.from, cfg, defaultsAnUnsetCap)
 	reconciliation.log()
 	if update.sent.Replicas > info.Config.Replicas {
 		if err := awaitStreamLeader(ctx, js, afterRaise, Stream); err != nil {
-			return nil, err
+			return deployedRead{}, err
 		}
 	}
 	if migratingRoleLanes {
 		if err := written("purge", func() error { return purgeLegacyRoleMessages(js) }); err != nil {
-			return nil, err
+			return deployedRead{}, err
 		}
 	}
-	return update.sent.Subjects, nil
+	return deployedOf(&update.sent), nil
 }
 
 // newerBuild reports whether info's stream carries the settings of a newer build, one that stamped

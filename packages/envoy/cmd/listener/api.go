@@ -261,6 +261,22 @@ const publishDeniedPrefix = "envoy: the message bus denied the publish under thi
 // room.
 const streamFullPrefix = "envoy: the message bus refused the message because its stream is full"
 
+// streamLacksSubjectPrefix opens the body of every answer the send and publish routes give a send
+// or publish the notifications stream did not take because, as the bus last read it, the stream
+// carries no subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream
+// that dropped a subject this build stores), a role send's forward and keep among them, so one
+// string matches in a test and in a deployed log filter; the webhook routes answer the error
+// itself (internal/webhook's failureOutcome). A keep or a role send's forward after an earlier
+// send of the same message that went out unanswered - a send of the keep, or a forward of the role
+// send - is not among them: that send may have stored the message, so it is the maybe-stored 503
+// (writeBusUnavailable). An earlier send the server answered stored nothing and changes nothing. The
+// error after it names the subject and the stream's generation. It is deliberately not
+// busUnansweredPrefix: the bus answered, that no copy is kept for that subject, so "the message bus
+// did not answer" would have a monitor count it as an outage and send an operator looking for one
+// instead of at the stream's subjects. The same message is stored once a build that stores the
+// subject sets the stream, so the sender's retry is right.
+const streamLacksSubjectPrefix = "envoy: the message bus stored nothing"
+
 // grantGuardPrefix opens the error of the answer POST /v1/roles/set gives a soft claim the grant
 // guard refused (roleGrantGuarded): a role held under the claimant's own session id whose renewal
 // is older than the live window, while the role claim copy's last whole read is past its repair
@@ -280,9 +296,13 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // drift apart. Retry-After is set only where retrying can help: every member of bus.ErrRefused -
 // a refusal NATS repeats however often the same bytes are sent - is answered by writeNATSError as
 // what it is, bus.ErrTooLarge as the 413 and bus.ErrInvalidSubject and bus.ErrInvalidKey as the
-// 400, so this one guard keeps the header off every bus.ErrRefused and off nothing else. The
-// status writeNATSError settled on is passed back for the record's sake, as that function's own
-// comment explains.
+// 400, so this one guard keeps the header off every bus.ErrRefused and off nothing else.
+//
+// It returns the status it wrote and the outcome a request record names that answer by, both
+// decided here in one place: a route that records its answer (requestRecord.refuseBusUnavailable,
+// request_record.go) writes the pair this returns and classifies the error no second time, so
+// the answer and the record cannot drift apart. The 413 and the 400 are writeNATSError's, and
+// the status it settled on is the outcome's too.
 //
 // A publish the server denied (bus.ErrPublishDenied) is answered ahead of both, because it is
 // neither. bus.ErrRefused has exactly three members (internal/bus/nats.go): bus.ErrTooLarge,
@@ -301,18 +321,25 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
 // answered, so the body must not say it did not, but the same message is taken once the stream
-// has room, so the caller's retry is right.
+// has room, so the caller's retry is right. A message the stream does not capture the subject of
+// (bus.ErrStreamLacksSubject) is answered the same way under streamLacksSubjectPrefix.
 //
 // A publish that may have stored its message (mayHaveStored) is the 503 with
-// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
-// resend after a send nothing answered - so a sender treats it as a send that may have landed
-// rather than one that stored nothing.
-func writeBusUnavailable(w http.ResponseWriter, err error) int {
+// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, a missing subject's,
+// or a refusal of the resend after a send nothing answered - so a sender treats it as a send that
+// may have landed rather than one that stored nothing. So the missing-subject 503 is only for an
+// error that mayHaveStored does not report and no full stream ended: both those 503s win over it.
+func writeBusUnavailable(w http.ResponseWriter, err error) (int, requestOutcome) {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
-		return http.StatusForbidden
+		return http.StatusForbidden, outcomePublishDenied
 	}
 	stored, full := mayHaveStored(err), errors.Is(err, bus.ErrStreamFull)
+	if !stored && !full && errors.Is(err, bus.ErrStreamLacksSubject) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", streamLacksSubjectPrefix, err))
+		return http.StatusServiceUnavailable, outcomeStreamLacksSubject
+	}
 	prefix := busUnansweredPrefix
 	if full {
 		prefix = streamFullPrefix
@@ -321,7 +348,14 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		if !errors.Is(err, bus.ErrRefused) {
 			w.Header().Set("Retry-After", "1")
 		}
-		return writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", prefix, err))
+		switch status := writeNATSError(w, err, http.StatusServiceUnavailable, fmt.Sprintf("%s: %s", prefix, err)); status {
+		case http.StatusRequestEntityTooLarge:
+			return status, outcomeTooLarge
+		case http.StatusBadRequest:
+			return status, outcomeInvalidRequest
+		default:
+			return status, outcomeBusUnavailable
+		}
 	}
 	w.Header().Set("Retry-After", "1")
 	answer := listenerwire.APIError{Error: fmt.Sprintf("%s: %s", prefix, err)}
@@ -329,7 +363,10 @@ func writeBusUnavailable(w http.ResponseWriter, err error) int {
 		answer.Code = listenerwire.CodeMaybeStored
 	}
 	writeJSON(w, http.StatusServiceUnavailable, answer)
-	return http.StatusServiceUnavailable
+	if full {
+		return http.StatusServiceUnavailable, outcomeStreamFull
+	}
+	return http.StatusServiceUnavailable, outcomeBusUnavailable
 }
 
 // mayHaveStored reports whether a publish that failed with err may still have stored its message:
@@ -688,6 +725,21 @@ const senderStampReadTimeout = 1 * time.Second
 //     classifies a delivery failure on that prefix.
 //   - A stopped target whose request set connected_only: 409 "the session is stopped", with
 //     nothing stored.
+//
+// Every 200 is written only once the notifications stream, the one every session consumer reads,
+// has acknowledged the copy it holds: the target's agent subject is one this build stores, which
+// bus.Client.PublishAckWithin keeps on JetStream whatever the deployed stream captures, and no
+// other stream's acknowledgement counts, so a stopped answer means the message waits in the
+// stream for the session. A publish the stream did not acknowledge is the bus's 503, which asks
+// the sender to send the message again. Where the server answers that no stream took the publish,
+// or that a stream other than the notifications stream refused it, and the client's last read of
+// the deployed stream leaves the target's subject out (a newer build's stream that dropped it),
+// nothing is stored and the 503 names that subject and the stream's generation
+// (streamLacksSubjectPrefix). Two sends over such a stream keep the words of a bus that did not
+// answer: one whose subject a core subscriber holds, since that subscriber is handed the publish,
+// so no answer that nothing took it comes and the publish waits out its budget; and one made
+// while the client's last read is older than the change of the stream's subjects, which it reads
+// again every minute.
 //
 // The entry is read from the session store itself and not merely from this listener's cache of
 // it: only the store's word that the key is gone can make a record-based stopped answer or a 404,

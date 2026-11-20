@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The bundled `envoy_publish` tool description says that a role keep the stream refuses because it lacks the kept lane's subject answers 503 with Retry-After, rather than the no-holder 404.
+time: 2026-11-20T00:16:21Z
+custom:
+    Issue: pr4414

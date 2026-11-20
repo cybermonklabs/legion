@@ -1312,6 +1312,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Dispatch keeps the stream's deployed replica count, and keeps its deployed consumer cap where that is higher than its own (`streamMaxConsumers`): the cap, like the replica count and the byte limit, is only ever raised, so it takes no generation and the two builds never lower each other's.
   Every ensure keeps a deployed subject it does not know, unless it overlaps a subject of its own, and each client publishes a topic on the transport the deployed stream's subjects call for (`bus.Client.UsesCoreTransport`), so build N publishes a topic under a subject only build N+1 adds to the stream too, with its message id.
   No subject is retired while a running build publishes to it: retiring one is an operator step (`internal/bus/stream.go`, `streamReconciliation`).
+  A topic under a subject build N stores keeps JetStream from build N even where the deployed stream has dropped that subject, so its publish fails for want of the stream's acknowledgement rather than succeed over core NATS with no copy kept.
   Each delivery durable has one intake holder at a time, the process that holds its `duty.Hold` (above).
 
 - **Messages.**

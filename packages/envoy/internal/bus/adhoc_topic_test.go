@@ -54,11 +54,13 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 	}
 }
 
-// A client that has read the deployed stream's subjects decides by them, not by the subjects this
-// build compiles: a topic only the deployed stream captures takes JetStream, one only this build
-// captures takes core NATS. A role lane and its exception lane take core NATS even from a stream
-// that still captures them.
-func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testing.T) {
+// A client that has read the deployed stream's subjects decides by them and by the subjects this
+// build compiles: a topic only the deployed stream captures takes JetStream, and so does one only
+// this build captures, which this build must store whatever the deployed stream says, so its
+// publish fails for want of the stream's acknowledgement rather than succeed over core NATS with
+// nothing kept. A role lane and its exception lane take core NATS even from a stream that still
+// captures them.
+func TestUsesCoreTransportDecidesByTheDeployedAndCompiledSubjectsOnceItHasReadThem(t *testing.T) {
 	for _, tc := range []struct {
 		deployed []string
 		topic    string
@@ -68,16 +70,45 @@ func TestUsesCoreTransportDecidesByTheDeployedSubjectsOnceItHasReadThem(t *testi
 		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.x.y.z", true},
 		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.x", true},
 		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.github.acme.widgets.pr.1", false},
-		{[]string{"notifications.github.>", "notifications.x.*"}, contracts.AgentTopicPrefix + "ses_a", true},
+		{[]string{"notifications.github.>", "notifications.x.*"}, contracts.AgentTopicPrefix + "ses_a", false},
+		{[]string{"notifications.github.>", "notifications.x.*"}, ExceptionTopicPrefix + "notifications.team.deploy-squad", false},
+		{[]string{"notifications.github.>", "notifications.x.*"}, contracts.RoleTopicPrefix + "reviewer", true},
+		{[]string{"notifications.github.>", "notifications.x.*"}, "notifications.lxspec.probe.all", true},
 		{[]string{"notifications.>"}, "notifications.team.deploy-squad", false},
 		{[]string{"notifications.>"}, contracts.RoleTopicPrefix + "reviewer", true},
 		{[]string{"notifications.>"}, ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
 		{[]string{"notifications.>"}, "team.deploy-squad.all", false},
 	} {
 		client := &Client{}
-		client.deployedSubjects.Store(&tc.deployed)
+		client.deployed.Store(&deployedRead{subjects: tc.deployed})
 		if got := client.UsesCoreTransport(tc.topic); got != tc.core {
 			t.Errorf("deployed %v: UsesCoreTransport(%q) = %t, want %t", tc.deployed, tc.topic, got, tc.core)
+		}
+	}
+}
+
+// Whether a topic reaches a session is judged on the deployed stream alone, whatever transport its
+// publish takes: a topic this build stores that the deployed stream does not capture reaches no
+// session, since a session reads only what its own consumer holds and a consumer filters only on
+// what the stream captures, so the listener leaves it out of a registration and refuses its
+// publish by name, as it does a topic no build stores. A role lane reaches its holder through the
+// listener's forward wherever the stream stands.
+func TestReachesNoSessionDecidesByTheDeployedSubjectsAlone(t *testing.T) {
+	deployed := []string{"notifications.github.>", "notifications.x.*"}
+	client := &Client{}
+	client.deployed.Store(&deployedRead{subjects: deployed})
+	for _, tc := range []struct {
+		topic string
+		none  bool
+	}{
+		{contracts.AgentTopicPrefix + "ses_a", true},
+		{"notifications.lxspec.probe.all", true},
+		{"notifications.x.y", false},
+		{"notifications.github.acme.widgets.pr.1", false},
+		{contracts.RoleTopicPrefix + "reviewer", false},
+	} {
+		if got := client.ReachesNoSession(tc.topic); got != tc.none {
+			t.Errorf("deployed %v: ReachesNoSession(%q) = %t, want %t", deployed, tc.topic, got, tc.none)
 		}
 	}
 }

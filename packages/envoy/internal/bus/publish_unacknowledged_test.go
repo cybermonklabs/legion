@@ -3,6 +3,7 @@ package bus_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,4 +265,105 @@ func TestAStoredPublishSaysWhenTheStreamMayHoldWhatItFailedToSend(t *testing.T) 
 			t.Fatalf("the stream holds %d messages on %s, want none", stored, topic)
 		}
 	})
+}
+
+// A resend the server refuses because the notifications stream does not capture its subject says
+// that the stream stored nothing, and only that: the first send, the same message with the same
+// Nats-Expected-Stream, went to the same stream moments before, so it stored nothing either, and
+// the error is no ErrUnacknowledged, which would tell the listener's sender limit to charge a copy
+// the stream may hold beside a 503 that says it holds none. Each fault is a newer build's stream
+// that leaves the agent subject out: alone, where no stream answers the resend, and beside another
+// stream that captures the subject, which refuses the pinned resend. The control is a stream that
+// captures the subject, over the same rig: the resend is acknowledged as one (Resent) and stored.
+func TestAResendTheStreamRefusesForWantOfItsSubjectSaysItStoredNothing(t *testing.T) {
+	agentSubjects := contracts.AgentTopicPrefix + ">"
+	var omitsAgent []string
+	for _, carried := range bus.StreamCarriedSubjects() {
+		if carried != agentSubjects {
+			omitsAgent = append(omitsAgent, carried)
+		}
+	}
+	if len(omitsAgent) == len(bus.StreamCarriedSubjects()) {
+		t.Fatalf("this build carries no %s to leave out", agentSubjects)
+	}
+	for _, shape := range []struct {
+		name     string
+		subjects []string
+		another  bool
+		captures bool
+	}{
+		{"the control: the stream captures the subject", bus.StreamCarriedSubjects(), false, true},
+		{"the stream leaves the subject out", omitsAgent, false, false},
+		{"the stream leaves it out and another stream captures it", omitsAgent, true, false},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			server, uri := testnats.Start(t)
+			raw := testnats.Connect(t, uri)
+			t.Cleanup(raw.Close)
+			js, err := raw.JetStream()
+			if err != nil {
+				t.Fatalf("open JetStream: %v", err)
+			}
+			if _, err := js.AddStream(&nats.StreamConfig{Name: bus.Stream, Subjects: shape.subjects, Storage: nats.FileStorage,
+				Metadata: map[string]string{bus.StreamIDMetadataKey: id.New(), "dispatch.stream-generation": "1000000"}}); err != nil {
+				t.Fatalf("the newer build creates %s: %v", bus.Stream, err)
+			}
+			const another = "ANOTHER_PROGRAMS_STREAM"
+			if shape.another {
+				if _, err := js.AddStream(&nats.StreamConfig{Name: another, Subjects: []string{agentSubjects}, Storage: nats.FileStorage}); err != nil {
+					t.Fatalf("another program creates %s: %v", another, err)
+				}
+			}
+			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(client.Close)
+			topic := contracts.LegacyAgentSubject("ses_resend_refused")
+			thaw := server.Freeze(t)
+			t.Cleanup(thaw)
+			closing := client.Connection()
+			before := closing.Stats().OutMsgs
+			type answer struct {
+				ack bus.StoredAck
+				err error
+			}
+			answered := make(chan answer, 1)
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				ack, err := client.PublishAckWithin(ctx, unacknowledgedEnvelope(topic))
+				answered <- answer{ack, err}
+			}()
+			testwait.WithinPolling(t, 5*time.Second, time.Millisecond, "the publish to go out on the frozen connection",
+				func() bool { return closing.Stats().OutMsgs > before })
+			closing.Close()
+			thaw()
+			var got answer
+			select {
+			case got = <-answered:
+			case <-time.After(15 * time.Second):
+				t.Fatal("the publish whose connection closed under it did not return")
+			}
+			stored := uint64(0)
+			if info, err := js.StreamInfo(bus.Stream, &nats.StreamInfoRequest{SubjectsFilter: topic}); err == nil {
+				stored = info.State.Subjects[topic]
+			} else {
+				t.Fatalf("read what %s holds on %s: %v", bus.Stream, topic, err)
+			}
+			t.Logf("ack %+v, err %v, %d copies in %s", got.ack, got.err, stored, bus.Stream)
+			if shape.captures {
+				if got.err != nil || !got.ack.Resent || stored != 1 {
+					t.Fatalf("control: %+v, %v, %d copies; want a Resent acknowledgement and 1 copy", got.ack, got.err, stored)
+				}
+				return
+			}
+			if !errors.Is(got.err, bus.ErrStreamLacksSubject) || stored != 0 {
+				t.Fatalf("the refused resend = %v with %d copies, want bus.ErrStreamLacksSubject and none", got.err, stored)
+			}
+			if errors.Is(got.err, bus.ErrUnacknowledged) || strings.Contains(got.err.Error(), "may hold") {
+				t.Fatalf("the refused resend reads %q: it says the stream may hold the message, beside a refusal that says it stored nothing", got.err)
+			}
+		})
+	}
 }
