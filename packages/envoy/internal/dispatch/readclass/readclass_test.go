@@ -10,8 +10,9 @@ import (
 )
 
 // TestHandleRecordsEveryPattern: two patterns mounted through Handle on one mux both appear in
-// Patterns of that mux, sorted, and nothing appears for a second mux. Each pattern is named, so a
-// Handle that stopped recording fails here naming the first one it dropped.
+// Patterns of that mux, sorted, each with the classes it was mounted with, and nothing appears for
+// a second mux. Each pattern is named, so a Handle that stopped recording fails here naming the
+// first one it dropped.
 func TestHandleRecordsEveryPattern(t *testing.T) {
 	served, other := http.NewServeMux(), http.NewServeMux()
 	nothing := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
@@ -29,6 +30,14 @@ func TestHandleRecordsEveryPattern(t *testing.T) {
 	}
 	if mounted := Patterns(other); len(mounted) != 0 {
 		t.Fatalf("Patterns of a mux nothing was mounted on = %q, want none", mounted)
+	}
+	for pattern, want := range map[string][]Class{"GET /zeta": {Deployment}, "GET /alpha/{key}": {Project, People}} {
+		if got := ClassesOf(served, pattern); !slices.Equal(got, want) {
+			t.Fatalf("ClassesOf %q = %q, want the classes it was mounted with, %q", pattern, got, want)
+		}
+		if got := ClassesOf(other, pattern); got != nil {
+			t.Fatalf("ClassesOf %q on a mux nothing was mounted on = %q, want none", pattern, got)
+		}
 	}
 	// The mux serves what Handle mounted: the record is beside the mount, not instead of it.
 	if _, pattern := served.Handler(httptest.NewRequest(http.MethodGet, "/alpha/KEY", nil)); pattern != "GET /alpha/{key}" {

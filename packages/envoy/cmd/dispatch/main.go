@@ -2064,16 +2064,17 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
 //
-// Each is mounted with what it reads (readclass.Handle). The probes read the process's own
-// health. /metrics reads the deployment's counters, which name no project, issue, person or
-// session (readclass's TestMetricsNameNoProject), and the router reads what each of its routes
-// declares.
+// Each is mounted with what it reads (readclass.Handle). None of the three holds a check that
+// decides what a caller may read, since each answers whoever reaches the port with no credential,
+// so each is a read of no caller's rows (readclass.None): the probes read the process's own
+// health, and /metrics the deployment's counters, which name no project, issue, person or session
+// (readclass's TestMetricsNameNoProject). The router reads what each of its routes declares.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	none := []readclass.Class{readclass.None}
 	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, privateState, reads))
 	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	readclass.Handle(mux, []readclass.Class{readclass.Deployment}, "GET /metrics", registry.Handler())
+	readclass.Handle(mux, none, "GET /metrics", registry.Handler())
 	readclass.Handle(mux, none, "/", handler)
 	return mux
 }
