@@ -10,7 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 )
 
-// TestARestrictedMembersMachineLoginEnrollsNothing is Create's member-kind rule against a
+// TestARestrictedMembersLauncherEnrollsNothing is Create's member-kind rule against a
 // stand-in of Dispatch's person route. A machine login whose person Dispatch calls a restricted
 // member enrolls nothing, ErrRestrictedMember, and writes no row; a full member's login, and a
 // login of a person Dispatch holds no row for, enroll as before (the control). While Dispatch
@@ -20,7 +20,7 @@ import (
 // the broker checked that person's domain itself when it minted the credential. A broker with no
 // client of Dispatch asks nothing and enrolls as before, which is why the check needs
 // BROKER_PROJECT_ACCESS_URL.
-func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
+func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 	const (
 		outsider = "outsider@outside.example"
 		full     = "ines@example.com"

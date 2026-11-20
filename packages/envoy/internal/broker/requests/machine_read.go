@@ -443,6 +443,13 @@ func restrictedMember(name string) error {
 	return fmt.Errorf("%w: %w: %s is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember, name)
 }
 
+// restrictedMemberGrant is the refusal of a whole grant to a session whose person Dispatch calls a
+// restricted member, at an airlock connection, which reads no one name (AirlockConnection); it
+// ends the grant for good as restrictedMember does.
+func restrictedMemberGrant() error {
+	return fmt.Errorf("%w: %w: this grant is released to no restricted member's session", ErrGrantNotLive, errRestrictedMember)
+}
+
 // judgedAdminSecret is the refusal of a granted name the live policy tags as an administrator's
 // (policy.TagAdmin) on a grant the model judge decided, which ends the grant for good
 // (errJudgedAdminSecret).

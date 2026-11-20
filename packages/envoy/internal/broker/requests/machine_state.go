@@ -525,7 +525,9 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // restrictedOperator reports whether Dispatch calls the person e acts for a restricted member
 // (projectaccess.MemberRestricted), asked through m.Projects on no transaction, as the rule
 // internal/broker/projectaccess states for every caller is: Create asks it before it reads a
-// live grant to reuse, and every release before it re-checks the grant. The person is the one
+// live grant to reuse, every release before it re-checks the grant, and every airlock proxy
+// connection before it carries anything (AirlockConnection), since the proxy holds a grant's
+// values past the release that read them. The person is the one
 // requester reads, so a pod whose account BROKER_POD_OPERATORS no longer maps, a service's pod
 // and a machine's own session ask nothing, and neither does a machine with no client of Dispatch.
 //
@@ -533,9 +535,10 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
 // half reaches the sessions that rule never saw: one a broker with no client of Dispatch
 // enrolled, and one whose person Dispatch called something else when it enrolled. A failure to
-// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create and every release
-// return as it is: a check that cannot decide refuses, so while Dispatch cannot be asked about a
-// person nothing is decided or released for that person's sessions, and each asks again.
+// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create, every release and
+// every airlock connection return as it is: a check that cannot decide refuses, so while Dispatch
+// cannot be asked about a person nothing is decided, released or carried for that person's
+// sessions, and each asks again.
 //
 // An approval of a request still pending from before asks nothing, and neither does the model
 // judge's read of the policy: no request a restricted member's session makes is left pending
