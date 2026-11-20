@@ -271,7 +271,9 @@ func mergedRuns(updates [][]byte) ([][]byte, error) {
 // open (holdOpen) so no close retires its persistence worker under the commit. It returns what the
 // room recorded for the batch's transaction - nil when the batch changed nothing, whose slot it
 // cancels, since a slot left queued holds the worker at the room's next update - and whether the
-// room still held live; a room that does not writes nothing.
+// room still held live; a room that does not writes nothing. A batch whose drain of the room's
+// pending queue the room's apply check refused is applied, with that drain discarded and its
+// senders closed (serverApplyStood).
 func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (applied []byte, open bool, err error) {
 	release, open := s.srv.holdOpen(room, live)
 	if !open {
@@ -285,7 +287,8 @@ func (s *Service) applyRemoteBatch(room string, live *crdt.Doc, batch []byte) (a
 			applied = append([]byte(nil), update...)
 		}
 	})
-	err = crdt.ApplyUpdateV1(live, batch, origin)
+	origin.held = heldIn(live, batch)
+	err = s.serverApplyStood(room, batch, crdt.ApplyUpdateV1(live, batch, origin))
 	unsubscribe()
 	if applied == nil {
 		s.cancelSuppressedPersistence(room, slot)

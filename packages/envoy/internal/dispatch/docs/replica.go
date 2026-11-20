@@ -144,7 +144,8 @@ type renderedReplica struct {
 	// document this replica follows, which keepReplica is given. The replica holds it so that
 	// each drain can read the structs the room holds for the room's charge (chargeAdded,
 	// roomWeight), which is a read of what the room's last committed apply reported
-	// (roomApplies.structsHeld) and of the document itself only before the first of them, and so
+	// (roomApplies.structsHeld) and of the document itself only before the first of them, so that
+	// a drain handing over a server write's commit can read the room's pending queue, and so
 	// that a drain owing the room a re-read of its state can encode it (roomApplies.reread). It is
 	// held strongly and not weakly: a keystroke must make no weak pointer strong (roomWeighing
 	// says what that costs), and the reference closes no cycle anything else holds - live's
@@ -512,7 +513,9 @@ func (r *renderedReplica) drainLog() (base []byte, updates []crdt.LoggedUpdate, 
 // consumed, counted, classified and recorded once.
 func (r *renderedReplica) takeLocked(room string, base []byte, updates []crdt.LoggedUpdate, reports []madeReport) (settles, changed, local bool) {
 	r.pairing = reportPairing{reports: reports}
-	defer r.chargeAdded(len(updates) > 0)
+	defer r.chargeAdded(len(updates) > 0, slices.ContainsFunc(updates, func(update crdt.LoggedUpdate) bool {
+		return writtenApplyOf(update.Origin) != nil
+	}))
 	note := func(update crdt.LoggedUpdate, contentChanged bool, asks func() map[string]struct{}) {
 		r.seq++
 		if r.classify == nil {
@@ -1115,19 +1118,20 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 }
 
 // chargeAdded ends a drain: it drops the reports the drain paired its commits against
-// (roomApplies.settleReports), re-reads the room's state where the drain left its figure owed
+// (roomApplies.settleReports), reads the room's pending queue again where the drain handed over a
+// server write's commit (written), re-reads the room's state where the drain left its figure owed
 // (roomApplies.reread), and, where the drain handed anything over, charges the room again from
 // the bytes of state its record now holds, with what its pending queue holds beside them
 // (roomApplies.residentBytes), and the structs the room holds (roomWeight), whoever
 // wrote what it handed over: a browser's update the peer hook admitted, an API write's publish,
 // an injected update, settlement's repair, any other write of the server's own. It is the
 // budget's one writer while a room stands, and it reads nothing of the document but on a path
-// that owes a re-read: the structs are the figure the room's last committed apply reported
-// (roomApplies.structsHeld, crdt.ApplyReport.Structs), and the bytes are the room's own tally,
-// which each remote apply's report raised as it committed and each drain raised for a commit no
-// report covers (roomApplies.noteApply, countCommit), where an encode of the room's state costs
-// 18.7 ms and 5,495,143 bytes allocated on a mebibyte of prose and so can sit on no keystroke's
-// path (bytesOfHeapAStateByte).
+// that owes a re-read or follows a server write: the structs are the figure the room's last
+// committed apply reported (roomApplies.structsHeld, crdt.ApplyReport.Structs), and the bytes are
+// the room's own tally, which each remote apply's report raised as it committed and each drain
+// raised for a commit no report covers (roomApplies.noteApply, countCommit), where an encode of
+// the room's state costs 18.7 ms and 5,495,143 bytes allocated on a mebibyte of prose and so can
+// sit on no keystroke's path (bytesOfHeapAStateByte).
 //
 // The tally comes from the library's count of what each apply added to the encoded state
 // (crdt.ApplyReport.StateBytes), because the bytes the room's commits log fall short of it: an
@@ -1142,14 +1146,31 @@ func (r *renderedReplica) drainedSeq(room string) (seq uint64, settles bool) {
 // holding 17,511,178 bytes, past the 16,777,216 one room may hold, charged for none of them
 // (TestARunOfParkedFramesIsRefusedAtTheStateCapHoweverManyArrive).
 //
+// The queue's figures are what the peer update hook read after the room's last browser apply
+// (noteQueued, noteParkedRanges), and a server write's apply - a published live write, a
+// catch-up's stored rows - ends with a drain of that queue too, which lands what browsers parked
+// behind the clocks the write supplied or discards it (renderCheck.check), and passes no hook. So
+// a drain that hands over such a commit reads the queue itself (crdt.Doc.PendingStats, a read
+// lock and a handful of fields), from outside the document's lock, as the hook does once its
+// apply has returned. Left as the browser apply before it read them, the figures counted what the
+// write's drain landed both in the tally and in the queue: after a catch-up whose drain landed
+// 1,800,000 bytes of parked content, a room tracked at 1,800,342 bytes was weighed at 3,600,342
+// resident, by the room budget and by the next browser update's state cap alike
+// (TestAServerWritesDrainLeavesTheQueueFigureReadingTheQueue).
+//
 // Each committed update is counted exactly once: a remote apply by its report as it commits, and
 // a commit no report covers by the observer whose drain of the room's update log hands it over,
 // whichever observer that is (observe, atPoint). A replica no room's load charged (a test's)
 // charges nothing.
-func (r *renderedReplica) chargeAdded(handed bool) {
+func (r *renderedReplica) chargeAdded(handed, written bool) {
 	applies := r.applies()
 	applies.settleReports(len(r.pairing.reports))
 	r.pairing = reportPairing{}
+	if written && r.live != nil {
+		queued := r.live.PendingStats()
+		applies.noteQueued(queued)
+		applies.noteParkedRanges(queued)
+	}
 	reread := applies.reread(r.live)
 	charge := r.roomCharge()
 	if charge == nil || !handed && !reread {
@@ -1169,9 +1190,9 @@ func (r *renderedReplica) chargeAdded(handed bool) {
 	// dispatch://INFRA-179, review 6's finding 2). A room between its load and its first remote
 	// apply has no report yet and is read from its document instead, and a replica of a room no
 	// load gave a document - a test's - charges by its state alone. The delete ranges the room
-	// parks are charged at the count the hook read after its last apply
-	// (roomApplies.parkedRangeCount), as the struct figure is read off the room's own record
-	// rather than off the document.
+	// parks are charged at the count the hook read after its last apply, or this drain read
+	// above after a server write's commit (roomApplies.parkedRangeCount), as the struct figure is
+	// read off the room's own record rather than off the document.
 	var structs int64
 	if r.live != nil {
 		structs = int64(applies.structsHeld(r.live))

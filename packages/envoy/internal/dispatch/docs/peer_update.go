@@ -647,18 +647,18 @@ type roomApplies struct {
 	// (peerApply, applying).
 	inFlight map[any]*peerApply
 	// queuedContent is the content bytes the room holds in its pending queue, as the hook read them
-	// after its last apply (crdt.Doc.PendingStats.ContentBytes, noteQueued, queuedBytes): resident
-	// memory the room's encoded state leaves out (leaveParkedOut), which the state cap's allowance
-	// and the room budget weigh beside the tracked state (residentBytes). It is written by the
-	// hook after its apply and read by the hook before one and by the budget's drains, so it is an
-	// atomic.
+	// after its last apply, or the room's drain after a server write's commit
+	// (renderedReplica.chargeAdded): crdt.Doc.PendingStats.ContentBytes (noteQueued, queuedBytes),
+	// resident memory the room's encoded state leaves out (leaveParkedOut), which the state cap's
+	// allowance and the room budget weigh beside the tracked state (residentBytes). It is written
+	// by the hook after its apply and by the drain, and read by the hook before one and by the
+	// budget's drains, so it is an atomic.
 	queuedContent atomic.Int64
-	// parkedRanges is the delete ranges the room's pending queue holds, as the hook read them
-	// after its last apply (crdt.Doc.PendingStats.DeleteRanges, noteParkedRanges): heap the room
-	// holds and neither its encoded state nor its struct figure counts, which the room budget
-	// charges at bytesOfHeapAParkedRange beside its two copies' weight (roomWeight). It is
-	// written by the hook after its apply and read by the budget's drains and re-base, as
-	// queuedContent is, so it is an atomic.
+	// parkedRanges is the delete ranges the room's pending queue holds, as the hook or the drain
+	// read them (crdt.Doc.PendingStats.DeleteRanges, noteParkedRanges): heap the room holds and
+	// neither its encoded state nor its struct figure counts, which the room budget charges at
+	// bytesOfHeapAParkedRange beside its two copies' weight (roomWeight). It is written and read
+	// as queuedContent is, so it is an atomic.
 	parkedRanges atomic.Int64
 	// parked is each browser connection whose frames left something parked that has not landed
 	// yet, which the room resyncs once the commit that lands it is stored (parked_resync.go).
@@ -1093,9 +1093,10 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 }
 
 // noteQueued records after, what the room's pending queue holds once an apply of the hook's has
-// returned, as the content bytes that queue holds in memory (queuedContent, queuedBytes), and
-// reports whether that figure moved, which is when the hook weighs the room again
-// (weighPeerUpdate).
+// returned, or once a drain of the room's update log has handed over a server write's commit,
+// whose apply drained the queue too (renderedReplica.chargeAdded), as the content bytes that queue
+// holds in memory (queuedContent, queuedBytes), and reports whether that figure moved, which is
+// when the hook weighs the room again (weighPeerUpdate); the drain weighs it again whatever moved.
 //
 // The queue is resident in the room and is no part of its encoded state (leaveParkedOut), so the
 // library's count of that state, which the room's tracked state follows, counts nothing an apply
@@ -1140,8 +1141,9 @@ func (a *roomApplies) queuedBytes() int64 {
 }
 
 // noteParkedRanges records after, what the room's pending queue holds once an apply of the hook's
-// has returned, as the delete ranges the room parks (parkedRanges), and reports whether that count
-// moved, which is when the hook weighs the room again (weighPeerUpdate). The count is the
+// has returned, or a drain has handed over a server write's commit (noteQueued), as the delete
+// ranges the room parks (parkedRanges), and reports whether that count moved, which is when the
+// hook weighs the room again (weighPeerUpdate). The count is the
 // library's own (crdt.Doc.PendingStats), so it is what the queue holds and not a sum of what each
 // apply parked: a resend of ranges already parked leaves it where it was, and a drain that lands
 // them takes it down.
@@ -1154,8 +1156,8 @@ func (a *roomApplies) noteParkedRanges(after crdt.PendingStats) bool {
 }
 
 // parkedRangeCount is the delete ranges the room's pending queue held after the hook's last apply
-// (noteParkedRanges), which the room budget charges (roomChargeWeight), and none for a room no
-// load listed.
+// or a server write's commit (noteParkedRanges), which the room budget charges
+// (roomChargeWeight), and none for a room no load listed.
 func (a *roomApplies) parkedRangeCount() int64 {
 	if a == nil {
 		return 0
@@ -1391,7 +1393,7 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	stood := err == nil || errors.Is(err, crdt.ErrApplyCheckDrain)
 	s.settleClients(info, judged, stood)
 	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
-		s.closeDiscardedSenders(info, discarded)
+		s.closeDiscardedSenders(info.Room, info.Update, discarded)
 	}
 	if !stood {
 		return s.refusedByApply(info, weighing, allowance, scanning, err)
@@ -1414,28 +1416,30 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 }
 
 // closeDiscardedSenders closes every browser whose parked frame a refused drain discarded
-// (crdt.DrainDiscardedError.Senders, leaveParkedOut): the update that filled the gap stood and
-// was relayed as what it integrated, and what parked behind the gap is gone from the room, which
-// never relayed, answered applied or stored it. Each sender is given the close of what refused the
-// drain: where the render check refused what the drain would land, the check's own close
-// (renderRefusal.close) - DOC_TOO_LARGE for a rendering past the bound, DOC_UPDATE_REFUSED for a
-// document this build cannot render - and DOC_TOO_TANGLED where the drain's scans or splits passed
-// the apply's allowance. The editor drops the frame the server last answered not applied, which
-// the parked frame was, and tells the person why (connection.ts). A drain's check weighs it against
-// the rendering the check of the update it follows made, which is exact, so a drain is refused for
-// now (renderRefusal.unsure) and its senders closed with the transient DOC_BUSY in one case alone:
-// the update it follows changed nothing itself, which ygo does not check (crdt.WithApplyCheck), and
-// what the drain started from was not known, a server write having committed since the replica's
-// last rendering. Such an update still drains: a parked struct or delete range can wait on clocks
-// a server write in the room's own transaction supplied, which runs no drain, and lands at the
-// next browser's apply, whatever that apply carries (crdt.StructStore.noteAppend,
-// crdt/store.go:155-166 in theorem-labs/ygo v1.55.1-theorem.9, marks what such a struct releases
-// for the next drain). Nothing says the edit is too large
+// (crdt.DrainDiscardedError.Senders, leaveParkedOut): the update that filled the gap, a browser's
+// or a server write's (serverApplyStood), stood and was relayed as what it integrated, and what
+// parked behind the gap is gone from the room, which never relayed, answered applied or stored
+// it. Each sender is given the close of what refused the drain: where the render check refused
+// what the drain would land, the check's own close (renderRefusal.close) - DOC_TOO_LARGE for a
+// rendering past the bound, DOC_UPDATE_REFUSED for a document this build cannot render - and
+// DOC_TOO_TANGLED where the drain's scans or splits passed the apply's allowance. The editor
+// drops the frame the server last answered not applied, which the parked frame was, and tells the
+// person why (connection.ts). A drain's check weighs it against the rendering the check of the
+// update it follows made, which is exact, so a drain is refused for now (renderRefusal.unsure)
+// and its senders closed with the transient DOC_BUSY in two cases alone. One is the drain of a
+// server write's apply, whose update the check does not render (renderCheck.check). The other is
+// the drain of a browser's update that changed nothing itself, which ygo does not check
+// (crdt.WithApplyCheck), where what the drain started from was not known, a server write having
+// committed since the replica's last rendering. Such an update still drains: a
+// parked struct or delete range can wait on clocks a server write in the room's own transaction
+// supplied, which runs no drain, and lands at the next remote apply, whatever that apply carries
+// (crdt.StructStore.noteAppend, crdt/store.go:155-166 in theorem-labs/ygo v1.55.1-theorem.9,
+// marks what such a struct releases for the next drain). Nothing says the edit is too large
 // then, so the honest answer is the one the editor keeps the edit and sends it again for, and its
 // resend is weighed whole, its gap now filled. A sender already gone is closed by nothing, and its
-// saved row is weighed the same way when it comes back. The close is safe from this goroutine and
+// saved row is weighed the same way when it comes back. The close is safe from any goroutine and
 // goes out after the answers the sender is still owed (websocket.Server.ClosePeer).
-func (s *Service) closeDiscardedSenders(info websocket.PeerUpdateInfo, discarded *crdt.DrainDiscardedError) {
+func (s *Service) closeDiscardedSenders(room string, update []byte, discarded *crdt.DrainDiscardedError) {
 	refusal := documentTooTangled()
 	var rendered *renderRefusal
 	if errors.As(discarded.Cause, &rendered) {
@@ -1447,11 +1451,28 @@ func (s *Service) closeDiscardedSenders(info websocket.PeerUpdateInfo, discarded
 			closed++
 		}
 	}
-	slog.Warn("dispatch: the room took a browser's update and discarded the drain it released; the browsers that parked what was discarded are closed",
-		"room", info.Room, "update_bytes", len(info.Update), "discarded_structs", discarded.Structs,
+	slog.Warn("dispatch: the room took an update and discarded the drain it released; the browsers that parked what was discarded are closed",
+		"room", room, "update_bytes", len(update), "discarded_structs", discarded.Structs,
 		"discarded_ranges", discarded.Ranges, "drain_scanned", discarded.Scanned,
 		"senders", len(discarded.Senders), "closed", closed, "close_code", refusal.Code,
 		"close_reason", refusal.Reason, "error", discarded.Error())
+}
+
+// serverApplyStood is err, what a server write's apply of update to room returned - a published
+// live write's (publishLiveUpdate) or a catch-up's batch of stored rows (applyRemoteBatch) - as
+// the error that write failed with. An apply whose drain of the room's pending queue was taken
+// back stood (crdt.ErrApplyCheckDrain): the room's apply check refused what the drain would land
+// (renderCheck.check), the update committed without it, and the write goes on as one that
+// applied. What the drain would have landed was discarded, and its senders are closed as a
+// browser's refused drain closes them (closeDiscardedSenders).
+func (s *Service) serverApplyStood(room string, update []byte, err error) error {
+	if !errors.Is(err, crdt.ErrApplyCheckDrain) {
+		return err
+	}
+	if discarded := (*crdt.DrainDiscardedError)(nil); errors.As(err, &discarded) {
+		s.closeDiscardedSenders(room, update, discarded)
+	}
+	return nil
 }
 
 // underPressure is whether room's next update is weighed under the budget's pressure: the budget

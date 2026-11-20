@@ -846,8 +846,9 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		// persistence observer, which the room registers after OnLoadDocument, hands the update to
 		// the room's worker, which waits on that slot (publishLiveUpdate, catchUpRoom). Both are
 		// then classified like any other update, and neither is credited to a local peer
-		// (creditContentChange) nor names one as the author of the ask blocks it introduces
-		// (observeAskBlocksForUpdate).
+		// (creditContentChange), unless its drain landed a frame a local peer parked, which is
+		// credited as a browser's commit is (classifyDrained), nor names one as the author of the
+		// ask blocks it introduces (observeAskBlocksForUpdate).
 		switch durable := origin.(type) {
 		case *liveWriteOrigin:
 			s.finishSuppressedPersistence(durable.slot, update)
@@ -1219,8 +1220,8 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 // blocks it left when it did (renderedReplica). It is the room's drainClassifier, which runs
 // holding the replica's lock. It reports whether a settlement follows the update, which is every
 // update but a repair's, whether it changed the content, and whether this process made it - a
-// peer's update or a published live write's, rather than another process's append a catch-up
-// applied.
+// peer's update, a published live write's, or a catch-up whose drain landed a frame one of this
+// room's browsers parked, rather than another process's append a catch-up applied.
 //
 // A commit can park bytes - structs or deletions that wait for an edit the room has not received -
 // and ygo logs them in Parked, beside an Update that carries only what the commit integrated, the
@@ -1271,16 +1272,6 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 		attributed = s.observeAskBlocksForUpdate(room, asks(), logged.Origin)
 	}
 	class.durable = true
-	if contentChanged {
-		// The authors of the ask blocks this render first showed go with the credit to the
-		// update's append, which records them durably (recordAskAuthors): a tree is rendered
-		// only for a content change, so a browser's update that names an author always carries
-		// a credit. A published live write carries none; its commit recorded its blocks'
-		// authors (Ledger.recordSettlementCredit).
-		class.credit = s.creditContentChange(room, logged.Origin, &instance.hold, attributed)
-	} else {
-		class.roomCredit = s.unchangedCredit(room, logged.Origin, &instance.hold)
-	}
 	// A published write's update was stored by the transaction that wrote it, before the room
 	// took it, and a catch-up's is the stored row itself, so neither is stored again - unless the
 	// commit carries more than its writer stored: the drain of the room's pending queue the apply
@@ -1291,8 +1282,23 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	// stored a second time beside it, which a load integrates as the nothing it is. Every other
 	// update only the room holds, so it names its instance and is listed there until its append
 	// has returned.
-	stored := published && !origin.landedBeyond(logged.Update) ||
-		remote && !catchUp.landedBeyond(logged.Update)
+	landed := published && origin.landedBeyond(logged.Update) || remote && catchUp.landedBeyond(logged.Update)
+	// A commit is credited as its origin says (originCreditsNoOne), and a server write's whose
+	// drain landed a browser's parked frame as a browser's commit is: what it carries beyond its
+	// writer's rows is that browser's edit, which no writer credited, so it is credited to the peers
+	// connected as the room took it, as the browser update whose drain landed it would have been,
+	// and a catch-up that landed it is this process's to settle.
+	if credited := landed || !s.originCreditsNoOne(logged.Origin); credited && contentChanged {
+		// The authors of the ask blocks this render first showed go with the credit to the
+		// update's append, which records them durably (recordAskAuthors): a tree is rendered
+		// only for a content change, so a browser's update that names an author always carries
+		// a credit. A published live write's own carries none; its commit recorded its blocks'
+		// authors (Ledger.recordSettlementCredit).
+		class.credit = s.creditContentChange(room, &instance.hold, attributed)
+	} else if credited {
+		class.roomCredit = s.unchangedCredit(room, &instance.hold)
+	}
+	stored := (published || remote) && !landed
 	if !stored {
 		class.instance = instance
 	}
@@ -1305,26 +1311,74 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	if published && origin.shadow != nil {
 		s.reachShadow(room, origin.shadow, &instance.cursor, seq)
 	}
-	return true, contentChanged, !remote
+	return true, contentChanged, !remote || landed
 }
 
 // writtenApply is what the origin of a server write's apply to a room - a published live write's
 // (liveWriteOrigin) or a catch-up's (remoteUpdateOrigin) - keeps for the room's update observer to
 // hold the apply's commit against (classifyDrained): written, the update the writer stored, and
-// checks, how many times the room's apply check ran on the apply (renderCheck.check), counted under
-// the document's lock before the commit is logged.
+// checks, how many of the room's apply check's runs on the apply passed (renderCheck.check),
+// counted under the document's lock before the commit is logged. held is whether the room held
+// all of written as the write began its apply (heldIn), so that the apply's update changes
+// nothing, ygo checks no run of its own, and every run of the check on the apply is its drain's.
+// It is written once, by the writer's goroutine before it applies, and read by the check that
+// apply runs on the same goroutine.
 type writtenApply struct {
 	written []byte
 	checks  atomic.Int32
+	held    bool
+}
+
+// heldIn is whether live holds all of update, a server write's, read before the write applies it:
+// every struct it carries at clocks live's state vector reaches (crdt.ParseUpdateMeta, which reads
+// their headers alone), and every clock it deletes among those live has deleted. An apply of such
+// an update integrates nothing, so ygo runs the room's apply check on it only for its drain of the
+// room's pending queue (crdt.WithApplyCheck: "It is not called for an apply that changed
+// nothing"), and only where that drain lands something (renderCheck.check). A struct or a deleted
+// clock live lacks, an update that does not read, and a delete set read while the room's queue
+// holds nothing - no drain can land anything then - each answer false, the room's delete set
+// being built (crdt.DeleteSetFromDoc, a walk of its store) only for an update whose structs it
+// holds and whose deletes then decide it. The room only grows, so an update held as the write
+// reads it is held as it applies.
+func heldIn(live *crdt.Doc, update []byte) bool {
+	_, to, err := crdt.ParseUpdateMeta(update)
+	if err != nil {
+		return false
+	}
+	state := live.StateVector()
+	for client, end := range to {
+		if state.Clock(client) < end {
+			return false
+		}
+	}
+	deletes := crdt.NewIDSet()
+	if !eachV1Range(update, func(crdt.ClientID, uint64, uint64) {}, deletes.Add) {
+		return false
+	}
+	if clients := deletes.Clients(); len(clients) > 0 {
+		if parked := live.PendingStats(); parked.Items == 0 && parked.DeleteRanges == 0 {
+			return false
+		}
+		deleted := rangesByClient(crdt.DeleteSetFromDoc(live))
+		for _, client := range clients {
+			for _, r := range deletes.Ranges(client) {
+				if covered, _ := rangesHold(deleted[client], r.Clock, r.Len); !covered {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 // landedBeyond reports whether update, the room's commit of the apply, carries content the writer
 // did not store, which the room then stores itself (classifyDrained). Only the drain of the room's
 // pending queue the apply ends with lands such content, and ygo runs the room's apply check on a
 // remote apply once for what its update changed, where it changed anything, and once more where
-// that drain landed anything (crdt.WithApplyCheck). An update that changed the room leaves a clock
-// of written in the commit, a struct it integrated or a deletion it made; so a commit that shares
-// a clock with written, of an apply the check ran on once, is one whose drain landed nothing. It
+// that drain landed anything (crdt.WithApplyCheck); a drain the check refuses is taken back, lands
+// nothing, and its run is not counted. An update that changed the room leaves a clock of written
+// in the commit, a struct it integrated or a deletion it made; so a commit that shares a clock
+// with written, of an apply one run of the check passed, is one whose drain landed nothing. It
 // carries written and only what written's own changes reach in the room: the deletion of what the
 // room held under what written deletes or replaces - the text another editor typed, after the
 // write's fork read, into the paragraph the write removes - and of written's structs that land
@@ -1333,7 +1387,7 @@ type writtenApply struct {
 // its writer's rows. Taken as carrying more, it was stored again, classed as the change the write
 // had made, at a place in the history where it changes nothing
 // (TestStoredOrderEditAfterTheForkReadIntoADeletedParagraph). Every other commit is held against
-// written clock by clock (heldAgainst): one the check ran on twice, whose drain landed
+// written clock by clock (heldAgainst): one two runs of the check passed, whose drain landed
 // something; one sharing no clock with written, whose update changed nothing, so that the one run
 // was the drain's; and one the check never ran on, which only a room without the check makes.
 func (w *writtenApply) landedBeyond(update []byte) bool {
@@ -1475,18 +1529,19 @@ func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]st
 }
 
 // originCreditsNoOne is whether a commit's origin names nobody to credit for the update, the one
-// rule both credit paths follow (creditContentChange, unchangedCredit). Four origins credit no
-// one. A service repair's origin, the one serviceTransact registered: the service made that
-// commit, and a browser that was only connected while it happened is not credited for it. A
-// published live write's *liveWriteOrigin: Ledger.Commit credited that write when its transaction
-// committed, and it is not credited again. A catch-up's *remoteUpdateOrigin: another process
-// stored that update, and its append recorded the authors that process credited it to, so none
-// of this room's peers may be named for it on either path. And no origin at all: every commit a
-// loaded room makes names an origin - a browser's update names the peer ygo applied it for (its
-// *peer, ygo's provider/websocket peer_update.go), a service mutation names the sentinel ygo's
-// Server.Apply makes for the call (applyOriginSentinel), which serviceTransact registers as a
-// service origin, a repair names its own *identityClosureOrigin (applySuppressed), a published
-// live write its *liveWriteOrigin and a catch-up its *remoteUpdateOrigin. The room's own load
+// rule classifyDrained weighs a commit by before either credit path (creditContentChange,
+// unchangedCredit). Four origins credit no one. A service repair's origin, the one
+// serviceTransact registered: the service made that commit, and a browser that was only connected
+// while it happened is not credited for it. A published live write's *liveWriteOrigin:
+// Ledger.Commit credited that write when its transaction committed, and it is not credited again.
+// A catch-up's *remoteUpdateOrigin: another process stored that update, and its append recorded
+// the authors that process credited it to, so none of this room's peers may be named for it on
+// either path. And no origin at all: every commit a loaded room makes names an origin - a
+// browser's update names the peer ygo applied it for (its *peer, ygo's provider/websocket
+// peer_update.go), a service mutation names the sentinel ygo's Server.Apply makes for the call
+// (applyOriginSentinel), which serviceTransact registers as a service origin, a repair names its
+// own *identityClosureOrigin (applySuppressed), a published live write its *liveWriteOrigin and
+// a catch-up its *remoteUpdateOrigin. The room's own load
 // decodes the stored history with no origin (bootstrapLoadedState), earlier in the load hook
 // that goes on to open the update log and register this observer, so no observer ever sees it. A
 // nil origin here can therefore only be ygo's own cleanup transaction, which a document commits
@@ -1496,6 +1551,9 @@ func (s *Service) observeAskBlocksForUpdate(room string, askBlocks map[string]st
 // crediting it would hand every connected browser an edit none of them made (INFRA-644); on the
 // shadow path, a cleanup the room measured as no change is stored as a change wherever an open
 // write's shadow measures one (storedClasses), which would store those browsers as its authors.
+// A server write's commit whose drain landed a frame one of this room's browsers parked is
+// credited as a browser's commit all the same (classifyDrained): what it carries beyond its
+// writer's rows is no writer's.
 func (s *Service) originCreditsNoOne(origin any) bool {
 	if origin == nil {
 		return true
@@ -1508,22 +1566,20 @@ func (s *Service) originCreditsNoOne(origin any) bool {
 	return service
 }
 
-// creditContentChange credits an observed content change to its authors, or to no one where its
-// origin credits no one (originCreditsNoOne). Any other update is a browser edit by one of the
-// peers, which ygo applies while that peer's connection is registered. ygo does not say which
-// connection sent it, so every connected peer is credited with it: when exactly one is connected
-// it is the latest edit source and replaces `lastActor`, and otherwise the edit cannot be pinned
-// on a single peer and no older actor may stand in for it.
+// creditContentChange credits an observed content change to the peers connected to room: a
+// browser edit by one of them, which ygo applies while that peer's connection is registered, or
+// the commit of a server write whose drain landed a frame one of them parked (classifyDrained),
+// which weighs whether a commit is credited at all first (originCreditsNoOne). ygo does not say
+// which connection sent it, so every connected peer is credited with it: when exactly one is
+// connected it is the latest edit source and replaces `lastActor`, and otherwise the edit cannot
+// be pinned on a single peer and no older actor may stand in for it.
 //
 // The credit goes to F, the room's in-flight credits, until the edit's append lands it
 // (AppendUpdatesWithCredit): the returned UpdateCredit is how that append reaches it, and how
 // askAuthors, the authors of the ask blocks the edit's render first showed (observeAskBlocks),
 // reach the durable record in the same append. This takes no advisory lock and touches no
 // database: nothing reads F without holding state.mu.
-func (s *Service) creditContentChange(room string, origin any, hold *roomHold, askAuthors map[string]model.Actor) *UpdateCredit {
-	if s.originCreditsNoOne(origin) {
-		return nil
-	}
+func (s *Service) creditContentChange(room string, hold *roomHold, askAuthors map[string]model.Actor) *UpdateCredit {
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
 	record := connectedCreditLocked(state)
@@ -1539,15 +1595,12 @@ func (s *Service) creditContentChange(room string, origin any, hold *roomHold, a
 // took it, the authors creditContentChange would credit the same commit to, recorded only while a
 // live write is open, whose shadow may measure the update a change once the write is stored before
 // it. It is not in F and takes no credit sequence: no version lists an update recorded as no
-// change, and its append writes these authors only when it stores the update as a change. It
-// weighs the origin by the same rule that path does (originCreditsNoOne), so a service repair, a
-// published live write Ledger.Commit credited already and a commit with no origin at all - ygo's
-// own cleanup, which nobody typed - carry no authors for a shadow to store them with either. Nil
-// too while no write is open.
-func (s *Service) unchangedCredit(room string, origin any, hold *roomHold) *UpdateCredit {
-	if s.originCreditsNoOne(origin) {
-		return nil
-	}
+// change, and its append writes these authors only when it stores the update as a change. The
+// observer weighs the origin first by the rule that path follows (originCreditsNoOne), so a
+// service repair, a published live write Ledger.Commit credited already and a commit with no
+// origin at all - ygo's own cleanup, which nobody typed - carry no authors for a shadow to store
+// them with either. Nil too while no write is open.
+func (s *Service) unchangedCredit(room string, hold *roomHold) *UpdateCredit {
 	state := s.lockState(room)
 	defer s.unlockState(room, state)
 	if state.liveWriter == nil {

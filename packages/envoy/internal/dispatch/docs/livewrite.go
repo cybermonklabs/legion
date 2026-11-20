@@ -228,7 +228,9 @@ type forkReadMark struct {
 // liveWriteOrigin tags the room transaction that applies a committed live write, so the room's
 // update observer credits it to no one: Ledger.Commit credited it when its transaction
 // committed, and registered the ask ids it introduced before this write's publish could reach any
-// observer (Ledger.creditRooms, registerAskAuthors). It carries the write's
+// observer (Ledger.creditRooms, registerAskAuthors). A commit whose drain landed a browser's
+// parked frame is credited as that browser's commit is, for what it carries beyond the write
+// (classifyDrained). It carries the write's
 // persistence-suppression slot, which that observer finishes (onLoadDocument). It must remain
 // non-zero sized because ygo compares origins by interface equality.
 //
@@ -1310,10 +1312,12 @@ func (s *Service) publishedWithoutARoom(write *liveWrite) {
 // The origin carries rendering, the operation's own rendering of what the update leaves, which the
 // room's update observer takes when it can (renderedReplica.changedBy). An update the room already
 // held is no commit: ygo calls no update observer for it, so there is nothing for the observer to
-// classify. marginRoom is the room document a margin write's fork was warm-built from, or the zero
-// pointer (liveWrite.marginRooms): the update is tagged margin-only when the document it reaches is
-// that one (liveWriteOrigin.marginOnly). shadow, on the write's last update, is the shadow whose
-// window the update's drain closes.
+// classify. An apply whose drain of the room's pending queue the room's apply check refused stood,
+// with that drain discarded and its senders closed, and is published as any other
+// (serverApplyStood). marginRoom is the room document a margin write's fork was warm-built from,
+// or the zero pointer (liveWrite.marginRooms): the update is tagged margin-only when the document
+// it reaches is that one (liveWriteOrigin.marginOnly). shadow, on the write's last update, is the
+// shadow whose window the update's drain closes.
 func (s *Service) publishLiveUpdate(room string, update []byte, version persistence.Version, rendering publishedRendering, marginRoom weak.Pointer[crdt.Doc], shadow *roomShadow) error {
 	ctx := withOwnerVerified(context.Background())
 	slot := s.prepareSuppressedPersistence(room)
@@ -1331,9 +1335,10 @@ func (s *Service) publishLiveUpdate(room string, update []byte, version persiste
 			// would be refused everything until it reloaded.
 			advanceRoomCursor(&instance.cursor, version)
 		}
+		origin.held = heldIn(doc, update)
 		return crdt.ApplyUpdateV1(doc, update, origin)
 	})
-	if err != nil {
+	if err = s.serverApplyStood(room, update, err); err != nil {
 		s.cancelSuppressedPersistence(room, slot)
 		return fmt.Errorf("apply committed live document write: %w", err)
 	}

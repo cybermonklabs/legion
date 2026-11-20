@@ -43,20 +43,24 @@ body: |-
     apply integrated, and no read or first sync is served what parked. It answers a frame that
     parked as not applied, so the editor keeps the edit and sends it again, and it resyncs that
     browser once a later stored commit lands what the frame parked. The browser whose frame fills
-    the gap is sent what its fill landed, as every other browser is. A server write that lands such
-    content - a catch-up of another process's rows, a published write - is stored by the room as a
-    browser's commit is, so that browser is told only once a row holds it. Where the room cannot
-    take a drain of parked content, it discards the drain and keeps the update that released it.
-    Each browser that parked what was discarded is closed `4413 DOC_TOO_LARGE` where the drain would
-    leave the rendering past the bound, `4413 DOC_UPDATE_REFUSED` where it would leave a document
-    this build cannot render, and `4413 DOC_TOO_TANGLED` where its merge would scan or split more
-    than the apply allows; it is closed `4503 DOC_BUSY` instead where the update that released the
-    drain changed nothing itself and what the drain started from is not known yet. A parked delete
-    range spends none of the decode cap's headroom, and the room budget charges each 32 bytes on the
-    room's live copy while it waits. A room parks at most 4,096 delete ranges and 1,048,576 structs,
-    and an update that would park past either is answered not applied with its socket left open,
-    since it waits on edits the room has not received yet. What the queue holds of content is
-    weighed as it holds it now, so content a later edit landed is no longer charged after it.
+    the gap is sent what its fill landed, as every other browser is. Such content that a server
+    write lands - a catch-up of another process's rows, a published write - is held to the document
+    bound as a browser's edit is, and the room stores that commit and credits it to the browsers
+    connected as it does a browser's commit, so that browser is told only once a row holds it.
+    Where the room cannot take a drain of parked content, it discards the drain and keeps the update
+    that released it. Each browser that parked what was discarded is closed `4413 DOC_TOO_LARGE`
+    where the drain would leave the rendering past the bound, `4413 DOC_UPDATE_REFUSED` where it
+    would leave a document this build cannot render, and `4413 DOC_TOO_TANGLED` where its merge
+    would scan or split more than the apply allows. Past the bound it is closed `4503 DOC_BUSY`
+    instead where a server write released the drain, or where the update that released it changed
+    nothing itself and what the drain started from is not known yet; the edit its editor then sends
+    again is weighed as that browser's own.
+    A parked delete range spends none of the decode cap's headroom, and the room budget charges each
+    32 bytes on the room's live copy while it waits. A room parks at most 4,096 delete ranges and
+    1,048,576 structs, and an update that would park past either is answered not applied with its
+    socket left open, since it waits on edits the room has not received yet. What the queue holds of
+    content is weighed as it holds it now, so content a later edit or a server write landed is no
+    longer charged after it.
     A browser's edit is now answered saved only once the commit that holds it is stored. A frame
     that commits nothing, such as a reconnect's sync step 2 carrying only what the room holds, is
     answered saved only once every commit the room had made by then is stored, and a room that could

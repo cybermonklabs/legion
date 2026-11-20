@@ -43,12 +43,17 @@ import (
 // every drain of its own that lands anything, so it integrates only what each commit's update
 // carries (renderedReplica, holdParked).
 //
-// It judges the hook's own applies alone - those the hook reserved an allowance for
+// It judges the hook's own applies - those the hook reserved an allowance for
 // (roomApplies.inFlight), which is every update and whole-state message a read-write browser
-// sends - and passes every other origin's: the room's load decodes its stored state before the
-// check is set, and a catch-up's stored rows, a published live write and every other write the
-// server makes come through other origins and are weighed by rules of their own (growth.go), so a
-// stored document already past the bound loads and is caught up as it was.
+// sends - and the drain of a server write's apply, and passes the rest: the room's load decodes
+// its stored state before the check is set, the update of a catch-up's stored rows and of a
+// published live write is weighed by rules of its own (growth.go), so a stored document already
+// past the bound loads and is caught up as it was, and every other write the server makes is a
+// local transaction, which ygo does not check. What a server write's drain lands is not the
+// write's own: it is browser content another apply parked behind the clocks the write supplied.
+// So that drain is held to what a browser's drain is held to, and one the check refuses is
+// discarded while the write stands, its senders closed as a browser's refused drain closes
+// them (check, serverApplyStood).
 //
 // One render pays for the update. The check's rendering is the one the update observer then
 // keeps and publishes for the commit (takeChecked), so the observer renders nothing of its own for
@@ -123,8 +128,8 @@ func (a *roomApplies) began(origin any, logged *loggedCommits) {
 }
 
 // checking is the record of the hook's apply with origin that the room's apply check is judging,
-// nil for an apply of any other origin, which the check passes (renderCheck.check). The caller
-// holds the document's lock.
+// nil for an apply of any other origin, which the check passes, all but the drain of a server
+// write's apply (renderCheck.check). The caller holds the document's lock.
 func (a *roomApplies) checking(origin any) *peerApply {
 	if a == nil {
 		return nil
@@ -285,12 +290,33 @@ func newRenderCheck(live *crdt.Doc, weighing *roomWeighing, paths *renderPathCou
 // *renderRefusal for one it refuses (renderCheck says what it judges). ygo calls it under the
 // document's write lock, once for the update and once more for a drain that lands parked content,
 // so it reads the document only through view and the reads that take no lock, and calls nothing
-// that takes that lock. A panic in the render is recovered here and refuses the apply as a render
-// error does, rather than reaching the peer's read loop.
-func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
+// that takes that lock.
+//
+// A server write's apply (writtenApplyOf) is passed on the run of its update and judged on the
+// run of its drain. ygo checks an apply's update where it changed the document, before the drain,
+// and the drain where it landed something (crdt.WithApplyCheck), so a second run on one apply is
+// its drain's. That drain lands what browsers parked behind the clocks the write supplied: a
+// frame typed after another process's edit, which a catch-up brings, or one naming the room's
+// own client at its next clock, which only the server writes, in a transaction of the room's own
+// that drains nothing, so the next remote apply's drain lands it. The write's update is not
+// rendered here, so what it left is not known, and the drain is rendered whole and weighed as an
+// apply whose starting rendering is not known (judge): passed where it leaves the rendering
+// within maxPeerRenderingBytes, and refused for now past it (renderRefusal.unsure). Its senders
+// are then closed with the transient DOC_BUSY, and each frame sent again is weighed as its
+// browser's own apply, its gap now filled. A server write whose update the room already held is
+// checked once, for its drain, since its update changes nothing, so the write reads that before
+// it applies (writtenApply.held, heldIn) and every run on such an apply is judged as a drain's.
+// A struct the room parks is one its state vector does not reach, so an update that would only
+// park is not held, and its one run is passed as an update's. checks counts the runs passed, so a
+// drain refused, which lands nothing, is not counted (writtenApply.landedBeyond).
+func (c *renderCheck) check(origin any, view *crdt.ApplyView) error {
 	if write := writtenApplyOf(origin); write != nil {
-		// A server write's apply is weighed by rules of its own, and passed here; that the check
-		// ran on it again says its drain landed something (writtenApply.landedBeyond).
+		if write.held || write.checks.Load() > 0 {
+			before, _ := c.weighing.size()
+			if _, err := c.judge(view, before, nil, false); err != nil {
+				return err
+			}
+		}
 		write.checks.Add(1)
 		return nil
 	}
@@ -308,32 +334,43 @@ func (c *renderCheck) check(origin any, view *crdt.ApplyView) (err error) {
 		// drain is weighed against what the update left, which that update's check rendered.
 		before, exact = renderedSize(running.rendering), true
 	}
+	after, err := c.judge(view, before, from, exact)
+	if err == nil {
+		c.weighing.applies().passed(running, after)
+	}
+	return err
+}
+
+// judge renders what the apply the check is running on leaves, from from (render), and answers
+// that rendering where the apply passes: one within maxPeerRenderingBytes, or past it and no
+// larger than before, the rendering it is weighed against. before is exact where it is what the
+// apply's starting state renders; where it is not, an apply leaving the rendering past
+// maxPeerRenderingBytes is refused for now (renderRefusal.unsure), since whether it grew the
+// rendering is not known. A render that errors refuses the apply, unless before rendered nothing
+// either, which passes it with no rendering. A panic in the render is recovered here and refuses
+// the apply as a render error does, rather than reaching the peer's read loop.
+func (c *renderCheck) judge(view *crdt.ApplyView, before int64, from *replicaRendering, exact bool) (after *replicaRendering, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = &renderRefusal{before: before, after: sizeUnmeasured, cause: fmt.Errorf("%w: %v", errRenderPanicked, recovered)}
+			after, err = nil, &renderRefusal{before: before, after: sizeUnmeasured, cause: fmt.Errorf("%w: %v", errRenderPanicked, recovered)}
 		}
 	}()
-	after, renderErr := c.render(view, from)
+	after, err = c.render(view, from)
 	switch {
-	case renderErr != nil && before == sizeUnmeasured:
-		c.weighing.applies().passed(running, nil)
-		return nil
-	case renderErr != nil:
-		return &renderRefusal{before: before, after: sizeUnmeasured, cause: renderErr}
+	case err != nil && before == sizeUnmeasured:
+		return nil, nil
+	case err != nil:
+		return nil, &renderRefusal{before: before, after: sizeUnmeasured, cause: err}
 	}
 	size := renderedSize(after)
 	switch {
 	case size <= maxPeerRenderingBytes:
 	case !exact:
-		// What the apply found is not known (base), so it is not known whether this grew the
-		// rendering: refused for now, and taken once the room's rendering at the apply's
-		// starting commit is known again (renderRefusal.unsure).
-		return &renderRefusal{before: before, after: size, unsure: true}
+		return nil, &renderRefusal{before: before, after: size, unsure: true}
 	case size > before:
-		return &renderRefusal{before: before, after: size}
+		return nil, &renderRefusal{before: before, after: size}
 	}
-	c.weighing.applies().passed(running, after)
-	return nil
+	return after, nil
 }
 
 // base is the room's rendering as the apply running found it, and whether it is exact: the
@@ -498,14 +535,14 @@ func spliceIndexed(from *replicaRendering, index *blockIndex, blocks []crdt.Shar
 // errRenderPanicked is why the check refused an apply whose render panicked (renderCheck.check).
 var errRenderPanicked = errors.New("rendering the document the update leaves panicked")
 
-// renderRefusal is the room's apply check's refusal of a browser's apply: what it would leave
-// renders after bytes, past maxPeerRenderingBytes and more than the before it found, or past it
-// where what it found is not known (unsure), or does not render at all where it rendered before,
-// cause saying why. ygo wraps it inside the apply's crdt.RefusedUpdateError, beside
-// crdt.ErrApplyCheck, and the hook reads it back to close that browser and log why
-// (refusedByApply); a drain's refusal comes back as the cause of a crdt.DrainDiscardedError
-// instead, which leaves the update standing and closes the browsers whose parked frames the drain
-// held with this refusal's close (closeDiscardedSenders).
+// renderRefusal is the room's apply check's refusal of a browser's apply, or of the drain of a
+// server write's (renderCheck.check): what it would leave renders after bytes, past
+// maxPeerRenderingBytes and more than the before it found, or past it where what it found is not
+// known (unsure), or does not render at all where it rendered before, cause saying why. ygo wraps
+// it inside the apply's crdt.RefusedUpdateError, beside crdt.ErrApplyCheck, and the hook reads it
+// back to close that browser and log why (refusedByApply); a drain's refusal comes back as the
+// cause of a crdt.DrainDiscardedError instead, which leaves the update standing and closes the
+// browsers whose parked frames the drain held with this refusal's close (closeDiscardedSenders).
 type renderRefusal struct {
 	before, after int64
 	unsure        bool
@@ -530,7 +567,9 @@ func (r *renderRefusal) Unwrap() error { return r.cause }
 // holding content the document does not take; and, for one refused because what it found was not
 // known (unsure), the transient DOC_BUSY, which the editor keeps the edit through and sends again
 // on its backoff - by then the room's rendering at the commit it starts from is known, and an
-// edit that shortens the document is taken.
+// edit that shortens the document is taken. The senders of a server write's drain refused for
+// now are closed with it too, and the frame each sends again, its gap filled, is weighed as that
+// browser's own apply.
 func (r *renderRefusal) close() *websocket.PeerClose {
 	switch {
 	case r.cause != nil:
