@@ -8,9 +8,9 @@ import {
 import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteRequest } from "../../api/client";
-import { holdBackReads, type ReadHold } from "../../api/query-client";
+import { type EndReadHold, holdBackReads, type ReadHold } from "../../api/query-client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "./keyed-write";
+import { refusedByDispatch, retriesUnderItsKey } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -79,11 +79,12 @@ export interface UnansweredLanding<TVariables> {
 
 /** The end of each press's hold on the reads it writes over (`KeyedWriteOptions.holds`), by the
  *  context TanStack makes for that press's run and hands to each of its callbacks. */
-const pressHolds = new WeakMap<MutationFunctionContext, () => void>();
+const pressHolds = new WeakMap<MutationFunctionContext, EndReadHold>();
 
-/** Ends the hold `press` keeps, if it keeps one still. */
-function endHold(press: MutationFunctionContext): void {
-  pressHolds.get(press)?.();
+/** Ends the hold `press` keeps, if it keeps one still: `refused` is whether Dispatch refused the
+ *  press (`refusedByDispatch`), which then publishes no event for the hold to wait for. */
+function endHold(press: MutationFunctionContext, refused = false): void {
+  pressHolds.get(press)?.(refused ? 1 : 0);
   pressHolds.delete(press);
 }
 
@@ -169,7 +170,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
             try {
               return options.onError?.(error, variables, context, press);
             } finally {
-              endHold(press);
+              endHold(press, refusedByDispatch(error));
             }
           },
         }),

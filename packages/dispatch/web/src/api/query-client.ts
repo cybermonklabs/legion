@@ -16,7 +16,6 @@ import {
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { ApiError, isEventHeadUnavailable, isRetryableQueryError } from "./client";
-import { RECONNECT_SPREAD_MS } from "./live-socket";
 import type { DispatchEvent } from "./types";
 
 /** The wait before a failed read's retry when the server asked for none. */
@@ -234,14 +233,12 @@ export interface ReadHold {
 }
 
 /**
- * How long a hold waits for its write's event after its write's answer, where its deadline has
- * passed by then (`holdBackReads`). Dispatch publishes a write's event once it has committed the
- * write, before it writes the answer (`announceAskSnooze` in `ask_snooze.go`, `issue_patch.go`),
- * so on a live socket the event reaches the page about when the answer does. It comes later when
- * the socket was down then: the resume after the reconnect replays it, and the first reconnect
- * after Dispatch drops the socket is tried within `RECONNECT_SPREAD_MS`, which this is.
+ * What ends a hold's holding of reads (`holdBackReads`): its write calls it once its answer or
+ * refusal is in, with how many of the writes the hold stands for (`ReadHold.events`) Dispatch
+ * refused (`refusedByDispatch`), none where it leaves that out. Dispatch commits nothing of a
+ * write it refuses, so it publishes no event for it, and the hold waits for none.
  */
-export const LATE_EVENT_GRACE_MS = RECONNECT_SPREAD_MS;
+export type EndReadHold = (refused?: number) => void;
 
 /** One hold: the hashes of the queries it holds back while `holding`, and the events of its write
  *  it still waits for. */
@@ -347,10 +344,16 @@ function holdEnded(
  * that event, holding no read, and takes it ahead of every hold still holding, so the event ends
  * no later write's hold when it comes. That is so from its answer, and from its deadline while its
  * write is still out: Dispatch can take a write after its deadline, and its event then comes after
- * it too. It waits so until the later of its deadline and `LATE_EVENT_GRACE_MS` after its answer.
- * A write never answered - the page tries a snooze for as long as the reader leaves it - waits so
- * until `IDEMPOTENCY_KEY_TTL_MS` after the hold began, a day, the longest Dispatch keeps a write's
- * key, so no hold outlives that.
+ * it too. The event can come seconds after the answer even with the live socket up all along:
+ * Dispatch commits the write, then answers it, and its feed carries the event only once the event
+ * stream relay's safe horizon has passed it, which trails the longest write transaction open on
+ * Dispatch's whole Postgres instance (`events/horizon.go`), however little of it is Dispatch's.
+ * Nothing bounds that lag, so a hold waits for its event until `SEND_DEADLINE_MS` after its answer:
+ * it holds no read meanwhile, so where its event never comes it only takes a later write's, whose
+ * hold then ends at its own answer, later and never sooner. A write Dispatch refused publishes no
+ * event, and its hold waits for none (`EndReadHold`). A write never answered - the page tries a
+ * snooze for as long as the reader leaves it - waits until `IDEMPOTENCY_KEY_TTL_MS` after the hold
+ * began, a day, the longest Dispatch keeps a write's key, so no hold outlives that.
  *
  * The write's answer, put in over the reads still out, cancels a held read too, though it has
  * asked nothing yet, and what it was asked for - news of another change, a view mounting - would
@@ -359,24 +362,18 @@ function holdEnded(
  * back in its query's function, after `onAttempt` is told, so a plain `QueryClient` lets every read
  * go. The function this answers lets the hold's reads go once; called again, it does nothing.
  */
-export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
+export function holdBackReads(client: QueryClient, hold: ReadHold): EndReadHold {
   let holds = readHolds.get(client);
   if (holds === undefined) {
     holds = { givenUp: new Map(), held: new Set(), waiting: new Set() };
     readHolds.set(client, holds);
   }
   const ours = holds;
-  // Short of its events, its wait for them ends once both its deadline and `LATE_EVENT_GRACE_MS`
-  // after its answer have passed, the two `toPass` counts, or at the key's lifetime for a write
-  // never answered.
-  let toPass = 2;
-  let grace: ReturnType<typeof setTimeout> | undefined;
   const held: HeldReads = {
     answered: false,
     drop: () => {
       ours.held.delete(held);
-      clearTimeout(deadline);
-      clearTimeout(grace);
+      clearTimeout(ends);
       letReadsGo(client, ours, held);
     },
     endsOn: hold.endsOn,
@@ -384,31 +381,28 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
     hashes: new Set(hold.keys.map((key) => hashKey(key))),
     holding: true,
   };
-  const passed = () => {
-    toPass -= 1;
-    if (toPass === 0) held.drop();
-  };
   ours.held.add(held);
-  let deadline = setTimeout(() => {
+  // What ends it short of its events: its deadline, then for a write still out the key's lifetime,
+  // and once the answer is in, `SEND_DEADLINE_MS` after it.
+  let ends = setTimeout(() => {
     if (held.eventsDue === 0) {
       held.drop();
       return;
     }
     letReadsGo(client, ours, held);
-    if (!held.answered) {
-      deadline = setTimeout(held.drop, IDEMPOTENCY_KEY_TTL_MS - SEND_DEADLINE_MS);
-    }
-    passed();
+    ends = setTimeout(held.drop, IDEMPOTENCY_KEY_TTL_MS - SEND_DEADLINE_MS);
   }, SEND_DEADLINE_MS);
-  return () => {
+  return (refused = 0) => {
     if (held.answered) return;
     held.answered = true;
+    held.eventsDue = Math.max(0, held.eventsDue - refused);
     if (held.eventsDue === 0 || !ours.held.has(held)) {
       held.drop();
       return;
     }
     letReadsGo(client, ours, held);
-    grace = setTimeout(passed, LATE_EVENT_GRACE_MS);
+    clearTimeout(ends);
+    ends = setTimeout(held.drop, SEND_DEADLINE_MS);
   };
 }
 
@@ -420,27 +414,27 @@ export function holdBackReads(client: QueryClient, hold: ReadHold): () => void {
  *
  * One event is one write's, and no event names a tab. The hold that takes it is the oldest whose
  * write's answer is in, since that write is in and its event is due, or else the oldest whose
- * write is still out, which is first one past its deadline: a hold waits for its write's events
- * after it lets its reads go (`holdBackReads`), so a write's event, though it comes after the
- * write's answer or deadline, finds its own write's hold and not a later one's. Where the event
- * names the entity written, a hold matches that entity's events alone, and of two writes of one
- * entity - two components saves of an issue, which go out in press order on the issue's line -
- * the older one's event comes first. Where it names none (a snooze's names no ask, a Mark all
- * read's no thread), a hold may take another write's event in place of its own, and that write's
- * hold then takes the first one's event when it comes.
+ * write is still out, which is a hold past its deadline before any hold still holding: a hold
+ * waits for its write's events after it lets its reads go (`holdBackReads`), so a write's event,
+ * though it comes after the write's answer or deadline, finds its own write's hold and not a later
+ * one's. Where the event names the entity written, a hold matches that entity's events alone, and
+ * of two writes of one entity - two components saves of an issue, which go out in press order on
+ * the issue's line - the older one's event comes first. Where it names none (a snooze's names no
+ * ask, a Mark all read's no thread), a hold may take another write's event in place of its own,
+ * and that write's hold then takes the first one's event when it comes.
  *
  * A hold that holds reads ends early, on another write's event, in three cases. Dispatch takes two
  * writes still out in the other order than their presses, which no event can tell apart. A write's
- * event comes after its hold stopped waiting for it: more than `LATE_EVENT_GRACE_MS` after its
- * answer and after its deadline (the socket was down and did not come back at its first
- * reconnect), or a day after its press. And a Mark all read or a dismiss that moves threads of
- * several projects publishes one event for each, so its later ones count toward the next such hold
- * still out. In each, the read the hold let go can show the state from before that write's press
- * until the write's answer comes. Every other misreading ends a hold later, never sooner: a write
- * that publishes no such event (it moved nothing, or Dispatch refused it) may take a later
- * write's, and so may a write still out past its deadline - a snooze Dispatch has not answered
- * takes the next snooze event - and the hold whose event it was then ends at its own answer, later
- * and never sooner.
+ * event comes after its hold stopped waiting for it: more than `SEND_DEADLINE_MS` after its answer
+ * (the safe horizon of Dispatch's event stream held it back that long, or the live socket was down
+ * that long), or a day after its press for a write never answered. And a Mark all read or a
+ * dismiss that moves threads of several projects publishes one event for each, so its later ones
+ * count toward the next such hold still out. In each, the read the hold let go can show the state
+ * from before that write's press until the write's answer comes. Every other misreading ends a
+ * hold later, never sooner: a write Dispatch took that publishes no such event (it moved nothing)
+ * may take a later write's, and so may a write still out past its deadline - a snooze Dispatch has
+ * not answered takes the next snooze event - and the hold whose event it was then ends at its own
+ * answer, later and never sooner.
  */
 export function hearLiveEvent(
   client: QueryClient,

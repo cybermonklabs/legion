@@ -6,6 +6,7 @@ import { inboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
+import { refusedByDispatch } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
@@ -101,7 +102,7 @@ export interface AskSnoozeManyWrite {
  * before, not to null, which would un-snooze a row that was already deferred - and the ones the
  * server took stay where they landed. A read of the Inbox asked while the set is out waits until
  * the last of them is decided, or until as many snooze events as asks have come, as the single
- * snooze's does.
+ * snooze's does; an ask Dispatch refused publishes no event, and the hold waits for none of it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -123,6 +124,8 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         keys: [inboxKey],
       });
       let failed: AskSnoozeFailure[];
+      // How many of the asks Dispatch refused (`refusedByDispatch`), which publish no event.
+      let refusals = 0;
       try {
         await queryClient.cancelQueries({ queryKey: inboxKey });
         const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
@@ -149,6 +152,9 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           const reason: unknown = result.reason;
           return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
         });
+        refusals = results.filter(
+          (result) => result.status === "rejected" && refusedByDispatch(result.reason)
+        ).length;
         const refused = new Set(failed.map(({ askId }) => askId));
         for (const [key, data] of refused.size === 0 ? [] : previous) {
           const before = new Map((data ?? []).map((row) => [row.id, row.snoozed_until]));
@@ -160,7 +166,7 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         }
       } finally {
         // Whatever happens above: a hold left on would keep every read of the Inbox waiting.
-        release();
+        release(refusals);
       }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
       setPending((count) => count - 1);

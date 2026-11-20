@@ -162,6 +162,17 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/**
+ * Whether `refusal`, which ended a write, is Dispatch's verdict that it made nothing: a 4xx it
+ * answered, since `writeUnderKey` makes the write again after every other answer. Dispatch commits
+ * nothing of such a write, so it publishes no live event for it (`EndReadHold`). A write that ended
+ * any other way - stopped, interrupted by a reload, its key run out, or an error of the page's
+ * own - may have landed, and its event may still come.
+ */
+export function refusedByDispatch(refusal: unknown): boolean {
+  return refusal instanceof ApiError;
+}
+
 /** What ended one attempt without Dispatch's verdict, and so makes the write again under its key:
  *  how long to wait first, and whether the page learning Dispatch can be reached again cuts that
  *  wait short. `undefined` for an answer that is Dispatch's verdict, or an error of the page's
