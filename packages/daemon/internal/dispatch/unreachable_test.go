@@ -113,6 +113,38 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 			wantTransient: false,
 		},
 		{
+			// net/http turns the client's tls.RecordHeaderError into http.ErrSchemeMismatch only
+			// where the answer starts "HTTP/" (net/http/client.go). A port that answers in neither
+			// TLS nor HTTP/1.x, such as an SSH server, leaves the record error itself, and no wait
+			// fixes that either. Python's http.server, which answers the TLS client hello as an
+			// HTTP/0.9 request with no status line, gave the real `legion start` the same error:
+			// "tls: first record does not look like a TLS handshake".
+			name: "an https:// URL pointed at a port that answers in neither TLS nor HTTP/1.x",
+			client: func(t *testing.T) *HTTPClient {
+				listener, err := net.Listen("tcp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+				t.Cleanup(func() { listener.Close() })
+				go func() {
+					for {
+						conn, err := listener.Accept()
+						if err != nil {
+							return
+						}
+						go func() {
+							defer conn.Close()
+							if _, err := conn.Write([]byte("SSH-2.0-OpenSSH_9.6\r\n")); err == nil {
+								_, _ = io.Copy(io.Discard, conn)
+							}
+						}()
+					}
+				}()
+				return New("https://"+listener.Addr().String(), "test-token")
+			},
+			wantTransient: false,
+		},
+		{
 			name: "a dial the network refuses",
 			client: func(t *testing.T) *HTTPClient {
 				reserved, err := net.Listen("tcp", "127.0.0.1:0")
