@@ -508,8 +508,8 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
 	}
-	// The error is logged in callNATS's Bounded goroutine after the deferred that closes
-	// published runs. Wait for the INFO record itself, with a 30 s guard.
+	// The error is logged on callNATS's call goroutine, after the deferred that closes published
+	// runs. Wait for the INFO record itself, with a 30 s guard.
 	waitFor(t, 30*time.Second, func() bool {
 		for _, record := range logs() {
 			msg, _ := record["msg"].(string)
@@ -536,12 +536,13 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	}
 }
 
-// A hand-back's publish count returns to zero even when every callNATS outlives its wait. At
-// 45c29a6944, callNATS used bus.Bounded, whose context could end before the call started; the
-// decrement inside the call never ran, handBacksLanded never closed, and the finalizer waited
-// forever. With callNATSWait set to 0, every call outlives its wait, and the row checks that
-// handBacksLanded still closes. The negative control is 45c29a6944's callNATS (bus.Bounded with
-// a context.WithTimeout of 0).
+// A hand-back's publish count returns to zero even when every callNATS outlives its wait. A
+// callNATS that runs its call inside bus.Bounded skips the call when its context has already
+// ended; the decrement inside the call never runs, handBacksLanded never closes, and the
+// finalizer waits forever. With callNATSWait set to 0, callNATS's timer is ready at once, so a call
+// may outlive its wait (select picks between the timer and a fast answer), and the row checks that
+// handBacksLanded closes either way. The negative control is such a callNATS (bus.Bounded
+// with a context.WithTimeout of callNATSWait).
 func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) {
 	saved := callNATSWait.Swap(0)
 	t.Cleanup(func() { callNATSWait.Store(saved) })

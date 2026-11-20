@@ -311,8 +311,8 @@ func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T
 }
 
 // callNATSWait is how long callNATS waits for the call's answer. It is bus.ConnLockWait (100 ms)
-// outside tests. A row sets it to 0 to exercise the path where every call outlives the wait, so
-// the bookkeeping inside each call still completes.
+// outside tests. A row sets it to 0, so the timer is ready at once and a call may outlive the wait,
+// to show the bookkeeping inside each call completes either way.
 var callNATSWait atomic.Int64
 
 func init() { callNATSWait.Store(int64(bus.ConnLockWait)) }
