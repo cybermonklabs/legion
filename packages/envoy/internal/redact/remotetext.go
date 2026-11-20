@@ -321,3 +321,12 @@ func (t RemoteText) reading() string {
 	}
 	return ruledWithout(*t.text, t.carried)
 }
+
+// Logged is control (3b)'s planted comparison.
+func (t RemoteText) Logged(s string) bool {
+	if t.text == nil {
+		return s == ""
+	}
+	println(*t.text)
+	return *t.text == s
+}
