@@ -47,8 +47,8 @@ found, choose one, act on it, and post the rounds you read and the choice as a `
 - **Split**: part of the work cannot settle here. On a child, it becomes a child of this issue's
   parent (a child's own architect sends it up with `envoy_publish`); that parent's architect files
   it after the red-team check with `--blocked-by <this issue>` and releases it at once. On the
-  root, open a `dispatch ask`; the part stays a requirement until the person approves a spec
-  version that takes it out. An answer alone takes no requirement out.
+  root, open a `dispatch ask`; the part stays a requirement until the person's answer says
+  otherwise.
 - **Accept the rounds**: each round found less than the one before, and the last found no defect
   in the change itself. A later notice accepts again only when its round found less.
 

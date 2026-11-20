@@ -33,7 +33,7 @@ with a WAITING line naming the defect and the answer you wait on.
    tester's handoff (`dispatch handoff-read --issue <issue> --phase test`) and the review at the
    version your task's `Handoff:` line names (`--phase review --version <n>`). A pass must stand at
    the approved head for every `before_merge` check, and the body's `Checks` block carries each. A
-   pass recorded below that head also stands when every push since changes no code that runs.
+   pass at the head just below a reviewer's text commit that the acceptance carries also stands.
    - A check carrying `ci_check` is CI's: its derived result is the pass it needs
      (`skill://legion-worker/references/ci-checks.md`). A `ci_check` check has no pass standing at
      that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or

@@ -36,7 +36,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 - The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`. A blocker that is not an open ask does not exist for them. A Legion phase worker sends decisions to its architect instead. Before you say you wait on a person, run `dispatch open-asks`.
 - A result a person asked for is the same: end its document with an ask block asking their next step, else `dispatch ask`.
-- Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact. Before you end a turn, read that record. Each item is done, in progress, or an open ask. Never drop one. Once a person approved an issue's spec, their later request becomes a spec version they approve, not another issue.
+- Record every request you accept in Dispatch before you start it: an issue, or a line in your issue's `open-items.md` artifact. Before you end a turn, read that record. Each item is done, in progress, or an open ask. Never drop one.
 
 ## Which skill to read
 
