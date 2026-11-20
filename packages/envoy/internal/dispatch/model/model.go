@@ -73,10 +73,11 @@ type Credential struct {
 	TokenID   string
 	TokenName string
 	// Projects are the projects the credential may use, sorted: a personal token's
-	// agent_tokens.projects, a broker token's list. Empty is a credential that names none, which
-	// sees only the public projects its person sees (internal/dispatch/access, the rule). No token
-	// read fills it yet, and no read resolves a viewer yet: the two come together, so until then
-	// every credential names no list.
+	// agent_tokens.projects (personalTokenActor), or a broker token's list (brokerTokenActor:
+	// the one project of a token an operator's entry mapped to it, or the list a token acting as
+	// its person traded for). Empty is a credential that names none, which sees only the public
+	// projects its person sees (internal/dispatch/access, the rule); what a list holds while no
+	// project is private is ListHoldsWhileNoPrivate's.
 	Projects []string
 	// BrokerAdmittedSubject is, for such a token, the Google account (`sub`) the token's own
 	// credential records at the broker (the introspection's account_subject: the person token that
@@ -110,7 +111,30 @@ type Credential struct {
 	// requirement; it narrows what this credential may call rather than widening it. False for
 	// every other credential.
 	ReadOnly bool
+	// ListHoldsWhileNoPrivate is what Projects holds this credential to while the deployment
+	// holds no private project, which is what decides whether a list that existed before projects
+	// could be private changes what its credential reads (R9): once a project is private every list
+	// holds reads and writes alike (R3). Its zero value holds both, which is every credential that
+	// names no other. access.Resolve and api's writesHeldTo read it; brokerTokenActor sets it. A
+	// fact of the request, never written to a row or an answer.
+	ListHoldsWhileNoPrivate ListHold `json:"-"`
 }
+
+// ListHold is what a credential's list of projects (Credential.Projects) holds it to while the
+// deployment holds no private project.
+type ListHold uint8
+
+const (
+	// ListHoldsAll holds reads and writes to the list: a personal token's list, which is new with
+	// private projects.
+	ListHoldsAll ListHold = iota
+	// ListHoldsWrites holds writes to the list and no read: a broker token an operator's entry
+	// mapped to its one project, which before projects could be private limited its writes alone.
+	ListHoldsWrites
+	// ListHoldsNothing holds neither: a broker token acting as its person, whose trade's list
+	// limited nothing before projects could be private.
+	ListHoldsNothing
+)
 
 // Holds reports whether the credential holds one scope. A nil Credential holds none, so a
 // caller that resolved to no credential at all is refused by the same test.
@@ -248,9 +272,9 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
-// Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
-// for and whether its credential proved its id, which two requests of one credential differ in,
-// so comparing them would call one credential two.
+// Origin, Act and Proven are not compared: they say where a write came from, who it acted for and
+// whether its credential proved its id, which two requests of one credential differ in, so
+// comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
 	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
 }

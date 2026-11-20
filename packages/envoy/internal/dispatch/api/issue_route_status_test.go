@@ -601,10 +601,23 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 // record from route_roster_session_projects, its indexed projection of route_roster's sessions.
 // The projection follows an insert and a later sessions update, so an older writer of
 // route_roster, and test fixtures that write it directly, leave the session rule the same answer
-// as the roster every route-status read shares.
+// as the roster every route-status read shares. It holds each session whose record lists its
+// projects, an empty list included, and no session whose record has no projects key: a list the
+// listener did not send is one Dispatch does not know, never a credential that lists none. The
+// projection's row references the roster's: a delete of the stored roster, and a truncate of it
+// with cascade, take the projection with it, and a truncate of route_roster alone is refused with
+// both rows kept, so no session keeps a listener record the roster no longer holds.
 func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
+	held := func(after string) int {
+		t.Helper()
+		var rows int
+		if err := database.Pool.QueryRow(ctx, `select count(*) from route_roster_session_projects`).Scan(&rows); err != nil {
+			t.Fatalf("count the session-projects snapshot after %s: %v", after, err)
+		}
+		return rows
+	}
 	write := func(sessions, want string) {
 		t.Helper()
 		if _, err := database.Pool.Exec(ctx, `
@@ -624,9 +637,29 @@ func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
 			t.Errorf("the session-projects snapshot after %s differs from %s", sessions, want)
 		}
 	}
-	write(`[{"session_id":"ses-priv","projects":["PRIV"]},{"session_id":"ses-none"}]`,
-		`{"ses-none":[],"ses-priv":["PRIV"]}`)
+	write(`[{"session_id":"ses-priv","projects":["PRIV"]},{"session_id":"ses-empty","projects":[]},{"session_id":"ses-none"}]`,
+		`{"ses-empty":[],"ses-priv":["PRIV"]}`)
 	write(`[{"session_id":"ses-pub","projects":["PUB"]}]`, `{"ses-pub":["PUB"]}`)
+	for _, removal := range []string{`delete from route_roster`, `truncate route_roster cascade`} {
+		write(`[{"session_id":"ses-pub","projects":["PUB"]}]`, `{"ses-pub":["PUB"]}`)
+		if _, err := database.Pool.Exec(ctx, removal); err != nil {
+			t.Fatalf("%s: %v", removal, err)
+		}
+		if rows := held(removal); rows != 0 {
+			t.Errorf("after %s the session-projects snapshot holds %d rows, want none", removal, rows)
+		}
+	}
+	write(`[{"session_id":"ses-pub","projects":["PUB"]}]`, `{"ses-pub":["PUB"]}`)
+	if _, err := database.Pool.Exec(ctx, `truncate route_roster`); err == nil {
+		t.Errorf("truncate route_roster alone emptied the roster, want it refused while the projection references its row")
+	}
+	var rosters int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from route_roster`).Scan(&rosters); err != nil {
+		t.Fatalf("count the stored roster after a refused truncate: %v", err)
+	}
+	if rows := held("a refused truncate"); rosters != 1 || rows != 1 {
+		t.Errorf("after a refused truncate the roster holds %d rows and its projection %d, want one each", rosters, rows)
+	}
 }
 
 // secondRouteStatusServer is a second server process beside served: the same database and the

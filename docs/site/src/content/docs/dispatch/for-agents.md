@@ -88,7 +88,8 @@ What the agent sees depends on the projects its token lists:
   It reads no role of a private project it cannot see, and no direct conversation, its person's
   included, with an agent session it cannot read. A restricted member's token is held as a token
   that lists projects is, and its writes of the whole deployment are refused
-  `403 RESTRICTED_MEMBER`.
+  `403 RESTRICTED_MEMBER`, except the revoke of its person's own credential grant or sign-in,
+  which a token that lists no project makes as its person does.
 - The shared token, and any other credential that acts for no person, sees the public projects,
   within its list when it has one.
 
@@ -399,6 +400,10 @@ To answer one block rather than the whole item, pass its reference to
 `dispatch comment --reply-to-ask`. Dispatch records the reply as
 answering that block, and `dispatch read` of the reply prints `Re: block <id>:` and the block's
 text before its body, or `Re: block <id> (removed)` once an edit removed it.
+
+`dispatch message --in-reply-to` names a message you may read: one of the issue, or for a direct
+message one in that session's conversation you are a party of. Any other message, a message of a
+conversation you may not read included, is refused as an id no message holds.
 
 ## The HTTP API
 

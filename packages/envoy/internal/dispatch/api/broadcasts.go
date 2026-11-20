@@ -184,7 +184,17 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// A per-session read asks the store the question the exclusion claims to answer, and the
 	// selection is the sender's, not a set the list has to be scanned for, so there is nothing
 	// a single list read buys that is worth that.
-	sessions, err := s.resolveBroadcastSessions(r.Context(), requested)
+	//
+	// A selected session the sender may not see (sessionsHiddenFromReader) is a session nobody
+	// holds: the listener is asked nothing about it, so it is missing from what the reads find
+	// and excluded "no live session" with no title, and a send to hidden sessions alone answers
+	// 400 BROADCAST_EMPTY in the words a send to sessions nobody holds does.
+	hidden, err := s.sessionsHiddenFromReader(r.Context(), requested)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	sessions, err := s.resolveBroadcastSessions(r.Context(), slices.DeleteFunc(slices.Clone(requested), hidden))
 	if err != nil {
 		// Nothing is written when a read did not answer, or the budget ended before every
 		// selected session was read, not even the recipients whose reads answered:
@@ -399,7 +409,9 @@ func (s *server) resolveBroadcastSessions(
 
 // resolveBroadcastTargets judges each selected session against the record the session store
 // holds for it: it is a recipient when the store holds its session, that session has not gone,
-// and it advertises the chosen mode, and otherwise carries the reason it was left out.
+// and it advertises the chosen mode, and otherwise carries the reason it was left out. A session
+// the sender may not see is missing from live (sessionsHiddenFromReader), as one the store holds
+// no record of is.
 //
 // An unresponsive session is a recipient like any other: the listener stores what is sent to
 // it and hands it over when it answers again, which is exactly what a broadcast to a session
@@ -648,21 +660,6 @@ func (s *server) sendOwedBroadcastRecipients(ctx context.Context, read broadcast
 	return nil
 }
 
-// broadcastVisibleSQL is which broadcasts a viewer reads, over the broadcasts row aliased
-// broadcast and the visibility argument at viewerParam (refs.VisibilityArg): the person who sent
-// it reads it, and so does a viewer that may see every session it was sent to
-// (access.SessionClause: an open viewer sees every session but one that acted in a project it does
-// not see). To any other viewer it is a broadcast nobody sent. SessionClause answers true or false
-// and never null, so its negation lets no hidden recipient pass.
-func broadcastVisibleSQL(broadcast, viewerParam string) string {
-	return `((` + broadcast + `.author->>'kind' = 'user' and ` + broadcast + `.author->>'id' = ` + access.ViewerPerson(viewerParam) + `)
-		or not exists (
-			select 1 from messages recipient
-			where recipient.broadcast_id = ` + broadcast + `.id
-				and not ` + access.SessionClause("substr(recipient.target, 9)", viewerParam) + `
-			offset 0))`
-}
-
 // broadcastReplyVisibleSQL is whether a viewer reads the message whose id idExpr names, a reply
 // under one of a broadcast's copies: such a thread belongs to no project, so a reply is read under
 // the rule of every message on no issue (access.MessageClause's arm), by the parties its node
@@ -673,7 +670,7 @@ func broadcastReplyVisibleSQL(idExpr, viewerParam string) string {
 	return access.PartyClause(access.MessagePartiesSQL(idExpr), viewerParam)
 }
 
-// GET /api/v1/broadcasts: the broadcasts the caller reads (broadcastVisibleSQL), each counting the
+// GET /api/v1/broadcasts: the broadcasts the caller reads (access.BroadcastClause), each counting the
 // recipients whose answer the caller reads (broadcastReplyVisibleSQL).
 func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.actingPerson(w, r); !ok {
@@ -693,7 +690,7 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 		from broadcasts b
 		left join messages m on m.broadcast_id = b.id
 		left join message_deliveries d on d.message_id = m.id and d.reply_id is not null
-		where `+broadcastVisibleSQL("b", "$1")+`
+		where `+access.BroadcastClause("b.id", "$1")+`
 		group by b.id
 		order by b.created_at desc, b.id desc
 		limit 50
@@ -769,14 +766,14 @@ func (s *server) getBroadcast(w http.ResponseWriter, r *http.Request) {
 }
 
 // readBroadcast reads one broadcast with every recipient's state, as GET /api/v1/broadcasts/{id}
-// answers it to who; an unknown id, and a broadcast who may not read (broadcastVisibleSQL), is
+// answers it to who; an unknown id, and a broadcast who may not read (access.BroadcastClause), is
 // pgx.ErrNoRows.
 func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, trees bool) (broadcastRead, error) {
 	var read broadcastRead
 	var author []byte
 	if err := s.deps.Store.Pool.QueryRow(ctx, `
 		select b.id::text, b.author, b.body, b.delivery, b.created_at from broadcasts b
-		where b.id = $1 and `+broadcastVisibleSQL("b", "$2")+`
+		where b.id = $1 and `+access.BroadcastClause("b.id", "$2")+`
 	`, id, refs.VisibilityArg(who)).Scan(&read.ID, &author, &read.Body, &read.Delivery, &read.CreatedAt); err != nil {
 		return broadcastRead{}, err
 	}
@@ -799,18 +796,17 @@ func (s *server) readBroadcast(ctx context.Context, who model.Actor, id string, 
 
 // loadBroadcastRecipients reads every message the broadcast sent in the sender's requested
 // order, each reply's block read for who, and only the replies who may read
-// (keepReadableBroadcastReplies). The copies are read under the broadcast's own rule
-// (broadcastVisibleSQL): a broadcast who may not read sent who nothing. Messages created before
-// positions existed, or by an old server during a rolling deploy, have no position; their request
-// order was never stored, so they retain the created_at and id fallback order. created_at cannot
-// order one current broadcast because all of its rows share the one transaction's now().
+// (keepReadableBroadcastReplies). Each copy is read under the broadcast's own rule, over its own
+// broadcast_id (access.BroadcastClause): a broadcast who may not read sent who nothing. Messages
+// created before positions existed, or by an old server during a rolling deploy, have no position;
+// their request order was never stored, so they retain the created_at and id fallback order.
+// created_at cannot order one current broadcast because all of its rows share the one
+// transaction's now().
 func (s *server) loadBroadcastRecipients(ctx context.Context, who model.Actor, broadcastID string, reader *displayTreeReader) ([]broadcastRecipient, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select `+messageColumns+`
 		from messages
-		where broadcast_id = $1 and exists (
-			select 1 from broadcasts sent where sent.id = $1 and `+broadcastVisibleSQL("sent", "$2")+`
-			offset 0)
+		where broadcast_id = $1 and `+access.BroadcastClause("messages.broadcast_id", "$2")+`
 		order by broadcast_position nulls last, created_at, id
 	`, broadcastID, refs.VisibilityArg(who))
 	if err != nil {
@@ -888,12 +884,17 @@ func (s *server) keepReadableBroadcastReplies(ctx context.Context, who model.Act
 	if err != nil {
 		return fmt.Errorf("read which broadcast replies the caller reads: %w", err)
 	}
+	slices.Sort(readable)
+	reads := func(id string) bool {
+		_, found := slices.BinarySearch(readable, id)
+		return found
+	}
 	for seed, chain := range replies {
-		replies[seed] = slices.DeleteFunc(chain, func(reply model.Message) bool { return !slices.Contains(readable, reply.ID) })
+		replies[seed] = slices.DeleteFunc(chain, func(reply model.Message) bool { return !reads(reply.ID) })
 	}
 	for _, attempts := range deliveries {
 		for index := range attempts {
-			if reply := attempts[index].ReplyID; reply != nil && !slices.Contains(readable, *reply) {
+			if reply := attempts[index].ReplyID; reply != nil && !reads(*reply) {
 				attempts[index].ReplyID = nil
 			}
 		}

@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -17,34 +21,55 @@ import (
 // to private waits for has not finished: backfill-session-projects (session_projects_filled) and
 // scrub-access-events (access_events_scrubbed). The boot's and the hourly report name each, with
 // the command that repairs it, as the switch's 409 PRIVATE_PROJECTS_INCOMPLETE does, and a
-// complete store is no report at all.
+// complete store is no report at all. A row or node the project census names is printed as
+// graphcensus.ProjectComplete answers it, with its own cure, and the report adds no cure of its
+// own: an orphaned node is removed by the erase its line names, never by the backfill.
 func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
+	alice := model.Actor{Kind: "user", ID: "alice"}
 	for _, row := range []struct {
 		name, seed string
-		want       []string
+		// nodes are written after the seed, each with no row behind it.
+		nodes []graphstore.Node
+		want  []string
+		// refuse is text the report must not hold.
+		refuse []string
 	}{
 		{"a complete store", `
 			insert into session_projects_filled default values;
-			insert into access_events_scrubbed default values;`, nil},
+			insert into access_events_scrubbed default values;`, nil, nil, nil},
 		{"session_projects_filled empty", `
-			insert into access_events_scrubbed default values;`,
-			[]string{"session_projects_filled holds no row", "envoy-dispatch backfill-session-projects"}},
+			insert into access_events_scrubbed default values;`, nil,
+			[]string{"session_projects_filled holds no row", "envoy-dispatch backfill-session-projects"}, nil},
 		{"access_events_scrubbed empty", `
-			insert into session_projects_filled default values;`,
-			[]string{"access_events_scrubbed holds no row", "envoy-dispatch scrub-access-events"}},
+			insert into session_projects_filled default values;`, nil,
+			[]string{"access_events_scrubbed holds no row", "envoy-dispatch scrub-access-events"}, nil},
 		{"an issue with no node", `
 			insert into session_projects_filled default values;
 			insert into access_events_scrubbed default values;
 			insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice');
 			insert into issues (key, project_key, number, title, created_by, rank)
-			values ('PRIV-1', 'PRIV', 1, 'One', '{"kind":"user","id":"alice"}', 'U');`,
-			[]string{"issue PRIV-1: missing", "envoy-dispatch backfill-graph-store"}},
+			values ('PRIV-1', 'PRIV', 1, 'One', '{"kind":"user","id":"alice"}', 'U');`, nil,
+			[]string{"issue PRIV-1: missing; run envoy-dispatch backfill-graph-store"},
+			[]string{"writes their nodes"}},
+		{"an issue node no row stands behind", `
+			insert into session_projects_filled default values;
+			insert into access_events_scrubbed default values;`,
+			[]graphstore.Node{graphstore.IssueNode("PRIV-9", "PRIV", alice, time.Now().UTC())},
+			[]string{"issue PRIV-9: orphaned; remove it with: envoy-dispatch erase --node issue:PRIV-9"},
+			[]string{"backfill-graph-store"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
 			database := storetest.Open(t)
 			if _, err := database.Pool.Exec(ctx, row.seed); err != nil {
 				t.Fatalf("seed %s: %v", row.name, err)
+			}
+			if len(row.nodes) > 0 {
+				if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+					return graphstore.Write(ctx, tx, row.nodes, nil)
+				}); err != nil {
+					t.Fatalf("%s: write the nodes no row stands behind: %v", row.name, err)
+				}
 			}
 			err := storeIncomplete(store.WithTransactionTracking(ctx), database.Pool)
 			if row.want == nil {
@@ -59,6 +84,11 @@ func TestTheStoreReportNamesEveryBackfillNotRun(t *testing.T) {
 			for _, want := range row.want {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("%s: the report %q does not name %q", row.name, err, want)
+				}
+			}
+			for _, refused := range row.refuse {
+				if strings.Contains(err.Error(), refused) {
+					t.Errorf("%s: the report %q holds %q, a cure no line of it names", row.name, err, refused)
 				}
 			}
 		})

@@ -97,7 +97,8 @@ type pipelinePopulation struct {
 // viewer, none, is left out of the job timings (deliveryPopulation.runShown). A PR-checks run names
 // its pull request by number, so it can carry a hidden pull request's timing, failing job and run
 // address: it is shown when its pull request, the deploy repository's row of that number, is, and
-// one whose number no row holds names no issue and is shown to an open viewer (prChecksShown).
+// one whose number no row holds names no issue and is shown to an open viewer from whom the deploy
+// repository is not hidden (prChecksShown, deliveryPopulation.unnamedShown).
 func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
 	pool := s.deps.Store.Pool
 	from := measures.WindowStart(at)
@@ -138,7 +139,7 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 	pop.deploys.Runs, pop.deploys.Jobs = runsWhere(pop.deploys.Runs, pop.deploys.Jobs, func(run delivery.DeliveryRun) bool {
 		return pop.leadTimes.runShown(run.RunID)
 	})
-	shown, err := s.prChecksShown(ctx, reader, settings.DeployRepo, pop.checks.Runs)
+	shown, err := s.prChecksShown(ctx, reader, settings.DeployRepo, pop.checks.Runs, pop.leadTimes.unnamedShown)
 	if err != nil {
 		return pipelinePopulation{}, err
 	}
@@ -148,8 +149,10 @@ func (s *server) readPipelinePopulation(ctx context.Context, reader model.Actor,
 
 // prChecksShown is whether reader is shown each of runs, PR-checks runs of repo: a run is shown
 // when its pull request, the row of its number (delivery.PullRequestNumbersShown), is, and a run
-// whose number no row holds, or that names none, names no issue and is shown to an open viewer.
-func (s *server) prChecksShown(ctx context.Context, reader model.Actor, repo string, runs []delivery.DeliveryRun) (func(delivery.DeliveryRun) bool, error) {
+// whose number no row holds, or that names none, names no issue and is shown when unnamedShown, the
+// population's answer for a run that names no pull request (deliveryPopulation.unnamedShown: an open
+// viewer from whom repo is not hidden).
+func (s *server) prChecksShown(ctx context.Context, reader model.Actor, repo string, runs []delivery.DeliveryRun, unnamedShown bool) (func(delivery.DeliveryRun) bool, error) {
 	numbers := []int{}
 	for _, run := range runs {
 		if run.PRNumber != nil {
@@ -160,13 +163,12 @@ func (s *server) prChecksShown(ctx context.Context, reader model.Actor, repo str
 	if err != nil {
 		return nil, err
 	}
-	open := reader.Viewer != nil && reader.Viewer.Open
 	return func(run delivery.DeliveryRun) bool {
 		if run.PRNumber == nil {
-			return open
+			return unnamedShown
 		}
 		visible, stored := shown[*run.PRNumber]
-		return visible || (!stored && open)
+		return visible || (!stored && unnamedShown)
 	}, nil
 }
 

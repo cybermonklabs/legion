@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -56,7 +57,8 @@ import (
 //
 // Parameters are unreadDirectRepliesCTE's own (unreadDirectRepliesArgs), so the first free one is
 // $4, the number of rows a page read takes (null for every row), and a Dismissed page resumes from
-// $5 and $6; a count read binds neither.
+// $5 and $6; a count read binds neither. A reader that may not see every object binds its viewer
+// after those, at $5, or at $7 after a Dismissed page's cursor (myAgentSeenAnd).
 
 // agentThreadCTE walks one root's thread: every message under it, at any depth, through
 // messages_in_reply_to. root is the expression naming that root, so the walk is per root and a
@@ -118,7 +120,7 @@ func myAgentUnreadReplyTest(reply, mark string) string {
 // myAgentRootFilter is what makes a message one of the person's one-off messages to a session: an
 // issue-less message of theirs targeted at a session, which no session took as a turn of its live
 // conversation. row names the relation it reads the message from, since the Dismissed view reads
-// that message by its primary key (myAgentRootIsOneOff) and the Inbox's own states read it off
+// that message by its primary key (myAgentRootIsOneOffAnd) and the Inbox's own states read it off
 // messages_direct_roots.
 func myAgentRootFilter(row string) string {
 	return row + `.issue_key is null and ` + row + `.in_reply_to is null
@@ -131,23 +133,55 @@ func myAgentRootFilter(row string) string {
 		  )`
 }
 
-// myAgentRootIsOneOff asks that of the root a dismissal mark names, read by the message's primary
-// key. Two fences, both load-bearing. The outer `offset 0` stops the planner pulling the test up
-// into a join, which would drive the read from messages_direct_roots - every one-off message the
-// person ever sent - rather than from the marks the page is cut from. The inner one leaves the
-// lookup with one condition, the id, so it is a primary-key read: given the author test as well,
-// the planner reads messages_direct_roots and filters it by id instead, which walks that index to
+// agentConversationSeen is what a reader's viewer, bound at viewerParam, must pass to read the
+// conversation of one of the person's one-off messages to a session, rootID naming that message
+// (as text) and session the session it went to: the conversation's own rule, a conversation of no
+// project read by its parties, the ones its root's node states (access.PartyClause over
+// access.MessagePartiesSQL, access.MessageClause's arm for a message on no issue, as the thread
+// read reads it), and the session it is with (access.SessionClause), as the session's conversation
+// window holds each of its roots to both (listAgentMessages). A conversation the reader may not
+// read is then no Agent row of any state and counts in no total here, and its replies count in no
+// unread count of GET /api/v1/me/agents/state (userAgentStatesSeenQuery), so the list, the badge
+// and the window the row links to agree on it.
+func agentConversationSeen(rootID, session, viewerParam string) string {
+	return access.SessionClause(session, viewerParam) + `
+		  and ` + access.PartyClause(access.MessagePartiesSQL(rootID), viewerParam)
+}
+
+// myAgentSeenAnd is the narrowing a list read adds to the root row names, for a reader whose
+// viewer it binds at viewerParam (agentConversationSeen), and "" for a reader that sees every
+// object (seesEveryObject), which reads the statements every reader made before a project could
+// be private (R9): every conversation passes that reader, so the narrowing would only cost it.
+// Each state adds it before its roots are cut or counted, so a page and its total hold the same
+// rows.
+func myAgentSeenAnd(row, viewerParam string) string {
+	if viewerParam == "" {
+		return ""
+	}
+	return `
+		  and ` + agentConversationSeen(row+`.id::text`, agentSessionOf(row+`.target`), viewerParam)
+}
+
+// myAgentRootIsOneOffAnd asks that of the root a dismissal mark names, read by the message's
+// primary key, with seen, the list's narrowing (myAgentSeenAnd) or none, asked of the same root.
+// Two fences, both load-bearing. The outer `offset 0` stops the planner pulling the test up into a
+// join, which would drive the read from messages_direct_roots - every one-off message the person
+// ever sent - rather than from the marks the page is cut from. The inner one leaves the lookup
+// with one condition, the id, so it is a primary-key read: given the author test as well, the
+// planner reads messages_direct_roots and filters it by id instead, which walks that index to
 // wherever the root sits - 0.6 ms a root 50,000 marks deep, against 0.02 ms by key.
-var myAgentRootIsOneOff = `
+func myAgentRootIsOneOffAnd(seen string) string {
+	return `
 		exists (
 			select 1 from (
 				select m.id, m.issue_key, m.in_reply_to, m.target, m.author
 				from messages m where m.id = d.message_id
 				offset 0
 			) root
-			where ` + myAgentRootFilter("root") + `
+			where ` + myAgentRootFilter("root") + seen + `
 			offset 0
 		)`
+}
 
 // myAgentDismissedRootSet is the person's own dismissal marks, read once per statement as the set
 // the Inbox's own two states test their roots against, and myAgentDismissedRoot is that test. What
@@ -214,45 +248,60 @@ var myAgentRootsWithFacts = `
 	from roots r` + myAgentRowFacts
 
 // The roots each state reads, one `roots` set per state, each carrying the root and the dismissal
-// mark, which only the Dismissed view's rows have.
-var (
-	// The Inbox's own two states leave a dismissed root out before they read anything of its
-	// thread: the mark alone says it is dismissed (myAgentDismissedRoot), so the test is one
-	// anti-join against the person's own marks rather than a walk of every thread they ever
-	// dismissed. The unread state leaves them out too, and may: a dismissal marks every reply in
-	// the thread read by id, and a reply written since cleared the mark in its own transaction, so
-	// a root that still carries one holds nothing unread.
-	myAgentUnreadRoots = myAgentMarks + myAgentDismissedRootSet + `
+// mark, which only the Dismissed view's rows have. Each is built over seen, the list's narrowing
+// of its roots for a reader that may not see every object (myAgentSeenAnd), or "" for none, which
+// is how the write routes over the same roots read them (api/inbox_read.go, api/inbox_dismiss.go).
+
+// myAgentUnreadRootsAnd and myAgentInboxRootsAnd are the Inbox's own two states. Each leaves a
+// dismissed root out before it reads anything of its thread: the mark alone says it is dismissed
+// (myAgentDismissedRoot), so the test is one anti-join against the person's own marks rather than
+// a walk of every thread they ever dismissed. The unread state leaves them out too, and may: a
+// dismissal marks every reply in the thread read by id, and a reply written since cleared the mark
+// in its own transaction, so a root that still carries one holds nothing unread.
+func myAgentUnreadRootsAnd(seen string) string {
+	return myAgentMarks + myAgentDismissedRootSet + `
 	roots as (
 		select m.id as root_id, null::timestamptz as dismissed_at
 		from messages m
 		cross join lateral (select ` + agentMarkOf(agentSessionOf("m.target")) + ` as at) mark
 		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
+		  and not ` + myAgentDismissedRoot("m.id") + seen + `
 		  and exists (` + agentThreadCTE("m.id") + `
 			select 1 from thread t
 			where t.author->>'kind' = 'session'
 			  and t.` + myAgentUnreadReplyTest("t.id", "mark.at") + `
 		  )
 	)`
-	myAgentInboxRoots = myAgentMarks + myAgentDismissedRootSet + `
+}
+
+func myAgentInboxRootsAnd(seen string) string {
+	return myAgentMarks + myAgentDismissedRootSet + `
 	roots as (
 		select m.id as root_id, null::timestamptz as dismissed_at
 		from messages m
 		where ` + myAgentRootFilter("m") + `
-		  and not ` + myAgentDismissedRoot("m.id") + `
+		  and not ` + myAgentDismissedRoot("m.id") + seen + `
 	)`
-	// The Dismissed view's roots are the marks themselves, in the order the view answers in, so
-	// one index scan answers the narrowing, the order and the cursor
-	// (user_agent_thread_dismissed_login_dismissed_at). Every test a mark has to pass to be a row
-	// is above the cut, so the page the index cuts is the page the read answers.
-	myAgentDismissedRootsHead = myAgentMarks + `
+}
+
+// myAgentDismissedRootsHeadAnd is the Dismissed view's roots: the marks themselves, in the order
+// the view answers in, so one index scan answers the narrowing, the order and the cursor
+// (user_agent_thread_dismissed_login_dismissed_at). Every test a mark has to pass to be a row is
+// above the cut, seen among them, so the page the index cuts is the page the read answers.
+func myAgentDismissedRootsHeadAnd(seen string) string {
+	return myAgentMarks + `
 	roots as (
 		select d.message_id as root_id, d.dismissed_at
 		from user_agent_thread_dismissed d
 		where d.login = $1
-		  and ` + myAgentRootIsOneOff
-	myAgentDismissedCursor = `
+		  and ` + myAgentRootIsOneOffAnd(seen)
+}
+
+var (
+	myAgentUnreadRoots        = myAgentUnreadRootsAnd("")
+	myAgentInboxRoots         = myAgentInboxRootsAnd("")
+	myAgentDismissedRootsHead = myAgentDismissedRootsHeadAnd("")
+	myAgentDismissedCursor    = `
 		  and (d.dismissed_at, d.message_id) < ($5::text::timestamptz, $6::uuid)`
 	// The list's own cut. A write route over the same marks appends a narrowing of its own
 	// instead, its $4 being a mark or a list of ids rather than a page size.
@@ -308,26 +357,60 @@ var (
 	myAgentDismissedFromQuery    = myAgentDismissedFrom + myAgentRowsSelect
 )
 
-// myAgentPageQuery is the statement one state reads its Agent rows through: the cursor's own query
-// when a Dismissed page resumes from one, and the form that answers the state's total beside each
-// row when the read is counted. The Dismissed view is never counted, so it has no counted form.
-func myAgentPageQuery(state string, from *myRepliesCursor, counted bool) string {
+// myAgentStatements is the statement each state reads its Agent rows through, for one narrowing
+// of its roots: the form that answers the state's total beside each row when the read is counted,
+// and the cursor's own when a Dismissed page resumes from one. The Dismissed view is never counted,
+// so it has no counted form.
+type myAgentStatements struct {
+	unread, countedUnread, inbox, countedInbox, dismissed, dismissedFrom string
+}
+
+var (
+	// myAgentEveryStatements are the list's statements for a reader that sees every object, which
+	// narrow nothing (myAgentSeenAnd).
+	myAgentEveryStatements = myAgentStatements{
+		unread: myAgentRowsQuery, countedUnread: myAgentCountedRowsQuery,
+		inbox: myAgentInboxRowsQuery, countedInbox: myAgentCountedInboxRowsQuery,
+		dismissed: myAgentDismissedRowsQuery, dismissedFrom: myAgentDismissedFromQuery,
+	}
+	// myAgentSeenStatements are the same statements for every other reader, each root held to the
+	// conversation's rule (agentConversationSeen) for the viewer bound after the page's own
+	// parameters: at $5, after the page size, or at $7, after a Dismissed page's cursor.
+	myAgentSeenStatements = myAgentStatements{
+		unread:        myAgentUnreadRootsAnd(myAgentSeenAnd("m", "$5")) + myAgentRowsSelect + myAgentRowsOrder,
+		countedUnread: myAgentUnreadRootsAnd(myAgentSeenAnd("m", "$5")) + myAgentCountedRowsSelect + myAgentRowsOrder,
+		inbox:         myAgentInboxRootsAnd(myAgentSeenAnd("m", "$5")) + myAgentRowsSelect + myAgentRowsOrder,
+		countedInbox:  myAgentInboxRootsAnd(myAgentSeenAnd("m", "$5")) + myAgentCountedRowsSelect + myAgentRowsOrder,
+		dismissed:     myAgentDismissedRootsHeadAnd(myAgentSeenAnd("root", "$5")) + myAgentDismissedPageCut + myAgentRowsSelect,
+		dismissedFrom: myAgentDismissedRootsHeadAnd(myAgentSeenAnd("root", "$7")) + myAgentDismissedCursor +
+			myAgentDismissedPageCut + myAgentRowsSelect,
+	}
+)
+
+// myAgentPageQuery is the statement one state reads its Agent rows through (myAgentStatements):
+// the narrowed one when seen, for a reader that may not see every object, whose viewer the read
+// then binds after the page's own parameters.
+func myAgentPageQuery(state string, from *myRepliesCursor, counted, seen bool) string {
+	statements := &myAgentEveryStatements
+	if seen {
+		statements = &myAgentSeenStatements
+	}
 	switch state {
 	case myRepliesStateInbox:
 		if counted {
-			return myAgentCountedInboxRowsQuery
+			return statements.countedInbox
 		}
-		return myAgentInboxRowsQuery
+		return statements.inbox
 	case myRepliesStateDismissed:
 		if from != nil {
-			return myAgentDismissedFromQuery
+			return statements.dismissedFrom
 		}
-		return myAgentDismissedRowsQuery
+		return statements.dismissed
 	default:
 		if counted {
-			return myAgentCountedRowsQuery
+			return statements.countedUnread
 		}
-		return myAgentRowsQuery
+		return statements.unread
 	}
 }
 

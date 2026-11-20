@@ -178,10 +178,14 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 	}
 
 	// A row of PRIV's whose node names another project, or whose node is gone, is a row a private
-	// project's reads would answer wrongly: the switch is refused, naming it and its repair.
-	for _, broken := range []struct{ name, sql, class string }{
-		{"PRIV-1's node names another project", `update graph_nodes set project_key = 'OTHER' where kind = 'issue' and id = 'PRIV-1'`, "differs"},
-		{"PRIV-1's node deleted", `delete from graph_nodes where kind = 'issue' and id = 'PRIV-1'`, "missing"},
+	// project's reads would answer wrongly: the switch is refused, naming it with its own cure
+	// (graphcensus.ProjectCompleteFor), and naming no cure of its own: a node that names another
+	// project is no backfill's to mend.
+	for _, broken := range []struct{ name, sql, line, refuse string }{
+		{"PRIV-1's node names another project", `update graph_nodes set project_key = 'OTHER' where kind = 'issue' and id = 'PRIV-1'`,
+			"issue PRIV-1: differs; no command cures it: compare the row with its node", "backfill-graph-store"},
+		{"PRIV-1's node deleted", `delete from graph_nodes where kind = 'issue' and id = 'PRIV-1'`,
+			"issue PRIV-1: missing; run envoy-dispatch backfill-graph-store", "writes their nodes"},
 	} {
 		t.Run(broken.name, func(t *testing.T) {
 			bus := &recordingBus{}
@@ -194,8 +198,10 @@ func TestAProjectBecomesPrivateOnlyWhenTheDeploymentAllows(t *testing.T) {
 			}
 			before := allEvents(t, database)
 			response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
-			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE",
-				"issue PRIV-1: "+broken.class, "envoy-dispatch backfill-graph-store")
+			requireRefused(t, database, response, "PRIV", before, http.StatusConflict, "PRIVATE_PROJECTS_INCOMPLETE", broken.line)
+			if body := response.Body.String(); strings.Contains(body, broken.refuse) {
+				t.Fatalf("%s: the refusal %s holds %q, a cure its line does not name", broken.name, body, broken.refuse)
+			}
 			if calls := bus.taken(); len(calls) != 0 {
 				t.Fatalf("%s: the refused write called the writer: %+v", broken.name, calls)
 			}

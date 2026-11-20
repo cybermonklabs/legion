@@ -61,32 +61,27 @@ func (s *server) agentOpenAskCounts(ctx context.Context, viewer any, sessionIDs 
 }
 
 // visibleRosterSessions is the one place that decides which of the roster's sessions a reader
-// reads (K6), in their order: a session passes when the projects the listener names for it
-// (envoy.Session.Projects, its token's list) meet what the reader sees, or when SessionClause
-// passes on its id, which is the reader's own session, a session with history in a project the
-// reader sees (session_projects), or, for an open viewer, any session with no history in a project
-// it does not see. A session whose list is empty and that has no history therefore reaches an open
-// viewer alone. The list decides a row and is served on none (agentResponse). A reader that sees
-// every object (seesEveryObject) passes every session, so listAgents does not ask (R9).
+// reads (K6), in their order: those SessionClause passes on their id, in one read. That is the
+// reader's own session, a session with history in a project the reader sees (session_projects)
+// and none in a private project it does not see, and a session with no history judged by the
+// projects its listener record names, which the clause reads from the stored roster this list was
+// read from (route_roster_session_projects): for an open viewer, every project the record names is
+// one it sees, none included, and for a viewer that is not open, the record names a project and
+// every one it names is one the viewer sees. While a project is private, a session whose record
+// names no list (the listener sent no projects key) is one nothing Dispatch holds places, and it
+// reaches no reader but its own. The list decides a row and is served on none (agentResponse). A
+// reader that sees every object (seesEveryObject) passes every session, so listAgents does not ask
+// (R9).
 func (s *server) visibleRosterSessions(ctx context.Context, reader model.Actor, sessions []envoy.Session) ([]envoy.Session, error) {
-	var sees []string
-	if reader.Viewer != nil {
-		sees = reader.Viewer.Sees
+	ids := make([]string, len(sessions))
+	for index, session := range sessions {
+		ids[index] = session.SessionID
 	}
-	listed := func(session envoy.Session) bool {
-		return slices.ContainsFunc(session.Projects, func(key string) bool { return slices.Contains(sees, key) })
-	}
-	asked := []string{}
-	for _, session := range sessions {
-		if !listed(session) {
-			asked = append(asked, session.SessionID)
-		}
-	}
-	seen, err := s.sessionsSeen(ctx, refs.VisibilityArg(reader), asked)
+	seen, err := s.sessionsSeen(ctx, refs.VisibilityArg(reader), ids)
 	if err != nil {
 		return nil, err
 	}
-	return slices.DeleteFunc(sessions, func(session envoy.Session) bool { return !listed(session) && !seen[session.SessionID] }), nil
+	return slices.DeleteFunc(sessions, func(session envoy.Session) bool { return !seen[session.SessionID] }), nil
 }
 
 // sessionsSeen is which of ids pass SessionClause for the reader whose visibility argument is

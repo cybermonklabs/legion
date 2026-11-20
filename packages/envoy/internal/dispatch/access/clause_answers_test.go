@@ -40,6 +40,8 @@ func TestEveryClauseAnswersTrueOrFalseNeverNull(t *testing.T) {
 		"MessageClause over a message on no issue and of no node": MessageClause("message_row", "$1"),
 		"MessageClause over a message on a missing issue":         MessageClause("missing_issue_row", "$1"),
 		"DocumentClause over a document of no project or session": DocumentClause("document_row", "$1"),
+		"BroadcastClause over a missing broadcast":                BroadcastClause("null::uuid", "$1"),
+		"BroadcastClause over a broadcast nobody sent":            BroadcastClause("'00000000-0000-4000-8000-000000000003'::uuid", "$1"),
 	}
 	// Two message rows the MessageClause cases read, neither of which any table holds: one on no
 	// issue whose node was never stated, and one on an issue nobody holds; and a document row that

@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -29,8 +30,10 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // The check c-health-github (INFRA-4324): the real envoy-dispatch binary, on a database and a NATS
 // of its own and a GitHub App whose every call goes to a loopback GitHub, names the webhook
 // redelivery sweep's newest attempt in /healthz's github member. While GitHub answers the sweep's
-// listing 503 with a body of about 4 KiB, the entry reads failed, with its time and its first
-// failure: the client's own text of that answer, cut to 1,024 bytes on a rune boundary though a
+// listing 503 with a body of about 4 KiB, the entry reads failed, with its time and its cause's
+// class, "status 503": /healthz answers whoever reaches the port, and a cause's text can name a
+// repository (gitHubReadCauseClass). The record (github_read_attempts) holds the first failure
+// itself: the client's own text of that answer, cut to 1,024 bytes on a rune boundary though a
 // three-byte character straddles byte 1,024 of it, and ended with how long it was. The probe still
 // answers 200 with ok true, and the three reads that sent nothing (no architecture source, no
 // delivery settings, no mapped repository) read no_attempt. Once GitHub answers the listing, the
@@ -89,9 +92,12 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		t.Fatalf("/healthz with a failed GitHub read = %d %s, want 200 with ok true", failed.status, failed.body)
 	}
 	failedAt := attemptTime(t, failed, githubreads.WebhookRedelivery)
-	cause := *failed.reads[string(githubreads.WebhookRedelivery)].Cause
+	if class := *failed.reads[string(githubreads.WebhookRedelivery)].Cause; class != "status 503" {
+		t.Fatalf("/healthz names the failed sweep's cause %q, want its class \"status 503\" alone: %s", class, failed.body)
+	}
+	cause := recordedCause(t, database, githubreads.WebhookRedelivery)
 	if len(cause) > githubreads.CauseLimit || !utf8.ValidString(cause) || !strings.HasPrefix(cause, prefix) || !strings.HasSuffix(cause, marker) {
-		t.Fatalf("cause %q is %d bytes, valid UTF-8 %t; want at most %d bytes of valid UTF-8 starting %q and ending %q",
+		t.Fatalf("the recorded cause %q is %d bytes, valid UTF-8 %t; want at most %d bytes of valid UTF-8 starting %q and ending %q",
 			cause, len(cause), utf8.ValidString(cause), githubreads.CauseLimit, prefix, marker)
 	}
 	for _, read := range []githubreads.Read{githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile} {
@@ -131,9 +137,10 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 // own read's name: the real binary, with NATS, the App's settings and a loopback GitHub that
 // answers every request 503, and a database holding what makes each loop send a request (a mapped
 // repository and the CI state bucket, the delivery settings, and one enabled architecture
-// source), names all four failed, each with a cause that names a request of its own loop. A loop
-// left without its recorder leaves its entry no_attempt, and two loops given each other's names
-// put a cause under the wrong key; either fails naming the entry.
+// source), names all four failed with the class "status 503", and records each with a cause that
+// names a request of its own loop. A loop left without its recorder leaves its entry no_attempt,
+// and two loops given each other's names put a cause under the wrong key; either fails naming the
+// entry.
 //
 // The test settings bring every loop's pass inside the test's window: the sweep's and the CI
 // reconcile's intervals, and a first pass at start for the delivery reconcile and the
@@ -189,11 +196,28 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 		githubreads.CIReconcile:        {ciReconcileRow},
 	}
 	for _, read := range githubreads.Reads() {
-		cause := *answer.reads[string(read)].Cause
+		if class := *answer.reads[string(read)].Cause; class != "status 503" {
+			t.Errorf("/healthz names %s's cause %q, want its class \"status 503\" alone: %s", read, class, answer.body)
+		}
+		cause := recordedCause(t, database, read)
 		if !slices.ContainsFunc(names[read], func(name string) bool { return strings.Contains(strings.ToLower(cause), strings.ToLower(name)) }) {
-			t.Errorf("%s's cause names no request of its own loop, want one naming any of %q: %s", read, names[read], cause)
+			t.Errorf("%s's recorded cause names no request of its own loop, want one naming any of %q: %s", read, names[read], cause)
 		}
 	}
+}
+
+// recordedCause is the cause github_read_attempts holds for read's newest attempt, which the
+// operator reads there: /healthz names only its class.
+func recordedCause(t *testing.T, database *store.Store, read githubreads.Read) string {
+	t.Helper()
+	var cause *string
+	if err := database.Pool.QueryRow(t.Context(), `select cause from github_read_attempts where read = $1`, string(read)).Scan(&cause); err != nil {
+		t.Fatalf("read %s's recorded cause: %v", read, err)
+	}
+	if cause == nil {
+		t.Fatalf("github_read_attempts holds no cause for %s: its newest attempt succeeded", read)
+	}
+	return *cause
 }
 
 // healthzAnswer is one /healthz answer as the GitHub read tests read it: its status and its body

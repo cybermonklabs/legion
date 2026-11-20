@@ -252,27 +252,68 @@ func foreignTargets(ctx context.Context, q queryer, project string, who model.Ac
 
 // lockIssueOwners takes the owner locks of key and of the issues in others in one statement, in the
 // lock-key order LockOwners takes event owners in (store.LockOwners), and then answers key's parent
-// as it stands under them, read as who reads it. A PATCH locks every issue it names through one
-// call, so two writes naming the same issues queue one behind the other instead of each holding one
-// while waiting for the other. A key with no row costs a lock nobody else takes; the caller's own
-// read of that key refuses it. The parent is read in the statement after the locks, never in the
-// same one, so it is the parent the lock's previous holder committed (store.LockOwnersAndRead):
-// every writer of parent_key holds the issue's lock. An issue of a project who does not see is
-// read as a key with no row (access.ProjectClause): no parent of it is answered, and its lock
-// costs the write what a missing key's lock costs.
+// as it stands under them, read as who reads it (lockSeenIssues). A write naming several issues
+// locks them through one call, so two writes naming the same issues queue one behind the other
+// instead of each holding one while waiting for the other. An issue who does not see, and a key no
+// issue holds, costs no lock; key among them takes none at all and answers no parent, and the
+// caller's own read of that key refuses it.
 func lockIssueOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, others ...string) (*string, error) {
-	owners := make([]store.Owner, 0, len(others)+1)
-	owners = append(owners, store.IssueOwner(key))
-	for _, other := range others {
-		owners = append(owners, store.IssueOwner(other))
+	locked, err := lockSeenIssues(ctx, tx, who, key, false, others...)
+	return locked.parent, err
+}
+
+// seenIssuesLock is what lockSeenIssues read of key: whether who sees it, its parent as it stood
+// before the locks were asked for, and its parent as it stands under them.
+type seenIssuesLock struct {
+	found                bool
+	parentBefore, parent *string
+}
+
+// lockSeenIssues takes the owner locks of key and of the issues in others that who sees, in one
+// statement (store.LockOwnersAndRead), with the lock of key's parent among them when withParent is
+// set, and answers key's parent before and under them.
+//
+// The issues are read first, with nothing locked, as who reads them (access.ProjectClause): key's
+// parent, and which of the issues named who sees. A key no issue holds and an issue of a project
+// who does not see are both left out of the locks, so a hidden issue never waits behind its
+// project's writers, as a key no issue holds never waits; key itself left out takes no lock at all
+// and answers found false. A named issue left out is refused by the read that decides on it
+// (validateIssueParent, rankBoundary, the result's reads), which reads it as who reads it. The
+// parent under the locks is read in the statement after them, never in the same one, so it is the
+// parent the lock's previous holder committed: every writer of parent_key holds the issue's lock.
+func lockSeenIssues(ctx context.Context, tx pgx.Tx, who model.Actor, key string, withParent bool, others ...string) (seenIssuesLock, error) {
+	viewer := refs.VisibilityArg(who)
+	rows, err := tx.Query(ctx, `select key, parent_key from issues where key = any($1::text[]) and `+access.ProjectClause("project_key", "$2"),
+		append([]string{key}, others...), viewer)
+	if err != nil {
+		return seenIssuesLock{}, err
 	}
-	var parent *string
-	err := store.LockOwnersAndRead(ctx, tx, owners, `select parent_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-		[]any{key, refs.VisibilityArg(who)}, &parent)
+	type seenIssue struct {
+		Key    string
+		Parent *string
+	}
+	seen, err := pgx.CollectRows(rows, pgx.RowToStructByPos[seenIssue])
+	if err != nil {
+		return seenIssuesLock{}, err
+	}
+	own := slices.IndexFunc(seen, func(issue seenIssue) bool { return issue.Key == key })
+	if own < 0 {
+		return seenIssuesLock{}, nil
+	}
+	locked := seenIssuesLock{found: true, parentBefore: seen[own].Parent}
+	owners := make([]store.Owner, 0, len(seen)+1)
+	for _, issue := range seen {
+		owners = append(owners, store.IssueOwner(issue.Key))
+	}
+	if withParent && locked.parentBefore != nil {
+		owners = append(owners, store.IssueOwner(*locked.parentBefore))
+	}
+	err = store.LockOwnersAndRead(ctx, tx, owners, `select parent_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+		[]any{key, viewer}, &locked.parent)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, err
+		return seenIssuesLock{}, err
 	}
-	return parent, nil
+	return locked, nil
 }
 
 // parentContended is the code of a PATCH whose issue's parent a concurrent reparent moved at
@@ -287,19 +328,24 @@ const parentLockAttempts = 2
 
 // lockPatchOwners takes the owner locks of the issue and of the issues in named (a proposed parent,
 // rank neighbours) in one lock order, for a PATCH that appends no event to the issue's current
-// parent, each as who reads it (lockIssueOwners).
+// parent, each as who reads it (lockSeenIssues). An issue who does not see is the key no issue
+// holds, answered as missing (pgx.ErrNoRows) before any lock is taken.
 func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
-	_, err := lockIssueOwners(ctx, tx, who, key, named...)
+	locked, err := lockSeenIssues(ctx, tx, who, key, false, named...)
+	if err == nil && !locked.found {
+		err = pgx.ErrNoRows
+	}
 	return err
 }
 
 // lockPatchOwnersAndParent is lockPatchOwners for a PATCH that appends an event to the issue's
 // current parent (a status change, a reparent), which it locks in the same lock order. The parent
 // can only be read before the lock, and a concurrent reparent of the issue, which holds the
-// issue's lock, can change it in between, so the lock reads it again. A parent that moved releases
-// every lock the attempt took (a savepoint, whose rollback gives back the advisory locks taken
-// under it) and the attempt starts over with the parent that stands, so no lock is ever taken out
-// of order. A parent that moves at every attempt is 409 PARENT_CONTENDED, with nothing applied.
+// issue's lock, can change it in between, so the lock reads it again (lockSeenIssues). A parent
+// that moved releases every lock the attempt took (a savepoint, whose rollback gives back the
+// advisory locks taken under it) and the attempt starts over with the parent that stands, so no
+// lock is ever taken out of order. A parent that moves at every attempt is 409 PARENT_CONTENDED,
+// with nothing applied.
 //
 // The issue is read as who reads it, first: an issue of a project who does not see is the key no
 // issue holds, which is answered as missing before any lock is taken, and so can never wait
@@ -309,28 +355,20 @@ func lockPatchOwners(ctx context.Context, tx pgx.Tx, who model.Actor, key string
 // owns its own transaction: both halves here run inside the PATCH's transaction, after its
 // advisory locks, so the locks they take commit with the PATCH's writes.
 func lockPatchOwnersAndParent(ctx context.Context, tx pgx.Tx, who model.Actor, key string, named ...string) error {
-	rows := make([]string, 0, len(named)+1)
-	viewer := refs.VisibilityArg(who)
 	for range parentLockAttempts {
-		var parent *string
-		if err := tx.QueryRow(ctx, `select parent_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-			key, viewer).Scan(&parent); err != nil {
-			return err
-		}
-		rows = append(rows[:0], named...)
-		if parent != nil {
-			rows = append(rows, *parent)
-		}
 		attempt, err := tx.Begin(ctx)
 		if err != nil {
 			return err
 		}
-		locked, err := lockIssueOwners(ctx, attempt, who, key, rows...)
+		locked, err := lockSeenIssues(ctx, attempt, who, key, true, named...)
+		if err == nil && !locked.found {
+			err = pgx.ErrNoRows
+		}
 		if err != nil {
 			_ = attempt.Rollback(ctx)
 			return err
 		}
-		if stringPointersEqual(parent, locked) {
+		if stringPointersEqual(locked.parentBefore, locked.parent) {
 			return attempt.Commit(ctx)
 		}
 		if err := attempt.Rollback(ctx); err != nil {
@@ -447,6 +485,11 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // projects sees no project outside its list, so this is also what holds such a caller's targets
 // to its list.
 //
+// A broker token scoped to one project, which reads open while no project is private, writes a
+// target only of that project then, as before projects could be private: a target of another is
+// refused 403 PROJECT_SCOPE in the words it was refused then (refuseBlockedByOutsideCallerProject).
+// Nothing is private then, so the refusal names no project its caller may not see.
+//
 // The list who writes is the list who reads (the rule of references, references_seen.go): a link
 // to an issue who does not see is no part of it, so the write replaces the links who sees and keeps
 // every other, as a link stored across projects stays stored.
@@ -455,14 +498,19 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
 	viewer := refs.VisibilityArg(who)
+	covers, scoped := brokerProjectWhileNoPrivate(ctx, who.Viewer)
 	for _, target := range targets {
-		err := tx.QueryRow(ctx, `select true from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-			target, viewer).Scan(new(bool))
+		var project string
+		err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+			target, viewer).Scan(&project)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
 		}
 		if err != nil {
 			return err
+		}
+		if scoped && project != covers {
+			return refuseBlockedByOutsideCallerProject(covers, target, project)
 		}
 	}
 	from := make([]waitNode, len(targets))
@@ -484,6 +532,15 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 		select $1, 'blocked_by', target_key from unnest($2::text[]) as target_key
 	`, issue, targets)
 	return err
+}
+
+// refuseBlockedByOutsideCallerProject is what a broker token scoped to project caller is answered,
+// while no project is private, for a blocked_by target of another project, in the words it was
+// answered before projects could be private.
+func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+		caller, target, targetProject)
 }
 
 // assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap.

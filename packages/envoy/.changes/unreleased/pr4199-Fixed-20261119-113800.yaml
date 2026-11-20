@@ -9,9 +9,13 @@ body: |-
   signs in again and every agent gets a new token. A new session row starts at the deployment's
   floor the reset writes as well as at its address's (migrations
   `20261119060414_session_generation_floors` and `20261119183355_session_generation_deployment_floor`),
-  so an address the restored database never saw cannot start below it. A broker database restored
-  alone is told again what Dispatch settled since its backup, with an hour's margin for the two
-  clocks, and one made again is told everything Dispatch settled. The recovery's broker reads take
+  so an address the restored database never saw cannot start below it. The reset records its own
+  start and end (migration `20261120144819_deployment_resets`), ends every person's broker
+  credentials at once and again an hour later, and is closed only once the broker holds none. A
+  broker database restored alone is told again what Dispatch settled since its backup, with an
+  hour's margin for the two clocks, and since the last reset's start; one made again is told what
+  Dispatch settled since that start, or everything where no reset ran; and either runs the reset's
+  broker blocks again when it may predate the last reset's end. The recovery's broker reads take
   a libpq URL made from the broker's own, which can carry a pgx-only parameter psql refuses, and the
   directory read passes its token from a file rather than on the command line.
   `envoy-dispatch clear-broker-revocation <address>` prints each owed revocation's session

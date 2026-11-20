@@ -12,8 +12,9 @@ import (
 
 // A stored event's payload is the record its write made, and it names other rows' objects: the
 // issues an issue waits on (blocked_by), the nodes a write's text moved (references_changed), the
-// sessions a comment mentions and its deliveries reached, the session a message was sent to, the
-// person an issue is assigned to or an ask waits on. The rule of references (references_seen.go)
+// sessions a comment mentions and its deliveries reached, the session or role a message was sent
+// to or an issue is routed to, the session or person holding an issue's claim, the person an issue
+// is assigned to or an ask waits on. The rule of references (references_seen.go)
 // holds for each of them: a reader is answered a payload with every reference to an object it does
 // not see left out, as the payload would read had that object never been named. An event whose
 // one subject is such an object - a session's follow of an ask, its subscription, a delivery to
@@ -31,24 +32,34 @@ import (
 //   - blocked_by: the issues an issue waits on, a list of keys; each hidden key is dropped.
 //   - references_changed: the nodes a write's text moved, a list of {kind, id, issue_key,
 //     artifact_id, ref}; each entry naming a hidden node is dropped (changedReferenceOwner).
-//   - assignee, asked_of, suppressed_route_session_id, thread_target, route, target, suppressed_route:
-//     one person by login, or one session by id or `session:<id>` route; a hidden one is null.
+//   - assignee, asked_of, suppressed_route_session_id: one person by login, or one session by id; a
+//     hidden one is null.
+//   - route, target, thread_target, suppressed_route: one route, `session:<id>` or `role:<name>`
+//     (payloadStringReference); a route to a hidden session, or to a role of a private project the
+//     reader does not see (routeRoleProject), is null.
+//   - claim, previous_claim: the claim an issue's write left and the one a claim write replaced,
+//     each {actor, at}, held by a session or a person (actorReference); a claim whose holder is
+//     hidden is null, and a hidden previous_claim is left out, as a write that replaced no claim
+//     records none.
 //   - thread_logins: persons by login; each hidden one is dropped.
 //   - mentions, deliveries: a comment's or a message's targets, each {target, session_id,
-//     resolved_session_id}; each entry naming a hidden session is dropped.
+//     resolved_session_id}; each entry naming a hidden session, or a role of a hidden project, is
+//     dropped.
 var payloadReferenceKeys = map[string]string{
 	"blocked_by":                  "issue keys, each dropped when hidden",
 	model.ReferencesChangedKey:    "graph nodes {kind,id,issue_key,artifact_id,ref}, each dropped when hidden",
 	"assignee":                    "a person, null when hidden",
 	"asked_of":                    "a person, null when hidden",
 	"thread_logins":               "persons, each dropped when hidden",
-	"route":                       "a session route (session:<id>), null when hidden",
-	"target":                      "a session route (session:<id>), null when hidden",
-	"thread_target":               "a session route (session:<id>), null when hidden",
-	"suppressed_route":            "a session route (session:<id>), null when hidden",
+	"route":                       "a route (session:<id> or role:<name>), null when hidden",
+	"target":                      "a route (session:<id> or role:<name>), null when hidden",
+	"thread_target":               "a route (session:<id> or role:<name>), null when hidden",
+	"suppressed_route":            "a route (session:<id> or role:<name>), null when hidden",
 	"suppressed_route_session_id": "a session id, null when hidden",
-	"mentions":                    "targets {target,session_id,resolved_session_id}, each dropped when its session is hidden",
-	"deliveries":                  "attempts {target,session_id}, each dropped when its session is hidden",
+	"claim":                       "a claim {actor,at} of a session or a person, null when its holder is hidden",
+	"previous_claim":              "a claim {actor,at} of a session or a person, left out when its holder is hidden",
+	"mentions":                    "targets {target,session_id,resolved_session_id}, each dropped when its session or role is hidden",
+	"deliveries":                  "attempts {target,session_id}, each dropped when its session or role is hidden",
 }
 
 // routeSession is the session a `session:<id>` route names, "" for a route of any other kind.
@@ -82,27 +93,55 @@ func changedReferenceOwner(entry map[string]any) (referenceKind, string, bool) {
 	return "", "", false
 }
 
-// nameEntrySessions names the sessions one mention or delivery entry names.
-func nameEntrySessions(entry map[string]any, named references) {
+// nameEntryReferences names what one mention or delivery entry names: the sessions it resolved to
+// or reached, and the session or the role's project its target names (payloadStringReference).
+func nameEntryReferences(entry map[string]any, named references) {
 	for _, key := range []string{"session_id", "resolved_session_id"} {
 		if session, _ := entry[key].(string); session != "" {
 			named.name(sessionReference, session)
 		}
 	}
-	if target, _ := entry["target"].(string); routeSession(target) != "" {
-		named.name(sessionReference, routeSession(target))
+	if target, _ := entry["target"].(string); target != "" {
+		named.name(payloadStringReference("target", target))
 	}
 }
 
-// entrySessionsSeen reports whether every session one mention or delivery entry names is seen.
-func entrySessionsSeen(entry map[string]any, seen references) bool {
+// entryReferencesSeen reports whether seen holds everything one mention or delivery entry names.
+func entryReferencesSeen(entry map[string]any, seen references) bool {
 	for _, key := range []string{"session_id", "resolved_session_id"} {
 		if session, _ := entry[key].(string); session != "" && !seen.holds(sessionReference, session) {
 			return false
 		}
 	}
 	target, _ := entry["target"].(string)
-	return routeSession(target) == "" || seen.holds(sessionReference, routeSession(target))
+	kind, id := payloadStringReference("target", target)
+	return id == "" || seen.holds(kind, id)
+}
+
+// payloadStringReference is the object a payload key's string value names: a person by login
+// under assignee and asked_of, a session by id under suppressed_route_session_id, and under every
+// other key a route - the session a `session:<id>` route names, or the project the role a
+// `role:<name>` route names works for (routeRoleProject). An id of "" names nothing.
+func payloadStringReference(key, value string) (referenceKind, string) {
+	switch key {
+	case "assignee", "asked_of":
+		return personReference, value
+	case "suppressed_route_session_id":
+		return sessionReference, value
+	}
+	if session := routeSession(value); session != "" {
+		return sessionReference, session
+	}
+	return roleProjectReference, routeRoleProject(value)
+}
+
+// payloadClaimReference is the holder a claim value {actor, at} names (actorReference), and an id
+// of "" for a value that names none.
+func payloadClaimReference(claim map[string]any) (referenceKind, string) {
+	actor, _ := claim["actor"].(map[string]any)
+	kind, _ := actor["kind"].(string)
+	id, _ := actor["id"].(string)
+	return actorReference(model.Actor{Kind: kind, ID: id})
 }
 
 // namePayloadReferences adds every object payload names under payloadReferenceKeys to named.
@@ -110,13 +149,12 @@ func namePayloadReferences(payload map[string]any, named references) {
 	for key := range payloadReferenceKeys {
 		switch value := payload[key].(type) {
 		case string:
-			switch key {
-			case "assignee", "asked_of":
-				named.name(personReference, value)
-			case "suppressed_route_session_id":
-				named.name(sessionReference, value)
-			default:
-				named.name(sessionReference, routeSession(value))
+			named.name(payloadStringReference(key, value))
+		case map[string]any:
+			if key == "claim" || key == "previous_claim" {
+				if kind, id := payloadClaimReference(value); kind != "" {
+					named.name(kind, id)
+				}
 			}
 		case []any:
 			for _, element := range value {
@@ -133,7 +171,7 @@ func namePayloadReferences(payload map[string]any, named references) {
 							named.name(kind, id)
 						}
 					} else {
-						nameEntrySessions(element, named)
+						nameEntryReferences(element, named)
 					}
 				}
 			}
@@ -148,15 +186,20 @@ func leavePayloadReferencesOut(payload map[string]any, seen references) bool {
 	for key := range payloadReferenceKeys {
 		switch value := payload[key].(type) {
 		case string:
-			kind, id := sessionReference, routeSession(value)
-			switch key {
-			case "assignee", "asked_of":
-				kind, id = personReference, value
-			case "suppressed_route_session_id":
-				id = value
-			}
-			if id != "" && !seen.holds(kind, id) {
+			if kind, id := payloadStringReference(key, value); id != "" && !seen.holds(kind, id) {
 				payload[key] = nil
+				changed = true
+			}
+		case map[string]any:
+			if key != "claim" && key != "previous_claim" {
+				continue
+			}
+			if kind, id := payloadClaimReference(value); kind != "" && id != "" && !seen.holds(kind, id) {
+				if key == "previous_claim" {
+					delete(payload, key)
+				} else {
+					payload[key] = nil
+				}
 				changed = true
 			}
 		case []any:
@@ -175,7 +218,7 @@ func leavePayloadReferencesOut(payload map[string]any, seen references) bool {
 						kind, id, ok := changedReferenceOwner(element)
 						keep = ok && seen.holds(kind, id)
 					} else {
-						keep = entrySessionsSeen(element, seen)
+						keep = entryReferencesSeen(element, seen)
 					}
 				}
 				if keep {

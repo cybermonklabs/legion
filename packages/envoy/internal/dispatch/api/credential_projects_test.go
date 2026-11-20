@@ -544,29 +544,24 @@ func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
 	carolOpen := mintListed(t, handler, accessCarol, "carol-open", nil)
 	const list = "/api/v1/me/agent-tokens"
 	keepScopes := map[string]any{"scopes": model.Scopes}
+	// Each reader, and its own token that a PATCH below edits, keeping its list.
 	readers := []struct {
-		name string
-		read func(method, path string, body any) *httptest.ResponseRecorder
+		name     string
+		editedID string
+		read     func(method, path string, body any) *httptest.ResponseRecorder
 	}{
-		{"alice's browser", func(method, path string, body any) *httptest.ResponseRecorder {
+		{"alice's browser", alicePriv.ID, func(method, path string, body any) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, method, path, body, "alice")
 		}},
-		{"carol's browser", func(method, path string, body any) *httptest.ResponseRecorder {
+		{"carol's browser", carolPriv.ID, func(method, path string, body any) *httptest.ResponseRecorder {
 			return dispatchRequest(t, handler, method, path, body, accessCarol)
 		}},
-		{"carol's token listing nothing", func(method, path string, body any) *httptest.ResponseRecorder {
+		{"carol's token listing nothing", carolPriv.ID, func(method, path string, body any) *httptest.ResponseRecorder {
 			return agentRequest(t, handler, method, path, body, carolOpen.Token)
 		}},
-		{"carol's token listing PRIV", func(method, path string, body any) *httptest.ResponseRecorder {
+		{"carol's token listing PRIV", carolBoth.ID, func(method, path string, body any) *httptest.ResponseRecorder {
 			return agentRequest(t, handler, method, path, body, carolPriv.Token)
 		}},
-	}
-	// Each reader's own token that a PATCH below edits, keeping its list.
-	edited := map[string]string{
-		"alice's browser":               alicePriv.ID,
-		"carol's browser":               carolPriv.ID,
-		"carol's token listing nothing": carolPriv.ID,
-		"carol's token listing PRIV":    carolBoth.ID,
 	}
 
 	t.Run("with no private project every answer is the answer before the field", func(t *testing.T) {
@@ -576,7 +571,7 @@ func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
 				t.Fatalf("GET %s under %s: status=%d body=%s", list, reader.name, listed.Code, listed.Body.String())
 			}
 			wantAnswerBeforeHidden(t, "GET "+list+" under "+reader.name, listed.Body.String(), true)
-			patched := reader.read(http.MethodPatch, list+"/"+edited[reader.name], keepScopes)
+			patched := reader.read(http.MethodPatch, list+"/"+reader.editedID, keepScopes)
 			if patched.Code != http.StatusOK {
 				t.Fatalf("PATCH under %s: status=%d body=%s", reader.name, patched.Code, patched.Body.String())
 			}
@@ -616,7 +611,7 @@ func TestABrowserIsToldItsTokenListsProjectsItCannotSee(t *testing.T) {
 	t.Run("no credential is told a sibling token lists a project it cannot see", func(t *testing.T) {
 		for _, reader := range readers[2:] {
 			listed := reader.read(http.MethodGet, list, nil)
-			patched := reader.read(http.MethodPatch, list+"/"+edited[reader.name], keepScopes)
+			patched := reader.read(http.MethodPatch, list+"/"+reader.editedID, keepScopes)
 			for call, answer := range map[string]*httptest.ResponseRecorder{
 				"GET " + list + " under " + reader.name:        listed,
 				"PATCH " + list + "/{id} under " + reader.name: patched,

@@ -289,61 +289,89 @@ func TestBlockedByCrossesAProjectAndStillRefusesACycle(t *testing.T) {
 		[]dependencyEdge{{alpha[6], beta[5]}, {beta[6], alpha[7]}},
 		[]dependencyEdge{{beta[5], beta[6]}, {alpha[7], alpha[6]}})
 
-	t.Run("a credential that names one project is refused a target outside it as a key nobody holds", func(t *testing.T) {
-		rig := newBrokerTokenRig(t)
-		caller := newBrokerCaller(t)
-		const token = "a-token-linking-across-projects"
-		rig.broker.Says(token, liveNamedToken(caller.jkt))
-		createProject := func(key string) {
-			t.Helper()
-			response := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key})
-			if response.Code != http.StatusCreated {
-				t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+	for _, private := range []bool{false, true} {
+		name := "a credential that names one project is refused a target outside it"
+		if private {
+			name += " as a key nobody holds once a project is private"
+		}
+		t.Run(name, func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			caller := newBrokerCaller(t)
+			const token = "a-token-linking-across-projects"
+			rig.broker.Says(token, liveNamedToken(caller.jkt))
+			createProject := func(key string) {
+				t.Helper()
+				response := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": key, "name": key})
+				if response.Code != http.StatusCreated {
+					t.Fatalf("create project %s: status=%d body=%s", key, response.Code, response.Body.String())
+				}
 			}
-		}
-		createIssue := func(project, title string) string {
-			t.Helper()
-			response := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
-				"project": project, "title": title, "spec": "# Spec", "force": true,
-			})
-			if response.Code != http.StatusCreated {
-				t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
+			createIssue := func(project, title string) string {
+				t.Helper()
+				response := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{
+					"project": project, "title": title, "spec": "# Spec", "force": true,
+				})
+				if response.Code != http.StatusCreated {
+					t.Fatalf("create %q in %s: status=%d body=%s", title, project, response.Code, response.Body.String())
+				}
+				return decodeBody[model.Issue](t, response).Key
 			}
-			return decodeBody[model.Issue](t, response).Key
-		}
-		createProject(brokerTestProject)
-		createProject("OTH")
-		own := createIssue(brokerTestProject, "Its own project's issue")
-		sibling := createIssue(brokerTestProject, "Another issue of its own project")
-		outside := createIssue("OTH", "An issue of another project")
+			createProject(brokerTestProject)
+			createProject("OTH")
+			own := createIssue(brokerTestProject, "Its own project's issue")
+			sibling := createIssue(brokerTestProject, "Another issue of its own project")
+			outside := createIssue("OTH", "An issue of another project")
+			if private {
+				createProject("HIDE")
+				makePrivate(t, rig.database, "HIDE")
+			}
 
-		// A credential that lists one project sees no other, so a target outside it is refused
-		// exactly as a key no issue holds, naming nothing of the project it belongs to.
-		refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{outside},
-		}))
-		missing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{"NOPE-1"},
-		}))
-		if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", outside) {
-			t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
-				refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
-		}
-		read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
-		if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {
-			t.Fatalf("the refused write left blocked_by = %v, want []", got)
-		}
+			refused := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+				"blocked_by": []string{outside},
+			}))
+			if !private {
+				// While no project is private the credential reads every project, and its write of a
+				// target outside its own is refused as before projects could be private (R9), naming
+				// both projects.
+				if refused.Code != http.StatusForbidden {
+					t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want 403", refused.Code, refused.Body.String())
+				}
+				refusal := decodeBody[refusalAnswer](t, refused)
+				if refusal.Code != codeProjectScope {
+					t.Fatalf("refusal = %+v, want %s", refusal, codeProjectScope)
+				}
+				if !strings.Contains(refusal.Error, brokerTestProject) || !strings.Contains(refusal.Error, "OTH") {
+					t.Fatalf("refusal %q names neither the project the credential covers (%s) nor the target's (OTH)",
+						refusal.Error, brokerTestProject)
+				}
+			} else {
+				// Once a project is private a credential that lists one project sees no other, so a
+				// target outside it is refused exactly as a key no issue holds, naming nothing of the
+				// project it belongs to.
+				missing := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+					"blocked_by": []string{"NOPE-1"},
+				}))
+				if refused.Code != http.StatusBadRequest || refused.Body.String() != strings.ReplaceAll(missing.Body.String(), "NOPE-1", outside) {
+					t.Fatalf("a scoped caller linking across projects: status=%d body=%s, want what a key nobody holds answers: status=%d body=%s",
+						refused.Code, refused.Body.String(), missing.Code, missing.Body.String())
+				}
+			}
+			read := rig.asPerson(t, http.MethodGet, "/api/v1/issues/"+own, nil)
+			if got := decodeBody[model.Issue](t, read).BlockedBy; len(got) != 0 {
+				t.Fatalf("the refused write left blocked_by = %v, want []", got)
+			}
 
-		// The same caller still links inside its own project, so what is refused is the target
-		// outside the credential's project and not the route.
-		allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
-			"blocked_by": []string{sibling},
-		}))
-		if allowed.Code != http.StatusOK {
-			t.Fatalf("a scoped caller linking inside its own project: status=%d body=%s", allowed.Code, allowed.Body.String())
-		}
-		if got := decodeBody[model.Issue](t, allowed).BlockedBy; !slices.Equal(got, []string{sibling}) {
-			t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
-		}
-	})
+			// The same caller still links inside its own project, so what is refused is the target
+			// outside the credential's project and not the route.
+			allowed := rig.serve(caller.presenting(t, http.MethodPatch, "/api/v1/issues/"+own, token, map[string]any{
+				"blocked_by": []string{sibling},
+			}))
+			if allowed.Code != http.StatusOK {
+				t.Fatalf("a scoped caller linking inside its own project: status=%d body=%s", allowed.Code, allowed.Body.String())
+			}
+			if got := decodeBody[model.Issue](t, allowed).BlockedBy; !slices.Equal(got, []string{sibling}) {
+				t.Fatalf("blocked_by = %v, want %v", got, []string{sibling})
+			}
+		})
+	}
 }

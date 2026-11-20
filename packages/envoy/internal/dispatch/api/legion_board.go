@@ -313,7 +313,7 @@ func (p *legionBoardPopulation) leaveOutHiddenBlockers(ctx context.Context, q qu
 		return err
 	}
 	hidden, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
+	if err != nil || len(hidden) == 0 {
 		return err
 	}
 	for index, blocked := range p.admission.Blocked {

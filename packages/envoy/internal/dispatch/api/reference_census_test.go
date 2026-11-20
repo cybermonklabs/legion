@@ -33,7 +33,7 @@ import (
 // referenceColumnNames are the names a column of no foreign key is a reference by: a session by id
 // or by a `session:<id>` target, a person by login, a route, and a document or an issue a column
 // stores the id or key of without a key on it.
-var referenceColumnNames = regexp.MustCompile(`^(session_id|session|sessions|resolved_session_id|target|artifact_id|issue|issue_key|project|project_key|assignee|asked_of|default_assignee|route)$`)
+var referenceColumnNames = regexp.MustCompile(`^(session_id|session|sessions|resolved_session_id|target|artifact_id|issue|issue_key|project|project_key|assignee|asked_of|default_assignee|route|claimed_by)$`)
 
 // The dispositions of a reference column.
 const (
@@ -153,9 +153,10 @@ var referenceDispositions = map[string]referenceDisposition{
 	"legion_reads.project":                      {ownColumn, "the board's project (legionProject reads it under the project clause)"},
 	"legion_settings.project":                   {ownColumn, "the daemon setting's project (legionProject reads it under the project clause)"},
 	"issues.assignee":                           {filteredReference, "a person the writer sees: leaveOutHiddenIssueReferences, leaveOutHiddenSummaryReferences; payloads by leaveOutHiddenReferences"},
+	"issues.claimed_by":                         {filteredReference, "a session or a person holding the claim: leaveOutHiddenIssueReferences, leaveOutHiddenSummaryReferences, leaveOutHiddenPriorityReferences, claimHolderHidden; the claim events by eventReadableSQL's claim rule, payloads by leaveOutHiddenReferences"},
 	"issues.parent_key":                         {sameOwnerColumn, "a parent must be in the same project (validateIssueParent)"},
 	"issues.project_key":                        {ownColumn, "the issue's project"},
-	"issues.route":                              {filteredReference, "a `session:<id>` or `role:<name>` route: leaveOutHiddenIssueReferences, leaveOutHiddenSummaryReferences, leaveOutHiddenReaches; payloads by leaveOutHiddenReferences"},
+	"issues.route":                              {filteredReference, "a `session:<id>` or `role:<name>` route: leaveOutHiddenIssueReferences, leaveOutHiddenSummaryReferences, leaveOutHiddenReaches (a role of a project the reader does not see, by leaveOutRoute; the reach of one whose holder it may not see, by leaveOutHiddenRouteHolders); payloads by leaveOutHiddenReferences"},
 	"message_block_refs.message_id":             {ownColumn, "the message whose block holds the link"},
 	"message_block_state.message_id":            {internalColumn, "the message's block index state"},
 	"message_blocks.message_id":                 {ownColumn, "the message whose block it is"},
@@ -262,6 +263,9 @@ func seedCrossReferences(t *testing.T, fixture fragmentCensusFixture) crossRefer
 	}
 	cross := crossReferences{publicPerson: seedBob, privatePerson: hiddenPerson}
 	carol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/default-assignee", map[string]any{"assignee": cross.privatePerson})
+	// session-priv, which acted in PRIV, holds the claim on PUB's issue, so that issue's reads and
+	// the payloads of its later writes name a holder the walkers that do not see PRIV may not see.
+	fixture.asSession(t, sessionOfPrivate, seedPublic, http.MethodPost, "/api/v1/issues/"+fixture.public.issue+"/claim", map[string]any{}, http.StatusOK)
 	for _, pair := range []struct {
 		from, to         censusObjects
 		session          string
@@ -422,8 +426,9 @@ func (h hiddenObjects) leaksOf(value any, path string) []leak {
 // from the stored rows, that each such column holds one. Three readers then walk every GET row of
 // the route table whose read classes include project, graph, people or agents, filled with the
 // objects of the project each sees, and every answer is scanned for an object hidden from that
-// reader: alice, an open viewer who sees PUB; alice's token that lists PUB, which sees PUB and
-// neither PRIV's sessions nor its people; and bob, a restricted member who sees PRIV alone. A found
+// reader: alice, an open viewer who sees PUB and not PRIV's session, which has acted in PRIV
+// (access.SessionClause); alice's token that lists PUB, which sees PUB and neither PRIV's sessions
+// nor its people; and bob, a restricted member who sees PRIV alone. A found
 // one fails naming the route, the JSON path of the answer, and what the object is. The stored
 // payloads are read too: every leaf of a payload a reader may read (eventReadableSQL) that names an
 // object hidden from that reader must sit under a key leaveOutHiddenReferences leaves out
@@ -454,7 +459,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		objects censusObjects
 		hidden  hiddenObjects
 	}{
-		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, nil, nil)},
+		{callerAlice, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, nil)},
 		{callerAlicePubToken, fixture.public, hiddenObjectsOf(t, fixture, seedPrivate, []string{sessionOfPrivate}, []string{cross.publicPerson})},
 		{callerBob, fixture.private, hiddenObjectsOf(t, fixture, seedPublic, []string{sessionOfPublic}, []string{cross.privatePerson, seedAlice})},
 	}
@@ -471,6 +476,15 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 		}
 		if err != nil {
 			t.Fatalf("read %s: %v", column, err)
+		}
+		// A jsonb column holds an actor; the object it names is that actor's id.
+		for index, value := range values {
+			var actor struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal([]byte(value), &actor) == nil && actor.ID != "" {
+				values[index] = actor.ID
+			}
 		}
 		held := slices.ContainsFunc(values, func(value string) bool {
 			return slices.ContainsFunc(walkers, func(walker struct {
@@ -573,7 +587,7 @@ func TestNoAnswerNamesAnObjectItsReaderCannotSee(t *testing.T) {
 			t.Fatalf("read the events %s may read: %v", walker.caller, err)
 		}
 	}
-	for _, key := range []string{"blocked_by", "references_changed", "assignee", "asked_of", "route", "target", "mentions", "thread_logins"} {
+	for _, key := range []string{"blocked_by", "references_changed", "assignee", "asked_of", "route", "target", "mentions", "thread_logins", "claim"} {
 		if !payloadKeys[key] {
 			t.Errorf("no stored payload a walker may read names a hidden object under %q, so its filter is walked by nothing: write one in seedCrossReferences", key)
 		}

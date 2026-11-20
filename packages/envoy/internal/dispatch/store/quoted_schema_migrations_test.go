@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestTheSearchPathMigrationsQuoteARequiredSchema runs the three migrations whose DO blocks name
+// TestTheSearchPathMigrationsQuoteARequiredSchema runs the four migrations whose DO blocks name
 // current_schema() in a schema called Dispatch. Main's owner lock keeps a full Dispatch database in
 // public, but these branch migrations still have to quote the schema they are handed: their table
 // and function names are made with %I, so a schema needing quotes is not folded to dispatch.
@@ -40,6 +40,7 @@ func TestTheSearchPathMigrationsQuoteARequiredSchema(t *testing.T) {
 		"20261119021826_clock_guards_search_path.up.sql",
 		"20261119060414_session_generation_floors.up.sql",
 		"20261119065002_binding_guards_search_path.up.sql",
+		"20261120144819_deployment_resets.up.sql",
 	} {
 		sql, err := migrationFiles.ReadFile("migrations/" + file)
 		if err != nil {
@@ -57,6 +58,7 @@ func TestTheSearchPathMigrationsQuoteARequiredSchema(t *testing.T) {
 		"broker_revocations_notify",
 		"end_people_sessions_on_new_account",
 		"guard_broker_revocation_columns",
+		"guard_deployment_resets",
 		"guard_people_binding_columns",
 		"guard_session_generation_floors",
 		"guard_user_sessions_binding_columns",

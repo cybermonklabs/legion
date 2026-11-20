@@ -129,7 +129,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // read the coverage the answer reports, before the request's transaction opens
 // (approvalCoverage); the fourteen after them are the transaction itself, and all but two of
 // those are reads: this route's writes are queued and sent as one batch before the commit, which
-// is what holds its transaction id to its database work (INFRA-636). The last two store the
+// is what holds its transaction id to its database work. The last two store the
 // display trees of the texts it wrote, after the commit. In the order it sends them:
 //
 //  1. what the caller sees (access.Resolve, through readerOf), resolved before the request holds

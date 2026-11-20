@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -41,25 +42,28 @@ const storeCompletenessInterval = time.Hour
 const incompleteRowsNamed = 20
 
 // storeIncomplete answers nil when a private project's reads would answer no row wrongly: every
-// row a project owns has a node naming its project (graphcensus.ProjectComplete), and both
-// backfills a switch to private waits for have run (backfillMarkersMissing). Otherwise it answers
-// why, naming the first rows and the command that repairs it.
+// row a project owns has a node naming its project, and no node stands behind no row
+// (graphcensus.ProjectComplete), and both backfills a switch to private waits for have run
+// (backfillMarkersMissing). Otherwise it answers why, naming the first rows and nodes, each with
+// its cure, or the backfill not run and its command.
 func storeIncomplete(ctx context.Context, q graphstore.Queryer) error {
 	incomplete, err := graphcensus.ProjectComplete(ctx, q)
 	if err != nil {
 		return err
 	}
 	if len(incomplete) > 0 {
-		return incompleteRowsError(incomplete, "a project owns")
+		return incompleteRowsError(incomplete, "rows and nodes a project owns")
 	}
 	return backfillMarkersMissing(ctx, q)
 }
 
-// incompleteRowsError says how many rows, those whose names ("a project owns", "of PRIV"), have no
-// node naming their project, names the first of them, and the command that writes their nodes.
+// incompleteRowsError says how many of the store's rows and nodes, those whose names ("rows of
+// PRIV"), a private project's reads would answer wrongly, and names the first of them as the
+// project census answers each line: with its own cure, the backfill, the erase that removes it, or
+// none. It adds no cure of its own, since no one command cures every class.
 func incompleteRowsError(incomplete []string, whose string) error {
-	return fmt.Errorf("%d rows %s have no node naming their project, so a private project's reads would answer them wrongly (%s): "+
-		"envoy-dispatch backfill-graph-store writes their nodes, and envoy-dispatch census --store names them",
+	return fmt.Errorf("%d %s are incomplete in the graph store, so a private project's reads would answer them wrongly; "+
+		"each names its own cure, and envoy-dispatch census --store names them all: %s",
 		len(incomplete), whose, strings.Join(incomplete[:min(len(incomplete), incompleteRowsNamed)], ", "))
 }
 
@@ -67,13 +71,27 @@ func incompleteRowsError(incomplete []string, whose string) error {
 // written their marker row - backfill-session-projects (sessionProjectsFilled), then
 // scrub-access-events (accessEventsScrubbed) - and otherwise why, naming the first one missing and
 // its command. It is the one marker check of the store's report, at a process's start and hourly
-// (storeIncomplete), and of the switch's 409 PRIVATE_PROJECTS_INCOMPLETE.
+// (storeIncomplete), and of the switch's 409 PRIVATE_PROJECTS_INCOMPLETE (privateProjectIncomplete).
+// A marker missing answers an error errors.Is reads as errBackfillNotRun; a marker that could not
+// be read answers the read's own error, which is not.
 func backfillMarkersMissing(ctx context.Context, q graphstore.Queryer) error {
 	if err := sessionProjectsFilled(ctx, q); err != nil {
 		return err
 	}
 	return accessEventsScrubbed(ctx, q)
 }
+
+// errBackfillNotRun is a backfill a switch to private waits for that has not written its marker:
+// what each missing marker's error is (backfillNotRun), so a caller tells it from a failed read.
+var errBackfillNotRun = errors.New("a backfill a switch to private waits for has not run")
+
+// backfillNotRun is a missing marker's error: its message is the sentence the report and the
+// switch name it by, and it is errBackfillNotRun.
+type backfillNotRun string
+
+func (missing backfillNotRun) Error() string { return string(missing) }
+
+func (backfillNotRun) Is(target error) bool { return target == errBackfillNotRun }
 
 // sessionProjectsFilled answers nil when session_projects_filled holds its row: every older event's
 // session has its projects recorded, which an agent's visibility reads.
@@ -83,7 +101,7 @@ func sessionProjectsFilled(ctx context.Context, q graphstore.Queryer) error {
 		return fmt.Errorf("read session_projects_filled: %w", err)
 	}
 	if !filled {
-		return fmt.Errorf("session_projects_filled holds no row, so the projects the sessions of earlier events acted in are not all recorded: run envoy-dispatch backfill-session-projects")
+		return backfillNotRun("session_projects_filled holds no row, so the projects the sessions of earlier events acted in are not all recorded: run envoy-dispatch backfill-session-projects")
 	}
 	return nil
 }
@@ -96,7 +114,7 @@ func accessEventsScrubbed(ctx context.Context, q graphstore.Queryer) error {
 		return fmt.Errorf("read access_events_scrubbed: %w", err)
 	}
 	if !scrubbed {
-		return fmt.Errorf("access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events")
+		return backfillNotRun("access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events")
 	}
 	return nil
 }

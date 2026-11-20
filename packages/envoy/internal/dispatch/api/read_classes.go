@@ -88,8 +88,8 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/going/capability":         reads("whether the deployment configured a text model, which names no row", nil, readclass.None),
 	"GET /api/v1/dashboard/builds":         reads("the dashboard builds the server processes serve, which name no row of a project", nil, readclass.None),
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, asked of GitHub and read from no row: a repository's name is no project's content",
-		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.None),
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository the caller may see; a repository a private project hidden from the caller owns answers as not installed",
+		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
 
 	// The caller's own rows, keyed on its credential or its person.
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),

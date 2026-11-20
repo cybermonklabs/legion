@@ -67,34 +67,71 @@ var errPrivateProjectsUnavailable = errors.New("the project stays public: every 
 var errPrivateProjectNotProvisioned = errors.New("is not one of the projects DISPATCH_PRIVATE_PROJECTS names; a deployment names a project there once it has provisioned that project's private namespace, stores and grants (the infrastructure repository's privateprojects.Projects())")
 
 // errPrivateProjectsIncomplete is a switch to private while the store cannot hold the project
-// private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and the command that repairs it.
+// private yet: 409 PRIVATE_PROJECTS_INCOMPLETE, naming why and what repairs it.
 var errPrivateProjectsIncomplete = errors.New("the project stays public until the store can hold it private")
 
 // privateProjectIncomplete answers, read in the switch's own transaction q, why project key cannot
 // be made private yet, as errPrivateProjectsIncomplete: a row of key's whose node does not name it
-// (graphcensus.ProjectCompleteFor), which its reads would answer wrongly, the sessions' projects
-// not yet filled (session_projects_filled), or the access events not yet scrubbed
-// (access_events_scrubbed), whose older payloads may still carry a project's access list. It
-// answers nil when none holds.
+// (graphcensus.ProjectCompleteFor), which its reads would answer wrongly, a direct message whose
+// conversation names no party (conversationsNamingNoParty), or a backfill the switch waits for that
+// has not run (backfillMarkersMissing, the store report's own marker check). It answers nil when
+// none holds, and a read that fails as that read's error, never as errPrivateProjectsIncomplete,
+// since a database that did not answer says nothing of whether the store can hold the project.
 func privateProjectIncomplete(ctx context.Context, q graphstore.Queryer, key string) error {
 	incomplete, err := graphcensus.ProjectCompleteFor(ctx, q, key)
 	if err != nil {
 		return err
 	}
 	if len(incomplete) > 0 {
-		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(incomplete, "of "+key))
+		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(incomplete, "rows of "+key))
 	}
-	if err := sessionProjectsFilled(ctx, q); err != nil {
-		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)
-	}
-	var scrubbed bool
-	if err := q.QueryRow(ctx, `select exists (select 1 from access_events_scrubbed)`).Scan(&scrubbed); err != nil {
+	unnamed, err := conversationsNamingNoParty(ctx, q)
+	if err != nil {
 		return err
 	}
-	if !scrubbed {
-		return fmt.Errorf("%w: access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events", errPrivateProjectsIncomplete)
+	if len(unnamed) > 0 {
+		return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, incompleteRowsError(unnamed, "direct messages"))
+	}
+	if err := backfillMarkersMissing(ctx, q); err != nil {
+		if errors.Is(err, errBackfillNotRun) {
+			return fmt.Errorf("%w: %w", errPrivateProjectsIncomplete, err)
+		}
+		return err
 	}
 	return nil
+}
+
+// conversationsNamingNoParty is every direct message, one on no issue, whose conversation names no
+// party as the read rule reads it (access.MessagePartiesSQL): Dispatch holds no node of it, or its
+// node names none. Such a message belongs to no project, and while a project is private it passes
+// no viewer but the server's (access.PartyClause), not even its own parties, so every project's
+// switch reads it. Each is a line as the project census writes one, in id order: one with no node
+// is missing and the backfill writes it, and one whose node names no party is named with the
+// census that names its cure, since which cure it takes depends on what its node holds.
+func conversationsNamingNoParty(ctx context.Context, q graphstore.Queryer) ([]string, error) {
+	rows, err := q.Query(ctx, `
+		select m.id::text, exists (
+			select 1 from graph_nodes node where node.kind = '`+graphstore.KindMessage+`' and node.id = m.id::text)
+		from messages m
+		where m.issue_key is null and coalesce(cardinality(`+access.MessagePartiesSQL("m.id::text")+`), 0) = 0
+		order by m.id`)
+	if err != nil {
+		return nil, fmt.Errorf("read the direct messages whose conversation names no party: %w", err)
+	}
+	var lines []string
+	var id string
+	var noded bool
+	if _, err := pgx.ForEachRow(rows, []any{&id, &noded}, func() error {
+		line := graphstore.KindMessage + " " + id + ": missing; run envoy-dispatch backfill-graph-store"
+		if noded {
+			line = graphstore.KindMessage + " " + id + ": its node names no party; envoy-dispatch census --store names its cure"
+		}
+		lines = append(lines, line)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the direct messages whose conversation names no party: %w", err)
+	}
+	return lines, nil
 }
 
 // privateProjectProvisioned reports whether the deployment names project key among the projects it

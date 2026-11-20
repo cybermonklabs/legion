@@ -265,22 +265,46 @@ test(
  *  to `calls`, one line per run, with its own pid first. A `pg_ctl start` then hangs, as a start
  *  that has not answered yet does. So does a `docker run`, unless `runFor` is given: it then runs
  *  that many seconds under its own arguments, as a `docker run` its killed starter left behind
- *  goes on to make its container, and answers. Docker holds no container (`container inspect`
- *  answers none); every other call answers at once. */
+ *  goes on to do, makes its container and answers. Docker holds the containers its runs made, a
+ *  file of each one's name in `<dir>/containers`: `container inspect` answers whether the name's
+ *  file is there, and `rm` deletes it. A making and a removal each add a line of their own to
+ *  `calls`, `<pid> made <name>` before the file is there and `<pid> removed <name>` once it is
+ *  gone, so a removal of a container is always after its making in `calls`. Every other call
+ *  answers at once. */
 async function startingStandIns(
   dir: string,
   runFor?: number
 ): Promise<{ bin: string; calls: string }> {
   const bin = join(dir, "bin");
   const calls = join(dir, "calls");
+  const containers = join(dir, "containers");
   const record = `printf '%s %s %s\\n' "$$" "$(basename "$0")" "$*" >> ${JSON.stringify(calls)}`;
-  const run = runFor === undefined ? "exec sleep 600" : `sleep ${runFor}; echo stand-in-id`;
+  const held = `${JSON.stringify(containers)}/"$name"`;
+  const run =
+    runFor === undefined
+      ? "exec sleep 600"
+      : `sleep ${runFor}
+    name= previous=
+    for word in "$@"; do [ "$previous" = --name ] && name=$word; previous=$word; done
+    note made
+    touch ${held}
+    echo stand-in-id`;
   const scripts: Record<string, string> = {
-    docker: `${record}\ncase "$1" in\n  run) ${run} ;;\n  container) [ "$2" = inspect ] && exit 1 ;;\nesac\n`,
+    docker: `${record}
+note() { printf '%s %s %s\\n' "$$" "$1" "$name" >> ${JSON.stringify(calls)}; }
+case "$1" in
+  run)
+    ${run} ;;
+  container) name=$3; [ "$2" = inspect ] && { [ -e ${held} ]; exit; } ;;
+  rm)
+    name=\${!#}
+    if [ -e ${held} ]; then rm -f -- ${held}; note removed; fi ;;
+esac
+`,
     initdb: `${record}\n`,
     pg_ctl: `${record}\nfor word in "$@"; do if [ "$word" = start ]; then exec sleep 600; fi; done\n`,
   };
-  await Bun.spawn(["mkdir", "-p", bin]).exited;
+  await Bun.spawn(["mkdir", "-p", bin, containers]).exited;
   for (const [name, body] of Object.entries(scripts)) {
     await Bun.write(join(bin, name), `#!/usr/bin/env bash\n${body}`);
     await Bun.spawn(["chmod", "+x", join(bin, name)]).exited;
@@ -407,21 +431,36 @@ test(
 
 // A `docker run` its killed starter left behind goes on, and can make the container after the
 // reaper's first removal. So the reaper removes the name again while a process of that name still
-// runs. The stand-in's `run` goes on for three seconds under its own arguments after the kill.
+// runs. The stand-in's `run` goes on for three seconds under its own arguments after the kill, then
+// makes its container, and the row waits for that container's removal: a reaper that removes the
+// name only before anything made it leaves the container the run makes after.
 test(
   "a container a killed parent's docker run makes after the reaper's first removal is removed too",
   async () => {
-    const removals = (answered: string[]) =>
-      answered.filter((call) => call.startsWith("docker rm --force --volumes ")).length;
+    const dir = makeDirectory();
     const answered = await killedWhileStarting(
-      makeDirectory(),
+      dir,
       { [pgImageVariable]: "stand-in-image" },
       / docker run /u,
-      { runFor: 3, settled: (lines) => removals(lines) >= 2 }
+      { runFor: 3, settled: (lines) => lines.some((line) => line.startsWith("removed ")) }
     );
-    expect(removals(answered)).toBeGreaterThanOrEqual(2);
+    const name = /--name (\S+)/u.exec(
+      answered.find((call) => call.startsWith("docker run")) ?? ""
+    )?.[1];
+    expect(name).toMatch(/^dispatch-e2e-pg-starting-[0-9a-f]{8}-0-1$/u);
+    // The run made its container after the reaper's first removal of the name, and the reaper
+    // removed that container after it was made: Docker holds it no longer.
+    expect(answered).toContain(`made ${name}`);
+    const made = answered.indexOf(`made ${name}`);
+    expect(answered.slice(0, made)).toContain(`docker rm --force --volumes ${name}`);
+    expect(answered.slice(made)).toContain(`removed ${name}`);
+    expect(await Bun.file(join(dir, "containers", String(name))).exists()).toBe(false);
+    expect(
+      answered.filter((call) => call.startsWith("docker rm --force --volumes ")).length
+    ).toBeGreaterThanOrEqual(2);
   },
-  // The row drives a killed parent's stand-in docker run past the reaper's first removal, and waits for its second.
+  // The row drives a killed parent's stand-in docker run past the reaper's first removal and its
+  // making of the container, and waits for that container's removal.
   ROW_MS
 );
 

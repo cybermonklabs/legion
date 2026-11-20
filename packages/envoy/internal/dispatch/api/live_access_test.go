@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	gws "github.com/gorilla/websocket"
 
@@ -78,8 +79,8 @@ func commentCreated(id string) func(liveEvent) bool {
 }
 
 // agentStateOf is the marker of a user_agent_state.updated event of login's: the one ownerless
-// event about a person's own thread, which reaches that person's every credential whatever it sees
-// of any project (eventReadableSQL).
+// event about a person's own thread, which reaches that person's credentials, and an open viewer,
+// that may see the session it names (eventReadableSQL).
 func agentStateOf(login string) func(liveEvent) bool {
 	return func(event liveEvent) bool {
 		var payload struct {
@@ -99,7 +100,7 @@ func (s privateSeed) markAgentState(t *testing.T, login, session string) {
 	t.Helper()
 	if _, err := s.database.Pool.Exec(t.Context(), `
 		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, jsonb_build_array(jsonb_build_object('session_id', $1::text)), now(), now())
+		values (true, jsonb_build_array(jsonb_build_object('session_id', $1::text, 'projects', '[]'::jsonb)), now(), now())
 		on conflict (id) do update
 		set answered = true, sessions = case when route_roster.sessions @> excluded.sessions then route_roster.sessions
 			else route_roster.sessions || excluded.sessions end`, session); err != nil {
@@ -143,6 +144,13 @@ func TestTheLiveSocketSendsNoEventOfAHiddenProject(t *testing.T) {
 
 	requireSent := func(t *testing.T, caller privateCaller, sub string, client *socketClient) {
 		t.Helper()
+		if caller == callerAlicePrivToken {
+			// alice's token lists only PRIV, which alice does not see, so it sees no project and no
+			// session, s1 included: no event of the seed reaches it, alice's pin neither, so its socket
+			// stays quiet once the callers before it have read the marker that event is.
+			client.quiet(t, 3*time.Second, string(caller)+"'s "+sub+", which sees no project and no session")
+			return
+		}
 		if !slices.Contains(callersOfPrivate, caller) {
 			requireNoEventOf(t, string(caller), sub, seedPrivate, liveEventsThrough(t, client, sub, agentStateOf(seedAlice)))
 			return

@@ -401,7 +401,8 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
 	// The signed-in person's own login, member kind and the event log's head, which names no row.
 	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
-	// A repository's GitHub state, held to the projects its mapping names (apiGithubRest).
+	// A repository's GitHub state, hidden where a project the person does not see owns the
+	// repository (apiGithubRest, refs.ProjectRepositoriesSQL).
 	readclass.Handle(mux, []readclass.Class{readclass.Project}, githubapi.Prefix, accesslog.HandlerFunc(githubapi.Prefix, r.apiGithubRest))
 	background := api.Register(mux, r.ctx.lifetime, r.ctx.apiDeps)
 	r.eventHead = ctx.eventHead
@@ -686,11 +687,12 @@ func (r *router) apiGithubRest(w http.ResponseWriter, req *http.Request) {
 }
 
 // repositoryHidden reports whether the person login may not see repository: the cookie's viewer
-// (access.Resolve of model.BrowserActor) fails refs.RepositoryClause, so a repository is hidden
-// unless an issue the person sees resolves to it, or the person is an open viewer and no issue of
-// a project the person does not see resolves to it. A router with no Store, a test's, has no
-// viewer to resolve, so it reads the person as the closed viewer, which sees no repository: every
-// repository is hidden there.
+// (access.Resolve of model.BrowserActor) fails refs.RepositoryClause (repositoryVisibleQuery), so a
+// repository is hidden when a project the person does not see owns it (refs.ProjectRepositoriesSQL:
+// an issue of that project resolves to it, or the project maps it, under any of its names), and
+// otherwise shown to an open viewer, and to any other person only when a project the person sees
+// owns it. A router with no Store, a test's, has no viewer to resolve, so it reads the person as the
+// closed viewer, which sees no repository: every repository is hidden there.
 func (r *router) repositoryHidden(ctx context.Context, login, repository string) (bool, error) {
 	if r.ctx.Store == nil {
 		return true, nil
@@ -700,12 +702,16 @@ func (r *router) repositoryHidden(ctx context.Context, login, repository string)
 		return false, err
 	}
 	var visible bool
-	if err := r.ctx.Store.Pool.QueryRow(ctx, `select `+refs.RepositoryClause("$2", "$1"),
+	if err := r.ctx.Store.Pool.QueryRow(ctx, repositoryVisibleQuery,
 		refs.VisibilityArg(model.Actor{Viewer: &viewer}), repository).Scan(&visible); err != nil {
 		return false, fmt.Errorf("read whether %s sees %s: %w", login, repository, err)
 	}
 	return !visible, nil
 }
+
+// repositoryVisibleQuery is refs.RepositoryClause as the proxy's one read, the viewer bound at $1 and
+// the repository at $2. Neither placeholder differs between requests, so the text is built once.
+var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2", "$1")
 
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.

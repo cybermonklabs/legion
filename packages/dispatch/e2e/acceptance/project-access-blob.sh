@@ -11,15 +11,17 @@
 # comment, an ask, a message, an issue document and a project document; a personal token of each
 # person, which names no project, since the merge base has no list to name one in; and the shared
 # agent token. Then, as each of the seven callers in turn, it makes `POST /api/v1/projects` and
-# reads the fixed list below from both builds, and compares the status and the bytes of each pair
-# of answers.
+# reads the fixed list below from both builds, search's meaning leg among them, and compares the
+# status, the headers and the bytes of each pair of answers; and it compares the frames the live
+# socket sends each caller at both builds while carol comments on each project.
 #
 # What it masks, each named, and nothing else (access-lib.sh's mask):
 #   - every id the seed writes new: each object's id as its create answered it, each document's
 #     spec id and first block, and each personal token's plaintext, id and prefix, recorded under
 #     one label per object (`remember`), so the same object reads as the same label in both builds;
 #   - every time the run wrote: an RFC 3339 instant between the run's start and the moment the
-#     answer is masked, and each duration access-lib.sh's `durations` names.
+#     answer is masked, and each duration access-lib.sh's `durations` names;
+#   - the values of the headers access-lib.sh's masked_headers names, each line kept.
 # Issue keys, project keys, slugs, names, versions and event numbers are the seed's own and are
 # compared as they are.
 #
@@ -209,16 +211,16 @@ pass
 
 two_builds_identity
 
-# Both builds run with the test hooks on and no embedder, so search answers its keyword leg alone
-# and no answer waits on a model call or on a queue that drains in its own time. Each is given no
-# port, so start_server holds one and sets base_port and head_port.
+# Both builds run with the test hooks on and the dev embedder, which calls no model service, so
+# search answers its meaning leg beside its keyword leg, each read once neither build owes a vector
+# (indexed). Each is given no port, so start_server holds one and sets base_port and head_port.
 begin servers
 database_url=$base_database_url start_server base "$work/bin/dispatch-base" '' \
-  DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1
+  DISPATCH_TEST_HOOKS=1 DISPATCH_DEV_EMBEDDER=1
 head_private=()
 [ "$control" != private-header ] || head_private=(DISPATCH_PRIVATE_PROJECTS=PRIV)
 database_url=$head_database_url start_server head "$work/bin/dispatch-head" '' \
-  DISPATCH_TEST_HOOKS=1 DISPATCH_TEST_EMBEDDER_OFF=1 "${head_private[@]}"
+  DISPATCH_TEST_HOOKS=1 DISPATCH_DEV_EMBEDDER=1 "${head_private[@]}"
 build_url[base]=http://127.0.0.1:$base_port
 build_url[head]=http://127.0.0.1:$head_port
 await_start base "$base_pid" 120 "the base build to answer /healthz" curl -fsS --max-time 2 "${build_url[base]}/healthz"
@@ -311,11 +313,6 @@ decisions_linked() {
   [ "$status" = 200 ] && jq -e 'any(.decisions[]; (.links | length > 0) and (.asks | length > 0))' "$work/body" >/dev/null
 }
 
-# map_repository BUILD REPOSITORY PROJECT writes on BUILD the repository mapping of REPOSITORY
-# (owner/name) to PROJECT, the one row GET /api/v1/settings/repo-projects answers for it. It writes
-# through PUT /api/v1/settings/repo-projects/{owner}/{repo} while both builds have that route; once
-# the write route goes, this helper writes the same row into repo_projects on each build's own
-# database, and the change that removes the route changes it.
 map_repository() {
   send "$1" carol PUT "/api/v1/settings/repo-projects/$2" "$(jq -cn --arg p "$3" '{project: $p}')"
   created "$1" "carol maps $2 to $3"
@@ -482,10 +479,11 @@ pass
 # mappings (GET /api/v1/settings/repo-projects) are on it: the route answers only the rows of
 # projects its reader sees, which with every project public is the answer it gave before, and
 # map_repository writes a row of each project at both builds, so the list is never empty and is
-# never named in unfillable_lists. The third search writes a phrase, so its answer's
-# query.operators holds a row. It names no OR: in a run with `"first paragraph" OR remark`, PRIV-1's
-# comment and its spec were answered in one order at one build and in the other at the other,
-# every caller alike.
+# never named in unfillable_lists. The third search and the results read write a phrase, so each
+# answer's query.operators holds a row. They name no OR: in a run with `"first paragraph" OR
+# remark`, PRIV-1's comment and its spec were answered in one order at one build and in the other
+# at the other, every caller alike. Each search but the one keywords_only names runs both legs,
+# keyword and meaning.
 readonly reads=(
   /auth/whoami
   /api/v1/whoami
@@ -501,6 +499,7 @@ readonly reads=(
   "/api/v1/search?q=paragraph"
   "/api/v1/search?q=remark"
   "/api/v1/search?q=%22first%20paragraph%22"
+  "/api/v1/search/results?q=%22first%20paragraph%22&keywords_only=true"
   /api/v1/agents
   /api/v1/broadcasts
   /api/v1/priorities
@@ -539,25 +538,12 @@ readonly project_reads=(
   "/api/v1/artifacts/{{P} playbook}"
 )
 
-# The response headers are compared too, after a mask that drops each header below, with why it
-# differs between two answers of one build:
-#   date            the answer's own time
-#   content-length  the raw body's length; the bodies are compared masked, and an id or a duration
-#                   the mask names can be a byte longer at one build
-#   etag            a digest of the raw body, which holds each build's own ids
-# The status line is compared as the status. The one declared addition: this build answers
-# `Dispatch-Private-Projects: 0` (KF7) on every answer, which a base from before it does not send,
-# so it must be on this build's answer, and it is dropped from both builds' headers before they are
-# compared; any other header difference fails, naming the route and the header.
-readonly masked_headers='^(date|content-length|etag):'
+# The headers are compared as access-lib.sh's same_answers compares them. The one declared
+# addition: this build answers `Dispatch-Private-Projects: 0` (KF7) on every answer, which a base
+# from before it does not send, so it must be on this build's answer, and it is dropped from both
+# builds' headers before they are compared: a base that already holds this change sends it too,
+# and only the exact `: 0` line is dropped, so a base or a build that sends `: 1` still differs.
 readonly declared_header='dispatch-private-projects: 0'
-
-# keep_headers NAME keeps the last answer's headers, one `name: value` line each with the name in
-# lower case, sorted, the masked ones dropped, as $work/answers/NAME.headers.
-keep_headers() {
-  tr -d '\r' <"$work/headers" | tail -n +2 | sed -E '/^$/d; s/^([^:]+):[[:space:]]*/\L\1\E: /' |
-    grep -v -E "$masked_headers" | sort >"$work/answers/$1.headers" || true
-}
 
 # record_lists PATH writes, for every list in this build's last answer to PATH (each JSON array,
 # the answer itself included), one `ROUTE<tab>WHERE<tab>LENGTH` line to $work/lists.tsv. ROUTE is
@@ -576,36 +562,17 @@ record_lists() {
 }
 
 # compare CALLER METHOD PATH [BODY]: the base build's answer and this build's, to the same request
-# made as CALLER, are the same status and, masked, the same bytes (same_answers), and the same
-# headers but the declared addition. The pair is one answer compared, so however many of these it
-# breaks, each written to the differences, it counts once among those that differ.
+# made as CALLER, are the same status, the same headers but the declared addition and, masked, the
+# same bytes (same_answers).
 compare() {
-  local caller=$1 method=$2 path=$3 body=${4:-} build target before=$differed headers_differ=0
+  local caller=$1 method=$2 path=$3 body=${4:-} build target
   for build in base head; do
     target=$(resolve "$build" "$path")
     send "$build" "$caller" "$method" "$target" "$body"
     keep_answer "$build" "$build"
-    keep_headers "$build"
   done
-  same_answers "$caller $method $path" base head
+  same_answers "$caller $method $path" base head '' "$declared_header"
   [ "$method" != GET ] || record_lists "$path"
-  if ! grep -qx "$declared_header" "$work/answers/head.headers"; then
-    headers_differ=1
-    printf '%s %s %s: this build answered no "%s": %s\n' "$caller" "$method" "$path" "$declared_header" \
-      "$(grep -i '^dispatch-private-projects:' "$work/answers/head.headers" || echo 'the header is absent')" >>"$work/differences"
-  fi
-  # The declared line is dropped from both builds' headers before they are compared: a base that
-  # already holds this change sends it too, and only the exact `: 0` line is dropped, so a base or a
-  # build that sends `: 1` still differs.
-  for build in base head; do
-    grep -vx "$declared_header" "$work/answers/$build.headers" >"$work/answers/$build.headers.compared" || true
-  done
-  if ! cmp -s "$work/answers/base.headers.compared" "$work/answers/head.headers.compared"; then
-    headers_differ=1
-    printf '%s %s %s: the headers differ:\n%s\n' "$caller" "$method" "$path" \
-      "$(diff "$work/answers/base.headers.compared" "$work/answers/head.headers.compared" | grep -E '^[<>]' | sed 's/^</   base:/; s/^>/   this build:/')" >>"$work/differences"
-  fi
-  [ "$headers_differ" = 0 ] || [ "$differed" -gt "$before" ] || differed=$((differed + 1))
 }
 
 begin create-projects
@@ -619,17 +586,11 @@ no_difference
 note "every caller's project answer is the same at both builds"
 pass
 
-# event_log_reaches BUILD ID: BUILD's event log, as carol reads it, holds an event at ID or above.
-event_log_reaches() {
-  send "$1" carol GET "/api/v1/events/log?after=$(($2 - 1))&limit=1"
-  [ "$status" = 200 ] && jq -e --argjson id "$2" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
-}
-
 # spec_blocks_windowed BUILD PROJECT: every block of PROJECT's spec on BUILD, as carol reads it, is
 # in a window of the meaning index: its embedding reads other than "none", which is a block no
-# window covers yet (refs.BlockEmbeddingStates). With no embedder, "pending" is where it stays. A
-# block inside another one, as the question of the spec's ask block is, is indexed as a part of
-# that block and in no window of its own, so it reads "none" at both builds and is not waited on.
+# window covers yet (refs.BlockEmbeddingStates). A block inside another one, as the question of
+# the spec's ask block is, is indexed as a part of that block and in no window of its own, so it
+# reads "none" at both builds and is not waited on.
 spec_blocks_windowed() {
   send "$1" carol GET "$(resolve "$1" "/api/v1/artifacts/{$2 spec}/blocks")"
   [ "$status" = 200 ] && jq -e 'length > 0 and (. as $all | all(.[]; . as $b | .embedding != "none"
@@ -641,20 +602,23 @@ begin reads
 # build can answer a read before that horizon has passed what the seed wrote: one run read [] from
 # the merge base's log where this build listed the seed's events. So each build is read only once
 # its log, as carol reads it, holds the newest event its database holds after the projects above,
-# the project.created of a public project. Likewise the windows of each spec's blocks are written
-# behind the write, in each build's own time: two runs in five read `"embedding":"pending"` at the
-# merge base where this build still read `"none"`. So each spec is read only once every one of its
-# blocks is in a window on that build. A build that never writes them fails the wait, naming it.
-# The seed settled every delivery before it wrote on, so the newest event is read after them.
+# the project.created of a public project. Likewise the windows of each spec's blocks, and the
+# vectors of everything meaning search ranks, are written behind the write, in each build's own
+# time: two runs in five read `"embedding":"pending"` at the merge base where this build still
+# read `"none"`. So each spec is read only once every one of its blocks is in a window on that
+# build, and each build once it owes no vector. A build that never writes them fails the wait,
+# naming it. The seed settled every delivery before it wrote on, so the newest event is read after
+# them.
 for build in base head; do
   for project in PUB PRIV; do
     until_true 120 "the $build build to window every block of $project-1's spec" spec_blocks_windowed "$build" "$project"
   done
+  until_true 120 "the $build build to owe no vector" indexed "$build"
   url_var=${build}_database_url
   newest=$(psql "${!url_var}" -X -tAc 'select coalesce(max(id), 0) from events') ||
     fail "$build: could not read the newest event of its database"
   [ "$newest" -gt 0 ] || fail "$build: its database holds no event after the seed"
-  until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" "$newest"
+  until_true 120 "the $build build's event log to reach its newest event, $newest" event_log_reaches "$build" carol "$newest"
 done
 for caller in "${callers[@]}"; do
   for path in "${reads[@]}"; do
@@ -724,4 +688,54 @@ done
 $empty${stale:+and unfillable_lists is wrong:
 $stale}"
 note "$(wc -l <"$work/lists-most.tsv") lists read, each holding a row in at least one caller's answer but those unfillable_lists names (${#unfillable_lists[@]} patterns)"
+pass
+
+# The live socket, last, since it writes: each caller subscribes with no resume at both builds at
+# once, and while both sockets are open carol comments on PUB-1 and then on PRIV-1 at each build.
+# Each build's answer is the frames it sent the caller (socket-access.ts live, which prints each
+# event's id as <event>), each comment's id remembered under one label at both builds, and the two
+# answers must be the same. With every project public every caller is sent both comments, so an
+# answer at this build that holds no event fails: the compare must see the socket send something.
+begin sockets
+declare -A live_pid=()
+# live_settled READY PID: the live probe PID has written its ready file READY, or has exited.
+live_settled() { [ -e "$1" ] || ! kill -0 "$2" 2>/dev/null; }
+for caller in "${callers[@]}"; do
+  for build in base head; do
+    rm -f "$work/live-ready-$build" "$work/live-written-$build"
+    bun "$(dirname "$0")/socket-access.ts" live "${build_url[$build]}" "$work/auth/$build-$caller" \
+      "$work/live-ready-$build" "$work/live-written-$build" >"$work/live-body-$build" 2>&1 &
+    live_pid[$build]=$!
+  done
+  # A probe that ends before it is ready, as one whose upgrade is refused does (it prints
+  # `http <status> <body>` and writes no ready file), ends the wait at once: its output is its
+  # answer, kept and compared as any other.
+  for build in base head; do
+    until_true 10 "$caller's live socket on the $build build to start, or its probe to end" \
+      live_settled "$work/live-ready-$build" "${live_pid[$build]}"
+  done
+  for build in base head; do
+    for project in PUB PRIV; do
+      send "$build" carol POST "/api/v1/issues/$project-1/comments" "$(jq -cn --arg p "$project" '{body: ("A live remark on " + $p + ".")}')"
+      expect_status 201 "$build: carol comments on $project-1 while $caller's live socket is open"
+      remember "$build" "live $project comment for $caller" "$(jq -r .id "$work/body")"
+    done
+  done
+  for build in base head; do
+    : >"$work/live-written-$build"
+  done
+  for build in base head; do
+    status=socket
+    wait "${live_pid[$build]}" || status=error
+    cp "$work/live-body-$build" "$work/body"
+    keep_answer "$build" "$build"
+  done
+  problem=''
+  grep -q '"type":"event"' "$work/answers/head.body" ||
+    problem="$caller /ws/live: this build sent no event of carol's comments, so the compare saw nothing: $(head -c 300 "$work/answers/head.body")"
+  judge "$(<"$work/answers/head.status")" "$problem"
+  same_answers "$caller /ws/live" base head
+done
+no_difference
+note "every caller is sent the same frames at both builds"
 pass

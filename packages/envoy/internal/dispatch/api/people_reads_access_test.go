@@ -35,12 +35,14 @@ const (
 )
 
 // privateRoster is the stand-in listener's sessions, newest first by last_seen, so the agents list
-// answers them in this order.
+// answers them in this order. session-idle has acted in no project, and the listener lists it with
+// a credential that lists none ("projects":[]): a row with no projects key is a listener that does
+// not know the session's projects, and reaches no open viewer while a project is private.
 const privateRoster = `[
 	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"last_seen":400},
 	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"last_seen":300},
 	{"session_id":"session-pub","title":"Public","capabilities":["btw","steer"],"last_seen":200},
-	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"last_seen":100}
+	{"session_id":"session-idle","title":"Idle","capabilities":["btw","steer"],"projects":[],"last_seen":100}
 ]`
 
 // seedSessionWork has the roster's sessions act in the seed's projects, each under a credential
@@ -158,21 +160,23 @@ func TestARestrictedMemberSeesOnlyThePeopleAndAgentsOfItsProjects(t *testing.T) 
 
 // listedRoster is privateRoster's two sessions of PRIV as a listener answers them once it names
 // each session's projects (K6): session-both, S3, registered with a token that lists PRIV and PUB,
-// and session-priv, S2, with one that lists PRIV. Both acted in PRIV (seedSessionWork), so
-// SessionClause passes neither to a viewer that does not see PRIV.
+// and session-priv, S2, with one that lists PRIV, both of which acted in PRIV (seedSessionWork); and
+// session-listed-pub, S4, with one that lists PUB, which has acted in no project.
 const listedRoster = `[
 	{"session_id":"session-both","title":"Both","capabilities":["btw","steer"],"projects":["PRIV","PUB"],"last_seen":400},
-	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300}
+	{"session_id":"session-priv","title":"Private","capabilities":["btw","steer"],"projects":["PRIV"],"last_seen":300},
+	{"session_id":"session-listed-pub","title":"On PUB","capabilities":["btw","steer"],"projects":["PUB"],"last_seen":200}
 ]`
 
-// TestAFilteredAgentRowNamesNoProject (K6): GET /api/v1/agents passes a roster row when the
-// projects the listener names for its session meet what the caller sees, or when SessionClause
-// passes on its id, and serves none of that list. alice, who sees PUB and not PRIV, reads S3's row,
-// whose token lists PUB, and no row of S2, whose token lists PRIV alone; no byte of her answer has
-// a projects key or names PRIV. bob, on PRIV's list, reads both rows, neither with a projects key.
+// TestAFilteredAgentRowNamesNoProject (K6): GET /api/v1/agents passes a roster row when
+// SessionClause passes on its id, and serves none of the list the listener names for it. alice,
+// who sees PUB and not PRIV, reads S4's row, whose token lists PUB, and no row of S3 or S2, each of
+// which acted in PRIV and lists it; no byte of her answer has a projects key or names PRIV. bob, on
+// PRIV's list alone, reads S3's and S2's rows, neither with a projects key, and not S4's, whose
+// token lists PUB.
 //
 // Control: drop agentResponse's own Projects field (plan C's t-c-28); the embedded session's list
-// is served, alice's S3 row names PRIV, and the test fails naming it.
+// is served, every row carries it, and the test fails naming each.
 func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
 	listener, _ := newBroadcastListener(t, listedRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -181,7 +185,7 @@ func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
 		caller privateCaller
 		want   []string
 	}{
-		{callerAlice, []string{sessionOfBoth}},
+		{callerAlice, []string{"session-listed-pub"}},
 		{callerBob, []string{sessionOfBoth, sessionOfPrivate}},
 	} {
 		response := seed.mustRequest(t, test.caller, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
@@ -206,11 +210,11 @@ func TestAFilteredAgentRowNamesNoProject(t *testing.T) {
 // newSessionsRoster is three sessions that have written nothing yet, so none has a
 // session_projects pair, as the listener lists them: session-new-priv registered with a token that
 // lists PRIV, session-new-pub with one that lists PUB, and session-new-none with one that lists no
-// project, which the listener sends no projects key for.
+// project ("projects":[]).
 const newSessionsRoster = `[
 	{"session_id":"session-new-priv","title":"New on PRIV","capabilities":["btw"],"projects":["PRIV"],"last_seen":300},
 	{"session_id":"session-new-pub","title":"New on PUB","capabilities":["btw"],"last_seen":200,"projects":["PUB"]},
-	{"session_id":"session-new-none","title":"New, no list","capabilities":["btw"],"last_seen":100}
+	{"session_id":"session-new-none","title":"New, no list","capabilities":["btw"],"projects":[],"last_seen":100}
 ]`
 
 // TestAnOpenViewerListsNoNewSessionOfAPrivateProjectItCannotSee (K6): a session with no history is
@@ -469,12 +473,15 @@ func TestADeliveryViewTakesItsCallersNewReaderOnAnAccessChange(t *testing.T) {
 	if err := delivery.MarkPullRequestUnfetchable(t.Context(), rig.database.Pool, "acme/hidden", 2, "the pull request is gone"); err != nil {
 		t.Fatalf("mark acme/hidden#2 unfetchable: %v", err)
 	}
+	// An open viewer that does not see HID is one of a deployment where HID is private: with no
+	// private project an open viewer sees every project (seesEveryObject), so the caller's sight can
+	// move only while some project is private.
 	var lost atomic.Bool
 	resolve := func(context.Context) (model.Actor, error) {
 		if lost.Load() {
-			return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{}}}, nil
+			return model.Actor{Viewer: &model.Viewer{Open: true, AnyPrivate: true, Sees: []string{}}}, nil
 		}
-		return model.Actor{Viewer: &model.Viewer{Open: true, Sees: []string{"HID"}}}, nil
+		return model.Actor{Viewer: &model.Viewer{Open: true, AnyPrivate: true, Sees: []string{"HID"}}}, nil
 	}
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, deliverySubscription{Sub: "p", View: presetView(deliveryLiveTimeline, 7, ""), Resolve: resolve})
@@ -555,21 +562,20 @@ func TestADeploymentReadCountsOnlyTheProjectsTheCallerSees(t *testing.T) {
 	}
 }
 
-// TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient: a broadcast is read by its author,
-// and by a caller that may see every one of its recipients; to anyone else GET
+// TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient: a broadcast is read by a caller that
+// may see every one of its recipients, when the caller is its author or open; to anyone else GET
 // /api/v1/broadcasts leaves it out and GET /api/v1/broadcasts/{id} answers it as an id nobody
 // holds. session-priv has acted in PRIV, so an open viewer that does not see PRIV (alice) may not
-// see it (access.SessionClause), and reads neither broadcast that went to it;
-// carol's token that lists no project acts for carol, who sent both, and reads them as their
-// author. The replies under a copy are a conversation of no project, read when the caller's person
-// or session is a party, or the caller is open, and it may see every session party (PartyClause):
-// no caller reads what session-priv answered carol unless it reads that conversation, neither in
-// the reply list, nor as the attempt's reply id, nor in the list's count of recipients who
-// answered, so carol's token that lists no project, which does not see PRIV, reads none of it.
-// session-priv answers under the one credential that proves it in PRIV (asSession). Both routes
-// are deployment reads (readClasses), so a viewer that is not open, a restricted member or a
-// credential that lists projects, is refused them whole, the same bytes for a broadcast it wrote,
-// one it could not see and an id nobody holds.
+// see it (access.SessionClause), and reads neither broadcast that went to it; nor does carol's
+// token that lists no project, which acts for carol, who sent both, and sees the public projects
+// alone (R3), not all carol sees. The replies under a copy are a conversation of no project, read
+// when the caller's person or session is a party, or the caller is open, and it may see every
+// session party (PartyClause): no caller reads what session-priv answered carol unless it reads
+// that conversation, neither in the reply list, nor as the attempt's reply id, nor in the list's
+// count of recipients who answered. session-priv answers under the one credential that proves it
+// in PRIV (asSession). Both routes are deployment reads (readClasses), so a viewer that is not
+// open, a restricted member or a credential that lists projects, is refused them whole, the same
+// bytes for a broadcast it wrote, one it could not see and an id nobody holds.
 func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 	listener, _ := newBroadcastListener(t, privateRoster)
 	seed := seedPrivateProjectWith(t, testServerOptions{envoyURL: listener.URL})
@@ -604,7 +610,7 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 		{callerCarol, false, []string{toBoth.ID, toPrivate.ID}, true},
 		{callerCarolPrivToken, true, nil, false},
 		{callerAlicePrivToken, true, nil, false},
-		{callerCarolToken, false, []string{toBoth.ID, toPrivate.ID}, false},
+		{callerCarolToken, false, []string{}, false},
 	} {
 		t.Run(string(test.caller), func(t *testing.T) {
 			if test.refused {
@@ -668,12 +674,14 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 }
 
 // TestWhoamiAnswersAPersonalTokensProjects (KF4): GET /api/v1/whoami answers projects, sorted,
-// whenever the credential lists projects, a person's own dsp_ token included, in the agent shape;
-// and project, deprecated, as the one key of a one-key list and null for any other list. The person
-// shape is a browser's cookie's, which lists nothing, so it carries no list. The control is byte for
-// byte: a credential that lists nothing answers exactly what it answered before the list existed,
-// and a broker token scoped to one project, whose credential lists that project
-// (brokerTokenActor), answers it in both fields.
+// whenever the credential's reads are held to a list, a person's own dsp_ token included, in the
+// agent shape; and project, deprecated, as the one key of a one-key list its writes are held to and
+// null for any other list. The person shape is a browser's cookie's, which lists nothing, so it
+// carries no list. The control is byte for byte: a credential that lists nothing answers exactly
+// what it answered before the list existed. A broker token scoped to one project, whose credential
+// lists that project (brokerTokenActor), answers it in both fields while a project is private, and
+// while none is answers it as project alone, as it did before lists existed (R9); a broker token
+// acting as its person answers its list only while a project is private.
 func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	carol := seedCarol
 	project := seedPublic
@@ -682,20 +690,36 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	token := func(projects ...string) model.Actor {
 		return model.Actor{Kind: "session", Owner: &carol, Credential: &model.Credential{Projects: projects}}
 	}
+	broker := func(hold model.ListHold) model.Actor {
+		return model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}, ListHoldsWhileNoPrivate: hold}}
+	}
+	// What Resolve answers a broker token while a project is private (held to its list) and while
+	// none is (open, no Lists).
+	held := &model.Viewer{Sees: []string{project}, AnyPrivate: true, Lists: []string{project}}
+	open := &model.Viewer{Open: true, Sees: []string{project, seedPrivate}}
 	for _, test := range []struct {
 		name string
 		body any
 		want string
 	}{
-		{"a token that lists two projects", newWhoamiAgent(token(both...), "", []string{}),
+		{"a token that lists two projects", newWhoamiAgent(token(both...), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","projects":["PRIV","PUB"],"project":null,"scopes":[],"service":null,"session":null}`},
-		{"a token that lists one project", newWhoamiAgent(token(seedPrivate), "", []string{}),
+		{"a token that lists one project", newWhoamiAgent(token(seedPrivate), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","projects":["PRIV"],"project":"PRIV","scopes":[],"service":null,"session":null}`},
-		{"a token that lists none", newWhoamiAgent(token(), "", []string{}),
+		{"a token that lists none", newWhoamiAgent(token(), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":[],"service":null,"session":null}`},
-		{"a broker token scoped to one project",
-			newWhoamiAgent(model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}}}, "", []string{}),
+		{"a broker token scoped to one project, while a project is private",
+			newWhoamiAgent(broker(model.ListHoldsWrites), "", []string{}, held),
 			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token scoped to one project, while none is",
+			newWhoamiAgent(broker(model.ListHoldsWrites), "", []string{}, open),
+			`{"kind":"agent","owner":null,"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token acting as its person, while a project is private",
+			newWhoamiAgent(broker(model.ListHoldsNothing), "", []string{}, held),
+			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token acting as its person, while none is",
+			newWhoamiAgent(broker(model.ListHoldsNothing), "", []string{}, open),
+			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":null,"session":"ses_x"}`},
 		{"a person shape, whatever its credential lists",
 			newWhoamiUser(model.Actor{Kind: "user", ID: carol, Credential: &model.Credential{Projects: both}}, "", []string{}),
 			`{"kind":"user","login":"carol@example.com","scopes":[]}`},

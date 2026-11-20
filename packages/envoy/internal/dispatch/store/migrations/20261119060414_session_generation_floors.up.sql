@@ -14,10 +14,11 @@
 -- The reset after a Dispatch database restored or made again alone writes one deployment floor,
 -- login `*`, above every generation the lost history can have issued: the greatest of the
 -- microseconds at its raise, the broker's greatest recorded generation plus one, and every session
--- row and floor Dispatch holds plus one (running-dispatch.md, "Signing people in"). Every statement
--- that makes a user_sessions row starts it at the greater of its address's floor and the deployment
--- floor: start_session_generation_at_floor runs before insert on user_sessions, which the sign-in's
--- trigger, PgSessionStore.EnsureSession and every other writer pass through. So no writer can make
+-- row and floor Dispatch holds plus one (running-dispatch.md, "Signing people in"). This file's
+-- start_session_generation_at_floor runs before insert on user_sessions, which the sign-in's
+-- trigger, PgSessionStore.EnsureSession and every other writer pass through, and starts the row at
+-- its address's floor; 20261119183355 adds the deployment floor's arm, so a row starts at the
+-- greater of the two. So no writer can make
 -- the row below the deployment floor, whichever runs first and however long after the reset. A row
 -- that already exists is raised by the reset's update, and a generation only rises
 -- (user_sessions_binding_columns), so a floor never lowers one.
@@ -27,12 +28,11 @@
 -- replacement's generation and supersedes a revocation *below* the greatest it applied), but every
 -- cookie the replacement that left that generation issued would match the new row as well, a
 -- signed-out one included. The time term keeps a later reset after a second restore above the first
--- one's floor. This table holds the deployment floor and any address floor a writer needs.
+-- one's floor. This table holds the deployment floor, the row `*`.
 --
 --   session_generation_floors.login        written once, at the insert.
---   session_generation_floors.generation   only rises: a later reset, or a writer's later address
---                                          floor, must never let the next row start below an
---                                          earlier floor.
+--   session_generation_floors.generation   only rises: a later reset must never let the next row
+--                                          start below an earlier floor.
 --   session_generation_floors row          never deleted or truncated, for the same reason.
 --
 -- guard_session_generation_floors refuses every other write with SQLSTATE 23514 (check_violation).
@@ -43,6 +43,11 @@
 -- triggers, written into the catalogue alone, and reads, refuses and rewrites no row. The function
 -- names are Dispatch's own: the broker's migrations may share this schema
 -- (TestTheBrokerAndDispatchMigrationsCreateNoNameInCommon).
+-- This header was edited in place after the migration identity check arrived, twice (round 26 of
+-- its review, then these lines), and the two lines below name the texts before each edit, so a
+-- database that applied either still boots.
+-- replaces: 20261119060414_session_generation_floors.up.sql sha256:bd9d44ffd84309bec3bfd73529bdad12550331a175e246c383ff8e600429443d
+-- replaces: 20261119060414_session_generation_floors.up.sql sha256:2b187b6569dd926846dceb59513c2d701385d6491fe8c95d6e5838ddd156540d
 create table session_generation_floors (
   login text primary key check (login <> '' and login = lower(login)),
   generation bigint not null check (generation > 0)

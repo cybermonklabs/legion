@@ -218,70 +218,75 @@ func TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince(t *t
 	}
 }
 
+// resetBlocksAgain runs the runbook's read of whether a broker backup taken at backup may predate
+// the last reset's end and, where it answers `run the reset's blocks again`, the reset's
+// credentials and directory blocks again, as the runbook's next paragraph says. It answers the
+// read's answer.
+func (r *recoveryRig) resetBlocksAgain(t *testing.T, backup any, directory map[string]directoryAnswer) string {
+	t.Helper()
+	answer := queryRunbook(t, r.dispatch.Pool, runbookBlockAfter(t, repeatResetLead), pgx.NamedArgs{"backup": backup})
+	if len(answer) != 1 {
+		t.Fatalf("the runbook's read of the last reset answered %q; want one line", answer)
+	}
+	if answer[0] != "run the reset's blocks again" {
+		return answer[0]
+	}
+	const again = "run **End every person's credential at the broker** and **Clear a refusal only for the directory's holder** again, after the record-again block and before starting Dispatch"
+	if paragraph := runbookParagraph(t, "For `run the reset's blocks again`"); !strings.Contains(paragraph, again) {
+		t.Fatalf("the runbook's paragraph after the read is %q; want %q", paragraph, again)
+	}
+	if left := r.endBrokerCredentials(t); len(left) != 0 {
+		t.Fatalf("STILL LIVE after the reset's credentials block run again: %v", left)
+	}
+	if output, err := r.clearHoldersRefusals(t, directory); err != nil {
+		t.Fatalf("the reset's directory block run again: %v\n%s", err, output)
+	}
+	return answer[0]
+}
+
 // TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBlocks covers two
 // restores in sequence. Restored Dispatch still records A, because B's replacement was owed when
 // Dispatch's database was lost. The reset ends A's broker sign-in, but a broker backup taken before
 // the reset brings it back. No revocation names A yet, so record-again has nothing to write. The
-// runbook therefore runs the reset's credentials and directory blocks again after record-again:
-// A's sign-in is ended before Dispatch starts, then B's sign-in pays the revocation that refuses A.
+// runbook's read of the last reset says the backup predates its end, so the reset's credentials
+// and directory blocks run again after record-again: A's sign-in is ended before Dispatch starts,
+// then B's sign-in pays the revocation that refuses A. With no reset recorded the read says so.
 //
-// Control in the runbook: without that second credentials block, the restored broker leaves A's
-// sign-in live before Dispatch starts.
+// Control in the runbook: the read answering anything but `run the reset's blocks again` for a
+// backup from before the reset leaves A's sign-in live before Dispatch starts.
 func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBlocks(t *testing.T) {
 	ctx := context.Background()
-	runbook := strings.Join(runbookLines(t), "\n")
-	repeatResetBlocks := strings.Contains(runbook, "run **End every person's credential at the broker** and **Clear a\nrefusal only for the directory's holder** again")
-	for _, want := range []string{
-		`select to_timestamp(generation / 1000000.0) from session_generation_floors where login = '*'`,
-		"run **End every person's credential at the broker** and **Clear a\nrefusal only for the directory's holder** again",
-		"If the deployment floor row `*`\nexists, a reset ran before this broker was made again",
-	} {
-		if !strings.Contains(runbook, want) {
-			t.Errorf("the broker-alone recovery is missing %q", want)
-		}
-	}
 	r := newRecoveryRig(t)
 	const email = "reset-then-broker@example.com"
+	directory := map[string]directoryAnswer{email: {User: directoryUser{ID: "b-reset", PrimaryEmail: email}}}
+	if answer := r.resetBlocksAgain(t, time.Now(), directory); answer != "no reset ran" {
+		t.Errorf("the read of the last reset on a deployment that never reset answered %q; want no reset ran", answer)
+	}
 	if err := r.people.SignInSubject(ctx, email, "a-reset", "refresh-a", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	signIn := r.signInMachine(t, email, "a-reset", strings.Repeat("z", 43))
-	backup := time.Now()
 
-	r.resetSessions(t)
-	if left := r.endBrokerCredentials(t); len(left) != 0 {
-		t.Fatalf("STILL LIVE after the reset's credentials block: %v", left)
-	}
+	start, _ := r.resetDeployment(t, directory)
 	if r.machineSignInLive(t, signIn) {
 		t.Fatal("the reset left A's sign-in live")
 	}
+	backup := start.Add(-time.Minute)
 
-	// Restore the broker to the backup before the reset: its record of B replacing A remains, and
-	// A's sign-in the reset ended is live again.
+	// Restore the broker to the backup before the reset: A's sign-in the reset ended is live again.
 	if _, err := r.rig.Store.Pool.Exec(ctx, `update person_signins set revoked_at = null where id = $1::uuid`, signIn); err != nil {
 		t.Fatalf("restore A's broker sign-in from before the reset: %v", err)
-	}
-	if !r.machineSignInLive(t, signIn) {
-		t.Fatalf("setup: broker restored before the reset leaves A's sign-in live %t; want live", r.machineSignInLive(t, signIn))
 	}
 	block := runbookBlockAfter(t, brokerRestoredLead)
 	runStatements(t, r.dispatch.Pool, block.statements, pgx.NamedArgs{"backup": backup})
 	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 0 {
 		t.Fatalf("the broker-alone record-again with no revocation naming A owes %+v, %v; want nothing", owing, err)
 	}
-	if repeatResetBlocks {
-		if left := r.endBrokerCredentials(t); len(left) != 0 {
-			t.Fatalf("STILL LIVE after the reset's second credentials block: %v", left)
-		}
-		output, err := r.clearHoldersRefusals(t, map[string]directoryAnswer{
-			email: {User: directoryUser{ID: "b-reset", PrimaryEmail: email}},
-		})
-		if err != nil {
-			t.Fatalf("the reset's second directory block: %v\n%s", err, output)
-		}
+	if answer := r.resetBlocksAgain(t, backup, directory); answer != "run the reset's blocks again" {
+		t.Errorf("the read of the last reset for a backup from before it answered %q; want the reset's blocks run again", answer)
 	}
 	if r.machineSignInLive(t, signIn) {
-		t.Errorf("after the broker-alone recovery and the reset blocks again, A's sign-in is live; want ended before Dispatch starts")
+		t.Errorf("after the broker-alone recovery, A's sign-in is live; want it ended before Dispatch starts")
 	}
 	if err := r.people.SignInSubject(ctx, email, "b-reset", "refresh-b", model.MemberFull); err != nil {
 		t.Fatal(err)
@@ -291,6 +296,242 @@ func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBl
 	if r.machineSignInLive(t, signIn) || !r.refused(t, email, "a-reset") {
 		t.Errorf("after B signs in and Dispatch pays the revocation, A's sign-in is live %t and the broker refuses A %t; want ended and refused", r.machineSignInLive(t, signIn), r.refused(t, email, "a-reset"))
 	}
+}
+
+// TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks is the history of the TN
+// deep review's m1. Restored Dispatch owes the revocation of A, which B replaced and the broker
+// never applied, and A holds a sign-in at the broker. The reset settles that revocation unpaid and
+// ends A's sign-in. A broker backup taken just before the reset holds the sign-in live, and its
+// moment is written late, half an hour after the reset's end, as a backup's end or a rounded
+// moment can be. Restored to it, the broker serves A's sign-in again and no revocation names A. The
+// read of the last reset takes the same hour's margin as record-again, so it says the backup may
+// predate the reset's end, and the credentials block run again ends the sign-in. A backup written
+// two hours after the end is read as holding the reset, and asks for nothing.
+//
+// Control in the runbook: the read without its hour (the backup's moment compared with the end as
+// written) answers that the backup holds the reset, and A's sign-in stays live.
+func TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	const email = "late-backup@example.com"
+	for _, account := range []string{"a-late", "b-late"} {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+			t.Fatal(err)
+		}
+	}
+	signIn := r.signInMachine(t, email, "a-late", strings.Repeat("l", 43))
+	directory := map[string]directoryAnswer{email: {User: directoryUser{ID: "b-late", PrimaryEmail: email}}}
+	_, end := r.resetDeployment(t, directory)
+	if r.machineSignInLive(t, signIn) {
+		t.Fatal("the reset left A's sign-in live")
+	}
+
+	if answer := r.resetBlocksAgain(t, end.Add(2*time.Hour), directory); answer != "the backup holds the last reset" {
+		t.Errorf("the read for a backup written two hours after the reset's end answered %q; want the backup holds the last reset", answer)
+	}
+	backup := end.Add(30 * time.Minute)
+	if _, err := r.rig.Store.Pool.Exec(ctx, `update person_signins set revoked_at = null where id = $1::uuid`, signIn); err != nil {
+		t.Fatalf("restore A's broker sign-in from just before the reset: %v", err)
+	}
+	runStatements(t, r.dispatch.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": backup})
+	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 0 {
+		t.Errorf("record-again for a backup from just before the reset owes %+v, %v; want nothing, since the reset settled the one revocation", owing, err)
+	}
+	if answer := r.resetBlocksAgain(t, backup, directory); answer != "run the reset's blocks again" {
+		t.Errorf("the read for a backup written half an hour after the reset's end answered %q; want the reset's blocks run again", answer)
+	}
+	if r.machineSignInLive(t, signIn) {
+		t.Error("after the broker-alone recovery, A's sign-in the backup brought back is live; want it ended before Dispatch starts")
+	}
+}
+
+// TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks: a broker backup taken while the reset runs,
+// after its first credentials run and more than an hour after its start, but before its second
+// run, holds a sign-in A traded during that hour with a Google ID token issued before B replaced
+// it. The second run ends it and the reset closes. Restored to that backup, the broker serves the
+// sign-in again. The read compares the backup with the reset's end, not its start, so it says the
+// backup may predate the end, and the credentials block run again ends the sign-in.
+//
+// Control in the runbook: the read comparing the backup with the last reset's start answers that
+// the backup holds the reset, and the traded sign-in stays live.
+func TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	const email = "during-reset@example.com"
+	for _, account := range []string{"a-during", "b-during"} {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+			t.Fatal(err)
+		}
+	}
+	directory := map[string]directoryAnswer{email: {User: directoryUser{ID: "b-during", PrimaryEmail: email}}}
+	r.resetSessions(t)
+	if left := r.endBrokerCredentials(t); len(left) != 0 {
+		t.Fatalf("STILL LIVE after the reset's first credentials run: %v", left)
+	}
+	if output, err := r.clearHoldersRefusals(t, directory); err != nil {
+		t.Fatalf("the reset's directory block: %v\n%s", err, output)
+	}
+	r.ageReset(t, time.Hour+time.Minute)
+	traded := r.signInMachine(t, email, "a-during", strings.Repeat("u", 43))
+	backup := time.Now()
+	if left := r.endBrokerCredentials(t); len(left) != 0 || r.machineSignInLive(t, traded) {
+		t.Fatalf("the reset's second credentials run leaves %v and the traded sign-in live %t; want nothing", left, r.machineSignInLive(t, traded))
+	}
+	if output, err := r.closeReset(t); err != nil {
+		t.Fatalf("the reset's close: %v\n%s", err, output)
+	}
+
+	if _, err := r.rig.Store.Pool.Exec(ctx, `update person_signins set revoked_at = null where id = $1::uuid`, traded); err != nil {
+		t.Fatalf("restore the sign-in traded during the reset: %v", err)
+	}
+	runStatements(t, r.dispatch.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": backup})
+	if answer := r.resetBlocksAgain(t, backup, directory); answer != "run the reset's blocks again" {
+		t.Errorf("the read for a backup taken during the reset answered %q; want the reset's blocks run again", answer)
+	}
+	if r.machineSignInLive(t, traded) {
+		t.Error("after the broker-alone recovery, the sign-in traded during the reset is live; want it ended before Dispatch starts")
+	}
+}
+
+// TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared: the reset settles a
+// revocation restored Dispatch owed without paying it, and its directory block clears the refusal
+// of the account the directory names. Here that account, X, took the address back from Y before
+// Dispatch's database was lost, so the restored database still records Y and owes "X replaced,
+// holder Y". A broker backup from before the reset brings X's refusal back, and the runbook's
+// record-again block then runs. Were it to record that settled row again, it would name Y, whom
+// the restored `people` row records, as the holder; Dispatch's first pass would refuse X at the
+// broker again and end the broker sign-in X made after the reset's directory block cleared it. The
+// block records again only what Dispatch settled after the last reset's start, and the reset
+// settled that row at its start, so it records that row again not at all, and the reset's blocks,
+// run again, decide X's refusal.
+//
+// Control in the runbook: the block's bound as the backup's moment less an hour alone records the
+// row again, and the pass refuses X and ends X's sign-in.
+func TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared(t *testing.T) {
+	ctx := context.Background()
+	r := newRecoveryRig(t)
+	const email = "holder-after-reset@example.com"
+	// The restored database: X, then Y, and the revocation of X still owed.
+	if err := r.people.SignInSubject(ctx, email, "x-owed", "refresh-x", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.people.SignInSubject(ctx, email, "y-owed", "refresh-y", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	// The broker, before the reset: it applied that revocation before the loss, so it refuses X.
+	r.revoke(t, email, "x-owed", "y-owed", 2)
+	directory := map[string]directoryAnswer{email: {User: directoryUser{ID: "x-owed", PrimaryEmail: email}}}
+	start, _ := r.resetDeployment(t, directory)
+	if r.refused(t, email, "x-owed") {
+		t.Fatal("the reset's directory block left X refused; want X cleared")
+	}
+	backup := start.Add(-time.Minute)
+
+	// The broker is restored to its backup from before the reset: X is refused again.
+	r.revoke(t, email, "x-owed", "y-owed", 3)
+	runStatements(t, r.dispatch.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": backup})
+	owing, err := r.revocations.Owing(ctx, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(owing) != 0 {
+		t.Errorf("the broker-alone record-again after a reset owes %+v; want nothing, since the reset settled that revocation", owing)
+	}
+	if answer := r.resetBlocksAgain(t, backup, directory); answer != "run the reset's blocks again" {
+		t.Errorf("the read for a backup from before the reset answered %q; want the reset's blocks run again", answer)
+	}
+
+	// X signs in at the broker, then Dispatch starts and its loop runs a pass.
+	signIn := r.signInMachine(t, email, "x-owed", strings.Repeat("x", 43))
+	r.ageClaims(t)
+	r.served.revokeOwedBrokerCredentials(ctx)
+	if r.refused(t, email, "x-owed") || !r.machineSignInLive(t, signIn) {
+		t.Errorf("after Dispatch's first pass the broker refuses X %t and X's broker sign-in is live %t; want X not refused and its sign-in live", r.refused(t, email, "x-owed"), r.machineSignInLive(t, signIn))
+	}
+}
+
+// TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore holds the same-family
+// review's R25-1 histories (its round-25 probe), each through the whole documented procedure: the
+// reset, a broker restored alone to a backup from before it, record-again, the read of the last
+// reset and its blocks, and Dispatch's first pass.
+//
+//   - owedrow: Y replaced X, the broker applied it, restored Dispatch still owes it, and the
+//     directory names X, who has not signed in to Dispatch since the reset. After the first pass X
+//     is not refused and approves.
+//   - kept: T replaced S, restored Dispatch owes S's revocation naming T, the broker already
+//     refuses T, and the directory names H, so it keeps T's refusal. After the first pass T is
+//     still refused.
+//
+// Control in the runbook: record-again's bound as the backup's moment less an hour alone records
+// the reset-settled row again; the pass then refuses X (its approve APPROVER_REPLACED) and lifts
+// T's refusal.
+func TestAResetsSettledRevocationIsNotRecordedAgainByALaterBrokerRestore(t *testing.T) {
+	ctx := context.Background()
+	t.Run("owedrow", func(t *testing.T) {
+		r := newRecoveryRig(t)
+		const owed = "owedrow-restore@example.com"
+		for _, account := range []string{"x-owed", "y-owed"} {
+			if err := r.people.SignInSubject(ctx, owed, account, "refresh-"+account, model.MemberFull); err != nil {
+				t.Fatal(err)
+			}
+		}
+		rows, err := r.revocations.Owing(ctx, owed)
+		if err != nil || len(rows) != 1 || rows[0].SessionGeneration == nil {
+			t.Fatalf("setup: owes %+v, %v; want one revocation with its generation", rows, err)
+		}
+		generation := *rows[0].SessionGeneration
+		r.revoke(t, owed, "x-owed", "y-owed", generation) // the broker applied it before Dispatch's loss
+		directory := map[string]directoryAnswer{owed: {User: directoryUser{ID: "x-owed", PrimaryEmail: owed}}}
+		start, _ := r.resetDeployment(t, directory)
+		if r.refused(t, owed, "x-owed") {
+			t.Fatal("setup: after the reset the broker still refuses X")
+		}
+		backup := start.Add(-time.Minute)
+		r.revoke(t, owed, "x-owed", "y-owed", generation) // the restored broker refuses X again
+		runStatements(t, r.dispatch.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": backup})
+		if owing, err := r.revocations.Owing(ctx, owed); err != nil || len(owing) != 0 {
+			t.Errorf("record-again after the reset owes %+v, %v; want nothing, since the reset settled the one revocation", owing, err)
+		}
+		r.resetBlocksAgain(t, backup, directory)
+		r.ageClaims(t)
+		r.served.revokeOwedBrokerCredentials(ctx)
+		current, _, err := store.NewPgSessionStore(r.dispatch.Pool).CurrentSessionGeneration(ctx, owed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.refused(t, owed, "x-owed") {
+			t.Error("after Dispatch's first pass the broker refuses X, the directory's holder; want X not refused")
+		}
+		if err := r.approveAs(t, owed, "x-owed", current); err != nil {
+			t.Errorf("after Dispatch's first pass X's approve answered %v; want it approved", err)
+		}
+	})
+	t.Run("kept", func(t *testing.T) {
+		r := newRecoveryRig(t)
+		const kept = "kept-restore@example.com"
+		for _, account := range []string{"s-kept", "t-kept"} {
+			if err := r.people.SignInSubject(ctx, kept, account, "refresh-"+account, model.MemberFull); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.revoke(t, kept, "t-kept", "u-kept", 1)
+		directory := map[string]directoryAnswer{kept: {User: directoryUser{ID: "h-kept", PrimaryEmail: kept}}}
+		start, _ := r.resetDeployment(t, directory)
+		if !r.refused(t, kept, "t-kept") {
+			t.Fatal("setup: after the reset the broker does not refuse T")
+		}
+		backup := start.Add(-time.Minute)
+		runStatements(t, r.dispatch.Pool, runbookBlockAfter(t, brokerRestoredLead).statements, pgx.NamedArgs{"backup": backup})
+		if owing, err := r.revocations.Owing(ctx, kept); err != nil || len(owing) != 0 {
+			t.Errorf("record-again after the reset owes %+v, %v; want nothing, since the reset settled the one revocation", owing, err)
+		}
+		r.resetBlocksAgain(t, backup, directory)
+		r.ageClaims(t)
+		r.served.revokeOwedBrokerCredentials(ctx)
+		if !r.refused(t, kept, "t-kept") {
+			t.Error("after Dispatch's first pass the broker no longer refuses T, whose refusal the directory kept; want T refused")
+		}
+	})
 }
 
 // TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled: a broker database made again, rather

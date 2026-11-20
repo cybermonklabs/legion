@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -228,8 +229,9 @@ type bootConfig struct {
 	OIDCAudience string
 	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
 	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
-	// private; the boot and the maintenance sweep report a private project it does not name, and
-	// /healthz names it (reportPrivateProjects, privateProjectsState).
+	// private; the boot and the maintenance sweep report a private project it does not name, by key,
+	// and /healthz says only that one exists, naming none (reportPrivateProjects,
+	// unprovisionedPrivateProjectReason).
 	PrivateProjects []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
@@ -2193,13 +2195,14 @@ type gitHubReadEntry struct {
 	State gitHubReadState `json:"state"`
 	// At is when the newest attempt was recorded, by the database's clock, in UTC.
 	At *time.Time `json:"at"`
-	// Cause is the newest attempt's first failure, at most githubreads.CauseLimit bytes.
+	// Cause is the class of the newest attempt's first failure (gitHubReadCauseClass); the
+	// failure's text is github_read_attempts'.
 	Cause *string `json:"cause"`
 }
 
 // gitHubReadEntryOf is read's entry: off when this process does not run it (runs false), unknown
 // before the copy's first load (loaded false), no_attempt when the copy holds no row for it, and
-// otherwise the row's own outcome, with its time, and with its cause when it failed.
+// otherwise the row's own outcome, with its time, and with its cause's class when it failed.
 func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[githubreads.Read]githubreads.Recorded) gitHubReadEntry {
 	if !runs {
 		return gitHubReadEntry{State: gitHubReadOff}
@@ -2215,8 +2218,28 @@ func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[github
 	if row.Succeeded {
 		return gitHubReadEntry{State: gitHubReadSucceeded, At: &at}
 	}
-	cause := row.Cause
-	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &cause}
+	class := gitHubReadCauseClass(row.Cause)
+	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &class}
+}
+
+// gitHubStatus matches the first HTTP status a GitHub read's cause names, "status <n>", which is
+// the class itself. The client words every answer it notes as a failure with its status ahead of
+// any body GitHub sent ("<METHOD> <target>: status <n>: <body>", and "rate-limited by GitHub
+// (status <n>)"; githubapp's failedAnswer), so the first one is the answer's own.
+var gitHubStatus = regexp.MustCompile(`\bstatus [1-5][0-9]{2}\b`)
+
+// gitHubReadCauseClass is the class /healthz answers for a failed read's cause: "status <n>" for
+// the status GitHub answered, and "no status" for a failure that carries none (a request GitHub
+// never answered, or a failure of the read's own). A cause is GitHub's error text, which names the
+// repository the read read, one a private project maps or one GitHub keeps private, and /healthz
+// answers whoever reaches the port, from outside too where the deployment has an outside origin
+// (R2). So /healthz answers the class alone, in every deployment, which can name no repository,
+// and the operator reads the cause itself in github_read_attempts.
+func gitHubReadCauseClass(cause string) string {
+	if status := gitHubStatus.FindString(cause); status != "" {
+		return status
+	}
+	return "no status"
 }
 
 // gitHubReadsMember is /healthz's github member: one entry for each read, in the order
@@ -2228,28 +2251,15 @@ type gitHubReadsMember struct {
 	CIReconcile        gitHubReadEntry `json:"ci_reconcile"`
 }
 
-// withheldGitHubCause is the cause /healthz answers for a failed GitHub read while any project is
-// private (privateProjectsState.AnyPrivate). A cause is GitHub's error text, which names the
-// repository the read read, a private project's among them, and /healthz answers a caller with no
-// credential (R2). So it is fixed, naming no repository; the operator reads the cause itself in
-// github_read_attempts. With no private project the cause is answered as recorded (R9).
-const withheldGitHubCause = "withheld while a project is private, since it can name a repository; github_read_attempts holds it"
-
 // member is the github member of one answer, nil where no App is configured. It reads the copy
-// once, so the four entries come from one load, and reads nothing else. With withhold, each
-// failed read's cause is withheldGitHubCause.
-func (g *gitHubReads) member(withhold bool) *gitHubReadsMember {
+// once, so the four entries come from one load, and reads nothing else.
+func (g *gitHubReads) member() *gitHubReadsMember {
 	if g == nil {
 		return nil
 	}
 	rows, loaded := g.recordCopy.Rows()
 	entry := func(read githubreads.Read) gitHubReadEntry {
-		answer := gitHubReadEntryOf(read, g.runs[read], loaded, rows)
-		if withhold && answer.Cause != nil {
-			withheld := withheldGitHubCause
-			answer.Cause = &withheld
-		}
-		return answer
+		return gitHubReadEntryOf(read, g.runs[read], loaded, rows)
 	}
 	return &gitHubReadsMember{
 		WebhookRedelivery:  entry(githubreads.WebhookRedelivery),
@@ -2353,12 +2363,11 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // failure, `failed` when it noted one, `no_attempt` while the record holds none, `unknown` before
 // this process has read the record, and `off` where this process does not run the read (no App
 // private key, or no NATS for the redelivery sweep and the CI reconcile). `at` is when a
-// succeeded or failed attempt was recorded, by the database's clock, and `cause` a failed one's
-// first failure, cut to githubreads.CauseLimit bytes; each is null where the state carries none.
-// A cause is GitHub's error text, which names the repository the read read, so while any project
-// is private (privateProjectsState.AnyPrivate) every failed read's cause is withheldGitHubCause:
-// this answer reaches a caller with no credential (R2), and the operator reads the text itself in
-// github_read_attempts. With no private project the cause is answered as recorded (R9).
+// succeeded or failed attempt was recorded, by the database's clock, and `cause` the class of a
+// failed one's first failure, `status <n>` or `no status` (gitHubReadCauseClass); each is null
+// where the state carries none. The failure's text names the repository the read read, and this
+// answer reaches whoever reaches the port (R2), so it is never answered here: the operator reads
+// it in github_read_attempts.
 // It never decides `ok` or the status: a process serves everything but GitHub's own reads while
 // GitHub fails, so failing the probe would take every server process out of service for an outage
 // each of them serves through. It is read from this process's copy of the record
@@ -2474,7 +2483,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			Degraded        []string           `json:"degraded,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
-			GitHub: reads.member(privateState.AnyPrivate()), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
+			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
 			Degraded: degraded,
 		})

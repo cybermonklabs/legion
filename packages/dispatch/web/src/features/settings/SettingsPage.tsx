@@ -81,7 +81,8 @@ export function SettingsPage(): ReactNode {
   // A restricted member reads none of the deployment's own rows (`useRestrictedMember`): no
   // group list, no delivery settings, no credential list and no Legion daemon setting, so their
   // Settings draws no Groups, no Delivery timeline and no Legion. Their own grants and sign-ins
-  // are theirs to read.
+  // are theirs to read and to revoke, which Dispatch takes to the secrets broker as it does a full
+  // member's.
   const restricted = useRestrictedMember();
   // Whether this Dispatch has a secrets broker, without which Live grants and Sign-ins have
   // nothing to list: the credential list answers `null` where it has none. A restricted member

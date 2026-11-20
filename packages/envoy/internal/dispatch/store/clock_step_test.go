@@ -314,16 +314,17 @@ func TestTheGuardsAcceptAWritersOwnStampAfterTheClockStepsBack(t *testing.T) {
 	}
 }
 
-// bindingTables are the tables the account binding's guards stand on: every trigger of theirs runs
-// a function this schema must pin (TestEveryBindingTriggerRunsUnderItsOwnSearchPath).
-var bindingTables = []string{"people", "user_sessions", "agent_tokens", "broker_revocations", "session_generation_floors"}
+// bindingTables are the tables the account binding's guards stand on, with the reset's own record
+// of its start and end: every trigger of theirs runs a function this schema must pin
+// (TestEveryBindingTriggerRunsUnderItsOwnSearchPath).
+var bindingTables = []string{"people", "user_sessions", "agent_tokens", "broker_revocations", "session_generation_floors", "deployment_resets"}
 
 // TestEveryBindingTriggerRunsUnderItsOwnSearchPath reads every trigger of the binding's tables and
 // holds the function it runs to search_path = pg_catalog, the schema the tables are in, pg_temp
-// (20261119021826, 20261119060414 and 20261119065002). A function with none resolves its tables,
-// functions and operators under the caller's path, where a temporary table or a schema listed
-// before pg_catalog is the caller's to make; so a guard added later fails this test until it is
-// pinned as well.
+// (20261119021826, 20261119060414, 20261119065002 and 20261120144819). A function with none
+// resolves its tables, functions and operators under the caller's path, where a temporary table or
+// a schema listed before pg_catalog is the caller's to make; so a guard added later fails this test
+// until it is pinned as well.
 //
 // Control, in the test: with one function's setting reset, the test's own read names it.
 func TestEveryBindingTriggerRunsUnderItsOwnSearchPath(t *testing.T) {

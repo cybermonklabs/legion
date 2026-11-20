@@ -12,6 +12,11 @@
 -- own: the broker's migrations may share this schema (CI runs both sets on one database), and
 -- broker migration 0041 has a function of its own for the same refusal
 -- (TestTheBrokerAndDispatchSchemasShareOneDatabase).
+-- This header was edited in place after the migration identity check arrived, twice (the broker
+-- migration's number, then these lines), and the two lines below name the texts before each edit,
+-- so a database that applied either still boots.
+-- replaces: 20261117160116_agent_token_subject_unchanged.up.sql sha256:68676325a89e13a4e8b67d7ba8f445a23788e5d2eb47d26d93c6a12c197b359e
+-- replaces: 20261117160116_agent_token_subject_unchanged.up.sql sha256:da2643939aaad25b9b4626c4a99af86e77addc9595d637ce2476ebeafd40dff6
 create function refuse_agent_token_account_change() returns trigger language plpgsql as $$
 begin
   raise exception 'the Google account % records is written once, when it is made, and is never changed', tg_table_name

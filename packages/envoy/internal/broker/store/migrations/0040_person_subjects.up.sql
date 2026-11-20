@@ -84,18 +84,25 @@
 --
 -- Earlier heads of cybermonklabs/legion#4199 shipped this migration without session_generation, the
 -- guards and person_replacement_generations, or (7142c3108a) with a guard whose delete marker joined
--- its fields with '|', and the migrator records a version alone, with no checksum, so a broker
--- database an earlier head migrated keeps that shape: there the revoke's own delete is refused
--- (23514), as the marker it sets is not the one that guard compares, or its read of
--- person_replacement_generations fails on the missing table. Reset it (drop it, create it empty,
--- and let the broker migrate it) together with Dispatch's database, never one alone, for the reason
--- Dispatch's runbook gives (docs/site/src/content/docs/dispatch/running-dispatch.md, "Signing
--- people in"). This file was numbered 0032, then 0033, until it was merged onto bases whose 0032
--- to 0036 are other migrations (0032_oauth_pod_sessions_binding, then
--- 0033_credential_request_dismissals to 0036_request_notify): a broker database an earlier head
--- of this branch migrated recorded this file and its two followers under those numbers (0032 to
--- 0034, or 0033 to 0035), so its runner would skip the base's migrations of those numbers in
--- silence. Reset it the same way, with its Dispatch database.
+-- its fields with '|', so a broker database an earlier head migrated keeps that shape: there the
+-- revoke's own delete is refused (23514), as the marker it sets is not the one that guard compares,
+-- or its read of person_replacement_generations fails on the missing table. Reset it (drop it,
+-- create it empty, and let the broker migrate it) together with Dispatch's database, never one
+-- alone, for the reason Dispatch's runbook gives (docs/site/src/content/docs/dispatch/running-
+-- dispatch.md, "Signing people in"). This file was numbered 0032, then 0033, then 0037, until it was
+-- merged onto bases whose 0032 to 0039 are other migrations (0032_oauth_pod_sessions_binding, then
+-- 0033_credential_request_dismissals to 0036_request_notify, then 0037_pod_carry_launcher to
+-- 0039_pod_session_registrars). A broker database an earlier head of this branch migrated recorded
+-- this file and its two followers under those numbers (0032 to 0034, 0033 to 0035, or 0037 to
+-- 0039). The migrator now records each file's identity and refuses a version recorded under
+-- another file (pgmigrate's identity check), but a database migrated before that check arrived
+-- holds no identity to compare, so it takes those numbers for the base's files and fails at this
+-- file's first statement with SQLSTATE 42701 (the column already exists); reset it the same way,
+-- with its Dispatch database. This header was edited in place after the check arrived, twice, and
+-- the two lines below name the texts before each edit, so a database that ran this file as 0040
+-- under either of them still boots.
+-- replaces: 0040_person_subjects.up.sql sha256:8d26b84bea0befd98e827c12b1cb98c19c1b6a70c9cefed0c52a4c487d024c15
+-- replaces: 0040_person_subjects.up.sql sha256:742a57586dd47192feef5eec8270b09c41b46a3031ee99485627cdf2ccad771e
 alter table person_signins
   add column issuer text,
   add column subject text,

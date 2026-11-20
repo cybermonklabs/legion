@@ -343,14 +343,13 @@ type heldRecheck struct{}
 // its first read, begun (schemaAdmissions.beginAccessCheck) and not ended, for as long as the
 // test chooses. Every other statement runs as it would.
 type recheckHolder struct {
-	once            sync.Once
-	entered, gate   chan struct{}
-	releaseOnce     sync.Once
-	holdsTheRecheck bool
+	once          sync.Once
+	entered, gate chan struct{}
+	releaseOnce   sync.Once
 }
 
-func newRecheckHolder(holds bool) *recheckHolder {
-	return &recheckHolder{entered: make(chan struct{}), gate: make(chan struct{}), holdsTheRecheck: holds}
+func newRecheckHolder() *recheckHolder {
+	return &recheckHolder{entered: make(chan struct{}), gate: make(chan struct{})}
 }
 
 func (h *recheckHolder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
@@ -359,9 +358,7 @@ func (h *recheckHolder) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.
 	}
 	h.once.Do(func() {
 		close(h.entered)
-		if h.holdsTheRecheck {
-			<-h.gate
-		}
+		<-h.gate
 	})
 	return ctx
 }
@@ -376,7 +373,7 @@ func (h *recheckHolder) release() { h.releaseOnce.Do(func() { close(h.gate) }) }
 func socketBurstDuringAccessRechecks(t *testing.T, built *weak.Pointer[Service]) {
 	// An odd number of changes, the first a removal, so bob ends off the list.
 	const bob, burst, changes = "bob@outside.example", 24, 7
-	holder := newRecheckHolder(true)
+	holder := newRecheckHolder()
 	t.Cleanup(holder.release)
 	database := storetest.TracedStore(t, storetest.Open(t), holder)
 	service := New(Deps{

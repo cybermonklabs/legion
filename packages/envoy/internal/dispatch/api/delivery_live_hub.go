@@ -63,7 +63,8 @@ type deliverySubscription struct {
 // While delivery is not configured the sub is told DELIVERY_NOT_CONFIGURED once and stays open,
 // and the settings' first save answers its snapshot. A sub id conn already holds is replaced. The
 // first sub of a hub with none starts a generation (deliveryHub); once the server's lifetime has
-// ended no generation starts and the frame is answered nothing, as the socket closes with 1012.
+// ended no sub joins, and none starts a goroutine of the hub's (goLocked), and the frame is
+// answered nothing, as the socket closes with 1012.
 // A view is its reader's: the pull requests, unowned P0 issues and issue facts it reads are of the
 // projects that reader sees (readDeliveryRows), so subscribers share a view only when they see
 // alike (deliveryReaderKey).
@@ -118,11 +119,11 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed || h.lifetime.Err() != nil {
+		return false
+	}
 	g := h.generation
 	if g == nil {
-		if h.closed || h.lifetime.Err() != nil {
-			return false
-		}
 		g = h.startLocked()
 	}
 	subs := g.conns[conn]
@@ -140,13 +141,11 @@ func (h *deliveryHub) Subscribe(conn deliveryLiveConn, frame deliverySubscriptio
 		// have walked the subs before this one was among them. Every other sub it walked it read,
 		// so this one alone is read again, after it: a re-check reads the database, which no hub
 		// lock is held across.
-		h.running.Add(1)
-		go func() {
-			defer h.running.Done()
+		h.goLocked(func() {
 			h.recheckMu.Lock()
 			defer h.recheckMu.Unlock()
 			h.recheckSubs(g, []*deliverySub{sub})
-		}()
+		})
 	}
 	return true
 }
@@ -200,6 +199,12 @@ func (h *deliveryHub) recheckReaders(g *hubGeneration) {
 // whose new reader its view's GET row refuses (liveReadRefusal) is dropped and sent that refusal
 // instead. A sub replaced or dropped meanwhile is left as it is; a reader that does not resolve
 // keeps its view until the next re-check.
+//
+// The key of a reader that sees every object (seesEveryObject) names none of the projects it sees,
+// so a new project moves no such sub: its view is read again, for the reader that sees the project
+// now, which the statements that bind the viewer read (the unowned P0 list, the unfetchable count,
+// a Legion board's project), and its pages are sent what changed, as before a project could be
+// private (R9).
 func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 	for _, sub := range subs {
 		reader, err := sub.resolve(g.readContext())
@@ -223,6 +228,9 @@ func (h *deliveryHub) recheckSubs(g *hubGeneration, subs []*deliverySub) {
 			spec.readFor(reader)
 			g.leaveLocked(sub)
 			h.joinLocked(g, sub.conn, sub.id, spec, nil, sub.resolve, sub.holds, h.clock.Now())
+		case seesEveryObject(reader) && !sameSet(sub.view.spec.reader.Viewer.Sees, reader.Viewer.Sees):
+			sub.view.spec.reader = reader
+			h.markDirtyLocked(g, sub.view, h.clock.Now(), deliveryCauseChange)
 		}
 		h.mu.Unlock()
 	}
@@ -281,12 +289,28 @@ func (h *deliveryHub) dropLocked(conn deliveryLiveConn, id string) {
 	}
 }
 
-// leaveLocked takes sub out of its view, and drops the view it leaves without a sub.
+// leaveLocked takes sub out of its view, and drops the view it leaves without a sub, and with the
+// last view of its reader what g holds of that reader (forgetReaderLocked).
 func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	delete(sub.view.subs, sub)
 	if len(sub.view.subs) == 0 && g.views[sub.view.spec.key] == sub.view {
 		delete(g.views, sub.view.spec.key)
+		g.forgetReaderLocked(sub.view.spec.viewer)
 	}
+}
+
+// forgetReaderLocked drops the unfetchable count and the verdict last sent of the reader whose part
+// of a view key is viewer once no view of g is that reader's, so a generation keeps nothing of a
+// reader whose pages have all gone, however many come and go while it runs. A reader that comes
+// back is one g never saw: its first read sets its verdict silently again (recompute).
+func (g *hubGeneration) forgetReaderLocked(viewer string) {
+	for _, view := range g.views {
+		if view.spec.viewer == viewer {
+			return
+		}
+	}
+	delete(g.unfetchable, viewer)
+	delete(g.sent, viewer)
 }
 
 // The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
@@ -319,10 +343,10 @@ const deliveryHubFeedBuffer = 1024
 // runs three goroutines on a context of its own: the listener; the intake, which alone moves the
 // change log's cursor, applies the relay's events and marks views dirty; and the worker, which
 // alone recomputes, so one recompute runs at a time. Its relay subscription, which waits for a
-// safe horizon, is taken on a fourth that ends once it has (seedEvents), at the start and after
-// a feed closes. A generation owns its views and conns, and
-// the drop of its last conn is what stops it, so a goroutine of a stopped generation reaches only
-// its own empty maps, never the next generation's, and returns once its context ends.
+// safe horizon, is taken on a fourth that ends once it has (seedEventsLocked), at the start and
+// after a feed closes. A generation owns its views and conns, and the drop of its last conn is
+// what stops it, so a goroutine of a stopped generation reaches only its own empty maps, never the
+// next generation's, and returns once its context ends.
 type deliveryHub struct {
 	server   *server
 	clock    hubClock
@@ -359,23 +383,25 @@ type hubGeneration struct {
 	ctx  context.Context
 	stop context.CancelFunc
 	// ready closes once the intake has read where the change log stands, which the worker waits
-	// for. The relay subscription is taken apart (seedEvents), so neither waits on the horizon.
+	// for. The relay subscription is taken apart (seedEventsLocked), so neither waits on the horizon.
 	ready chan struct{}
 	// Each wake holds at most one pending signal: what it asks for covers every signal before it.
 	wakeWork, wakeChanges, connected chan struct{}
 	barrier                          chan chan struct{}
 	// readersStale is set when something may have moved what a subscriber sees: an access change
-	// announced on store.AccessChangedChannel (an access write, or a person's member kind
-	// changed), a relayed event that can move it (movesSight, receive), or the listener's
-	// (re)connection, which may have missed an announcement. The worker resolves every sub's
-	// reader again before its next recompute (recheckStaleReaders), once for however many came
-	// since its last pass.
+	// announced on store.AccessChangedChannel (an access write, or a person's member kind changed), a
+	// relayed event that can move it (movesSight, receive), the listener's (re)connection, which may
+	// have missed an announcement, and the socket's heartbeat, past which an access change no event
+	// or announcement carries goes unread no longer (work). The worker resolves every sub's reader
+	// again before its next recompute (recheckStaleReaders), once for however many came since its
+	// last pass.
 	readersStale atomic.Bool
-	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
-	// completes only as the intake takes it, so a subscription is always either the intake's, which
-	// it cancels as it returns, or still seedEvents', which cancels it once g has ended. A slot
-	// could hold one the intake never took past g's end, which neither would cancel, and the relay
-	// would keep its generation, its LISTEN connection and its reads of the event log for it.
+	// feeds hands the intake the relay subscription seedEventsLocked took. It has no slot: a
+	// hand-over completes only as the intake takes it, so a subscription is always either the
+	// intake's, which it cancels as it returns, or still the subscribing goroutine's, which cancels
+	// it once g has ended. A slot could hold one the intake never took past g's end, which neither
+	// would cancel, and the relay would keep its generation, its LISTEN connection and its reads of
+	// the event log for it.
 	feeds chan hubEventFeed
 
 	views map[string]*deliveryView // by canonical view key
@@ -449,12 +475,14 @@ type deliveryView struct {
 	pipe     pipelinePopulation
 	readFrom time.Time
 	// body is the last answer, nil until the first and while delivery is not configured; seq the
-	// change position it reflects and changedAt when that change was recorded; and readingSeq the
-	// position a read under way reflects, so a change at or before it marks nothing.
+	// change position it reflects, and readingSeq the position a read under way reflects, so a
+	// change at or before either marks nothing; and shownSeq and shownAt the position its frames
+	// name to its reader and when that change was recorded (deliveryShownChange).
 	body       *deliveryLiveEncoded
 	seq        int64
 	readingSeq int64
-	changedAt  *time.Time
+	shownSeq   int64
+	shownAt    *time.Time
 	// from and at are the window start and the pipeline clock the last answer resolved; expiry is
 	// the next moment something leaves it, zero for a custom range or a pinned at.
 	from, at time.Time
@@ -592,17 +620,32 @@ func (h *deliveryHub) startLocked() *hubGeneration {
 		OnConnected: func() { g.readersStale.Store(true); signal(g.connected); signal(g.wakeWork) },
 		OnNotify:    func(channel, payload string) { h.onNotify(g, channel, payload) },
 	}
-	h.running.Add(3)
-	go func() { defer h.running.Done(); listener.Run(ctx) }()
-	go func() { defer h.running.Done(); h.intake(g) }()
-	go func() { defer h.running.Done(); h.work(g) }()
-	h.seedEvents(g)
+	h.goLocked(func() { listener.Run(ctx) })
+	h.goLocked(func() { h.intake(g) })
+	h.goLocked(func() { h.work(g) })
+	h.seedEventsLocked(g)
 	h.generation = g
 	return g
 }
 
-// wait marks the hub closed, so no generation starts again, then returns once every generation's
-// goroutines have. It is called after the lifetime ended, which ends them all.
+// goLocked runs f on a goroutine of the hub's, which running counts, with mu held, and reports
+// whether it did. Once the hub is closed (wait) it starts nothing: every Add of running is made
+// under mu before the close, so none can meet wait's Wait.
+func (h *deliveryHub) goLocked(f func()) bool {
+	if h.closed {
+		return false
+	}
+	h.running.Add(1)
+	go func() {
+		defer h.running.Done()
+		f()
+	}()
+	return true
+}
+
+// wait marks the hub closed, so no generation starts again and no goroutine of the hub's either
+// (goLocked), then returns once every generation's goroutines have. It is called after the
+// lifetime ended, which ends them all.
 func (h *deliveryHub) wait() {
 	h.mu.Lock()
 	h.closed = true

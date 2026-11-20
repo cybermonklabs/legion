@@ -475,30 +475,33 @@ func callerScopes(actor model.Actor) []string {
 const codeTokenProjectsInput = "TOKEN_PROJECTS_INPUT"
 
 // tokenProjects is the list a mint or an edit gives a token: the one the body names, or, where it
-// names none, the list the caller's own credential holds. It writes its own refusal and answers
+// names none, the list the caller's own writes are held to. It writes its own refusal and answers
 // false for a list of more than contracts.MaxTokenProjects keys, for a key the caller does not
-// see, and for an empty list from a credential that lists projects, because a token listing
-// nothing sees every public project its person sees. Every project a credential holding a list
-// sees is on that list (internal/dispatch/access, the rule), so such a credential gives a token
-// only a part of its own.
+// see, and for an empty list from a credential whose writes are held to a list, because a token
+// listing nothing sees every public project its person sees. Every project a credential holding a
+// list sees is on that list (internal/dispatch/access, the rule), so such a credential gives a
+// token only a part of its own.
 // A key named twice is listed once, and the list is stored sorted, as Credential.Projects holds it.
 //
-// What the caller sees is the reader the write's gate already resolved over the caller
-// optionalActor decided (resolveReader, which finds the one withinProjectScope put in the
-// request's context), and is read only for a list that names a key. A key the caller does not
-// see is refused in the same words whether a hidden project holds it or none does, so the refusal
-// says nothing of a project the caller may not see. So the list a mint answers, and the one an
-// edit names, is one its caller sees whole, and needs no cut (seeToken).
+// What the caller sees, and the list its writes are held to (writesHeldTo), are read off the
+// write's reader (resolveReader, which finds the one withinProjectScope put in the request's
+// context) and the request's credential: a credential's list as it holds the credential now, so a
+// broker token acting as its person, whose list holds nothing while no project is private, gives a
+// token what a credential listing none gives (R9). A key the caller does not see is refused in the
+// same words whether a hidden project holds it or none does, so the refusal says nothing of a
+// project the caller may not see. So the list a mint answers, and the one an edit names, is one its
+// caller sees whole, and needs no cut (seeToken).
 func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested *[]string) ([]string, bool) {
 	caller, _, err := s.optionalActor(r)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return nil, false
 	}
-	var own []string
-	if caller.Credential != nil {
-		own = caller.Credential.Projects
+	reader, ok := s.readerOf(w, r)
+	if !ok {
+		return nil, false
 	}
+	own := writesHeldTo(reader.Viewer, caller.Credential)
 	named := own
 	if requested != nil {
 		named = *requested
@@ -517,13 +520,8 @@ func (s *server) tokenProjects(w http.ResponseWriter, r *http.Request, requested
 		// Not nil: agent_tokens.projects is not null, and its empty list is a token listing none.
 		return []string{}, true
 	}
-	reader, err := s.resolveReader(r)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return nil, false
-	}
 	for _, project := range projects {
-		if !slices.Contains(reader.Viewer.Sees, project) {
+		if reader.Viewer == nil || !slices.Contains(reader.Viewer.Sees, project) {
 			writeError(w, codeTokenProjectsInput, http.StatusBadRequest, fmt.Sprintf(
 				"%q is no project this request's credential sees", project))
 			return nil, false

@@ -729,11 +729,11 @@ func TestTheReplacedSubjectRowsMoveOnlyAsTheRevokeMovesThem(t *testing.T) {
 	})
 }
 
-// TestMigrationThirtyTwoHoldsAnAccountWholeOrNotAtAll: a sign-in and a machine login record an
+// TestThePersonSubjectsMigrationHoldsAnAccountWholeOrNotAtAll: a sign-in and a machine login record an
 // account as an issuer and a `sub` together, never one without the other and never an empty one,
 // so a row either names one account or plainly names none; and a replaced account is recorded
 // under a lowercase login, as every login the broker compares is.
-func TestMigrationThirtyTwoHoldsAnAccountWholeOrNotAtAll(t *testing.T) {
+func TestThePersonSubjectsMigrationHoldsAnAccountWholeOrNotAtAll(t *testing.T) {
 	st := storetest.Open(t)
 	ctx := context.Background()
 	for _, c := range []struct {

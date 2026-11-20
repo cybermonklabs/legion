@@ -160,8 +160,9 @@ function TokenScopeChoices({
 /** The projects a token may use, for a token's row and for the mint form. A token that names no
  *  project uses the public projects only, and one that names projects uses those alone, private
  *  ones included. It offers the projects the reader sees (`projects`), and any the token names
- *  that the reader no longer sees, ticked, so they can be taken off. The choice is staged while
- *  the picker is open and handed to `onChoose` once it closes, and only when it changed.
+ *  that this list does not hold - a list read before the token's, or not read yet - ticked, so
+ *  they can be taken off. The choice is staged while the picker is open and handed to `onChoose`
+ *  once it closes, and only when it changed.
  *  `subject` is the token it belongs to, as for the scope boxes.
  *
  *  Dispatch cuts a token's list to what the reader sees, and tells the person's own browser when
@@ -189,8 +190,10 @@ function TokenProjectsChoice({
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const names = new Map(projects.map((listed) => [listed.key, listed.name]));
-  const options = [...names.keys(), ...chosen.filter((key) => !names.has(key))];
+  // A closed picker draws no option (MultiSelect), so its options are built only while it is open:
+  // a page of tokens re-renders every row's picker on each change, and each would build them all.
+  const names = new Map(open ? projects.map((listed) => [listed.key, listed.name]) : []);
+  const options = open ? [...names.keys(), ...chosen.filter((key) => !names.has(key))] : [];
   // The name holds the text the trigger shows, after whose token it is, so a reader who says what
   // they see reaches it (WCAG 2.5.3, Label in Name).
   const shown =

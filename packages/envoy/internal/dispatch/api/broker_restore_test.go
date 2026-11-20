@@ -24,6 +24,11 @@ const (
 	brokerURLLead      = "Every block below that reads the broker's database reaches it with `psql`"
 	madeAgainLead      = "A broker database **made again**, rather than restored, has no such moment"
 	brokerRestoredLead = "The other way round, when it is **the broker's database that was restored alone**"
+	// repeatResetLead opens the read of whether a broker backup may predate the last reset's end.
+	repeatResetLead = "A broker backup can also predate the end of a reset"
+	// poolSweepAgainLead opens the paragraph that runs the pool-to-domain sweep again after a
+	// broker restored alone.
+	poolSweepAgainLead = "A broker backup can also predate a move from the Cognito pool to a domain"
 )
 
 // TestTheRunbookPassesNoBearerTokenOnACommandLine: a token in curl's arguments sits in

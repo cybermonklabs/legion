@@ -463,17 +463,25 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if caller.Service != "" {
 		actor.Service = &caller.Service
 	}
-	// Only a token an operator's entry mapped to one project names that project, which is today's
-	// named-scope rule; brokertoken refuses a named token naming two. The one project is the
-	// credential's list, which the one rule of what a caller sees reads (internal/dispatch/access).
-	// Every other token carries no list: a named token naming none (the shared public-session
-	// account's), which reads and writes as a token naming no project does; a token acting as its
-	// person, whose trade's list (brokertoken.Caller.Projects) limits nothing here, since a dev box
-	// session's person writes wherever they may; the token of a machine naming a service and no
-	// person, which names no project at all; and a read-only token, whose project scope none names
-	// no project and writes none.
-	if caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+	// A token's list is its credential's, which the one rule of what a caller sees reads
+	// (internal/dispatch/access), and what the list holds while the deployment holds no private
+	// project is what the token did before projects could be private (R9); once one is private,
+	// every list holds the token's reads and writes (R3). A token an operator's entry mapped to one
+	// project names that project, today's named-scope rule (brokertoken refuses a named token naming
+	// two): it held the token's writes, and still does, and no read (model.ListHoldsWrites). A token
+	// acting as its person carries the list its trade asked for (brokertoken.Caller.Projects), which
+	// held nothing, since a dev box session's person writes wherever they may
+	// (model.ListHoldsNothing). Every other token carries no list: a named token naming none (the
+	// shared public-session account's), which reads and writes as a token naming no project does;
+	// the token of a machine naming a service and no person, which names no project at all; and a
+	// read-only token, whose project scope none names no project and writes none.
+	switch {
+	case caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1:
 		actor.Credential.Projects = caller.Projects
+		actor.Credential.ListHoldsWhileNoPrivate = model.ListHoldsWrites
+	case caller.ProjectScope == brokertoken.ProjectScopePerson && len(caller.Projects) > 0:
+		actor.Credential.Projects = caller.Projects
+		actor.Credential.ListHoldsWhileNoPrivate = model.ListHoldsNothing
 	}
 	// The writer the line names: the person, or the service for a token that names none, under
 	// the `service:` prefix requestKeyLogin spells a service with, so one field never reads a

@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -13,11 +15,13 @@ import (
 //
 // Control: the person back in the error's text; the test fails naming them.
 func TestAFailedEventHeadReadNamesNoPerson(t *testing.T) {
-	seed := seedPrivateProject(t)
-	if _, err := seed.database.Pool.Exec(t.Context(), `alter table projects rename to projects_gone`); err != nil {
+	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	if _, err := database.Pool.Exec(t.Context(), `alter table projects rename to projects_gone`); err != nil {
 		t.Fatalf("take the projects table away: %v", err)
 	}
-	_, err := seed.server.personEventHead(seed.readerRequest(t, callerAlice))
+	request := httptest.NewRequest(http.MethodGet, "/auth/whoami", nil)
+	request.Header.Set("X-Dispatch-User", seedAlice)
+	_, err := served.personEventHead(request)
 	if err == nil {
 		t.Fatal("the event head of a person whose projects cannot be read answered no error")
 	}
