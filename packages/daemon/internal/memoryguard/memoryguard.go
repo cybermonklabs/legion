@@ -584,14 +584,19 @@ type sizeRead struct {
 // (asOfKill), each read with whether it was a fork's read: before, its last read at a reading
 // before that one, where it has one (readBefore); and atReading, its reads at that reading in the
 // order the guard made them, the newest last, of which the first beforeKill came before that
-// reading's first kill. forkProgram is the executable and arguments its latest read that passed
-// the fork test found it running, an empty executable where it has had none in this stay: while it
-// runs that program, a later read of it is a fork's read too (discountFork).
+// reading's first kill. For a process the guard first read after the stay's first kill, atReading
+// is also what firstReadSince takes its size as of that kill from, and firstTaken is whether
+// atFirstKill holds the size firstReadSince took from these reads, which is taken again while they
+// are its reads (growthSinceStayKill, keepKillSizes). forkProgram is the executable and arguments
+// its latest read that passed the fork test found it running, an empty executable where it has had
+// none in this stay: while it runs that program, a later read of it is a fork's read too
+// (discountFork).
 type procReads struct {
 	window      []sizeRead
 	readings    int
 	before      forkRead
 	readBefore  bool
+	firstTaken  bool
 	atReading   []forkRead
 	beforeKill  int
 	forkProgram program
@@ -800,12 +805,11 @@ type Guard struct {
 	// kill; their storage is kept from one kill to the next.
 	atKill map[procKey]forkRead
 	// atFirstKill are the sizes, by process, as of the first kill of this stay in the band, kept
-	// the same way but for a process the guard never read before that kill, which has 0 where its
-	// first read after it is not a fork's read (firstReadSince), from which the order's third tier
-	// measures growth (sinceStayKill); firstKillKept is whether the stay has had that kill. Both
-	// are let go of where the stay ends (forgetSizes): below the band, while the guard is off and
-	// where it gives a rise up. A reading below the mark that is in the band ends a rise and keeps
-	// them.
+	// the same way but for a process the guard never read before that kill, whose size there is
+	// firstReadSince's, from which the order's third tier measures growth (sinceStayKill);
+	// firstKillKept is whether the stay has had that kill. Both are let go of where the stay ends
+	// (forgetSizes): below the band, while the guard is off and where it gives a rise up. A reading
+	// below the mark that is in the band ends a rise and keeps them.
 	atFirstKill   map[procKey]forkRead
 	firstKillKept bool
 	// sent are the kills sent at one reading (sendFirst, sendUrgent), whose lines and reports
@@ -2947,9 +2951,11 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate, t *Table) {
 // of c at now, its newest read before it, with that read's fork flag, as its last read before this
 // reading (before); and every read of c at now, in the order the guard makes them (atReading),
 // counting those before this reading's first kill (sendFirst, which sets the wait's at to now) in
-// beforeKill. A reading can read c more than once before its kill: at the mark, the reads again
-// (rereadHeld) and, where they send no kill (endHeld), the assessment act decides on, and a step
-// between two of them is growth since the kill. So a read after a kill at the mark replaces the
+// beforeKill. That first read clears firstTaken: a size as of the stay's first kill that
+// firstReadSince took from an earlier reading's reads is not taken again. A reading can read c
+// more than once before its kill: at the mark, the reads again (rereadHeld) and, where they send
+// no kill (endHeld), the assessment act decides on, and a step between two of them is growth since
+// the kill. So a read after a kill at the mark replaces the
 // decision's read in the window, and not in atReading. Which of those reads are of another program
 // than the one c runs now asOfKill says, by c's newest read, since a read is of another program
 // only where it was a fork's read and the later one is not (anotherProgram; INFRA-3368's
@@ -2975,7 +2981,7 @@ func (g *Guard) keepSize(now time.Time, c *candidate) {
 		} else {
 			r.atReading = make([]forkRead, 0, 2)
 		}
-		r.atReading, r.beforeKill = r.atReading[:0], 0
+		r.atReading, r.beforeKill, r.firstTaken = r.atReading[:0], 0, false
 	}
 	// A reading's reads before its first kill come before every read after it.
 	if !g.wait.at.Equal(now) {
@@ -3098,10 +3104,12 @@ func (g *Guard) forgetSizes() {
 // At the first kill of the stay in the band each is kept as the size as of that kill too
 // (atFirstKill), from which sinceStayKill measures the order's third tier for the rest of the
 // stay, across a dip below the mark that stays in the band. There, and only there, a process the
-// guard never read before the kill has 0 as its size as of it where its first read after the kill
-// is not a fork's read (firstReadSince). A process the guard first reads at a later reading has no
-// size here: keepGrowth keeps one from that first read, and growthSinceStayKill keeps one in
-// atFirstKill by firstReadSince.
+// guard never read before the kill has firstReadSince's size as of it. A process the guard first
+// reads at a later reading has no size here: keepGrowth keeps one from that first read, and
+// growthSinceStayKill keeps one in atFirstKill by firstReadSince. At a kill of the reading such a
+// size was taken at (procReads.firstTaken), this takes it again, from all of the process's reads
+// there: growthSinceStayKill may have taken it before the last of them, as where the search at the
+// mark read a fork before its parent.
 //
 // So a size as of the kills is never above a process's last read of its program before the kills'
 // reading, and a step after that read counts as growth since the kills; a read after the first
@@ -3140,11 +3148,18 @@ func (g *Guard) keepKillSizes() {
 	for key, r := range g.sizes {
 		asOf, afterKill := r.asOfKill(g.wait.at)
 		g.atKill[key] = asOf
-		if first {
-			if afterKill {
-				asOf = firstReadSince(asOf)
-			}
+		switch {
+		case first && afterKill:
+			g.atFirstKill[key] = firstReadSince(r.atReading)
+			r.firstTaken = true
+			g.sizes[key] = r
+		case first:
 			g.atFirstKill[key] = asOf
+		case r.firstTaken:
+			// A size firstReadSince took from these reads: all of them are made now.
+			if _, taken := g.atFirstKill[key]; taken {
+				g.atFirstKill[key] = firstReadSince(r.atReading)
+			}
 		}
 	}
 }
@@ -3165,7 +3180,7 @@ func (g *Guard) keepKillSizes() {
 //   - Where it has neither of those reads, the guard never read it before the kill, and its size
 //     is its first read after the kill. Only that process takes a read after the kill, since a
 //     fork reports its parent's shared pages as its own. At the stay's first kill keepKillSizes
-//     takes it only where it is a fork's read (firstReadSince).
+//     takes firstReadSince's size in its place.
 func (r *procReads) asOfKill(at time.Time) (asOf forkRead, afterKill bool) {
 	newest := r.atReading[len(r.atReading)-1]
 	if !r.readAt(at) {
@@ -3188,14 +3203,36 @@ func (r *procReads) asOfKill(at time.Time) (asOf forkRead, afterKill bool) {
 }
 
 // firstReadSince is the size as of the stay's first kill of a process the guard never read before
-// that kill, from read, its first read after the kill (keepKillSizes, growthSinceStayKill): read
-// where it is a fork's read, since a fork reports its parent's shared pages as its own, and 0 where
-// it is not. By INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec
-// version 43, item 2, such a process holds memory of its own, and the order's third tier is there
-// so that a grower ranks before a process that never grew. It is for that tier alone: the go-on's
-// sizes as of a kill (atKill) keep that first read, so below the urgent share a process that never
-// grew cannot make the guard go on.
-func firstReadSince(read forkRead) forkRead {
+// that kill, from reads, its reads at the reading of its first read after the kill, the oldest
+// first (procReads.atReading; keepKillSizes, growthSinceStayKill): its first read there, as a
+// fork's read, where any of those reads is a fork's read, since a fork reports its parent's shared
+// pages as its own; and 0 where none is. By INFRA-3368's architect's decision of 2026-11-20T08:13Z
+// on INFRA-3531 R1 of spec version 43, item 2, a process that is no fork there holds memory of its
+// own, and the order's third tier is there so that a grower ranks before a process that never
+// grew. It is for that tier alone: the go-on's sizes as of a kill (atKill) keep that first read, so
+// below the urgent share a process that never grew still cannot make the guard go on.
+//
+// The fork test is on each of those reads, the last included, and not on the first alone. A parent
+// read at that reading makes the process a fork there whether its read came before or after the
+// process's (discountFork), but the guard sets a read's flag when it makes the read, so a read made
+// before the parent's has no flag. The size is the first read's, the one nearest the kill, so a
+// step after it counts as growth since the kill: that read is a fork's read, or one with no flag,
+// which is of the program of every later read there (anotherProgram), as asOfKill takes an earlier
+// read by the newest one's flag. Its callers mark each size they take by it (procReads.firstTaken)
+// until the next reading reads the process (keepSize): until then growthSinceStayKill takes it
+// again at each measure, and keepKillSizes at a kill of that reading, once all of its reads are
+// made. A size from a read before the stay's first kill is not marked, and neither takes it again.
+//
+// At 98207b42 it took the first read's own flag. Where the search read a fork before its parent
+// and stopped, at the stay's first kill or at a later mark, the fork counted its whole size as
+// growth since that kill, and the guard ended it by rule=grew-since-kill or rule=urgent while its
+// parent lived (thread PRRT_kwDORFy7ds66JVV0 of review round 4 of cybermonklabs/legion#4273;
+// TestMemoryGuardCountsNoGrowthSinceTheStaysFirstKillForAForkTheSearchReadBeforeItsParent). This
+// is no rule change: R1 of spec version 48 counts a fork from its fork's read (INFRA-3368's
+// architect, 2026-11-20T19:50Z).
+func firstReadSince(reads []forkRead) forkRead {
+	read := reads[0]
+	read.fork = slices.ContainsFunc(reads, func(f forkRead) bool { return f.fork })
 	if read.fork {
 		return read
 	}
@@ -3230,16 +3267,14 @@ func (g *Guard) grownSinceKill(cs []candidate, t *Table) bool {
 // of that kill (atFirstKill), growthNoise or more, measured as keepGrowth measures it; and it drops
 // the sizes of each process t no longer lists (dropEnded). That is the order's third tier (rank,
 // INFRA-3531 R1 of spec versions 34 and 37). A process the guard never read before that kill
-// counts from 0 where its first read after it is not a fork's read, and from that read where it
-// is (firstReadSince; INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of
-// spec version 43, item 2). It answers whether the stay has had its first kill: before it no
-// process has any such growth, and it sets and keeps nothing. decide measures it at each band
-// reading after that kill and at the reading at the mark of each rise after it, and watch at each
-// reading after a kill (grownSinceKill), so a dip below the mark that stays in the band keeps it:
-// at 15bdbd3c, in `8g-latepool-r2`, `8g-latepool-r3` and `8g-latefork2-r1`, one grower was left,
-// the reading went about 2 MB below the mark and came back, and a guard that dropped these sizes
-// below the mark saw no growth since the dip and ended the probe's 4.8 GB parent first, which freed
-// about 6 MB, and the grower at the next reading.
+// counts from firstReadSince's size (growthSinceStayKill). It answers whether the stay has had its
+// first kill: before it no process has any such growth, and it sets and keeps nothing. decide
+// measures it at each band reading after that kill and at the reading at the mark of each rise
+// after it, and watch at each reading after a kill (grownSinceKill), so a dip below the mark that
+// stays in the band keeps it: at 15bdbd3c, in `8g-latepool-r2`, `8g-latepool-r3` and
+// `8g-latefork2-r1`, one grower was left, the reading went about 2 MB below the mark and came back,
+// and a guard that dropped these sizes below the mark saw no growth since the dip and ended the
+// probe's 4.8 GB parent first, which freed about 6 MB, and the grower at the next reading.
 func (g *Guard) sinceStayKill(cs []candidate, t *Table) bool {
 	if !g.firstKillKept {
 		return false
@@ -3252,16 +3287,27 @@ func (g *Guard) sinceStayKill(cs []candidate, t *Table) bool {
 }
 
 // growthSinceStayKill is how much c, a process read at a reading after the first kill of this stay
-// in the band, grew since that kill, the order's third tier (sinceStayKill, endKnown), measured
-// from its size as of that kill (atFirstKill) as keepGrowth measures it. Where atFirstKill holds no
-// size of c, one the guard first read after that kill's reading, it first keeps firstReadSince of
-// c's read: 0 where that read is not a fork's read, so c has grown by all it holds, and that read
-// where it is (INFRA-3368's architect's decision of 2026-11-20T08:13Z on INFRA-3531 R1 of spec
-// version 43, item 2).
+// in the band, grew since that kill, the order's third tier (sinceStayKill, endKnown, readOn),
+// measured from its size as of that kill (atFirstKill) as keepGrowth measures it. Where atFirstKill
+// holds no size of c, which the guard first read after that kill, it keeps firstReadSince's from
+// c's reads at its newest read's reading, and marks it (procReads.firstTaken). It takes a marked
+// size again at each measure while c's reads are those of the reading it was taken at, since a
+// later read there can be a fork's read where an earlier one was not. A size from a read before
+// that kill (keepKillSizes, asOfKill) is not marked, and it never takes that again. Where no read
+// of c is kept (keepSize), c's own read is the one read of it there is.
 func (g *Guard) growthSinceStayKill(c *candidate) uint64 {
 	key := procKey{pid: c.PID, start: c.StartTime}
-	if _, known := g.atFirstKill[key]; !known {
-		g.atFirstKill[key] = firstReadSince(forkRead{size: c.size, fork: c.fork})
+	r, kept := g.sizes[key]
+	_, known := g.atFirstKill[key]
+	switch {
+	case kept && (!known || r.firstTaken):
+		g.atFirstKill[key] = firstReadSince(r.atReading)
+		if !r.firstTaken {
+			r.firstTaken = true
+			g.sizes[key] = r
+		}
+	case !known:
+		g.atFirstKill[key] = firstReadSince([]forkRead{{size: c.size, fork: c.fork}})
 	}
 	return keepGrowth(g.atFirstKill, c)
 }
