@@ -15,6 +15,24 @@
 -- the time of the head the record last held, so a late opened event of that pull request at an
 -- older head records nothing (record's clearGeneration, workflow's pullRequestOpened).
 --
+-- pull_requests.settled_runs keeps, for each of the last heads a CI settlement of the pull request
+-- applied on, that head's newest run of each check (record.PullRequest.SettledRuns), at most 16
+-- heads (classify's maxSettledHeads) of one run per check name each. The check fence (check_runs)
+-- holds one head's runs and starts afresh for another head, after a reopen and after a new
+-- generation's clear, so an earlier settlement of a head the branch came back to would apply as
+-- newer; against this column it is stale (classify.SettlementFor). No verdict reads it. An earlier
+-- daemon never reads or writes it: its writes leave the column as it stands and a row it creates
+-- takes the default, so the way back keeps it.
+--
+-- dispatch_issues.status_seq is the sequence of the Dispatch event at which the mirror last saw the
+-- issue's status change (record.Postgres.PutDispatchIssue): set when a row is written first, and
+-- moved, only forward, by an applied event whose status differs from the row's. A person's approval
+-- of a parked root's spec that reaches the daemon late queues the root as their handover only when
+-- no status change came after the approval (workflow's personHandoverQueues). It is null on every
+-- row written before it, which reads as no such change, as before. An earlier daemon neither reads
+-- nor writes it, so the way back keeps it; a roll forward finds it at a sequence older than the
+-- row's newest status change, which only lets a late approval queue the root, as before.
+--
 -- A rollback of one project to an earlier image first deletes two kinds of that project's row,
 -- with its daemon stopped. Its intake-gave-up controller notices go, because the earlier image
 -- decodes a notice strictly (record.DecodeOutboxPayload) and refuses this kind and its count and
@@ -96,6 +114,10 @@ create table cleared_pull_requests (
   cleared_at timestamptz not null,
   primary key (repo, number)
 );
+
+alter table pull_requests add column settled_runs jsonb not null default '[]'::jsonb;
+
+alter table dispatch_issues add column status_seq bigint;
 
 -- There is no down file: migrations here are forward-only. The way back above is what a rollback
 -- runs.

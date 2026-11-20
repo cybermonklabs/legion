@@ -55,8 +55,34 @@ func tableExists(t *testing.T, store *Store, name string) bool {
 	return exists
 }
 
-// 20261120001432 creates intake_failures and cleared_pull_requests, neither of which the database
-// before it holds (the negative control). A record takes the shapes the intake writes — an open
+// columnShape is the type, nullability and default of table's column as the database holds it,
+// "" for a column it does not hold.
+func columnShape(t *testing.T, store *Store, table, column string) string {
+	t.Helper()
+	var shape string
+	err := store.Pool().QueryRow(t.Context(), `select data_type || ' nullable=' || is_nullable || ' default=' || coalesce(column_default, '')
+		from information_schema.columns where table_schema = current_schema() and table_name = $1 and column_name = $2`, table, column).Scan(&shape)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read the shape of %s.%s: %v", table, column, err)
+	}
+	return shape
+}
+
+// The columns 20261120001432 adds to two tables an earlier daemon writes, each in the shape that
+// daemon's writes keep working with: pull_requests.settled_runs, never null and the empty list by
+// default, so a row an earlier daemon inserts holds no settled run; and dispatch_issues.status_seq,
+// a sequence that is null on every row written before it.
+var intakeFailuresColumns = map[[2]string]string{
+	{"pull_requests", "settled_runs"}:  "jsonb nullable=NO default='[]'::jsonb",
+	{"dispatch_issues", "status_seq"}: "bigint nullable=YES default=",
+}
+
+// 20261120001432 creates intake_failures and cleared_pull_requests, and adds the two columns
+// intakeFailuresColumns names in their shapes, none of which the database before it holds (the
+// negative control). A record takes the shapes the intake writes — an open
 // failure, a give-up, a give-up a replay closed, a discarded one, and a discarded one a replay
 // closed later, which keeps its discard — and the checks refuse each shape no statement may write,
 // each by its own constraint: a closed record that is not given up, a discard with no reason, a
@@ -72,8 +98,18 @@ func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
 			t.Fatalf("the database before %d holds %s; the control wants it absent", intakeFailuresVersion, table)
 		}
 	}
+	for column := range intakeFailuresColumns {
+		if shape := columnShape(t, store, column[0], column[1]); shape != "" {
+			t.Fatalf("the database before %d holds %s.%s (%s); the control wants it absent", intakeFailuresVersion, column[0], column[1], shape)
+		}
+	}
 	if _, err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through the intake's failures: %v", err)
+	}
+	for column, want := range intakeFailuresColumns {
+		if got := columnShape(t, store, column[0], column[1]); got != want {
+			t.Errorf("%s.%s after %d = %q, want %q", column[0], column[1], intakeFailuresVersion, got, want)
+		}
 	}
 
 	seq := 0

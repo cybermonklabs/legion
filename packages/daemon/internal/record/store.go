@@ -686,7 +686,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	failing, cancelled, check_runs,
 	generation, snapshot, statuses, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward`
+	checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha, conflict_read, merge_forward, settled_runs`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -741,6 +741,18 @@ func (s *Postgres) PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo stri
 		return nil, fmt.Errorf("read pull request %s#%d: %w", repo, number, err)
 	}
 	return pr, nil
+}
+
+func (s *Postgres) ClearedPullRequestClock(ctx context.Context, tx pgx.Tx, repo string, number int) (time.Time, error) {
+	var clock *time.Time
+	if err := tx.QueryRow(ctx, `select max(head_updated_at) from cleared_pull_requests where lower(repo) = lower($1) and number = $2`,
+		repo, number).Scan(&clock); err != nil {
+		return time.Time{}, fmt.Errorf("read the clock of cleared pull request %s#%d: %w", repo, number, err)
+	}
+	if clock == nil {
+		return time.Time{}, nil
+	}
+	return *clock, nil
 }
 
 // RowQuerier reads one row: a pool (*pgxpool.Pool), a connection or a transaction.
@@ -852,6 +864,10 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: encode check runs: %w", pr.Issue, err)
 	}
+	settledRuns, err := json.Marshal(append([]AttemptRun{}, pr.SettledRuns...))
+	if err != nil {
+		return fmt.Errorf("put pull request for %s: encode settled runs: %w", pr.Issue, err)
+	}
 	noteIssueWrite(ctx, pr.Issue)
 	statuses, err := json.Marshal(append([]CommitStatus{}, pr.Statuses...))
 	if err != nil {
@@ -894,9 +910,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		failing, cancelled, check_runs, generation, snapshot, statuses, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, state_read_at, conflicting_head, merge_sha,
-		conflict_read, merge_forward, fix_attempts, blocked_attempts, head_counted)
+		conflict_read, merge_forward, settled_runs, fix_attempts, blocked_attempts, head_counted)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, 0, 0, '')
+		$27, $28, $29, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -907,12 +923,12 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
 		mergeability = excluded.mergeability, merge_state = excluded.merge_state, state_read_at = excluded.state_read_at,
 		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha,
-		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward`,
+		conflict_read = excluded.conflict_read, merge_forward = excluded.merge_forward, settled_runs = excluded.settled_runs`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, statuses, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward,
+		pr.Mergeability, pr.MergeState, pr.StateReadAt, pr.ConflictingHead, pr.MergeSHA, conflictRead, mergeForward, settledRuns,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1448,9 +1464,24 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
 // their issue column, and issues selects the same issues in the issues table. The design gates go
 // with them, in a statement of their own (clearGates).
+//
+// A pull request that is not open goes, and its clock — the updated_at of the newest lifecycle
+// event it applied — is kept in cleared_pull_requests at its repository and number, the latest of
+// every clear's: GitHub can deliver an opened or a reopen of it after the clear, late or replayed
+// from a message the intake gave up on, however late, and the workflow records such an event only
+// when it is newer than that clock (workflow's pullRequestOpened, ClearedPullRequestClock). The
+// row is never deleted: a pull request recorded again is fenced by its own row from then on.
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
+	if _, err := tx.Exec(ctx, `with cleared as (
+			delete from pull_requests where `+where+` and state <> 'open' returning repo, number, head_updated_at)
+		insert into cleared_pull_requests (repo, number, head_updated_at, cleared_at)
+		select distinct on (repo, number) repo, number, head_updated_at, $2::timestamptz from cleared order by repo, number, head_updated_at desc
+		on conflict (repo, number) do update set
+			head_updated_at = greatest(cleared_pull_requests.head_updated_at, excluded.head_updated_at), cleared_at = excluded.cleared_at`,
+		key, now); err != nil {
+		return fmt.Errorf("%s: %w", describe, err)
+	}
 	for _, statement := range []string{
-		"delete from pull_requests where " + where + " and state <> 'open'",
 		// An open pull request is kept across a new generation, but the last one's reading of it is
 		// not: its checks settlement is of a head nobody has judged since, and the
 		// review round's decision goes with the phases below, and so does its head run, whose
@@ -1526,12 +1557,12 @@ func (s *Postgres) clearGates(ctx context.Context, tx pgx.Tx, where, key, descri
 
 func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
-	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward []byte
+	var failing, cancelled, checkRuns, statuses, pushes, moves, run, conflictRead, mergeForward, settledRuns []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot, &statuses,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.StateReadAt, &pr.ConflictingHead, &pr.MergeSHA,
-		&conflictRead, &mergeForward); err != nil {
+		&conflictRead, &mergeForward, &settledRuns); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
@@ -1542,6 +1573,13 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	}
 	if err := json.Unmarshal(checkRuns, &pr.CheckRuns); err != nil {
 		return nil, fmt.Errorf("decode check runs: %w", err)
+	}
+	// No settled run is nil, as a pull request built before any settlement holds it.
+	if err := json.Unmarshal(settledRuns, &pr.SettledRuns); err != nil {
+		return nil, fmt.Errorf("decode settled runs: %w", err)
+	}
+	if len(pr.SettledRuns) == 0 {
+		pr.SettledRuns = nil
 	}
 	if err := json.Unmarshal(statuses, &pr.Statuses); err != nil {
 		return nil, fmt.Errorf("decode commit statuses: %w", err)

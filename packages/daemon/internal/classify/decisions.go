@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -710,6 +711,15 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 // the current head: every other settlement - an earlier head's, a head a force push left - stands
 // for nothing. A settlement of a head other than the recorded one starts that head's fence afresh,
 // since check runs, generations, snapshots and commit statuses are each head's own.
+//
+// A fresh fence holds no run of the head, so an older settlement of it would be classified newer
+// than nothing. That happens when the branch went to another head that settled and then came
+// back, when a reopen emptied the fence, and when a new generation's clear did (record.Store's
+// ClearGeneration). So a settlement older, check by check, than the runs of the head a settlement
+// the record applied before held (record.PullRequest.SettledRuns, settledBefore) - delivered late,
+// or replayed from a message the intake gave up on, however late - stands for nothing either. A
+// settlement of those same runs again is no older and stands: it says what the head came to,
+// which the fresh fence does not say.
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -717,6 +727,9 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	}
 	if head == pr.CheckedHead {
 		return pr, true
+	}
+	if settledBefore(pr, candidate) {
+		return pr, false
 	}
 	pr.CheckedHead = head
 	pr.Failing = []string{}
@@ -726,6 +739,57 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 	pr.Snapshot = ""
 	pr.Statuses = nil
 	return pr, true
+}
+
+// maxSettledHeads bounds the heads a pull request remembers the settled runs of
+// (record.PullRequest.SettledRuns), and so the column that keeps them: at most this many heads,
+// one run of each check name a head reported. A branch comes back to a head it held after a push
+// or two is undone, a reopen, or a new generation, each of which is a head or two back; sixteen
+// cover that with room. A head pushed out of the memory loses only this fence: an older
+// settlement of it applies, as one did before the record kept any.
+const maxSettledHeads = 16
+
+// settledBefore says whether candidate is older, check by check (CompareAttemptSets), than the
+// runs the record remembers settling for candidate.Head (record.PullRequest.SettledRuns): the
+// settlement is an earlier one of that head than one already applied. A head the record never
+// settled, or one it no longer remembers, says nothing against it.
+func settledBefore(pr record.PullRequest, candidate SettlementCandidate) bool {
+	var settled []record.AttemptRun
+	for _, run := range pr.SettledRuns {
+		if run.Head == candidate.Head {
+			settled = append(settled, run)
+		}
+	}
+	return settled != nil && CompareAttemptSets(settled, candidate.CheckRuns) == AttemptSetOlder
+}
+
+// rememberSettled is settled, the runs the record remembers settling (record.PullRequest's
+// SettledRuns), with the runs fence holds for head, the head a settlement just applied on: each
+// check name's newest run of that head, the head's group moved to the end, where the newest
+// settled head stands. The oldest heads go beyond maxSettledHeads. No verdict reads what it
+// keeps: only settledBefore does.
+func rememberSettled(settled []record.AttemptRun, head string, fence []record.AttemptRun) []record.AttemptRun {
+	var own, others []record.AttemptRun
+	var heads []string
+	for _, run := range settled {
+		if run.Head == head {
+			own = append(own, run)
+			continue
+		}
+		if !slices.Contains(heads, run.Head) {
+			heads = append(heads, run.Head)
+		}
+		others = append(others, run)
+	}
+	for _, run := range fence {
+		if run.Head == head {
+			own = append(own, run)
+		}
+	}
+	if drop := len(heads) - (maxSettledHeads - 1); drop > 0 {
+		others = slices.DeleteFunc(others, func(run record.AttemptRun) bool { return slices.Contains(heads[:drop], run.Head) })
+	}
+	return append(others, mergeAttemptSets(own, nil)...)
 }
 
 // HeadPushKnown says whether a push the record holds left head, so the record already knows of a

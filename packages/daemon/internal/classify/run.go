@@ -201,7 +201,9 @@ func sameSettlement(a, b record.Settlement) bool {
 }
 
 // settle applies candidate when it stands for the head and is newer than the recorded settlement,
-// and otherwise leaves pr as it was.
+// and otherwise leaves pr as it was. A settlement it applies is remembered for its head
+// (rememberSettled), so a later reset of the head's fence still finds an older one stale
+// (SettlementFor).
 func settle(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	stood, stands := SettlementFor(pr, candidate)
 	if !stands {
@@ -211,6 +213,7 @@ func settle(pr record.PullRequest, candidate SettlementCandidate) (record.PullRe
 	if !ok {
 		return pr, false
 	}
+	applied.SettledRuns = rememberSettled(applied.SettledRuns, applied.CheckedHead, applied.CheckRuns)
 	return applied, true
 }
 

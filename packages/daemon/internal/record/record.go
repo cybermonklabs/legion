@@ -836,6 +836,15 @@ type PullRequest struct {
 	// reopen step of a head run, Store.ClearGeneration). A move of the head leaves it stamped with
 	// the head it was of, so no text names it for the new head (workflow's headChecks).
 	Statuses []CommitStatus
+	// SettledRuns is the runs of the last heads a CI settlement applied on, each check name's
+	// newest run of each, grouped by head, the head settled last at the end: at most
+	// classify.maxSettledHeads heads. The fence above is one head's and starts afresh for another
+	// head, after a reopen and after a new generation's clear, which leaves it nothing to find an
+	// older settlement of a head stale against when the branch comes back to that head; this is
+	// what it is found stale against then (classify.SettlementFor). Nothing else reads it, no
+	// verdict among them, and it is kept through a reopen and a new generation, as the pull
+	// request's row is.
+	SettledRuns []AttemptRun
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
 	// chain still to complete, or one that returns the branch to a commit it held before
@@ -1808,6 +1817,10 @@ type Store interface {
 	// or without a mirrored row of the issue: a claim event applied before the issue's first row is
 	// the newest claim Dispatch showed.
 	DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error)
+	// DispatchStatusSeq is the sequence of the Dispatch event at which the mirror last saw key's
+	// status change, and whether it holds one: false for no mirrored row, and for a row written
+	// before the mirror kept it.
+	DispatchStatusSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error)
 	Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error)
 	// PhaseEntries is the entry each phases row of issues names, the moment that entry was raised
 	// and whether its task is one to send as written (PhaseRow.Entry, PhaseRow.EntryRaisedAt,
@@ -1824,6 +1837,11 @@ type Store interface {
 	PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error)
 	PullRequestByBranch(ctx context.Context, tx pgx.Tx, repo, branch string) (*PullRequest, error)
 	PullRequestByNumber(ctx context.Context, tx pgx.Tx, repo string, number int) (*PullRequest, error)
+	// ClearedPullRequestClock is the clock (updated_at) of the newest lifecycle event pull request
+	// number of repo had applied when a new generation's clear deleted its row (ClearGeneration),
+	// repo compared without case as PullRequestByNumber compares it, and the zero time when no clear
+	// deleted it or its row held no clock.
+	ClearedPullRequestClock(ctx context.Context, tx pgx.Tx, repo string, number int) (time.Time, error)
 	// OpenPullRequests is every open pull request of the Dispatch project key project's issues.
 	OpenPullRequests(ctx context.Context, tx pgx.Tx, project string) ([]PullRequest, error)
 	// OpenPullRequestsOnBase is every open pull request of repo recorded on the base branch base,

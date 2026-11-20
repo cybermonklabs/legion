@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -257,6 +258,72 @@ func TestALateReviewOlderThanTheNewestChangesNothing(t *testing.T) {
 	}
 }
 
+// A deciding review submitted before the entry the reviewer's row stands at was raised
+// (record.PhaseRow.EntryRaisedAt) is a review of an earlier round, and decides nothing of the round
+// that stands, however late it is applied - a webhook redelivered late, or a message the intake
+// gave up on and replayed: a person's by that time alone, and the review App's when its footer also
+// names an entry other than the row's (intake.PullRequestReview.LegionEntry). It is dropped before
+// anything is written, so the round records no refusal of it either, even where its footer names
+// a head that is no longer the pull request's. Here round 1 (entry 1) ended undecided at the head
+// it reviewed and round 2 (entry 2) stands at that same head, raised at raised.
+//
+// What the rule leaves deciding: the review App's review of the earlier entry whose submission
+// time is after the raise, which is the reviewer's review of the round that stands after a carried
+// hand-over's promotion raised its entry in the middle of that round, and is also a late review
+// whose GitHub time runs ahead of the daemon's clock (decided only when its footer names the
+// current head, refusesRound); a footer that names no entry; a person's review with no submission
+// time; and any review submitted after the raise.
+func TestAReviewOfAnEarlierRoundDecidesNoLaterRound(t *testing.T) {
+	raised := time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC)
+	before, after := raised.Add(-time.Hour), raised.Add(time.Hour)
+	app := func(state, body string, at time.Time) intake.PullRequestReview {
+		return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, SubmittedAt: at, State: state, CommitID: headOne,
+			HeadSHA: headOne, Author: testReviewApp, Body: body}
+	}
+	person := func(at time.Time) intake.PullRequestReview {
+		return intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 12, SubmittedAt: at, State: "changes_requested", CommitID: headOne,
+			Author: "a-writer", AuthorCanWrite: true, Body: "rename the widget"}
+	}
+	for _, tc := range []struct {
+		name   string
+		review intake.PullRequestReview
+		// decides is the state the review decides round 2 with, "" for none.
+		decides string
+	}{
+		{name: "a review-App approval whose footer names the earlier entry",
+			review: app("approved", reviewBodyOfEntry("ship it", "ses-reviewer", headOne, 1), before)},
+		{name: "a person's changes request submitted before the entry was raised", review: person(before)},
+		{name: "a review-App changes request of the earlier entry whose footer names another head",
+			review: app("changes_requested", reviewBodyOfEntry("rename the widget", "ses-reviewer", headTwo, 1), before)},
+		{name: "a review-App approval of the earlier entry submitted after the raise",
+			review: app("approved", reviewBodyOfEntry("ship it", "ses-reviewer", headOne, 1), after), decides: "approved"},
+		{name: "a review-App approval whose footer names no entry",
+			review: app("approved", reviewBody("ship it", headOne), before), decides: "approved"},
+		{name: "a person's changes request with no submission time", review: person(time.Time{}), decides: "changes_requested"},
+		{name: "a person's changes request submitted after the raise", review: person(after), decides: "changes_requested"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedReviewOf(t, pool, headOne, "green")
+			// Round 2's entry, raised when the issue came back into reviewing at the same head.
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Entry: 2,
+				EntryTask: "Continue root. Issue: LEGION-208. Phase: reviewing. Pull request: #42.", EntryRaisedAt: raised})
+			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			if tc.decides == "" {
+				lateChangesNothing(t, pool, apply, "late-review", tc.review)
+				if row := reviewerRow(t, pool); row.Decision != nil {
+					t.Fatalf("round 2's decision after the review of round 1 = %+v, want none", *row.Decision)
+				}
+				return
+			}
+			apply("review", tc.review)
+			if row := reviewerRow(t, pool); row.Decision == nil || row.Decision.State != tc.decides {
+				t.Fatalf("round 2's decision = %+v, want the review's %s", row.Decision, tc.decides)
+			}
+		})
+	}
+}
+
 // A CI settlement whose runs are older, check by check, than the settlement the record holds - the
 // listener's earlier settlement of the head, delivered late - is stale and changes nothing, whether
 // the head stays green and the issue in testing, though the late settlement is red.
@@ -278,6 +345,58 @@ func TestALateSettlementWithLowerRunsChangesNothing(t *testing.T) {
 			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 			apply("newest-settlement", tc.newest)
 			lateChangesNothing(t, pool, apply, "late-settlement", tc.late)
+			assertPhase(t, pool, phase.Testing)
+		})
+	}
+}
+
+// A settlement of a head the fence no longer stands at starts that head's fence afresh
+// (classify.SettlementFor), and the record remembers the runs of the heads it settled
+// (record.PullRequest.SettledRuns): so an earlier settlement of a head, delivered late or replayed
+// from a message the intake gave up on, however late, is stale against them and changes nothing
+// once the fence has left that head. Here head settled (ci, run 5), and then its fence was reset
+// in each of the three ways one is: the branch moved to head-2, which settled (ci, run 7), and
+// came back to head; the pull request was closed and reopened at head; or a new generation of the
+// issue cleared it. The settlement of head before run 5 then arrives.
+func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
+	const dev = "legion-implementer[bot]"
+	settled := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
+		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, CheckRuns: []record.AttemptRun{{Name: "ci", ID: id}},
+			Generation: generation, Snapshot: fmt.Sprintf("%s-%d", head, generation), Failing: append([]string{}, failing...), Cancelled: []string{}}
+	}
+	for _, tc := range []struct {
+		name  string
+		reset func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact))
+	}{
+		{"the branch left the head and came back", func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+			apply("pushed-head-2", sentPush("head", "head-2", dev))
+			apply("moved-to-head-2", namedSync("head", "head-2", dev, lateApplied.Add(time.Minute)))
+			apply("head-2-settled", settled("head-2", 7, 1))
+			apply("pushed-back", sentPush("head-2", "head", dev))
+			apply("moved-back", namedSync("head-2", "head", dev, lateApplied.Add(2*time.Minute)))
+		}},
+		{"the pull request was closed and reopened", func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+			apply("closed", closedAt("head", lateApplied.Add(time.Minute)))
+			apply("reopened", readOpened("head", lateApplied.Add(2*time.Minute), true))
+		}},
+		{"a new generation cleared it", func(t *testing.T, pool *pgxpool.Pool, apply func(string, intake.Fact)) {
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(time.Hour))
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedLateIssue(t, pool, phase.Testing, "testing", &record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42,
+				Branch: "legion/LEGION-208", HeadSHA: "head", HeadUpdatedAt: lateApplied, Failing: []string{}})
+			apply := githubFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			apply("head-settled", settled("head", 5, 2))
+			tc.reset(t, pool, apply)
+			if pr := latePullRequest(t, pool); pr.State != record.PullRequestOpen || pr.HeadSHA != "head" || pr.CheckedHead == "head" || pr.Run != nil {
+				t.Fatalf("after the reset the pull request is %s at %s, its fence at %q, a head run open %v; want it open at head, its fence elsewhere and no run",
+					pr.State, pr.HeadSHA, pr.CheckedHead, pr.Run != nil)
+			}
+			lateChangesNothing(t, pool, apply, "late-settlement", settled("head", 4, 1, "ci"))
 			assertPhase(t, pool, phase.Testing)
 		})
 	}

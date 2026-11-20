@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -213,6 +214,13 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 // Only the worker of the pod's open phase is woken: the settlement is that worker's business and
 // no one else's, and an architect reads it from its own notices. A head that settles again as each
 // of its checks finishes wakes the pod no second time, because the role's resume is still open.
+//
+// A settlement wakes nobody where the record will not take it for the pull request's head now
+// (dispatch://INFRA-1575 R1): one of a head the pull request has left, or one of its head that is
+// older than a settlement the record applied (classify.SettlementFor, which also reads the runs
+// remembered for the head, and classify.SettlementStale). Such a settlement arrives late, or
+// replayed from a message the intake gave up on, however late, and the woken worker's task would
+// name a verdict that is no longer the head's.
 func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks) (claim.Role, error) {
 	if e.cfg.Pods == nil || fact.HeadSHA == "" {
 		return "", nil
@@ -220,6 +228,10 @@ func (e *Engine) wakeOnSettlement(ctx context.Context, tx pgx.Tx, fact intake.Pu
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
 		return "", err
+	}
+	candidate := settlementCandidate(fact)
+	if stood, stands := classify.SettlementFor(*pr, candidate); !stands || classify.ClassifySettlement(stood, candidate) == classify.SettlementStale {
+		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {

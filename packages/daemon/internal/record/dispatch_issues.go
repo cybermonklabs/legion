@@ -25,11 +25,18 @@ func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, row Dispatch
 	if row.Parent != "" {
 		parent = &row.Parent
 	}
-	tag, err := tx.Exec(ctx, `insert into dispatch_issues (key, project, status, blockers, dispatch_seq, parent)
-		values ($1, $2, $3, $4, $5, $6)
+	// status_seq is the sequence at which the mirror last saw the status change: the row's first
+	// write sets it, and a newer observation moves it only when its status differs from the row's,
+	// so a rename or a re-rank leaves it where the status last moved (DispatchStatusSeq). A row
+	// written before the column holds none, and an observation with the status it holds leaves
+	// that as it is.
+	tag, err := tx.Exec(ctx, `insert into dispatch_issues (key, project, status, blockers, dispatch_seq, parent, status_seq)
+		values ($1, $2, $3, $4, $5, $6, $5)
 		on conflict (key) do update set project = excluded.project, status = excluded.status,
 			blockers = excluded.blockers, dispatch_seq = excluded.dispatch_seq,
-			parent = excluded.parent
+			parent = excluded.parent,
+			status_seq = case when dispatch_issues.status is distinct from excluded.status then excluded.dispatch_seq
+				else dispatch_issues.status_seq end
 		where dispatch_issues.dispatch_seq < excluded.dispatch_seq`,
 		row.Key, row.Project, row.Status, blockers, row.Seq, parent)
 	if err != nil {
@@ -84,6 +91,23 @@ func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) 
 		return 0, false, fmt.Errorf("read the Dispatch mirror sequence of %s: %w", key, err)
 	}
 	return seq, true, nil
+}
+
+// DispatchStatusSeq is the sequence of the Dispatch event at which the mirror last saw key's
+// status change (PutDispatchIssue), and whether it holds one: false for no row, and for a row
+// written before the mirror kept it.
+func (s *Postgres) DispatchStatusSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error) {
+	var seq *int64
+	err := tx.QueryRow(ctx, `select status_seq from dispatch_issues where key = $1`, key).Scan(&seq)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return 0, false, nil
+	case err != nil:
+		return 0, false, fmt.Errorf("read the Dispatch status sequence of %s: %w", key, err)
+	case seq == nil:
+		return 0, false, nil
+	}
+	return *seq, true, nil
 }
 
 func (s *Postgres) DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error) {

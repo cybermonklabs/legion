@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -221,6 +222,55 @@ func TestASecondSettlementOfTheSameHeadWakesThePodNoSecondTime(t *testing.T) {
 	oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1")
 	if resumes := wakeResumes(t, rig.pool); len(resumes) != 1 {
 		t.Fatalf("pod resumes after a second settlement of the same head = %v, want the one", resumes)
+	}
+}
+
+// R2 and the late-apply rule of dispatch://INFRA-1575: a settlement wakes a released worker only
+// when it is one the record applies for the pull request's head now. A settlement of a head the
+// pull request has left, or one of the head that is older than the settlement the record holds
+// (classify.SettlementStale), wakes nobody, however late it arrives: a webhook delivered late, or a
+// message the intake gave up on and replayed. The woken worker's task would name a verdict that is
+// no longer the head's. In the second case the newer settlement woke the pod, the worker came back
+// and its pod was released again, so the late settlement finds the role released with no open
+// resume, which is the one state a wake can be taken in.
+func TestASettlementOfAnotherHeadWakesNoReleasedWorker(t *testing.T) {
+	ofRun := func(head string, id, generation int64, failing ...string) intake.PullRequestChecks {
+		return intake.PullRequestChecks{Repo: "sjawhar/legion", Number: 42, HeadSHA: head, Generation: generation,
+			Snapshot: fmt.Sprintf("%s-%d", head, generation), CheckRuns: []record.AttemptRun{{Name: "build", ID: id}}, Failing: failing}
+	}
+	for _, tc := range []struct {
+		name string
+		// newer is what the record applied before the late settlement.
+		newer func(t *testing.T, rig wakeRig)
+		// wakes is how many wakes the outbox holds at the end: the newer settlement's own, if any.
+		wakes int
+		late  intake.PullRequestChecks
+	}{
+		{name: "a settlement of the head before a push", newer: func(t *testing.T, rig wakeRig) {
+			rig.apply("pushed", latePush("head1", "head2", "legion-implementer[bot]"))
+			rig.apply("moved", lateSync("head2", wakeAt))
+			if pr := latePullRequest(t, rig.pool); pr.HeadSHA != "head2" {
+				t.Fatalf("after the push the pull request is at %s, want head2", pr.HeadSHA)
+			}
+		}, late: ofRun("head1", 1, 1, "build")},
+		{name: "a settlement of the head older than the one that woke the pod", newer: func(t *testing.T, rig wakeRig) {
+			rig.apply("settled", ofRun("head1", 5, 2))
+			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, "head1", "passed every check")
+			// The worker's first turn takes the resume up, and a later idle release leaves its claim
+			// released again.
+			if _, err := rig.pool.Exec(context.Background(), `update pod_resumes set first_turn_at = $1 where issue = 'LEGION-208'`, wakeAt); err != nil {
+				t.Fatalf("take the resume up: %v", err)
+			}
+		}, wakes: 1, late: ofRun("head1", 4, 1, "build")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			tc.newer(t, rig)
+			rig.apply("late-settled", tc.late)
+			if starts := wakeStarts(t, rig.pool); len(starts) != tc.wakes {
+				t.Fatalf("supervise start rows after the late settlement = %+v, want %d: the late settlement wakes nobody", starts, tc.wakes)
+			}
+		})
 	}
 }
 

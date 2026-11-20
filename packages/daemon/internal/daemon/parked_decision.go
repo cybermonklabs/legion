@@ -43,11 +43,15 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // parked-decision notice of its own, and the decision is kept for the root's next architect start.
 // It runs in a transaction of its own that marks key processed and owns the commit hook the write
 // registers (projectRecords, intake.OnCommit), so the notice's lane wakes as it commits. It does
-// nothing for a kind that is no spec decision. Every outcome logs one line that pairs the
+// nothing for a kind that is no spec decision, nor for a changes request the person has since
+// replaced with a newer one of the same document (workflow.ChangesSuperseded): the workflow tells
+// such a request when it arrives after the newer one — late, or replayed from a message the intake
+// gave up on, however late — and kept now it would take the newer decision's place, and its
+// claim, under the document's ref. Every outcome logs one line that pairs the
 // undelivered row with what became of its decision: sent, kept for a root that waits for its slot,
-// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, or on a
-// root with no record), or handled before under the same key, by an earlier run or another row
-// carrying the same notice, whose own line said what became of it.
+// not relayed (by no person, on a root that is no parked tree, on a tree that hears it, on a root
+// with no record, or replaced since), or handled before under the same key, by an earlier run or
+// another row carrying the same notice, whose own line said what became of it.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
 	if !ok {
@@ -55,7 +59,7 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 	}
 	args := []any{"row", row, "kind", notice.Kind, "issue", issue, "root", root, "key", key}
 	now := r.now().UTC()
-	outcome, fresh, recorded := record.RelayNone, false, false
+	outcome, fresh, recorded, replaced := record.RelayNone, false, false, false
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		marked, err := r.records.MarkProcessed(scoped, tx, parkedDecisionSource, key)
@@ -68,6 +72,13 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 			return err
 		}
 		recorded = true
+		gates, err := r.records.GatesOf(scoped, tx, issue)
+		if err != nil {
+			return err
+		}
+		if replaced = workflow.ChangesSuperseded(gates, issue, notice); replaced {
+			return nil
+		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
 			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
 		return err
@@ -80,6 +91,8 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		r.log.Info("outbox parked decision handled before under this key", args...)
 	case !recorded:
 		r.log.Info("outbox parked decision not relayed: its root has no record", args...)
+	case replaced:
+		r.log.Info("outbox parked decision not relayed: a newer changes request of its document replaced it", append(args, "ref", notice.Ref, "version", notice.Version)...)
 	case outcome == record.RelaySent:
 		r.log.Info("outbox parked decision sent to the controller", args...)
 	case outcome == record.RelayKept:

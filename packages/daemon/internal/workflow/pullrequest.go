@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -160,6 +162,26 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 	if recorded != nil && classify.LateLifecycle(fact.UpdatedAt, recorded.HeadUpdatedAt) {
 		return intake.Result{}, nil
 	}
+	// A new generation deletes a pull request that is not open and keeps its clock
+	// (record.Store.ClearedPullRequestClock), so an opened or reopened of it no newer than that
+	// clock - late, or replayed from a message the intake gave up on, however late - finds no row
+	// for the fence above and would bring it back open at the head it had then. It records nothing.
+	// A reopen newer than the clock is a person reopening it since, and applies. The clock is read
+	// under either name of a configured rename, as the record is (ghrepo.Under), and a clock missing
+	// on either side fences nothing, as LateLifecycle's does.
+	if recorded == nil {
+		cleared, err := ghrepo.Under(e.cfg.RepositoryRenames, fact.Repo, func(name string) (time.Time, error) {
+			return e.store.ClearedPullRequestClock(ctx, tx, name, fact.Number)
+		})
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if !fact.UpdatedAt.IsZero() && !cleared.IsZero() && !fact.UpdatedAt.After(cleared) {
+			e.logOnCommit(ctx, "workflow: a late opened of a pull request a new generation cleared records nothing",
+				"issue", issue.Key, "repo", fact.Repo, "pull_request", fact.Number, "updated_at", fact.UpdatedAt, "cleared_clock", cleared)
+			return intake.Result{}, nil
+		}
+	}
 	if recorded != nil && recorded.State == record.PullRequestMerged && recorded.Number != fact.Number && awaitsMerge(*issue) {
 		e.logOnCommit(ctx, "workflow: a pull request opened from a branch whose issue waits to close on its merge is not recorded",
 			"issue", issue.Key, "merged", recorded.Number, "opened", fact.Number)
@@ -181,10 +203,13 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		// The reopen keeps the pushes - facts about commits - and the head run, so a push that
 		// arrives after the reopen settles the move the reopen made as it would have had it
-		// arrived first (classify.Reopen); the CI settlement starts afresh.
+		// arrived first (classify.Reopen); the CI settlement starts afresh. It keeps the runs of
+		// the heads settled before (record.PullRequest.SettledRuns), so an earlier settlement of
+		// the head it reopens at, delivered late, is still stale against them (classify's
+		// SettlementFor).
 		carried := classify.Reopen(*recorded, fact.HeadSHA)
 		pr.ReviewSeen = recorded.ReviewSeen
-		pr.Pushes, pr.Moves, pr.Run = carried.Pushes, carried.Moves, carried.Run
+		pr.Pushes, pr.Moves, pr.Run, pr.SettledRuns = carried.Pushes, carried.Moves, carried.Run, carried.SettledRuns
 		// The reopen keeps the base and the push onto it the next read still owes an answer for: a
 		// pull request reopens onto the base it was opened on, and a fact that names none (a
 		// listener that predates the field) must not forget the recorded one.
@@ -241,20 +266,22 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		return intake.Result{}, err
 	}
 	prior := *pr
-	// GitHub names the base on every pull-request event, so a synchronize is also where a base
-	// retargeted on GitHub reaches the record; one that names none (a listener that predates the
-	// field, or the daemon's own read of the head) leaves the recorded base as it is, for the
-	// daemon's next read of the pull request to fill. A late redelivery that writes nothing
-	// records no base either, as it records nothing else.
-	if fact.Base != "" {
-		pr.Base = fact.Base
-	}
 	named := record.Named{Before: fact.Before, SHA: fact.HeadSHA, Sender: fact.Sender, At: fact.UpdatedAt}
 	if classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
 		if *pr = classify.NameMove(*pr, named); pr.Run == prior.Run {
 			return intake.Result{}, nil
 		}
 		return intake.Result{}, e.putPullRequest(ctx, tx, *pr)
+	}
+	// GitHub names the base on every pull-request event, so a synchronize is also where a base
+	// retargeted on GitHub reaches the record; one that names none (a listener that predates the
+	// field, or the daemon's own read of the head) leaves the recorded base as it is, for the
+	// daemon's next read of the pull request to fill. A late synchronize - a redelivery, or one
+	// replayed from a message the intake gave up on, however late - records no base, even where it
+	// names the move a head run waits for above: the base it names is the one the pull request had
+	// when it was sent, which a newer event may have retargeted since.
+	if fact.Base != "" {
+		pr.Base = fact.Base
 	}
 	arrival := classify.Arrival{Before: fact.Before, Sender: fact.Sender, At: fact.UpdatedAt}
 	moved := classify.MovesBy(*pr, fact.HeadSHA)

@@ -231,3 +231,48 @@ func TestALateEventOfAnEarlierPullRequestLeavesTheNewerOne(t *testing.T) {
 		})
 	}
 }
+
+// A new generation of the issue deletes its pull request when it is not open (record.Store's
+// ClearGeneration), and keeps the clock of the newest event that pull request applied
+// (cleared_pull_requests). An opened or reopened of that pull request no newer than the clock -
+// late, or replayed from a message the intake gave up on, however late - records nothing: it
+// neither brings the pull request back open at the head it had then nor moves the issue, under
+// the name the pull request was recorded with or the other name of a configured rename. A reopen
+// newer than the clock is a person reopening it since, and records it open, as before.
+func TestALateOpenedOfAPullRequestAnEarlierGenerationClearedRecordsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		seed   record.PullRequestState
+		engine *Engine
+		fact   intake.Fact
+		// reopened is whether the fact records the pull request open again.
+		reopened bool
+	}{
+		{name: "a closed pull request's late opened", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateOpened("head-a", lateApplied.Add(-time.Hour))},
+		{name: "a merged pull request's late opened", seed: record.PullRequestMerged, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateOpened("head-a", lateApplied.Add(-time.Hour))},
+		{name: "a closed pull request's late reopen", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateReopened("head-b", lateApplied.Add(-30*time.Minute))},
+		{name: "a late opened under the name the repository moved to", seed: record.PullRequestClosed, engine: renamedEngine(renamedLegion),
+			fact: intake.PullRequestOpened{Repo: "cybermonklabs/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head-a", UpdatedAt: lateApplied.Add(-time.Hour)}},
+		{name: "a reopen after the clear", seed: record.PullRequestClosed, engine: testEngine(config.DesignGateRootIssues, nil),
+			fact: lateReopened("head-d", lateApplied.Add(time.Hour)), reopened: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := appliedEvents(t, tc.seed)
+			seedRecord(t, pool, func(tx pgx.Tx) error {
+				return record.NewStore().ClearGeneration(t.Context(), tx, "LEGION-208", lateApplied.Add(2*time.Hour))
+			})
+			apply := githubFacts(t, pool, tc.engine)
+			if !tc.reopened {
+				lateChangesNothing(t, pool, apply, "late", tc.fact)
+				return
+			}
+			apply("reopened", tc.fact)
+			if got := latePullRequest(t, pool); got.Number != 42 || got.State != record.PullRequestOpen || got.HeadSHA != "head-d" {
+				t.Fatalf("the record after the reopen is #%d at %s, %s; want #42 open at head-d", got.Number, got.HeadSHA, got.State)
+			}
+		})
+	}
+}

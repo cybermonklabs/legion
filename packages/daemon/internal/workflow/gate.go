@@ -741,6 +741,13 @@ func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArt
 // "The walk", step 3) repeats this decision in prose to skip the approvals it queues: a change to
 // what queues changes that step too.
 //
+// The view is Dispatch's issue as it is when the fact is prepared, not as it was at the approval,
+// so it cannot say whether the park it shows came before the approval or after it. An approval
+// the daemon applies after a later change of the issue's status (statusMovedSince) — delivered
+// late, or replayed from a message the intake gave up on, however late — queues nothing: a person
+// who approved and then parked the root again keeps it parked. Any other later event, a rename
+// say, changes no status and leaves the approval queuing the root, as the walk expects.
+//
 // dispatchArtifact ties its skip of the root's own gate to this decision rather than to the tree
 // being live: a lingering root that is not parked — closed as done, or still in triage — queues
 // nothing and keeps today's behaviour, its gate taking the event, so a reopen inside the linger
@@ -754,6 +761,9 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 	if view.Parent != nil || !view.HandedOver || !parked || view.PrimaryArtifactID != fact.ArtifactID {
 		return false, nil
 	}
+	if moved, err := e.statusMovedSince(ctx, tx, fact.Key, fact.Mark.Seq); err != nil || moved {
+		return false, err
+	}
 	stored, err := e.store.Issue(ctx, tx, fact.Key)
 	if err != nil {
 		return false, err
@@ -766,6 +776,19 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 		return false, err
 	}
 	return !live, nil
+}
+
+// statusMovedSince says whether the issue key's status changed after seq: the sequence at which
+// the Dispatch mirror, which every issue event the daemon applies writes first (blockers.Mirror),
+// last saw its status change is later (record.Store.DispatchStatusSeq). A seq of zero, a review
+// from a read that carries no sequence, cannot be placed, and a mirror row that keeps no status
+// sequence says nothing: neither is a change since.
+func (e *Engine) statusMovedSince(ctx context.Context, tx pgx.Tx, key string, seq int64) (bool, error) {
+	if seq <= 0 {
+		return false, nil
+	}
+	moved, known, err := e.store.DispatchStatusSeq(ctx, tx, key)
+	return known && moved > seq, err
 }
 
 // copyTakes says whether a carried copy of another root's gate takes an event of that root's

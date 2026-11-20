@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"reflect"
 	"slices"
@@ -340,4 +341,60 @@ func TestAPendingPersonsHandoverSuppressesASecondAndAHandOverRowDoesNot(t *testi
 			t.Fatalf("status writes = %#v, want the hand-over row and the person's handover, %#v", got, want)
 		}
 	})
+}
+
+// A person's approval of a parked labelled root's spec, delivered after the root's status changed
+// - late, or replayed from a message the intake gave up on, however late - queues nothing:
+// Dispatch's view the approval is prepared with is the issue as it is now, so it cannot say whether
+// the park it shows came before the approval or after it, and the mirror's status sequence
+// (record.Store.DispatchStatusSeq) says the status moved after the approval. Here the person
+// approved the spec at sequence 9 and moved the root to icebox at sequence 10, and the park reached
+// the daemon first. An event after the approval that changed no status, a rename after a park that
+// came before it, leaves the root queued, and so does a mirror row written before the mirror kept
+// the status sequence, as before.
+func TestALatePersonsApprovalQueuesNoRootAPersonParkedSince(t *testing.T) {
+	event := func(seq int64, title string) intake.DispatchIssue {
+		return intake.DispatchIssue{Key: "LEGION-208", ResolvedRepo: "sjawhar/legion", Seq: seq, Type: "issue.updated", Status: "icebox",
+			Title: title, Rank: "U", HandedOver: true}
+	}
+	for _, tc := range []struct {
+		name string
+		// recorded seeds the root's record, nil for a root the daemon has no record of.
+		recorded *record.Issue
+		// events are the root's issue events the daemon applied before the approval, which is at 9.
+		events []intake.DispatchIssue
+		// unkept takes the status sequence off the mirror's row, as a row written before it was kept.
+		unkept bool
+		// queued is whether the approval queues the root as the person's handover.
+		queued bool
+	}{
+		{name: "an unrecorded root parked after the approval", events: []intake.DispatchIssue{event(10, "root")}},
+		{name: "a recorded lingering root parked after the approval", recorded: new(lingeringRoot("backlog")), events: []intake.DispatchIssue{event(10, "root")}},
+		{name: "a root parked before the approval and renamed after it", events: []intake.DispatchIssue{event(8, "root"), event(11, "the root, renamed")}, queued: true},
+		{name: "a mirror row that keeps no status sequence", events: []intake.DispatchIssue{event(10, "root")}, unkept: true, queued: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			if tc.recorded != nil {
+				seedIssue(t, pool, *tc.recorded)
+			}
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			for _, fact := range tc.events {
+				applyMirrored(t, pool, engine, fmt.Sprintf("event-%d", fact.Seq), fact)
+			}
+			if tc.unkept {
+				if _, err := pool.Exec(t.Context(), `update dispatch_issues set status_seq = null where key = 'LEGION-208'`); err != nil {
+					t.Fatalf("take the status sequence off the mirror's row: %v", err)
+				}
+			}
+
+			applyMirrored(t, pool, engine, "late-approval", approvalOf(askPerson, parkedRootView("icebox")))
+
+			queued := slices.Contains(statusWrites(t, pool, "LEGION-208"), personHandoverWrite("icebox"))
+			if queued != tc.queued {
+				t.Fatalf("the approval at sequence 9 queued the person's handover = %v, want %v; status writes %#v",
+					queued, tc.queued, statusWrites(t, pool, "LEGION-208"))
+			}
+		})
+	}
 }
