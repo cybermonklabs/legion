@@ -45,7 +45,8 @@ func renderedTimeout(t *testing.T, text string) int {
 // firstClientPingInterval (2 s, plus up to 20%: server/client.go setFirstPingTimer), also while
 // the client's CONNECT still waits for the callout, and nats.go's handshake reads anything but
 // PONG as an error. nats-server 2.15.1 reads no configuration key that lengthens that first ping
-// (DisableShortFirstPing is `json:"-"` in server/opts.go). So the block renders no timeout, the
+// (DisableShortFirstPing is `json:"-"` in server/opts.go). nats.go v1.55.0 keeps the unexpected-
+// protocol refusal in connection initialization (`nats.go:2942-3306`). So the block renders no timeout, the
 // server's default of 2 s stands, and the service's budget is 1.5 s.
 //
 // Each row's answer comes inside both: 0.5 s before the rendered timeout (1.5 s at the default),

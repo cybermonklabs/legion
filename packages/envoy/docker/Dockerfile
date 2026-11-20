@@ -29,7 +29,7 @@ RUN set -eu; \
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
-COPY packages/broker-client/package.json packages/broker-client/package.json
+COPY packages/cipher-client/package.json packages/cipher-client/package.json
 COPY packages/envoy-client/package.json packages/envoy-client/package.json
 COPY packages/pi-envoy/package.json packages/pi-envoy/package.json
 COPY packages/pi-legion/package.json packages/pi-legion/package.json
@@ -104,9 +104,10 @@ RUN go mod download
 # .dockerignore leaves out what no image compiles: test files, internal/integration,
 # internal/smoke, deploy, infra (the envoy-infra module) and the changelog fragments.
 COPY packages/envoy ./
-# The Go contracts file is generated from packages/contracts/schemas; never
+# The Go contracts files are generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
+COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listenerwire/envelope_generated.go
 
 # /out/THIRD_PARTY_NOTICES, the image's /usr/share/doc/legion/THIRD_PARTY_NOTICES: the licenses of
 # the Go modules the four binaries below compile in (with the build's CGO_ENABLED and the image's
@@ -115,7 +116,7 @@ COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
-      ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets \
+      ./cmd/listener ./cmd/dispatch ./cmd/cipherd ./cmd/cipher \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
       "Go modules compiled into /usr/local/bin/envoy-listener, envoy-dispatch, envoy-broker and agent-secrets" /tmp/go-notices \
@@ -135,9 +136,9 @@ RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
     go build -ldflags "-X main.buildCommit=${LEGION_COMMIT}" -o /out/envoy-dispatch ./cmd/dispatch \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/envoy-broker ./cmd/broker \
+    go build -o /out/envoy-broker ./cmd/cipherd \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \
-    go build -o /out/agent-secrets ./cmd/agent-secrets
+    go build -o /out/agent-secrets ./cmd/cipher
 
 # Minimal runtime — static binary, no shell needed.
 # curl is included for HEALTHCHECK and operational debugging.

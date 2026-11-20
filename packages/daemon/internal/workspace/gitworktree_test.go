@@ -118,35 +118,6 @@ func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
 	}
 }
 
-// removeTree answers a path whose parent is a fifo rather than waiting on it: os.RemoveAll opens
-// the parent of a path it cannot unlink outright with a plain open, which a fifo nobody writes
-// holds for ever, and every caller of removeTree removes something under the shared clone's
-// .git/worktrees, which a role can swap for a fifo.
-func TestRemoveTreeAnswersAParentThatIsAFifo(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "worktrees")
-	if err := syscall.Mkfifo(parent, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- removeTree(filepath.Join(parent, "infra-1")) }()
-	select {
-	case err := <-done:
-		if !errors.Is(err, syscall.ENOTDIR) {
-			t.Fatalf("removeTree under a fifo answered %v, want ENOTDIR", err)
-		}
-	case <-time.After(5 * time.Second):
-		// Open the fifo for writing so the blocked open returns and the test's goroutine ends.
-		if writer, openErr := os.OpenFile(parent, os.O_WRONLY, 0); openErr == nil {
-			_ = writer.Close()
-		}
-		<-done
-		t.Fatalf("removeTree was still opening %s after 5s: a parent that is a fifo blocks the removal", parent)
-	}
-	if info, err := os.Lstat(parent); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
-		t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", parent, info, err)
-	}
-}
-
 // worktreesToFifo is a runner for restoreGitWorktree alone: jj answers a working-copy parent, and
 // `git read-tree` swaps the shared clone's .git/worktrees for a fifo, as a role working the clone
 // can, and fails, which sends the restore down its cleanup of the temporary entry it built there.

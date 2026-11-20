@@ -340,9 +340,11 @@ that registers a port is refused: the listener answers 400 naming `port`, since 
 session's port. Register with no port and receive from the session's own NATS consumer. The
 listener's `/v1` API takes no bearer, which the listener allows on a loopback address, or off
 loopback where `ENVOY_API_ALLOW_UNAUTHENTICATED=1` says something else fences the port, as the
-clustered hub's session listener sets it (`packages/envoy/cmd/listener/apiauth.go`). On this VM
-the listener is on loopback, so the tailnet's policy for port 9020 is the only thing that decides
-who may call it; on the clustered hub the listener's own NetworkPolicy is a second fence there.
+clustered hub's tailnet-only session listener sets it (`packages/envoy/cmd/listener/apiauth.go`).
+On this VM the listener is on loopback, so the tailnet's policy for port 9020 is the only thing that
+decides who may call it; on the clustered hub the listener's own NetworkPolicy is a second fence
+there, and a clustered hub listener that pods of the cluster reach requires a token instead
+([The session listener](#the-session-listener)).
 Either way a caller that gets through gets the whole API with no credential: it can publish to any
 topic outside the agent topics with a `source` of its choosing, under the listener's user's
 publish grant (Dispatch, GitHub, Slack, Legion and role notifications included), claim a role,
@@ -427,8 +429,9 @@ The listener keeps one count for each sending session. The count starts at the b
 one message every 60 seconds divided by the rate, up to the burst. The counts are the listener
 process's own, so a restart of the listener, or a new VM, fills each count again. The sender is
 the session that a secrets-broker token proves, else the request's `source_session`. A message
-with another `source`, such as `dispatch` or `envoy`, is not counted. Neither is a message with no
-sender, which is how the Legion daemon sends its notices.
+with another `source`, such as `dispatch` or `envoy`, is not counted, with a secrets-broker token
+or without one. Neither is a message with no sender, which is how the Legion daemon sends its
+notices.
 
 A message that finds its sender's count at 0 is answered HTTP `429`. The listener does not store
 it, keep it for a later holder of a role or report a wake for it. `Retry-After` gives the whole
@@ -975,8 +978,9 @@ Both hubs render their users through one function, `authorization` in `gcp/natsh
 `core`'s `Render` under the same header, so the same `users`, listener and `sessionUser` give the
 same authorization byte for byte (`TestClusteredNatsHubRendersTheVMHubsAuthorization`). Everything
 [The hub's users](#the-hubs-users) says holds for the clustered hub, with one difference: the
-listener's user is named after `tailnet.listener.machineId`, which defaults to
-`tailnet.serviceName`, where the VM names it after its `hostname`. A deployment that moves from a
+listener's user is named after its `machineId` (`listener.machineId` or `tailnet.listener.machineId`,
+wherever the listener is declared), which defaults to `tailnet.serviceName` with `tailnet` and is
+required without it, where the VM names it after its `hostname`. A deployment that moves from a
 `gcp:NatsHub` whose `hostname` is `envoy-hub` keeps the machine id `envoy-hub`, by naming its
 Tailscale Service `envoy-hub` or by setting `machineId`: the listener's user is then the one the
 VM rendered, with `ListenerPermissions(envoy-hub)`, and its durable is the VM listener's
@@ -1079,11 +1083,15 @@ servers on the rendered configuration, the route through a proxy limited to 0.4 
 a 40 MB burst does not close the route as stale within 60 s of the burst's start, and without it
 the top-level 20 s ping does, within 60.5 s of the moment the sending server has queued the burst.
 
-The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
+The session listener's `/v1` on 9020 is the second port a policy guards. Declared as
+`tailnet.listener` with no `clientNamespaces`, that listener carries
 `ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token
 input for it, so its `/v1` answers with no credential at all. The NetworkPolicy `<n>-listener`
-admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of the
-cluster off `/v1` ([The session listener](#the-session-listener)).
+then admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of
+the cluster off `/v1`. A listener declared as the hub's own `listener`, or given
+`clientNamespaces`, is admitted to by the pods of those namespaces as well, and requires each
+caller's projected ServiceAccount token instead of the flag, so the policy is not its only guard
+([The session listener](#the-session-listener)).
 
 Both guards need a cluster that enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane
 V2. A cluster whose network plugin does not enforce it accepts both objects and admits every
@@ -1100,8 +1108,11 @@ client to a host, not to a host per port, so every host serves both of the Servi
 forwarded as TCP to the hub's client Service, and 9020, forwarded to the session listener's own
 cluster Service. Clients reach them as the hub's `tailnetNatsUrl`,
 `nats://<tailnet.serviceName>.<tailnetDnsName>:4222`, and `tailnetEnvoyUrl`, the same name on
-9020. The listener's `/v1` takes no bearer there, as on the VM, so
-[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written.
+9020. A `tailnet.listener` with no `clientNamespaces` takes no bearer there, as on the VM, so
+[The hub's listener](#the-hubs-listener) holds for port 9020 of the Service as written. A
+listener declared as the hub's own `listener`, or given `clientNamespaces`, requires each tailnet
+caller's token too, as it requires every other caller's ([The session
+listener](#the-session-listener)).
 
 Each host's advertiser advertises the Service as soon as its node may. So a listener fault leaves
 the hub's 4222 on the tailnet, and every host keeps serving both ports while the listener's own
@@ -1120,7 +1131,7 @@ seconds of it.
 ### The session listener
 
 The session listener runs in a workload of its own, the Deployment `<n>-listener`, and in no host
-pod. One pod runs it, as machine `tailnet.listener.machineId`, and no input changes that count.
+pod. One pod runs it, as its `machineId`, and no input changes that count.
 Two copies would contend for the one durable `listener-<machine id>`: the second waits 135
 seconds for it (`cmd/listener/durable.go`, `durableBindDeadline`), then exits, and is restarted
 again and again. That holds until cybermonklabs/legion#2404 gives the listener a delivery lease.
@@ -1128,42 +1139,74 @@ The module's README lists the five objects the listener's name carries
 ([The session listener](../README.md#the-session-listener)).
 
 How it is reached. Each host forwards the Tailscale Service's port 9020 to the Service
-`<n>-listener` in the hub's namespace. The NetworkPolicy `<n>-listener` admits TCP 9020 from the
-tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
-listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
-`/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
-is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces NetworkPolicy.
-The listener answers 421 to every `Host` that is neither a loopback name or address nor one of
-`ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather than a caller the
-NetworkPolicy admits, since such a caller reaches `/v1` with `Host: localhost`. The hub's own
-NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
+`<n>-listener` in the hub's namespace, and the pods of `clientNamespaces` dial that Service at
+`<n>-listener.<namespace>.svc.cluster.local:9020`. The NetworkPolicy `<n>-listener` admits TCP
+9020 from the tailnet hosts' pods with `tailnet`, then from the pods of each `clientNamespaces`
+namespace, and every other port of the listener's pod is admitted to nobody. The listener binds
+`0.0.0.0` and carries no `ENVOY_API_TOKEN`. What lets its `/v1` answer off loopback depends on who
+reaches it:
+
+- A `tailnet.listener` with no `clientNamespaces` is reached by the tailnet hosts alone and
+  carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, so its `/v1` answers with no credential. The
+  NetworkPolicy is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces
+  NetworkPolicy. The listener answers 421 to every `Host` that is neither a loopback name or
+  address nor one of `ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather
+  than a caller the NetworkPolicy admits, since such a caller reaches `/v1` with `Host:
+  localhost`.
+- A listener declared as the hub's own `listener`, with or without `tailnet`, or a
+  `tailnet.listener` with `clientNamespaces`, carries the token check instead:
+  `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS`, from its `oidcIssuer`,
+  `oidcAudience` and `oidcAccounts`. Every caller, a tailnet host's included, presents a
+  projected ServiceAccount token that issuer signed for that audience, of a subject the list
+  names; any other request gets 401, whatever the NetworkPolicy admits. It renders no
+  `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer serves `/v1` to any `Host`.
+  Its image must be `legion-envoy-v30.32.0` or later, the first release whose listener reads
+  `ENVOY_OIDC_ACCOUNTS`. An older listener reads the issuer and audience, so it still requires a
+  bearer, but takes no account list and admits every subject that issuer signs a token for the
+  audience, so any pod the NetworkPolicy admits could call `/v1` as any session. The component
+  reads the image only as a digest, which says nothing of its release, so it cannot refuse an
+  older one: the deployment pins a digest of that release or later.
+
+The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
-`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
-reads the HTTP status of `/healthz` and never its body, so the new pod is ready while it still
-waits for the durable, and the rolling update never waits for the stream. The two copies contend
-for the durable from the moment the new pod's container starts, and the old pod is sent SIGTERM
-only once the new pod is Ready, so the window where both exist is the new pod's time to its first
-`/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
-removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
-seconds, inside its grace period of 40. That is a margin of 7 seconds (`listenerGraceMargin`),
-which covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
-container's teardown and a late tick on a loaded node. It does not cover a listener that runs
-over its own deadlines. What has to hold that whole window is the new pod's own 135-second bind
-deadline, counted from its own start, not the old pod's grace. A hung old pod holds its durable
-for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` answer. A new
-pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
-restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
-listener pod is ready, and its port 4222 serves through it. Setting, changing or removing
-`tailnet.listener.senderMessagesPerMinute` or `tailnet.listener.senderMessageBurst` is a change
-of the listener's environment, so it rolls the pod the same way. The new pod's listener starts
-with every sender's count full, as any restart of the listener does.
+`maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. The new pod
+is Ready only once its `/v1` serves, since its startup probe passes only then (below), and `/v1`
+opens without waiting for the durable, which the old pod holds until it stops, so the new pod's
+`/v1` cannot wait on the old pod. The new pod's listener starts its bind of the durable right
+after its `/v1` opens, and the old pod is sent SIGTERM only once the new pod is Ready, at most one
+10-second period of the startup probe after that open. The old pod's stop then takes 33 seconds
+in all: it keeps answering for 5 seconds, the time its removal from the Service's endpoints takes
+to reach every node's proxy, and then stops in 28 seconds, inside its grace period of 40. That is
+a margin of 7 seconds (`listenerGraceMargin`), which covers the kubelet's own latency between the
+preStop hook's return and SIGTERM, the container's teardown and a late tick on a loaded node. It
+does not cover a listener that runs over its own deadlines. What has to fit under the new pod's
+135-second bind deadline (`durableBindDeadline`), counted from its `/v1` open, is the startup
+probe's lag behind that open plus the old pod's stop. A hung old pod holds its durable for all 40
+seconds, so that lag may be up to 95 seconds, and the probe's period keeps it at most 10. A new
+pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one restarts
+on its bind deadline, or on its startup probe when its `/v1` never opens. The Tailscale Service's
+port 9020 refuses connections while no listener pod is ready, and its port 4222 serves through
+it. Setting, changing or removing the listener's `senderMessagesPerMinute` or `senderMessageBurst`
+is a change of the listener's environment, so it rolls the pod the same way. The new pod's listener
+starts with every sender's count full, as any restart of the listener does.
 
-What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
-listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a
-NATS outage or a cache warm-up restarts nothing. The listener gets two minutes for its first
-answer, and a minute of no answer at all restarts the container. Only the readiness probe reads
-`/healthz`, whose HTTP status is what tells a starting pod from a serving one.
+What is watched. The startup probe runs `/bin/sh -c` of
+`curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '` every
+10 seconds, with a 6-second timeout and 60 failures allowed: ten minutes for `/v1` to open, after
+which the kubelet restarts the container. `/metrics` takes no credential, and the listener writes
+the sample line `envoy_active_interests <n>` there only once its `/v1` gate is open and its
+interest list can be served; the pattern never matches the gauge's `# HELP` or `# TYPE` line,
+which every scrape carries. The kubelet runs neither of the other two probes, and the pod is not
+Ready, until this one has passed. A listener older than `legion-envoy-v29.15.0` writes the sample
+from its first answer, so there the probe passes at that answer. Readiness and liveness read
+`/livez` with `curl -sS`, which the listener answers 204 without reading the bus, and which exits
+0 whatever the HTTP status, so both are status-blind: a NATS outage or any other fault of the
+hub, which every pod shares, neither takes the one pod out of the Service nor restarts it. Only
+30 seconds of no answer at all takes the pod out of the Service (readiness, every 10 seconds, 3
+failures allowed), and a minute of it restarts the container (liveness, every 10 seconds, 6
+failures allowed). No probe reads `/healthz`, which the listener answers 200 `starting` from its
+first answer, before its `/v1` opens.
 The PodDisruptionBudget `<n>-listener` allows one unavailable pod, so a node drain or an
 Autopilot upgrade moves the pod rather than stalling on it. The pod-down alert below names this
 pod and its container.

@@ -924,7 +924,7 @@ pair_session= negative_config_pod= block_tree= pg_container=none
 shape_pid= daemon_pid= watch_pid= events_pid= leaks_pid= sampler_pid= interests_pid=
 mkdir -p "$work" "$evidence"
 exec 7>&1
-stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; run_processes() { :; }; docker() { :; }
+stop_tree() { :; }; stop_pid() { :; }; record_pair() { :; }; stop_marked_processes() { :; }; docker() { :; }
 note() { echo "   $*"; }
 run_container_label=legion.dev/e2e-run run_container_id=session-text-run signalled=
 ${fn("remove_run_container")}

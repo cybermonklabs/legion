@@ -228,7 +228,7 @@ func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan error, logs *s
 // stopWithin is stopRun for a daemon startDaemonLogging started.
 func stopWithin(t *testing.T, d *daemon, logs *syncBuffer, bound time.Duration) (time.Duration, string) {
 	t.Helper()
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	return stopRun(t, d.cancel, d.done, logs, bound)
 }
@@ -660,7 +660,7 @@ func TestRunRecordsAnOperatorSuspensionWhoseProcessExitsWithinTheDrain(t *testin
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -734,7 +734,7 @@ func TestRunWaitsForTheCleanStopOfASuspensionDecidedBeforeTheHalt(t *testing.T) 
 		t.Fatalf("the suspension's clean stop never reached the listener; log:\n%s", logs)
 	}
 
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -856,7 +856,7 @@ func TestAFrameAShimWritesDuringTheDrainWaitsInItsBacklogForTheNextDaemon(t *tes
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()
@@ -995,7 +995,7 @@ func TestAnOperatorsTreeCloseInFlightAtTheStopStopsTheTreesClaimsOverTheirConnec
 	}
 
 	bootSwept(t, logs)
-	d.stopped = true
+	d.stopped.Store(true)
 	d.transport.CloseIdleConnections()
 	mark := len(logs.String())
 	d.cancel()

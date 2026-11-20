@@ -107,7 +107,7 @@ func TestCommittedLedgerWritePersistsSettlementCreditWhenCallerContextCancelsAft
 		t.Fatalf("begin edit: %v", err)
 	}
 	defer tx.Rollback(context.Background())
-	joined, ledger := service.Join(ctx, cancelAfterCommitTx{Tx: tx, cancel: cancel})
+	joined, ledger := service.Join(ctx, &cancelAfterCommitTx{Tx: tx, cancel: cancel})
 	defer ledger.Discard()
 	actor := model.Actor{Kind: "session", ID: "canceled-after-commit-session"}
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{
@@ -697,7 +697,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 	var nextNumber int
@@ -742,7 +742,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 
@@ -1325,7 +1325,7 @@ func closeTestIssue(t *testing.T, service *Service) {
 	})
 }
 
-// reopenTestIssue reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx): in one
+// reopenTestIssue reopens DOC-1 as the API's reopen does (api.prepareRestoration, recordRestoredAsksTx): in one
 // transaction joined with Service.Join (joinedWrite), which holds the issue's row once it clears
 // closed_at, it marks owing a settlement each document of the issue whose ask blocks a settlement
 // after the reopen has to reconcile (MarkReopenOwedAskDocuments): one that holds an ask block no
@@ -1334,12 +1334,11 @@ func closeTestIssue(t *testing.T, service *Service) {
 // closed (FollowClosedIssueVersions): it moves an open approval request to its document's latest
 // version, carries a standing approval to that version, and forgets the editor a closed issue's
 // settlement kept for each document that owes no settlement. It restores no ask: a test that
-// wants an ask the close withdrew open again writes its row itself. Once that commits, the events
-// the follow appended are published and the reopen is recorded on this service's rooms, as room
-// sync records it on the reopen's notification.
+// wants an ask the close withdrew open again writes its row itself. The commit publishes the
+// events the follow appended (Ledger.Commit), and the reopen is then recorded on this service's
+// rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
-	var followed []model.Event
 	if err := joinedWrite(service, func(ctx context.Context) error {
 		tx, _ := txFromContext(ctx)
 		if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
@@ -1348,14 +1347,9 @@ func reopenTestIssue(t *testing.T, service *Service) {
 		if err := service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		var err error
-		followed, err = service.FollowClosedIssueVersions(ctx, "DOC-1")
-		return err
+		return service.FollowClosedIssueVersions(ctx, "DOC-1")
 	}); err != nil {
 		t.Fatalf("reopen the issue, mark owed its documents whose ask blocks wait for the reopen and follow its closed versions: %v", err)
-	}
-	for _, event := range followed {
-		service.events.Publish(event)
 	}
 	service.issueOpenChanged(context.Background(), "DOC-1")
 }

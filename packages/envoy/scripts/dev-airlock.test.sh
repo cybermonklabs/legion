@@ -102,13 +102,13 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'NOTHING'
 #!/usr/bin/env bash
 exit 0
 NOTHING
     ;;
-  */agent-secrets)
+  */cipher)
     # The stack runs two forms: `keygen --out <dir>`, which makes the session key and prints its
     # thumbprint, which the enrolment sends; and `renew --pod-token-file <file>`, the session's
     # renewer, which records what it was started with and stays alive until it is stopped.
@@ -166,7 +166,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */broker)
+  */cipherd)
     # Logs the whole of what it was configured with, the model judge's settings included, then
     # the JSON lines the stack reads its addresses from, as the real broker writes them: the
     # API port always, the proxy port only with a rules file, exactly as the real broker binds a
@@ -185,7 +185,7 @@ printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metri
 exec sleep 999999
 BROKER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     # The three modes the stack drives: the stands, which write the files and the JSON report
     # it reads; the front, which reports the address it bound; and the enrolment, which
     # answers an enrollment id and records what it was asked to enrol.
@@ -228,8 +228,10 @@ cat <<REPORT
   "github_app_id": "123456",
   "github_app_key_file": "$dir/github-app.pem",
   "model_answer_url": "http://127.0.0.1:$$/answers/model",
-  "dispatch_open_issue": "INFRA-1353",
-  "dispatch_done_issue": "INFRA-1200",
+  "dispatch_open_issue": "ACME-1353",
+  "dispatch_done_issue": "ACME-1200",
+  "dispatch_answered_ask": "4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b",
+  "dispatch_ask_answered_by": "approver@example.test",
   "stands": {
     "s": {"address": "127.0.0.1:1001", "url": "https://127.0.0.1:1001", "records_url": "http://127.0.0.1:$$/records/s"},
     "t": {"address": "127.0.0.1:1002", "url": "https://127.0.0.1:1002", "records_url": "http://127.0.0.1:$$/records/t"},
@@ -468,20 +470,21 @@ printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s to 
   "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
   "$approver" "$service" "$admin_max_grant"
 
-# What a check needs to drive the judge: the three stands' records, the answer route and the
-# two issues the Dispatch stand holds.
+# What a check needs to drive the judge: the three stands' records, the answer route, the two
+# issues the Dispatch stand holds and the answered ask on the open one.
 records_url="$(exported AIRLOCK_RECORDS_URL)"
 for want in "AIRLOCK_MODEL_RECORDS=$records_url/records/model" \
   "AIRLOCK_DISPATCH_RECORDS=$records_url/records/dispatch" \
   "AIRLOCK_METADATA_RECORDS=$records_url/records/metadata" \
   "AIRLOCK_MODEL_ANSWER_URL=$model_answer_url" \
-  "AIRLOCK_DISPATCH_OPEN_ISSUE=INFRA-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=INFRA-1200"; do
+  "AIRLOCK_DISPATCH_OPEN_ISSUE=ACME-1353" "AIRLOCK_DISPATCH_DONE_ISSUE=ACME-1200" \
+  "AIRLOCK_DISPATCH_ANSWERED_ASK=4f3c2a10-5b6d-4e7f-8a9b-0c1d2e3f4a5b"; do
   if [[ "$(exported "${want%%=*}")" != "${want#*=}" ]]; then
     echo "FAIL: the banner exports ${want%%=*}=$(exported "${want%%=*}"); want ${want#*=}" >&2
     exit 1
   fi
 done
-printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s) and the two issues the Dispatch stand holds\n' \
+printf 'PASS: the banner exports the three stands'"'"' records, the route a check sets the model'"'"'s answer at (%s), the two issues the Dispatch stand holds and the ask its approver answered\n' \
   "$model_answer_url"
 
 mapfile -t broker_lines < <(grep -o 'fake broker: .*' "$log")

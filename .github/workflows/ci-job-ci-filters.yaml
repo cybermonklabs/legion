@@ -44,6 +44,19 @@ jobs:
       - name: Check every CI filter matches every file its job reads
         run: .github/scripts/check-ci-filters.sh
 
+      - name: Check every workflow file GitHub can read and its size
+        if: ${{ !cancelled() }}
+        run: .github/scripts/check-workflow-files.sh
+
+      # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
+      # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.
+      - name: Check every workflow file with actionlint
+        if: ${{ !cancelled() }}
+        run: >-
+          docker run --rm -e SHELLCHECK_OPTS=--severity=warning -v "$PWD:/repo" -w /repo
+          ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -verbose -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'
+
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

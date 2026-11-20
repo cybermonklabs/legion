@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -45,20 +46,36 @@ type Failure struct {
 // tells it, since the code is in hand here and the writer would otherwise read the body back.
 type refusalNoter interface{ noteRefusal(code string) }
 
-func writeFailure(w http.ResponseWriter, status int, code, message string) {
+// writeFailure is the one writer of a refusal in the Failure shape. The message passes the URL
+// rule (redact.URLCredentials): a refusal can quote a far side's error, a Dispatch or GitHub
+// transport error that names the URL it asked (dispatch_url's user name, a redirect's query), and
+// the answer goes to an agent. A refusal is an answer of the table like any other (AnswerRefusal),
+// so it goes through the shaping every answer goes through, and the request is threaded here for
+// that.
+func (s *server) writeFailure(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	if noter, ok := w.(refusalNoter); ok {
 		noter.noteRefusal(code)
 	}
-	writeJSON(w, status, Failure{Code: code, Error: message})
+	s.writeAnswer(w, r, AnswerRefusal, status, Failure{Code: code, Error: redact.URLCredentials(message)})
+}
+
+// refuse is the one writer of a refusal in the sentence-only shape the claim and operator routes
+// use, as writeFailure is the one writer of the coded shape, and its message passes the same URL
+// rule. The body is a claim.Refusal, so the refusal's row of shapeAnswer reads one type for every
+// sentence-only refusal, and its status rides beside it, as refuse's own argument. A refusal is an
+// answer of the table like any other (AnswerRefusal), so it goes through the shaping every answer
+// goes through, and the request is threaded here for that.
+func (s *server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
+	s.writeAnswer(w, r, AnswerRefusal, status, claim.Refusal{Message: redact.URLCredentials(message)})
 }
 
 // requireFailureFields refuses the first field that is blank, by its wire name, in the Failure
 // shape every credential and workflow refusal takes. The claim and operator routes refuse with
 // their sentence alone (requireFields).
-func requireFailureFields(w http.ResponseWriter, fields ...field) bool {
+func (s *server) requireFailureFields(w http.ResponseWriter, r *http.Request, fields ...field) bool {
 	for _, f := range fields {
 		if strings.TrimSpace(f.value) == "" {
-			writeFailure(w, http.StatusBadRequest, "MISSING_FIELD", f.name+" is required")
+			s.writeFailure(w, r, http.StatusBadRequest, "MISSING_FIELD", f.name+" is required")
 			return false
 		}
 	}
@@ -72,17 +89,18 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case req.Tree != "" || req.Issue != "":
-		if requireFailureFields(w, field{"sessionId", req.SessionID}, field{"secret", req.Secret}, field{"tree", req.Tree}, field{"issue", req.Issue}) {
+		if s.requireFailureFields(w, r, field{"sessionId", req.SessionID}, field{"secret", req.Secret}, field{"tree", req.Tree}, field{"issue", req.Issue}) {
 			s.claimGrant(w, r, req)
 		}
 	case req.SessionID != "" || req.Secret != "":
-		if requireFailureFields(w, field{"sessionId", req.SessionID}, field{"secret", req.Secret}) {
+		if s.requireFailureFields(w, r, field{"sessionId", req.SessionID}, field{"secret", req.Secret}) {
 			s.controllerSessionGrant(w, r, req)
 		}
 	case !s.operatorAuthorized(r):
-		writeFailure(w, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
+		s.writeFailure(w, r, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
 	default:
-		s.mintControllerGrant(w)
+		grant, err := s.grants.MintOperatorController()
+		s.writeControllerGrant(w, r, grant, err)
 	}
 }
 
@@ -92,11 +110,11 @@ func (s *server) claimGrant(w http.ResponseWriter, r *http.Request, req GrantReq
 	machine, authenticated, err := s.claimForGrant(r.Context(), req.SessionID, req.Secret, req.Tree, req.Issue)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: list claims to mint grant")
-		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
 		return
 	}
 	if !authenticated {
-		writeFailure(w, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
+		s.writeFailure(w, r, http.StatusForbidden, "INVALID_SESSION_SECRET", claim.InvalidSecret.Message)
 		return
 	}
 	c := machine.Claim()
@@ -106,10 +124,10 @@ func (s *server) claimGrant(w http.ResponseWriter, r *http.Request, req GrantReq
 	grant, err := s.grants.Mint(c)
 	if err != nil {
 		s.log.Error("api: mint claim grant", "error", err)
-		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")
 		return
 	}
-	writeJSON(w, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
+	s.writeAnswer(w, r, AnswerGrant, http.StatusOK, GrantResponse{GrantID: grant.ID, ExpiresAt: grant.ExpiresAt.UTC().Format(timeFormat)})
 }
 
 // claimForGrant finds the claim session, tree and issue name and authenticates it with secret, as
@@ -121,7 +139,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		return nil, false, err
 	}
 	for _, current := range claims {
-		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
+		if !current.HoldsSession(sessionID) || current.Tree != tree || current.Issue != issue {
 			continue
 		}
 		m, _, ok := s.authenticated(current.Token, secret)
@@ -163,7 +181,8 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 // registration that minted it; the credential routes check that again after their GitHub await. A
 // claim grant whose claim speaks another plugin contract than the daemon's is refused the
 // stale-caller 409 here, once every other check has passed: every grant-bearing route takes its
-// claim caller's staleness from this one place.
+// claim caller's staleness from this one place. A claim grant it takes notes its claim as the
+// request's requester (noteRequester), whose stream apply waits for.
 //
 // A controller grant is returned here without consulting the controller record at all (LEGION-164):
 // its own staleness is refused at mint (controllerSessionGrant -> refuseIfStaleController), grants
@@ -177,11 +196,11 @@ const timeFormat = "2006-01-02T15:04:05.999999999Z07:00"
 func (s *server) redeem(w http.ResponseWriter, r *http.Request, id string) (credential.Grant, bool) {
 	grant, err := s.grants.Redeem(id)
 	if errors.Is(err, credential.ErrExpired) {
-		writeFailure(w, http.StatusForbidden, "GRANT_EXPIRED", "grant expired")
+		s.writeFailure(w, r, http.StatusForbidden, "GRANT_EXPIRED", "grant expired")
 		return credential.Grant{}, false
 	}
 	if err != nil {
-		writeFailure(w, http.StatusForbidden, "GRANT_UNAVAILABLE", "grant is unavailable")
+		s.writeFailure(w, r, http.StatusForbidden, "GRANT_UNAVAILABLE", "grant is unavailable")
 		return credential.Grant{}, false
 	}
 	if grant.Controller {
@@ -189,12 +208,13 @@ func (s *server) redeem(w http.ResponseWriter, r *http.Request, id string) (cred
 	}
 	machine, holds := s.claimHolds(grant)
 	if !holds {
-		writeFailure(w, http.StatusForbidden, "GRANT_REVOKED", grantRevoked)
+		s.writeFailure(w, r, http.StatusForbidden, "GRANT_REVOKED", grantRevoked)
 		return credential.Grant{}, false
 	}
 	if s.refuseIfStaleClaimFailure(w, r, machine.Claim()) {
 		return credential.Grant{}, false
 	}
+	noteRequester(r.Context(), grant.Claim)
 	return grant, true
 }
 
@@ -242,17 +262,17 @@ func (s *server) redeemIdentityCheck(w http.ResponseWriter, r *http.Request, bod
 // error log line; it carries no secret.
 func (s *server) appLease(w http.ResponseWriter, r *http.Request, role appauth.AppRole, repo ghrepo.Repository, logRole string) (appauth.Lease, bool) {
 	if s.tokens == nil {
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
 		return appauth.Lease{}, false
 	}
 	if repo.IsZero() {
-		writeFailure(w, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
+		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_OWNER_UNCONFIGURED", "no repository owner is configured for GitHub App tokens")
 		return appauth.Lease{}, false
 	}
 	lease, err := s.tokens.Token(r.Context(), role, repo.Owner())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: mint GitHub App token", "role", logRole, "repo", repo.String())
-		writeFailure(w, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
+		s.writeFailure(w, r, http.StatusBadGateway, "GITHUB_TOKEN_FAILED", "GitHub token exchange failed")
 		return appauth.Lease{}, false
 	}
 	return lease, true
@@ -268,7 +288,7 @@ func (s *server) leaseForGrant(w http.ResponseWriter, r *http.Request, grant cre
 		return appauth.Lease{}, false
 	}
 	if _, holds := s.claimHolds(grant); !holds {
-		writeFailure(w, http.StatusForbidden, "GRANT_REVOKED", grantRevoked)
+		s.writeFailure(w, r, http.StatusForbidden, "GRANT_REVOKED", grantRevoked)
 		return appauth.Lease{}, false
 	}
 	return lease, true

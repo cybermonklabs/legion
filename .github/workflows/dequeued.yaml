@@ -5,7 +5,8 @@ name: CI (dequeued pull request)
 # while that group's ci.yaml merge-group run, which nothing cancels, keeps its runners to the end
 # and decides nothing. That runner time is what this workflow takes back, for the one case
 # ci.yaml's own cancel act cannot see: that act cancels the older groups of the pull request a
-# new group of it replaced (the comment above ci.yaml's `cancel-started` says what it does), and
+# new group of it replaced (.github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
+# says what it does), and
 # a pull request that left the queue builds no new group.
 #
 # Why pull_request_target. `dequeued` is an activity type of that event alone, and GitHub runs the
@@ -16,10 +17,9 @@ name: CI (dequeued pull request)
 #
 # Where the commit comes from. The `dequeued` payload carries no beforeCommit, so the job reads the
 # pull request's timeline with GraphQL and takes the newest RemovedFromMergeQueueEvent after the
-# newest AddedToMergeQueueEvent, which is the selection
-# packages/daemon/internal/ghautomerge/removal.go makes over the same two item types; that item's
-# `beforeCommit.oid` is the head of the group the queue had built, and its `reason` is read from
-# the same item. GitHub can show the event before the timeline holds it, so the read is made up to
+# newest AddedToMergeQueueEvent; that item's `beforeCommit.oid` is the head of the group the queue
+# had built, and its `reason` is read from the same item. GitHub can show the event before the
+# timeline holds it, so the read is made up to
 # seven times, ten seconds apart: a fixed list of attempts, which bounds the wait at one minute and
 # cannot spin. A read GitHub refuses counts as one of those attempts and leaves a warning of its
 # own, and no line about what the timeline holds, since a refused read read nothing: the attempts

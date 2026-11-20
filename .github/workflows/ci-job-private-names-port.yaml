@@ -15,13 +15,13 @@ name: CI job private-names-port
 #
 # It is a job because of what that comparison costs the filters: the harness builds ./cmd/legion
 # out of packages/daemon (:70), so the filter that selects it has to name the whole closure of
-# that build - `go list -deps ./cmd/legion`, the ci.yaml anchor legion_command. While the step
+# that build - `go list -deps ./cmd/legion`, ci-filters.yaml's legion_command. While the step
 # was the test job's, that closure sat on the `test` filter, and a change to any package of the
 # daemon or to the envoy packages it imports ran thirty-odd shell harnesses, the Claude Code
 # plugin build and the Bun suites of scripts/ beside this one, none of which could see it
 # (dispatch://INFRA-1413). A gate on the step inside that job could not cure it: the gate's own
-# filter would be that closure a second time, and the changes job's filters string has no room
-# for one (rule 18 of .github/scripts/check-ci-filters.sh).
+# filter would be that closure a second time, written out once more in .github/ci-filters.yaml
+# for a gate that decides one step of a job the `test` filter had already started.
 #
 # Everything the harness needs, and nothing else:
 #   * the checkout, which is the whole of its corpus: the harness, the frozen script it compares

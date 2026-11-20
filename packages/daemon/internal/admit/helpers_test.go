@@ -57,9 +57,9 @@ func (e engineStub) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 
 const testProject = "LEGION"
 
-// handed is the label set of an issue handed to Legion.
-// handed is the label list intake.DispatchIssue.Labels once carried; the wire types now
-// resolve HandedOver at the decode/client boundary, so tests set it directly.
+// handed is HandedOver of an issue handed to Legion. The wire types resolve it from the issue's
+// labels at the decode and client boundary, and every decision reads that bool, so tests set it
+// directly.
 const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
@@ -159,12 +159,15 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 }
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
-// with every task-less phase start left out. A phase worker's start is one row, which carries
-// the task and waits for the issue's admission slot (workflow.StartOrOwe); a start that names a
-// phase and carries no task is a role admission brings back beside it, which asks that role
-// nothing. These assertions are about the starts that carry work, as the workflow package's own
-// helpers are. A start that names no phase is no phase worker's — the architect start promotion
-// makes, the production check's look — and is left in.
+// with every task-less phase start and every step record left out. A phase worker's start is one
+// row, which carries the task and waits for the issue's admission slot (workflow.StartOrOwe); a
+// start that names a phase and carries no task is a role admission brings back beside it, which
+// asks that role nothing. These assertions are about the starts that carry work, as the workflow
+// package's own helpers are. A start that names no phase is no phase worker's — the architect
+// start promotion makes, the production check's look — and is left in. A step record is written
+// beside the rows of each start and end of a step, and the tests of those sites read it exactly
+// (workflow's step_sites_test.go and step_sites_linger_test.go, and step_records_test.go here for
+// admission's own sites), so every row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has
@@ -182,6 +185,9 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 		var row record.OutboxRow
 		if err := rows.Scan(&row.Kind, &row.Issue, &row.Payload); err != nil {
 			t.Fatalf("scan outbox: %v", err)
+		}
+		if row.Kind == record.OutboxKindStepRecord {
+			continue
 		}
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
@@ -448,9 +454,13 @@ func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admissio
 		listed[i] = intake.ListedIssue(summary)
 	}
 	scoped, committed := intake.WithCommitHooks(context.Background())
+	scoped, settle := intake.OpenSettlers(scoped, admission)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
 			t.Fatalf("Reconcile: %v", err)
+		}
+		if err := settle(scoped, tx); err != nil {
+			t.Fatalf("settle the reconcile: %v", err)
 		}
 	})
 	committed()

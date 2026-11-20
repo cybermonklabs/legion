@@ -22,19 +22,42 @@ import (
 // it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
 // phase decides on - rerun, wait, or fix - and not the daemon's to read the semantics of
 // (dispatch://INFRA-714/spec R1).
+//
+// It runs for every settlement fact, after the wake (wakeOnSettlement), and each settlement it
+// does not apply is named by one INFO line once the fact commits, since a pull request whose head
+// got no CI message otherwise leaves nothing to say whether the daemon dropped its settlement or
+// never heard it (dispatch://INFRA-4135 R6): one that no recorded pull request matches
+// (intake.NoRecordedPullRequestLine, which the consumer writes for nearly every such settlement
+// before any transaction, so here it names a record gone by the time the fact applies); one that
+// stands for no head the record holds (classify.SettlementFor), with the record's head, the head
+// its checks stand at and whether a head run is open; and one of the head that the fence takes as
+// stale or conflicting (classify.ClassifySettlement), with the generation and snapshot the record
+// holds. A redelivery of a settlement already applied is no drop and logs nothing. Each line
+// begins with the settlement's identity (intake.SettlementIdentity), by which it is matched to
+// the listener's line that published the settlement, and is written once for each identity
+// (logDroppedSettlement).
 func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestChecks, woken claim.Role) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if pr == nil {
+		e.logDroppedSettlement(ctx, fact, intake.NoRecordedPullRequestLine)
+		return intake.Result{}, nil
 	}
 	// The listener settles every commit of the pull request, its head or not, and a settlement
 	// stands only for the commit it names: it is for the head only when it names the head. While a
 	// head run is open the settlement is recorded in it whether it stands or not
-	// (classify.ApplyCheckSettlement).
-	candidate := classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot, Failing: fact.Failing, Cancelled: fact.Cancelled}
+	// (classify.ApplyCheckSettlement). A list of commit statuses the decoder could not read costs
+	// the settlement nothing else: the fact names no status, and the pull request keeps the
+	// statuses it holds for the head, since a settlement's statuses are merged into those per
+	// context and a context it leaves out stays as it is kept (classify.ApplySettlement,
+	// intake.PullRequestChecks.StatusesUnread).
+	candidate := settlementCandidate(fact)
 	told := settledChecks(*pr)
 	settled, applied := classify.ApplyCheckSettlement(*pr, candidate)
 	if !applied {
+		e.logUnappliedSettlement(ctx, fact, *pr, candidate)
 		if pr.Run != nil {
 			*pr = settled
 			if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
@@ -76,23 +99,95 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)
 }
 
+// settlementCandidate is the settlement fact as the apply step reads it, and the one place it is
+// built from the fact: checks applies it, and the wake (wakeOnSettlement) asks the apply step
+// whether it applies before it wakes anyone, so the two read one candidate and cannot drift. It is
+// the fact as delivered: a list of commit statuses the decoder could not read is no status here,
+// whatever the wake's task names in its place.
+func settlementCandidate(fact intake.PullRequestChecks) classify.SettlementCandidate {
+	return classify.SettlementCandidate{Head: fact.HeadSHA, CheckRuns: fact.CheckRuns, Generation: fact.Generation, Snapshot: fact.Snapshot,
+		Failing: fact.Failing, Cancelled: fact.Cancelled, Statuses: fact.Statuses}
+}
+
+// logUnappliedSettlement names a settlement checks does not apply to pr, the record as it stood
+// before the settlement: one that stands for no head the record holds, and one of its head the
+// fence takes as stale or conflicting. Every other settlement not applied, the redelivery of one
+// applied (classify.SettlementDuplicate) among them, logs nothing.
+func (e *Engine) logUnappliedSettlement(ctx context.Context, fact intake.PullRequestChecks, pr record.PullRequest, candidate classify.SettlementCandidate) {
+	stood, stands := classify.SettlementFor(pr, candidate)
+	if !stands {
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement stands for no head the record holds",
+			"recorded_head", pr.HeadSHA, "checked_head", pr.CheckedHead, "head_run_open", pr.Run != nil, "issue", pr.Issue)
+		return
+	}
+	switch classified := classify.ClassifySettlement(stood, candidate); classified {
+	case classify.SettlementStale, classify.SettlementConflict:
+		e.logDroppedSettlement(ctx, fact, "workflow: a checks settlement of the head was not applied",
+			"classification", string(classified), "recorded_generation", stood.Generation, "recorded_snapshot", stood.Snapshot, "issue", pr.Issue)
+	}
+}
+
+// logDroppedSettlement writes msg at INFO once the fact's transaction commits, after the
+// settlement's identity and then args, unless the engine has logged a drop of the same settlement
+// already: one settlement delivered many times writes one line, and the identity is marked in the
+// commit's own hook, so a fact rolled back neither writes the line nor keeps its retry from
+// writing it (Engine.droppedSettlements).
+func (e *Engine) logDroppedSettlement(ctx context.Context, fact intake.PullRequestChecks, msg string, args ...any) {
+	identity := fact.Identity()
+	args = append(identity.Attributes(), args...)
+	intake.OnCommit(ctx, func() {
+		if e.droppedSettlements.Add(identity) {
+			e.log.Info(msg, args...)
+		}
+	})
+}
+
+// conflictConfirmWait is how long after a first CONFLICTING read of a head the read that can
+// confirm it comes, at the least (dispatch://INFRA-4374 R2). GitHub documents that `mergeable` is
+// computed by a background job and that a client asks again "after giving the job time to
+// complete", and it documents no time for the job (https://docs.github.com/en/rest/pulls/pulls,
+// "Get a pull request"). The daemon already waits 30 seconds between reads of a head GitHub
+// answers `unknown` for (the daemon's mergeStateWait); the spec's floor of one minute is two of
+// those waits, and this is that floor. It is compared with the reads' own times, and with the
+// engine's clock where a fact carries none, so tests control it.
+const conflictConfirmWait = time.Minute
+
 // mergeability records what GitHub's last read found for whether the pull request's head can be
 // merged into its base (intake.PullRequestMergeability, readPullRequest's own GitHub answer), and
-// acts on the two things that read can say.
+// acts on a conflict only once a second read has confirmed it and the issue's next step needs a
+// head that merges.
 //
-// A head that conflicts with its base sends the issue back to implementing from whatever later
-// phase it stands in (TriggerConflict):
-// GitHub computes no merge ref for a conflicting head, so no check runs on it and no CI result
-// will ever arrive for it, and only the implementer merging the base forward clears it. It
-// decides on every read, not only a changed one, since the recorded conflict is what a read made
-// in an earlier phase left. Implementing, where the work already is, has no row for the trigger,
-// so a read there records the conflict and moves nothing (transition).
+// A head that conflicts with its base is judged in two reads (dispatch://INFRA-4374 R2). GitHub
+// computes mergeability in a background job and can answer CONFLICTING about a base it has not
+// caught up with, so the first CONFLICTING read of an open pull request's head records itself
+// (record.PullRequest.ConflictRead: the head, the base branch and the time of the read), queues the
+// read that asks GitHub again once conflictConfirmWait has passed (record.ConflictConfirm), logs
+// itself, and acts on nothing. A later CONFLICTING read of the same head and the same base branch,
+// made conflictConfirmWait or more after the first, confirms the conflict: the record holds the
+// head conflicting (ConflictingHead) from then on, drops the first read, and decides. A
+// CONFLICTING read sooner than the wait changes nothing of the first read, and one of another
+// head or another base branch is a first read of its own. The base branch is compared by name and
+// never by commit: GitHub's base.sha does not name the base it computed against, and a conflict
+// with a newer base is still a conflict. A MERGEABLE read releases the first read and logs both
+// reads. An UNKNOWN read leaves it as it is, and the second read's own row releases it once its
+// last attempt still answers UNKNOWN, while the first read is still the one the row was queued for
+// (conflictConfirmDone, record.ConflictConfirm.FirstReadAt). After a release, the next CONFLICTING
+// read is a first read again, with a row of its own.
+//
+// The decision is R0's (dispatch://INFRA-4374 R0, classify.ConflictNeedsMerge), read on the
+// base's rules for its required checks, which the confirming read carries
+// (intake.PullRequestMergeability.Rules). A reason to act asks the implementer to merge the base
+// forward, and the issue keeps its phase (mergeForward, R1); no reason leaves the conflict
+// recorded and logged with the checks the base requires and those green on the head, and the
+// tester and the reviewer go on at that head. A CONFLICTING read of a head the record already
+// holds conflicting decides again in the same way, since the phase the issue has reached since can
+// need what the phase before did not, and mergeForward asks nothing twice for one head.
 //
 // GitHub's own merge state for the head rides along on the same fact: it is what says whether
 // GitHub would merge this head now, which the tri-state mergeability cannot, and it is what an
 // approval standing on the head waits for (reviewRound). So in reviewing the round is asked again
-// once the state is recorded - this read is the one that moves an approved issue to accepting, as
-// often as not. The base the read names is recorded with
+// once the state is recorded, whatever the read decided - this read is the one that moves an
+// approved issue to accepting, as often as not. The base the read names is recorded with
 // them, since that read is the only one that names the base of a pull request opened before the
 // record kept one: it is what a push onto that branch finds the pull request by (basePush), and a
 // read that answers for a base push already recorded clears the push's mark, the two having been
@@ -105,14 +200,25 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // goes with it: a stamp is never recorded against a head the record has already left, since it
 // would say that head's state was read when it was another head's that was.
 //
+// A read GitHub answered before the read the record holds of its head
+// (record.PullRequest.StateReadAt) is dropped whole as well, and logged: nothing is written,
+// nothing decided and no round asked again. The readers of the pull request run apart, and the
+// per-issue read dates its answer before it follows the head under the fact lock (daemon's
+// readIssuePullRequest), so a MERGEABLE answer made before a push to the base can be applied after
+// the CONFLICTING answer of a read made since. Applied, it would release that conflict's first
+// read, and the record would say mergeable while GitHub says CONFLICTING. A fact that carries no
+// read time is never dropped for its time.
+//
 // The read time the fact carries (intake.PullRequestMergeability.ReadAt) is what
 // record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
 // what is recorded still moves: the row is written for it alone. A fact that carries none - every
 // one minted by something that did not read GitHub, as a test's PullRequestMergeability is -
-// writes no stamp and erases none, so the recorded one stands as the last real read left it.
+// writes no stamp and erases none, so the recorded one stands as the last real read left it. The
+// two reads of a conflict are timed by the same read time, and by the engine's clock for a fact
+// that carries none.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
-// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
+// (record.PullRequest.ConflictingHead, recordRound): a confirmed conflict holds the pull request's
 // own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
 // which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
 // GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
@@ -130,18 +236,50 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
 		return intake.Result{}, nil
 	}
+	if !fact.ReadAt.IsZero() && fact.ReadAt.Before(pr.StateReadAt) {
+		e.logOnCommit(ctx, "workflow: GitHub's merge state answered before the read the record holds; the read is dropped",
+			"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "readAt", fact.ReadAt, "stateReadAt", pr.StateReadAt,
+			"mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
+		return intake.Result{}, nil
+	}
 	base := pr.Base
 	if fact.Base != "" {
 		base = fact.Base
 	}
+	readAt := fact.ReadAt
+	if readAt.IsZero() {
+		readAt = e.now()
+	}
 	prior := *pr
-	conflicting := pr.ConflictingHead
+	conflicting, first, decide := pr.ConflictingHead, pr.ConflictRead, false
 	switch fact.Mergeable {
 	case record.MergeabilityConflicting:
-		conflicting = pr.HeadSHA
+		switch {
+		case pr.State != record.PullRequestOpen:
+			// A pull request that is not open merges nothing, so its conflict is nothing to act on.
+		case conflicting == pr.HeadSHA:
+			decide = true
+		case first != nil && first.Head == pr.HeadSHA && first.Base == base:
+			if readAt.Sub(first.At) >= conflictConfirmWait {
+				conflicting, first, decide = pr.HeadSHA, nil, true
+			}
+		default:
+			first = &record.ConflictRead{Head: pr.HeadSHA, Base: base, At: readAt}
+			if err := e.enqueueAt(ctx, tx, pr.Issue, record.ConflictConfirm{Number: pr.Number, Head: pr.HeadSHA, FirstReadAt: readAt}, readAt.Add(conflictConfirmWait)); err != nil {
+				return intake.Result{}, err
+			}
+			e.logOnCommit(ctx, "workflow: a conflict read waits for a second read",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "readAt", readAt)
+		}
 	case record.MergeabilityMergeable:
 		if conflicting == pr.HeadSHA {
 			conflicting = ""
+		}
+		if first != nil {
+			e.logOnCommit(ctx, "workflow: a second read did not confirm the conflict",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", first.Head, "base", first.Base,
+				"firstReadAt", first.At, "readAt", readAt, "mergeable", string(fact.Mergeable), "mergeState", string(fact.MergeState))
+			first = nil
 		}
 	}
 	stateReadAt := pr.StateReadAt
@@ -151,9 +289,9 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	// The last clause is the confirming read's: it answers what is already recorded, and the time
 	// it was read is the whole of what it has to say.
 	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" ||
-		pr.ConflictingHead != conflicting || !stateReadAt.Equal(pr.StateReadAt) {
-		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.StateReadAt =
-			fact.Mergeable, fact.MergeState, base, "", conflicting, stateReadAt
+		pr.ConflictingHead != conflicting || pr.ConflictRead != first || !stateReadAt.Equal(pr.StateReadAt) {
+		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.ConflictRead, pr.StateReadAt =
+			fact.Mergeable, fact.MergeState, base, "", conflicting, first, stateReadAt
 		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -162,21 +300,40 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	if classify.HeadConflicts(*pr) {
-		reason := fmt.Sprintf("the head conflicts with %s: GitHub runs no checks on it; merge %s forward", base, base)
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerConflict, "", record.PhaseRow{}, pr, reason)
+	if decide {
+		green := classify.GreenContexts(*pr)
+		if why := classify.ConflictNeedsMerge(*issue, fact.Rules, green); why != "" {
+			if err := e.mergeForward(ctx, tx, *issue, pr, why); err != nil {
+				return intake.Result{}, err
+			}
+		} else {
+			e.logOnCommit(ctx, "workflow: a confirmed conflict needs no merge yet",
+				"issue", pr.Issue, "pullRequest", pr.Number, "head", pr.HeadSHA, "base", base, "phase", issue.Phase,
+				"required", fact.Rules.Required, "green", green)
+		}
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior, byMergeState)
 }
 
 // settledChecks is what the CI settlement standing for the pull request's head says: the head it
-// settled on, and each check it reports with the conclusion it reports for it, in name order; ""
-// while no settlement stands. A check the settlement names as failed failed, one it names as
-// cancelled was cancelled, and one it reports as a run and names neither way succeeded - the
-// listener settles a commit once every check it has seen is terminal. Nothing here judges those
-// conclusions: a job GitHub never started reads like any other, and what they mean for the work is
-// the reading worker's (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon
-// knows of that head's CI, so two settlements that leave it the same say nothing new (tellChecks).
+// settled on, and each check it reports with what it came to, in name order; "" while no
+// settlement stands. A check the settlement names as failed failed, one it names as cancelled was
+// cancelled, one whose run GitHub skipped (record.RunSkipped) was skipped, and one it reports as a
+// run and names no other way succeeded - the listener settles a commit once every check it has
+// seen is terminal. Nothing here judges those conclusions: a job GitHub never started is named
+// skipped and decides nothing, and what they mean for the work is the reading worker's
+// (dispatch://INFRA-714/spec R1). The line is the whole of what the daemon knows of that head's
+// CI, so two settlements that leave it the same say nothing new (tellChecks).
+//
+// Each check is named by the word GitHub gave its run (record.AttemptRun.GitHubConclusion) where
+// the settlement carried one, and by the daemon's conclusion where it did not (shownAs). GitHub's
+// word is what tells a check that ran from one that did not, where the daemon's conclusion takes
+// every run that neither failed nor was cancelled as succeeded or skipped. A skipped check ran
+// nothing on the head, and a role that read it as a pass would believe a suite held back for the
+// merge queue passed on a head where it never ran (dispatch://INFRA-4135 R1), so where the line
+// names any check skipped it says once, after the commit statuses, that a skipped check ran
+// nothing (skippedClause). A settlement that carries no word and names no run skipped, as a
+// listener of an earlier release sends, gives the line the daemon gave before it read either.
 //
 // Each name's conclusion is the newest run of it among the settlements of the head the fence
 // stands at, which is what the record holds (classify.SettlementFor): a settlement stands only
@@ -189,6 +346,12 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 // prompt, so each name is quoted as a Go string (strconv.Quote): the quotes bound it, and a quote
 // or a newline inside it is escaped rather than closing the one around it. A name of ordinary
 // characters reads as itself inside the quotes.
+//
+// After the check runs it names each commit status the record keeps for the checked head, with
+// its state, in context order (namedStatuses), and nothing where it keeps none, so the line of a
+// head that carries no status reads as it did before the daemon kept any. A status is an entry of
+// its own kind, apart from the check runs: a context that shares a check run's name is named in
+// both places.
 func settledChecks(pr record.PullRequest) string {
 	if pr.CheckedHead == "" {
 		return ""
@@ -196,6 +359,9 @@ func settledChecks(pr record.PullRequest) string {
 	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns)+len(pr.Failing)+len(pr.Cancelled))
 	for _, run := range pr.CheckRuns {
 		conclusions[run.Name] = record.RunSucceeded
+		if run.Conclusion == record.RunSkipped {
+			conclusions[run.Name] = record.RunSkipped
+		}
 	}
 	for _, name := range pr.Cancelled {
 		conclusions[name] = record.RunCancelled
@@ -203,10 +369,19 @@ func settledChecks(pr record.PullRequest) string {
 	for _, name := range pr.Failing {
 		conclusions[name] = record.RunFailed
 	}
-	if len(conclusions) == 0 {
-		return "CI settled at " + pr.CheckedHead + " reporting no check"
+	shown := make(map[string]string, len(conclusions))
+	for name, conclusion := range conclusions {
+		shown[name] = string(conclusion)
 	}
-	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(conclusions)
+	// The fence holds one run per name (classify's mergeAttemptSets), the run that decided it.
+	for _, run := range pr.CheckRuns {
+		shown[run.Name] = shownAs(run, conclusions[run.Name])
+	}
+	statuses := namedStatuses(keptStatuses(pr, pr.CheckedHead))
+	if len(shown) == 0 {
+		return "CI settled at " + pr.CheckedHead + " reporting no check" + statuses
+	}
+	return "CI settled at " + pr.CheckedHead + ": " + namedConclusions(shown) + statuses + skippedClause(shown)
 }
 
 // headChecks is every check run GitHub reported on the pull request's current head with what that
@@ -217,35 +392,113 @@ func settledChecks(pr record.PullRequest) string {
 // weighs for the merge is the current head, so that is the head whose checks the notice names,
 // and a required check whose run is missing here is the thing its reader looks for.
 //
+// Each run is named by the word GitHub gave it where the settlement carried one, and by its
+// conclusion where it did not (shownAs), and where any run is named skipped the line says once,
+// after the commit statuses, that a skipped check ran nothing on this head (skippedClause), as
+// settledChecks does and for the same reason: a required check GitHub skipped is one that never
+// ran there, and its reader must not take it for a pass (dispatch://INFRA-4135 R1).
+//
 // Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
 // this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
 // of a run's head the daemon's readers share: a check run on this head that a newer run of the
 // same name on another head has replaced in the fence is not named, and nor is a run stored before
 // the fence carried its head.
+//
+// After the runs it names each commit status the record keeps for the current head, with its
+// state (namedStatuses), when the checked head is the current head (classify.Settled), and none
+// otherwise: a status the record keeps is stamped with the head whose settlement named it, and one
+// of another head says nothing of this one.
 func headChecks(pr record.PullRequest) string {
 	runs := classify.HeadRuns(pr)
-	conclusions := make(map[string]record.RunConclusion, len(runs))
+	shown := make(map[string]string, len(runs))
 	for _, run := range runs {
-		conclusions[run.Name] = run.Conclusion
+		shown[run.Name] = shownAs(run, run.Conclusion)
 	}
-	if len(conclusions) == 0 {
+	if len(shown) == 0 {
 		return ""
 	}
-	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(conclusions)
+	var statuses []record.CommitStatus
+	if classify.Settled(pr) {
+		statuses = keptStatuses(pr, pr.HeadSHA)
+	}
+	return "GitHub reported on head " + pr.HeadSHA + ": " + namedConclusions(shown) + namedStatuses(statuses) + skippedClause(shown)
 }
 
-// namedConclusions is each check name with what it came to, in name order, as both lines above
+// shownAs is what a text names run's check as, conclusion being what the text concludes the check
+// came to: the word GitHub gave the run (record.AttemptRun.GitHubConclusion) where the settlement
+// carried one and the run's own conclusion is that conclusion, and the conclusion otherwise. The
+// word is the run's, so it names the check only where that run is what decided it: a name the
+// settlement's lists give another conclusion than its run's is named by the lists' conclusion, and
+// a run with no word - from a listener that sends none, or a word the decoder refused - by the
+// daemon's conclusion, as before the daemon kept a word. Unlike a check's name, the word is shown
+// unquoted: the decoder keeps only a word of lower-case letters and underscores (intake's
+// conclusionWord), so it can carry nothing else into the agent's prompt the line is read into.
+func shownAs(run record.AttemptRun, conclusion record.RunConclusion) string {
+	if run.GitHubConclusion != "" && run.Conclusion == conclusion {
+		return run.GitHubConclusion
+	}
+	return string(conclusion)
+}
+
+// namedConclusions is each check name with what the line names it as (shownAs: GitHub's word where
+// the settlement carried one, else the daemon's conclusion), in name order, as both lines above
 // spell it.
-func namedConclusions(conclusions map[string]record.RunConclusion) string {
-	names := make([]string, 0, len(conclusions))
-	for name := range conclusions {
+func namedConclusions(shown map[string]string) string {
+	names := make([]string, 0, len(shown))
+	for name := range shown {
 		names = append(names, name)
 	}
 	slices.Sort(names)
 	for i, name := range names {
-		names[i] = strconv.Quote(name) + " " + string(conclusions[name])
+		names[i] = strconv.Quote(name) + " " + shown[name]
 	}
 	return strings.Join(names, ", ")
+}
+
+// skippedRanNothing is what each text the roles read of a head's CI says once where it names a
+// check skipped: GitHub skipped the check, so it ran nothing on the head, and a role must not read
+// it as a pass (dispatch://INFRA-4135 R1).
+const skippedRanNothing = "a skipped check ran nothing on this head"
+
+// skippedClause is what settledChecks and headChecks add after the commit statuses where they name
+// any check skipped, by GitHub's word or by the daemon's conclusion, the two being spelled alike
+// (record.RunSkipped); "" where they name none, so a line with no skipped check reads as before.
+func skippedClause(shown map[string]string) string {
+	for _, word := range shown {
+		if word == string(record.RunSkipped) {
+			return "; " + skippedRanNothing
+		}
+	}
+	return ""
+}
+
+// keptStatuses is every commit status pr keeps for head (record.PullRequest.Statuses), in context
+// order; none when what pr keeps is another head's. The stamp is what keeps a list out of a text
+// about another head (record.CommitStatus.StampedWith): a daemon of an earlier release moves
+// checked_head after a rollback and leaves the list as this one left it (record.CommitStatus.Head).
+func keptStatuses(pr record.PullRequest, head string) []record.CommitStatus {
+	var kept []record.CommitStatus
+	for _, status := range pr.Statuses {
+		if status.StampedWith(head) {
+			kept = append(kept, status)
+		}
+	}
+	slices.SortFunc(kept, func(a, b record.CommitStatus) int { return strings.Compare(a.Context, b.Context) })
+	return kept
+}
+
+// namedStatuses is what settledChecks and headChecks add after the check runs for statuses: each
+// context, quoted as a check name is (namedConclusions), with its state as GitHub spells it, in
+// the order given; "" for none.
+func namedStatuses(statuses []record.CommitStatus) string {
+	if len(statuses) == 0 {
+		return ""
+	}
+	named := make([]string, len(statuses))
+	for i, status := range statuses {
+		named[i] = strconv.Quote(status.Context) + " " + string(status.State)
+	}
+	return "; commit statuses: " + strings.Join(named, ", ")
 }
 
 // tellChecks tells the roles that work the issue what the settlement now standing for the pull
@@ -791,28 +1044,32 @@ func (r round) stuckAs(other round) bool {
 
 // stuckMergeStateReason is what the architect and the reviewer are told of an approval standing
 // on a head GitHub answers for with a merge state it would not merge from: the head, the pull
-// request, the state in GitHub's own spelling, and every check run GitHub reported on that head
-// with the conclusion it came to (headChecks), which is the whole of what the daemon knows of
-// the head's own CI. There is always one to name: the only caller builds this reason for a round
-// it has already reported a head for, which it does only once GitHub has reported a check run on
-// that head itself and every one of them has concluded (reviewRound,
-// classify.ChecksConcludedOnHead), and that gate and headChecks read the same runs of the fence
-// (classify.HeadRuns), so headChecks names at least the run the gate found.
+// request, the state in GitHub's own spelling, every check run GitHub reported on that head
+// with the conclusion it came to, and every commit status the record keeps for that head with
+// its state (headChecks), which is the whole of what the daemon knows of the head's own CI. There
+// is always a run to name: the only caller builds this reason for a round it has already reported
+// a head for, which it does only once GitHub has reported a check run on that head itself and
+// every one of them has concluded (reviewRound, classify.ChecksConcludedOnHead), and that gate
+// and headChecks read the same runs of the fence (classify.HeadRuns), so headChecks names at least
+// the run the gate found.
 //
 // It names the head's own check runs rather than everything the settlement standing for the head
 // reports, which can be the code head's below it: GitHub weighs the current head for the merge,
 // so a name whose newest run ran on another head of the tree says nothing about why this head is
 // held, and naming it here would read as a run GitHub made on this one.
 //
-// The daemon reads no repository ruleset, so it does not know which checks the base requires
-// (dispatch://INFRA-714/spec R1): a required check that has never run is in no list GitHub gives
-// for the head, so it is simply absent from the checks named here. The reason says so, because a
-// reader who does not know that would take a short list for the daemon leaving something out
-// rather than for the finding it is - the check that is missing is the one to look for. It says
-// nothing of what clears the state: a push that earns what the base requires is one way, and a
-// check the base requires finishing on the head as it stands is another.
+// The daemon reads the base's rules for its required checks only on a read that finds the head
+// conflicting with its base (intake.PullRequestMergeability.Rules, dispatch://INFRA-4374 R0), and
+// a head this reason is built for is not one: an approval of a head held in a confirmed conflict
+// ends its round, and one whose first conflicting read waits for its second waits (reviewRound).
+// So here it does not know which checks the base requires: a required check that has never run is
+// in no list GitHub gives for the head, so it is simply absent from the checks named here. The
+// reason says so, because a reader who does not know that would take a short list for the daemon
+// leaving something out rather than for the finding it is - the check that is missing is the one
+// to look for. It says nothing of what clears the state: a push that earns what the base requires
+// is one way, and a check the base requires finishing on the head as it stands is another.
 func stuckMergeStateReason(pr record.PullRequest) string {
-	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge. %s. The daemon reads no ruleset and so names no required check: one the base requires that has never run is in nothing GitHub reports for the head, so it is absent here rather than named as missing, which makes the missing check the thing to look for. The issue waits in reviewing until GitHub reports the head clean, unstable or has_hooks",
+	return fmt.Sprintf("the reviewer approved head %s on pull request #%d, and GitHub reports that head %s rather than one it would merge. %s. The daemon reads the base's rules only on a conflicting read and so names no required check: one the base requires that has never run is in nothing GitHub reports for the head, so it is absent here rather than named as missing, which makes the missing check the thing to look for. The issue waits in reviewing until GitHub reports the head clean, unstable or has_hooks",
 		pr.HeadSHA, pr.Number, pr.MergeState, headChecks(pr))
 }
 
@@ -825,6 +1082,14 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // (record.MergeState.Mergeable), or once the pull request has merged at that head: a merged pull
 // request has nothing left to merge, GitHub answers `unknown` for it for good, and the daemon
 // never reads its state again (askMergeStateFor), so nothing it could wait on would ever come.
+// An approval of a head the record holds in a confirmed conflict with its base
+// (classify.ConflictRound) ends the round too, whatever GitHub's merge state for it
+// (dispatch://INFRA-4374 R0): nothing GitHub answers about that head changes until the
+// implementer merges the base forward, and the merge is what the issue needs next once its review
+// is over, so the move into accepting asks for it (transition, mergeForwardOnEntry,
+// record.ConflictMergeNext). While the first conflicting read of the head waits for its second
+// (record.PullRequest.ConflictRead), the approval waits where it stands and is never reported
+// stuck: GitHub's `dirty` is not yet a conflict the daemon holds, and the second read decides it.
 // An approval that stands on the head of a pull request closed without merging keeps the round
 // open: the architect has the pr-closed-unmerged notice and decides what comes next, and a
 // reopen asks GitHub for the head's merge state again (the opened handler, then askMergeState).
@@ -881,20 +1146,26 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 			// on ever comes, so its approval ends the round.
 			return round{outcome: roundApproved}
 		}
-		// Only an open pull request is left, and only its round can wait on GitHub's answer.
+		// Only an open pull request is left, and only its round can wait on GitHub's answer. An
+		// approval of a head held in a confirmed conflict waits on no answer of GitHub's, since
+		// none changes until the base is merged forward (classify.RoundWaitsOnMergeState does
+		// not hold for it), so it ends the round here, whatever the merge state.
 		if !classify.RoundWaitsOnMergeState(issue, row, pr) {
 			return round{outcome: roundApproved}
 		}
 		// The approval stands on the head of an open pull request and GitHub's answer for that
 		// head is not one the issue may advance on, so the round waits on GitHub's answer for it:
 		// the unread state and `unknown` because GitHub has given none yet, every other because
-		// the one it gave can change under the head, and a head GitHub has reported no concluded
-		// check run on because a check still running there is what the state is waiting for. The
-		// daemon reads for each (settleRound), and the settlement that ends the last check is
-		// itself a fact that asks for a read. Which approval waits is the rule the state build
-		// reads too (classify.RoundWaitsOnMergeState), so the view carries a mergeWait for
-		// exactly this round.
-		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) {
+		// the one it gave can change under the head, a head GitHub has reported no concluded
+		// check run on because a check still running there is what the state is waiting for,
+		// and a head whose first conflicting read waits for its second because GitHub's `dirty`
+		// is no conflict until that read confirms it (mergeability), which then ends the round,
+		// or releases it. The daemon reads for each (settleRound), and the settlement that ends
+		// the last check is itself a fact that asks for a read. Which approval waits is the rule
+		// the state build reads too (classify.RoundWaitsOnMergeState), so the view carries a
+		// mergeWait for exactly this round.
+		firstReadWaits := pr.ConflictRead != nil && pr.ConflictRead.Head == pr.HeadSHA
+		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) || firstReadWaits {
 			return round{waitsOnMergeState: true}
 		}
 		return round{outcome: roundStuck, cause: stuckMergeState, head: pr.HeadSHA, state: pr.MergeState,
@@ -1045,20 +1316,25 @@ func told(row record.PhaseRow, r round) bool {
 }
 
 // askMergeState asks the daemon to read GitHub's merge state for the pull request fact is of,
-// when the round that fact has just been applied to leaves waiting on GitHub's answer for the
-// head (round.waitsOnMergeState, Config.ReadMergeState). It is the engine's own account of what
-// the round is owed rather than a second reading of the record beside it, and it runs on the
-// commit, so the fact's transaction waits for no GitHub call.
+// when the fact owes that read (askMergeStateFor, Config.ReadMergeState): the round the fact has
+// just been applied to leaves waiting on GitHub's answer for the head (round.waitsOnMergeState),
+// or the fact moves the head of an issue in implementing through merging, which a conflict with
+// the base needs read (the gate's reason, classify.MergeStateReadOwed, dispatch://INFRA-4374 R0).
+// It is the engine's own account of what the round is owed rather than a second reading of
+// the record beside it, and it runs on the commit, so the fact's transaction waits for no GitHub
+// call.
 //
 // Every fact that can change GitHub's answer asks, and the list is this function's switch rather
 // than a sentence in a comment and nine calls spread through the handlers: the pull request's own
-// events, a push to it, a review, a CI settlement, and a push to the base it sits on. Apply calls
-// it once, after the handler, so a handler's own early return cannot drop the read and no handler
-// recomputes the round settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own
-// answer does not ask - the fact a read applies is mergeability, and a read that asked for
-// another would read the same head for as long as GitHub kept answering the same way. What a read
-// answers is the ladder's to decide (daemon's mergeStateLadder), and the next fact of the issue
-// asks again.
+// events, a push to it, a review, a CI settlement, and a push to the base it sits on. The switch
+// also names which of them move the head (classify.MergeStateFactHeadMove): the pull request
+// opened or reopened, and a synchronize, which is the fact that moves the head a push to the
+// branch carries (its case says why the push is not one). Apply calls it once, after the handler,
+// so a handler's own early return cannot drop the read and no handler recomputes the round
+// settleRound has just computed (dispatch://INFRA-714 R3). GitHub's own answer does not ask - the
+// fact a read applies is mergeability, and a read that asked for another would read the same head
+// for as long as GitHub kept answering the same way. What a read answers is the ladder's to decide
+// (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
 // walks the open pull requests recorded on the base once, and asks for each read inside that
@@ -1070,12 +1346,19 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	}
 	var pr *record.PullRequest
 	var err error
+	kind := classify.MergeStateFactOther
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		kind = classify.MergeStateFactHeadMove
 	case intake.PullRequestSynchronized:
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
+		kind = classify.MergeStateFactHeadMove
 	case intake.Push:
+		// The push moves no head of the record: its synchronize, from GitHub or from the per-issue
+		// read (daemon's followHead), is the fact that moves the head, and the one a head move is
+		// read for. So the push asks only as a review or a settlement does, for a round it leaves
+		// waiting on GitHub, and one push to a branch asks for no ladder beside its synchronize's.
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	case intake.PullRequestChecks:
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
@@ -1091,15 +1374,21 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
-	return e.askMergeStateFor(ctx, tx, pr)
+	return e.askMergeStateFor(ctx, tx, pr, kind)
 }
 
-// askMergeStateFor queues the read for one pull request whose round waits on GitHub's answer. The
-// guard on a daemon with no reader is here as well as in askMergeState, because a base push
-// reaches this from its handler's walk rather than through that switch (basePush). A pull request
-// that is not open waits on no answer (classify.RoundWaitsOnMergeState holds only for an open
-// one), so the test of its state here only saves the store reads below.
-func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest) error {
+// askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
+// one of the gate's two reasons (classify.MergeStateReadOwed: a head move of an issue in
+// implementing through merging, a base push of an issue in testing through merging) or by the
+// third, which the gate does not hold: the issue's review round waiting on GitHub's answer for the
+// head (reviewRound's waitsOnMergeState), worked out here only for a fact the gate owes no read
+// for. The guard on a daemon with no reader is here as well as in askMergeState, because a base
+// push reaches this from its handler's walk rather than through that switch (basePush), and that
+// walk is the one caller that names classify.MergeStateFactBasePush. A pull request that is not
+// open is read for nothing: it merges nothing until a reopen, which asks again, and its round
+// waits on no answer (classify.RoundWaitsOnMergeState holds only for an open one), so the test of
+// its state here saves the store reads below.
+func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, fact classify.MergeStateFact) error {
 	if e.cfg.ReadMergeState == nil || pr.State != record.PullRequestOpen {
 		return nil
 	}
@@ -1107,11 +1396,17 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	if err != nil || issue == nil {
 		return err
 	}
-	reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
-	if err != nil {
-		return err
+	owed := classify.MergeStateReadOwed(*issue, fact)
+	if !owed {
+		// The round's own answer matters only where the fact and the phase owe no read: every
+		// phase a round can wait on GitHub in already owes one on a head move or a base push.
+		reviewer, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
+		if err != nil {
+			return err
+		}
+		owed = e.reviewRound(*issue, reviewer, pr).waitsOnMergeState
 	}
-	if !e.reviewRound(*issue, reviewer, pr).waitsOnMergeState {
+	if !owed {
 		return nil
 	}
 	key := issue.Key

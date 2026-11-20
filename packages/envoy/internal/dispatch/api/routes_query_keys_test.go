@@ -51,6 +51,9 @@ var queryKeyExceptions = map[string]string{
 // other search route's, declares it no longer: the five members a build released before them
 // drops are declared on GET /api/v1/search/results alone (routes_shapes.go).
 var queryKeysReadThroughAHelper = []string{
+	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
+	// `precondition`, each a field of the multipart body the upload routes declare.
+	`artifacts.go: FormValue(field)`,
 	`delivery.go: Get(name)`,
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,

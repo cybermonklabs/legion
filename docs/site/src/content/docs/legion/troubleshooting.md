@@ -30,6 +30,8 @@ legion config check --config legion.yaml
 | `worker_stop_timeout_seconds must be at least 9 when runtime is kubernetes: …` | Raise it to 9 or more. A role's stop gives its agent 5 s to exit, drains its output for 1 s and waits at least 3 s for the CodeGraph warm-up to release its lease on the issue volume; a smaller grace would let the pod kill the shim with the lease held, and the role's relaunch would skip its own build for a minute. |
 | `projects must configure <PROJECT>, the daemon's own project` | `project` must also be a key of `projects`. |
 | `postgres_dsn is required (or set LEGION_POSTGRES_DSN)` | Give the daemon its database. |
+| `<LEGION_LEAK_CHECK_REPOSITORY or leak_check.repository> is set and the manifest sha256 is not: …` or `<LEGION_LEAK_CHECK_MANIFEST_SHA256 or leak_check.manifest_sha256> is set and the repository is not: …` | The deployment's shared leak check is two values, set together or not at all: the repository it is published from and the check's manifest digest, one sha256 over every file it runs from ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). Set the half the message names, in the daemon's environment or in `legion.yaml`; or unset the half that is set, and the daemon runs no shared leak check. |
+| `connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec` | `postgres_dsn` sets `default_query_exec_mode` to `exec` or `simple_protocol`, in which pgx sends each value with no parameter type, so the store cannot apply its text rule to what it writes. Remove `default_query_exec_mode` from the DSN, or set another mode: `cache_statement` (pgx's default), `cache_describe` or `describe_exec`. |
 | `unknown key <key>` | A typo, or a setting Legion no longer has; the message says which when it knows. `Unknown key "projects.<KEY>.repo": Dispatch holds the project's repository mapping …` is one: map the repositories in Dispatch and delete the key ([Upgrade](/legion/legion/running-legion/#upgrade)). |
 | `omp_invocation is not used when runtime is kubernetes: …` | Remove it: every pod runs the worker image's Oh My Pi. |
 | `worker_backends.architect is claude (Claude Code), which runs only planner, implementer, tester, reviewer, merger: …` | Claude Code runs the phase workers alone; leave the architect on `omp`. |
@@ -548,8 +550,14 @@ whole record.
 
 **A launch the shared public leak check refused** has a sentence of its own on the claim, as
 `leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
-image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
-starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+image pins, from the repository the deployment names (`LEGION_LEAK_CHECK_REPOSITORY` and
+`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment, or `leak_check.repository` and
+`leak_check.manifest_sha256` in `legion.yaml`), and pushes it to the pod's launcher, which installs
+it before any role of the pod starts
+([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)). A
+deployment that names no check runs none: the daemon logs `daemon: the deployment leak check is
+not configured` once at boot, and no launch is refused for the check and no claim carries this
+sentence.
 A start whose check could not be installed is not sent, and it is charged as a launch failure, so
 a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
 word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
@@ -564,23 +572,25 @@ the try started or failed for another reason. It is not cleared while the claim 
 tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
 claim, and in `legion claims list --json` and the last column of `legion claims list` for every
 claim. The project's controller is on no claim view of the state, so its sentence shows in the
-listing alone. What follows the colon says where to look:
+listing alone. What follows the colon says where to look. Each sentence names the repository the
+deployment configured (`leak_check.repository`, or `LEGION_LEAK_CHECK_REPOSITORY` in the daemon's
+environment), written `<owner>/<repository>` below, and its owner, `<owner>`:
 
-- `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
-  could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
-  configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
-  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+- `the daemon runs with no GitHub App, so it cannot read <owner>/<repository>`, or `the daemon
+  could not mint its read-only token for <owner>/<repository>: …`: the daemon's GitHub App
+  configuration, and the implement App's installation on `<owner>`.
+- `GitHub refused the daemon's implement App the reading permissions on <owner>, …`: what the
+  account grants the implement App's installation on `<owner>`. The read lease needs contents,
   pull requests and metadata read. The daemon asks for no wider token in its place.
-- `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
-  tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
+- `GitHub answered the read of <owner>/<repository> at <tag> with HTTP <status>…`, or `the
+  tarball of <owner>/<repository> at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
-- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, `the daemon's read of
-  theorem-labs/agent-infra at <tag> did not finish within <bound>`, `the daemon could not ask
+- `the daemon could not read <owner>/<repository> at <tag>: …`, `the daemon's read of
+  <owner>/<repository> at <tag> did not finish within <bound>`, `the daemon could not ask
   GitHub for …` or `the daemon could not slice the check it read at <tag>: …`: the daemon's own
   connection to GitHub, or what GitHub sent. The daemon keeps no failed read, so the next launch
   reads again.
-- `the start stopped waiting for the daemon's read of theorem-labs/agent-infra at <tag>: …`: the
+- `the start stopped waiting for the daemon's read of <owner>/<repository> at <tag>: …`: the
   launch reached its own bound before the daemon's read ended. The read goes on, and the next
   launch takes what it read.
 - `the pod asked for the tag "<tag>", which is not of the published shape leak-check-v<n>`: the
@@ -1073,7 +1083,7 @@ These tasks adopt nothing:
 
 - the controller's start.
 
-Notices, hooks, phase-ended messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
+Notices, hooks, merge-forward messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
 
 **A phase task waits for the turns of the other roles.**
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
@@ -1156,10 +1166,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   waiting on capacity; running it again` with the scheduler's reason and creates the pod again every
   5 minutes, serving nothing until one is placed and passes, and then reports the `pool-capacity`
   capability open with the count and the reason. Make room in the pool, or raise its limits; the
-  probe pod itself needs only 250m and 1Gi.
-- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's own
-  disk, and its refusals name what to do, sometimes a `jj` command to run against the issue's
-  clone (a local bookmark deleted and never pushed, or a conflicted one). Read it with
+  probe pod itself needs only 500m and 1Gi.
+- **The `workspace-init` container fails.** It provisions the issue's workspace on the pod's disk
+  (the pod's own, or a kept volume, below), and its refusals name what to do, sometimes a `jj`
+  command to run against the issue's clone (a local bookmark deleted and never pushed, or a
+  conflicted one). Read it with
 
   ```sh
   kubectl -n legion logs <pod> -c workspace-init
@@ -1168,16 +1179,35 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   Nothing is registered before a refusal, so every later attempt in that pod refuses the same way.
   A pod whose `workspace-init` refuses runs no `roles` container, so there is no shell in which to
   run the commands it names; the remedy is letting the pod be replaced, and the issue's next launch
-  provisions a fresh clone and workspace from its pushed branch on a disk of its own. Run no `jj`,
-  `git` or `omp` in a running issue pod either: any role can plant configuration in its clone or
-  workspace that starts a program with every role's credentials in reach (`docs/kubernetes.md` in
-  the repository, "A shell on an issue's disk").
+  provisions a fresh clone and workspace from its pushed branch on a disk of its own, except on a
+  kept volume (below). Run no `jj`, `git` or `omp` in a running issue pod either: any role can
+  plant configuration in its clone or workspace that starts a program with every role's
+  credentials in reach (`docs/kubernetes.md` in the repository, "A shell on an issue's disk").
+
+  On a kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), a failure of an init
+  container can come from the volume itself. So the issue's next launch gives the issue a new,
+  empty volume, except in these cases, which keep the volume:
+
+  - The container exited with code 2 or 3.
+  - The container ended as `OOMKilled`, or as `ContainerStatusUnknown`, which the kubelet writes
+    when the node or its container runtime restarts.
+  - The pod is being deleted.
+  - The kubelet ended the pod itself, for example in an eviction for node pressure or for a
+    storage limit, or in a graceful node shutdown.
+
+  The full rule is in `docs/kubernetes.md` in the repository ("A kept volume on a microVM pod",
+  "The reset").
 - **An issue's work is gone after its pod was replaced.** That is the shape of the runtime, not a
   failure: an issue's disk is its pod's own and is deleted with the pod, so a stop, a close, a
   node loss or a launch that replaces the pod takes the workspace with it. What survives is what
   was pushed to `legion/<issue>` and each role's conversation, which lives in the session
   database; the next pod provisions the workspace from that branch, and the agent is told its
   workspace is newer than its conversation before its next turn.
+  A microVM issue pod under `runtime.kubernetes.sandbox.microvm.keep_volume` is the exception: its
+  volume stays through a node loss and a replacement of the pod, and the next pod finds the
+  workspace as the last pod left it. That volume goes when the issue leaves the workflow, when its
+  disk's shape changes, or when the daemon resets it after a failed init container
+  (`docs/kubernetes.md` in the repository, "A kept volume on a microVM pod").
 - **`worker-stream: rejected hello (stale worker generation)`** in the daemon's log is the fence
   working: a pod from an older generation of a claim tried to connect after a newer one replaced it.
   Nothing to do.
@@ -1190,7 +1220,12 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the
   defaults), often because the registration's answer never reached it. The daemon resumes the same
   session one generation later and counts a launch failure; after `launch_failure_limit` of them
-  the claim fails.
+  the claim fails. The line carries `claim`, and `launchFailure` with `limit`, the launch failure
+  this retirement counts and the limit it counts toward. A daemon-launched controller whose Envoy
+  role claim the listener keeps answering `503` at its start lands here, and its waits are in the
+  Oh My Pi log of its session; a controller whose Oh My Pi session changed is refused when it
+  registers the new session (`SameAgentRefusal`, `409`), exits, and is relaunched on its recorded
+  session.
   While the tree's cleanup is reserved (the tree is closing), the retirement waits: the process is
   kept, nothing is counted, and the deadline is tried again at the probe interval
   (`probe_interval_seconds`, 30 seconds at the default). Each try logs **`supervise: timer`** at
@@ -1461,8 +1496,9 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
-  `implementing` on its own. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
+  the base forward while the issue stays in `merging`, and the merger merges the new head once the
+  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1490,9 +1526,8 @@ These arrive as messages on the Dispatch issue:
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
 - **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
-  issue left the phase and came back, or the head started conflicting with its base while the
-  tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  issue left the phase and came back, as when a request for changes ended a review round the
+  reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
   role's phases row is on, and then what decided it, which is one of four readings: the
@@ -1525,23 +1560,27 @@ These arrive as messages on the Dispatch issue:
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
 
-An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
-GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
-the issue back to the implementer with the base to merge forward and told the architect. From
-`retro` the implementer kept its turn and was handed the implementing task once that turn ended;
-from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
-interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
-workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one. The issue is in
-`implementing` by then, so the `legion` tool sends it as the implementer's completion of
-implementing, with the newest `implement` record and the head that record names, which can be the
-head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
-is a move back, which raised the entry the phase stands on, and the refusal names that move. The
-implementer merges the base forward in the implementing task's own turn and completes that work
-with a handoff of its own, never retro's commit; the merger's phases row still names the entry
-merging gave it, so a completion it sends for the phase it lost is refused
-(`HANDOFF_NOT_CURRENT_PHASE`).
-The work comes back through testing, review, acceptance and retro to a new merge. A red check
+An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
+conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
+reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
+both reads report, and only when the next step needs a mergeable head: the issue stands past its
+review, a check the base requires has no green result on the head, the base requires a current
+branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
+read waits for a second read` for a first read, `workflow: a second read did not confirm the
+conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
+merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
+required contexts and the green ones, and `workflow: merge forward asked` with the reason. A read
+GitHub answered before the newest read the record holds of the same head is dropped whole, with
+`workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
+so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
+forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
+and no completion, the phase's worker is told to stop writing the workspace and not to complete
+its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
+names both heads. A completion of the phase the issue stands in that names a head a merge
+forward replaced, the head an earlier merge forward replaced included, or that names no head once
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
+made again at the new head; a completion of a phase the issue has already left is recorded as
+before. Past review the reviewer is asked to read the merge and approve the new head. A red check
 sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
@@ -1702,6 +1741,38 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub lists, applies a lost head, review or approval-carrying push, and tells an architect
   `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
   drain.
+- **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
+  that says where the settlement stopped. Each line names the head and the generation, and the
+  publish line and the drop lines also name the snapshot, so a drop line matches the publish line
+  of the same settlement. Each line is written once for each record state or settlement while the
+  listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
+  dropped settlements since: each remembers in memory what it logged.
+  - The listener writes `checks held a head` for a head's record that it has
+    not settled after 10 minutes with no event. The line names what holds the record: `running`
+    names each check run that has not finished, `suites` names each check suite that is not
+    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
+    name the other holds. It is a warning when every recorded check run has finished.
+  - The listener writes `checks settlement published` for each settlement it publishes.
+  - The daemon writes one line for each checks settlement it drops before it applies it:
+    `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the
+    field in `reason`, and the `sha`, `generation` and `snapshot` of the payload where each
+    reads), `workflow: a checks settlement was dropped: no pull request is recorded
+    for it`, `workflow: a checks settlement stands for no head the record holds` (with
+    `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
+    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
+    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
+    message` (an error with the `subject`) and dropped. A settlement delivered again after it
+    applied writes no line.
+
+  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  - The daemon applied it, and the line it would tell is the line it already told for that head,
+    so it tells nobody again. The earlier `CI settled` message of that head stands for it.
+  - The daemon applied it on a tree that lingers after its root left the workflow, where the
+    daemon tells nobody.
+  - In every other case, it was lost between the listener and the daemon.
+
+  No line at all for a finished head means that no event of that head reached the listener's
+  record.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the

@@ -67,15 +67,15 @@ func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 	st := migratedStore(t)
 	records := NewStore()
 	inTx(t, st, func(tx pgx.Tx) {
-		for _, row := range []DispatchIssueRow{
-			{Key: "LEGION-10", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-12", "LEGION-11", "OTHER-11"}, Seq: 3},
-			{Key: "LEGION-11", Project: "LEGION", Status: "done", Seq: 4},
-			{Key: "LEGION-12", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-13"}, Seq: 5},
-			{Key: "LEGION-13", Project: "LEGION", Status: "todo", Seq: 6},
-			{Key: "LEGION-14", Project: "LEGION", Status: "todo", Seq: 7},
-			{Key: "OTHER-11", Project: "OTHER", Status: "done", Seq: 8},
+		for _, reading := range []DispatchReading{
+			{Key: "LEGION-10", Project: "LEGION", Seq: 3, Status: Carry("todo"), Parent: Carry(""), Blockers: Carry([]string{"LEGION-12", "LEGION-11", "OTHER-11"})},
+			{Key: "LEGION-11", Project: "LEGION", Seq: 4, Status: Carry("done"), Parent: Carry(""), Blockers: Carry[[]string](nil)},
+			{Key: "LEGION-12", Project: "LEGION", Seq: 5, Status: Carry("todo"), Parent: Carry(""), Blockers: Carry([]string{"LEGION-13"})},
+			{Key: "LEGION-13", Project: "LEGION", Seq: 6, Status: Carry("todo"), Parent: Carry(""), Blockers: Carry[[]string](nil)},
+			{Key: "LEGION-14", Project: "LEGION", Seq: 7, Status: Carry("todo"), Parent: Carry(""), Blockers: Carry[[]string](nil)},
+			{Key: "OTHER-11", Project: "OTHER", Seq: 8, Status: Carry("done"), Parent: Carry(""), Blockers: Carry[[]string](nil)},
 		} {
-			must(t, records.PutDispatchIssue(t.Context(), tx, row))
+			must(t, records.PutDispatchIssue(t.Context(), tx, reading))
 		}
 		must(t, records.PutDispatchClaim(t.Context(), tx, "LEGION-10", "session:s-1", 9))
 
@@ -84,10 +84,10 @@ func TestDispatchIssuesOfReadsTheKeysAndWhatTheyWaitOn(t *testing.T) {
 			t.Fatalf("read the mirror of LEGION-10: %v", err)
 		}
 		want := []DispatchIssueRow{
-			{Key: "LEGION-10", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-12", "LEGION-11", "OTHER-11"}, Seq: 3, ClaimedBy: "session:s-1", ClaimSeq: 9},
-			{Key: "LEGION-11", Project: "LEGION", Status: "done", Blockers: []string{}, Seq: 4},
-			{Key: "LEGION-12", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-13"}, Seq: 5},
-			{Key: "OTHER-11", Project: "OTHER", Status: "done", Blockers: []string{}, Seq: 8},
+			{Key: "LEGION-10", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-12", "LEGION-11", "OTHER-11"}, Seq: 3, ClaimedBy: "session:s-1", ClaimSeq: 9, Labels: []string{}},
+			{Key: "LEGION-11", Project: "LEGION", Status: "done", Blockers: []string{}, Seq: 4, Labels: []string{}},
+			{Key: "LEGION-12", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-13"}, Seq: 5, Labels: []string{}},
+			{Key: "OTHER-11", Project: "OTHER", Status: "done", Blockers: []string{}, Seq: 8, Labels: []string{}},
 		}
 		if !reflect.DeepEqual(rows, want) {
 			t.Fatalf("the mirror of LEGION-10 = %#v, want %#v: its row and its blockers', whatever project they are in, by key", rows, want)

@@ -10,10 +10,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// A listener that refuses Dispatch's ENVOY_TOKEN (a bad or rotated token) answers 401 to every
+// A listener that refuses Dispatch's credential (a bad or rotated token) answers 401 to every
 // request. That is the listener's answer, not a take-over: no successor will accept the same
 // token a few seconds later, so the send settles failed on its first try instead of retrying the
-// registry read for the whole take-over window.
+// registry read for the whole take-over window. Dispatch here presents its identity token, which
+// its client reads once more and presents again after a 401, as the kubelet may have rotated it
+// (envoy.Client.do): one try, two requests.
 func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
 	listener := startTakeOverListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.server.URL)
@@ -41,10 +43,11 @@ func TestAListenerRefusingTheTokenSettlesTheSendAtOnce(t *testing.T) {
 		t.Fatalf("attempt = %#v, want failed with the listener's unauthorized answer", attempt)
 	}
 	tries := listener.requestsTo(takeOverRegistry)
-	if tries != 1 || took > 2*time.Second {
-		t.Fatalf("a listener answering 401 unauthorized was asked for the registry %d times over %v, want once "+
-			"and settled at once: a refused token is the listener's answer, not a take-over to wait out "+
-			"(envoy Client.Session maps the 401 to ErrUnavailable, which the take-over wait retries)", tries, took)
+	if tries != 2 || took > 2*time.Second {
+		t.Fatalf("a listener answering 401 unauthorized was asked for the registry %d times over %v, want twice "+
+			"(the identity token, then the same file read again) and settled at once: a refused token is the "+
+			"listener's answer, not a take-over to wait out (envoy Client.Session maps the 401 to ErrUnavailable, "+
+			"which the take-over wait retries)", tries, took)
 	}
 	if states := attemptStates(t, database, "message_deliveries", "message_id", message.ID); !slices.Equal(states, []string{"1:failed"}) {
 		t.Fatalf("attempts = %v, want attempt 1 alone, failed", states)

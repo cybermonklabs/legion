@@ -26,7 +26,7 @@ type Deployment struct {
 	Probed bool
 	// AgentSecrets is whether runtime.kubernetes.agent_secrets is configured.
 	AgentSecrets bool
-	// SecretsLogin is the broker login's state (agentsecrets.LoginState.State: "none", "issued" or
+	// SecretsLogin is the broker login's state (cipher.LoginState.State: "none", "issued" or
 	// "failed"); "" with no broker.
 	SecretsLogin string
 	// UnreservedPods are the pods the daemon builds that reserve no CPU and memory, those whose
@@ -61,15 +61,19 @@ type Deployment struct {
 // (in the probe table, the browser row under `probe-image --skip-browser`).
 // StatusMissing and StatusReported are the probe table's alone (CheckImage): a deployment row
 // `legion state` carries (api.CapabilityState) is never missing or reported, since the daemon
-// either measures it or has nothing yet to measure it with.
+// either measures it or has nothing yet to measure it with. StatusUnanswered is the probe table's
+// alone too: an image row the end of the check's context (the probe's deadline) left with no
+// verdict, a command of its check stopped by that end, or kept from starting, or the check never
+// run, which says nothing of the image.
 const (
-	StatusPresent   = "present"
-	StatusMissing   = "missing"
-	StatusReported  = "reported"
-	StatusWithheld  = "withheld"
-	StatusUnchecked = "unchecked"
-	StatusDecided   = "decided"
-	StatusOpen      = "open"
+	StatusPresent    = "present"
+	StatusMissing    = "missing"
+	StatusReported   = "reported"
+	StatusWithheld   = "withheld"
+	StatusUnchecked  = "unchecked"
+	StatusUnanswered = "unanswered"
+	StatusDecided    = "decided"
+	StatusOpen       = "open"
 )
 
 // Source is where a deployment row's measurement came from.
@@ -123,9 +127,9 @@ func (s State) OpenLine() string {
 // satisfies it, decided when legion.yaml records a decision on it, and open otherwise, with the
 // line that records one.
 func (d Deployment) Report() []State {
-	// The renderers run no command, so the walk under a context that never ends cannot fail.
-	states, _ := render(context.Background(), renderer{image: d.image, live: d.live, deployment: d.deployment})
-	return states
+	// The renderers run no command, and the walk's context never ends, so no image row is
+	// unanswered.
+	return render(context.Background(), renderer{image: d.image, live: d.live, deployment: d.deployment})
 }
 
 // Open is the rows whose status is open, in Table order: the deployment gaps with no decision, and
@@ -325,7 +329,7 @@ func (d Deployment) measure(name Name) (bool, Source, string) {
 		case d.ProbeCapacityWaits == 0:
 			return true, SourceBoot, "the image probe pod scheduled at its first attempt"
 		default:
-			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 250m / 1Gi reservation",
+			return false, SourceBoot, fmt.Sprintf("the image probe pod was Unschedulable %d time(s) at boot before it scheduled: %s; the pool had no room for its 500m / 1Gi reservation",
 				d.ProbeCapacityWaits, d.ProbeCapacityReason)
 		}
 	}

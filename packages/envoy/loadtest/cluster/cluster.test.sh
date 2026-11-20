@@ -241,9 +241,35 @@ for a in "$@"; do
 done
 $has_ns || printf '%s\n' "$*" >>"$FAKE_DIR/kubectl-no-ns.log"
 c=${cmd[*]:-}
+# credential_reader JOB DIR LOG: the job a call that carries the copy's credentials starts here
+# (runner_start -c, replay_checksum) in place of loadgen: one line per file of DIR, "JOB FILE MODE
+# DIR-MODE CONTENT", appended to LOG -- what the job would read, and how the runner kept it.
+# shellcheck disable=SC2016 # expanded by the runner's sh
+credential_reader='for f in "$2"/*; do printf "%s %s %s %s %s\n" "$1" "${f##*/}" "$(stat -c %a "$f")" "$(stat -c %a "$2")" "$(cat "$f")"; done >>"$3"'
+# flags_name_dir DIR ARG...: every -token-file, -listener-token-file and -pg-file of the job's
+# command ARG... names a file in DIR, the directory its start claims, and there is one at least:
+# a job whose flags named another directory would open no file at all.
+flags_name_dir() {
+  local dir=$1 prev="" a n=0
+  shift
+  for a in "$@"; do
+    case $prev in
+      -token-file | -listener-token-file | -pg-file)
+        ((++n))
+        [ "${a%/*}" = "$dir" ] || { echo "fake kubectl exec: the start claims $dir, and its job's $prev names $a" >&2; return 1; }
+        ;;
+    esac
+    prev=$a
+  done
+  ((n > 0)) || { echo "fake kubectl exec: a start given credentials gives its job no -…-file flag" >&2; return 1; }
+}
 case $verb in
   get)
     case "$*" in
+      *"get --raw /.well-known/openid-configuration"*)
+        # The cluster's ServiceAccount token issuer, which up records for the copy's listener.
+        printf '{"issuer":"https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example","jwks_uri":"https://203.0.113.1:443/openid/v1/jwks"}\n'
+        ;;
       *"configmap dispatch-loadtest-lock"*)
         # FAKE_LOCK_GET_FAIL: a read of the lock fails with a refused API server connection once
         # the lock exists, so the command that takes it goes on and every read after that fails.
@@ -335,7 +361,37 @@ case $verb in
           printf 'usage_usec 123456\nthrottled_usec 0\ncpu_max 1600000 100000\nmemory_current 1048576\ninactive_file 4096\nend\n'
         fi
         ;;
-      "sh -c name="*) printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts" ;;
+      # A runner job's start (runner_start). One started with the copy's credentials (-c) runs the
+      # runner's own script here, on the fake runner's /work with this call's standard input, so
+      # the script itself writes the credentials and its job's EXIT trap removes them; the job it
+      # starts is credential_reader, in place of the loadgen command the start line names.
+      "sh -c name="*)
+        printf '%s\n' "${cmd[*]:4}" >>"$FAKE_DIR/runner-starts"
+        if [[ ${cmd[2]} == *'read -r v'* ]]; then
+          mkdir -p "$FAKE_DIR/runner/work"
+          # The directory the start claims is in its script (runner_start -c DIR), and it is the
+          # one the job's -…-file flags name.
+          [[ ${cmd[2]} =~ secrets=\'(/work/secrets/[A-Za-z0-9._-]+)\' ]] || { echo "fake kubectl exec: a start given credentials names no directory: $c" >&2; exit 1; }
+          claimed=${BASH_REMATCH[1]}
+          flags_name_dir "$claimed" "${cmd[@]:5}" || exit 1
+          sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "${cmd[4]}" \
+            sh -c "$credential_reader" sh "${cmd[4]}" "$FAKE_DIR/runner$claimed" "$FAKE_DIR/runner-credentials" || exit $?
+        fi
+        ;;
+      # replay_checksum: the runner's own script too, with credential_reader and then the checksum
+      # line standing in for loadgen replay-checksum.
+      'sh -c secrets=$1; '*)
+        if [ "${cmd[5]:-} ${cmd[6]:-}" != "/work/loadgen replay-checksum" ]; then
+          echo "fake kubectl exec: unexpected command given the copy's credentials: $c" >&2
+          exit 1
+        fi
+        flags_name_dir "${cmd[4]}" "${cmd[@]:5}" || exit 1
+        mkdir -p "$FAKE_DIR/runner/work"
+        sh -c "${cmd[2]//\/work/$FAKE_DIR/runner/work}" sh "$FAKE_DIR/runner${cmd[4]}" \
+          sh -c "$credential_reader"' && echo "{\"issues\": 1047, \"md5\": \"fakemd5\"}"' \
+          sh replay-checksum "$FAKE_DIR/runner${cmd[4]}" "$FAKE_DIR/runner-credentials"
+        exit $?
+        ;;
       # The job a stop names (runner_stop, runner_wait's bound, typing_stop) and, in a file of
       # its own so that every exact check of runner-stops keeps reading one job name per line,
       # the job a SIGKILL names (runner_wait past its grace), with the second that SIGKILL was
@@ -383,7 +439,6 @@ case $verb in
       # A replay step: the runner's directories, the bundle copied in and verified there.
       "sh -c rm -rf /work/bundle"*) ;;
       "tar -C /work -xf -") cat >/dev/null ;;
-      "/work/loadgen replay-checksum "*) echo '{"issues": 1047, "md5": "fakemd5"}' ;;
       "/work/loadgen replay-verify-bundle "*) echo '{"files": 28}' ;;
       *"/healthz")
         echo '{"ok":true,"nats":true,"schema_version":121}'
@@ -853,6 +908,16 @@ if [ "\$*" = 3 ] || [[ " \${FAKE_FAST_SLEEP:-none} " == *" \$* "* ]]; then
 fi
 exec $real_sleep "\$@"
 EOF
+
+# The jq stand-in: every jq call of cluster.sh and of the fakes, its arguments recorded in
+# jq-argv.log, one call a line, then the real jq. An argument is what every user of the pod reads
+# (/proc/<pid>/cmdline), so no_credential_in_args reads this log as it reads kubectl.log.
+real_jq=$(PATH=$real_path command -v jq)
+cat >"$bin/jq" <<EOF
+#!/usr/bin/env bash
+[ -z "\${FAKE_DIR:-}" ] || [ ! -d "\$FAKE_DIR" ] || printf '%s\n' "\$*" >>"\$FAKE_DIR/jq-argv.log"
+exec $real_jq "\$@"
+EOF
 chmod +x "$bin"/*
 
 export FAKE_DIR=$fake FAKE_NS=$ns
@@ -970,7 +1035,7 @@ write_pods() {
 }
 
 reset_fake() {
-  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/seeded" "$fake/runner-starts" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
+  rm -f -- "$fake/lock.json" "$fake/applied.yaml" "$fake/kubectl.log" "$fake/kubectl-calls.log" "$fake/jq-argv.log" "$fake/seeded" "$fake/runner-starts" "$fake/runner-credentials" "$fake/dispatch.log" "$fake/loadgen.log" "$fake"/refine.[0-9]* \
     "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-polls" "$fake/rc-kill-polls" "$fake/df-seq" "$fake/runner-heap-kept" "$fake/lock-get-fails" "$fake/lock-get-oks" \
     "$fake/sleep.log" "$fake/apply-errors" "$fake/replay-template" "$fake/restores" "$fake/pod-dump" \
     "$fake/stored-order.log" "$fake/go-dispatch.log" "$fake/go-browsertype.log" "$fake/git.log" \
@@ -1278,6 +1343,61 @@ jq -e '.browsertype == null' "$run_dir/state.json" >/dev/null || fail "state.jso
   fail "up did not copy envoy-dispatch into the runner"
 pg_password=$(jq -r .secrets.pg_password "$run_dir/state.json")
 
+# copy_credentials: the three credentials of the run in run_dir as a runner job reads them, one a
+# line in RUNNER_CREDENTIALS' order and with its file's name: dispatch-token, listener-token,
+# pg-url. A run whose state.json lacks one fails here, so no check below compares against nothing.
+copy_credentials() {
+  local dt lt pw
+  dt=$(jq -r '.secrets.dispatch_token // empty' "$run_dir/state.json")
+  lt=$(jq -r '.secrets.listener_token // empty' "$run_dir/state.json")
+  pw=$(jq -r '.secrets.pg_password // empty' "$run_dir/state.json")
+  [ -n "$dt" ] && [ -n "$lt" ] && [ -n "$pw" ] || fail "$run_dir/state.json lacks a credential of the copy"
+  printf '%s\n' "dispatch-token $dt" "listener-token $lt" "pg-url postgres://dispatch:$pw@postgres.$ns.svc:5432/dispatch?sslmode=disable"
+}
+
+# job_credentials JOB: the runner job JOB read the copy's three credentials from files of mode 600
+# in a directory of mode 700 of its own, each holding the copy's own value (credential_reader's
+# record), and that directory is gone once the job has ended: the EXIT trap of the runner sh that
+# waited on the job removed it. A detached job's removal lands a moment after its start returned.
+job_credentials() {
+  local job=$1 naps=0 file value creds
+  creds=$(copy_credentials)
+  while compgen -G "$fake/runner/work/secrets/$job.*" >/dev/null; do
+    ((++naps <= 200)) || fail "runner job $job's credentials are still in the runner after it ended: $(ls -ld "$fake/runner/work/secrets/$job".*)"
+    sleep 0.05
+  done
+  while read -r file value; do
+    grep -qxF -- "$job $file 600 700 $value" "$fake/runner-credentials" 2>/dev/null ||
+      fail "runner job $job read no $file of mode 600, in a directory of mode 700, holding the copy's own value: $(grep "^$job " "$fake/runner-credentials" 2>/dev/null)"
+  done <<<"$creds"
+}
+
+# no_credential_in_args: no kubectl call and no jq call so far carries a credential of the copy
+# among its arguments, where every user of this pod can read it (/proc/<pid>/cmdline).
+no_credential_in_args() {
+  local log name value
+  for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+    # A log no call wrote cannot show a credential in a call, so the check would prove nothing.
+    [ -s "$log" ] || fail "no call wrote $log, so no_credential_in_args can see no argument in it"
+  done
+  # All four of the copy's secrets, as up made them; the Postgres password stands for the URL
+  # that holds it, whose rest is no secret. A state.json without one fails here, so no check
+  # below compares against nothing.
+  while read -r name value; do
+    [ -n "$value" ] || fail "$run_dir/state.json has no $name"
+    for log in "$fake/kubectl.log" "$fake/jq-argv.log"; do
+      ! grep -qF -- "$value" "$log" ||
+        fail "a ${log##*/} call carries the copy's $name on its command line: $(grep -m1 -F -- "$value" "$log" | cut -c1-300)"
+    done
+  done < <(jq -r '.secrets | to_entries[] | "\(.key) \(.value)"' "$run_dir/state.json")
+  [ "$(jq '.secrets | length' "$run_dir/state.json")" = 4 ] || fail "$run_dir/state.json does not hold the copy's four secrets"
+}
+
+# up made the copy's four secrets and wrote them into state.json: no call of up carried one as an
+# argument (the logs hold only up's calls here, since reset_fake ran before it).
+no_credential_in_args
+pass "up writes the copy's four secrets into state.json with no kubectl or jq call carrying one as an argument"
+
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC"
 [ -f "$run_dir/seed.json" ] || fail "seed kept no seed.json in the run directory"
@@ -1289,6 +1409,23 @@ for k in artifact_versions ref_targets ref_target_versions ref_sources artifact_
   jq -e --arg k "$k" '.counts | has($k)' "$run_dir/seed.meta.json" >/dev/null ||
     fail "seed.meta.json's counts lack $k, which common.sh's SEED_COUNTS_SQL counts: $(jq -c .counts "$run_dir/seed.meta.json" 2>/dev/null)"
 done
+# Each of the seed's loadgen jobs is given the -…-file forms of its credentials, naming files the
+# runner wrote for that job alone, and no kubectl call carries a credential.
+for job in seed seed-refs seed-finish; do
+  start=$(grep "^$job /work/loadgen " "$fake/runner-starts") || fail "the seed started no loadgen $job in the runner"
+  wants=("-pg-file /work/secrets/$job\.[0-9a-f]+/pg-url ")
+  [ "$job" = seed-finish ] ||
+    wants+=("-token-file /work/secrets/$job\.[0-9a-f]+/dispatch-token " "-listener-token-file /work/secrets/$job\.[0-9a-f]+/listener-token ")
+  for want in "${wants[@]}"; do
+    [[ "$start " =~ \ $want ]] || fail "loadgen $job is not given '$want': $start"
+  done
+  for gone in "-token " "-listener-token " "-pg "; do
+    [[ "$start " != *" $gone"* ]] || fail "loadgen $job is still given ${gone% } as a value: $start"
+  done
+  job_credentials "$job"
+done
+no_credential_in_args
+pass "seed's loadgen jobs read the copy's credentials from files of mode 600 the runner writes for each job alone and removes when it ends, and no kubectl call carries one"
 
 run_cluster step --namespace "$ns" smoke 1 --duration 1m
 ((RC == 0)) || fail "step exited $RC"
@@ -1302,9 +1439,15 @@ cmp -s "$fake/stepdir/heap.txt" "$run_dir/steps/smoke/heap.txt" || fail "heap.tx
 grep -q -- 'gzip -1 -c /work/steps/smoke/heap.txt' "$fake/kubectl.log" || fail "heap.txt did not come back by its own stream"
 start=$(grep '^step-smoke ' "$fake/runner-starts") || fail "the step started no loadgen run in the runner"
 for want in "run -allow-foreign" "-events 4 " "-sessions 400 " "-requests 60 " "-duration 1m " "-warmup 30s " "-grace 20s " \
-  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0" "-pg postgres://dispatch:"; do
+  "-rng-seed 1 " "-copy-meta /work/meta/smoke.json" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/step-smoke\.[0-9a-f]+)/dispatch-token\  ]] || fail "the step's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "the step's loadgen run lacks '$want': $start"
+done
+job_credentials step-smoke
+no_credential_in_args
 jq -e '.namespace == "'"$ns"'" and .postgres.version != "" and .postgres.settings_sha256 != "" and .node_cpu_model.dispatch == "Fake CPU @ 2.00GHz" and (.pods | length) == 8' \
   "$run_dir/steps/smoke/copy-meta.json" >/dev/null || fail "copy-meta.json lacks a field: $(cat "$run_dir/steps/smoke/copy-meta.json")"
 # The phase and the reads-only flag, which loadgen curves reads to place the step in the curves.
@@ -1467,6 +1610,18 @@ for want in "env LOADTEST_ROOT=/work/root LOADTEST_GOMAXPROCS=16 /work/loadgen r
   "-copy-meta /work/meta/r16.json" "-pprof http://dispatch-pprof.$ns.svc:6061" "-nats-server-name nats-0"; do
   [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
 done
+[[ $start =~ \ -token-file\ (/work/secrets/replay-r16\.[0-9a-f]+)/dispatch-token\  ]] || fail "replay r16's loadgen run has no -token-file of a directory of its own: $start"
+for want in "-listener-token-file ${BASH_REMATCH[1]}/listener-token " "-pg-file ${BASH_REMATCH[1]}/pg-url "; do
+  [[ $start == *"$want"* ]] || fail "replay r16's loadgen run lacks '$want': $start"
+done
+# The replay and the checksums replay-prepare and its reset read (replay_checksum) take the copy's
+# credentials as the seed and the step do, and still no kubectl call carries one.
+job_credentials replay-r16
+job_credentials replay-checksum
+grep -qE -- "sh /work/secrets/replay-checksum\.[0-9a-f]+ /work/loadgen replay-checksum -allow-foreign -url http://dispatch\.$ns\.svc:8766 -token-file /work/secrets/replay-checksum\.[0-9a-f]+/dispatch-token " "$fake/kubectl.log" ||
+  fail "no loadgen replay-checksum was given its credentials' files: $(grep -F 'replay-checksum' "$fake/kubectl.log" | tail -n1)"
+no_credential_in_args
+pass "replay and replay-checksum read the copy's credentials from files the runner writes for each and removes when it ends, and no kubectl or jq call of up, seed, step, replay-prepare or replay carries one"
 for f in reset.json replay-prepared.json last-reset.json envoy-dispatch.json pg-stats-before.json pg-stats-after.json summary.json CODEPATHS.md; do
   [ -f "$run_dir/steps/r16/$f" ] || fail "the replay step directory has no $f"
 done
@@ -1779,10 +1934,14 @@ bt_start=$(grep -F 'typing-10x-typing /work/browsertype ' "$fake/runner-starts")
   fail "a kubectl call of the typing path wrote a token into the runner: $(grep -F 'cat >"$1/token"' "$fake/kubectl.log" | tail -n1)"
 [ ! -e "$fake/runner/work/typing/token" ] ||
   fail "the typing path left a token in the runner: $(cat "$fake/runner/work/typing/token")"
-# (loadgen run's own command line carries -token; browsertype's calls are those naming it, its
-# job or its runner directory.)
+# (browsertype's calls are those naming it, its job or its runner directory.) The step's own
+# loadgen run reads the copy's credentials from the runner, which shows the record below can hold
+# a job's; browser typing reads none (runner_start without -c).
 grep -E 'browsertype|/work/typing|sh typing-' "$fake/kubectl.log" >"$tmp/typing-calls" || fail "kubectl.log holds no browsertype call"
 ! grep -qF -- "$dispatch_token" "$tmp/typing-calls" || fail "a browsertype kubectl call carries the agent token on its command line"
+job_credentials step-10x-typing
+! grep -q '^typing-' "$fake/runner-credentials" ||
+  fail "a browsertype job was given the copy's credentials: $(grep '^typing-' "$fake/runner-credentials")"
 ! grep -rqF -- "$dispatch_token" "$tdir" || fail "a file under the step directory holds the agent token: $(grep -rlF -- "$dispatch_token" "$tdir")"
 ! grep -qF -- "$dispatch_token" "$tmp/out" || fail "step --typing printed the agent token"
 # The order in kubectl.log: the document list copied in, browsertype's start, loadgen's start
@@ -1969,6 +2128,7 @@ pass "up stops after five quota races in a row on one manifest"
   NS=$ns
   digest=sha256:$(printf '%064d' 7)
   values=(NAMESPACE=loadtest RUN_ID=lt-20261028t120000-abcd STORAGE_CLASS=premium-rwo
+    OIDC_ISSUER=https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
     "ENVOY_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest" "LISTENER_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest"
     "PG_IMAGE=mirror.gcr.io/pgvector/pgvector@$digest" "SOCAT_IMAGE=mirror.gcr.io/alpine/socat@$digest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")
@@ -2043,6 +2203,85 @@ pass "a restart between the before and after container reads writes step-failed.
   tail -n1 "$out" | jq -e '.error != "" and .usage_usec == null' >/dev/null || fail "the end of an exec stream wrote no error line"
 )
 pass "the sampler writes an error line with no number when its exec fails, and a numeric line when it reads"
+
+# ---- (g2) a runner job's credential directory ----------------------------------------------------
+
+# The runner's own scripts (RUNNER_CREDENTIALS, RUNNER_SECRETS_CLEANUP), run here under dash, the
+# runner image's sh, against a directory under this test's own root standing in for /work/secrets.
+# Without dash this section cannot run them as the runner does, so it fails naming dash rather than
+# blaming the scripts for a 127.
+command -v dash >/dev/null ||
+  fail "(g2) needs dash, the runner image's sh, to run the runner's credential scripts as the runner does; install dash (Debian and Ubuntu: apt-get install dash)"
+(
+  # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
+  source "$cluster"
+  NS=$ns
+  secrets_root=$tmp/secrets-work/secrets
+  creds=$'agent-token\nlistener-token\npostgres://dispatch:pw@postgres/dispatch'
+  # Two starts of one job name -- this command's, or another command's of the same run -- are
+  # given two directories, so neither's end removes the other's credentials.
+  endpoints seed
+  first=$JOB_SECRETS
+  endpoints seed
+  [[ $first == /work/secrets/seed.* && $JOB_SECRETS == /work/secrets/seed.* && $first != "$JOB_SECRETS" ]] ||
+    fail "two starts of the job seed were given the directories $first and $JOB_SECRETS, not one of their own each"
+  # A start claims its directory with one mkdir: given one that is there, it writes nothing into
+  # it, removes nothing of it and ends with 1, so its job is never started.
+  mkdir -p "$secrets_root/seed.taken"
+  printf 'keep\n' >"$secrets_root/seed.taken/dispatch-token"
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  dash -c 'secrets=$1; '"$RUNNER_CREDENTIALS"'; echo started' sh "$secrets_root/seed.taken" <<<"$creds" >"$tmp/claim.out" 2>&1 || rc=$?
+  ((rc == 1)) || fail "a start given a directory that is there ended with $rc, not 1"
+  [ "$(cat "$secrets_root/seed.taken/dispatch-token")" = keep ] || fail "a start wrote into a directory another start holds"
+  ! grep -q started "$tmp/claim.out" || fail "a start whose claim failed went on to start its job"
+  # The shell that waits on a job -- in the foreground, as replay_checksum's, or with the job in
+  # the background, as runner_start's -- removes the directory on a TERM or a HUP of its own, on
+  # which dash otherwise ends without running its EXIT trap.
+  # shellcheck disable=SC2016 # expanded by dash
+  for case in foreground:TERM foreground:HUP detached:TERM detached:HUP detached:INT; do
+    wrapper=${case%:*} sig=${case#*:}
+    dir=$secrets_root/job-$wrapper-$sig
+    case $wrapper in
+      foreground) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' ;;
+      detached) script='secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; trap - HUP INT TERM; '"$RUNNER_SECRETS_CLEANUP"'"$@" & wait $!' ;;
+    esac
+    dash -c "$script" sh "$dir" sleep 2 <<<"$creds" &
+    pid=$!
+    naps=0
+    until [ -f "$dir/pg-url" ]; do
+      ((++naps <= 200)) || fail "the $wrapper shell wrote no credentials into $dir"
+      sleep 0.05
+    done
+    [ "$(stat -c %a "$dir")" = 700 ] && [ "$(stat -c %a "$dir/pg-url")" = 600 ] ||
+      fail "the $wrapper shell's directory is mode $(stat -c %a "$dir") and its pg-url $(stat -c %a "$dir/pg-url"), not 700 and 600"
+    kill -"$sig" "$pid"
+    rc=0
+    if [ "$sig" = INT ]; then
+      # A background job of a non-interactive sh ignores INT, the runner's detached wait shell as
+      # much as this one, so an INT ends neither it nor its job: the directory stays while the job
+      # runs and goes when it ends.
+      sleep 0.3
+      { kill -0 "$pid" 2>/dev/null && [ -d "$dir" ]; } ||
+        fail "an INT ended the detached shell or removed its job's credentials while the job ran"
+      wait "$pid" || rc=$?
+      ((rc == 0)) || fail "the detached shell ended with $rc once its job did, not 0"
+    else
+      wait "$pid" || rc=$?
+      ((rc == 143)) || fail "the $wrapper shell ended with $rc on a $sig, not 143"
+    fi
+    [ ! -e "$dir" ] || fail "the $wrapper shell left its job's credentials in $dir after a $sig"
+  done
+  # An INT that reaches a foreground shell, one not started ignoring it, ends it through the
+  # cleanup too.
+  dir=$secrets_root/job-foreground-INT
+  rc=0
+  # shellcheck disable=SC2016 # expanded by dash
+  timeout -s INT 0.5 dash -c 'secrets=$1; shift; '"$RUNNER_CREDENTIALS"'; '"$RUNNER_SECRETS_CLEANUP"'"$@"' sh "$dir" sleep 2 <<<"$creds" || rc=$?
+  ((rc == 124)) || fail "the foreground shell given an INT by timeout ended with $rc, not timeout's 124"
+  [ ! -e "$dir" ] || fail "the foreground shell left its job's credentials in $dir after an INT"
+)
+pass "two starts of one runner job name get directories of their own, a start never writes into or removes one it did not claim, and the shell that waits on a job removes its directory on a TERM or a HUP, and a foreground one on an INT, while an INT leaves a detached one running until its job ends"
 
 # ---- (h) nats.yaml against a fresh render of the vendored chart ---------------------------------
 

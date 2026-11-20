@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -99,14 +100,11 @@ func (a *adoptionHarness) shows(key, status, parent string, seq int64, handed bo
 	a.statuses.issues[key] = dispatch.Issue{Key: key, ResolvedRepo: "acme/widgets", Title: key, Status: status, Parent: &parent, Rank: "B", HandedOver: handed, LastSeq: seq}
 }
 
-func (a *adoptionHarness) release(keys ...string) (int, Failure) {
+// release is the architect's wave release of keys, answered: a caller holds a refusal to its code
+// with refused.
+func (a *adoptionHarness) release(keys ...string) *httptest.ResponseRecorder {
 	a.t.Helper()
-	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(a.t), "issues": keys}, nil)
-	var failure Failure
-	if recorder.Code != http.StatusOK {
-		decodeInto(a.t, recorder, &failure)
-	}
-	return recorder.Code, failure
+	return a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(a.t), "issues": keys}, nil)
 }
 
 func (a *adoptionHarness) assertParked(key string) {
@@ -234,8 +232,8 @@ func TestReleaseAdoptsAQueuedRootDispatchShowsTodo(t *testing.T) {
 	}
 	a.shows(adoptionChild, "todo", adoptionTree, 2, true)
 
-	if status, failure := a.release(adoptionChild); status != http.StatusOK {
-		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
+	if recorder := a.release(adoptionChild); recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d %s, want released", adoptionChild, recorder.Code, recorder.Body)
 	}
 	a.assertJoinedAndWaiting(adoptionChild, 2)
 	if got := a.record(adoptionChild); got.Parent == nil || *got.Parent != adoptionTree {
@@ -255,11 +253,13 @@ func TestReleaseAdoptsAQueuedRootThatWaitsOnAnUnfinishedIssueAndAnswersItHeld(t 
 	const blocker = "LEGION-400"
 	a.observe(adoptionChild, 1, "todo", "", true)
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		for _, row := range []record.DispatchIssueRow{
-			{Key: adoptionChild, Project: testProject, Status: "todo", Blockers: []string{blocker}, Seq: 1},
-			{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1},
+		for _, reading := range []record.DispatchReading{
+			{Key: adoptionChild, Project: testProject, Seq: 1,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{blocker})},
+			{Key: blocker, Project: testProject, Seq: 1,
+				Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
 		} {
-			if err := a.records.PutDispatchIssue(context.Background(), tx, row); err != nil {
+			if err := a.records.PutDispatchIssue(context.Background(), tx, reading); err != nil {
 				return err
 			}
 		}
@@ -305,8 +305,8 @@ func TestReleaseAdoptsAQueuedRootFromBacklog(t *testing.T) {
 	}
 	a.shows(adoptionChild, "backlog", adoptionTree, 3, true)
 
-	if status, failure := a.release(adoptionChild); status != http.StatusOK {
-		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
+	if recorder := a.release(adoptionChild); recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d %s, want released", adoptionChild, recorder.Code, recorder.Body)
 	}
 	if got := a.record(adoptionChild); got.Tree != adoptionTree || got.Generation != 2 || got.Phase != phase.Done || got.Lingers() {
 		t.Fatalf("%s when the release answered = %#v, want it parked at done in the tree of %s at generation 2, no linger of its own", adoptionChild, got, adoptionTree)
@@ -346,8 +346,8 @@ func TestReleaseAdoptsTheStateInfra214Reached(t *testing.T) {
 	}
 	a.shows(adoptionChild, "todo", adoptionTree, 5, false)
 
-	if status, failure := a.release(adoptionChild); status != http.StatusOK {
-		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
+	if recorder := a.release(adoptionChild); recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d %s, want released", adoptionChild, recorder.Code, recorder.Body)
 	}
 	a.assertJoinedAndWaiting(adoptionChild, g+1)
 	if len(a.statuses.writes) != 0 {
@@ -383,8 +383,8 @@ func TestReleaseAdoptsAHeldRootUnderAnUnreleasedChild(t *testing.T) {
 	a.shows(adoptionChild, "todo", parent, 1, true)
 	a.shows(parent, "backlog", adoptionTree, 1, false)
 
-	if status, failure := a.release(adoptionChild); status != http.StatusOK {
-		t.Fatalf("release of %s = %d %#v, want released", adoptionChild, status, failure)
+	if recorder := a.release(adoptionChild); recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d %s, want released", adoptionChild, recorder.Code, recorder.Body)
 	}
 	a.assertJoinedAndPlanning(adoptionChild, 2)
 	if got := a.record(adoptionChild); got.Parent == nil || *got.Parent != parent {
@@ -479,9 +479,8 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 			tc.seed(a)
 			before := a.record(tc.child)
 
-			status, failure := a.release(tc.child)
-			if status != http.StatusConflict || failure.Code != tc.code || !strings.Contains(failure.Error, tc.child) || !strings.Contains(failure.Error, tc.reason) {
-				t.Fatalf("release of %s = %d %#v, want 409 %s naming %s and %q", tc.child, status, failure, tc.code, tc.child, tc.reason)
+			if message := refused(t, a.release(tc.child), http.StatusConflict, tc.code); !strings.Contains(message, tc.child) || !strings.Contains(message, tc.reason) {
+				t.Fatalf("release of %s says %q, want it to name %s and %q", tc.child, message, tc.child, tc.reason)
 			}
 			if got := a.record(tc.child); !reflect.DeepEqual(got, before) {
 				t.Fatalf("%s after the refusal = %#v, want it unchanged from %#v", tc.child, got, before)
@@ -493,25 +492,24 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 	}
 
 	t.Run("a wave with one refused child writes nothing", func(t *testing.T) {
-		const adoptable, fresh, refused = "LEGION-215", "LEGION-216", "LEGION-217"
+		const adoptable, fresh, unadoptable = "LEGION-215", "LEGION-216", "LEGION-217"
 		a := newAdoptionHarness(t, 2)
 		a.recordIssue(queuedRoot(adoptable, "B"))
-		a.recordIssue(queuedRoot(refused, "C"))
+		a.recordIssue(queuedRoot(unadoptable, "C"))
 		seed(a, func(tx pgx.Tx) error {
-			_, err := a.records.OpenTreeLifecycle(context.Background(), tx, project, refused, treelifecycle.AuthorityWorkflow)
+			_, err := a.records.OpenTreeLifecycle(context.Background(), tx, project, unadoptable, treelifecycle.AuthorityWorkflow)
 			return err
 		})
 		a.shows(adoptable, "todo", adoptionTree, 2, true)
 		a.shows(fresh, "backlog", adoptionTree, 1, false)
-		a.shows(refused, "todo", adoptionTree, 2, true)
+		a.shows(unadoptable, "todo", adoptionTree, 2, true)
 		before := a.record(adoptable)
 		if a.count(`select count(*) from slots`) != 1 {
 			t.Fatalf("slots before the release = %d, want only %s's, leaving one of two free", a.count(`select count(*) from slots`), adoptionTree)
 		}
 
-		status, failure := a.release(adoptable, fresh, refused)
-		if status != http.StatusConflict || failure.Code != "CHILD_NOT_ADOPTABLE" || !strings.Contains(failure.Error, refused) {
-			t.Fatalf("release of the wave = %d %#v, want 409 CHILD_NOT_ADOPTABLE naming %s", status, failure, refused)
+		if message := refused(t, a.release(adoptable, fresh, unadoptable), http.StatusConflict, "CHILD_NOT_ADOPTABLE"); !strings.Contains(message, unadoptable) {
+			t.Fatalf("release of the wave says %q, want it to name %s", message, unadoptable)
 		}
 		if got := a.record(adoptable); !reflect.DeepEqual(got, before) {
 			t.Fatalf("%s after the refused wave = %#v, want it as it was, %#v", adoptable, got, before)
@@ -594,8 +592,8 @@ func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.
 		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 	// The mirror knows the blocker is unfinished and nothing of the link to it.
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return a.records.PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the blocker's mirror row: %v", err)
 	}
@@ -656,8 +654,8 @@ func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 	// The mirror knows the blocker is unfinished and nothing of the link to it: the child's own
 	// row is the one its event wrote, under no parent and waiting on nothing.
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return a.records.PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the blocker's mirror row: %v", err)
 	}

@@ -530,6 +530,7 @@ verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows.
 | `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` | Also accept Kubernetes service-account tokens from that issuer for that audience. Set both or neither. |
 | `ENVOY_OIDC_ACCOUNTS` | The service accounts whose tokens the OIDC pair admits, as `system:serviceaccount:<namespace>:<name>` subjects separated by commas or spaces. Unset or empty, every account the issuer signs for is admitted; a value that names no account, only spaces or commas, refuses startup, and so does a stray comma that leaves an entry empty. Any pod of a cluster can get a token for any audience, so set it on a listener that takes no shared token. |
 | `ENVOY_OIDC_GOOGLE_AUDIENCE`, `ENVOY_OIDC_GOOGLE_ACCOUNTS` | Also accept a Google identity token that Google signed for that audience, for a caller that runs on Google Cloud and holds no Kubernetes token, such as a Cloud Run service. The accounts are service account addresses separated by commas or spaces; the token must name one of them, with its address verified, so the caller asks its metadata server for the token with `format=full`. Set both or neither. |
+| `ENVOY_DISPATCH_PRINCIPAL` | Dispatch's own account: a `system:serviceaccount:<namespace>:<name>` subject the OIDC pair admits, or a Google service account address the Google pair admits. Only a send whose token proves this account may carry `role`, the role a Dispatch message for a `role:` route is sent for; any other caller that sends `role` is refused `403`, and so is every caller while this is unset. When the role has moved to another session by the time such a send arrives, the listener keeps the message for the role's holder and answers `202` with `kept`. A value no configured pair could prove refuses startup. |
 | `ENVOY_ALLOWED_HOSTS` | Comma-separated host names or addresses, with no port, that a listener with no bearer serves `/v1` to besides loopback. Set it to each name clients reach such a listener by, such as a forward to it. |
 | `ENVOY_NATS_REPLICAS` | The deployment's replica count, a whole number from 1 to 5; default `1`. The listener creates the `ENVOY_NOTIFICATIONS` stream and its buckets with this many copies and raises one it finds with fewer, at start and every 30 seconds after ([Keeping the stream](#keeping-the-stream)). More than 1 needs a clustered NATS: a single server refuses it, and the listener then exits at start with an error naming the variable. Any other value refuses startup. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
 | `ENVOY_STREAM_MAX_BYTES` | The `ENVOY_NOTIFICATIONS` stream's size limit, a positive whole number of bytes. Once the stream holds that much it refuses every new message and keeps every one it holds, which leaves only when it is 72 hours old, and the sender gets an error it can retry: the listener answers a GitHub webhook `503`, which Dispatch's redelivery sweep has GitHub send again (on a doubling backoff, until GitHub records the delivery or 72 hours after its first failed attempt); Dispatch's outbox retries its event; an agent's send or publish fails with `stream ENVOY_NOTIFICATIONS is full`. Size the limit above what the stream takes in 72 hours at its busiest, with room to spare. Unset, the listener creates the stream with no limit and keeps a limit the stream already has; set, it raises a smaller limit, or none, to its own at start and every 30 seconds, and never lowers one ([Keeping the stream](#keeping-the-stream)). A limit larger than the NATS server can reserve makes the listener exit at start with an error naming the variable. Give every Envoy program of a deployment the same value: a clustered deployment sets it in every listener and in Dispatch's server. |
@@ -698,12 +699,16 @@ does not count a message with another source, such as Dispatch's (`dispatch`) or
 (`envoy`). It does not count a message with no sender either, which is how the Legion daemon sends
 its notices.
 
-So the count is bound to a session only where callers present secrets-broker tokens. A caller
-that presents one and names another session in the body gets `403`. A caller that the listener
-admits on a bearer, or with no credential where `/v1` is open, names the sender itself in
-`source_session`. Such a caller can send under another session's id and spend that session's
-count, which then takes up to `burst × 60 ÷ rate` seconds to fill again. That caller can already
-send messages as that session.
+A secrets-broker token names the session that the listener counts. A caller that presents one
+and names another session in the body gets `403`. A caller that the listener admits on a bearer, or
+with no credential where `/v1` is open, names the sender itself in `source_session`. Such a caller
+can send under another session's id and spend that session's count, which then takes up to
+`burst × 60 ÷ rate` seconds to fill again. That caller can already send messages as that session.
+
+A token does not make a message with another `source` count. The agents' own Envoy tools send
+the source `agent` and give the agent no argument for it, so the limit counts each of their
+messages that has a sender. A caller that writes its own request can give another source, so the
+limit is not a security boundary.
 
 A counted message costs one when the listener stores it, may have stored it or reports a wake for
 it, whatever the answer is. A role send answered `504` costs one whether or not a forward went
@@ -725,9 +730,9 @@ count at 0 is refused as a new message is, because the listener reads the count 
 Each listener process keeps its counts in its own memory. So each replica of a listener keeps its
 own count for a session, and a restart fills each count again. The start log states the limit in
 one line, `listener sender limit: <rate> messages a minute, <burst> at once, for each agent session
-in this process`, or `listener sender limit: none`. The `envoy-infra` components take the two
-values as the inputs `senderMessagesPerMinute` and `senderMessageBurst`
-([With Pulumi](#with-pulumi)).
+in this process`, or `listener sender limit: none`. Where the rate is 1, the line reads
+`1 message a minute`. The `envoy-infra` components take the two values as the inputs
+`senderMessagesPerMinute` and `senderMessageBurst` ([With Pulumi](#with-pulumi)).
 
 ### With Pulumi
 
@@ -736,9 +741,10 @@ language, as the component `envoy-infra:host:Listener`, and a NATS server for it
 as `envoy-infra:gcp:NatsHub` on one VM or as `envoy-infra:gcp:ClusteredNatsHub`, three NATS
 servers on a GKE cluster that also runs the session listener as a workload of its own, which the
 component's optional tailnet hosts forward to. It also deploys Dispatch on Google Cloud as
-`envoy-infra:gcp:Dispatch`, which creates an Autopilot cluster, private Cloud SQL, and the
-tailnet-served Dispatch workloads. A hub user with `dispatchMachineId` renders the NATS user
-`envoy-dispatch` shares with its listener. Its
+`envoy-infra:gcp:Dispatch`, which runs the Dispatch workloads, served over a tailnet, at a public
+origin or inside the cluster alone. That component makes its own Autopilot cluster and private
+Cloud SQL instance, or uses a cluster, an instance, or both, that another program makes. A hub
+user with `dispatchMachineId` renders the NATS user `envoy-dispatch` shares with its listener. Its
 [README](https://github.com/cybermonklabs/legion/blob/main/packages/envoy/infra/README.md) says how to
 install it, what each component deploys and which settings it sets.
 

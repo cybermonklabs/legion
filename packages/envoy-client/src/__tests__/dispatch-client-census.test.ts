@@ -72,6 +72,14 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
       verdict: "pass",
       commit: "1111111111111111111111111111111111111111",
     }),
+  dryRunResult: (client) =>
+    client.dryRunResult("DSP-1", {
+      actor,
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    }),
   issueResults: (client) => client.issueResults("DSP-1"),
   retractResult: (client) =>
     client.retractResult("result-1", { reason: "The run read a stale build.", actor }),
@@ -122,6 +130,12 @@ const CALLS: Record<ClientMethod, (client: DispatchClient) => Promise<unknown>> 
   listHandoffs: (client) => client.listHandoffs("DSP-1"),
   latestHandoff: (client) => client.latestHandoff("DSP-1", "implement"),
   handoff: (client) => client.handoff("handoff-1"),
+  listSteps: (client) => client.listSteps("DSP-1"),
+  listProjectPlans: (client) =>
+    client.listProjectPlans("DSP", {
+      since: "2026-11-01T00:00:00Z",
+      until: "2026-11-17T00:00:00Z",
+    }),
 };
 
 afterEach(forgetKeyedLayerMemory);

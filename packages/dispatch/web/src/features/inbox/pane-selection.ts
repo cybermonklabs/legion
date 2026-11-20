@@ -27,6 +27,8 @@ interface Neighbours {
 export interface PaneSelectionOptions {
   /** How many rows a bulk snooze is deferring; zero while none is out. */
   bulkSnoozing: number;
+  /** Every row the list could hold before its five fields narrow it (`Inbox`'s `candidates`). */
+  candidates: readonly InboxListRow[];
   /** The address this list is on. The selection is written into its `?item=`. */
   filter: InboxRoute;
   /** The list's root, where the selected row's own element is looked up. */
@@ -79,6 +81,7 @@ export interface PaneSelection {
  */
 export function usePaneSelection({
   bulkSnoozing,
+  candidates,
   filter,
   listRef,
   openFoldedBand,
@@ -97,7 +100,7 @@ export function usePaneSelection({
 
   /** Every row this list holds, a folded band's included: what `?item=` is answered against. */
   const listedRows = useRef<readonly PlacedRow[]>([]);
-  /** The row the column is showing, as the list last held it, and whether it is being kept
+  /** The row the column is showing, as the Inbox last held it, and whether it is being kept
    *  there past its row. */
   const paneSubject = useRef<{ row: InboxListRow; kept: boolean } | undefined>(undefined);
   // The rows the selected one stood between when the list last held it, either of them
@@ -191,6 +194,8 @@ export function usePaneSelection({
    * a deferred row, for the one write whose own optimistic update takes the row out of the Inbox
    * read rather than merely out of this view.
    *
+   * A kept row is drawn as its row among `candidates` where it is one, else as last seen.
+   *
    * A row held by neither - an ask they have neither typed nor sent an answer to, and every
    * thread row, which a dismiss takes out of the list under its own optimistic update - leaves
    * the column as it leaves the list, the first row this list selected for them included.
@@ -210,8 +215,9 @@ export function usePaneSelection({
       return undefined;
     }
     const kept = subject.kept || answerOutstanding(selectedId) || answerDraft(selectedId) !== "";
-    paneSubject.current = kept ? { kept: true, row: subject.row } : undefined;
-    return kept ? subject.row : undefined;
+    const row = candidates.find((candidate) => rowId(candidate) === selectedId) ?? subject.row;
+    paneSubject.current = kept ? { kept: true, row } : undefined;
+    return kept ? row : undefined;
   };
 
   const showing = (listed: readonly PlacedRow[]): InboxListRow | undefined => {

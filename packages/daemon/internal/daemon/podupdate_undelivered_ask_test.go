@@ -70,11 +70,11 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
 	}
-	if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
 		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
-	}); err != nil {
-		t.Fatalf("queue the earlier release's ask: %v", err)
+	}); err != nil || !written {
+		t.Fatalf("queue the earlier release's ask = %t, %v; want it written", written, err)
 	}
 
 	rig.migrate(updateAskCutover)
@@ -215,9 +215,10 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
 	enqueue := rig.s.enqueue
-	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error {
-		if err := enqueue(ctx, issue, payloads...); err != nil {
-			return err
+	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+		written, err := enqueue(ctx, issue, payloads...)
+		if err != nil || !written {
+			return written, err
 		}
 		for _, payload := range payloads {
 			if _, ask := payload.(record.UpdateAsk); ask {
@@ -225,7 +226,7 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 				break
 			}
 		}
-		return nil
+		return true, nil
 	}
 
 	rig.tick()
@@ -284,10 +285,10 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
-				if err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
-				}); err != nil {
-					t.Fatalf("queue a row of the round: %v", err)
+				}); err != nil || !written {
+					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)
 				}
 			}
 			rig.tick()
@@ -325,10 +326,11 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 // The ask is published and marked under the claim's own lock, and that lock is taken without
 // waiting (supervise's Machine.PublishUpdateAsk). An issue's role-message lane runs one row at a
 // time (record.LaneKey), and a Sandbox relaunch holds a claim's lock for minutes while the runtime
-// waits out its pod, so a row that waited for that lock would hold every phase-ended message, hook
-// prompt and ask of that issue behind one relaunch. Here the claim's machine is held inside a
-// Resume: the row returns a wait at once, having published nothing and marked nothing, and the
-// row's next attempt once the relaunch is over publishes the ask, which is delivered once in all.
+// waits out its pod, so a row that waited for that lock would hold every hook prompt, merge
+// forward's message and ask of that issue behind one relaunch. Here the claim's machine is held
+// inside a Resume: the row returns a wait at once, having published nothing and marked nothing,
+// and the row's next attempt once the relaunch is over publishes the ask, which is delivered once
+// in all.
 //
 // The negative control is a row that takes the lock with waiting: the run below does not return
 // while the relaunch is held inside its Resume. On 74ab1cd3, which published with no lock held,

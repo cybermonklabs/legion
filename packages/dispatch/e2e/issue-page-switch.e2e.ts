@@ -43,8 +43,24 @@ async function navigation(page: Page): Promise<Locator> {
 }
 
 async function openSettings(page: Page): Promise<void> {
-  const links = await navigation(page);
-  await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  // Each caller has waited for the page it stands on, today's or the new one, to draw, so one
+  // count says whether it is the new one.
+  const onNewPage = (await page.locator("[data-issue-page]").count()) > 0;
+  // The shell draws the rail, which holds Open navigation, in the render that routes to the new
+  // page, from a width query read as it renders, so one count says whether this width has it.
+  const navigationControls = await page.getByRole("button", { name: "Open navigation" }).count();
+  // The new page's frame (part D) draws no navigation below 768 px until the header's menu
+  // comes, so there the reader goes to Settings with its key, `g s`, which moves with no reload
+  // as a link does.
+  const frameWithoutNavigation = onNewPage && navigationControls === 0;
+  if (frameWithoutNavigation) {
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await page.keyboard.press("g");
+    await page.keyboard.press("s");
+  } else {
+    const links = await navigation(page);
+    await links.getByRole("link", { exact: true, name: "Settings" }).click();
+  }
   await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
 }
 
@@ -82,17 +98,43 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as this part draws it: the key and the title as the page's one `h1`, no tab, and
- *  nothing else. */
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header, which draws the key and the title, the view row, and nothing else. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: each slot drawn so far adds no text or control.
-  await expect(newPage).toHaveText(`${issue.key} ${issue.title}`, { useInnerText: true });
-  await expect(newPage.locator("button, a, input, select, textarea")).toHaveCount(0);
+  // A part that fills another slot adds its selector here: so far the header
+  // (`[data-issue-header]`) and the view row (`[data-filter-row]`) are filled, and each other
+  // slot adds no text or control.
+  const header = newPage.locator("[data-issue-header]");
+  const row = newPage.locator("[data-filter-row]");
+  await expect(header).toHaveCount(1);
+  await expect(row).toHaveCount(1);
+  await expect
+    .poll(
+      () =>
+        newPage.evaluate((root) => {
+          const headerText =
+            root.querySelector<HTMLElement>("[data-issue-header]")?.innerText ?? "";
+          const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
+          return (root as HTMLElement).innerText
+            .replace(headerText, " ")
+            .replace(rowText, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+        }),
+      { message: "the new page draws text outside its header and its view row" }
+    )
+    .toBe("");
+  const controls = "button, a, input, select, textarea";
+  expect(
+    await newPage.locator(controls).count(),
+    "the new page draws a control outside its header and its view row"
+  ).toBe((await header.locator(controls).count()) + (await row.locator(controls).count()));
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

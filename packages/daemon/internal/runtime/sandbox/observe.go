@@ -82,6 +82,12 @@ func (r *Runtime) Probe(ctx context.Context, loc runtime.Locator) (runtime.Obser
 // read again from it, its detail included; when the read fails the observation is Uncertain, so the
 // claim stays watched and is evaluated again.
 //
+// The same read serves the end a launch recorded on the Sandbox when it replaced the recorded pod
+// after that pod had ended (endedPod): the record is written in the suspension that replaces the
+// pod, before the controller deletes it, so where the cached Sandbox records no end for the
+// recorded pod and the verdict carries none, a read of the Sandbox that does record one is the
+// view the verdict is read again from.
+//
 // When that read finds no Sandbox at all, the name may be in the gap a migrating launch opens
 // between deleting the issue's Sandbox of the superseded disk shape and creating its replacement
 // (replaceSupersededSandbox), and then the runtime's own keeping of the pod the deleted one named
@@ -118,6 +124,9 @@ func (r *Runtime) evaluate(ctx context.Context, loc runtime.Locator) runtime.Obs
 		case names(current, loc):
 			v = r.viewOf(name, current)
 			obs = r.verdict(ctx, loc, v)
+		case obs.PodEnd == "" && endedPod(current, loc) != "":
+			v = r.viewOf(name, current)
+			obs = r.verdict(ctx, loc, v)
 		case current == nil:
 			if now, nowAt := r.strandedPod(name); nowAt != heldAt {
 				return uncertain("the stores report %s (%s); the API server holds no sandbox %s, but the daemon's record of the pods its sandbox replacements displaced moved while that read was out (pod %q held for it before, %q now), so whether the daemon replaced pod %s is read again",
@@ -147,8 +156,8 @@ func (r *Runtime) readSandbox(ctx context.Context, name string) (*sandbox, error
 
 // observation is one verdict of the mapping: the runtime.Observation the caller receives, beside
 // the one classification only this package acts on. No runtime consumer reads it — the supervisor
-// reads Kind, Displaced and OutOfMemory alone — so it stays here rather than on the cross-runtime
-// contract.
+// reads Kind, Displaced, OutOfMemory and PodEnd beside the detail — so it stays here rather than on
+// the cross-runtime contract.
 type observation struct {
 	runtime.Observation
 	// initFailed is a Gone whose process never started because an init container of its pod ended
@@ -179,6 +188,26 @@ func names(s *sandbox, loc runtime.Locator) bool {
 	return ok && named == loc.Sandbox.PodUID
 }
 
+// endedPod is the end s records for loc's recorded pod, which a launch replaced after it had
+// ended (endedPodAnnotation), and "" when s records none for that pod.
+func endedPod(s *sandbox, loc runtime.Locator) string {
+	if s == nil || s.Annotations[endedPodAnnotation] != loc.Sandbox.PodUID {
+		return ""
+	}
+	return s.Annotations[endedPodEndAnnotation]
+}
+
+// withEndedPod is obs, a verdict on loc's process that read no pod of loc's at all — none, or one
+// of another uid — carrying the end s records for loc's recorded pod (endedPod) where it records
+// one: as its PodEnd, and in its detail, which names the pod's end as Runtime.ended's does.
+func withEndedPod(obs observation, s *sandbox, loc runtime.Locator) observation {
+	if end := endedPod(s, loc); end != "" {
+		obs.PodEnd = end
+		obs.Detail += fmt.Sprintf("; pod %s had ended before a launch replaced it: %s", loc.Sandbox.PodUID, end)
+	}
+	return obs
+}
+
 // displaced reports whether obs, the verdict on loc's process from v, is an end the daemon made:
 // a final verdict (ends) on a process whose recorded pod the Sandbox names as the live pod a
 // relaunch replaced, once that pod is being deleted or is gone. A role that ends while its pod
@@ -199,7 +228,10 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 // does the one container's end: a launcher that exits takes every role's process with it. A live
 // pod is judged through that role's own launcher state: Ready changes during the container's
 // restart and is never a whole-pod death verdict, and a role's own process ending is that role's
-// alone.
+// alone. A verdict that reads no pod of the recorded uid — none, or one of another uid — carries
+// the end the Sandbox records for the recorded pod where a launch replaced it after it ended
+// (withEndedPod), so a role checked after that replacement reads the end a role checked before it
+// read off the pod.
 //
 // A live pod that holds, for the recorded role, something fixed for its life that a pod created now
 // is not handed and whose worker this daemon cannot ask to push its work first (movedInPod: the
@@ -210,7 +242,8 @@ func displaced(v view, loc runtime.Locator, obs observation) bool {
 // reads so, so each is relaunched uncharged and they move into one new pod together, rather than
 // the first relaunch for some other reason replacing the pod under the rest. A pod that has merely
 // drifted from the configuration is never StaleAddress (PodDrift): its roles keep running until
-// its update round replaces it, once every worker of the pod has answered or at the round's
+// its update round replaces it, once every worker of the pod has answered, no turn runs and no
+// claim's activity report holds it (internal/daemon's roundEnd.holding), or at the round's
 // bound, which is the whole point of the round — repointing one of them would end the pod's turns
 // mid-flight, which this verdict must never do.
 // In a pod no update round covers (roundCovers, today the project controller's) movedInPod holds
@@ -230,9 +263,9 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	case v.sandbox == nil:
 		return observe(runtime.Gone, "sandbox %s/%s is absent", r.namespace, name)
 	case v.pod == nil:
-		return observe(runtime.Gone, "%s", podAbsent(v))
+		return withEndedPod(observe(runtime.Gone, "%s", podAbsent(v)), v.sandbox, loc)
 	case string(v.pod.UID) != loc.Sandbox.PodUID:
-		return observe(runtime.NotRecordedProcess, "pod %s is uid %s, not the recorded pod UID %s", name, v.pod.UID, loc.Sandbox.PodUID)
+		return withEndedPod(observe(runtime.NotRecordedProcess, "pod %s is uid %s, not the recorded pod UID %s", name, v.pod.UID, loc.Sandbox.PodUID), v.sandbox, loc)
 	}
 	pod := v.pod
 	initName, initExit := failedInit(pod)
@@ -241,6 +274,10 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 		ended := observe(runtime.Gone, "%s", detail)
 		ended.initFailed = initExit != nil && pod.DeletionTimestamp == nil
 		ended.OutOfMemory = ranOutOfMemory
+		// The pod's own reason for the end, apart from the detail, which ends with a tail of the
+		// role's log: this is what the claim keeps and what the worker-died notice names
+		// (runtime.Observation.PodEnd).
+		ended.PodEnd = runtime.PodEnd(pod.Status.Reason, pod.Status.Message)
 		return ended
 	}
 	if scheduled := podCondition(pod, corev1.PodScheduled); pod.Status.Phase == corev1.PodPending && scheduled != nil &&
@@ -376,6 +413,12 @@ func podAbsent(v view) string {
 // beside the detail, whether the end it resolved is one the out-of-memory note is for
 // (outOfMemory), which it decides from the container it resolved: an init container's end and an
 // old-layout container's are neither.
+//
+// The pod's own reason and the kubelet's message with it are written into the detail on both
+// branches below, not only where the resolved container has no terminated state: the kubelet
+// writes `Evicted` on the pod and then ends the container, so a pod whose container also
+// terminated carried its eviction in neither the detail nor the notice before this. The detail
+// says both for the same reason, in the order the pod holds them.
 func (r *Runtime) ended(ctx context.Context, v view, container string, role claim.Role, initName string, initExit *corev1.ContainerStateTerminated) (string, bool) {
 	pod := v.pod
 	kind, state := "container", initExit
@@ -392,10 +435,14 @@ func (r *Runtime) ended(ctx context.Context, v view, container string, role clai
 	var detail strings.Builder
 
 	fmt.Fprintf(&detail, "pod %s (uid %s) %s", pod.Name, pod.UID, pod.Status.Phase)
+	if pod.Status.Reason != "" {
+		fmt.Fprintf(&detail, ": %s", pod.Status.Reason)
+		if pod.Status.Message != "" {
+			fmt.Fprintf(&detail, ": %s", pod.Status.Message)
+		}
+	}
 	if state != nil {
 		fmt.Fprintf(&detail, ": %s %s terminated (%s, exit code %d)", kind, container, state.Reason, state.ExitCode)
-	} else if pod.Status.Reason != "" {
-		fmt.Fprintf(&detail, ": %s: %s", pod.Status.Reason, pod.Status.Message)
 	}
 	if finished := v.sandbox.condition(conditionFinished); finished != nil {
 		fmt.Fprintf(&detail, "; sandbox Finished=%s %s", finished.Status, finished.Reason)
@@ -480,7 +527,11 @@ func initContainerStatus(pod *corev1.Pod, name string) *corev1.ContainerStatus {
 
 // logTail is a container's last log lines, or why they could not be read: a detail's quote never
 // changes its verdict, so the read is bounded whole (call), in time and in bytes off the API
-// (readLog).
+// (readLog). A read the bound stopped ends on the last whole line it took, and the quote says it
+// is not the container's newest lines (logBoundNote). A read whose first line began inside a long
+// line the kubelet split into partial entries keeps that line as it reads it, so a URL cut there
+// before its userinfo keeps that userinfo, which the URL rule a death cause is kept under
+// (storetext.FarSideText) cannot find.
 func (r *Runtime) logTail(ctx context.Context, pod, container string) string {
 	text, _, _, bounded, err := r.readLog(ctx, pod, container, logTailLines, logTailBytes, logTailReadBytes)
 	if err != nil {
@@ -570,9 +621,14 @@ func (r *Runtime) roleLog(ctx context.Context, pod, container string, role claim
 // the caller to say so in its quote. A second read that fails (its stream refused, or the shared
 // bound expiring) gives back the first read, still bounded, rather than losing what it held. tail
 // is the TailLines of the read text came from. When the byte bound dropped older bytes, the read
-// starts from the first whole line it kept, and whole says so: the text then starts just after a
-// newline of the log. Otherwise it starts where the kubelet's line count did, which may be inside
-// a line.
+// drops the head that cut fell inside (dropCutHead): it starts from the first whole line it kept,
+// and whole says so, the text then starting just after a newline of the log; where it kept no
+// newline, it starts after its first byte that ends a URL, or is empty where none does, and whole
+// is false. Otherwise it starts where the kubelet's line count did, which may be inside a line,
+// and whole is false too. A read the read bound cut ends with the last whole line it kept, the
+// line it stopped inside dropped (readLogOnce), and is empty when it kept no whole line: that line
+// could end inside a URL's userinfo, before its "@", and leave the start of a user name where the
+// URL rule a death cause is kept under (storetext.FarSideText) reads it as the URL's host.
 func (r *Runtime) readLog(ctx context.Context, pod, container string, lines int64, limit, read int) (text string, tail int64, whole, bounded bool, err error) {
 	reading, cancel := call(ctx)
 	defer cancel()
@@ -592,7 +648,10 @@ func (r *Runtime) readLog(ctx context.Context, pod, container string, lines int6
 }
 
 // readLogOnce is one read of readLog's: the text, whether it starts on a whole line, how many
-// newlines the read took off the API, and whether it stopped at read bytes.
+// newlines the read took off the API, and whether it stopped at read bytes. A read that stopped
+// there ends inside a line the stream goes on with, unless the last byte it took is a newline,
+// and the text drops that unfinished line, the bytes after the last newline, as it drops the head
+// of a read whose older bytes tailBytes cut (dropCutHead).
 func (r *Runtime) readLogOnce(ctx context.Context, pod, container string, lines int64, limit, read int) (text string, whole bool, seen int64, bounded bool, err error) {
 	stream, err := r.kube.CoreV1().Pods(r.namespace).GetLogs(pod, &corev1.PodLogOptions{Container: container, TailLines: &lines}).Stream(ctx)
 	if err != nil {
@@ -605,11 +664,13 @@ func (r *Runtime) readLogOnce(ctx context.Context, pod, container string, lines 
 		return "", false, 0, false, err
 	}
 	if cut {
-		if newline := bytes.IndexByte(kept, '\n'); newline >= 0 {
-			kept, whole = kept[newline+1:], true
-		}
+		kept, whole = dropCutHead(kept)
 	}
-	return strings.TrimRight(string(kept), "\n"), whole, counted.newlines, counted.n > int64(read), nil
+	bounded = counted.n > int64(read)
+	if bounded {
+		kept = kept[:bytes.LastIndexByte(kept, '\n')+1]
+	}
+	return strings.TrimRight(string(kept), "\n"), whole, counted.newlines, bounded, nil
 }
 
 // logByteCounter counts the bytes and newlines read through it, so a read that stopped at an
