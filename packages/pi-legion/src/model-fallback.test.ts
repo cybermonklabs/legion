@@ -58,6 +58,8 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     sessionId: "session-a",
     /** Whether the pane runs no turn now, which `isIdle` reads live. */
     idle: true,
+    /** Whether a message waits to steer or follow the turn, which `hasPendingMessages` reads. */
+    pending: false,
     /** A switch of the model calls this once it has started, then waits for `setModelHeld`, when
      * either is set. */
     onSetModel: undefined as (() => void) | undefined,
@@ -92,6 +94,7 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
   const ctx: ModelFallbackContext = {
     sessionManager: { getBranch: () => branch, getSessionId: () => live.sessionId },
     isIdle: () => live.idle,
+    hasPendingMessages: () => live.pending,
     models: {
       list: () => [],
       current: () => model(live.current),
@@ -137,6 +140,9 @@ function fixture(startOn = OPUS, limits = { baseMs: HOUR, maxMs: 8 * HOUR }) {
     },
     paneContext: async () => (live.onPane ? ctx : undefined),
   });
+  // The pane's session_start: the runner reads the session's state, an empty one here, and the
+  // session it is, as the entry restores every claimed session before anything arms it.
+  runner.restore(undefined, ctx);
 
   return {
     branch,
@@ -655,18 +661,20 @@ describe("the return to the session's own model", () => {
     pane.chain.set(OPUS, SONNET);
     await pane.runner.turnSettled(REFUSED, pane.ctx);
 
-    // The wait ends while a turn streams: a switch now could drop that response.
+    // The wait ends while a turn streams: a switch now could drop that response. The timer looks
+    // again a moment later.
     pane.live.now += HOUR;
     pane.live.idle = false;
     await pane.fireTimers();
     expect(pane.setModelCalls).toEqual([SONNET]);
+    expect(pane.timers.map((timer) => timer.delayMs)).toEqual([250]);
 
     // The turn's next request runs the `context` hook, which makes the return.
     await pane.runner.maybeRestore(pane.ctx);
     expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
   });
 
-  test("makes the return at the end of a turn that sent no request after the timer found it running", async () => {
+  test("makes the return at the first idle firing after a turn that ended waiting on a background job", async () => {
     const pane = fixture();
     pane.chain.set(OPUS, SONNET);
     await pane.runner.turnSettled(REFUSED, pane.ctx);
@@ -675,14 +683,68 @@ describe("the return to the session's own model", () => {
     await pane.fireTimers();
     expect(pane.setModelCalls).toEqual([SONNET]);
 
-    // The turn ends with no request after the timer, so no hook made the return; its end does,
-    // before anything starts the next run.
+    // The turn ends waiting on a background job, as the host settles it, and sends no request
+    // after the timer, so no hook makes the return.
+    await pane.runner.turnSettled(
+      { ...CLEAN, willContinue: true, awaitingAsyncWork: true },
+      pane.ctx
+    );
     pane.live.idle = true;
-    await pane.runner.turnSettled(CLEAN, pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // The pane is idle while the job runs: the timer's next firing makes the return, so the
+    // job's result starts its run on the model the session fell back from.
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+    expect(pane.live.current).toBe(OPUS);
+    expect(pane.timers).toEqual([]);
+  });
+
+  test("switches no model while a message waits to steer the turn's continuation", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+
+    // The turn has ended and a steering message waits: the continuation is about to read its
+    // model, so the timer leaves it alone.
+    pane.live.now += HOUR;
+    pane.live.pending = true;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // The continuation streams: still no switch.
+    pane.live.pending = false;
+    pane.live.idle = false;
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.setModelCalls).toEqual([SONNET]);
+
+    // Its next request's `context` hook makes the return.
+    await pane.runner.maybeRestore(pane.ctx);
     expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
   });
 
-  test("names a move to another session made while the model it fell back from was set again", async () => {
+  test("stops looking again once a hook has made the return, and leaves no timer", async () => {
+    const pane = fixture();
+    pane.chain.set(OPUS, SONNET);
+    await pane.runner.turnSettled(REFUSED, pane.ctx);
+    pane.live.now += HOUR;
+    pane.live.idle = false;
+    await pane.fireTimers();
+    expect(pane.timers).toHaveLength(1);
+
+    // The turn's `context` hook makes the return while the pane is still busy.
+    await pane.runner.maybeRestore(pane.ctx);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+
+    pane.live.now += 250;
+    await pane.fireTimers();
+    expect(pane.timers).toEqual([]);
+    expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
+  });
+
+  test("names a move to another session made while the model it fell back from was set again, and records nothing there", async () => {
     const pane = fixture();
     pane.chain.set(OPUS, SONNET);
     await pane.runner.turnSettled(REFUSED, pane.ctx);
@@ -690,12 +752,15 @@ describe("the return to the session's own model", () => {
     pane.live.onSetModel = () => {
       pane.live.sessionId = "session-b";
     };
+    const saves = pane.saved.length;
 
     await pane.fireTimers();
     expect(pane.setModelCalls).toEqual([SONNET, OPUS]);
     expect(pane.warnings).toContain(
       "legion: the pane moved to another session while the model it fell back from was set again"
     );
+    // Session B gets no `restored` record of session A's arming.
+    expect(pane.saved.length).toBe(saves);
   });
 
   test("waits for the host's own suppression to end when the fallback was no refusal", async () => {

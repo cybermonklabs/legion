@@ -282,13 +282,8 @@ export default function legionExtension(pi: PiApi): void {
   // with the specification's defaults, as the stall limits do, and the state is kept in the
   // transcript so a relaunched worker comes back with its due time and its doubling levels.
   // When the return is made is `ModelFallback.maybeRestore`'s to say; its timer runs on the pane's
-  // own host timer, as the phase reminder's does.
-  //
-  // The session whose fallback state the runner holds: the one `restoreModelFallback` last read.
-  // A session change moves `paneContext` first and that read comes after the controller's
-  // re-claim, so in between the pane is on a session whose state the runner does not hold, and a
-  // timer that fires then has no session to make its return into.
-  let fallbackSession: string | undefined;
+  // own host timer, as the phase reminder's does, and the runner itself checks that the pane is
+  // still on the session whose state it holds when the timer fires.
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
@@ -301,12 +296,10 @@ export default function legionExtension(pi: PiApi): void {
       paneContext.setTimeout(callback, delayMs);
       return true;
     },
-    paneContext: async () => {
-      const context = paneContext;
-      if (context === undefined) return undefined;
-      if (context.sessionManager.getSessionId() !== fallbackSession) return undefined;
-      return (await modelFallbackSession(context)) ? context : undefined;
-    },
+    paneContext: async () =>
+      paneContext !== undefined && (await modelFallbackSession(paneContext))
+        ? paneContext
+        : undefined,
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved
@@ -318,7 +311,6 @@ export default function legionExtension(pi: PiApi): void {
   // happens to sit on a host fallback is no Legion role's to arm or to write into.
   const restoreModelFallback = (context: CommandContext | SessionContext): void => {
     if (!legionClaimSession(context)) return;
-    fallbackSession = context.sessionManager.getSessionId();
     modelFallback.restore(
       restoreFallbackCooldown(context.sessionManager.getBranch?.() ?? []),
       context
@@ -805,7 +797,10 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // A turn that has settled: a content filter the host did not walk is walked here, a clean turn
-  // puts the model's wait back to the base, and any other provider failure leaves it alone.
+  // puts the model's wait back to the base, and any other provider failure leaves it alone. It
+  // makes no return: a turn's end can be followed at once by a continuation that reads its model,
+  // so a return the timer found the pane too busy for is made at the timer's first firing on an
+  // idle pane (`ModelFallback.maybeRestore`).
   pi.on("agent_end", async (event, context) => {
     if (!(await modelFallbackSession(context))) return;
     await modelFallback.turnSettled(event, context);

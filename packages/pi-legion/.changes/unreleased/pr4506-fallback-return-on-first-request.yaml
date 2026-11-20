@@ -1,13 +1,16 @@
 kind: Fixed
 body: |-
-  A Legion role's session now goes back to its own model when its refusal cooldown ends, on a timer,
-  rather than at the first provider request that finds the wait over. Every run that starts after
-  that moment sends its first request to the role's own model, whatever starts it: the daemon's task,
-  a worker the daemon relaunched after its cooldown, an Envoy card, a background job's result. Before,
-  the plugin made the return only in Oh My Pi's `context` hook, which the host runs after it has read
-  the request's model, so such a run sent its first request to the fallback model; a run already
-  going comes back one request earlier too. A prompt that comes before the timer has run is put back
-  in `before_agent_start`, and the `context` hook still makes the return for a fallback that waits on
-  the host's own suppression rather than a time.
+  A Legion role's session whose refusal cooldown ends while the pane runs no turn now goes back to
+  its own model then, on a timer, rather than at the first provider request that finds the wait
+  over. A run that starts after that moment sends its first request to the role's own model, whatever
+  starts it: the daemon's task, a worker the daemon relaunched after its cooldown, an Envoy card, a
+  background job's result. Before, the plugin made the return only in Oh My Pi's `context` hook,
+  which the host runs after it has read the request's model, so such a run sent its first request to
+  the fallback model. A turn still running when the cooldown ends comes back as before, at the
+  request after the first one sent past the due time: the timer switches no model while a turn
+  streams or a message waits to continue it, and looks again a quarter of a second later, so the
+  return is made at its first look at an idle pane.
+  A prompt is put back in `before_agent_start`, and a fallback that waits on the host's own
+  suppression rather than a time comes back only in the two hooks.
 custom:
   Issue: pr4506
