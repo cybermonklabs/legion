@@ -8,7 +8,7 @@
  *  that is absent here, so the map stays complete and machine-checked either way.
  *
  *  A reason names what the server decides for that file's rows: the four shapes
- *  `packages/dispatch/AGENTS.md`, "The stubbed layer", sets out. Where a file's rows stay for
+ *  `packages/dispatch/README.md`, "The stubbed layer", sets out. Where a file's rows stay for
  *  more than one, the reasons are joined with a semicolon.
  *
  *  A file whose every row moved is absent from this list, and so is a file no project of this

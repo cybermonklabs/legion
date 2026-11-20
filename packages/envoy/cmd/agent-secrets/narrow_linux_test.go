@@ -105,7 +105,7 @@ func TestTheExecFormReleasesANarrowedGitHubAppTokenEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.Secrets.Put(policytest.TypeSecret("APP_KEY", rig.Operator, policy.TierAgent, policy.TypeGitHubApp, string(value)))
-	if status, body := rig.Req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := rig.Reread(t, "APP_KEY"); status != http.StatusOK {
 		t.Fatalf("reread APP_KEY = %d %s", status, body)
 	}
 

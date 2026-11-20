@@ -47,9 +47,12 @@ type launchers struct {
 	leakCheckHop time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
-	// A launchers built without the pair restores nothing.
+	// A launchers built without the pair restores nothing. held drops a bundle that a pod's own
+	// kept volume holds already (Options.HeldWorkspaceBundle). A launchers built without it takes
+	// the bundle for every pod.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
+	held     runtime.HeldWorkspaceBundleDrop
 	// guardKilled takes a launcher's report of one process ended in an issue pod into the daemon's
 	// fact path (Options.MemoryGuardKilled), and controllerKilled one ended in the controller's pod
 	// (Options.ControllerMemoryGuardKilled): in a pod of either kind, one the memory guard ended in
@@ -82,8 +85,13 @@ type launcherSession struct {
 	// apart by its uid and not by this, so a role relaunched in the pod being released spends
 	// nothing.
 	podCreated time.Time
-	id         string
-	podUID     string
+	// keptSince is when the API server created this launcher's pod's Sandbox, where that Sandbox
+	// owns the issue's kept volume (ownsKeptVolume), and the zero time for a pod on a volume of its
+	// own. A Sandbox created before a release's save holds the volume the work was taken off, so
+	// its pod takes no saved work, and the store drops the bundle (restoreWorkspace).
+	keptSince time.Time
+	id        string
+	podUID    string
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -101,18 +109,19 @@ type launcherSession struct {
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
-	guardKilled runtime.MemoryGuardKilled, controllerKilled runtime.ControllerMemoryGuardKilled,
+	held runtime.HeldWorkspaceBundleDrop, guardKilled runtime.MemoryGuardKilled, controllerKilled runtime.ControllerMemoryGuardKilled,
 	volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		saved: saved, restored: restored, guardKilled: guardKilled, controllerKilled: controllerKilled,
+		saved: saved, restored: restored, held: held, guardKilled: guardKilled, controllerKilled: controllerKilled,
 		volume: volume, log: log}
 }
 
-// accept registers a launcher connection of the pod of issue, created at podCreated. The newest
-// authenticated connection for a role wins: a half-open predecessor is closed so its pending
-// requests fail instead of waiting forever.
-func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
-	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
+// accept registers a launcher connection of the pod of issue, created at podCreated, whose
+// Sandbox owns the issue's kept volume since keptSince (the zero time for a pod on a volume of its
+// own). The newest authenticated connection for a role wins: a half-open predecessor is closed so
+// its pending requests fail instead of waiting forever.
+func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
+	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
 		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
@@ -493,13 +502,26 @@ const bundleRestoreBound = 2 * time.Minute
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
+//
+// A pod whose own kept volume holds the work takes none of it, and the store drops the bundle
+// first. That pod's Sandbox owns the issue's kept volume and was created before the save
+// (launcherSession.keptSince): the release kept that Sandbox, so the volume is the one the work
+// was taken off. Its launcher would refuse the bundle, because the workspace is older than the
+// save, and log a notice that the work was lost, while the bundle held the issue's pod. The drop
+// sends no slice and keeps the take's rules (store.DropHeldWorkspaceBundle). A drop that finds no
+// such bundle leaves the take to run as for any pod. A drop that fails is logged and the pod is
+// sent nothing, as a take that fails: the row is as it was, and the next start asks again. The
+// drop runs at a role's start, after the pod's launcher connected, and that launcher runs after
+// both init containers of the pod. So a kept volume whose init failed never drops the bundle its
+// reset needs: the reset replaces that Sandbox, and the pod of the new Sandbox restores the work.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
-	// did, and when that pod was created, as the API server stamped it. A launcher that never
-	// arrives is the start's own error to report, not this hop's.
+	// did, and when that pod was created, as the API server stamped it. For a pod of a Sandbox
+	// that owns the issue's kept volume, it names when that Sandbox was created too. A launcher
+	// that never arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
 		return
@@ -507,6 +529,19 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	restoring, cancel := context.WithTimeout(ctx, bundleRestoreBound)
 	defer cancel()
+	if !session.keptSince.IsZero() && d.held != nil {
+		held, dropped, err := d.held(restoring, issue, podUID, session.keptSince)
+		if err != nil {
+			d.log.Warn("launcher bundle: the saved workspace bundle that this pod's kept volume may hold could not be dropped, so the pod is sent nothing and the bundle stays for the next start",
+				"issue", issue, "launcher", token, "pod", podUID, "volume_created", session.keptSince, "error", err)
+			return
+		}
+		if dropped {
+			d.log.Info("launcher bundle: this pod's kept volume holds the workspace the release's saved work came off, so the saved workspace bundle is dropped and the pod is sent nothing",
+				"issue", issue, "launcher", token, "pod", podUID, "release", held.Release, "volume_created", session.keptSince, "saved", held.At)
+			return
+		}
+	}
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",

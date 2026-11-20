@@ -175,10 +175,10 @@ async function saveTitle(user: UserEvent, title: string): Promise<void> {
 /**
  * Dispatch's answers, held until the case gives them: a mocked write returns `answer(reply)`,
  * whose `reply` returns the answer or throws the refusal, and `give()` gives every answer held
- * since its last call inside `act`, once the press that sent it is out, as
- * packages/dispatch/AGENTS.md's act rule says. On the held clock a press's own wait ends a few
- * turns after its last event, so an answer given at once lands after that wait and updates the
- * page outside `act`.
+ * since its last call inside `act`, once the press that sent it is out, as docs/testing.md
+ * ("The act rule of a Dispatch unit test") says. On the held clock a press's own wait ends a
+ * few turns after its last event, so an answer given at once lands after that wait and updates
+ * the page outside `act`.
  */
 function heldAnswers() {
   let held = Promise.withResolvers<void>();

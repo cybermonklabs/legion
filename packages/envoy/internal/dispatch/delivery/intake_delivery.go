@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // intakeDelivery is one subscription of an intake's: the client it subscribed on, the
@@ -422,11 +423,13 @@ func subjectKey(subject string, tokens []string, pullRequest bool) string {
 
 // subjectNamesRepo reports whether a GitHub subject's owner and repository tokens (2 and 3) name
 // repo, the "<owner>/<name>" a payload carries, each side sanitized as the publisher sanitizes it
-// (contracts.SanitizeSubjectSegment) and compared without case. A repo that does not split into
-// an owner and a name -- an empty one above all -- names no repository to compare, and answers
-// true, so intakeKey wants that message as it always did rather than dropping it.
+// (contracts.SanitizeSubjectSegment) and compared without case. A repo refs.SplitGitHubRepo
+// refuses -- an empty one above all, and one whose owner or name GitHub's names do not allow --
+// names no repository to compare, and answers true, so intakeKey wants that message as it always
+// did rather than dropping it; its handler then refuses the name when it splits it, before any
+// GitHub call.
 func subjectNamesRepo(tokens []string, repo string) bool {
-	owner, name, err := splitRepo(repo)
+	owner, name, err := refs.SplitGitHubRepo(repo)
 	if err != nil {
 		return true
 	}

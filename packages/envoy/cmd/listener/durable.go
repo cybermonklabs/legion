@@ -100,7 +100,7 @@ func listenerDurableRefusal(consumer string, config nats.ConsumerConfig) error {
 	return fmt.Errorf("%w: durable consumer %s has %s, which the listener's consumer policy forbids and NATS cannot change in place; "+
 		"deleting it lets the listener recreate it at deliver policy all, which replays every retained message, "+
 		"so to keep its cursor recreate it from its own config without %s, at deliver policy by_start_sequence "+
-		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/AGENTS.md, Operational notes)",
+		"with opt_start_seq one past its ack_floor.stream_seq (packages/envoy/deploy/README.md, Recreating a listener's durable)",
 		errListenerDurableRefused, consumer, strings.Join(settings, " and "), without)
 }
 

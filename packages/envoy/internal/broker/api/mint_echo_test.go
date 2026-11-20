@@ -54,7 +54,7 @@ func TestAMintFailureEchoingTheRefreshTokenReachesNeitherTheSessionNorTheLog(t *
 	})
 	value := `{"type":"authorized_user","client_id":"client-id","client_secret":"client-secret","refresh_token":"` + canary + `"}`
 	ts.Secrets.Put(policytest.TypeSecret("ECHOED_LOGIN", testApprover, policy.TierAgent, policy.TypeGoogleLogin, value))
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/ECHOED_LOGIN/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "ECHOED_LOGIN"); status != http.StatusOK {
 		t.Fatalf("reread ECHOED_LOGIN = %d %s", status, body)
 	}
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)

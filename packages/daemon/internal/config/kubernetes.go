@@ -327,6 +327,11 @@ type MicroVMConfig struct {
 	// `microvm.storage_class`, else Kubernetes.StorageClass, which the loader fills in. The
 	// controller's disk stays on Kubernetes.StorageClass in either sandbox.
 	StorageClass string
+	// KeepVolume is `microvm.keep_volume`: when true, each microVM issue pod's workspace volume is
+	// a claim that the issue's Sandbox owns. The claim stays through the pod's ends and the
+	// issue's idle releases, and Kubernetes deletes it with the Sandbox. False when the file sets
+	// none. It applies to a microVM issue pod alone: a gVisor pod and the controller's pod ignore it.
+	KeepVolume bool
 	// Metadata is the metadata endpoint a microVM pod's launcher serves on the pod itself; nil
 	// when the file names none.
 	Metadata *MetadataConfig
@@ -983,7 +988,8 @@ func readSandbox(value *yaml.Node, storageClass string) (SandboxConfig, error) {
 
 // readMicroVM reads `runtime.kubernetes.sandbox.microvm`: its compute_class, which readSandbox
 // requires while an issue pod runs in a microVM; its storage_class, storageClass when the block
-// names none; and its metadata block, nil when absent.
+// names none; its keep_volume, false when absent and otherwise only true or false, as
+// readTestPostgres reads test_postgres; and its metadata block, nil when absent.
 func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping", microVMKey)
@@ -1000,6 +1006,11 @@ func readMicroVM(value *yaml.Node, storageClass string) (*MicroVMConfig, error) 
 		return nil, err
 	}
 	block.StorageClass = cmp.Or(block.StorageClass, storageClass)
+	if keep := fields["keep_volume"]; keep != nil {
+		if keep.Tag != "!!bool" || keep.Decode(&block.KeepVolume) != nil {
+			return nil, fmt.Errorf("%s.keep_volume must be true or false", microVMKey)
+		}
+	}
 	if block.Metadata, err = readMetadata(fields["metadata"]); err != nil {
 		return nil, err
 	}

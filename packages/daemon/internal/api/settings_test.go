@@ -124,6 +124,7 @@ var settingsEmitted = map[string]string{
 	"SandboxConfig.MicroVM":                          "runtime.kubernetes.sandbox.microvm",
 	"MicroVMConfig.ComputeClass":                     "runtime.kubernetes.sandbox.microvm.compute_class",
 	"MicroVMConfig.StorageClass":                     "runtime.kubernetes.sandbox.microvm.storage_class (runtime.kubernetes.storage_class when the block names none)",
+	"MicroVMConfig.KeepVolume":                       "runtime.kubernetes.sandbox.microvm.keep_volume",
 	"MicroVMConfig.Metadata":                         "runtime.kubernetes.sandbox.microvm.metadata",
 	"MetadataConfig.WorkloadPool":                    "runtime.kubernetes.sandbox.microvm.metadata.workload_pool",
 	"MetadataConfig.IdentityProvider":                "runtime.kubernetes.sandbox.microvm.metadata.identity_provider",
@@ -508,8 +509,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 
 // The sandbox rides the settings as the loader settles it. The maximal file names no block, so it
 // shows gVisor, `canary_issues` as `[]` and no `microvm`. A block shows each member the file
-// names. An inert microvm block, which no issue pod uses, shows no compute class, and its storage
-// class is runtime.kubernetes.storage_class. None of it is a credential (settingsEmitted).
+// names, and `keep_volume` as false where it names none. An inert microvm block, which no issue pod
+// uses, shows no compute class, and its storage class is runtime.kubernetes.storage_class. None of
+// it is a credential (settingsEmitted).
 func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 	const pool = "example-project.svc.id.goog"
 	const provider = "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-cluster"
@@ -535,14 +537,14 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 				ComputeClass: "example-microvm", StorageClass: "example-microvm-disk",
 				Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
 			}},
-			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk",` +
+			wire: `{"type":"gvisor","canary_issues":["LEGION-208","LEGION-209"],"microvm":{"compute_class":"example-microvm","storage_class":"example-microvm-disk","keep_volume":false,` +
 				`"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
 		},
 		{
 			name:  "a microVM project",
-			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm}\n",
-			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3"}},
-			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3"}}`,
+			block: "    sandbox:\n      type: microvm\n      microvm: {compute_class: example-microvm, keep_volume: true}\n",
+			want:  SandboxSettings{Type: "microvm", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{ComputeClass: "example-microvm", StorageClass: "gp3", KeepVolume: true}},
+			wire:  `{"type":"microvm","canary_issues":[],"microvm":{"compute_class":"example-microvm","storage_class":"gp3","keep_volume":true}}`,
 		},
 		{
 			name:  "an inert microvm block",
@@ -550,7 +552,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 			want: SandboxSettings{Type: "gvisor", CanaryIssues: []string{}, MicroVM: &MicroVMSettings{
 				StorageClass: "gp3", Metadata: &MetadataSettings{WorkloadPool: pool, IdentityProvider: provider},
 			}},
-			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
+			wire: `{"type":"gvisor","canary_issues":[],"microvm":{"storage_class":"gp3","keep_volume":false,"metadata":{"workload_pool":"` + pool + `","identity_provider":"` + provider + `"}}}`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

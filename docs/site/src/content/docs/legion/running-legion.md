@@ -348,7 +348,11 @@ Dispatch read them, delete the files, then install every App from
   deletes it when the pod goes, so an issue's clone, workspace and caches live as long as its pod
   and no longer. What outlives a pod is what was pushed to the issue's branch and each agent's
   conversation, which the session database holds. The daemon-launched controller's pod has a
-  volume of its own, which its Sandbox owns and which does outlive its pods.
+  volume of its own, which its Sandbox owns and which does outlive its pods. A microVM issue pod
+  under `runtime.kubernetes.sandbox.microvm.keep_volume: true` is the exception: its volume is a
+  claim that the issue's Sandbox owns, so it outlives the pod, and it goes when the issue leaves
+  the workflow or when the daemon resets it after a failed init container (`docs/kubernetes.md`
+  in the repository, "A kept volume on a microVM pod").
 - **Pod Security.** Pods run under the `restricted` profile: user 1000, no privilege escalation, all
   capabilities dropped, the `RuntimeDefault` seccomp profile, and no automounted API token.
 - **A ServiceAccount for the agents' pods**, named in `runtime.kubernetes.pod.service_account`
@@ -658,15 +662,15 @@ What each part is for:
   each role's own are added after; under tmux `PI_CONFIG_FILES` is the runtime's own and refused
   in `pane_env` — the overlays there are `runtime.tmux.pi_config_files` — so the attributes are
   the one composed name. Set the OpenTelemetry resource attributes your deployment's spend is
-  billed under (`theorem.project=widgets`), and each launch carries them with its own
+  billed under (`acme.project=widgets`), and each launch carries them with its own
   `legion.issue` and `legion.role` after them, so each launch's attributes name the issue it
   serves. A launch in an arm of one of the project's experiments carries `legion.arms` after
   those: one `<experiment>:<variant>` for each arm it runs with all the overlays of
   (`legion.arms=memory:memory` once decoded), and none for an arm the pod it keeps holds only
   some or none of the overlays of, so each model call says which arm's files it ran with. The agent
   takes the last value a key is given, which is why Legion's pairs come last. A spend row names an
-  issue, a role or an arm only where your spend collector keeps that key: a collector that keeps
-  a list of `theorem.*` attributes alone drops all three (dispatch://INFRA-1835).
+  issue, a role or an arm only where your spend collector keeps that key. A deployment's collector
+  may keep a fixed list of attributes; include all three in that list to group spend by them.
   The project controller serves no issue and carries the role alone. The image probe's container
   runs no role and keeps your value exactly as you wrote it; the tmux boot gate's probe runs no
   role either and keeps it with its trailing commas and whitespace dropped and nothing added.
@@ -677,7 +681,7 @@ What each part is for:
   Legion writes itself. The refusal names that one member and what is wrong with it, never the
   rest of your value, and `legion config check` gives boot's verdict before a restart.
   One such member would cost a launch every attribute of the variable, your own
-  `theorem.project` among them, because the detector's caller catches the throw with an empty
+  `acme.project` among them, because the detector's caller catches the throw with an empty
   hand. Like every other variable here, the attributes reach a role with the start command of its
   next launch and travel in no pod specification, so no pod is replaced and a role already
   running keeps what it started with.
@@ -698,7 +702,8 @@ What each part is for:
   omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
   line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
   file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
-  claim after three failures. Name the store and its key, and have the database reachable from the
+  claim after three failures. A kept volume does not change this: a reset or a suspension of the
+  issue deletes that volume. Name the store and its key, and have the database reachable from the
   pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
@@ -836,9 +841,9 @@ What each part is for:
   under tmux, can read every role's overlay file, so never put a secret in one. Adding the mount
   to a running deployment replaces every affected issue pod at the restart: each of its running
   roles, named or not, loses its turn and resumes its session uncharged in a new pod, and the old
-  pod's disk goes with it, unpushed work included (a pod with no role running is replaced at the
-  first launch into it). Add it when no role of an affected issue is mid-turn and every role has
-  pushed. The repository's `docs/kubernetes.md` ("Operator
+  pod's disk goes with it, unpushed work included, unless the disk is a kept volume (a pod with no
+  role running is replaced at the first launch into it). Add it when no role of an affected issue
+  is mid-turn and every role has pushed. The repository's `docs/kubernetes.md` ("Operator
   configuration") shows the overlay and its mount.
 - **`worker_stall_backstop_hours`** (optional) is the daemon's own backstop under a worker whose
   turn has stopped: how long after a role's last recorded step the daemon ends the turn that step

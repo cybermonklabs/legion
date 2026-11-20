@@ -95,10 +95,24 @@ func (r *Runtime) LauncherResolver() stream.LauncherResolver {
 			return nil, shimwire.LauncherHelloAck{}, "launcher credential does not name this pod's role"
 		}
 		// The pod the connection is accepted for carries the instant the API server created it,
-		// which decides whether a release's saved work is this pod's to restore
-		// (launchers.restoreWorkspace).
-		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, hello), r.launcherHelloAck(kind), ""
+		// and the instant the API server created its Sandbox, where that Sandbox owns the issue's
+		// kept volume. The two decide whether a release's saved work is this pod's to restore, or
+		// is on its volume already (launchers.restoreWorkspace). Both come from the informer's
+		// objects, so neither costs a request.
+		return r.launchers.accept(token, credential.issue, view.pod.CreationTimestamp.Time, keptVolumeSince(view.sandbox), hello), r.launcherHelloAck(kind), ""
 	}
+}
+
+// keptVolumeSince is when the API server created s, where s owns an issue's kept volume
+// (ownsKeptVolume), and the zero time otherwise: a Sandbox whose pod's volume is the pod's own,
+// and the project controller's Sandbox. A kept volume is as old as the Sandbox that owns it,
+// since Agent Sandbox makes the claim from the Sandbox's template, and the claim goes only with
+// the Sandbox.
+func keptVolumeSince(s *sandbox) time.Time {
+	if !ownsKeptVolume(s) {
+		return time.Time{}
+	}
+	return s.CreationTimestamp.Time
 }
 
 // launcherHelloAck is the acknowledgement an accepted launcher on a pod of kind is answered with,
