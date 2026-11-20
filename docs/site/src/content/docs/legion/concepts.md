@@ -564,7 +564,7 @@ result of the issue's `after_merge` check, naming the merge commit and what woke
 that result's line on the pull request; `pending`,
 when production does not carry the merge yet, or an observation a requirement names has not
 happened yet; or `fail`, a requirement observed as not met, one still unobserved at the last
-look when production carries the merge, or a defect, naming the issue, the pull
+look whether or not production carries the merge, or a defect, naming the issue, the pull
 request, the merge commit, what it drove and what failed. A defect with a clear fix goes to the
 controller, which gives it to the tree that owns that code and files an issue only when none does.
 One that needs a decision is a Dispatch ask on Legion's

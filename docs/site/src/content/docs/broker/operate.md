@@ -22,7 +22,7 @@ and verify it as [Running Dispatch](/legion/dispatch/running-dispatch/) shows. T
 
 ```sh
 cd packages/envoy
-go build -o envoy-broker ./cmd/broker
+go build -o envoy-broker ./cmd/cipherd
 ```
 
 It takes no flags (it refuses any flag it is given) and reads all of its configuration from the
@@ -1263,7 +1263,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   alone. Neither route releases a value.
   Rereads are limited twice, by limits each pod derives rather than by settings
   (`RereadOverallFor` and `RereadLimitFor` in
-  `packages/envoy/internal/broker/api/limits.go`): the broker as a whole takes one reread every
+  `packages/envoy/internal/cipher/api/limits.go`): the broker as a whole takes one reread every
   `N² × 250 ms` on the default store, burst 10, however many addresses the rereads come from —
   each one takes the policy's writer lock while it reads the secret, so that lock, not the
   caller, is what this limit bounds — and each source address gets a burst of 30, refilled one

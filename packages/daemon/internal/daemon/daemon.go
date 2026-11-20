@@ -27,11 +27,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -959,9 +959,9 @@ type plan struct {
 	plugins       *runtime.PluginInstall
 	pluginsSource string
 	// secretsLogin is the same login's client, read-only, for the state route to show its
-	// current status (source.State, agentsecrets.Client.LoginStatus); nil when the deployment
+	// current status (source.State, cipher.Client.LoginStatus); nil when the deployment
 	// enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
@@ -2897,7 +2897,7 @@ type source struct {
 	now func() time.Time
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
 	// whose report the state carries.
 	deployment func() capabilities.Deployment

@@ -700,13 +700,18 @@ What each part is for:
   needs this member, because its identity has no email address and so no Cloud SQL login. The
   paragraph "What a pod signs in as, and what a deployment grants for it" in
   [Selecting the store](https://github.com/cybermonklabs/legion/blob/main/docs/kubernetes.md#selecting-the-store)
-  says when to set the member and lists what it needs. Each kind refuses the other's key. An
-  omitted `session_store` and `pvc`, the file store of earlier releases, are refused with the same
-  line and its reason: an issue pod's disk is deleted with the pod, so a conversation kept as a
-  file on it dies with the pod and the next launch's resume fails on the missing file, retiring the
-  claim after three failures. A kept volume does not change this: a reset or a suspension of the
-  issue deletes that volume. Name the store and its key, and have the database reachable from the
-  pods, before the daemon boots.
+  says when to set the member and lists what it needs. Its optional member `writer_audience`,
+  which needs `impersonate_service_account`, is a workload identity provider's full resource
+  name. With it, each pod's proxy impersonates the account with a token that only the pod's
+  launcher reads, in place of the pod's own credentials, and the proxy's socket admits only the
+  launcher and the role's Oh My Pi process. The paragraph "A token that only the launcher reads"
+  in the same section lists what a deployment makes true for it, and the order to turn it on.
+  Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
+  earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
+  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
+  resume fails on the missing file, retiring the claim after three failures. A kept volume does
+  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
+  its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the

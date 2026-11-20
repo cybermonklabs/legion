@@ -381,7 +381,7 @@ func ControllerLocatorOf(runtimeName string, record controller.Record) *Controll
 }
 
 // AgentSecretsLoginView is the daemon's own agent-secrets token login's current status
-// (agentsecrets.Client.LoginStatus): State is one of "none" (no login has finished yet), "issued",
+// (cipher.Client.LoginStatus): State is one of "none" (no login has finished yet), "issued",
 // or "failed" (the latest login won no credential). Never a key, a token, a launcher credential, or
 // why a login failed — those live only in the daemon's process memory and its log.
 type AgentSecretsLoginView struct {
