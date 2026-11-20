@@ -154,39 +154,43 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 // TestGaxStillStopsRetryingACertificateNoRootHereTrusts: AccessSecretVersion, which gax retries on
 // Unavailable, through the interceptor every Secret Manager call goes through, is tried once where
 // the TLS handshake failed with unknownAuthority, since gax reads that phrase in the error the
-// interceptor words, and returns at once. Control: a refused connection, also Unavailable, is
-// tried again within the call's deadline, so the count sees a retry.
+// interceptor words. Control: a refused connection, also Unavailable, is tried again. No row reads
+// the clock: the call's deadline is a minute, far past gax's first backoff, and a second attempt
+// ends the call (its context is cancelled once that attempt returns), so a retry is counted, not
+// timed, and a row ends as soon as it has its answer.
 func TestGaxStillStopsRetryingACertificateNoRootHereTrusts(t *testing.T) {
-	attempts := func(t *testing.T, to unreachedTarget) (int32, time.Duration, error) {
+	attempts := func(t *testing.T, to unreachedTarget) (int32, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
 		var tries atomic.Int32
 		count := func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-			tries.Add(1)
-			return invoker(ctx, method, req, reply, cc, opts...)
+			n := tries.Add(1)
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if n >= 2 {
+				cancel()
+			}
+			return err
 		}
 		conn, err := grpc.NewClient(to.target, append(to.opts, grpc.WithChainUnaryInterceptor(count, (&gcpBackend{}).storeInterceptor))...)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		defer cancel()
 		client, err := secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = client.Close() })
-		start := time.Now()
 		_, err = client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: "projects/p/secrets/s/versions/latest"})
-		return tries.Load(), time.Since(start), err
+		return tries.Load(), err
 	}
 	t.Run("a TLS handshake no root here trusts", func(t *testing.T) {
-		tries, took, err := attempts(t, tlsUnreached(t))
-		if tries != 1 || err == nil || !strings.Contains(err.Error(), unknownAuthority) || took >= 2*time.Second {
-			t.Fatalf("tried %d times in %s, err %v; want once, at once, with %q in the error", tries, took, err, unknownAuthority)
+		if tries, err := attempts(t, tlsUnreached(t)); tries != 1 || err == nil || !strings.Contains(err.Error(), unknownAuthority) {
+			t.Fatalf("tried %d times, err %v; want once, with %q in the error", tries, err, unknownAuthority)
 		}
 	})
 	t.Run("control: a refused connection", func(t *testing.T) {
-		if tries, took, err := attempts(t, refusedUnreached(t)); tries < 2 {
-			t.Fatalf("tried %d times in %s, err %v; want gax to try the call again", tries, took, err)
+		if tries, err := attempts(t, refusedUnreached(t)); tries < 2 {
+			t.Fatalf("tried %d times, err %v; want gax to try the call again", tries, err)
 		}
 	})
 }
