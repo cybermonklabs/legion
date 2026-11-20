@@ -84,32 +84,32 @@ const x509UnknownAuthority = "x509: certificate signed by unknown authority"
 // where nothing was reached: "connection error: desc = ..." for a failed connection and "name
 // resolver error: ..." for a name its resolver could not turn into an address. That text names the
 // address it dialed and the system's reason, so it prints as the class redact.Class gives the same
-// failure of any other request, in its words: "TLS failed" (with x509UnknownAuthority where the
-// text says it), "name resolution failed", "connection refused", "timed out", or "the request
-// failed" for any other connection that failed. A connection that broke after the call went out
-// on it has a peer, and reads as Secret Manager's own Unavailable.
+// failure of any other request, in its words: redact.ClassTLS (with x509UnknownAuthority where the
+// text says it), redact.ClassNameResolution, redact.ClassRefused, redact.ClassTimedOut, or
+// redact.ClassRequestFailed for any other connection that failed. A connection that broke after
+// the call went out on it has a peer, and reads as Secret Manager's own Unavailable.
 func storeUnreached(answer *status.Status, reached bool) (string, bool) {
 	text := answer.Message()
 	switch {
 	case reached || answer.Code() != codes.Unavailable:
 		return "", false
 	case strings.HasPrefix(text, "name resolver error: "):
-		return "name resolution failed", true
+		return redact.ClassNameResolution, true
 	case !strings.HasPrefix(text, "connection error: desc = "):
 		return "", false
 	case strings.Contains(text, "transport: authentication handshake failed"):
 		if strings.Contains(text, x509UnknownAuthority) {
-			return "TLS failed: " + x509UnknownAuthority, true
+			return redact.ClassTLS + ": " + x509UnknownAuthority, true
 		}
-		return "TLS failed", true
+		return redact.ClassTLS, true
 	case strings.Contains(text, "no such host"):
-		return "name resolution failed", true
+		return redact.ClassNameResolution, true
 	case strings.Contains(text, "connection refused"):
-		return "connection refused", true
+		return redact.ClassRefused, true
 	case strings.Contains(text, "i/o timeout"):
-		return "timed out", true
+		return redact.ClassTimedOut, true
 	}
-	return "the request failed", true
+	return redact.ClassRequestFailed, true
 }
 
 // storeRefusal is a Secret Manager call's failure as storeFailure words it: Error is the words,

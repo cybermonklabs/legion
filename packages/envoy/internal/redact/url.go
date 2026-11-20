@@ -476,6 +476,18 @@ type classified struct {
 func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
+// The words class names a failure by, which Class prints and which a caller that classifies a
+// failure redact cannot see into - one gRPC hands the client only as text - names the same failure
+// by, so one failure has one set of words wherever it prints.
+const (
+	ClassNotAURL        = "not a valid URL"
+	ClassNameResolution = "name resolution failed"
+	ClassRefused        = "connection refused"
+	ClassTimedOut       = "timed out"
+	ClassTLS            = "TLS failed"
+	ClassRequestFailed  = "the request failed"
+)
+
 // class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
 // "the broker" for Error and Cause and "the server" for Class. A failure Error, Cause, Class,
 // Masked or File already put in words (a classified) keeps those words: they name the server that
@@ -491,19 +503,19 @@ func class(err error, server string) string {
 	case errors.As(err, &worded):
 		return worded.text
 	case errors.As(err, &ue) && ue.Op == "parse":
-		return "not a valid URL"
+		return ClassNotAURL
 	case errors.As(err, &dns):
-		return "name resolution failed"
+		return ClassNameResolution
 	case errors.Is(err, syscall.ECONNREFUSED):
-		return "connection refused"
+		return ClassRefused
 	case errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout():
-		return "timed out"
+		return ClassTimedOut
 	case tlsFailure(err):
-		return "TLS failed"
+		return ClassTLS
 	case errors.As(err, &re) && re.Response != nil:
 		return fmt.Sprintf("%s answered HTTP %d", server, re.Response.StatusCode)
 	default:
-		return "the request failed"
+		return ClassRequestFailed
 	}
 }
 
