@@ -343,7 +343,10 @@ beforeAll(async () => {
   for (const key of environmentKeys) {
     if (key !== "HOME") delete process.env[key];
   }
-});
+  // Loading the two entries compiles both plugins, which on a loaded dev box took past Bun's 5 s
+  // default for a hook: a run at a load of several hundred failed this hook at 5002 ms and ran no
+  // row. The hook waits on no event, so a longer bound costs a passing run nothing.
+}, 120_000);
 
 type RegisteredCommand = {
   readonly name: string;
@@ -431,7 +434,9 @@ beforeAll(async () => {
       `jj git init exited ${exitCode}${signal}: ${stderr === "" ? "no stderr" : stderr}`
     );
   }
-});
+  // A spawn on a loaded dev box can take past Bun's 5 s default for a hook, as the entry loads
+  // above can; jj ends the wait either way.
+}, 120_000);
 
 afterAll(async () => {
   // The template was never built when the file skipped, and there is nothing to remove.
