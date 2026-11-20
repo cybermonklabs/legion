@@ -770,6 +770,10 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 // its service_account_impersonation_url (an external_account workload identity federation
 // credential, such as a dev box's, or an impersonated_service_account file), else
 // principalUnknown (an authorized_user file, a federation credential that impersonates no one).
+// Either names an account only where it has a service account's shape
+// (brokerclient.ServiceAccountShaped), as the token client's external_account identity does: the
+// file is a credential's place, so a field of it that is no service account's prints as fixed
+// words.
 func credentialsFilePrincipal(creds *google.Credentials) string {
 	var parsed struct {
 		ClientEmail      string `json:"client_email"`
@@ -778,15 +782,18 @@ func credentialsFilePrincipal(creds *google.Credentials) string {
 	if err := json.Unmarshal(creds.JSON, &parsed); err != nil {
 		return principalUnknown
 	}
-	if parsed.ClientEmail != "" {
-		return parsed.ClientEmail
+	account := parsed.ClientEmail
+	if _, rest, ok := strings.Cut(parsed.ImpersonationURL, "/serviceAccounts/"); account == "" && ok {
+		account, _, _ = strings.Cut(rest, ":")
 	}
-	if _, rest, ok := strings.Cut(parsed.ImpersonationURL, "/serviceAccounts/"); ok {
-		if account, _, _ := strings.Cut(rest, ":"); account != "" {
-			return account
-		}
+	switch {
+	case account == "":
+		return principalUnknown
+	case brokerclient.ServiceAccountShaped(account):
+		return account
+	default:
+		return "the service account the credentials file names (not printed: it has neither the shape of a service account's email nor of its unique id)"
 	}
-	return principalUnknown
 }
 
 // gcpBackend is the secretBackend for store "gcp-secret-manager": GCP Secret Manager under the

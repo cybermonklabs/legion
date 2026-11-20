@@ -644,3 +644,27 @@ func TestAnAccountGooglesAnswerNamesPrintsOnlyWhereItIsAServiceAccounts(t *testi
 		})
 	}
 }
+
+// TestACredentialsFilesAccountPrintsOnlyWhereItIsAServiceAccounts: the account a credentials
+// file names - a key file's client_email, or the account in an impersonating file's
+// service_account_impersonation_url - is text in a credential's file, so the using line and every
+// store refusal name it only where it has a service account's shape. Control: a service account's
+// email in either field still prints.
+func TestACredentialsFilesAccountPrintsOnlyWhereItIsAServiceAccounts(t *testing.T) {
+	planted := "hunter2pw-" + "fileaccount-" + "9e1d"
+	const robot = "deploy-bot@example-project.iam.gserviceaccount.com"
+	impersonating := func(account string) string {
+		return `{"type":"external_account","service_account_impersonation_url":"https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/` + account + `:generateAccessToken"}`
+	}
+	for _, row := range []struct{ name, file, want string }{
+		{"a key file's client_email that is no service account's", `{"type":"service_account","client_email":"` + planted + `"}`, "the service account the credentials file names (not printed"},
+		{"an impersonated account that is no service account's", impersonating(planted), "the service account the credentials file names (not printed"},
+		{"control: a key file's service account", `{"type":"service_account","client_email":"` + robot + `"}`, robot},
+		{"control: an impersonated service account", impersonating(robot), robot},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got := credentialsFilePrincipal(&google.Credentials{JSON: []byte(row.file)})
+			wantNamedNotPrinted(t, "the principal", got, []string{row.want}, planted)
+		})
+	}
+}
