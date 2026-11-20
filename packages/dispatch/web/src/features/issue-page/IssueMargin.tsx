@@ -50,6 +50,8 @@ import {
 } from "./details-icons";
 import {
   FOLD_AFTER,
+  firstControlOfRow,
+  headingOfSection,
   IssueList,
   PropertySection,
   Row,
@@ -60,7 +62,8 @@ import {
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
 import { detailsEditor, detailsOpener } from "./details-rows";
-import { IssueAddMenu } from "./IssueAddMenu";
+import { type FocusFallback, useFocusKeeper } from "./focus-keeper";
+import { addEntryAfter, IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
 import { IssuePins } from "./IssuePins";
@@ -122,6 +125,22 @@ function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
 }
+
+/**
+ * Where Details' keeper puts the focus once a change made elsewhere - another session's write, a
+ * read that answers, an event - takes away the control that held it, in this order. In Add's open
+ * menu, the entry after the lost one, else Add (`addEntryAfter`), so the reader stays in the menu
+ * they were walking. Else the first control that takes a press in the row the lost one stood in
+ * (`firstControlOfRow`), by the one rule every hand-off of the panel reads (`usableControl`),
+ * which is often the control the row draws in the lost one's place. Else the heading of the
+ * row's section (`headingOfSection`), which no change made elsewhere takes away: for a row the
+ * change took away whole, and for one left with nothing that takes a press.
+ */
+const DETAILS_FOCUS_FALLBACKS: readonly FocusFallback[] = [
+  addEntryAfter,
+  firstControlOfRow,
+  headingOfSection,
+];
 
 /**
  * The margin's own side of the issue page's panel: the margin's cards, and - where the margin
@@ -224,8 +243,10 @@ export function IssueMarginPanel({
   const [referencesOpen, setReferencesOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const filesList = useRef<HTMLUListElement>(null);
-  // The panel's own element, under which every control of Details that Add reaches is drawn.
+  // The panel's own element, under which every control of Details that Add reaches is drawn, and
+  // over which the keeper keeps a focus a change made elsewhere takes away.
   const panel = useRef<HTMLDivElement>(null);
+  useFocusKeeper(panel, DETAILS_FOCUS_FALLBACKS);
   const referencesPanelId = useId();
   // The blocked-by editor's state is the panel's, which stays drawn for the life of the page
   // (`slots/details.tsx`), as a closed section keeps its rows: a list typed before the reader
@@ -241,10 +262,11 @@ export function IssueMarginPanel({
   // row draws no control, so the focus goes to the parent's link where the issue has a parent,
   // and the route's control is disabled; where the row holds nothing that takes the focus, it
   // goes to Development's heading, the button that opens and closes the section these rows are in.
+  // The keeper, which waits one task, leaves this choice where it is: on a closed issue whose
+  // route is a session's, its first control of the route's row would be the agent's live link.
   const parentControl = useRef<HTMLButtonElement>(null);
   const parentValue = useRef<HTMLDivElement>(null);
   const routeControl = useRef<HTMLButtonElement>(null);
-  const routeValue = useRef<HTMLDivElement>(null);
   const developmentHeading = useRef<HTMLButtonElement>(null);
   const leftEditor = useRef<IssueField | null>(null);
   const closeEditor = () => {
@@ -262,19 +284,12 @@ export function IssueMarginPanel({
     firstUsable(...rowControls, developmentHeading.current)?.focus();
   }, [editingField]);
   // The failure of Details' last field save, which the route's row says when it is a route's.
-  // The focus of that line's Retry goes on in the row as the line goes: to the row's control, and
-  // where that takes no press - not drawn while the route's editor is open, disabled on a closed
-  // issue - to the editor's box, the one box of the row; and where that takes none either, on a
-  // closed issue, to Development's heading.
+  // The focus of that line's Retry goes on in the row as the line goes, by the keeper's rule: to
+  // the row's control, and where that is not drawn, while the route's editor is open, to the
+  // editor's box, the row's first control then. On a close, which takes Retry away, the close
+  // keeper has put it on Development's heading first.
   const fieldFailure = useSaidFailure(writes.updateIssue);
   const routeStopped = fieldFailure?.error instanceof SendStoppedError;
-  const routeRetryLeft = useFocusHandOff(() =>
-    firstUsable(
-      routeControl.current,
-      routeValue.current?.querySelector<HTMLElement>("input"),
-      developmentHeading.current
-    )
-  );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
   // waits on it and the titles of those, its links on GitHub, and what references it - are made
@@ -348,7 +363,9 @@ export function IssueMarginPanel({
   // line's Retry - what waits on the issue, or the titles of those - goes to the first issue the
   // row draws, or else to the None it says, or else to the other line's Retry, which a refetch
   // that fails as the first line goes leaves drawn, and where it draws none of these to
-  // Development's heading.
+  // Development's heading. Each row hands it on itself, and the keeper, which waits one task,
+  // leaves that choice where it is: its own rule would take Blocked by's first issue, which stands
+  // before the row's control, and in Blocks would pass over None, which takes no press.
   const blockedByValue = useRef<HTMLDivElement>(null);
   const titlesRetryLeft = useFocusHandOff(() =>
     firstUsable(
@@ -383,7 +400,9 @@ export function IssueMarginPanel({
   // press (`usableControl`), and where none is left the focus goes to Development's heading, the
   // button that opens and closes the section these rows are in. On a closed issue each add
   // control is disabled and holds no focus, so out of the place beside Add the focus goes to the
-  // row's first priority, and out of the Advances row to that heading.
+  // row's first priority, and out of the Advances row to that heading. The keeper, which waits one
+  // task, leaves each of these where it is: its own rule keeps a focus in the row it was lost in,
+  // and Add's row is none, so it would put the focus on that heading.
   const advancesValue = useRef<HTMLDivElement>(null);
   const addRow = useRef<HTMLDivElement>(null);
   const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
@@ -409,11 +428,14 @@ export function IssueMarginPanel({
   // reader's focus on its Retry - a write's at the press of that Retry, a read's once the
   // mappings answer - the focus goes on to the row's own control: the box, drawn while a write is
   // out, else the text or None the row draws in its place; and where the row holds nothing that
-  // takes it, on a closed issue, to Development's heading. On a closed issue a write's line has no
-  // Retry: Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent
-  // again would be refused again, and a pick the reader stopped says the issue is closed in place
-  // of the Retry its line would offer; the control says which pick the reader stopped
-  // (`RepoControlFailure`'s `stopped`).
+  // takes it, on a closed issue, to Development's heading. The keeper's rule finds the same
+  // control, but this hands the focus on in the commit itself, so a close that takes a write's
+  // Retry away while the read's line is drawn too puts the focus on that line's Retry, where the
+  // close keeper, acting first without it, would send it to Development's heading. On a closed
+  // issue a write's line has no Retry: Dispatch refuses every repository of a closed issue
+  // (`ISSUE_CLOSED`), so the pick sent again would be refused again, and a pick the reader stopped
+  // says the issue is closed in place of the Retry its line would offer; the control says which
+  // pick the reader stopped (`RepoControlFailure`'s `stopped`).
   const repoValue = useRef<HTMLDivElement>(null);
   const repoRetryLeft = useFocusHandOff(() =>
     firstUsable(
@@ -444,8 +466,8 @@ export function IssueMarginPanel({
     ) : null;
   // The keeper of Development's focus through a close made in another session, called after each
   // `useFocusHandOff` above so that in the commit that closes the issue a hand-off has moved its
-  // focus on before the keeper reads where the focus is; Add's own (`IssueAddMenu`) is a child's,
-  // whose layout effects run before the panel's.
+  // focus on before the keeper reads where the focus is. It hands on Add's focus too, which a
+  // close takes off the page (`IssueAddMenu`).
   const developmentFocus = useCloseFocusKeeper(isClosed, developmentHeading);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -704,7 +726,7 @@ export function IssueMarginPanel({
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
           <IssueClaimControl issue={issue} writes={writes} />
         </Row>
-        <Row glyph="→" label={PROPERTY_LABELS.route} row="route" valueRef={routeValue}>
+        <Row glyph="→" label={PROPERTY_LABELS.route} row="route">
           <IssueRouteControl
             controlRef={routeControl}
             editing={editingField === "route"}
@@ -740,7 +762,7 @@ export function IssueMarginPanel({
               in the header's words for a title or a route save, whose Retry is this one, a press
               of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
               sentence, that the route cannot be saved again. Once the route lands the line goes,
-              and the row's control takes the focus Retry held (`useFocusHandOff`). */}
+              and the row's control takes the focus Retry held (the panel's keeper). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.input.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -761,7 +783,6 @@ export function IssueMarginPanel({
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
               refused={writes.updateIssue.isPending}
-              retryRef={routeRetryLeft}
             />
           ) : null}
         </Row>
@@ -786,7 +807,6 @@ export function IssueMarginPanel({
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
-            focusFallback={developmentHeading}
             isClosed={isClosed}
             issue={issue}
             onOpenField={onEditingField}

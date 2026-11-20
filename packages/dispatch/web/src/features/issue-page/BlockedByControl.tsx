@@ -94,7 +94,8 @@ export function BlockedByControl({
   // fell to the document with the box, the one focus the page takes back (`shell/roving.ts`).
   // It passes over a control that takes no press (`usableControl`): on a closed issue the row
   // draws no control, so the focus goes to the first issue the row waits on, and where it waits
-  // on none, to `focusFallback`.
+  // on none, to `focusFallback`. Details' focus keeper, which waits one task, leaves this choice
+  // where it is: its own rule would take the row's first issue, which stands before the control.
   useEffect(() => {
     const closed = wasEditing.current && !editing;
     wasEditing.current = editing;

@@ -16,8 +16,9 @@ function closeTook(element: Element): boolean {
  * each `disabled` on a closed issue - and takes others off the page - Set or Edit parent issue,
  * Blocked by's control - and each takes the focus it held with it to the page's body. No hand-off
  * of the panel answers that, since each acts only as an element it holds leaves the page or as an
- * editor closes. Add and its menu go too, and hand their focus on themselves, as they do whenever
- * Add leaves the page (`IssueAddMenu`).
+ * editor closes. Add and its menu go too (`IssueAddMenu`), and this hands their focus on as well.
+ * The panel's keeper (`useFocusKeeper`) hears each of these losses too, but it waits one task, so
+ * it leaves the focus where this put it.
  *
  * So the section notes the element the focus last went to in it (`onFocus`), which a focus
  * anywhere else forgets, as does the reader's leaving it (`onBlur`); and as the issue closes,

@@ -18,6 +18,7 @@ import { AgentParts } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
+import { detailsHeading, detailsRowBox, detailsSection } from "./details-leaves";
 import { drawnLine, firstLineOf } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES } from "./page-words";
@@ -88,7 +89,8 @@ export function IssuePins({
   // An Unpin takes its pin's row away, and the focus with it: the focus goes on to the next
   // pin's link, else the one before, else the section's heading, rather than falling to the
   // page. Every row holds its pin's link as a child of its own; an event pin's actor is a link
-  // further in, inside its line.
+  // further in, inside its line. Details' focus keeper leaves this choice, made before the write,
+  // where it is: its own rule, for a pin another session takes away, is the list's first link.
   const unpin = (id: string) => {
     const rows = [...(list.current?.children ?? [])];
     const at = rows.findIndex((row) => row instanceof HTMLElement && row.dataset.pin === id);
@@ -101,12 +103,13 @@ export function IssuePins({
   };
   const link = `dispatch-inline-link ${ROW_LINK} ${pageInkText}`;
   return (
-    <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins">
+    <section aria-label={CONTROL_LABELS.pinned} data-testid="issue-pins" {...detailsSection}>
       <h2
         className={`text-sm font-semibold outline-none ${pageInkText}`}
         ref={heading}
         tabIndex={-1}
         {...pageChrome}
+        {...detailsHeading}
       >
         {CONTROL_LABELS.pinned}
       </h2>
@@ -115,7 +118,7 @@ export function IssuePins({
           {CONTROL_LABELS.none}
         </p>
       ) : (
-        <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list}>
+        <ul className="mt-1 flex min-w-0 flex-col gap-0.5" ref={list} {...detailsRowBox}>
           {pins.map((pin) => {
             const id = conversationItemId(pin.kind, pin.id);
             const words = pinWords(pin.kind, pin.id);

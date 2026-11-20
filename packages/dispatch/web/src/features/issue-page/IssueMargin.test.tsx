@@ -56,6 +56,7 @@ import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
+import { FOLD_AFTER } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
 import {
@@ -5102,8 +5103,13 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
   try {
     const control = await screen.findByRole("button", { name: "Messages default to no route" });
     act(() => control.focus());
-    // As a press on plain text does: the focus leaves the control for the body.
-    act(() => control.blur());
+    // A press on the row's label, plain text, as a browser sends it: its own task, its pointerdown
+    // first, then the blur that leaves the focus on the body.
+    const label = screen.getByText(PROPERTY_LABELS.route, { selector: "[data-page-chrome]" });
+    await act(async () => {
+      label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      control.blur();
+    });
     expect(document.activeElement, "the blur left the focus on the route's control").toBe(
       document.body
     );
@@ -5342,8 +5348,13 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
       "true"
     );
     act(() => control.focus());
-    // As a press on plain text does: the focus leaves the control for the body.
-    act(() => control.blur());
+    // A press on the row's label, plain text, as a browser sends it: its own task, its pointerdown
+    // first, then the blur that leaves the focus on the body.
+    const label = screen.getByText(PROPERTY_LABELS.labels, { selector: "[data-page-chrome]" });
+    await act(async () => {
+      label.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      control.blur();
+    });
     expect(document.activeElement, "the blur left the focus on the labels' control").toBe(
       document.body
     );
@@ -5639,6 +5650,483 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
   } finally {
     unmount();
     putIssueState.mockRestore();
+    restore();
+  }
+});
+
+/** The two comments of CORE-1 the table below pins, each drawn by its words. */
+const FIRST_PIN = "4b7d1e2f-6a3c-4d8e-9f0a-1b2c3d4e5f60";
+const SECOND_PIN = "5c8e2f3a-7b4d-4e9f-8a1b-2c3d4e5f6a71";
+const PIN_WORDS: Readonly<Record<string, string>> = {
+  [FIRST_PIN]: "First pin.",
+  [SECOND_PIN]: "Second pin.",
+};
+
+/** A route to an agent's session, which the route's row draws inside the agent's name, and one
+ *  to a role, which it draws as its address. */
+const SESSION_ROUTE = "session:7d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b82";
+const ROLE_ROUTE = "role:legion-controller-core";
+
+/** A claim of CORE-1 by an agent's session, whose name the claim's row draws as a link. */
+const SESSION_CLAIM: NonNullable<IssueDetails["claim"]> = {
+  actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
+  at: "2026-09-24T07:00:00Z",
+};
+
+/** The fixture's issue with its spec and `count` notes, named in order. */
+function withNotes(count: number): IssueDetails {
+  const notes = Array.from({ length: count }, (_, index) => {
+    const slug = `notes-${String(index + 1).padStart(2, "0")}`;
+    return {
+      ...specArtifact,
+      id: slug,
+      name: `${slug}.md`,
+      primary: false,
+      ref_key: `CORE-1/${slug}`,
+      slug,
+    };
+  });
+  return { ...issue, artifacts: [specArtifact, ...notes] };
+}
+
+/** The keys CORE-2, CORE-3 and on, `count` of them. */
+function keysFrom2(count: number): string[] {
+  return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
+}
+
+/** What Dispatch holds in a case of the table below: the issue (the fixture's where none is
+ *  named), the comments the reader has pinned, and the issues that wait on CORE-1. */
+interface Held {
+  readonly issue?: IssueDetails;
+  readonly pins?: readonly string[];
+  readonly waiting?: readonly string[];
+}
+
+/** One case of the table below: what Dispatch holds before the change made elsewhere and what
+ *  the change moves (`after`, over `before`); the element the reader's focus is on as it lands,
+ *  which it takes off the page; and the element the focus goes on to, by its name. */
+interface TakenAway {
+  readonly after: Held;
+  readonly before: Held;
+  readonly expected: { readonly find: () => HTMLElement; readonly name: string };
+  readonly focused: (user: UserEvent) => Promise<HTMLElement>;
+}
+
+/** The row of Details named `name`, once Details is drawn. */
+async function drawnRow(name: string): Promise<HTMLElement> {
+  await screen.findByText(name, { exact: true, selector: "[data-page-chrome]" });
+  return detailsRow(name);
+}
+
+/** Pinned, the section of the reader's pins. */
+function pinned(): HTMLElement {
+  return screen.getByRole("region", { name: CONTROL_LABELS.pinned });
+}
+
+/** The first pin's link, once Pinned has read its words. */
+async function firstPinLink(): Promise<HTMLElement> {
+  const section = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+  return within(section).findByRole("link", { name: PIN_WORDS[FIRST_PIN] });
+}
+
+/** Opens Add's menu, which puts the focus on its first entry, and answers the menu. */
+async function openAddMenu(user: UserEvent): Promise<HTMLElement> {
+  await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+  return screen.findByRole("menu", { name: CONTROL_LABELS.add });
+}
+
+/** Add's open menu's entry for `property`. */
+function addEntry(property: string): HTMLElement {
+  return within(screen.getByRole("menu", { name: CONTROL_LABELS.add })).getByRole("menuitem", {
+    name: property,
+  });
+}
+
+/** The claim row's Release. */
+function release(): HTMLElement {
+  return within(detailsRow(PROPERTY_LABELS.claim)).getByRole("button", {
+    name: "Release the claim on CORE-1",
+  });
+}
+
+/** The route's control, drawn inside the agent's name or on its own. */
+function routeControl(): HTMLElement {
+  return within(rowAt("route")).getByRole("button", { name: /^Messages default to / });
+}
+
+/**
+ * Each element of Details that a change made elsewhere takes off the page while it holds the
+ * focus, where one case can drive it through the query cache: first those whose focus fell to the
+ * page in a browser, then those nothing else hands on, then Add's two other ways out of its open
+ * menu. Each goes where Details' rule puts it: inside Add's open menu to the entry after the lost
+ * one, else to Add; else to the first control of its row that takes a press, else to the heading
+ * of the row's section; and on a close, to Development's heading.
+ */
+const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
+  [
+    "Pinned's link, its pin unpinned in another session",
+    {
+      after: { pins: [SECOND_PIN] },
+      before: { pins: [FIRST_PIN, SECOND_PIN] },
+      expected: {
+        find: () => within(pinned()).getByRole("link", { name: "Second pin." }),
+        name: "the list's first pin left",
+      },
+      focused: firstPinLink,
+    },
+  ],
+  [
+    "Pinned's Unpin, its pin unpinned in another session",
+    {
+      after: { pins: [SECOND_PIN] },
+      before: { pins: [FIRST_PIN, SECOND_PIN] },
+      expected: {
+        find: () => within(pinned()).getByRole("link", { name: "Second pin." }),
+        name: "the list's first pin left",
+      },
+      focused: async () => {
+        await firstPinLink();
+        const row = document.querySelector(
+          `[data-pin="${conversationItemId("comment", FIRST_PIN)}"]`
+        );
+        if (!(row instanceof HTMLElement)) throw new Error("Pinned draws no row for the first pin");
+        return within(row).getByRole("button", { name: CONTROL_LABELS.unpin });
+      },
+    },
+  ],
+  [
+    "Blocks' None, another issue starting to wait on this one",
+    {
+      after: { waiting: ["CORE-5"] },
+      before: { waiting: [] },
+      expected: {
+        find: () =>
+          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-5" }),
+        name: "the issue that waits now",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByText(CONTROL_LABELS.none),
+    },
+  ],
+  [
+    "Blocked by's link, that blocker taken away in another session",
+    {
+      after: { issue: { ...issue, blocked_by: ["CORE-3"] } },
+      before: { issue: { ...issue, blocked_by: ["CORE-2", "CORE-3"] } },
+      expected: {
+        find: () =>
+          within(detailsRow(PROPERTY_LABELS.blocked_by)).getByRole("link", { name: "CORE-3" }),
+        name: "the blocker left",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
+    "Referenced by's control, the last reference taken away",
+    {
+      after: { issue: { ...issue, referenced_by_count: 0 } },
+      before: { issue: { ...issue, referenced_by_count: 3 } },
+      expected: {
+        find: () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.references }),
+        name: "References' heading",
+      },
+      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
+    },
+  ],
+  [
+    "the parent's link, the parent cleared in another session",
+    {
+      after: { issue: { ...issue, parent: null } },
+      before: { issue: { ...issue, parent: "CORE-2" } },
+      expected: {
+        find: () =>
+          within(rowAt("parent")).getByRole("button", { name: CONTROL_LABELS.set_parent }),
+        name: "Set parent issue",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.parent)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
+    "the route's control, the route moved into an agent's name in another session",
+    {
+      after: { issue: { ...issue, route: SESSION_ROUTE } },
+      before: { issue: { ...issue, route: null } },
+      expected: { find: routeControl, name: "the route's control drawn inside the agent's name" },
+      focused: () => screen.findByRole("button", { name: "Messages default to no route" }),
+    },
+  ],
+  [
+    "the route's control, the route moved out of an agent's name in another session",
+    {
+      after: { issue: { ...issue, route: ROLE_ROUTE } },
+      before: { issue: { ...issue, route: SESSION_ROUTE } },
+      expected: { find: routeControl, name: "the route's control drawn on its own" },
+      focused: async () => {
+        await drawnRow(PROPERTY_LABELS.route);
+        return routeControl();
+      },
+    },
+  ],
+  [
+    "Add's menu entry, its property set in another session",
+    {
+      after: { issue: { ...issue, parent: "CORE-2" } },
+      before: {},
+      expected: { find: () => addEntry(PROPERTY_LABELS.labels), name: "the menu's next entry" },
+      focused: async (user) => {
+        await openAddMenu(user);
+        return addEntry(PROPERTY_LABELS.parent);
+      },
+    },
+  ],
+  [
+    "the claim row's None, a claim made in another session",
+    {
+      after: { issue: { ...issue, claim: SESSION_CLAIM } },
+      before: {},
+      expected: { find: release, name: "the new claim's Release" },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.claim)).findByText(CONTROL_LABELS.none),
+    },
+  ],
+  [
+    "Pinned's last link, its pin unpinned in another session",
+    {
+      after: { pins: [] },
+      before: { pins: [FIRST_PIN] },
+      expected: {
+        find: () => within(pinned()).getByRole("heading", { name: CONTROL_LABELS.pinned }),
+        name: "Pinned's heading",
+      },
+      focused: firstPinLink,
+    },
+  ],
+  [
+    "a waiting issue's link in Blocks, that issue no longer waiting",
+    {
+      after: { waiting: ["CORE-6"] },
+      before: { waiting: ["CORE-5", "CORE-6"] },
+      expected: {
+        find: () =>
+          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-6" }),
+        name: "the issue that still waits",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("link", { name: "CORE-5" }),
+    },
+  ],
+  [
+    "Blocks' Show all, the issues that wait falling to ten",
+    {
+      after: { waiting: keysFrom2(FOLD_AFTER) },
+      before: { waiting: keysFrom2(FOLD_AFTER + 1) },
+      expected: {
+        find: () =>
+          within(detailsRow(PROPERTY_LABELS.blocks)).getByRole("link", { name: "CORE-2" }),
+        name: "the first issue that waits",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
+          name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
+        }),
+    },
+  ],
+  [
+    "Blocked by's last link, that blocker taken away in another session",
+    {
+      after: { issue: { ...issue, blocked_by: [] } },
+      before: { issue: { ...issue, blocked_by: ["CORE-2"] } },
+      expected: {
+        find: () => screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }),
+        name: "the row's control",
+      },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.blocked_by)).findByRole("link", { name: "CORE-2" }),
+    },
+  ],
+  [
+    "the agent's live link in the route's row, the route moved to a role in another session",
+    {
+      after: { issue: { ...issue, route: ROLE_ROUTE } },
+      before: { issue: { ...issue, route: SESSION_ROUTE } },
+      expected: { find: routeControl, name: "the route's control" },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.route)).findByRole("link", {
+          name: /^Open live conversation with /,
+        }),
+    },
+  ],
+  [
+    "the claim's holder, the claim forced from the agent by a person",
+    {
+      after: {
+        issue: {
+          ...issue,
+          claim: { actor: { id: "alice", kind: "user" }, at: "2026-09-24T08:00:00Z" },
+        },
+      },
+      before: { issue: { ...issue, claim: SESSION_CLAIM } },
+      expected: { find: release, name: "Release" },
+      focused: async () => {
+        const [holder] = await within(await drawnRow(PROPERTY_LABELS.claim)).findAllByRole("link");
+        if (holder === undefined) throw new Error("the claim's row draws no link to its holder");
+        return holder;
+      },
+    },
+  ],
+  [
+    "a file's link, that file taken away",
+    {
+      after: { issue: withNotes(1) },
+      before: { issue: withNotes(2) },
+      expected: {
+        find: () =>
+          within(screen.getByTestId("issue-files")).getByRole("link", { name: /^spec\.md/ }),
+        name: "the row's first file",
+      },
+      focused: async () =>
+        within(await screen.findByTestId("issue-files")).findByRole("link", {
+          name: /^notes-02\.md/,
+        }),
+    },
+  ],
+  [
+    "Files' Show all, the files falling to ten",
+    {
+      after: { issue: withNotes(FOLD_AFTER - 1) },
+      before: { issue: withNotes(FOLD_AFTER) },
+      expected: {
+        find: () =>
+          within(screen.getByTestId("issue-files")).getByRole("link", { name: /^spec\.md/ }),
+        name: "the row's first file",
+      },
+      focused: () =>
+        screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
+    },
+  ],
+  [
+    "a priority's link in Advances, that priority taken away in another session",
+    {
+      after: { issue: { ...issue, advances: [{ id: "PRI-8", inherited: false }] } },
+      before: {
+        issue: {
+          ...issue,
+          advances: [
+            { id: "PRI-7", inherited: false },
+            { id: "PRI-8", inherited: false },
+          ],
+        },
+      },
+      expected: {
+        find: () =>
+          within(screen.getByTestId("issue-advances")).getByRole("link", { name: "PRI-8" }),
+        name: "the priority left",
+      },
+      focused: async () =>
+        within(await screen.findByTestId("issue-advances")).findByRole("link", { name: "PRI-7" }),
+    },
+  ],
+  [
+    "Add's last menu entry, its property set in another session",
+    {
+      after: { issue: { ...issue, advances: [{ id: "PRI-7", inherited: false }] } },
+      before: {},
+      expected: {
+        find: () => screen.getByRole("button", { name: CONTROL_LABELS.add }),
+        name: "Add",
+      },
+      focused: async (user) => {
+        await openAddMenu(user);
+        return addEntry(PROPERTY_LABELS.advances);
+      },
+    },
+  ],
+  [
+    "Add's menu entry, the issue closed in another session",
+    {
+      after: { issue: closedIssue },
+      before: {},
+      expected: {
+        find: () => screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }),
+        name: "Development's heading",
+      },
+      focused: async (user) => {
+        await openAddMenu(user);
+        return addEntry(PROPERTY_LABELS.parent);
+      },
+    },
+  ],
+];
+
+// A change made elsewhere - another session's write, the read it sets off - took away the element
+// of Details that held the focus, and the focus fell to the page's body, so the reader's next Tab
+// started again from the top of the page. Each change here comes through the query cache, as the
+// reads of such a change land.
+test.each(TAKEN_AWAY)("%s: the focus goes on in Details rather than to the page", async (_name, {
+  after,
+  before,
+  expected,
+  focused,
+}) => {
+  const user = userEvent.setup();
+  const { getIssue, getMyState, pinReads, restore } = stubIssueApi();
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences");
+  // The Advances row reads the priorities, to name the one the issue advances.
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  pinReads.comments.mockResolvedValue(
+    Object.entries(PIN_WORDS).map(([id, words]) => commentOf(id, words))
+  );
+  // Makes `held` what Dispatch answers and, once Details is drawn, what its reads hold.
+  const hold = (held: Held, queryClient?: QueryClient) => {
+    const details = held.issue ?? issue;
+    const state: UserState = {
+      "CORE-1": {
+        dismissed: (held.pins ?? []).map((id) =>
+          pinnedItemMarker(conversationItemId("comment", id))
+        ),
+        last_read_seq: 0,
+        pinned: false,
+        seq: 0,
+      },
+    };
+    const blocking: GraphReferences = {
+      edges: (held.waiting ?? []).map((key) => waitingEdge(key, `Waits for ${key}`)),
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    };
+    getIssue.mockResolvedValue(details);
+    getMyState.mockResolvedValue(state);
+    getReferences.mockResolvedValue(blocking);
+    if (queryClient === undefined) return;
+    act(() => {
+      queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
+      queryClient.setQueryData(userStateQuery().queryKey, state);
+      queryClient.setQueryData(["references", "to", reference, "blocked_by"], blocking);
+    });
+  };
+  hold(before);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const lost = await focused(user);
+    act(() => lost.focus());
+    expect(document.activeElement, "the case's element did not take the focus").toBe(lost);
+
+    hold({ ...before, ...after }, queryClient);
+    await waitFor(() =>
+      expect(lost.isConnected, "the change left the focused element on the page").toBe(false)
+    );
+    await waitFor(() =>
+      expect(document.activeElement, `the focus did not go to ${expected.name}`).toBe(
+        expected.find()
+      )
+    );
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    getReferences.mockRestore();
     restore();
   }
 });

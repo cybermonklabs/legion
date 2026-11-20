@@ -29,7 +29,9 @@ export const RELEASE_FAILED = "Could not release this claim.";
  * Retry, the claim's box, None - hands it to the row's own control as the row draws it then,
  * Release while a claim is drawn, else None. So Retry hands it to Release while its claim stays,
  * the claim's box to None once the release lands, and None to the new claim's Release once
- * another session claims the issue.
+ * another session claims the issue. Details' focus keeper (`IssueMarginPanel`), which waits one
+ * task, leaves this choice where it is; its own rule would differ here, since None takes no press
+ * and the holder's name, a link where an agent holds the claim, stands before Release.
  *
  * A release's failure is about the claim it was pressed on, and the row says it only while that
  * claim is still the issue's: Dispatch releases whichever claim the issue holds, so once the claim
