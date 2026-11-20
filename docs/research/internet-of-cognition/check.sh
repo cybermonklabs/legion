@@ -329,8 +329,11 @@
 # one commit of this pull request that carries each step's subject, and two commits of one
 # subject fail, naming them; steps merged in another pull request are judged by their
 # commits, in the list's order: one commit holds the order, since a commit is its own
-# ancestor, and two are held to ancestry on main as fetched; otherwise landed-order passes
-# naming the steps that are not landed, and that the order is not judged for that reason.
+# ancestor, and two are held to ancestry on main as fetched; a list that mixes steps of this
+# pull request with steps merged in another fails landed-order, since a commit of this pull
+# request that main does not hold has no ancestry to read against one main holds; otherwise
+# landed-order passes naming the steps that are not landed, and that the order is not judged
+# for that reason.
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -1749,9 +1752,9 @@ prepare_env() {
 # refused, or when a line here differs from what it measured; --self-test runs it.
 #
 #   form                            rows  what it is
-#   &&                               224  runs the next pipeline when this one exits 0
+#   &&                               223  runs the next pipeline when this one exits 0
 #   ||                                 9  runs the next pipeline when this one fails
-#   |                                472  joins the commands of a pipeline
+#   |                                471  joins the commands of a pipeline
 #   ;                                 73  ends a pipeline
 #   newline                            3  an unquoted newline, ending a pipeline as ; does
 #   >                                  8  writes the output to a file
@@ -1765,9 +1768,9 @@ prepare_env() {
 #   in                                21  comes before a for loop's words
 #   do                                21  comes before a for loop's body
 #   done                              21  closes a for loop
-#   simple command                   665  a command word and its arguments
-#   pipeline                         472  two or more commands joined by |
-#   list                             261  two or more pipelines joined by ;, &&, || or newline
+#   simple command                   664  a command word and its arguments
+#   pipeline                         471  two or more commands joined by |
+#   list                             260  two or more pipelines joined by ;, &&, || or newline
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          21  for NAME in words; do list; done
@@ -1797,16 +1800,16 @@ prepare_env() {
 #   program cut                        5  wrapped in a function that records its status
 #   program dispatch                  76  wrapped in a function that records its status
 #   program echo                      31  wrapped in a function that records its status
-#   program git                      389  wrapped in a function that records its status
+#   program git                      388  wrapped in a function that records its status
 #   program go                         2  wrapped in a function that records its status
-#   program grep                     247  wrapped in a function that records its status
+#   program grep                     246  wrapped in a function that records its status
 #   program jq                        74  wrapped in a function that records its status
 #   program mkdir                      1  wrapped in a function that records its status
 #   program mktemp                     1  wrapped in a function that records its status
 #   program printf                    12  wrapped in a function that records its status
 #   program python3                   37  wrapped in a function that records its status
 #   program rm                         2  wrapped in a function that records its status
-#   program sed                      309  wrapped in a function that records its status
+#   program sed                      308  wrapped in a function that records its status
 #   program sh                         1  wrapped in a function that records its status
 #   program sha256sum                  8  wrapped in a function that records its status
 #   program sort                      33  wrapped in a function that records its status
