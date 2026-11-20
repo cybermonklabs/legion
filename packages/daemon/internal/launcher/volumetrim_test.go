@@ -653,34 +653,13 @@ func (f *trimFixture) start(tr *trimmer) (context.CancelFunc, <-chan struct{}) {
 }
 
 // tick delivers one interval tick on the clock the trimmer is waiting on and returns once that
-// interval has ended, which is how a case holds the loop to one interval at a time. ends is a line
-// the interval writes. What the interval does after that line sorts it into one of two kinds:
-//
-//   - An interval that keeps its clock writes nothing and sends nothing after its last line, so
-//     tick returns at the line. Such an interval is a reading by settings of the clock's own
-//     period: "nothing to sweep", "no sweep for another", the line of a volume that cannot be
-//     read, or "recovered a panic" of a reading.
-//   - An interval that moves its clock goes on after its line, and the loop stops the clock only
-//     once the interval has returned (intervals). So tick also waits for the trimmer to stop the
-//     clock it ticked. Three kinds of interval move it. A sweep writes the pause's line and makes
-//     and sends the report after "the sweep ended" (trimmer.tick), and then the loop makes a new
-//     clock, or stops the clock on its way out where the sweep ended the loop ("the settings
-//     stopped the trimmer"). Settings of another interval_seconds have the loop stop the clock
-//     and make one of the new period after the reading's line. No settings, or settings the
-//     trimmer refuses, end the loop for the wait for settings ("sweeps nothing more",
-//     "discarded", and the refusal's lines, which that wait writes after the loop has returned).
-//
-// tick tells the two kinds apart by what the trimmer read after it took the tick, and never by a
-// line, since a line can be written by a read error's text or by a logger that panics after it.
-// A sweep reads the trimmer's own clock first (sweep), and nothing else in an interval reads that
-// clock before a sweep has begun. The interval reads its settings before anything else
-// (trimmer.tick), and what that read answers decides whether the loop makes a new clock or ends
-// (settingsReads). Both reads are counted at the hand-over itself (handTick), so a read the
-// interval before made late, in a report's size walk a case did not wait for, is not taken for one
-// of this interval. The ends a fault makes are the case's to wait for: the switch-off at a
-// reading's third fault in a row, and the loop that run starts again after a panic its interval
-// did not contain. A case waits for those itself (awaitClosed, or the "started:" line). A case
-// that holds a sweep's interval open past its line on purpose takes tickUntil.
+// interval has ended: every line, report and send of it exists. ends is a line the interval
+// writes. An interval that moves its clock goes on after its line, and tick returns once the loop
+// has stopped the clock it ticked. An interval moves its clock when it swept (it read the
+// trimmer's own clock after the hand-over), or when its first read of the settings names another
+// period, none, or settings the trimmer refuses (movesItsClock); a read of the same period, or one
+// that panicked, keeps the clock. The loop makes its next clock after that stop, so a case that
+// reads the next clock waits for it. A case that holds an interval open past ends takes tickUntil.
 func (f *trimFixture) tick(ends string) {
 	f.t.Helper()
 	handed := f.tickUntil(ends)
@@ -3699,24 +3678,60 @@ func TestNoSweepStartsWhileOneRunsAndTheNextReadingIsAnIntervalAfterItEnds(t *te
 		return f.ticks.stoppedAt(0)
 	})
 
-	// The clock it waited on before the sweep is stopped, and the new one it made after the
-	// sweep is what the next reading comes on.
+	// The clock it waited on before the sweep is stopped, and the new one it makes after the
+	// sweep, once it has stopped that one, is what the next reading comes on.
 	if f.ticks.offer(t, 0, 300*time.Millisecond) {
 		t.Error("the trimmer is still waiting on the interval clock it had before the sweep, want the next reading one interval after the sweep ended")
 	}
-	if made := f.ticks.count(); made < 2 {
-		t.Fatalf("the trimmer made %d clocks, want a new interval clock after the sweep", made)
-	}
-	live, running := f.ticks.live(f.interval())
-	if !running {
-		t.Fatal("the trimmer is waiting on no clock at all after its sweep")
-	}
-	if period := f.ticks.periodOf(live); period != settingsInterval(*trimSettings()) {
-		t.Errorf("the clock the trimmer now waits on runs every %s, want the interval %s", period, settingsInterval(*trimSettings()))
-	}
+	testwait.Eventually(t, "the trimmer to wait on a new clock of the interval after its sweep", func() bool {
+		_, running := f.ticks.live(f.interval())
+		return running
+	})
 	f.tick("nothing to sweep")
 	if sweeps := f.logged("sweeping"); sweeps != 1 {
 		t.Errorf("the trimmer swept %d times, want the one sweep: the reading after it is below the high mark", sweeps)
+	}
+}
+
+// A read of the settings that panics is a fault of the reading row, and the interval is passed
+// over on its clock: its recovery leaves restart and the ending as they were (trimmer.tick), so
+// the loop goes on waiting on the clock it ticked and makes no other. The fixture's tick must
+// return at the fault's line for that interval, and not wait for a stop the loop never makes: it
+// reads the panicked read as one that keeps the clock (movesItsClock), where a read it took for
+// an answer of no settings would hold it until its wait ran out.
+func TestAnIntervalWhoseSettingsReadPanicsStaysOnItsClock(t *testing.T) {
+	const fell = "the settings read fell over"
+	f := newTrimFixture(t, 0)
+	f.useVolume(steady(50)) // below the high mark: every interval that reads the volume sweeps nothing
+	var falling atomic.Bool
+	f.setOnSettings(func() {
+		if falling.CompareAndSwap(true, false) {
+			panic(fell)
+		}
+	})
+	f.setSettings(trimSettings())
+	f.start(f.trimmer())
+	f.tick("nothing to sweep")
+	ticked, running := f.ticks.live(f.interval())
+	if !running {
+		t.Fatal("the trimmer is waiting on no interval clock after its first reading")
+	}
+
+	falling.Store(true)
+	f.tick("recovered a panic")
+	switch {
+	case f.logged("(1 in a row of readings)") != 1 || f.logged(fell) != 1:
+		t.Errorf("the trimmer wrote %q, want the panic of the settings read counted as the first in the reading row", f.linesWritten())
+	case f.ticks.stoppedAt(ticked):
+		t.Error("the trimmer stopped the clock of the interval whose settings read panicked, want it kept")
+	}
+	if live, _ := f.ticks.live(f.interval()); live != ticked {
+		t.Errorf("the trimmer waits on clock %d, want the clock %d it was ticked on: a panicked read makes no new one", live, ticked)
+	}
+
+	f.tick("nothing to sweep") // the next interval comes on the same clock
+	if reads := f.readCount(); reads != 2 {
+		t.Errorf("the trimmer read the volume %d times, want 2: the interval whose settings read panicked reads nothing", reads)
 	}
 }
 

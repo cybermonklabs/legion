@@ -746,9 +746,12 @@ func TestALaterAnswerAppliesToTheNextSweepAndNotOneInFlight(t *testing.T) {
 	case f.logged("below the high mark 85%") != 1:
 		t.Errorf("the interval after the sweep did not read the volume under the settings in force; the trimmer wrote %q", f.linesWritten())
 	}
-	if _, live := f.ticks.live(settingsInterval(*laterTrimSettings())); !live {
-		t.Error("the trimmer is on no clock of the later answer's interval: a shortened interval must not wait the old one out")
-	}
+	// tick returns once the loop has stopped the clock of the old period; it makes the clock of
+	// the new one after that stop, so the case waits for it.
+	testwait.Eventually(t, "the trimmer to wait on a clock of the later answer's interval: a shortened interval must not wait the old one out", func() bool {
+		_, live := f.ticks.live(settingsInterval(*laterTrimSettings()))
+		return live
+	})
 	assertIntervals(t, f, settingsInterval(*trimSettings()), settingsInterval(*laterTrimSettings()))
 	f.assertProtected()
 }
