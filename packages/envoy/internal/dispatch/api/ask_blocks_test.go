@@ -207,7 +207,7 @@ func TestUploadsHoldAskBlocksToTheirContentRule(t *testing.T) {
 				t.Fatalf("%s with %q: status=%d body=%s", route, body, response.Code, response.Body.String())
 			}
 		}
-		version := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "notes.md", "content": ask(body)}, "alice")
+		version := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{"name": "notes.md", "content": ask(body), "precondition": uploadBase(t, handler, notes.ID)}, "alice")
 		if version.Code != http.StatusBadRequest || !strings.Contains(version.Body.String(), `"code":"INVALID_ASK_BLOCK"`) {
 			t.Fatalf("upload a version with %q: status=%d body=%s", body, version.Code, version.Body.String())
 		}
@@ -385,10 +385,11 @@ func TestAskBlocksInUploadedSpecVersionAreIndexed(t *testing.T) {
 	})
 	issue := createInteractionIssue(t, handler, "TEST", "Uploaded decisions", "Before\n")
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
-		"actor":   sessionActor(),
-		"name":    "spec.md",
-		"content": "Before\n\n:::ask{#uploaded-ask urgency=\"high\" multiple=\"false\"}\nShip the uploaded decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
-		"summary": "decisions as ask blocks",
+		"actor":        sessionActor(),
+		"name":         "spec.md",
+		"content":      "Before\n\n:::ask{#uploaded-ask urgency=\"high\" multiple=\"false\"}\nShip the uploaded decision?\n\n- Ship: Now.\n- Hold: Later.\n:::\n",
+		"summary":      "decisions as ask blocks",
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	})
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload spec version: status=%d body=%s", uploaded.Code, uploaded.Body.String())
@@ -681,6 +682,7 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 	}
 	if uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": tuesday,
+		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
 	}); uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload the reworded spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}

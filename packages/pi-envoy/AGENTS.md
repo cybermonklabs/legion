@@ -11,8 +11,7 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 
 - The real-binary tests: `LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=nats://127.0.0.1:<port> bun test ./extensions/*-omp.test.ts`.
 
-- `scripts/smoke-*.sh` are manual smokes against a live listener, never CI steps.
-  They run tmux on a private socket (`tmux -S "$tmux_socket"`) so cleanup ends only their own session; keep new tmux calls on it.
+- `scripts/smoke-*.sh` run tmux on a private socket (`tmux -S "$tmux_socket"`) so cleanup ends only their own session; keep new tmux calls on it.
 
 ## Rules
 

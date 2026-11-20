@@ -70,10 +70,10 @@ with a WAITING line naming the defect and the answer you wait on.
    **Production check:** <the command or user action that will show the change working in production>
    **Carried by:** <the deploy or restart that carries the merge there>
    **Run by:** <the agent or role your system prompt's deployment instructions name; when none, the person to ask>
-
-   <!-- legion: {"session":"<session-id>","phase":"retro"} -->
    EOF
    ```
+
+   A Dispatch comment or message never carries the `<!-- legion: … -->` footer. Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
 
 6. **Complete** with the `legion` tool's `handoff_complete`, its summary two sentences for the
    architect. In the same call, rate the plan the issue ran (its steps and the role that worked
