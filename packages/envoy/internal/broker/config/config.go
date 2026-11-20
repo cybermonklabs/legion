@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/pgsetting"
+	"github.com/sjawhar/envoy/urlsetting"
 )
 
 // DefaultGoogleOIDCIssuer is the issuer of every Google identity token, the one a machine's
@@ -657,7 +658,7 @@ type Config struct {
 	// BROKER_ENVOY_URL: an Envoy listener the broker notifies, best effort, when a session's
 	// pending request expires undecided. Unset, the broker sends nothing. Needs
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the credential it calls the listener with.
-	EnvoyURL string
+	EnvoyURL urlsetting.Value
 	// BROKER_ENVOY_ACCOUNT_TOKEN_FILE: the broker's own projected Kubernetes ServiceAccount
 	// token, read afresh at each call (brokertoken.AccountToken), which the broker presents to
 	// BROKER_ENVOY_URL as its bearer: the listener admits it as the account it names, as it
@@ -1775,7 +1776,7 @@ func Load(getenv func(string) string) (Config, error) {
 		K8sOIDCAudience:           getenv("BROKER_K8S_OIDC_AUDIENCE"),
 		GoogleOIDCIssuer:          orDefault(strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_ISSUER")), DefaultGoogleOIDCIssuer),
 		GoogleOIDCAudience:        strings.TrimSpace(getenv("BROKER_GOOGLE_OIDC_AUDIENCE")),
-		EnvoyURL:                  getenv("BROKER_ENVOY_URL"),
+		EnvoyURL:                  urlsetting.New(getenv("BROKER_ENVOY_URL")),
 		TrustedProxyHeader:        getenv("BROKER_TRUSTED_PROXY_HEADER"),
 		SignInOff:                 signInOff,
 	}
@@ -2175,7 +2176,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if len(cfg.ExchangeWorkflows) > 0 && cfg.ExchangeGitHubIssuer == "" {
 		return Config{}, fmt.Errorf("BROKER_EXCHANGE_WORKFLOWS needs BROKER_EXCHANGE_GITHUB_ISSUER and BROKER_EXCHANGE_GITHUB_AUDIENCE, whose tokens its runs present")
 	}
-	if cfg.EnvoyURL != "" {
+	if !cfg.EnvoyURL.Empty() {
 		if cfg.EnvoyAccountTokenFile = strings.TrimSpace(getenv("BROKER_ENVOY_ACCOUNT_TOKEN_FILE")); cfg.EnvoyAccountTokenFile == "" {
 			return Config{}, errors.New("BROKER_ENVOY_URL needs BROKER_ENVOY_ACCOUNT_TOKEN_FILE, the broker's own projected ServiceAccount token, which it presents to the listener")
 		}

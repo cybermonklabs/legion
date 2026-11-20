@@ -601,7 +601,7 @@ func main() {
 	}
 
 	var waker func(context.Context, string, string, string)
-	if cfg.EnvoyURL != "" {
+	if !cfg.EnvoyURL.Empty() {
 		w := wake.Envoy{URL: cfg.EnvoyURL, Account: brokertoken.NewAccountToken(cfg.EnvoyAccountTokenFile), HTTP: &http.Client{Timeout: 10 * time.Second}}
 		waker = func(ctx context.Context, enrollmentID, requestID, state string) {
 			sid, _ := reqMachine.SessionID(ctx, requestID) // requests.session_id, else the enrollment's

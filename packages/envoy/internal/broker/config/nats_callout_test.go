@@ -181,3 +181,26 @@ func TestNATSCalloutSettings(t *testing.T) {
 		}
 	})
 }
+
+// BROKER_ENVOY_URL crosses the configuration boundary as a guarded value. The broker still keeps
+// its complete text for the only request adapter, but diagnostics never recover its user, password
+// or query while the configuration is held. The user, password and query are made at each run, so
+// no credential is written in this file.
+func TestBrokerEnvoyURLIsGuardedOnRead(t *testing.T) {
+	user, password, query := "broker-wake-user-"+rand.Text(), "broker-wake-"+rand.Text(), "broker-wake-query-"+rand.Text()
+	raw := (&url.URL{Scheme: "https", User: url.UserPassword(user, password), Host: "listener.example", Path: "/send", RawQuery: query}).String()
+	e := validEnv()
+	e["BROKER_ENVOY_URL"] = raw
+	e["BROKER_ENVOY_ACCOUNT_TOKEN_FILE"] = "/var/run/secrets/tokens/envoy"
+
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.EnvoyURL.Raw(); got != raw {
+		t.Errorf("raw EnvoyURL = %q, want %q", got, raw)
+	}
+	if got := fmt.Sprint(cfg.EnvoyURL); got != redact.NotPrinted {
+		t.Errorf("printed EnvoyURL = %q, want %q", got, redact.NotPrinted)
+	}
+}

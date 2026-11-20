@@ -2,16 +2,21 @@ package wake
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/urlsetting"
 )
 
 // accountTokens is the broker's account token as Notify reads it: each read answers the next of
@@ -33,6 +38,12 @@ func (a *accountTokens) Read() (string, error) {
 
 // staticAccount is an account whose token never changes.
 func staticAccount(token string) *accountTokens { return &accountTokens{tokens: []string{token}} }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 // capturingHandler records every slog record it is asked to handle, so a test can assert that
 // Notify logged a warning without caring about the exact message text.
@@ -69,7 +80,7 @@ func TestNotifyPresentsTheAccountToken(t *testing.T) {
 	defer srv.Close()
 
 	account := &accountTokens{tokens: []string{"account-token-1", "account-token-2"}}
-	e := Envoy{URL: srv.URL, Account: account, HTTP: srv.Client()}
+	e := Envoy{URL: urlsetting.New(srv.URL), Account: account, HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 	if gotAuth != "Bearer account-token-1" {
 		t.Fatalf("authorization: got %q, want the account's token", gotAuth)
@@ -122,7 +133,7 @@ func TestNotifySwallowsServerErrorAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: urlsetting.New(srv.URL), Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -142,7 +153,7 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	e := Envoy{URL: urlsetting.New(srv.URL), Account: staticAccount("tok"), HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
@@ -155,11 +166,107 @@ func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
 	// A port the test holds and nothing listens on: the connection fails.
-	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
+	e := Envoy{URL: urlsetting.New("http://" + testport.Refused(t)), Account: staticAccount("tok"), HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {
 		t.Fatal("expected a warning to be logged for the connection failure, got none")
+	}
+}
+
+// A transport error can repeat its request URL. Notify sends the guarded setting's complete text,
+// credentials included, and logs the redacted request error, never the raw user part, even where
+// the transport itself puts that text in its error. The user and the password are made at each
+// run, so no credential is written in this file.
+func TestNotifyRedactsCredentialedEnvoyURLInTransportError(t *testing.T) {
+	user, password := "wake-user-"+rand.Text(), "wake-"+rand.Text()
+	var records []slog.Record
+	logtest.SetDefault(t, capturingHandler{records: &records})
+	var sent *url.URL
+	e := Envoy{
+		URL:     urlsetting.New("https://" + user + ":" + password + "@listener.example"),
+		Account: staticAccount("tok"),
+		HTTP: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			sent = request.URL
+			return nil, fmt.Errorf("transport rejected %s", request.URL)
+		})},
+	}
+
+	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+
+	// The round trip ran with the configured text, not the cleaned form: a request built from
+	// String would reach no listener, and its error would hold no marker for the check below.
+	if sent == nil {
+		t.Fatal("Notify sent no request")
+	}
+	if gotPassword, _ := sent.User.Password(); sent.User.Username() != user || gotPassword != password {
+		t.Errorf("request user part = %q, want the configured user and password", sent.User)
+	}
+	if sent.Scheme != "https" || sent.Host != "listener.example" || sent.Path != "/v1/messages/send" {
+		t.Errorf("request URL = %s://%s%s, want https://listener.example/v1/messages/send", sent.Scheme, sent.Host, sent.Path)
+	}
+
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want one transport warning", len(records))
+	}
+	var logged error
+	records[0].Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "error" {
+			logged, _ = attr.Value.Any().(error)
+		}
+		return true
+	})
+	if logged == nil {
+		t.Fatal("transport warning had no error")
+	}
+	for _, marker := range []string{user, password} {
+		if strings.Contains(logged.Error(), marker) {
+			t.Errorf("transport warning leaked %q in %q", marker, logged)
+		}
+	}
+}
+
+// A credentialed URL net/url cannot parse fails before any request is sent, and its parse error
+// quotes the whole request URL. Notify logs the redacted request error, never that user part.
+// The user and the password are made at each run, so no credential is written in this file.
+func TestNotifyRedactsCredentialedEnvoyURLInBuildError(t *testing.T) {
+	user, password := "build-user-"+rand.Text(), "build-pass/"+rand.Text()
+	var records []slog.Record
+	logtest.SetDefault(t, capturingHandler{records: &records})
+	e := Envoy{
+		// The / in the password ends the authority, so net/url reads the password's first part as
+		// a port and refuses it.
+		URL:     urlsetting.New("https://" + user + ":" + password + "@listener.example"),
+		Account: staticAccount("tok"),
+		HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Error("a request URL that does not parse was sent")
+			return nil, errors.New("unexpected send")
+		})},
+	}
+
+	e.Notify(context.Background(), "sess-123", "req-456", "approved")
+
+	if len(records) != 1 {
+		t.Fatalf("logged %d records, want one build warning", len(records))
+	}
+	var logged error
+	records[0].Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "error" {
+			logged, _ = attr.Value.Any().(error)
+		}
+		return true
+	})
+	if logged == nil {
+		t.Fatal("build warning had no error")
+	}
+	var parseErr *url.Error
+	if !errors.As(logged, &parseErr) || parseErr.Op != "parse" {
+		t.Errorf("build warning error = %v, want one that still unwraps to the parse *url.Error", logged)
+	}
+	for _, marker := range []string{user, "9q-secret"} {
+		if strings.Contains(logged.Error(), marker) {
+			t.Errorf("build warning leaked %q in %q", marker, logged)
+		}
 	}
 }
 
@@ -175,7 +282,7 @@ func TestNotifySendsNothingWithoutTheAccountToken(t *testing.T) {
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
+	e := Envoy{URL: urlsetting.New(srv.URL), Account: &accountTokens{err: errors.New("the token file is missing")}, HTTP: srv.Client()}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 	if sent {
 		t.Fatal("a notice went out with no account token")

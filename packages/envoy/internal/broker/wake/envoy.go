@@ -21,7 +21,9 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
+	"github.com/sjawhar/envoy/urlsetting"
 )
 
 // Envoy sends a "secret request <state>" notification directly to the target session, presenting
@@ -29,7 +31,7 @@ import (
 // listener admits the account that token names, as it admits every caller's, so no bearer is
 // shared between the broker and the listener's other callers.
 type Envoy struct {
-	URL     string
+	URL     urlsetting.Value
 	Account brokertoken.Account
 	HTTP    *http.Client
 }
@@ -67,9 +69,11 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 		slog.Warn("wake envoy: marshal body", "session", sessionID, "request", requestID, "error", err)
 		return
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL+"/v1/messages/send", bytes.NewReader(body))
+	requestURL := e.URL.Raw() + "/v1/messages/send"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
+		// A URL net/url cannot parse fails here, and its error quotes the request URL whole.
+		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", redact.RequestError(err, requestURL))
 		return
 	}
 	bearer, err := e.Account.Read()
@@ -81,7 +85,7 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)
+		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.RequestError(err, requestURL))
 		return
 	}
 	defer resp.Body.Close()
