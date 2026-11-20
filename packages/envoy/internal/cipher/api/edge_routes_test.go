@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/enroll"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
@@ -164,4 +166,83 @@ func TestTheEdgeRefusesADepsItCannotServe(t *testing.T) {
 		})
 	}
 	RegisterEdge(http.NewServeMux(), wired(), Edge{URL: testEdgeURL, VerificationURL: "https://dispatch.edge.example/credentials/machine"})
+}
+
+// TestEveryEdgeRouteTakesNoCredential: the edge's server holds none of the buckets a route that
+// takes a credential spends (its accountLimiter, rereadLimiter and rereadOverall are nil:
+// RegisterEdge), which is safe only while every row it mounts takes none. Each row of edgeRoutes is
+// a row of the broker's route table, and each is public: authNone, with no power to hold.
+//
+// The named revert: add "POST /v1/enrollments", a launcher's route, to edgeRoutes, and this fails
+// naming it.
+func TestEveryEdgeRouteTakesNoCredential(t *testing.T) {
+	table := map[string]apiRoute{}
+	for _, route := range routes() {
+		table[route.Method+" "+route.Pattern] = route
+	}
+	for pattern := range edgeRoutes {
+		route, ok := table[pattern]
+		if !ok {
+			t.Errorf("the edge mounts %s, which is no row of the broker's route table", pattern)
+			continue
+		}
+		if route.Handler.auth != authNone || route.Handler.power != noPower {
+			t.Errorf("the edge mounts %s, which takes a credential (auth %d, power %d): the edge's server has no bucket for a credentialed caller", pattern, route.Handler.auth, route.Handler.power)
+		}
+	}
+}
+
+// TestTheEdgesTokenHooksServeAPersonOutsideTheWorkspaceAlone holds edgeTokenHooks to what it
+// lets through, on the claims the library hands it. A refresh or device code grant runs the
+// broker's own Before only for a login whose operator is an address outside the Workspace, and is
+// refused invalid_grant EDGE_WORKSPACE_LOGIN for any other operator, no operator included. A trade
+// takes only a token the device login's client was issued, and of such a token only one whose
+// person is outside the Workspace: a Google machine's token and a person sign-in's token, which
+// their own trades mint with a credential id, are another client's and refused
+// EDGE_GRANT_REFUSED, wherever their principal points.
+//
+// The named reverts: drop the client check, and the Google machine's and the person sign-in's
+// tokens pass; drop the person check, and the Workspace person's token passes.
+func TestTheEdgesTokenHooksServeAPersonOutsideTheWorkspaceAlone(t *testing.T) {
+	var ran int
+	hooks := edgeTokenHooks(oauth.TokenHooks{
+		Before: func(context.Context, oauth2.GrantType, map[string]any) error { ran++; return nil },
+		After:  func(context.Context, oauth2.GrantType, map[string]any) (map[string]any, error) { return nil, nil },
+	}, []string{"example.com", "second.example"})
+	refusedAs := func(t *testing.T, what string, err error, oauthError, code string) {
+		t.Helper()
+		refusal, ok := err.(*oauth.Refusal)
+		if !ok || refusal.Status != http.StatusBadRequest || refusal.OAuthError != oauthError || refusal.Code != code {
+			t.Errorf("%s = %v, want 400 %s %s", what, err, oauthError, code)
+		}
+	}
+	for _, operator := range []string{"ada@example.com", "bob@eng.second.example", "ADA@EXAMPLE.COM", "ada", ""} {
+		for _, grant := range []oauth2.GrantType{oauth2.GrantTypeRefreshToken, oauth2.GrantTypeDeviceCode} {
+			refusedAs(t, fmt.Sprintf("%s of a login whose operator is %q", grant, operator),
+				hooks.Before(context.Background(), grant, map[string]any{"operator": operator}), "invalid_grant", "EDGE_WORKSPACE_LOGIN")
+		}
+	}
+	if ran != 0 {
+		t.Fatalf("the broker's own Before ran %d times for logins the edge refuses", ran)
+	}
+	if err := hooks.Before(context.Background(), oauth2.GrantTypeRefreshToken, map[string]any{"operator": "outside@outside.example"}); err != nil || ran != 1 {
+		t.Fatalf("a refresh of an outside person's login = %v with the broker's own Before run %d times, want it run once", err, ran)
+	}
+	for _, row := range []struct {
+		what    string
+		subject map[string]any
+		code    string
+	}{
+		{"a Workspace person's device login token", map[string]any{"client_id": oauthwire.ClientID, "sub": "ada@example.com", oauthwire.ExtraCredentialID: "c1"}, "EDGE_WORKSPACE_LOGIN"},
+		{"a device login token naming no address", map[string]any{"client_id": oauthwire.ClientID, "sub": "ada", oauthwire.ExtraCredentialID: "c1"}, "EDGE_WORKSPACE_LOGIN"},
+		{"a Google machine's token", map[string]any{"client_id": oauthwire.ExchangeClientID, "sub": "google:vm@project.iam.gserviceaccount.com", oauthwire.ExtraCredentialID: "c2"}, "EDGE_GRANT_REFUSED"},
+		{"a person sign-in's token", map[string]any{"client_id": oauthwire.ExchangeClientID, "sub": "person:outside@outside.example", oauthwire.ExtraCredentialID: "c3"}, "EDGE_GRANT_REFUSED"},
+		{"a session's token naming an outside person", map[string]any{"client_id": oauthwire.ExchangeClientID, "sub": "outside@outside.example"}, "EDGE_GRANT_REFUSED"},
+		{"a token naming no client", map[string]any{"sub": "outside@outside.example"}, "EDGE_GRANT_REFUSED"},
+	} {
+		refusedAs(t, "the trade at the edge of "+row.what, hooks.Trade(context.Background(), row.subject), "", row.code)
+	}
+	if err := hooks.Trade(context.Background(), map[string]any{"client_id": oauthwire.ClientID, "sub": "outside@outside.example", oauthwire.ExtraCredentialID: "c4"}); err != nil {
+		t.Fatalf("the trade of an outside person's device login token = %v, want it taken", err)
+	}
 }

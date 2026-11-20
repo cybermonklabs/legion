@@ -1345,7 +1345,7 @@ launcher credential the approval mints works as any other.
 | `BROKER_EDGE_LISTEN_ADDR` | The edge's `host:port`, such as `0.0.0.0:13383`, with its port written as a number. That number may not be the port of `BROKER_LISTEN_ADDR`, `BROKER_METRICS_LISTEN_ADDR` or `BROKER_AIRLOCK_LISTEN_ADDR`, each read as the bind reads it, so `013382` is `13382`: the boot is refused naming both settings. Unset, the broker has no edge and binds nothing for one. |
 | `BROKER_EDGE_URL` | The broker's address as the edge's callers reach it, an absolute URL with no path, whose origin is not `BROKER_PUBLIC_URL`'s. The two are compared as a DPoP proof's `htu` is, the scheme and the host in any case and the scheme's default port the same as none, so `https://secrets.example:443` is refused beside `https://secrets.example`. A login made at the edge signs its request object for this audience, and every DPoP proof sent there names this URL and the path, so a proof or request object made for one port is refused at the other. |
 | `BROKER_EDGE_MACHINE_LOGIN_URL` | The page the person types the code into, which a device authorization at the edge answers as its `verification_uri` in place of `BROKER_MACHINE_LOGIN_URL`: a page the person can reach from outside. |
-| `BROKER_SIGNIN_WORKSPACE_DOMAINS` | Optional: the other domains the Workspace owns beside `BROKER_SIGNIN_DOMAIN`, separated by commas, as `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists them. |
+| `BROKER_SIGNIN_WORKSPACE_DOMAINS` | Optional: the other domains the Workspace owns beside `BROKER_SIGNIN_DOMAIN`, separated by commas. |
 
 The first three are set together or not at all. The edge also needs `BROKER_MACHINE_LOGIN_URL`,
 since the device grant is what it serves, and `BROKER_SIGNIN_DOMAIN`, so `BROKER_SIGNIN=off`
@@ -1353,14 +1353,16 @@ refuses it.
 
 What the edge does that the API's port does not:
 
-- **The caller's address is the second-to-last `X-Forwarded-For` entry.** Google's external
-  Application Load Balancer writes the header as `[<what the client sent>,]<client address>,<load
-  balancer address>`, so the last entry is the balancer's own, the same for every caller, and
-  anything before the second-to-last is the caller's own text. A login request whose header holds
-  fewer than two entries, or whose entry is no IP address, did not come through the balancer as it
-  writes the header, and is refused `400 invalid_request` `REQUEST_INVALID`. `GET /healthz` reads
-  no address: the balancer's own probe calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the
-  edge.
+- **The caller's address is the second-to-last entry of the last `X-Forwarded-For` line.**
+  Google's external Application Load Balancer writes the header as `[<what the client
+  sent>,]<client address>,<load balancer address>`, so the last entry is the balancer's own, the
+  same for every caller, and anything before the second-to-last is the caller's own text. Only the
+  last line of the header is read, so a line the client sent itself is never read in its place,
+  whether the balancer merges every line into one, appends to the last line or adds a line of its
+  own. A login request whose last line holds fewer than two entries, or whose entry is no IP
+  address, did not come through the balancer as it writes the header, and is refused `400
+  invalid_request` `REQUEST_INVALID`. `GET /healthz` reads no address: the balancer's own probe
+  calls it. `BROKER_TRUSTED_PROXY_HEADER` is not read at the edge.
 - **Its rate-limit buckets are its own.** The edge spends the address, login and token buckets of
   [Network and trust](#network-and-trust) at the same limits, in buckets the API's port never
   reads, and its per-login keys open with `edge:`. A flood at the edge spends nothing a caller of
@@ -1370,14 +1372,26 @@ What the edge does that the API's port does not:
   is an address on `BROKER_SIGNIN_DOMAIN` or a `BROKER_SIGNIN_WORKSPACE_DOMAINS` domain, or on a
   subdomain of one, in any case, with a trailing dot or written in characters IDNA maps onto one,
   or a login that is no address at all, is refused `400 invalid_request` `EDGE_WORKSPACE_LOGIN`
-  before it spends any bucket or writes any row. A person of the Workspace logs machines in on
+  before it spends any bucket or writes any row. The edge reads the `login_hint` as the verifier
+  of the request object reads it. A person of the Workspace logs machines in on
   `BROKER_PUBLIC_URL`. The answer to a login the edge takes is the same whether or not the broker
   knows the person it names.
+- **A person of the Workspace cannot use a machine login there either.** A machine login of a
+  person of the Workspace is opened on `BROKER_PUBLIC_URL`, and the edge serves none of its
+  tokens, so a machine-login file copied off a developer's machine is no use from the internet:
+  at the edge its refresh and the poll of its device code are refused `400 invalid_grant`
+  `EDGE_WORKSPACE_LOGIN`, before the refresh moves the credential's expiry, and the trade of its
+  access token is refused `400 invalid_request` `EDGE_WORKSPACE_LOGIN`. The login refreshes and
+  trades on `BROKER_PUBLIC_URL` as before.
 - **The token route takes three grants.** The device code, a refresh token, and the RFC 8693
   trade of one of the broker's own access tokens (`subject_token_type`
   `urn:ietf:params:oauth:token-type:access_token`) with no actor token. Every other grant, a pod's,
   a workflow run's and a Google trade among them, is `400 unsupported_grant_type`
-  `EDGE_GRANT_REFUSED`, before any bucket is spent.
+  `EDGE_GRANT_REFUSED`, before any bucket is spent. The trade takes only a device login's own
+  access token. A token another trade minted, a Google machine's, a person sign-in's and a
+  session's among them, is the exchange client's own, which the exchange never trades again (`400
+  invalid_grant`), and the edge refuses any other token but a device login's `400 invalid_request`
+  `EDGE_GRANT_REFUSED`.
 - **Both login routes take a form and nothing else.** A body of any type but
   `application/x-www-form-urlencoded`, `multipart/form-data` included, is refused `400
   invalid_request` `REQUEST_INVALID` before it is read.

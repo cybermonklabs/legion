@@ -416,17 +416,23 @@ func clientAddress(r *http.Request, trustedProxyHeader string) string {
 const edgeForwardedFor = "X-Forwarded-For"
 
 // edgeClientAddress is the source address every bucket of the broker's edge keys on, and whether
-// r carries one: the second-to-last entry of X-Forwarded-For, every line of the header read as
-// one list, which is the client address the load balancer appends before its own. The last entry
-// is the balancer's own address, the same for every caller, so keying on it as clientAddress does
-// would put every internet caller in one bucket; anything before the second-to-last is the
-// caller's own text, which it could change to pick a bucket of its choice. An entry that is no IP
-// address, or a header of fewer than two entries, is a request that did not come through the
-// balancer as it writes the header, and answers false. An IPv4 address written as IPv6
-// (::ffff:a.b.c.d) keys as the IPv4 address it is, so one caller has one bucket however it is
-// written.
+// r carries one: the second-to-last entry of the last X-Forwarded-For line, which is the client
+// address the load balancer appends before its own. Only the last line is read, so a line the
+// client sent itself is never read in its place, whether the balancer merges every line into one,
+// appends its two entries to the last line it was sent, or adds a line of its own after the
+// client's. The last entry is the balancer's own address, the same for every caller, so keying on
+// it as clientAddress does would put every internet caller in one bucket; anything before the
+// second-to-last is the caller's own text, which it could change to pick a bucket of its choice.
+// An entry that is no IP address, or a last line of fewer than two entries, is a request that did
+// not come through the balancer as it writes the header, and answers false. An IPv4 address
+// written as IPv6 (::ffff:a.b.c.d) keys as the IPv4 address it is, so one caller has one bucket
+// however it is written.
 func edgeClientAddress(r *http.Request) (string, bool) {
-	hops := strings.Split(strings.Join(r.Header.Values(edgeForwardedFor), ","), ",")
+	lines := r.Header.Values(edgeForwardedFor)
+	if len(lines) == 0 {
+		return "", false
+	}
+	hops := strings.Split(lines[len(lines)-1], ",")
 	if len(hops) < 2 {
 		return "", false
 	}

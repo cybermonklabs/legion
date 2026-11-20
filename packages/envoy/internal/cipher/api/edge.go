@@ -1,14 +1,13 @@
 package api
 
 import (
-	"encoding/json"
+	"context"
 	"mime"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"authelia.com/provider/oauth2"
-	"github.com/go-jose/go-jose/v4"
 
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
@@ -31,7 +30,8 @@ type Edge struct {
 	// WorkspaceDomains are the domains the Google Workspace owns: BROKER_SIGNIN_DOMAIN and each
 	// domain BROKER_SIGNIN_WORKSPACE_DOMAINS lists, each a lowercase domain name as its A-labels.
 	// A device authorization naming an address on one of them, or on a subdomain of one, is
-	// refused before it spends anything (refuseWorkspaceLogin).
+	// refused before it spends anything (refuseWorkspaceLogin), and so is a refresh, a device code
+	// grant and a trade of a login whose person is on one (edgeTokenHooks).
 	WorkspaceDomains []string
 }
 
@@ -60,7 +60,9 @@ var edgeRoutes = map[string]func(Edge, http.ResponseWriter, *http.Request) bool{
 // edge.VerificationURL as a device authorization's verification_uri. Before either login route's
 // handler runs, the edge refuses a request whose address it cannot read, a body that is not a
 // form, a device authorization naming a person of the Workspace and a grant the outside agent
-// does not trade (edgeDeviceGate, edgeTokenGate).
+// does not trade (edgeDeviceGate, edgeTokenGate). Once the library has read whose login a token
+// request is, the edge refuses a login of a person of the Workspace, wherever it was opened, and
+// the trade of any token but a device login's own (edgeTokenHooks).
 //
 // It panics on a deps the edge cannot serve, as Register does: no OAuth provider or one serving no
 // device grant, either of whose routes the edge would then answer with nothing, and a
@@ -82,6 +84,7 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 	edgeDeps.PublicURL = edge.URL
 	edgeDeps.MachineLogin = login
 	edgeDeps.DeviceLogin = login.LoginDevice
+	edgeDeps.TokenHooks = edgeTokenHooks(deps.TokenHooks, edge.WorkspaceDomains)
 	limits := DefaultLauncherLimits
 	if deps.LauncherLimits != nil {
 		limits = *deps.LauncherLimits
@@ -192,20 +195,15 @@ func edgeGrant(form url.Values) bool {
 }
 
 // refuseWorkspaceLogin writes 400 invalid_request EDGE_WORKSPACE_LOGIN and reports true when the
-// request object compact claims a login_hint that is a person of the Workspace: an address on one
-// of domains or a subdomain of one, as Dispatch's sign-in reads an address by the same domains
-// (oidc.OnWorkspaceDomain), or a login that is no address at all, which names no person outside
-// it. It reads the claim without verifying the object's signature, which costs no signature check
-// and no bucket: a refusal only ever refuses the caller who sent it, and the object the gate passes
-// is verified as on the broker's own address. An object it cannot read, or one claiming no
-// login_hint, is the handler's to refuse, as it is there.
+// request object compact claims a login_hint that is no person outside the Workspace
+// (outsidePerson). It reads the claim without verifying the object's signature
+// (record.ClaimedLoginHint, which reads it as the verifier does), which costs no signature check
+// and no bucket: a refusal only ever refuses the caller who sent it, and the object the gate
+// passes is verified as on the broker's own address. An object it cannot read, or one claiming
+// no login_hint, is the handler's to refuse, as it is there.
 func refuseWorkspaceLogin(w http.ResponseWriter, compact string, domains []string) bool {
-	login := record.CanonicalLogin(claimedLoginHint(compact))
-	if login == "" {
-		return false
-	}
-	at := strings.LastIndexByte(login, '@')
-	if at >= 0 && !oidc.OnWorkspaceDomain(login[at+1:], domains) {
+	login := record.CanonicalLogin(record.ClaimedLoginHint(compact))
+	if login == "" || outsidePerson(login, domains) {
 		return false
 	}
 	oauth.WriteRefusal(w, &oauth.Refusal{Status: http.StatusBadRequest, Code: "EDGE_WORKSPACE_LOGIN",
@@ -213,18 +211,45 @@ func refuseWorkspaceLogin(w http.ResponseWriter, compact string, domains []strin
 	return true
 }
 
-// claimedLoginHint is the login_hint compact, a request object, claims, read with no check of its
-// signature, and "" for an object that is no ES256 JWS or whose payload names none.
-func claimedLoginHint(compact string) string {
-	signed, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
-	if err != nil {
-		return ""
+// outsidePerson reports whether login, a canonical login (record.CanonicalLogin), is a person
+// outside the Workspace: an address whose domain is not one of domains nor a subdomain of one,
+// by the one rule of the Workspace's domains (oidc.OnWorkspaceDomain). A login that is no address
+// at all names no person outside it.
+func outsidePerson(login string, domains []string) bool {
+	at := strings.LastIndexByte(login, '@')
+	return at >= 0 && !oidc.OnWorkspaceDomain(login[at+1:], domains)
+}
+
+// edgeTokenHooks are hooks as the edge runs them. A refresh or a device code grant of a login
+// whose operator, the person who approved it, is no person outside the Workspace (outsidePerson)
+// is refused 400 invalid_grant EDGE_WORKSPACE_LOGIN before hooks.Before runs, so it moves no
+// credential's expiry and issues nothing: a person of the Workspace opens and uses machine logins
+// on the broker's own address alone, wherever the login was opened. A trade of one of the broker's
+// own access tokens (hooks.Trade) is refused 400 invalid_request: EDGE_WORKSPACE_LOGIN for a device
+// login's token whose person is no person outside the Workspace, and EDGE_GRANT_REFUSED for a
+// token the device login's client was not issued. The library already refuses the exchange's
+// client a trade of a token its own trades minted (a Google machine's, a person sign-in's, a
+// session's); the client check holds the edge to the device login's tokens without resting on
+// that rule. Every other request runs hooks as the broker's own address runs them.
+func edgeTokenHooks(hooks oauth.TokenHooks, domains []string) oauth.TokenHooks {
+	before := hooks.Before
+	hooks.Before = func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) error {
+		if operator, _ := extra["operator"].(string); !outsidePerson(operator, domains) {
+			return &oauth.Refusal{Status: http.StatusBadRequest, OAuthError: "invalid_grant", Code: "EDGE_WORKSPACE_LOGIN",
+				Message: "the broker's edge serves the machine login of a person outside the Workspace only; a person of the Workspace uses a machine login on the broker's own address"}
+		}
+		return before(ctx, grant, extra)
 	}
-	var claims struct {
-		LoginHint string `json:"login_hint"`
+	hooks.Trade = func(_ context.Context, subjectToken map[string]any) error {
+		if client, _ := subjectToken["client_id"].(string); client != oauthwire.ClientID {
+			return &oauth.Refusal{Status: http.StatusBadRequest, Code: "EDGE_GRANT_REFUSED",
+				Message: "the broker's edge trades the access token of a device login only, and this token was minted by another trade"}
+		}
+		if person, _ := subjectToken["sub"].(string); !outsidePerson(person, domains) {
+			return &oauth.Refusal{Status: http.StatusBadRequest, Code: "EDGE_WORKSPACE_LOGIN",
+				Message: "the broker's edge trades the token of a person outside the Workspace only; a person of the Workspace trades on the broker's own address"}
+		}
+		return nil
 	}
-	if json.Unmarshal(signed.UnsafePayloadWithoutVerification(), &claims) != nil {
-		return ""
-	}
-	return claims.LoginHint
+	return hooks
 }

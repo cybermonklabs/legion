@@ -201,23 +201,39 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 		b.Log.Warn("broker: binding before the reread listener has had an answer", "waited", b.ListenWait)
 	}
 
-	listener, err := b.Listen()
-	if err != nil {
+	// bound is every socket the boot has taken, in the order it took them. A later bind the pod
+	// cannot make refuses the boot through refuse, which closes each of them in that order and
+	// only then ends the serving context, so a refused boot leaves no address held for the process
+	// started in its place. A boot that finishes hands each of them to its caller in booted, which
+	// owns them from then on.
+	var bound []net.Listener
+	bind := func(listen func() (net.Listener, error)) (net.Listener, error) {
+		listener, err := listen()
+		if err == nil {
+			bound = append(bound, listener)
+		}
+		return listener, err
+	}
+	refuse := func(err error) (booted, error) {
+		for _, listener := range bound {
+			listener.Close()
+		}
 		endServing()
 		return booted{}, err
+	}
+
+	listener, err := bind(b.Listen)
+	if err != nil {
+		return refuse(err)
 	}
 	// The proxy port, bound here rather than beside its own server below, and inside the boot
 	// rather than after it: a pod that cannot bind it - an address another process holds, a
 	// port a misconfiguration repeats - fails its boot instead of serving an API whose releases
-	// hand out placeholders for a proxy nobody is listening on. The API's socket is closed
-	// again on that path, since a refused boot must leave no address held.
+	// hand out placeholders for a proxy nobody is listening on.
 	var airlockListener net.Listener
 	if b.ListenAirlock != nil {
-		airlockListener, err = b.ListenAirlock()
-		if err != nil {
-			listener.Close()
-			endServing()
-			return booted{}, err
+		if airlockListener, err = bind(b.ListenAirlock); err != nil {
+			return refuse(err)
 		}
 	}
 	// The edge, bound after the proxy port and inside the boot for the same reason: a pod that
@@ -226,32 +242,17 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 	// port answers nobody a caller waits on.
 	var edgeListener net.Listener
 	if b.ListenEdge != nil {
-		edgeListener, err = b.ListenEdge()
-		if err != nil {
-			listener.Close()
-			if airlockListener != nil {
-				airlockListener.Close()
-			}
-			endServing()
-			return booted{}, err
+		if edgeListener, err = bind(b.ListenEdge); err != nil {
+			return refuse(err)
 		}
 	}
 	// The metrics port, bound last and inside the boot for the reason the proxy port is: what it
 	// serves is how this pod is watched from outside it, so a pod that cannot bind it - an
 	// address another process holds - fails its boot rather than serving callers nobody can
-	// watch it serve. Last, because nothing a caller is answered depends on it, and a refused
-	// boot closes every socket it bound before.
-	metricsListener, err := b.ListenMetrics()
+	// watch it serve. Last, because nothing a caller is answered depends on it.
+	metricsListener, err := bind(b.ListenMetrics)
 	if err != nil {
-		listener.Close()
-		if airlockListener != nil {
-			airlockListener.Close()
-		}
-		if edgeListener != nil {
-			edgeListener.Close()
-		}
-		endServing()
-		return booted{}, err
+		return refuse(err)
 	}
 	return booted{Serving: serving, EndServing: endServing, Policy: current, Listener: listener,
 		AirlockListener: airlockListener, EdgeListener: edgeListener, MetricsListener: metricsListener}, nil

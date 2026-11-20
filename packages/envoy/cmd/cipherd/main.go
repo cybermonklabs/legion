@@ -444,7 +444,7 @@ func main() {
 	// ever sees the stale placeholder. refusePortZeroPublicURLInProduction (the dev-vs-production
 	// gate) already refused this above, right after config.Load — before st.Migrate, any AWS
 	// call, and the boot's bind — so reaching here means it's safe to apply.
-	if u, urlErr := url.Parse(cfg.PublicURL); urlErr == nil && u.Port() == "0" {
+	if publicURLPortZero(cfg.PublicURL) {
 		cfg.PublicURL = "http://" + listener.Addr().String()
 	}
 	slog.Info("broker listening", "addr", listener.Addr().String())
@@ -975,19 +975,32 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	return st, awsCfg, nil
 }
 
-// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is literally "0"
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never dialable, so it can only
-// be dev-broker.sh's own "derive my public URL from whatever address I actually bind" convention
-// (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray literal ":0" reaching a real
-// deployment must fail loudly at boot, never silently reinterpret the broker's own public
-// identity as its internal bind address. Extracted from main so a test can drive it directly
-// instead of through fatal, which calls os.Exit.
+// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is 0
+// (publicURLPortZero) unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never
+// dialable, so it can only be dev-broker.sh's own "derive my public URL from whatever address I
+// actually bind" convention (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray
+// ":0" reaching a real deployment, however its zero is written, must fail loudly at boot, never
+// silently reinterpret the broker's own public identity as its internal bind address. Extracted
+// from main so a test can drive it directly instead of through fatal, which calls os.Exit.
 func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) error {
-	u, err := url.Parse(publicURL)
-	if err != nil || u.Port() != "0" || fakeSecretsFile != "" {
+	if !publicURLPortZero(publicURL) || fakeSecretsFile != "" {
 		return nil
 	}
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+}
+
+// publicURLPortZero reports whether publicURL names port 0, its port read as a number the way
+// the bind reads BROKER_LISTEN_ADDR's (net.LookupPort), so ":00" is port 0 as ":0" is. The
+// production refusal above and main's derive-from-bind rewrite both read it, so the URL one of
+// them takes as port 0 is the one the other does. A URL that does not parse, or names no port
+// (an empty one, as in "http://host:", included), names no port 0.
+func publicURLPortZero(publicURL string) bool {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Port() == "" {
+		return false
+	}
+	port, err := net.LookupPort("tcp", u.Port())
+	return err == nil && port == 0
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only

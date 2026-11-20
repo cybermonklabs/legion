@@ -44,9 +44,9 @@ func DomainNameRefusal(setting, value string) error {
 
 // OnWorkspaceDomain reports whether at, an address's domain, is one the Google Workspace owns or a
 // subdomain of one: one of workspace, the Workspace's domains, each a lowercase DNS name with an
-// internationalized label written as its A-label. It is the one rule Dispatch's sign-in and the
-// secrets broker's edge read an address by, so an address one of them takes as a person of the
-// Workspace the other takes as one too.
+// internationalized label written as its A-label. It is the rule the secrets broker's edge reads
+// an address by, kept here beside the domain-name rule so that every reader of whether an address
+// is a person of the Workspace reads it the one way.
 //
 // at is compared without regard to case and without one trailing dot, which names the same domain,
 // and, when it holds a character outside ASCII, also as IDNA lookup maps it (idna.Lookup.ToASCII),

@@ -99,26 +99,60 @@ func productionEnv(t *testing.T) []string {
 	}
 }
 
+// portZeroPublicURLs are BROKER_PUBLIC_URLs whose port is 0 as the bind reads a port: each spelling
+// of zero, which the production refusal and main's derive-from-bind rewrite both take as port 0.
+var portZeroPublicURLs = []string{"http://127.0.0.1:0", "http://127.0.0.1:00", "http://[::1]:000", "http://localhost:0000"}
+
+// TestPortZeroPublicURLRefusedInProduction: a BROKER_PUBLIC_URL whose port is 0, however the zero
+// is written, refuses a start that is not a local run.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows load.
 func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
-	err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "")
-	if err == nil {
-		t.Fatal("BROKER_PUBLIC_URL port 0 with no BROKER_FAKE_SECRETS_FILE: want an error, got nil")
-	}
-	const want = `BROKER_PUBLIC_URL "http://127.0.0.1:0": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention`
-	if err.Error() != want {
-		t.Fatalf("error = %q, want %q", err.Error(), want)
+	for _, publicURL := range portZeroPublicURLs {
+		err := refusePortZeroPublicURLInProduction(publicURL, "")
+		if err == nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with no BROKER_FAKE_SECRETS_FILE: want an error, got nil", publicURL)
+			continue
+		}
+		want := "BROKER_PUBLIC_URL " + strconv.Quote(publicURL) + ": port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention"
+		if err.Error() != want {
+			t.Errorf("error = %q, want %q", err.Error(), want)
+		}
 	}
 }
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("BROKER_PUBLIC_URL port 0 with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+	for _, publicURL := range portZeroPublicURLs {
+		if err := refusePortZeroPublicURLInProduction(publicURL, "/dev/fake-secrets.json"); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", publicURL, err)
+		}
 	}
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("https://broker.invalid", ""); err != nil {
-		t.Fatalf("a real BROKER_PUBLIC_URL: want nil, got %v", err)
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:"} {
+		if err := refusePortZeroPublicURLInProduction(publicURL, ""); err != nil {
+			t.Errorf("BROKER_PUBLIC_URL %s: want nil, got %v", publicURL, err)
+		}
+	}
+}
+
+// TestThePublicURLsPortIsReadAsTheBindReadsIt holds publicURLPortZero, the one reading of the
+// port that both the production refusal and main's derive-from-bind rewrite take, to the number
+// the bind reads: every spelling of zero is port 0, and a URL naming another port, or none (an
+// empty port included), or not parsing, names no port 0.
+//
+// The named revert: compare the port as the text "0", and the ":00" rows read as no port 0.
+func TestThePublicURLsPortIsReadAsTheBindReadsIt(t *testing.T) {
+	for _, publicURL := range portZeroPublicURLs {
+		if !publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = false, want true: the bind reads that port as 0", publicURL)
+		}
+	}
+	for _, publicURL := range []string{"https://broker.invalid", "https://broker.invalid:443", "http://127.0.0.1:010", "http://127.0.0.1:", "http://127.0.0.1:%30", "://no-scheme"} {
+		if publicURLPortZero(publicURL) {
+			t.Errorf("publicURLPortZero(%q) = true, want false", publicURL)
+		}
 	}
 }
 

@@ -147,6 +147,88 @@ func TestTheEdgeBindRefusalClosesEverySocketBoundBefore(t *testing.T) {
 	}
 }
 
+// closeWatched is a bound socket of a boot row: its Close first runs closing, so a row reads when
+// the boot closed it.
+type closeWatched struct {
+	net.Listener
+	closing func()
+}
+
+func (l closeWatched) Close() error {
+	l.closing()
+	return l.Listener.Close()
+}
+
+// TestARefusedBootClosesEverySocketItBoundBeforeItEndsServing: whichever bind after the API's
+// refuses the boot, the airlock's, the edge's or the metrics port's, the boot answers that bind's
+// own error, and closes every socket it bound before it, each once and in the order it bound
+// them, before it ends the serving context, so nothing the serving context runs outlives a
+// socket the refused boot still holds.
+//
+// The named reverts, each failing every row it touches: end the serving context before the
+// sockets close; close the sockets in another order; leave the last socket bound before the
+// refusal open.
+func TestARefusedBootClosesEverySocketItBoundBeforeItEndsServing(t *testing.T) {
+	for _, row := range []struct {
+		refused string
+		closed  []string
+	}{
+		{theAirlockBind, []string{theBind}},
+		{theEdgeBind, []string{theBind, theAirlockBind}},
+		{theMetricsBind, []string{theBind, theAirlockBind, theEdgeBind}},
+	} {
+		t.Run(row.refused, func(t *testing.T) {
+			refusal := errors.New(row.refused + " is already held")
+			var serving context.Context
+			var closed []string
+			bind := func(step string) func() (net.Listener, error) {
+				return func() (net.Listener, error) {
+					if step == row.refused {
+						return nil, refusal
+					}
+					listener, err := net.Listen("tcp", "127.0.0.1:0")
+					if err != nil {
+						return nil, err
+					}
+					t.Cleanup(func() { listener.Close() })
+					return closeWatched{Listener: listener, closing: func() {
+						if serving.Err() != nil {
+							t.Errorf("the refused boot closed %s after it had ended the serving context", step)
+						}
+						closed = append(closed, step)
+					}}, nil
+				}
+			}
+			started, err := boot(t.Context(), brokerBoot{
+				LoadPolicy: func(ctx context.Context) (*policy.Current, error) {
+					serving = ctx
+					return nil, nil
+				},
+				StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+				Listen:        bind(theBind),
+				ListenAirlock: bind(theAirlockBind),
+				ListenEdge:    bind(theEdgeBind),
+				ListenMetrics: bind(theMetricsBind),
+				ListenWait:    bootListenWait,
+				Catchup:       func(context.Context, *policy.Current) error { return nil },
+				Log:           orderingLog(),
+			})
+			if !errors.Is(err, refusal) {
+				t.Fatalf("boot refused at %s = %v; want that bind's own refusal", row.refused, err)
+			}
+			if started.Serving != nil || started.Listener != nil {
+				t.Fatalf("the refused boot answered %+v; want nothing to serve and nothing to stop", started)
+			}
+			if !slices.Equal(closed, row.closed) {
+				t.Fatalf("the boot refused at %s closed %v; want %v, each once and in the order it bound them", row.refused, closed, row.closed)
+			}
+			if serving.Err() == nil {
+				t.Fatal("the refused boot left its serving context running")
+			}
+		})
+	}
+}
+
 // TestTheEdgeDrainsBesideTheAPI pins the edge's drain: it closes out of the one shutdown budget
 // beside the API rather than after it, and before the work that outlived the drain stops. The
 // API's fake shutdown returns only once the edge's has begun, so a stop that drained the edge

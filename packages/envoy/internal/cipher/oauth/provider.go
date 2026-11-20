@@ -143,20 +143,29 @@ var (
 // TokenHooks are the broker's own steps around a token request the library has validated.
 type TokenHooks struct {
 	// Before runs before either grant issues anything, with the grant type and the login's session
-	// extra; ErrLoginEnded refuses the request invalid_grant, and any other error answers
-	// server_error.
+	// extra; ErrLoginEnded refuses the request invalid_grant, a *Refusal is answered as that
+	// refusal (WriteRefusal), and any other error answers server_error.
 	Before func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) error
 	// After runs once tokens are issued, with the grant type and the session extra; its map is
 	// merged into the token response.
 	After func(ctx context.Context, grant oauth2.GrantType, extra map[string]any) (map[string]any, error)
+	// Trade runs on the RFC 8693 trade of one of the broker's own access tokens, once the library
+	// has validated the request and before the exchange decides anything, with the subject token's
+	// claims as the library read them from the stored token: its sub, its client_id and its
+	// session extra. A *Refusal is answered as that refusal, and any other error answers
+	// server_error. Nil runs nothing: the broker's own address trades every token the exchange
+	// policy takes, and only its edge holds a trade to more (api.RegisterEdge).
+	Trade func(ctx context.Context, subjectToken map[string]any) error
 }
 
-// Refusal is an onRequest error the device authorization endpoint answers as
+// Refusal is an error the broker answers as
 // {"error": "invalid_request", "error_description": "<Code>: <Message>", "code": "<Code>"} with
-// Status, and with Retry-After when RetryAfter (seconds) is set. Any other onRequest error is a
-// 500 server_error. OAuthError names another of RFC 6749's error codes in place of
-// invalid_request, for a refusal a client's OAuth library must read as that one: the broker's
-// edge answers a grant it does not take unsupported_grant_type.
+// Status, and with Retry-After when RetryAfter (seconds) is set: an onRequest error of the device
+// authorization endpoint, and a TokenHooks.Before or TokenHooks.Trade error of the token
+// endpoint. Any other error of those is a 500 server_error. OAuthError names another of RFC
+// 6749's error codes in place of invalid_request, for a refusal a client's OAuth library must
+// read as that one: the broker's edge answers a grant it does not take unsupported_grant_type,
+// and a refresh of a login it does not serve invalid_grant.
 type Refusal struct {
 	Status     int
 	OAuthError string
@@ -387,9 +396,10 @@ func (p *Provider) ApproveDevice(ctx context.Context, userCode string, approved 
 
 // Token is the token endpoint: the device code grant, the refresh grant and the RFC 8693 token
 // exchange, each with a DPoP proof from the key the grant is bound to. An exchange is answered by
-// exchange, which runs none of the hooks: they are the machine login's own steps, and an
-// exchanged token follows no login. Either login grant runs hooks.Before first (ErrLoginEnded
-// refuses it invalid_grant, any other error is server_error); every issued pair
+// exchange, which runs only hooks.Trade, on the trade of one of the broker's own access tokens:
+// Before and After are the machine login's own steps, and an exchanged token follows no login.
+// Either login grant runs hooks.Before first (ErrLoginEnded refuses it invalid_grant, a *Refusal
+// is answered as that refusal, any other error is server_error); every issued pair
 // runs hooks.After, whose fields the answer carries. The hooks and the issued tokens share one
 // transaction (their ctx carries it: oauthstore.TxFrom), committed only once the answer is built,
 // so a row Before locks stays locked until the new tokens are stored. Validating the request stays
@@ -401,7 +411,7 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 	// the exchange needs its whole request in one transaction; a body the library cannot parse
 	// is left for it to refuse in its own words.
 	if err := r.ParseForm(); err == nil && r.PostForm.Get("grant_type") == string(oauth2.GrantTypeTokenExchange) {
-		p.exchangeGrant(w, r)
+		p.exchangeGrant(w, r, hooks.Trade)
 		return
 	}
 	request, err := p.oauth.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
@@ -427,6 +437,11 @@ func (p *Provider) Token(w http.ResponseWriter, r *http.Request, hooks TokenHook
 		}
 	}()
 	if err := hooks.Before(txCtx, grant, extra); err != nil {
+		var refused *Refusal
+		if errors.As(err, &refused) {
+			WriteRefusal(w, refused)
+			return
+		}
 		refusal := oauth2.ErrServerError
 		if errors.Is(err, ErrLoginEnded) {
 			refusal = oauth2.ErrInvalidGrant.WithHint("The machine login has ended.")

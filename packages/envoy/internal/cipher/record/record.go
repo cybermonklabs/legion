@@ -185,15 +185,34 @@ func ValidLifetime(seconds int) bool {
 
 // VerifyRequestObject enforces the contract: single ES256 JWS, typ RequestTyp, embedded P-256 JWK,
 // iss == thumbprint(jwk), aud == audience, iat within skew, exp in (now, iat+10m], reason ≤400 runes
-// with categories Cc/Cf/Cs/Co/Zl/Zp refused, details non-empty and single-typed, launcher identifiers
-// matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, and a lifetime, when
-// named, on a request for agent secrets alone and ValidLifetime. Replay (jti) is the caller's (it
-// needs the store). Every failure wraps ErrRequestInvalid with a reason that never quotes the JWS;
-// an aud that is not audience wraps ErrAudienceMismatch as well. The aud is checked after the
-// signature and before the times, so an object that is ErrAudienceMismatch was really signed by
-// its embedded key.
+// with categories Cc/Cf/Cs/Co/Zl/Zp refused, and those categories refused in login_hint, jti and
+// every string of the details too (validateStoredText), details non-empty and single-typed, launcher
+// identifiers matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, and a
+// lifetime, when named, on a request for agent secrets alone and ValidLifetime. Replay (jti) is the
+// caller's (it needs the store). Every failure wraps ErrRequestInvalid with a reason that never
+// quotes the JWS; an aud that is not audience wraps ErrAudienceMismatch as well. The aud is checked
+// after the signature and before the times, so an object that is ErrAudienceMismatch was really
+// signed by its embedded key.
 func VerifyRequestObject(compact, audience string, skew time.Duration, now time.Time) (RequestObject, error) {
 	return verifyRequestObject(compact, func(aud string, _ []AuthorizationDetail) bool { return aud == audience }, skew, now)
+}
+
+// ClaimedLoginHint is the login_hint the request object compact claims, read with no check of its
+// signature, and "" for an object that is no ES256 JWS or whose claims do not decode. It decodes
+// the payload into the claims verifyRequestObject decodes once the signature verifies
+// (requestClaims), with the same decoder, so a gate that reads the hint before the verifier runs
+// reads the one the verifier then reads: a key in any case, and the last of two keys that name
+// the field, are read alike by both.
+func ClaimedLoginHint(compact string) string {
+	sig, err := jose.ParseSigned(compact, []jose.SignatureAlgorithm{jose.ES256})
+	if err != nil {
+		return ""
+	}
+	var c requestClaims
+	if json.Unmarshal(sig.UnsafePayloadWithoutVerification(), &c) != nil {
+		return ""
+	}
+	return c.LoginHint
 }
 
 // verifyRequestObject is VerifyRequestObject with its aud check the caller's: ours reports
@@ -244,6 +263,9 @@ func verifyRequestObject(compact string, ours func(aud string, details []Authori
 		return RequestObject{}, fmt.Errorf("%w: %s", ErrRequestInvalid, err)
 	}
 	if err := validateReason(c.Reason); err != nil {
+		return RequestObject{}, fmt.Errorf("%w: %s", ErrRequestInvalid, err)
+	}
+	if err := validateStoredText(c); err != nil {
 		return RequestObject{}, fmt.Errorf("%w: %s", ErrRequestInvalid, err)
 	}
 	if c.LifetimeSeconds != nil {
@@ -404,6 +426,30 @@ func validateReason(reason string) error {
 	for _, r := range reason {
 		if ReasonRefuses(r) {
 			return errors.New("reason contains a refused rune category")
+		}
+	}
+	return nil
+}
+
+// validateStoredText refuses a request object whose login_hint, jti, or any authorization detail's
+// type, identifier, service or action carries a rune ReasonRefuses, as validateReason refuses one
+// in the reason. The store keeps each of them as it was signed, and Postgres cannot write U+0000 in
+// text at all, so a NUL there would fail the write and answer 500, where any other control or
+// format rune would be stored as a person or a name nobody can match or read. The request is
+// refused before anything is written, naming the field and never quoting it.
+func validateStoredText(c requestClaims) error {
+	type field struct{ name, value string }
+	fields := []field{{"login_hint", c.LoginHint}, {"jti", c.JTI}}
+	for _, d := range c.AuthorizationDetails {
+		fields = append(fields, field{"an authorization detail's type", d.Type}, field{"an authorization detail's identifier", d.Identifier},
+			field{"an authorization detail's service", d.Service})
+		for _, action := range d.Actions {
+			fields = append(fields, field{"an authorization detail's action", action})
+		}
+	}
+	for _, f := range fields {
+		if strings.IndexFunc(f.value, ReasonRefuses) >= 0 {
+			return fmt.Errorf("%s contains a refused rune category", f.name)
 		}
 	}
 	return nil

@@ -197,15 +197,15 @@ type Config struct {
 	// only a request that waits for a person; any other value refuses naming it.
 	SignInOff bool
 	// BROKER_SIGNIN_WORKSPACE_DOMAINS: the other domains the Google Workspace owns beside
-	// BROKER_SIGNIN_DOMAIN, separated by commas as DISPATCH_SIGNIN_WORKSPACE_DOMAINS lists them,
-	// each a lowercase domain name; an internationalized one is written in Unicode or as its
-	// A-labels, and is held as its A-labels.
+	// BROKER_SIGNIN_DOMAIN, separated by commas, each a lowercase domain name; an
+	// internationalized one is written in Unicode or as its A-labels, and is held as its A-labels.
 	// The broker's edge (BROKER_EDGE_LISTEN_ADDR) refuses a machine login naming an address on any
-	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, so nobody on the
-	// internet can name a person of the Workspace there; nothing else reads it. Unset, the
-	// Workspace is BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain
-	// name, refuses the start naming its position, and BROKER_SIGNIN=off refuses it, since that
-	// broker names no Workspace.
+	// of them or on a subdomain of one, as it refuses one on BROKER_SIGNIN_DOMAIN, and serves no
+	// token of a machine login whose person is on one, so nobody on the internet can name or use a
+	// person of the Workspace there; nothing else reads it. Unset, the Workspace is
+	// BROKER_SIGNIN_DOMAIN alone. An empty entry, or one that is no lowercase domain name, refuses
+	// the start naming its position, and BROKER_SIGNIN=off refuses it, since that broker names no
+	// Workspace.
 	SignInWorkspaceDomains []string
 	// BROKER_SIGNIN_DEVICE_AUDIENCE: the audience a person's own Google identity token must
 	// carry to be traded at the RFC 8693 token exchange, where such a token is a subject token

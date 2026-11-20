@@ -189,6 +189,109 @@ func TestTheEdgeKeysBucketsOnTheGoogleClientAddress(t *testing.T) {
 	}
 }
 
+// TestTheEdgeKeysOnTheLastForwardedForLineAlone: a request may carry X-Forwarded-For as several
+// header lines, and the edge reads the last alone, the one the load balancer writes or appends
+// to. A client that spends its burst with a forged line of its own before the balancer's is
+// refused past it, whatever forged line it sends and with the balancer's entries merged into one
+// line, while another client behind the balancer is served; and a last line of one entry, which
+// the balancer never writes, is refused 400 REQUEST_INVALID whatever the lines before it hold.
+//
+// The named revert: read every line as one list, and the request whose last line is one entry is
+// keyed on the balancer's own address and served.
+func TestTheEdgeKeysOnTheLastForwardedForLineAlone(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
+	const client = "203.0.113.80"
+	login := func(person string, lines ...string) answered {
+		t.Helper()
+		req := request(t, http.MethodPost, rig.EdgeURL+"/v1/oauth/device_authorization", strings.NewReader(edgeDeviceForm(t, rig.EdgeURL, person).Encode()),
+			map[string]string{"Content-Type": "application/x-www-form-urlencoded"})
+		for _, line := range lines {
+			req.Header.Add("X-Forwarded-For", line)
+		}
+		return send(t, http.DefaultClient, req)
+	}
+	burst := api.DefaultLauncherLimits.PerAddress.Burst
+	for i := range burst {
+		forged := fmt.Sprintf("198.51.100.%d, 198.51.100.%d", i+1, i+100)
+		if answer := login(fmt.Sprintf("lines-%d@outside.example", i), forged, forwardedFor("", client)); answer.status != http.StatusOK {
+			t.Fatalf("edge login %d of %d from %s under a forged first line = %d %s, want 200", i+1, burst, client, answer.status, answer.body)
+		}
+	}
+	for _, lines := range [][]string{{"192.0.2.1, 192.0.2.2", forwardedFor("", client)}, {"192.0.2.3", forwardedFor("", client)}, {forwardedFor("192.0.2.4", client)}} {
+		if answer := login("late-lines@outside.example", lines...); answer.status != http.StatusTooManyRequests || !strings.Contains(string(answer.body), `"code":"RATE_LIMITED"`) {
+			t.Errorf("an edge login from %s past its burst with X-Forwarded-For lines %q = %d %s, want 429 RATE_LIMITED", client, lines, answer.status, answer.body)
+		}
+	}
+	if answer := login("other-lines@outside.example", "198.51.100.250, 198.51.100.251", forwardedFor("", "203.0.113.81")); answer.status != http.StatusOK {
+		t.Fatalf("an edge login from another client behind the balancer under a forged first line = %d %s, want 200", answer.status, answer.body)
+	}
+	before := loginRows(t, rig)
+	for _, lines := range [][]string{{forwardedFor("", "203.0.113.82"), "198.51.100.7"}, {"198.51.100.8", edgeBalancer}} {
+		if answer := login("one-entry@outside.example", lines...); answer.status != http.StatusBadRequest || !strings.Contains(string(answer.body), `"code":"REQUEST_INVALID"`) {
+			t.Errorf("an edge login whose last X-Forwarded-For line is one entry, lines %q = %d %s, want 400 REQUEST_INVALID", lines, answer.status, answer.body)
+		}
+	}
+	if after := loginRows(t, rig); after != before {
+		t.Fatalf("a refused edge login wrote %d rows, want none", after-before)
+	}
+}
+
+// TestTheEdgeGateReadsTheRequestObjectTheLoginIsMadeOf: a device authorization may carry its
+// request parameter twice, and the edge's Workspace gate reads the value the login is made of.
+// With a Workspace person's object first, the gate refuses it 400 EDGE_WORKSPACE_LOGIN; with an
+// outside person's object first and a Workspace person's after it, signed by the same key, no
+// login of the Workspace person is opened, and any login the broker opens is the outside
+// person's.
+//
+// The named revert: read the last request value in the gate, and the first row is served and
+// opens a login awaiting the Workspace person.
+func TestTheEdgeGateReadsTheRequestObjectTheLoginIsMadeOf(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
+	header := map[string]string{"X-Forwarded-For": forwardedFor("", "203.0.113.90")}
+	workspace := "ada@" + ciphertest.SignInDomain
+	const outside = "two-values@outside.example"
+	key := newSigningKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := func(first, second string) url.Values {
+		return url.Values{
+			"client_id": {oauthwire.ClientID}, "scope": {oauthwire.Scope}, "dpop_jkt": {jkt},
+			"request": {
+				signMachineLoginRequest(t, key, rig.EdgeURL, first, "example-host-devbox", ""),
+				signMachineLoginRequest(t, key, rig.EdgeURL, second, "example-host-devbox", ""),
+			},
+		}
+	}
+	pending := func(approver string) int {
+		t.Helper()
+		status, body := rig.UI(t, http.MethodGet, "/v1/pending?approver="+url.QueryEscape(approver), nil)
+		listed := decode[struct {
+			Pending []struct {
+				RecordID string `json:"record_id"`
+			} `json:"pending"`
+		}](t, body)
+		if status != http.StatusOK {
+			t.Fatalf("GET /v1/pending for %s = %d %s", approver, status, body)
+		}
+		return len(listed.Pending)
+	}
+	if status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", form(workspace, outside), header); status != http.StatusBadRequest || body["code"] != "EDGE_WORKSPACE_LOGIN" {
+		t.Errorf("an edge login whose first request names %s = %d %v, want 400 EDGE_WORKSPACE_LOGIN", workspace, status, body)
+	}
+	status, body := postEdge(t, rig.EdgeURL, "/v1/oauth/device_authorization", form(outside, workspace), header)
+	if n := pending(workspace); n != 0 {
+		t.Fatalf("the edge's two logins with two request values each (the second answered %d %v) left %d logins awaiting %s, want none", status, body, n, workspace)
+	}
+	if status == http.StatusOK {
+		if n := pending(outside); n != 1 {
+			t.Fatalf("the edge served the login whose first request names %s, and %d logins await that person, want 1", outside, n)
+		}
+	}
+	t.Logf("an edge login whose first request names %s and second %s: %d %v", outside, workspace, status, body)
+}
+
 // TestAnEdgeFloodLeavesTheTailnetLoginBucket: the edge's address and login buckets are its own.
 // A caller that spends a person's login bucket at the edge, and then its own address's bucket
 // there, under the very address the broker's own address keys the same caller on, leaves the
@@ -479,6 +582,20 @@ func TestTheEdgeLoginIsDecidedOnTheTailnetAndUsedAtTheEdge(t *testing.T) {
 	if traded.status != http.StatusOK || !strings.Contains(string(traded.body), `"access_token"`) {
 		t.Fatalf("the access token's trade at the edge = %d %s, want a token", traded.status, traded.body)
 	}
+	// The token that trade minted is the exchange client's own, as a Google machine's and a person
+	// sign-in's token is: the library refuses the exchange client a trade of its own tokens
+	// (invalid_grant), before the edge's own trade check (edgeTokenHooks), which refuses any token
+	// but a device login's EDGE_GRANT_REFUSED behind it.
+	var minted struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(traded.body, &minted); err != nil {
+		t.Fatal(err)
+	}
+	retraded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), minted.AccessToken, "outside-session-again")
+	if retraded.status != http.StatusBadRequest || strings.Contains(string(retraded.body), `"access_token"`) {
+		t.Fatalf("the trade at the edge of a token another trade minted = %d %s, want 400 and no token", retraded.status, retraded.body)
+	}
 
 	sessionKey := newSigningKey(t)
 	sessionThumbprint, err := proof.Thumbprint(&sessionKey.PublicKey)
@@ -501,5 +618,74 @@ func TestTheEdgeLoginIsDecidedOnTheTailnetAndUsedAtTheEdge(t *testing.T) {
 	}
 	if status, body := postEdge(t, rig.URL, "/v1/oauth/device_authorization", edgeDeviceForm(t, rig.EdgeURL, outsidePerson), nil); status != http.StatusBadRequest || body["code"] != "REQUEST_INVALID" {
 		t.Errorf("a login on the broker's own address signed for the edge = %d %v, want 400 REQUEST_INVALID", status, body)
+	}
+}
+
+// tradeAt trades accessToken, one of the broker's own access tokens, at base through transport,
+// for a token of session, and answers what the broker answered.
+func tradeAt(t *testing.T, base string, transport http.RoundTripper, accessToken, session string) answered {
+	t.Helper()
+	form := url.Values{
+		"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "client_id": {oauthwire.ExchangeClientID},
+		"subject_token": {accessToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeAccessToken},
+		oauthwire.FormSession: {session},
+	}
+	return send(t, &http.Client{Transport: transport},
+		request(t, http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()), map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
+}
+
+// TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet: a machine login of a person
+// of the Workspace, opened and approved on the broker's own address, is used there alone. At the
+// edge, through the load balancer and with proofs of the edge's URL made by the login's own key,
+// its refresh and the poll of its device code are refused 400 invalid_grant EDGE_WORKSPACE_LOGIN,
+// and the trade of its access token 400 EDGE_WORKSPACE_LOGIN; the refused refresh moves nothing,
+// so the login refreshes and trades on the broker's own address afterwards as before.
+//
+// The named revert: drop edgeTokenHooks from RegisterEdge, and the edge refreshes the login and
+// trades its token for one acting as the Workspace person.
+func TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
+	via := throughBalancer{client: "198.51.100.9"}
+	atEdge := func(m *deviceMachine) *deviceMachine {
+		edge := newEdgeMachine(t, rig, via)
+		edge.key = m.key
+		edge.ctx = context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: cipherclient.NewDPoPTransport(m.key, via)})
+		return edge
+	}
+
+	m := newDeviceMachine(t, rig)
+	da := m.login(t)
+	rig.DecideMachineLogin(t, da.UserCode, true)
+	tok := m.poll(t, da)
+
+	_, err := atEdge(m).refresh(tok)
+	refusedWith(t, fmt.Sprintf("a refresh at the edge of %s's machine login opened on the broker's own address", rig.Operator), err, http.StatusBadRequest, "EDGE_WORKSPACE_LOGIN")
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) && re.ErrorCode != "invalid_grant" {
+		t.Errorf("the edge refused the refresh with %q, want invalid_grant", re.ErrorCode)
+	}
+	traded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), tok.AccessToken, "ada-from-the-internet")
+	if traded.status != http.StatusBadRequest || !strings.Contains(string(traded.body), `"code":"EDGE_WORKSPACE_LOGIN"`) {
+		t.Errorf("the trade at the edge of %s's access token = %d %s, want 400 EDGE_WORKSPACE_LOGIN", rig.Operator, traded.status, traded.body)
+	}
+
+	// The poll of a device code: a second login of the same person, opened and approved on the
+	// broker's own address, polled at the edge.
+	second := newDeviceMachine(t, rig)
+	secondDA := second.login(t)
+	rig.DecideMachineLogin(t, secondDA.UserCode, true)
+	secondDA.Interval = 1
+	edge := atEdge(second)
+	_, err = edge.config.DeviceAccessToken(edge.ctx, secondDA)
+	refusedWith(t, fmt.Sprintf("the poll at the edge of %s's device code approved on the broker's own address", rig.Operator), err, http.StatusBadRequest, "EDGE_WORKSPACE_LOGIN")
+
+	// On the broker's own address the first login still refreshes and trades.
+	refreshed, err := m.refresh(tok)
+	if err != nil {
+		t.Fatalf("the refresh on the broker's own address after the edge refused one: %v", err)
+	}
+	ownTrade := tradeAt(t, rig.URL, cipherclient.NewDPoPTransport(m.key, http.DefaultTransport), refreshed.AccessToken, "ada-on-the-tailnet")
+	if ownTrade.status != http.StatusOK || !strings.Contains(string(ownTrade.body), `"access_token"`) {
+		t.Fatalf("the trade on the broker's own address of %s's access token = %d %s, want a token", rig.Operator, ownTrade.status, ownTrade.body)
 	}
 }
