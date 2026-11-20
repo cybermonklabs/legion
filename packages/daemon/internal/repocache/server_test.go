@@ -1111,7 +1111,9 @@ func TestAnIssuePodTakesNothingFromAnotherRepositorysCache(t *testing.T) {
 }
 
 // A due repack runs outside the lock a tar takes: a tar asked for while the repack runs is served
-// at once, and the repack then completes.
+// at once, and the repack then completes. It runs within repackTimeout, and each of repackMemory's
+// pairs comes after feedGit's pair of the same key, where feedGit has one: git takes the last value
+// of a key, so the repack reads its own.
 func TestATarIsServedWhileARepackRuns(t *testing.T) {
 	saved := repackEvery
 	repackEvery = 0
@@ -1168,9 +1170,30 @@ func TestATarIsServedWhileARepackRuns(t *testing.T) {
 	if bound != repackTimeout {
 		t.Errorf("the repack ran within %s, want repackTimeout %s, not the runner's own budget", bound, repackTimeout)
 	}
-	for _, setting := range []string{"pack.windowMemory=256m", "core.packedGitLimit=512m", "pack.threads=1"} {
-		if !slices.Contains(argv, setting) {
-			t.Errorf("the repack ran %q, want its memory bounded by %s", argv, setting)
+	// last is the index of the last `-c` value of each key, lower-cased as git reads it.
+	last := map[string]int{}
+	for i := 1; i < len(argv); i++ {
+		if argv[i-1] == "-c" {
+			key, _, _ := strings.Cut(argv[i], "=")
+			last[strings.ToLower(key)] = i
+		}
+	}
+	feed := map[string]string{}
+	for _, pair := range workspace.PackWindowConfig() {
+		feed[strings.ToLower(pair[0])] = pair[0] + "=" + pair[1]
+	}
+	for i := 1; i < len(repackMemory); i += 2 {
+		setting := repackMemory[i]
+		key, _, _ := strings.Cut(setting, "=")
+		at, found := last[strings.ToLower(key)]
+		if !found || argv[at] != setting {
+			t.Errorf("the repack ran %q, want its memory bounded by %s, the last value of %s", argv, setting, key)
+			continue
+		}
+		if pair, ok := feed[strings.ToLower(key)]; ok {
+			if feedAt := slices.Index(argv, pair); feedAt < 0 || feedAt >= at {
+				t.Errorf("the repack ran %q, want %s after feedGit's %s", argv, setting, pair)
+			}
 		}
 	}
 	close(release)
@@ -1968,10 +1991,13 @@ func statFS(t *testing.T, dir string) (unit, blocks, available uint64) {
 // block size times the blocks, and the available bytes are that block size times the available
 // blocks. A shared disk's available bytes move, and not in one direction: on CI on 2026-11-20 the
 // answer read one block more than both `stat -f` readings around it. So each try reads `stat -f`,
-// then /healthz, then `stat -f` again, and the try that counts is the first whose two readings
-// agree, which the answer must then equal exactly; a disk that never holds still for one try fails
-// the test by name rather than passing it on a range. A cache with no clone yet answers 503, so the
-// figures are in that answer too.
+// then /healthz, then `stat -f` again. A try whose two readings disagree counts for nothing; one
+// whose readings agree passes the test when the answer equals them exactly, and one whose answer
+// differs from them is kept as the last mismatch and the test tries again, since the disk can move
+// and move back between the two readings. After 20 tries the test fails naming the last mismatch,
+// or, when no try's two readings agreed, that the disk never held still, rather than passing on a
+// range; a reader that is always wrong fails every try. A cache with no clone yet answers 503, so
+// the figures are in that answer too.
 func TestTheCacheReadsItsVolume(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the volume is read with statfs on Linux alone; on %s the reader refuses", runtime.GOOS)
@@ -1979,6 +2005,7 @@ func TestTheCacheReadsItsVolume(t *testing.T) {
 	const tries = 20
 	root := t.TempDir()
 	c := cacheOn(t, Options{Repo: ghrepo.MustParse("acme/widgets"), Root: root, Log: func(string) {}})
+	mismatch := ""
 	for try := 1; try <= tries; try++ {
 		unit, blocks, available := statFS(t, root)
 		status, health, _ := healthzOf(t, c)
@@ -1989,13 +2016,15 @@ func TestTheCacheReadsItsVolume(t *testing.T) {
 		if status != http.StatusServiceUnavailable || health.VolumeError != "" || health.VolumeBytes == nil || health.AvailableBytes == nil {
 			t.Fatalf("/healthz of a cache with no clone answers %d %+v, want 503 with the volume's figures", status, health)
 		}
-		if want := unit * blocks; *health.VolumeBytes != want {
-			t.Errorf("/healthz answers a volume of %d bytes, want %d blocks of %d bytes, %d", *health.VolumeBytes, blocks, unit, want)
+		volume, free := unit*blocks, unit*available
+		if *health.VolumeBytes == volume && *health.AvailableBytes == free {
+			return
 		}
-		if want := unit * available; *health.AvailableBytes != want {
-			t.Errorf("/healthz answers %d bytes available, want %d available blocks of %d bytes, %d, as stat -f read them before and after it", *health.AvailableBytes, available, unit, want)
-		}
-		return
+		mismatch = fmt.Sprintf("on try %d, /healthz answered a volume of %d bytes with %d available, want %d blocks of %d bytes, %d, with %d available blocks, %d, as stat -f read them before and after it",
+			try, *health.VolumeBytes, *health.AvailableBytes, blocks, unit, volume, available, free)
+	}
+	if mismatch != "" {
+		t.Fatalf("no try of %d had /healthz answer what stat -f read around it; the last: %s", tries, mismatch)
 	}
 	t.Fatalf("stat -f read %s differently before and after each of %d /healthz answers: the disk never held still for one read", root, tries)
 }

@@ -293,6 +293,8 @@ seed_remote_bookmark() { # seed_remote_bookmark <bare> <branch> <seed dir>
 
 # The measured push itself, one shape at a time. push_env is the environment the push is made in:
 # the clearing stand-in for k1's cases, and k7's two failures for the two variants below.
+# jj-gerrit and jj-unwrapped are the two pushes outside the git push shapes, run_outside_case's,
+# and are described above it.
 #
 # --change names the bookmark itself, from the change id, so the branch-name case reaches it only
 # through jj's own setting for that name. The value is a TOML string holding a template, and the
@@ -310,8 +312,19 @@ push_in_shape() { # push_in_shape <shape> <workspace> <bare> <branch>
     jj-change) env "${push_env[@]}" jj -R "$2" git push --remote origin --change @- --config "$(push_bookmark_config "$4")" ;;
     jj-named) env "${push_env[@]}" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     jj-deleted) env "${push_env[@]}" jj -R "$2" git push --remote origin --deleted ;;
+    jj-gerrit) env "${push_env[@]}" jj -R "$2" gerrit upload --remote origin --remote-branch main -r @- --config "git.executable-path=$real_git" ;;
+    jj-unwrapped) env "${push_env[@]}" PATH="$unwrapped_path" jj -R "$2" git push --remote origin --named "$4=@-" ;;
     *) die "no such shape: $1" ;;
   esac
+}
+
+# show_push <output> <status> <remote before> <remote after>: what a measured push printed, its exit
+# status, and the remote's refs before it and after it.
+show_push() {
+  printf '%s\n' "$1" | sed 's/^/      push | /'
+  echo "      push exited $2"
+  printf '%s\n' "${3:-(no ref)}" | sed 's/^/      ls-remote before | /'
+  printf '%s\n' "${4:-(no ref)}" | sed 's/^/      ls-remote after  | /'
 }
 
 # What jj itself says the shape would change, read before the measured push. This is the shapes
@@ -395,11 +408,8 @@ run_case() { # run_case <shape> <case> <variant>
   before=$(remote_state "$bare")
   out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
   status=$?
-  printf '%s\n' "$out" | sed 's/^/      push | /'
-  echo "      push exited $status"
-  printf '%s\n' "${before:-(no ref)}" | sed 's/^/      ls-remote before | /'
   after=$(remote_state "$bare")
-  printf '%s\n' "${after:-(no ref)}" | sed 's/^/      ls-remote after  | /'
+  show_push "$out" "$status" "$before" "$after"
 
   local status_word remote_word
   if [ "$status" -eq 0 ]; then status_word=zero; else status_word=non-zero; fi
@@ -481,8 +491,8 @@ done
 #                 `--config git.executable-path=/usr/bin/git`. jj uploads through that git, which
 #                 has no wrapper and so no pre-push hook, so on the head's image the jj wrapper
 #                 refuses the upload before it starts: exit 2, its `LEAK CHECK SETUP ERROR` line
-#                 naming git.executable-path, and the remote unchanged. On an image published
-#                 before the wrappers it lands, as refs/for/main.
+#                 saying `git.executable-path is /usr/bin/git`, and the remote unchanged. On an
+#                 image published before the wrappers it lands, as refs/for/main.
 #   jj-unwrapped  the negative control: a `jj git push --named` with /opt/legion/bin taken off
 #                 PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
 #                 /usr/bin/git, with no wrapper and no hook. It lands on either arm, which shows
@@ -512,27 +522,20 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
   echo "---- $id (branch $branch)"
   before=$(remote_state "$bare")
   case "$shape" in
-    jj-gerrit)
-      ref=refs/for/main
-      out=$(env PUBLIC_LEAK_CHECK="$clears" jj -R "$workspace" gerrit upload --remote origin --remote-branch main -r @- \
-        --config "git.executable-path=$real_git" 2>&1)
-      status=$?
-      ;;
+    jj-gerrit) ref=refs/for/main ;;
     jj-unwrapped)
       ref=refs/heads/$branch
       # In a subshell of its own, so the lookup reads the changed PATH and not this shell's hash.
       check "$id the jj off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v jj || echo 'no jj at all')" /usr/local/bin/jj
       check "$id the git off the wrappers' PATH" "$(PATH=$unwrapped_path; command -v git || echo 'no git at all')" "$real_git"
-      out=$(env PUBLIC_LEAK_CHECK="$clears" PATH="$unwrapped_path" jj -R "$workspace" git push --remote origin --named "$branch=@-" 2>&1)
-      status=$?
       ;;
     *) die "no such shape: $shape" ;;
   esac
-  printf '%s\n' "$out" | sed 's/^/      push | /'
-  echo "      push exited $status"
-  printf '%s\n' "${before:-(no ref)}" | sed 's/^/      ls-remote before | /'
+  push_env=("PUBLIC_LEAK_CHECK=$clears")
+  out=$(push_in_shape "$shape" "$workspace" "$bare" "$branch" 2>&1)
+  status=$?
   after=$(remote_state "$bare")
-  printf '%s\n' "${after:-(no ref)}" | sed 's/^/      ls-remote after  | /'
+  show_push "$out" "$status" "$before" "$after"
 
   local remote_word=changed
   [ "$before" != "$after" ] || remote_word=unchanged
@@ -540,7 +543,7 @@ run_outside_case() { # run_outside_case <jj-gerrit|jj-unwrapped>
     check "$id the push" "exit $status" "exit 2"
     check "$id the remote" "$remote_word" unchanged
     check "$id names the failure" "$(says "$out" 'LEAK CHECK SETUP ERROR')" yes
-    check "$id names git.executable-path" "$(says "$out" 'git.executable-path')" yes
+    check "$id names the git.executable-path it refuses" "$(says "$out" "git.executable-path is $real_git")" yes
   else
     check "$id the push" "exit $status" "exit 0"
     check "$id the remote" "$remote_word" changed

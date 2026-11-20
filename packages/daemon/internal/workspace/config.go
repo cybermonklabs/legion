@@ -961,12 +961,16 @@ func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error
 // Every git of an issue pod and of a repository cache gets them, the cache's repack apart, from four
 // places, each for gits the others miss: the role environment's GIT_CONFIG pairs (sandbox's
 // gitConfigPairs, through PackWindowConfig), for every role's git and the git jj runs for a push or
-// a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile, which
-// cannot read this list, so its build fails when the file holds other values), for provisioning's
-// git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own configuration
-// (configurePackWindows), for the shared public leak check's git; and `-c` on the git of Fetch,
-// FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig). A value
-// changed here is changed in the Dockerfile too.
+// a fetch; the worker image's /etc/gitconfig (packages/daemon/docker/worker.Dockerfile), for
+// provisioning's git, whose runner removes the role's pairs (execRunner.Run); the shared clone's own
+// configuration (configurePackWindows), for the shared public leak check's git; and `-c` on the git
+// of Fetch, FeedGit and FeedGitWithin (feedGit), which reads no system file (isolatedGitConfig).
+// The Dockerfile cannot read this list: its build holds /etc/gitconfig to the Dockerfile's own copy
+// of the values. What holds the image to this list is the pack-memory measurement Job
+// (scripts/e2e/pack-memory-job.sh): its `c-pack-window-config system <key>` rows hold the image's
+// `git config --system` to the probe's copy of the four values, and its `c-git-rows role scope
+// <key>` rows hold the pairs rolegitconfig prints from this list to that same copy. A value changed
+// here is changed in the Dockerfile and in that probe too.
 var packWindowConfig = [][2]string{
 	{"core.packedGitWindowSize", "32m"},
 	{"core.packedGitLimit", "256m"},
@@ -982,11 +986,12 @@ func PackWindowConfig() [][2]string { return slices.Clone(packWindowConfig) }
 // every workspace of the clone reads too, for the one git of a pod that reads nothing else: the
 // shared public leak check's, which every push runs with every GIT_CONFIG variable removed and
 // GIT_CONFIG_NOSYSTEM set, so neither the role environment's pairs nor the image's /etc/gitconfig
-// reach it. Every other git of the clone reads this file beside one of those two, which hold the
-// same values. Every provision writes it, so a clone made before the setting existed, or one whose
-// file a role changed, takes it at its next provision; --replace-all leaves one line of each key
-// whatever the file held, a key a role set twice included. The feed does not take them, for the
-// reason configureCloneReads gives.
+// reach it. Every other git of a pod's clone reads this file beside one of those two, which hold the
+// same values. Every provision writes it, so every shared clone takes them, a host clone of the tmux
+// runtime too (the daemon's Provision with FromGitHub), where they only bound git's pack windows; a
+// clone made before the setting existed, or one whose file a role changed, takes it at its next
+// provision. --replace-all leaves one line of each key whatever the file held, a key a role set
+// twice included. The feed does not take them, for the reason configureCloneReads gives.
 func configurePackWindows(ctx context.Context, run Runner, cloneDir string) error {
 	for _, pair := range packWindowConfig {
 		argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "--replace-all", pair[0], pair[1]}

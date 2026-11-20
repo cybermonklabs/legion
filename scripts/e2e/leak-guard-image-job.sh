@@ -41,7 +41,7 @@
 #   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
 #     which jj would upload through that git, with no wrapper and so no pre-push hook: the image's
 #     jj wrapper refuses it before the upload starts, with exit 2 and its `LEAK CHECK SETUP ERROR`
-#     line naming `git.executable-path`, and the remote is unchanged.
+#     line saying `git.executable-path is /usr/bin/git`, and the remote is unchanged.
 #
 # The negative control runs in the same Job: a `jj git push` of the message case with
 # /opt/legion/bin taken off PATH, so jj is the real /usr/local/bin/jj and the git it runs the real

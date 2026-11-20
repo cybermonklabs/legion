@@ -16,7 +16,8 @@ body: |-
   `core.packedGitLimit` 256m, `pack.windowMemory` 64m and `core.deltaBaseCacheLimit` 64m, from the
   role environment's pairs (`GIT_CONFIG_COUNT` 9), the worker image's `/etc/gitconfig`, the shared
   clone's own configuration and `-c` on the feed's fetch and the cache's git, whose repack keeps its
-  own.
+  own. Every shared clone takes them in its own configuration, a host clone of the tmux runtime too,
+  where they only bound git's pack windows.
 time: 2026-11-20T10:48:15Z
 custom:
     Issue: pr4553

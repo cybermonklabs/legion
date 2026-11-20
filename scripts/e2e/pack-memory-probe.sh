@@ -37,7 +37,8 @@
 #      its own clone and `git worktree repair` run in it. Each workspace's `git rev-parse
 #      --git-common-dir` must name its own clone's .git, and jj 0.45.1 must read its copied store
 #      (`op log`, exit 0 and no `Reindexing`); the run stops otherwise. Each R10 copy's jj reads
-#      its store the same way, and a copy whose jj cannot runs no row of R10.
+#      its store the same way, and a copy whose jj cannot runs none of R10's role commands; its
+#      provisioning rows, on a fresh root, still run.
 #   7. On the original and the 0.45.1 copy, the same edits to the walk file and to a file of
 #      another directory, with JJ_TIMESTAMP and JJ_OP_TIMESTAMP fixed and JJ_RANDOMNESS_SEED fixed
 #      per command, then `jj diff`, `jj diff --name-only`, a commit made with `git commit` and
@@ -491,16 +492,15 @@ r10_result() {
   echo "RESULT $line"
 }
 
-# r10_control <name> <label> <pack KiB>: a row of jj 0.46.0, R10's control. Its pack figure must
-# reach the pack's size, or its line is VOID; a control that never ran is a MISMATCH.
+# r10_control <name> <label> <pack KiB> <pack figure>: a row of jj 0.46.0, R10's control. Its pack
+# figure must reach the pack's size, or its line is VOID; a control that never ran is a MISMATCH.
 r10_control() {
-  local name=$1 label=$2 pack=$3 figure want
+  local name=$1 label=$2 pack=$3 figure=$4 want
   want="pack figure at or over $(group "${pack:-unread}") KiB, the pack's size"
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the control did not run"
     return
   fi
-  figure=$(pack_figure "$label")
   if ! whole "$pack"; then
     verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the pack's size could not be read"
   elif [ "$(field "$label" .exit)" != 0 ]; then
@@ -514,16 +514,16 @@ r10_control() {
   fi
 }
 
-# r10_bound <name> <label> <budget> <stores> <bound KiB>: a released row at its budget. It exits 0
-# and its pack figure is within the budget plus one chunk for each object store plus 32 MiB.
+# r10_bound <name> <label> <budget> <stores> <bound KiB> <pack figure>: a released row at its
+# budget. It exits 0 and its pack figure is within the budget plus one chunk for each object store
+# plus 32 MiB.
 r10_bound() {
-  local name=$1 label=$2 budget=$3 stores=$4 bound=$5 figure want
+  local name=$1 label=$2 budget=$3 stores=$4 bound=$5 figure=$6 want
   want="exit 0, pack figure within $(group "${bound:-unread}") KiB: $budget, ${stores:-unread} stores of one $chunk_kib KiB chunk, and $slack_kib KiB"
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the row did not run"
     return
   fi
-  figure=$(pack_figure "$label")
   if [ "$(field "$label" .exit)" != 0 ]; then
     verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the command failed"
   elif ! whole "$figure"; then
@@ -537,12 +537,12 @@ r10_bound() {
   fi
 }
 
-# r10_output <name> <label> <control label>: the released row's stdout is the 0.46.0 row's.
+# r10_output <name> <label> <control label> <same_output's status>: the released row's stdout is
+# the 0.46.0 row's.
 r10_output() {
-  local name=$1 label=$2 control=$3 want
+  local name=$1 label=$2 control=$3 same=$4 want
   want="stdout the same bytes as $control's"
-  same_output "$label" "$control"
-  case $? in
+  case $same in
     0) verdict "$name" pass "the same $(wc -c < "$out/$label.out") bytes" "$want" ;;
     1) verdict "$name" fail "$(cmp "$out/$label.out" "$out/$control.out" 2>&1 | head -n 1)" "$want" ;;
     *) verdict "$name" fail "no result for $(has_result "$label" && echo "$control" || echo "$label")" "$want" "a row did not run" ;;
@@ -1136,7 +1136,8 @@ fi
 
 # Each jj reads its copy's store before any row, so a row measures its command and not a store's
 # first read by another build. jj 0.45.1 must read the store the image's jj wrote with no
-# `Reindexing`, or the run stops; an R10 copy whose jj cannot read its store runs no row of R10.
+# `Reindexing`, or the run stops; an R10 copy whose jj cannot read its store runs none of R10's
+# role commands; its provisioning rows, on a fresh root, still run.
 declare -A ready=()
 if going; then
   echo
@@ -1176,6 +1177,22 @@ fi
 # --------------------------------------------------------------------------------------------
 # 7. R3 to R5's jj rows, on the original and on the 0.45.1 copy.
 # --------------------------------------------------------------------------------------------
+# The role commands steps 7 and 9 both run, as the code builds them (the harness holds each to the
+# line that builds it): handoff-record.ts's STANDING read, which its pathJj runs as `jj -R
+# <workspace> <STANDING>`, in the workspace; and the shim's adoption, the two commands
+# packages/daemon/internal/shim/commands.go builds (describedArgs, then adoptionArgs), each ending
+# in `-R <workspace>`, which the shim runs under the incoming role's identity, in the workspace.
+standing_args=(log -r @- --no-graph -T commit_id)
+described_args=(log -r '@ ~ description(exact:"")' --no-graph -T commit_id)
+adoption_args=(metaedit --update-author -r '@ & description(exact:"")')
+
+# edit_two_dirs <dir>: the jj rows' edits, to the walk file and to a file of another directory.
+edit_two_dirs() {
+  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$1/$walk_file"
+  mkdir -p "$(dirname "$1/$second_file")"
+  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$1/$second_file"
+}
+
 declare -A pushed=()
 jj_rows() { # jj_rows <copy> <workspace> <jj>
   local copy=$1 dir=$2 jj=$3
@@ -1185,9 +1202,7 @@ jj_rows() { # jj_rows <copy> <workspace> <jj>
     stop "cd $dir"
     return
   }
-  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$dir/$walk_file"
-  mkdir -p "$(dirname "$dir/$second_file")"
-  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$dir/$second_file"
+  edit_two_dirs "$dir"
   measure "$copy-jj-diff" --env JJ_RANDOMNESS_SEED=101 -- "$jj" -R "$dir" diff
   measure "$copy-jj-diff-name-only" --env JJ_RANDOMNESS_SEED=102 -- "$jj" -R "$dir" diff --name-only
   # The commit a role makes with git and pushes with git, which the STANDING read must answer.
@@ -1195,15 +1210,14 @@ jj_rows() { # jj_rows <copy> <workspace> <jj>
   measure "$copy-git-push" -- git push origin "HEAD:refs/heads/pack-memory/$copy"
   pushed[$copy]=$(git rev-parse HEAD)
   echo "pushed: ${pushed[$copy]}"
-  # handoff-record.ts's STANDING read, as its pathJj runs it: jj -R <workspace> <STANDING>, in it.
-  measure "$copy-standing" --env JJ_RANDOMNESS_SEED=103 -- "$jj" -R "$dir" log -r @- --no-graph -T commit_id
-  # The shim's adoption, as packages/daemon/internal/shim/commands.go builds its two commands
-  # (describedArgs, then adoptionArgs) and runs both under the incoming role's identity, in the
-  # workspace; the working copy is undescribed, so the shim runs adoptionArgs and not `jj new`.
+  # handoff-record.ts's STANDING read.
+  measure "$copy-standing" --env JJ_RANDOMNESS_SEED=103 -- "$jj" -R "$dir" "${standing_args[@]}"
+  # The shim's adoption: the working copy is undescribed, so the shim runs adoptionArgs and not
+  # `jj new`.
   measure "$copy-described" --env JJ_RANDOMNESS_SEED=104 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" log -r '@ ~ description(exact:"")' --no-graph -T commit_id -R "$dir"
+    -- "$jj" "${described_args[@]}" -R "$dir"
   measure "$copy-adoption" --env JJ_RANDOMNESS_SEED=105 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" metaedit --update-author -r '@ & description(exact:"")' -R "$dir"
+    -- "$jj" "${adoption_args[@]}" -R "$dir"
   JJ_RANDOMNESS_SEED=106 "$jj" --ignore-working-copy -R "$dir" log -r @ --no-graph -T 'author.email()' > "$out/$copy-author.out" 2>&1
   echo "the working copy's author after adoptionArgs: $(cat "$out/$copy-author.out")"
 }
@@ -1270,15 +1284,13 @@ r10_rows() { # r10_rows <copy>
     return
   }
   measure "$copy-file-list" "${limit[@]}" --env JJ_RANDOMNESS_SEED=201 -- "$jj" --ignore-working-copy -R "$dir" file list -r @-
-  measure "$copy-standing" "${limit[@]}" --env JJ_RANDOMNESS_SEED=202 -- "$jj" -R "$dir" log -r @- --no-graph -T commit_id
+  measure "$copy-standing" "${limit[@]}" --env JJ_RANDOMNESS_SEED=202 -- "$jj" -R "$dir" "${standing_args[@]}"
   measure "$copy-described" "${limit[@]}" --env JJ_RANDOMNESS_SEED=203 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" log -r '@ ~ description(exact:"")' --no-graph -T commit_id -R "$dir"
+    -- "$jj" "${described_args[@]}" -R "$dir"
   measure "$copy-adoption" "${limit[@]}" --env JJ_RANDOMNESS_SEED=204 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" metaedit --update-author -r '@ & description(exact:"")' -R "$dir"
+    -- "$jj" "${adoption_args[@]}" -R "$dir"
   measure "$copy-new" "${limit[@]}" --env JJ_RANDOMNESS_SEED=205 -- "$jj" -R "$dir" new
-  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$dir/$walk_file"
-  mkdir -p "$(dirname "$dir/$second_file")"
-  printf 'pack-memory probe: an edit the jj rows snapshot\n' >> "$dir/$second_file"
+  edit_two_dirs "$dir"
   measure "$copy-diff" "${limit[@]}" --env JJ_RANDOMNESS_SEED=206 -- "$jj" -R "$dir" diff
   measure "$copy-log-walk" "${limit[@]}" --env JJ_RANDOMNESS_SEED=207 -- "$jj" --ignore-working-copy -R "$dir" log -r '::@-' -- "$walk_file"
 }
@@ -1404,23 +1416,26 @@ if going; then
     suffix=${r10_label[$command]:-unrecorded-$command}
     control=r10-control-$suffix
     stores=$(field "$control" .largest_pack_file_mappings)
-    r10_result "$command" r10-control "$control" null "$(pack_figure "$control")" "$stores" ""
-    r10_control "c-budget-under-gvisor $command control" "$control" "$r10_pack_kib"
+    control_figure=$(pack_figure "$control")
+    r10_result "$command" r10-control "$control" null "$control_figure" "$stores" ""
+    r10_control "c-budget-under-gvisor $command control" "$control" "$r10_pack_kib" "$control_figure"
     for budget in "${budgets[@]}"; do
       label=r10-$budget-$suffix
       bound=""
       if whole "$stores"; then
         bound=$((${budget_kib[$budget]} + stores * chunk_kib + slack_kib))
       fi
+      figure=$(pack_figure "$label")
       same_output "$label" "$control"
-      case $? in
+      same=$?
+      case $same in
         0) equal=true ;;
         1) equal=false ;;
         *) equal=null ;;
       esac
-      r10_result "$command" "r10-$budget" "$label" "$equal" "$(pack_figure "$label")" "$stores" "$bound"
-      r10_bound "c-budget-under-gvisor $command $budget" "$label" "$budget" "$stores" "$bound"
-      r10_output "c-budget-under-gvisor $command $budget output" "$label" "$control"
+      r10_result "$command" "r10-$budget" "$label" "$equal" "$figure" "$stores" "$bound"
+      r10_bound "c-budget-under-gvisor $command $budget" "$label" "$budget" "$stores" "$bound" "$figure"
+      r10_output "c-budget-under-gvisor $command $budget output" "$label" "$control" "$same"
     done
   done
 fi

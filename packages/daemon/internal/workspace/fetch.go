@@ -36,12 +36,13 @@ var isolatedGitConfig = []string{"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSY
 // feedGit is how every git command of Fetch's, FeedGit's and FeedGitWithin's begins: git, then
 // packWindowConfig as `-c` pairs. That git reads no system file (isolatedGitConfig), so the worker
 // image's /etc/gitconfig does not reach it, its runner removes the role environment's pairs
-// (execRunner.Run), and the feed's own configuration may hold none of the four (feedConfigKeys); so
-// its command line is the one place left. git exports the pairs to every git it starts in turn, the
-// index-pack of a clone or a fetch among them. They come before everything a caller adds, and git
-// takes the last value of a key, so a caller's own `-c` of one of them wins: the repository cache's
-// repack keeps repackMemory's. Its capacity is its length, so an append to it copies rather than
-// writing past the shared prefix.
+// (execRunner.Run), and the feed's own configuration may hold none of the four (feedConfigKeys).
+// The runner's own pins (pinnedGitConfig) reach it too, but they reach every command any NewRunner
+// starts, the daemon's host runners among them, so the four go on this command line instead. git
+// exports the pairs to every git it starts in turn, the index-pack of a clone or a fetch among
+// them. They come before everything a caller adds, and git takes the last value of a key, so a
+// caller's own `-c` of one of them wins: the repository cache's repack keeps repackMemory's. Its
+// capacity is its length, so an append to it copies rather than writing past the shared prefix.
 var feedGit = func() []string {
 	argv := []string{"git"}
 	for _, pair := range packWindowConfig {
@@ -779,12 +780,6 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	verify := func(argv []string, left time.Duration) error {
-		// Every check runs in staging, which the stream filled before verifyCache was called.
-		result, err := runCommandTimeout(ctx, run, argv, isolatedGitConfig, staging, left)
-		_, err = checkedResult(argv, result, err)
-		return err
-	}
 	hash, err := objectHash(ctx, run, staging)
 	if err != nil {
 		return err
@@ -805,7 +800,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 		if err != nil {
 			return err
 		}
-		if err := verify(slices.Concat(feedGit, []string{"--git-dir=" + staging, "index-pack", pack}), left); err != nil {
+		if _, err := FeedGitWithin(ctx, run, staging, left, "index-pack", pack); err != nil {
 			return fmt.Errorf("the repository cache's pack %s, which does not verify: %w", filepath.Base(pack), err)
 		}
 	}
@@ -813,7 +808,7 @@ func verifyCache(ctx context.Context, run Runner, request FetchRequest, staging 
 	if err != nil {
 		return err
 	}
-	if err := verify(slices.Concat(feedGit, []string{"--git-dir=" + staging, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"}), left); err != nil {
+	if _, err := FeedGitWithin(ctx, run, staging, left, "fsck", "--connectivity-only", "--no-dangling", "--no-progress"); err != nil {
 		return fmt.Errorf("the repository cache's history is not whole: %w", err)
 	}
 	return nil

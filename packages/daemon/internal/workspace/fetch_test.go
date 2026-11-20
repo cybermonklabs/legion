@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -2436,21 +2437,22 @@ func TestAPackWithoutItsIndexIsIndexedInThePod(t *testing.T) {
 // repository cache whose pack came without its index, and whose branch GitHub has since deleted, so
 // it initializes, indexes, checks, reads GitHub's refs, prunes, fetches and configures the feed; a
 // Fetch from GitHub alone, which clones it; and the cache's read of its head and its repack. The
-// repack's own `-c` pairs, repocache's repackMemory, come after the four and win for its command:
-// 64m windows, a 512m limit and 256m of window memory. Every git the runner started is recorded.
+// repack here is given `-c` pairs of a caller's own, which come after the four and win for its
+// command: 64m windows, a 512m limit and 256m of window memory. Every git the runner started is
+// recorded.
 func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
 	windows := map[string]string{}
 	for _, setting := range packWindows {
 		windows[strings.ToLower(setting[0])] = setting[1]
 	}
-	// repackMemory is repocache's, which this package cannot import (repocache imports it), as the
-	// cache hands it to FeedGitWithin, and repackWins what its command reads of the four with it.
-	repackMemory := []string{
+	// callerPairs are a caller's own `-c` pairs, as a caller hands them to FeedGitWithin, and
+	// callerWins what its command reads of the four with them.
+	callerPairs := []string{
 		"-c", "pack.threads=1", "-c", "pack.windowMemory=256m", "-c", "pack.deltaCacheSize=64m",
 		"-c", "core.deltaBaseCacheLimit=64m", "-c", "core.packedGitLimit=512m", "-c", "core.packedGitWindowSize=64m",
 		"-c", "repack.writeBitmaps=false",
 	}
-	repackWins := map[string]string{"core.packedgitwindowsize": "64m", "core.packedgitlimit": "512m", "pack.windowmemory": "256m", "core.deltabasecachelimit": "64m"}
+	callerWins := map[string]string{"core.packedgitwindowsize": "64m", "core.packedgitlimit": "512m", "pack.windowmemory": "256m", "core.deltabasecachelimit": "64m"}
 	for _, tc := range []struct {
 		name string
 		// prepare makes what the subtest's gits run on, and answers what runs them.
@@ -2478,7 +2480,7 @@ func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
 				if _, err := FeedGit(context.Background(), run, cache, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
 					return err
 				}
-				_, err := FeedGitWithin(context.Background(), run, cache, testTimeout, append(slices.Clone(repackMemory), "repack", "-a", "-d", "--quiet")...)
+				_, err := FeedGitWithin(context.Background(), run, cache, testTimeout, append(slices.Clone(callerPairs), "repack", "-a", "-d", "--quiet")...)
 				return err
 			}
 		}},
@@ -2499,7 +2501,7 @@ func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
 				argv, reads, _ := strings.Cut(line, "\t")
 				want := windows
 				if slices.Contains(strings.Fields(argv), "repack") {
-					want = repackWins
+					want = callerWins
 				}
 				// git takes a key's last line, which got keeps.
 				got := map[string]string{}
@@ -2533,7 +2535,7 @@ func TestTheFeedsFetchMapsPacksInSmallWindows(t *testing.T) {
 
 // recordPackWindows has run's runner start a recording git, resolved from PATH as boot resolves
 // it (testTools), and answers the file it records in: one line each time it runs, its arguments,
-// a tab, then each line `git config --show-scope --get-regexp` prints for the four pack settings
+// a tab, then each line `git config --show-scope --get-regexp` prints for packWindows' four keys
 // under the `-c` pairs and the --git-dir its command line names before its subcommand, and its
 // environment, a space for a tab and each ended by `;`. It then runs the real git with its
 // arguments. PATH is the test's own again once the runner has resolved it, so no fixture command
@@ -2545,6 +2547,10 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 		t.Fatal(err)
 	}
 	bin, sink := t.TempDir(), filepath.Join(t.TempDir(), "record")
+	keys := make([]string, 0, len(packWindows))
+	for _, setting := range packWindows {
+		keys = append(keys, regexp.QuoteMeta(strings.ToLower(setting[0])))
+	}
 	script := "#!/bin/sh\n" +
 		"scoped() {\n" +
 		"  n=$# ahead=1\n" +
@@ -2558,7 +2564,7 @@ func recordPackWindows(t *testing.T, run *recordingRunner) string {
 		"      ahead=\n" +
 		"    fi\n" +
 		"  done\n" +
-		"  '" + realGit + "' \"$@\" config --show-scope --get-regexp '^(core\\.packedgitwindowsize|core\\.packedgitlimit|pack\\.windowmemory|core\\.deltabasecachelimit)$'\n" +
+		"  '" + realGit + "' \"$@\" config --show-scope --get-regexp '^(" + strings.Join(keys, "|") + ")$'\n" +
 		"}\n" +
 		"reads=$(scoped \"$@\" | tr '\\t\\n' ' ;')\n" +
 		"printf '%s\\t%s\\n' \"$*\" \"$reads\" >> '" + sink + "'\n" +

@@ -1445,10 +1445,10 @@ COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
-# arguments it was given and checks one thing before a `jj git push`: that the git jj will shell
-# out to is the wrapper above, on PATH and in jj's own git.executable-path. jj's push is a
-# `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard in front of
-# it, and a jj that would run another git is refused rather than pushing unchecked:
+# arguments it was given and checks one thing before a `jj git push` or a `jj gerrit upload`: that
+# the git jj will shell out to is the wrapper above, on PATH and in jj's own git.executable-path.
+# jj's push is a `git … push --porcelain --no-verify`, so that wrapper is what puts the leak guard
+# in front of it, and a jj that would run another git is refused rather than pushing unchecked:
 # packages/daemon/docker/jj.
 COPY --chmod=0755 packages/daemon/docker/jj /opt/legion/bin/jj
 # The pre-push hook the git wrapper points git at, in a root-owned directory no role can write:

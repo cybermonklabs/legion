@@ -25,11 +25,11 @@ wrapper=/opt/legion/bin/git
 # `--repository=<path>`) are one word and need no skip. The repository is kept because the
 # configuration read below must be the one this command would make: a repository's own
 # configuration file can name a `git.executable-path` of its own, and so can the caller's own
-# `--config`, which that read takes as well. The scan goes on past the pair, since a `-R` written
-# after the subcommand names the repository as one written before it does, and the last `-R`
-# written is the one jj opens. A `-R` clustered after another short option needs no reading: the
-# only short options of the two commands that take no value are `-h` and the upload's `-n`,
-# neither of which pushes.
+# `--config`, which that read takes as well. Any other pair runs the real jj as soon as its second
+# word is read. A push's scan goes on past the pair, since a `-R` written after the subcommand
+# names the repository as one written before it does, and the last `-R` written is the one jj
+# opens. A `-R` clustered after another short option needs no reading: the only short options of
+# the two commands that take no value are `-h` and the upload's `-n`, neither of which pushes.
 repository=
 takes=
 first=
@@ -53,11 +53,16 @@ for arg; do
         first=$arg
       elif [ -z "$second" ]; then
         second=$arg
+        case "$first $second" in
+          "git push" | "gerrit upload") ;;
+          *) exec "$real" "$@" ;;
+        esac
       fi
       ;;
   esac
 done
 
+# A command of fewer than two positional words is no push either.
 case "$first $second" in
   "git push" | "gerrit upload") ;;
   *) exec "$real" "$@" ;;
