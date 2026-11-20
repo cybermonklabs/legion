@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -36,6 +37,24 @@ func TestFailureCausesGolden(t *testing.T) {
 		t.Fatalf("supervise.FailureCauses = %q, want the wire words %q", supervise.FailureCauses, want)
 	}
 	golden(t, "failure-causes.json", map[string][]supervise.FailureCause{"causes": supervise.FailureCauses})
+}
+
+// The role rows of EnumeratedFields record each role at the contract it arrived at, from
+// answers.go's floorRoles, the roles a claim could hold at ServingFloor, named one by one. A role
+// added to claim.Roles alone would be on no row: nothing would record when it arrived, no value
+// strip would hold it back, and a reader of an older contract, whose role enum is strict, would
+// be served it and refuse the whole state. So every role claim.Roles holds must be one floorRoles
+// names, and a new one fails here by its name until it has a contract of its own. A role
+// claim.Roles drops stays in floorRoles, which is the history of what was served.
+func TestEveryRoleAClaimCanHoldHasARecordedArrival(t *testing.T) {
+	for _, role := range claim.Roles {
+		if !slices.Contains(floorRoles, role) {
+			t.Errorf("claim.Roles holds the role %q, which answers.go's floorRoles does not name: it has no recorded "+
+				"arrival, so a reader of an older contract would be served it and refuse the whole state. Give the "+
+				"role its own contract, record it at that contract in the role rows of EnumeratedFields, and hold "+
+				"it back below that contract with a value strip (shaping.go's valueStrips)", role)
+		}
+	}
 }
 
 // supervise.PodUpdateContract is the contract that introduced ready_for_update, and supervise

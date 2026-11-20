@@ -519,19 +519,28 @@ var claimViewStates = valuesFrom(ServingFloor,
 	supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed,
 	supervise.StateRetired)
 
+// floorRoles is every role a claim could hold at ServingFloor, named constant by constant. It
+// names each one rather than reading claim.Roles, as failureCauses does its causes, because these
+// lists record the contract a value arrived at: a role added to claim.Roles later arrives at its
+// own contract and not at the floor, at the wakes' or at the pause's.
+var floorRoles = []claim.Role{
+	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+	claim.RoleReviewer, claim.RoleMerger,
+}
+
 // claimRoles is every role a claim can hold, which four rows share: the stranded report's, the
 // registration's, the wake's and the pause stop's, those last two at their own arrivals
 // (wakeRoles, pauseStopRoles). The list has not moved since the floor.
-var claimRoles = valuesFrom(ServingFloor, claim.Roles...)
+var claimRoles = valuesFrom(ServingFloor, floorRoles...)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
 // array is served below it at all (shaping.go's withoutWakesWaiting).
-var wakeRoles = valuesFrom(wakesWaitingContract, claim.Roles...)
+var wakeRoles = valuesFrom(wakesWaitingContract, floorRoles...)
 
 // pauseStopRoles is the same list of roles at the contract `paused` arrived at, which the role of
 // each claim the open pause waits on takes (api.PauseStopView.Role): no `paused` is served below
 // that contract at all (shaping.go's withoutPause).
-var pauseStopRoles = valuesFrom(pauseContract, claim.Roles...)
+var pauseStopRoles = valuesFrom(pauseContract, floorRoles...)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the four the package declares (updatestate.go), so a
