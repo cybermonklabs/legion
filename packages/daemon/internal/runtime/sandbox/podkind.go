@@ -335,7 +335,9 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 // its gh — the image's `legion gh`, first on PATH, which runs the real gh at LEGION_GH_PATH — and
 // the clone's `legion git-credential` helper (workspace.GitHubCredentialHelper) read the token of
 // the owner a command names from the owner's directory under LEGION_GH_OWNERS_DIR, and every other
-// command's from GH_CONFIG_DIR, the launch's default owner's (gitHubDefault). GH_TOKEN,
+// command's from GH_CONFIG_DIR, the launch's default owner's (gitHubDefault). The helper also reads
+// a repository of an owner with no directory from GitHub with GH_CONFIG_DIR's token, and answers a
+// fork with the token of its parent's or its source's owner. GH_TOKEN,
 // GITHUB_TOKEN and GH_HOST are set to the empty string, which gh ignores, so no value the image or
 // an operator's rc file could leave in the environment outranks the files: a non-empty GH_TOKEN
 // would. No other tool path or helper is told: the agent's git and jj are the image's on PATH, and

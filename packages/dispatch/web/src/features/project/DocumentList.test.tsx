@@ -142,7 +142,8 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const { listProjectArtifacts, view } = renderList([]);
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const lostUpload = Promise.withResolvers<never>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(lostUpload.promise);
 
@@ -314,7 +315,8 @@ test("Create pressed again with the title a stopped create carried goes under a 
     const stoppedKey = uploadArtifact.mock.calls[0]?.[2]?.key;
     const stopped = uploadArtifact.mock.calls.length;
 
-    // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+    // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a
+    // Dispatch unit test") says.
     const made = Promise.withResolvers<ArtifactUploadResponse>();
     uploadArtifact.mockReturnValue(made.promise);
     await user.click(screen.getByRole("button", { name: "Create" }));

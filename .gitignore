@@ -141,7 +141,7 @@ web_modules/
 # vendored at the version it pins so that no render downloads it.
 !packages/envoy/loadtest/cluster/nats-*.tgz
 # The upstream editor sources packages/proof-editor installs as proof-sdk-upstream, packed from the
-# sjawhar/proof-sdk commit it pins so no install fetches them (packages/proof-editor/AGENTS.md).
+# sjawhar/proof-sdk commit it pins so no install fetches them (packages/proof-editor/docs/upstream.md).
 !packages/proof-editor/proof-sdk-*.tgz
 
 # Yarn Integrity file
@@ -277,8 +277,7 @@ $RECYCLE.BIN/
 
 # Playwright output (packages/dispatch e2e)
 packages/dispatch/e2e/test-results/
-# The visual job's reverse-order run writes here (`e2e/visual-run.sh --output=e2e/test-results-reverse`,
-# .github/workflows/dispatch-browser.yaml), and so does a person who runs its command.
+# The reverse-order visual run's results (`e2e/visual-run.sh --output=e2e/test-results-reverse`).
 packages/dispatch/e2e/test-results-reverse/
 packages/dispatch/e2e/playwright-report/
 # The blob report `--reporter=blob` writes, which the CI legs send to $RUNNER_TEMP through

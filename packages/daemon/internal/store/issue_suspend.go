@@ -93,8 +93,8 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 	return act, nil
 }
 
-// issueStopFences are the last three checks a close's authorizer and a release's both make, in
-// the order both make them and against the caller's own transaction: the tree's cleanup
+// issueStopFences are three checks a close's authorizer and a release's both make (a close's
+// last), in the order both make them and against the caller's own transaction: the tree's cleanup
 // reservation, the issue's own unfinished role stops, and a stored claim of the issue that may
 // still hold a process. what is the noun the caller's waits are read with ("suspension",
 // "release").

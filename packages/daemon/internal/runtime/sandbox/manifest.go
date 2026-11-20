@@ -1689,8 +1689,10 @@ func GitConfigPairs() [][2]string { return slices.Clone(gitConfigPairs) }
 // clones for itself. The reset drops every helper a configuration file names for github.com, the
 // image's or a repository's, and the helper it sets is the one the issue's clone already names, so
 // git in the clone asks what it asked before. Any other host is left to the configuration files.
-// `legion git-credential` answers only an owner of the project, from that owner's directory of
-// LEGION_GH_OWNERS_DIR (ghAgentEnv), and `legion gh` adds its own entry after these
+// `legion git-credential` answers an owner of the project from that owner's directory of
+// LEGION_GH_OWNERS_DIR (ghAgentEnv), and a fork of a repository of such an owner, whose own owner
+// has no directory, from the directory of the fork's parent or else its source, which it reads
+// from GitHub with GH_CONFIG_DIR's token; `legion gh` adds its own entry after these
 // (withGitHubUseHTTPPath, cmd/legion/gh.go).
 func gitConfigEnv() []corev1.EnvVar {
 	env := []corev1.EnvVar{{Name: "GIT_CONFIG_COUNT", Value: strconv.Itoa(len(gitConfigPairs))}}

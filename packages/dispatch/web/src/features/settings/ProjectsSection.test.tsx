@@ -27,7 +27,8 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
   const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const lostCreate = Promise.withResolvers<never>();
   const createProject = spyOn(api, "createProject").mockReturnValue(lostCreate.promise);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
