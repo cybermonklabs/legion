@@ -33,7 +33,7 @@ import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
-import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
+import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
@@ -206,7 +206,7 @@ export function NodeRow({
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a

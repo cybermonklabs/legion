@@ -152,10 +152,13 @@ export function IssueTree({
    *  editor rather than leaving the row with nothing to put a caret in, and hands that editor to
    *  the row; `undefined` whenever the reader is editing nothing. */
   onEditing: OnEditing;
-  /** Whether every read the tree is built from holds an answer, which a failed read never does
-   *  (`slots/body.tsx`). Until then a node the tree lacks may not have arrived yet, so a tree with
-   *  no node draws no `emptyLine`, and `q` and `w` with nowhere to go say nothing
-   *  (`useTreeKeymap.ts`). Held unless the page says otherwise. */
+  /** Whether each read the tree's nodes come from holds an answer, which a failed read never
+   *  does: the six reads - the coverage, the decisions, the results, the asks, the comments and
+   *  the messages - and each document's blocks (`outline-reads.ts`'s `readsHeld`). Until then a
+   *  node the tree lacks may not have arrived yet, so a tree with no node draws no `emptyLine`,
+   *  and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names are no part
+   *  of it: the page gives no `emptyLine` that reads the nodes' words until they are held
+   *  (`slots/body.tsx`). Held unless the page says otherwise. */
   readsHeld?: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or its failure
    *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, where every
