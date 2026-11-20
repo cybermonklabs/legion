@@ -29,8 +29,10 @@ function menuGroup(node: Element): Element | null {
     group !== null && group !== header;
     group = group.parentElement
   ) {
-    const opener = `[aria-expanded][aria-controls~="${CSS.escape(group.id)}"]`;
-    if (group.id !== "" && header?.querySelector(opener) != null) return group;
+    if (group.id !== "") {
+      const opener = `[aria-expanded][aria-controls~="${CSS.escape(group.id)}"]`;
+      if (header?.querySelector(opener) != null) return group;
+    }
   }
   return null;
 }
@@ -78,7 +80,7 @@ function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonEle
   if (button === undefined) {
     return null;
   }
-  return button.getAttribute("aria-disabled") === "true" ? null : button;
+  return usableControl(button) ? button : null;
 }
 
 /**
@@ -126,7 +128,8 @@ function outsideInputsAndAskCards(): boolean {
  * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
  * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
  * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
- * is busy (`aria-disabled`), `aria-hidden` or not drawn.
+ * is busy (`aria-disabled`), `aria-hidden` or not drawn, except the pin, which is read up to the
+ * shut actions menu (`headerControl`): `Shift+P` is offered while the shut menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [

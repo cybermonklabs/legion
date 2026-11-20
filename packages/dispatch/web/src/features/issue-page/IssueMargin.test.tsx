@@ -16,6 +16,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock } from "../../__tests__/fake-clock";
+import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -62,8 +63,8 @@ import {
   DETAILS_ROW_ATTRIBUTE,
   DETAILS_ROW_REQUEST_EVENT,
   type DetailsRow,
-  useOpenDetailsAt,
 } from "./details-rows";
+import { Opener } from "./details-rows-fixture";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
 import { narrowIssue, patchAnswer } from "./issue-fixtures";
@@ -4322,20 +4323,31 @@ test("the Parent row's first control is its marked opener, which opens the paren
   }
 });
 
-/** A control elsewhere on the page that opens Details at `row` with the row's control pressed,
- *  as the header's Set or Edit parent issue does (`slots/header.tsx`). */
-function PressAt({ row }: { row: DetailsRow }): ReactNode {
-  const openAt = useOpenDetailsAt();
-  return (
-    <button onClick={() => openAt(row, true)} type="button">
-      Press at {row}
-    </button>
-  );
-}
-
 /** The address the router is at, which a link followed on the page changes. */
 function PageAddress(): ReactNode {
   return <output data-testid="page-address">{useLocation().pathname}</output>;
+}
+
+/** Details on the issue `getIssue` answers, beside a control elsewhere on the page that presses
+ *  at `row` (`Opener`), as the header's Set or Edit parent issue does (`slots/header.tsx`), and
+ *  the address the router is at. `press` presses that control; `stayed` checks that the reader is
+ *  still on the issue. */
+function renderPressAt(row: DetailsRow) {
+  const { unmount } = renderDetails(() => (
+    <>
+      <Opener press row={row} />
+      <PageAddress />
+    </>
+  ));
+  return {
+    press: (user: UserEvent) => user.click(screen.getByRole("button", { name: `Press at ${row}` })),
+    stayed: () =>
+      expect(
+        screen.getByTestId("page-address").textContent,
+        `a press at the ${row} row left the issue`
+      ).toBe("/issues/CORE-1"),
+    unmount,
+  };
 }
 
 /** The rows whose editor Details draws itself, each with the issue and the name of the control
@@ -4360,14 +4372,10 @@ test("a press at the Parent or route row with its editor open puts the focus in 
   try {
     for (const { details, opener, row } of EDITOR_ROWS) {
       getIssue.mockResolvedValue(details);
-      const { unmount } = renderDetails(() => (
-        <>
-          <PressAt row={row} />
-          <PageAddress />
-        </>
-      ));
-      // Every click on a control of the row from the press on; the row goes with the case.
-      const clicked: EventTarget[] = [];
+      const { press, stayed, unmount } = renderPressAt(row);
+      // The text of every control of the row a click reaches from the press on; the row goes
+      // with the case.
+      const clicked: string[] = [];
       try {
         await user.click(await screen.findByRole("button", { name: opener }));
         const box = await screen.findByLabelText(PROPERTY_LABELS[row]);
@@ -4375,12 +4383,12 @@ test("a press at the Parent or route row with its editor open puts the focus in 
         rowAt(row).addEventListener(
           "click",
           (event) => {
-            if (event.target !== null) clicked.push(event.target);
+            if (event.target instanceof Element) clicked.push(event.target.textContent ?? "");
           },
           true
         );
         // The press moves the focus to its own control, out of the box.
-        await user.click(screen.getByRole("button", { name: `Press at ${row}` }));
+        await press(user);
         await waitFor(() =>
           expect(
             box,
@@ -4388,10 +4396,7 @@ test("a press at the Parent or route row with its editor open puts the focus in 
           ).toHaveFocus()
         );
         expect(clicked, `a press at the ${row} row clicked a control of the row`).toEqual([]);
-        expect(
-          screen.getByTestId("page-address").textContent,
-          `a press at the ${row} row left the issue`
-        ).toBe("/issues/CORE-1");
+        stayed();
       } finally {
         unmount();
       }
@@ -4410,30 +4415,58 @@ test("a press at the Parent or route row with its editor shut opens the editor, 
   try {
     for (const { details, opener, row } of EDITOR_ROWS) {
       getIssue.mockResolvedValue(details);
-      const { unmount } = renderDetails(() => (
-        <>
-          <PressAt row={row} />
-          <PageAddress />
-        </>
-      ));
+      const { press, stayed, unmount } = renderPressAt(row);
       try {
         await screen.findByRole("button", { name: opener });
-        await user.click(screen.getByRole("button", { name: `Press at ${row}` }));
+        await press(user);
         await waitFor(() =>
           expect(
             document.activeElement,
             `the press at ${row} (parent ${details.parent}) put no focus in a new editor's box`
           ).toBe(screen.queryByLabelText(PROPERTY_LABELS[row]))
         );
-        expect(
-          screen.getByTestId("page-address").textContent,
-          `a press at the ${row} row left the issue`
-        ).toBe("/issues/CORE-1");
+        stayed();
       } finally {
         unmount();
       }
     }
   } finally {
+    restore();
+  }
+});
+
+// A closed issue's Parent row draws no control that opens the parent's editor, only the parent's
+// link. A press at the row (`useOpenDetailsAt`), which finds no marked opener there, pressed the
+// row's first control that takes a press, the link, which took the reader to the parent issue.
+// It presses nothing.
+test("a press at a closed issue's Parent row, which draws no opener, presses nothing", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...closedIssue, parent: "CORE-2" });
+  const { press, stayed, unmount } = renderPressAt("parent");
+
+  try {
+    const link = await screen.findByRole("link", { name: "CORE-2" });
+    expect(firstUsableIn(rowAt("parent")), "the parent's link takes no press").toBe(link);
+    // The words of every control of the row a click reaches from the press on.
+    const clicked: string[] = [];
+    rowAt("parent").addEventListener(
+      "click",
+      (event) => {
+        if (event.target instanceof Element) clicked.push(event.target.textContent ?? "");
+      },
+      true
+    );
+    await press(user);
+    // The opener reaches the row two frames on; these two frames end after its own.
+    await act(async () => {
+      await nextFrame();
+      await nextFrame();
+    });
+    expect(clicked, "a press at the closed issue's Parent row clicked a control of it").toEqual([]);
+    stayed();
+  } finally {
+    unmount();
     restore();
   }
 });
@@ -4497,10 +4530,10 @@ test("Details clears the parent with an empty editor save", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
-    // The row's first control is the one the header's Set parent issue presses.
+    // The row's marked opener, the control the header's Set parent issue presses, sets a parent.
     await waitFor(() =>
       expect(
-        firstUsableIn(detailsRow(PROPERTY_LABELS.parent)),
+        detailsRow(PROPERTY_LABELS.parent).querySelector(`[${DETAILS_OPENER_ATTRIBUTE}]`),
         "the Parent row still offers to edit a parent the issue no longer has"
       ).toHaveTextContent(CONTROL_LABELS.set_parent)
     );

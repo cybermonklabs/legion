@@ -34,10 +34,12 @@ function ariaHiddenBelow(control: Element, bound: Element | null): boolean {
 
 /**
  * Whether `control` takes a press now: the one rule Add's entries, the key `l` and the header's
- * keys (`useHeaderKeys.ts`) read before they list, offer or press a control another component
- * draws, so what is offered is exactly what a press opens. Details reads it wherever it hands a
- * focus on through `firstUsable` (`IssueMargin.tsx`, `BlockedByControl.tsx`), as does the opener
- * of a row (`details-rows.ts`, through `firstUsableIn`) for the control it focuses or presses.
+ * keys (`useHeaderKeys.ts`, the approval's `a` and `Shift+R` too) read before they list, offer or
+ * press a control another component draws, so what is offered is exactly what a press opens.
+ * Details reads it wherever it hands a focus on through `firstUsable` (`IssueMargin.tsx`,
+ * `BlockedByControl.tsx`), as does the opener of a row (`details-rows.ts`), through `firstUsable`
+ * for the row's marked opener it presses and `firstUsableIn` for the control it focuses or the
+ * first control it presses in a row that marks none.
  *
  * It builds on `canHoldFocus` (`focus-keeper.ts`), whether an element can take the focus. A
  * control that can take the focus can still refuse a press, and an entry or a key that offered

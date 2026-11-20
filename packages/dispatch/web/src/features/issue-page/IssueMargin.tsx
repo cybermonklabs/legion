@@ -59,7 +59,7 @@ import {
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
-import { DETAILS_OPENER_ATTRIBUTE } from "./details-rows";
+import { detailsEditor, detailsOpener } from "./details-rows";
 import { IssueAddMenu } from "./IssueAddMenu";
 import { IssueClaimControl } from "./IssueClaimControl";
 import { type IssueField, IssueFieldForms } from "./IssueFieldForms";
@@ -570,7 +570,7 @@ export function IssueMarginPanel({
               ref={parentControl}
               type="button"
               {...pageChrome}
-              {...{ [DETAILS_OPENER_ATTRIBUTE]: "control" }}
+              {...detailsOpener}
             >
               {issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent}
             </button>
@@ -587,7 +587,7 @@ export function IssueMarginPanel({
             </Link>
           )}
           {editingField === "parent" ? (
-            <div className="contents" {...{ [DETAILS_OPENER_ATTRIBUTE]: "editor" }}>
+            <div className="contents" {...detailsEditor}>
               <IssueFieldForms
                 field="parent"
                 isClosed={isClosed}
@@ -714,7 +714,7 @@ export function IssueMarginPanel({
             writes={writes}
           />
           {editingField === "route" ? (
-            <div className="contents" {...{ [DETAILS_OPENER_ATTRIBUTE]: "editor" }}>
+            <div className="contents" {...detailsEditor}>
               <IssueFieldForms
                 field="route"
                 isClosed={isClosed}

@@ -162,7 +162,8 @@ test.each([
 });
 
 // Told a bound, `canHoldFocus` does not read the bound or what is above it, which its caller may
-// have shut on purpose: a button there holds the focus that it holds with no bound.
+// have shut on purpose: a button there holds the focus within the bound, though it holds none
+// with no bound named.
 test.each([
   ["a button in a hidden bound", `<div data-bound hidden>${SAVE}</div>`],
   ["a button in an inert bound", `<div data-bound inert>${SAVE}</div>`],

@@ -1,25 +1,9 @@
 import { expect, mock, test } from "bun:test";
 import { render, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
 
-import {
-  DETAILS_ROW_ATTRIBUTE,
-  DETAILS_ROW_REQUEST_EVENT,
-  type DetailsRow,
-  useOpenDetailsAt,
-} from "./details-rows";
+import { DETAILS_ROW_ATTRIBUTE, DETAILS_ROW_REQUEST_EVENT, type DetailsRow } from "./details-rows";
+import { Opener } from "./details-rows-fixture";
 import { DETAILS_ATTRIBUTE, type MarginDrawer, MarginSlotProvider } from "./margin-slot";
-
-/** A control elsewhere on the page that opens Details at `row`, as the header's label count does,
- *  or with `press` presses the row's first control there, as the labels key does. */
-function Opener({ press = false, row }: { press?: boolean; row: DetailsRow }): ReactNode {
-  const openAt = useOpenDetailsAt();
-  return (
-    <button onClick={() => openAt(row, press)} type="button">
-      {press ? "Press at" : "Open at"} {row}
-    </button>
-  );
-}
 
 // A row inside a closed section of Details is hidden, and takes no focus, until its section
 // opens, so the opener asks Details for the row - an event on the drawer's aside, with the row as

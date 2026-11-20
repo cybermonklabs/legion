@@ -10,7 +10,7 @@ import {
 } from "../issue/RouteReach";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionOfAddress } from "../refs/routes";
-import { DETAILS_OPENER_ATTRIBUTE } from "./details-rows";
+import { detailsOpener } from "./details-rows";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
@@ -71,7 +71,7 @@ export function IssueRouteControl({
       ref={controlRef}
       type="button"
       {...authorText}
-      {...{ [DETAILS_OPENER_ATTRIBUTE]: "control" }}
+      {...detailsOpener}
     >
       {name}
     </button>

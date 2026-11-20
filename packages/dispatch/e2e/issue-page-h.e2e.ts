@@ -1204,7 +1204,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
     ).toHaveText(CONTROL_LABELS.none);
     await addControl(page).click();
     // Add lists Assignee only where the header draws the assignee's control, which the menu
-    // presses, and only while TWO has no assignee: an issue someone is assigned to has a value for
+    // focuses, and only while TWO has no assignee: an issue someone is assigned to has a value for
     // it, and Add lists no property that has one. The header is read once it is drawn.
     const twoStored = await getIssue(two);
     await expect(

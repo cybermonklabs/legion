@@ -38,7 +38,7 @@ function outOfReach(element: Element, within: Element | null | undefined): boole
 }
 
 /**
- * Whether the element can take the focus as it stands: it is on the page, not disabled, and
+ * Whether the element can take the focus (up to `within`): it is on the page, not disabled, and
  * neither it nor an ancestor is hidden or inert. It reads no layout, so a test's DOM, which has
  * none, answers as a browser does.
  *
