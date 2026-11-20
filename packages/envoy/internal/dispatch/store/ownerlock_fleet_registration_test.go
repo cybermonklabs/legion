@@ -51,10 +51,10 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	defer registrationConn.Release()
 	registered := make(chan error, 1)
 	began := time.Now()
-	go func() { registered <- arriveOn(ctx, registrationConn, registration, uuid.NewString()) }()
+	go func() { registered <- arriveOn(ctx, t, registrationConn, registration, uuid.NewString()) }()
 	awaitGateWait(t, s, registrationConn.Conn().PgConn().PID(), registered, registration.name)
 	beat := make(chan error, 1)
-	go func() { beat <- heartbeatAsThisBuild(ctx, s, mine) }()
+	go func() { beat <- heartbeatAsThisBuild(ctx, t, s, mine) }()
 	select {
 	case err := <-registered:
 		took := time.Since(began)
@@ -88,7 +88,7 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 	}
 	defer publishConn.Release()
 	published := make(chan error, 1)
-	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
+	go func() { published <- arriveOn(ctx, t, publishConn, publish, uuid.NewString()) }()
 	awaitGateWait(t, s, publishConn.Conn().PgConn().PID(), published, publish.name)
 	select {
 	case err := <-published:

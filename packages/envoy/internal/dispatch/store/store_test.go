@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -1679,14 +1680,16 @@ func askThreadShape(t *testing.T, store *Store) map[string]commentThreadRow {
 }
 
 // applyMigrationFile runs one migration's statements the way the runner does: one transaction,
-// so an `on commit drop` temporary table lives exactly that long.
+// so an `on commit drop` temporary table lives exactly that long. The statements are given what
+// the test's deadline leaves (testwait.Answered).
 func applyMigrationFile(t *testing.T, store *Store, name string) {
 	t.Helper()
 	statements, err := migrationFiles.ReadFile("migrations/" + name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
-	ctx := context.Background()
+	ctx, cancel := testwait.Answered(t, context.Background())
+	defer cancel()
 	tx, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin %s: %v", name, err)
@@ -1730,24 +1733,12 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 			`); err != nil {
 				t.Fatalf("seed a cyclic ask thread: %v", err)
 			}
-			// A bound on the statement, so a walk that does spin fails the test in seconds
-			// instead of running until the test binary is killed. Database-level, because the
-			// migration takes its connection from the pool: only a session opened after this
-			// carries it.
-			if _, err := store.Pool.Exec(ctx,
-				"alter database "+store.Pool.Config().ConnConfig.Database+" set statement_timeout = '20s'",
-			); err != nil {
-				t.Fatalf("bound the migration statement: %v", err)
-			}
-			bounded, err := Open(ctx, store.Pool.Config().ConnString())
-			if err != nil {
-				t.Fatalf("reopen the bounded database: %v", err)
-			}
-			t.Cleanup(bounded.Pool.Close)
-
-			applyMigrationFile(t, bounded, backfill.file)
+			// The migration runs under what the test's deadline leaves (applyMigrationFile), so a
+			// walk that does spin fails the test, naming the migration, instead of running until
+			// the test binary is killed.
+			applyMigrationFile(t, store, backfill.file)
 			var movedAsk, movedReplyTo, movedTurn *string
-			if err := bounded.Pool.QueryRow(ctx, `
+			if err := store.Pool.QueryRow(ctx, `
 				select ask_id::text, reply_to::text, turn from comments where id = $1
 			`, replyID).Scan(&movedAsk, &movedReplyTo, &movedTurn); err != nil {
 				t.Fatalf("read the reply below the cycle: %v", err)

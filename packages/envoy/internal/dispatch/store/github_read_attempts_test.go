@@ -5,11 +5,11 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The record keeps one row for each read, which every attempt overwrites with its own values: a
@@ -121,9 +121,11 @@ func TestTheGitHubReadAttemptsTableRefusesARowHealthCannotAnswer(t *testing.T) {
 }
 
 // Each write of a row notifies githubreads.Channel with the read's name, the insert and the
-// update alike, so every process refreshes its copy whichever process recorded the attempt.
+// update alike, so every process refreshes its copy whichever process recorded the attempt. The
+// listen, the writes and the waits for each notification are given what the test's deadline leaves
+// (testwait.Answered): a notification that never comes fails the test naming the write.
 func TestRecordingAGitHubReadAttemptNotifiesItsChannel(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	ctx, cancel := testwait.Answered(t, context.Background())
 	defer cancel()
 	database := migratedEmptyStore(t)
 	listener := connectForTest(t, ctx, database)

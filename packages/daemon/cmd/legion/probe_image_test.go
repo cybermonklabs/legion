@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -192,6 +193,46 @@ func TestProbeImageRefusesANegativeProbeBudget(t *testing.T) {
 	code, stdout, stderr := probeImage("--plugin-root", t.TempDir(), "--envoy-plugin-root", t.TempDir(), "--probe-budget", "-1s")
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "--probe-budget must not be negative") {
 		t.Fatalf("probe-image with a negative budget = %d, stdout %q, stderr %q; want exit 1 naming --probe-budget", code, stdout, stderr)
+	}
+}
+
+// --probe-budget reaches the pod's own test database: with --test-postgres, a start that never
+// answers is stopped at the budget with its process group, named, and the command refuses, exit 1,
+// not before the budget and within seconds after it. Nothing of the start is left running.
+func TestProbeImageStopsTheTestDatabaseAtItsProbeBudget(t *testing.T) {
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	script := "#!/bin/sh\ncase $1 in\nensure)\n\techo \"$$ $(cut -d' ' -f22 /proc/$$/stat)\" > " + started +
+		"\n\texec sleep 30\n\t;;\nesac\nexit 0\n"
+	for _, program := range []string{"legion-testpg", "psql"} {
+		if err := os.WriteFile(filepath.Join(dir, program), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("LEGION_OMP_PATH", "")
+	began := time.Now()
+	code, stdout, stderr := probeImage("--plugin-root", t.TempDir(), "--envoy-plugin-root", t.TempDir(),
+		"--probe-budget", "2s", "--test-postgres", filepath.Join(t.TempDir(), "cluster"))
+	took := time.Since(began)
+	if code != 1 || stdout != "" ||
+		!strings.Contains(stderr, "legion probe-image: the pod's own test database: legion-testpg ensure did not finish before the probe's context ended (context deadline exceeded), so its process group was stopped") {
+		t.Fatalf("probe-image with a start that never answers and a 2 s budget = %d after %s, stdout %q, stderr %q; want exit 1 naming ensure as having run out the budget",
+			code, took, stdout, stderr)
+	}
+	if took < 2*time.Second || took > 15*time.Second {
+		t.Errorf("probe-image took %s over a 2 s budget, want it to end at the budget", took)
+	}
+	record, err := os.ReadFile(started)
+	if err != nil {
+		t.Fatalf("the stand-in's ensure never ran, so this run proves nothing: %v", err)
+	}
+	pid, since, _ := strings.Cut(strings.TrimSpace(string(record)), " ")
+	if stat, err := os.ReadFile("/proc/" + pid + "/stat"); err == nil {
+		fields := strings.Fields(string(stat[bytes.LastIndexByte(stat, ')')+1:]))
+		if len(fields) >= 20 && fields[0] != "Z" && fields[19] == since {
+			t.Errorf("the start the budget stopped, pid %s, still runs", pid)
+		}
 	}
 }
 

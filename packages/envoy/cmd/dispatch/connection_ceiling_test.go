@@ -7,12 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Every Dispatch process a test starts against one Postgres may open store.ConnectionsPerProcess
@@ -110,9 +110,9 @@ const tooManyConnections = "(SQLSTATE 53300)"
 // open on it now, which say whether the server is too small or other clients hold its slots. The
 // process has exited, so the count holds none of its connections once Postgres has ended their
 // backends.
-func connectionRefusalCause(refused, databaseURL string) string {
+func connectionRefusalCause(t testing.TB, refused, databaseURL string) string {
 	reason := "Postgres refused it a connection for too many clients (SQLSTATE 53300):\n" + refused + "\n"
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := testwait.Answered(t, context.Background())
 	defer cancel()
 	var allowed, open int
 	conn, err := pgx.Connect(ctx, databaseURL)

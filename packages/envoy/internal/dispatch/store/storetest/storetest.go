@@ -42,6 +42,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
@@ -269,10 +270,12 @@ const (
 // connection that really is somebody else's.
 func dropDatabase(name string) {
 	shared.drops.Go(func() {
-		deadline := time.Now().Add(dropWindow)
+		began := time.Now()
+		deadline := began.Add(dropWindow)
 		var err error
 		for {
 			if _, err = shared.admin.Exec(context.Background(), "drop database "+name); err == nil {
+				_ = testdb.LogDrop(context.Background(), shared.admin, name, time.Since(began))
 				return
 			}
 			var pgError *pgconn.PgError
@@ -283,6 +286,7 @@ func dropDatabase(name string) {
 		}
 		_, forced := shared.admin.Exec(context.Background(), "drop database "+name+" with (force)")
 		if forced == nil {
+			_ = testdb.LogDrop(context.Background(), shared.admin, name, time.Since(began))
 			return
 		}
 		// The forced drop is what ended the cleanup, so its error is the one reported; the

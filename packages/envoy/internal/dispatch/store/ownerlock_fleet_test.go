@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -284,17 +285,17 @@ var earlierBuildArrivals = []earlierBuildArrival{
 	}},
 }
 
-// arriveOn runs arrival for key in a transaction of its own on conn, bounded by a lock timeout so
-// a wait that never ends fails rather than hangs, and commits it.
-func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
+// arriveOn runs arrival for key in a transaction of its own on conn, given what the test's
+// deadline leaves (testwait.Answered) so a wait that never ends fails the test rather than hangs
+// it, and commits it.
+func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
+	ctx, cancel := testwait.Answered(t, ctx)
+	defer cancel()
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if err := arrival.arrive(ctx, tx, key); err != nil {
 		return err
 	}
@@ -302,13 +303,13 @@ func arriveOn(ctx context.Context, conn *pgxpool.Conn, arrival earlierBuildArriv
 }
 
 // arrive runs arrival for key on a connection of the pool's (arriveOn).
-func arrive(ctx context.Context, s *Store, arrival earlierBuildArrival, key string) error {
+func arrive(ctx context.Context, t *testing.T, s *Store, arrival earlierBuildArrival, key string) error {
 	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Release()
-	return arriveOn(ctx, conn, arrival, key)
+	return arriveOn(ctx, t, conn, arrival, key)
 }
 
 // awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
@@ -353,16 +354,16 @@ const (
 // earlier build in the fleet (fleetModeWriter alone; false for the others), and the transaction's
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
-// other; the earlier build's take theirs sorted by `<kind>:<key>` up front.
-func raceWriter(ctx context.Context, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
+// other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its statements are given
+// what the test's deadline leaves (testwait.Answered).
+func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
+	ctx, cancel := testwait.Answered(t, ctx)
+	defer cancel()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return false, err
-	}
 	switch shape {
 	case legacyModeWriter:
 		if err := LockOwners(ctx, tx, owners...); err != nil {
@@ -469,7 +470,7 @@ func (l *raceLedger) record(t *testing.T, role string, err error, touched []Owne
 // build's writer as its fleet read answers, the mode it committed in.
 func (l *raceLedger) write(ctx context.Context, t *testing.T, s *Store, shape writerShape, all []Owner) {
 	subset, touch := randomOwners(all)
-	legacy, err := raceWriter(ctx, s, shape, subset, touch)
+	legacy, err := raceWriter(ctx, t, s, shape, subset, touch)
 	if err == nil && shape == fleetModeWriter {
 		l.mu.Lock()
 		l.modes[legacy]++
@@ -532,16 +533,16 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 }
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
-// registry's lock, in a transaction of its own.
-func heartbeatAsThisBuild(ctx context.Context, s *Store, instance string) error {
+// registry's lock, in a transaction of its own, given what the test's deadline leaves
+// (testwait.Answered).
+func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
+	ctx, cancel := testwait.Answered(t, ctx)
+	defer cancel()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local lock_timeout = '20s'`); err != nil {
-		return err
-	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock($1)`, registryLockKey); err != nil {
 		return err
 	}

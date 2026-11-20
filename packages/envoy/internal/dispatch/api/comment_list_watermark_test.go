@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment list is answered under a validator read before its body is built: the watermark three
@@ -315,12 +316,14 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // A comment write held open blocks no other write on the same issue. This is what the triggers
 // are deferred for: an immediate trigger would take the issue's counter row where the write
 // happens and hold it until that transaction ended, so one long-running comment transaction would
-// serialise every comment write of its issue for its whole life. The second writer sets a lock
-// timeout, so an immediate trigger fails this test in seconds instead of hanging the suite.
+// serialise every comment write of its issue for its whole life. The test's writes are given what
+// its deadline leaves (testwait.Answered), so an immediate trigger fails this test, naming the
+// write that waited, instead of hanging the suite.
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "HELDW", "A write held open", "A spec")
-	ctx := context.Background()
+	ctx, cancel := testwait.Answered(t, context.Background())
+	defer cancel()
 
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -338,9 +341,6 @@ func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 		t.Fatalf("open the second writer's transaction: %v", err)
 	}
 	defer func() { _ = other.Rollback(ctx) }()
-	if _, err := other.Exec(ctx, `set local lock_timeout = '5s'`); err != nil {
-		t.Fatalf("set the second writer's lock timeout: %v", err)
-	}
 	if _, err := other.Exec(ctx, `
 		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'The write that must not wait.')
 	`, issue.Key); err != nil {

@@ -122,6 +122,10 @@ func (p *lockSampler) resolveRelations(url string) {
 			}
 		}
 	}
+	// A read of the live server after the load has ended, with no test deadline to take: a server
+	// that does not answer within 10 s leaves each relation named <database>:<oid>, as a refused
+	// connect does, rather than holding the step's summary. The test that runs this reads an
+	// address that refuses at once, so the bound decides nothing there.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for db, names := range byDB {

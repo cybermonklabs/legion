@@ -132,10 +132,12 @@ type Execer interface {
 // module, so every package's tests can take it — internal/store's among them, whose own tests
 // cannot import internal/testpg at all.
 func Drop(ctx context.Context, admin Execer, name string) error {
-	deadline := time.Now().Add(30 * time.Second)
+	began := time.Now()
+	deadline := began.Add(30 * time.Second)
 	for attempt := 0; ; attempt++ {
 		_, err := admin.Exec(ctx, "drop database "+name+" with (force)")
 		if err == nil {
+			_ = logDrop(ctx, admin, name, time.Since(began))
 			return nil
 		}
 		var pgErr *pgconn.PgError
@@ -151,6 +153,21 @@ func Drop(ctx context.Context, admin Execer, name string) error {
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// logDrop writes one line into the Postgres server's own log saying how long a test's drop of name
+// took: `testdb: drop database <name> took <ms> ms`, through a RAISE LOG, which any role may run
+// and which the server logs at its default log_min_messages. go test shows nothing a passing
+// package prints, and a CI job prints its Postgres service's log when it ends, so the server's log
+// is where a CI run's drop times can be read: internal/testwait's Cleanup, the reserve a failing
+// test keeps for its cleanup, is measured from them. The line is a measurement and nothing waits on
+// it, so Drop drops the error it answers. The envoy module's testdb writes the same line.
+// TestLogDropWritesALineTheServerAccepts runs the statement.
+func logDrop(ctx context.Context, admin Execer, name string, took time.Duration) error {
+	text := fmt.Sprintf("testdb: drop database %s took %.3f ms", name, float64(took)/float64(time.Millisecond))
+	text = strings.NewReplacer("'", "''", "%", "%%").Replace(text)
+	_, err := admin.Exec(ctx, "do $log$ begin raise log '"+text+"'; end $log$")
+	return err
 }
 
 // RandomName is prefix with a random suffix, so two databases of one prefix never collide. It is

@@ -41,7 +41,7 @@ func raceShapes(t *testing.T, s *Store, owners fleetOwners, a, b writerShape, ro
 		for _, shape := range []writerShape{a, b} {
 			subset, touch := randomOwners(all)
 			wg.Go(func() {
-				_, err := raceWriter(ctx, s, shape, subset, touch)
+				_, err := raceWriter(ctx, t, s, shape, subset, touch)
 				mu.Lock()
 				defer mu.Unlock()
 				var pgErr *pgconn.PgError
@@ -155,14 +155,14 @@ func TestTheOwnerLockGateRacesAnEarlierBuildArrivingWritingAndLeaving(t *testing
 				return
 			case <-time.After(5 * time.Millisecond):
 			}
-			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, s, mine), nil)
+			ledger.record(t, "this build's heartbeat", heartbeatAsThisBuild(ctx, t, s, mine), nil)
 		}
 	})
 
 	var waits []time.Duration
 	timedArrival := func(arrival earlierBuildArrival, key string) {
 		began := time.Now()
-		err := arrive(ctx, s, arrival, key)
+		err := arrive(ctx, t, s, arrival, key)
 		waits = append(waits, time.Since(began))
 		ledger.record(t, "earlier build, "+arrival.name, err, nil)
 	}

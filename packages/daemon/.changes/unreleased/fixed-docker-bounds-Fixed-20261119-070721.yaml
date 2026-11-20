@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  The pod's own test database no longer refuses a server that is slow to start or stop while its
+  caller's deadline still allows. The image probe's check (`legion probe-image --test-postgres`)
+  gave each step a fixed 60 s, the launcher's `ensure` had the same 60 s on every tick, and the
+  worker image's `legion-testpg` waited 180 s for its lock, 120 s for `pg_ctl start`, 60 s for
+  `pg_ctl stop`, 5 s for a connection and 3 s for `pg_isready`. Each now waits as long as its
+  caller's deadline leaves: the probe's `--probe-budget`, 60 s of the pod's boot for the
+  launcher's first `ensure`, and none for a later tick. The script is told that deadline
+  (`LEGION_TESTPG_DEADLINE`). A run still going at it is stopped with its whole process group, so
+  no start it began goes on to start a server after the probe's stop. A server that still runs
+  after the probe's stop is stopped by the probe and its data removed, and the probe names, on one
+  line, the step that ran out, a stop that failed, and the server it stopped. `initdb` writes a new
+  cluster into a directory of its own, renamed into place only once it ends, so a start the boot
+  budget stopped part way no longer leaves a cluster every later tick fails to start.
+time: 2026-11-19T07:07:21Z
+custom:
+  Issue: fixed-docker-bounds

@@ -172,9 +172,10 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	}
 	// The pod's own test database, under the runtime a pod runs on: the probe pod is the first
 	// place this deployment's gVisor starts the server, so a runtime it cannot run under refuses
-	// the boot probe rather than every pod's first Postgres test.
+	// the boot probe rather than every pod's first Postgres test. Its steps wait as long as ctx,
+	// which carries --probe-budget, allows.
 	if f.testPostgres != "" {
-		if err := launcher.CheckTestPostgres(f.testPostgres); err != nil {
+		if err := launcher.CheckTestPostgres(ctx, f.testPostgres); err != nil {
 			fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
 			return 1
 		}

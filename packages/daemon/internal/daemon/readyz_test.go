@@ -58,7 +58,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	}
 	d := startDaemon(t, cfg, o)
 
-	held, cancelHeld := context.WithTimeout(context.Background(), testwait.Bounded(t, 30*time.Second, time.Second))
+	held, cancelHeld := testwait.Answered(t, context.Background())
 	defer cancelHeld()
 	select {
 	case <-serving:

@@ -62,6 +62,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // liveCheck is one check of the harness: the name it prints, what it runs, and — when non-nil —
@@ -1278,7 +1279,7 @@ func (r *liveRig) recordSession(c *liveClaim) error {
 // the devbox this process runs on — never sessionDSNFile, the pod-advertised address a bridge-mode
 // devbox cannot resolve; liveEnv's doc has the reasoning).
 func (r *liveRig) writeSession(path, content string, written time.Time) error {
-	ctx, cancel := context.WithTimeout(r.ctx, time.Minute)
+	ctx, cancel := testwait.Answered(r.t, r.ctx)
 	defer cancel()
 	conn, err := ompsessions.Connect(ctx, r.env.sessionDSNLocalFile)
 	if err != nil {

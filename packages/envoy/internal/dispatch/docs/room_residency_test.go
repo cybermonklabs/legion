@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A room that only ever receives valid writes is never refused and never loses one while readers,
@@ -764,7 +765,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 		// Shutdown waits on the paused write's durable append, which this test holds, until its
 		// budget ends, then closes the room with a connected editor once the publish has left.
 		{"Shutdown with a connected editor", true, true, func(service *Service, _ string) error {
-			ctx, cancel := context.WithTimeout(context.Background(), ShutdownDrainBudget+11*time.Second)
+			ctx, cancel := testwait.Answered(t, context.Background())
 			defer cancel()
 			_ = service.Shutdown(ctx)
 			return nil

@@ -341,7 +341,8 @@ The worker image ships that skill, so a role reads it where it works, and a tool
 
 A role whose change owes a Postgres test has one in its own pod.
 The image carries the PostgreSQL 18 server with `pgvector` beside the `psql` above
-— 18 is CI's version and Cloud SQL's — and `/usr/local/bin/legion-testpg`, whose `ensure` runs `initdb` if the data directory is empty, starts the server on loopback port 5433, and creates the DSN's login role and the database the DSN names, owned by that role.
+— 18 is CI's version and Cloud SQL's — and `/usr/local/bin/legion-testpg`, whose `ensure` runs `initdb` if the data directory holds no whole cluster, starts the server on loopback port 5433, and creates the DSN's login role and the database the DSN names, owned by that role.
+  `initdb` writes into a directory of its own, `data.initdb`, renamed to `data` only once it ends, so a start stopped part way through `initdb` leaves nothing the next start takes for a cluster: that start names the part it removes and runs `initdb` again.
 
 A deployment turns it on with `runtime.kubernetes.test_postgres: true`, a key of its own beside `pod` rather than inside it.
 Then:
@@ -349,6 +350,11 @@ Then:
 - The **roles container's launcher**, PID 1 of the one `roles` container, runs `legion-testpg
   ensure` once at container start, before any role's agent, and every 15 seconds after, so a postmaster that exits is restarted and a start that died with the server up but its role, `vector` or database unmade is finished by the next tick:
   what `ensure` tests is the DSN, not the port.
+  The first `ensure` may take 60 seconds of the pod's boot, since the launcher connects to the daemon only after it, inside `worker_boot_timeout_seconds`:
+  one still running then is stopped with its whole process group, and the roles start without the database while the next tick carries the start on, a stopped `initdb` included.
+  A tick's `ensure` has no deadline of its own.
+  Each wait inside `legion-testpg` — for the cluster's lock, for a connection, for the server to start or to stop — takes the time its caller's deadline leaves (`LEGION_TESTPG_DEADLINE`), and with no deadline it waits until what it waits for answers.
+  The daemon's image probe (`legion probe-image --test-postgres`) stops, by its data directory, a server its own stop left running, removes that cluster's data, and names both, so the probe pod leaves nothing running.
   It is not `runtime.kubernetes.setup`: that command runs inside a role's own PID namespace, so the server would be a child of that role's generation and would die with it, and the next role would find a stale data directory and no postmaster.
 
 - The **daemon** puts `LEGION_TEST_PG_DSN` in the start command of every role of such an issue pod, and refuses the name in `runtime.kubernetes.pod.env`, so no deployment line can point a role at another server.
@@ -423,6 +429,10 @@ Then:
   for a deployment that sets the key, the probe Sandbox's `legion probe-image` carries `--test-postgres <its own
   volume>`, which runs `legion-testpg check` and `ensure`, makes and drops a database through the DSN every role is told, and stops the server.
   So a gVisor the server cannot start under refuses the daemon's boot probe (`legion probe-boot`, "Probing a configuration before the daemon boots on it") rather than every pod's first Postgres test.
+  Each of those steps waits as long as the probe command's own deadline (`--probe-budget`) allows, and so does each wait inside `legion-testpg`, which is told that deadline, so a step that is slow but still working is waited for rather than refused at a fixed bound.
+  A step still running at that deadline is stopped with its whole process group, and the refusal names the step.
+  The server is then stopped, waited for as long as the deadline allows, or asked to stop without a wait once the deadline has passed.
+  The probe then reads whether a process of the server still runs, by its data directory, and names it on the same line as the step's failure and the stop's.
   The image build runs the same sequence in its own toolchain self-check, under the builder's runtime.
 
 - `legion-testpg ensure` refuses a DSN that carries a password or names a host that is not loopback, so a wrong deployment line logs a refusal instead of starting a server.

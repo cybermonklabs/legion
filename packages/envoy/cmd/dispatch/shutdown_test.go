@@ -1239,15 +1239,15 @@ func TestTheHealthWaitTakesNoAnswerOnThePortForAProcessThatLostIt(t *testing.T) 
 	}
 
 	lost := process(`level=ERROR msg="dispatch: listen" `+address+` error="DISPATCH_LISTEN_FD=3: serve on the inherited socket: bad file descriptor"`, true)
-	if err := lost.healthyWithin(5 * time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
+	if err := lost.healthyWithin(t, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
 		t.Errorf("a process that exited on its listen passed as healthy on a port another server holds: %v", err)
 	}
 	gone := process(listening+"\n"+`level=INFO msg="dispatch: shutting down"`, true)
-	if err := gone.healthyWithin(5 * time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
+	if err := gone.healthyWithin(t, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exited before it became healthy") {
 		t.Errorf("a process that logged it serves and then exited passed as healthy on a port another server holds: %v", err)
 	}
 	bound := process(listening, false)
-	if err := bound.healthyWithin(5 * time.Second); err != nil {
+	if err := bound.healthyWithin(t, 5*time.Second); err != nil {
 		t.Errorf("a running process that logged it serves, on a port that answers, was not healthy: %v", err)
 	}
 }
@@ -1265,7 +1265,7 @@ func TestAProcessThatExitsBeforeItIsHealthySaysWhy(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
 		process := &dispatchProcess{Process: &cmdtest.Process{Output: logged, Exited: done}, databaseURL: databaseURL}
-		return process.healthyWithin(5 * time.Second)
+		return process.healthyWithin(t, 5*time.Second)
 	}
 	// cause is what the failure says before the process's whole output.
 	cause := func(err error) string {
@@ -1533,7 +1533,7 @@ func (p *dispatchProcess) listeningLine() string {
 // when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
 	t.Helper()
-	if err := p.healthyWithin(30 * time.Second); err != nil {
+	if err := p.healthyWithin(t, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1553,7 +1553,7 @@ const dispatchOutputHeading = "Dispatch's output:"
 // serves them. Nor is an answer once the process has exited, which released the port to whatever
 // took it next. The process serves after the SIGTERM handler is installed, so a server that
 // answers is one a signal stops in order.
-func (p *dispatchProcess) healthyWithin(within time.Duration) error {
+func (p *dispatchProcess) healthyWithin(t testing.TB, within time.Duration) error {
 	listening := p.listeningLine()
 	exited := func() bool {
 		select {
@@ -1594,7 +1594,7 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 		}
 	}
 	if exited() {
-		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
+		return fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(t), dispatchOutputHeading, p.Output.String())
 	}
 	return fmt.Errorf("Dispatch never became healthy:\n%s", p.Output.String())
 }
@@ -1602,7 +1602,7 @@ func (p *dispatchProcess) healthyWithin(within time.Duration) error {
 // exitCause is the reason a process that exited before it was healthy gives in its output: the
 // first line where Postgres refused it a connection for too many clients, with what the server
 // says of its connections now (connectionRefusalCause), or else its last exitCauseLines lines.
-func (p *dispatchProcess) exitCause() string {
+func (p *dispatchProcess) exitCause(t testing.TB) string {
 	output := strings.TrimRight(p.Output.String(), "\n")
 	if strings.TrimSpace(output) == "" {
 		return "It wrote no output."
@@ -1610,7 +1610,7 @@ func (p *dispatchProcess) exitCause() string {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, tooManyConnections) {
-			return connectionRefusalCause(line, p.databaseURL)
+			return connectionRefusalCause(t, line, p.databaseURL)
 		}
 	}
 	last := lines[max(0, len(lines)-exitCauseLines):]

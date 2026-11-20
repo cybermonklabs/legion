@@ -49,6 +49,11 @@ set -eu
 name=legion-testpg
 dir=${LEGION_TESTPG_DIR:-/var/run/legion/roles/testpg}
 data=$dir/data
+# initdb writes a new cluster here, and the directory is renamed to $data only once initdb has
+# exited 0 (start). So $data holds a whole cluster or nothing: a stop of initdb part way, which the
+# launcher's boot budget makes on a slow node, leaves its part in this directory alone, and the
+# next start removes it and runs initdb again.
+initdb_data=$dir/data.initdb
 sockets=$dir/sockets
 # The launcher names the log (LEGION_TESTPG_LOG), so the file role-init binds into every role's
 # namespace is the one this script and the server write; the default serves the image build's
@@ -74,6 +79,38 @@ die() {
 	echo "$name: $*" >&2
 	exit 1
 }
+
+# The caller's deadline. LEGION_TESTPG_DEADLINE is the Unix time, in whole seconds, by which the
+# caller needs this script's answer; the launcher and the image probe set it from their own
+# context's deadline (launcher.runTestPG, launcher.CheckTestPostgres), and at that deadline they
+# also stop the script's whole process group. Every wait of this script — for the cluster's lock,
+# for a connection, for the server to start or to stop — takes the time that deadline leaves and
+# has no bound of its own, so a server that is slow but still working (initdb, a cold start or a
+# shutdown checkpoint on a loaded node) is waited for as long as the caller allows, never refused
+# at a fixed number here. Unset — the image's build, a run by hand, and a launcher tick, which has
+# no deadline — no wait has a bound: each ends when what it waits for answers, or when the caller
+# stops the script.
+deadline=${LEGION_TESTPG_DEADLINE:-}
+case $deadline in
+*[!0-9]*) die "LEGION_TESTPG_DEADLINE is $deadline, which is no whole number of seconds since the epoch" ;;
+esac
+
+# until_deadline sets left to the whole seconds the caller's deadline leaves, and dies naming $1,
+# the wait about to start, once that deadline has passed, so no wait is ever handed 0, which
+# PGCONNECT_TIMEOUT and pg_isready -t read as no bound at all. With no deadline it sets left empty.
+until_deadline() {
+	left=
+	[ -n "$deadline" ] || return 0
+	left=$((deadline - $(date +%s)))
+	[ "$left" -gt 0 ] || die "the caller's deadline passed before $1"
+}
+
+# pg_ctl's --wait takes a count of seconds and has no form without one. unbounded is the largest
+# it counts: pg_ctl sleeps a tenth of a second per try and counts the tries in a C int against
+# wait_seconds * 10 (pg_ctl.c, wait_for_postmaster_start and wait_for_postmaster_stop, PostgreSQL
+# 16 and 18), so 214748364 s, about six years, is the most that product holds. It stands for no
+# bound, where the caller set no deadline.
+unbounded=214748364
 
 # bindir is the newest PostgreSQL server bin directory Debian's postgresql-<major> packages install
 # (PGBIN overrides it). The server programs are not on PATH: postgresql-common wraps the client
@@ -154,23 +191,30 @@ parse_dsn() {
 # DSN's database, so any failure after that leaves a server answering the port with no usable DSN,
 # and a port test would call that served for the pod's whole life. -w never prompts for a password
 # (the DSN carries none and pg_hba trusts loopback, so a prompt would mean something is wrong, not
-# something to wait on) and PGCONNECT_TIMEOUT bounds the connect, so a half-open port costs one
-# tick and never holds the launcher.
+# something to wait on). The connect waits as long as the caller's deadline leaves: a server
+# that accepts the connection late, on a loaded node, still answers. With no deadline
+# (PGCONNECT_TIMEOUT 0) it waits until the server answers or the kernel gives the connection up,
+# so a launcher tick that meets a half-open port waits on it, and the next tick comes after it.
 serving() {
-	PGCONNECT_TIMEOUT=5 psql -X -w -tAq "$LEGION_TEST_PG_DSN" -c 'select 1' > /dev/null 2>&1
+	until_deadline "a connection to $LEGION_TEST_PG_DSN"
+	PGCONNECT_TIMEOUT=${left:-0} psql -X -w -tAq "$LEGION_TEST_PG_DSN" -c 'select 1' > /dev/null 2>&1
 }
 
 # listening: a server on the port accepts connections. start() tests this rather than the DSN to
 # decide whether to launch a postmaster, because `pg_ctl start` against a running server fails:
 # the postmaster is started only when there is none, and the steps after it then run against the
-# server that is already up.
+# server that is already up. pg_isready gives up at 3 s by default and then answers 2, no server,
+# which would send a start at a server that is slow to answer; -t gives it the time the caller's
+# deadline leaves instead, and 0, with no deadline, waits until the server answers.
 listening() {
-	pg_isready -q -h 127.0.0.1 -p "$port"
+	until_deadline "a connection to 127.0.0.1:$port"
+	pg_isready -q -t "${left:-0}" -h 127.0.0.1 -p "$port"
 }
 
 # answering: a server holds the port, ready (0) or starting or recovering (1); 2 is no server.
 answering() {
-	pg_isready -q -h 127.0.0.1 -p "$port" || [ $? -ne 2 ]
+	until_deadline "a connection to 127.0.0.1:$port"
+	pg_isready -q -t "${left:-0}" -h 127.0.0.1 -p "$port" || [ $? -ne 2 ]
 }
 
 # holders: true when some process other than this one has $1 as its working directory. The
@@ -219,26 +263,39 @@ own_log() {
 start() {
 	own_log
 	bin=$(bindir)
-	mkdir -p "$data" "$sockets"
-	chmod 700 "$data"
+	mkdir -p "$sockets"
 	# start() is reached with no server, and also with one this script started and did not
 	# finish: every step below the postmaster can die with the postmaster up, and the tick that
 	# follows has to carry that server the rest of the way. So each step here is idempotent, and
 	# the postmaster is launched only when nothing accepts connections on the port — `pg_ctl
 	# start` against a running server fails, which would turn a repair into a refusal.
 	if ! listening; then
-		# An interrupted initdb leaves a directory with no PG_VERSION, which no server starts on.
-		if [ ! -f "$data/PG_VERSION" ]; then
-			rm -rf "${data:?}"/* "${data:?}"/.[!.]* 2> /dev/null || true
+		# A whole cluster is a $data holding PG_VERSION and global/pg_control. Neither file alone
+		# says initdb finished: initdb writes PG_VERSION first and pg_control in its bootstrap
+		# step, and goes on after both (template1's contents, template0, postgres). So initdb
+		# runs in $initdb_data, which becomes $data only once it has exited 0, and a $data
+		# that is no whole cluster, as an earlier layout's interrupted initdb left, is made
+		# again rather than started. Either part is removed only when no process runs in it,
+		# and is named on stderr as it goes.
+		if [ ! -f "$data/PG_VERSION" ] || [ ! -f "$data/global/pg_control" ]; then
+			for part in "$data" "$initdb_data"; do
+				[ -e "$part" ] || continue
+				! holders "$part" ||
+					die "a process still runs in $part, an initdb that did not finish, so refusing to remove it and run initdb again"
+				echo "$name: removing $part, which holds no whole cluster (an initdb that did not finish), and running initdb again" >&2
+				rm -rf -- "$part" || die "removing $part failed"
+			done
 			# --locale-provider=icu with en-US sorts text the way CI's en_US.utf8 databases
 			# do: a suite whose ORDER BY output is a fixture would otherwise pass here and
 			# fail there on C collation. --username keeps the OS user as the superuser; the
 			# DSN's role is made below, with no superuser rights.
-			"$bin/initdb" --pgdata "$data" --username "$superuser" --auth-local=trust \
+			"$bin/initdb" --pgdata "$initdb_data" --username "$superuser" --auth-local=trust \
 				--auth-host=trust --encoding=UTF8 --locale-provider=icu --icu-locale=en-US \
 				--no-sync > "$log" 2>&1 ||
 				die "initdb failed; $log holds its output"
+			mv -T -- "$initdb_data" "$data" || die "renaming $initdb_data to $data failed"
 		fi
+		chmod 700 "$data"
 		# initdb's own pg_hba.conf trusts every user on every address this server listens on.
 		# This one keeps the superuser on the socket alone and rejects it on every host line,
 		# so a connection that arrives over TCP can never be the superuser, and trusts every
@@ -299,11 +356,20 @@ start() {
 		# EOF, which libpq reports as `server closed the connection unexpectedly`, and the rest
 		# hung until the client's timeout. The cost, measured the same day, is about 350 bytes
 		# of log per connection over 4241 connections.
+		# The start is waited for as long as the caller's deadline leaves, and with no deadline
+		# until the server accepts connections or its postmaster exits, which pg_ctl reads as a
+		# failed start at once: a start on a loaded node is slow, not dead. The line before it is
+		# what a caller that stops this script at its deadline reads as the wait it stopped.
+		until_deadline "the server's start"
+		echo "$name: starting the server in $data and waiting for it to accept connections" >&2
 		# shellcheck disable=SC2094 # pg_ctl writes $log through --log and this append; it reads none
-		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout 120 \
+		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout "${left:-$unbounded}" \
 			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=$max_connections -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0 -c log_connections=all -c log_disconnections=on" \
-			start >> "$log" 2>&1 ||
+			start >> "$log" 2>&1 || {
+			[ -z "$deadline" ] || [ "$(date +%s)" -lt "$deadline" ] ||
+				die "the server did not start within the $left s the caller's deadline left, and may still be starting; $log holds its output"
 			die "pg_ctl start failed; $log holds its output"
+		}
 	fi
 	# vector in template1 reaches every database a test makes from it, so a suite that needs
 	# pgvector (Dispatch's) runs on this server with no extension step of its own, and a
@@ -363,25 +429,30 @@ ensure() {
 	# flock serialises the callers that start together; the second finds the first's server
 	# serving. -o closes the lock's descriptor in the child, so the server flock's child starts
 	# does not inherit it and hold the lock for the pod's whole life: without -o, measured, a
-	# second ensure blocked until its own timeout. -w bounds the wait at one cold start, so a
-	# holder that dies mid-start costs one wait and never a launch; -E makes that timeout 75, a
-	# status no command of start-locked returns, so the wait is reported rather than silent.
-	flock -E 75 -w 180 -o "$dir/.lock" "$0" start-locked || {
-		s=$?
-		[ "$s" -ne 75 ] || die "waited 180 s for $dir/.lock"
-		exit "$s"
-	}
+	# second ensure blocked until its own timeout. The lock is waited for as long as the caller's
+	# deadline leaves, since its holder is another start, slow or not, and with no deadline until
+	# it is free: the kernel frees a lock whose holder died. -E makes a wait that runs out the
+	# deadline 75, a status no command of start-locked returns, so it is named rather than silent.
+	until_deadline "the wait for $dir/.lock"
+	if [ -n "$left" ]; then
+		flock -E 75 -w "$left" -o "$dir/.lock" "$0" start-locked || {
+			s=$?
+			[ "$s" -ne 75 ] || die "waited $left s for $dir/.lock, all the caller's deadline left: another start still holds it"
+			exit "$s"
+		}
+	else
+		flock -o "$dir/.lock" "$0" start-locked
+	fi
 	# A start that no later start repairs — a role the cluster holds as NOLOGIN, a password set on
 	# it, an hba file an earlier version wrote — would be reported as served on every tick for the
 	# pod's life, and nothing in the log would say the DSN does not work. So the DSN is tried
-	# again here. A start that worked can still fail this probe: PGCONNECT_TIMEOUT bounds the
-	# connect alone, not psql's whole run, so a loaded box answers late (measured: 48 ms median,
-	# 23.5 s worst of 40 samples), and a suite holding every connection the server allows leaves
-	# none for the probe. Hence the second try, and a message that names those two before the
-	# cluster's own faults.
+	# again here. A start that worked can still fail this probe: a suite holding every connection
+	# the server allows leaves none for it, which the server answers at once. Hence the second
+	# try, and a message that names that before the cluster's own faults. A connect that runs out
+	# the caller's deadline is named by until_deadline instead.
 	serving || sleep 2
 	serving ||
-		die "the server started but $LEGION_TEST_PG_DSN did not answer twice running; it may be slow under load or out of connections (max_connections=$max_connections), or the cluster's role or hba file may be wrong: $log holds the server's output"
+		die "the server started but $LEGION_TEST_PG_DSN did not answer twice running; it may be out of connections (max_connections=$max_connections), or the cluster's role or hba file may be wrong: $log holds the server's output"
 	echo "$name: serving $LEGION_TEST_PG_DSN from $data"
 }
 
@@ -397,10 +468,22 @@ start-locked)
 	;;
 stop)
 	# A fast shutdown this waits for: the postmaster's exit leaves its shutdown checkpoint still
-	# running, and a caller that deletes the data directory next races it. The data directory is
-	# all pg_ctl needs, so `stop` reads LEGION_TESTPG_DIR alone, not the DSN.
+	# running, and a caller that deletes the data directory next races it. It is waited for as
+	# long as the caller's deadline leaves, and with no deadline until the server has exited. Once
+	# the deadline has passed the shutdown is still asked for, and not waited on (--no-wait), so a
+	# caller whose deadline passed still stops the server it started; that caller then reads
+	# whether the server still runs (launcher.CheckTestPostgres). The data directory is all
+	# pg_ctl needs, so `stop` reads LEGION_TESTPG_DIR alone, not the DSN.
 	bin=$(bindir)
-	"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout 60 stop
+	left=
+	[ -z "$deadline" ] || left=$((deadline - $(date +%s)))
+	if [ -z "$deadline" ]; then
+		"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout "$unbounded" stop
+	elif [ "$left" -gt 0 ]; then
+		"$bin/pg_ctl" --pgdata "$data" --mode fast --wait --timeout "$left" stop
+	else
+		"$bin/pg_ctl" --pgdata "$data" --mode fast --no-wait stop
+	fi
 	;;
 check)
 	# The image probe's toolchain check runs this: a worker image whose server package went missing

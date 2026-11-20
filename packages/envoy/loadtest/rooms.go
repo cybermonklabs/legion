@@ -136,6 +136,9 @@ func readWindow(ctx context.Context, ep endpoints) windowReading {
 			r.rooms = &rooms
 		}
 	}
+	// A read of the live stack's Postgres at the window's start and end, and no test runs it, so
+	// there is no test deadline to take: a Postgres that does not answer within 10 s gives
+	// versionsErr rather than holding the window's reading.
 	pgCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	conn, err := pgx.Connect(pgCtx, ep.pg)

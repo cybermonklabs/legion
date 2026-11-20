@@ -1530,6 +1530,8 @@ echo "case: every build shape is refused, and only a listed step is excused"
 # step is named and that the matched text is printed, so no row can pass on the zero-build
 # guard. `\n` in a body is a newline: a build under a wrapper, or after an inspecting command,
 # is the shape that hid an escape hatch in every pattern-based veto this replaced.
+# No row runs its body: run_step writes it into the fixture workflow as a run step's text, which
+# the check reads, so the `timeout 900` of timeout-900-docker-build bounds no call this test makes.
 while IFS='|' read -r label certain body; do
   [ -n "$label" ] || continue
   root=$(fixture "build-$label")

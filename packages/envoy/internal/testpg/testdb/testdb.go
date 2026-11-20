@@ -10,10 +10,14 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // DatabaseOn creates a database of this test's own on the server adminURL names, drops it when the
@@ -42,7 +46,7 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	name := prefix + "_" + hex.EncodeToString(suffix[:])
 	// A copy of template1's files: created the default way, through the write-ahead log, an empty
 	// database costs 4.4 MB of log (docs/testing.md, "A database a Go test creates").
-	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy")
+	adminExec(t, adminURL, server.Host, "create database "+name+" strategy file_copy", "")
 	// `with (force)` ends every backend attached to the database, which the drop needs because a
 	// database a connection still holds cannot be dropped. That covers a connection the test left
 	// open, so one leaked pool cannot keep a database on a shared server for the rest of the run.
@@ -50,7 +54,7 @@ func DatabaseOn(t testing.TB, adminURL, prefix string) string {
 	// the database already: the cleanup of a role the test created there drops the database before
 	// the role, which nothing in the database then holds (internal/dispatch/store's
 	// dropRoleAfterTestDatabase).
-	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)") })
+	t.Cleanup(func() { adminExec(t, adminURL, server.Host, "drop database if exists "+name+" with (force)", name) })
 	return databaseURL(*server, name)
 }
 
@@ -62,8 +66,9 @@ func databaseURL(server url.URL, database string) string {
 
 // adminExec runs one statement over a connection of its own to adminURL: neither create database
 // nor drop database may run inside a transaction or against the database it names. host is that
-// server's host, printed in place of adminURL, which carries a credential.
-func adminExec(t testing.TB, adminURL, host, statement string) {
+// server's host, printed in place of adminURL, which carries a credential. dropped, when it is not
+// empty, is the database the statement drops, whose time LogDrop then writes into the server's log.
+func adminExec(t testing.TB, adminURL, host, statement, dropped string) {
 	t.Helper()
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, adminURL)
@@ -71,7 +76,31 @@ func adminExec(t testing.TB, adminURL, host, statement string) {
 		t.Fatalf("connect to the Postgres server at %s: %v", host, err)
 	}
 	defer conn.Close(ctx)
+	began := time.Now()
 	if _, err := conn.Exec(ctx, statement); err != nil {
 		t.Fatalf("%s: %v", statement, err)
 	}
+	if dropped != "" {
+		_ = LogDrop(ctx, conn, dropped, time.Since(began))
+	}
+}
+
+// Execer is what LogDrop needs of a connection or a pool: one statement.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// LogDrop writes one line into the Postgres server's own log saying how long a test's drop of name
+// took: `testdb: drop database <name> took <ms> ms`, through a RAISE LOG, which any role may run
+// and which the server logs at its default log_min_messages. go test shows nothing a passing
+// package prints, and a CI job prints its Postgres service's log when it ends, so the server's log
+// is where a CI run's drop times can be read: internal/testwait's Cleanup, the reserve a failing
+// test keeps for its cleanup, is measured from them. The line is a measurement and nothing waits on
+// it, so its callers drop the error it answers; a reading that finds no such line in a job's log
+// reads that job's sample as unknown. TestLogDropWritesALineTheServerAccepts runs the statement.
+func LogDrop(ctx context.Context, admin Execer, name string, took time.Duration) error {
+	text := fmt.Sprintf("testdb: drop database %s took %.3f ms", name, float64(took)/float64(time.Millisecond))
+	text = strings.NewReplacer("'", "''", "%", "%%").Replace(text)
+	_, err := admin.Exec(ctx, "do $log$ begin raise log '"+text+"'; end $log$")
+	return err
 }

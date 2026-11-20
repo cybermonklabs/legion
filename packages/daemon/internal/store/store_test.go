@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testDSN is the devbox and CI Postgres the store tests run against. Without it
@@ -324,7 +325,7 @@ func TestMigrateResetsTheSessionAMigrationLeftOnItsConnection(t *testing.T) {
 		t.Fatalf("a new connection reads statement_timeout %q, search_path %q and the idle bound %t; want neither of the migration's settings and the idle bound %s, or the row proves nothing", wantTimeout, wantSearchPath, freshIdleBound, idleBound)
 	}
 
-	acquiring, cancel := context.WithTimeout(ctx, 30*time.Second)
+	acquiring, cancel := testwait.Answered(t, ctx)
 	defer cancel()
 	maxConns := store.pool.Config().MaxConns
 	held := make([]*pgxpool.Conn, 0, maxConns)

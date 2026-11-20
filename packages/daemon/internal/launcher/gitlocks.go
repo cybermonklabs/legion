@@ -69,10 +69,10 @@ var gitLockRemove = os.Remove
 var gitLockProc = "/proc"
 
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
-// decides. It exists for the reason testPGBound exists: the first pass runs before the launcher
-// serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass that goes
-// on and on must not take the pod's whole boot with it. A pod whose locks were left where they
-// are, with a line in the container's log, is better than a pod the daemon gives up on.
+// decides. It exists for the reason testPGBootBudget exists: the first pass runs before the
+// launcher serves any role, the daemon's boot timeout for a pod is 120 s by default, and a pass
+// that goes on and on must not take the pod's whole boot with it. A pod whose locks were left
+// where they are, with a line in the container's log, is better than a pod the daemon gives up on.
 //
 // What it bounds is the loop over the locks, which is where a pass reads its context (decide).
 // The recheck wait between a clock pass's two reads is no part of it: a first pass decides every
