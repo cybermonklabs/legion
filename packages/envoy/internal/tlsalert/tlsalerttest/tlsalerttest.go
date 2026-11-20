@@ -7,8 +7,22 @@ package tlsalerttest
 import (
 	"io"
 	"net"
+	"net/http"
 	"testing"
 )
+
+// Get is the error a GET of https://addr/ fails with, as net/http's client returns it: a test's
+// one way to meet what Remote's, Local's or any other address's TLS answer makes of a request. A
+// GET that answers fails t.
+func Get(t testing.TB, addr string) error {
+	t.Helper()
+	response, err := http.Get("https://" + addr + "/")
+	if err == nil {
+		_ = response.Body.Close()
+		t.Fatalf("a GET at %s answered %d; want it to fail", addr, response.StatusCode)
+	}
+	return err
+}
 
 // Remote is the address of a server that answers a ClientHello with a fatal handshake_failure
 // alert: the client returns a *net.OpError whose Op is "remote error".

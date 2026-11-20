@@ -21,7 +21,6 @@ import (
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
-	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer"
@@ -184,15 +183,7 @@ func TestASecretManagerCallThatDidNotReachItSaysSo(t *testing.T) {
 				t.Cleanup(server.Stop)
 				to = unreachedTarget{lis.Addr().String(), []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}, []string{"10.0.0.1", "did not reach"}}
 			}
-			restore := gcpClientDial
-			gcpClientDial = func(ctx context.Context, _ *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
-				conn, err := grpc.NewClient(to.target, append(to.opts, grpc.WithChainUnaryInterceptor(interceptor))...)
-				if err != nil {
-					return nil, err
-				}
-				return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
-			}
-			t.Cleanup(func() { gcpClientDial = restore })
+			useGCPDialTo(t, to.target, to.opts...)
 			useNoADC(t)
 			useNoGcloud(t)
 			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")

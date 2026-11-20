@@ -370,21 +370,36 @@ func startFakeSecretManager(t *testing.T, f *fakeSecretManager) {
 	go server.Serve(lis)
 	t.Cleanup(server.Stop)
 
+	useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
+
+// replaceGCPDial leaves the rest of t with gcpClientDial as dial, and puts the real one back after:
+// the one way a test points the Secret Manager client at a stand-in.
+func replaceGCPDial(t *testing.T, dial func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error)) {
+	t.Helper()
 	restore := gcpClientDial
-	gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
-		// A client built on a connection dialled here ignores the client's own dial options, so
-		// the interceptor that words every failure is installed on the connection itself.
-		dial := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(interceptor)}
+	gcpClientDial = dial
+	t.Cleanup(func() { gcpClientDial = restore })
+}
+
+// useGCPDialTo leaves the rest of t with gcpClientDial building its client on a connection to
+// target dialed with opts (replaceGCPDial). A client built on a connection dialed here ignores the
+// client's own dial options, so the interceptor that words every failure is installed on the
+// connection itself, as the real dial installs it, and each call carries the bearer token of the
+// credentials it signs in with (bearerOf).
+func useGCPDialTo(t *testing.T, target string, opts ...grpc.DialOption) {
+	t.Helper()
+	replaceGCPDial(t, func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+		dial := append(slices.Clip(opts), grpc.WithChainUnaryInterceptor(interceptor))
 		if creds != nil && creds.TokenSource != nil {
 			dial = append(dial, grpc.WithPerRPCCredentials(bearerOf{creds.TokenSource}))
 		}
-		conn, err := grpc.NewClient(lis.Addr().String(), dial...)
+		conn, err := grpc.NewClient(target, dial...)
 		if err != nil {
 			return nil, err
 		}
 		return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
-	}
-	t.Cleanup(func() { gcpClientDial = restore })
+	})
 }
 
 // bearerOf hands each call the access token source answers, as the real client does; the fake

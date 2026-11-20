@@ -16,12 +16,9 @@ import (
 	"strings"
 	"testing"
 
-	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/smithy-go"
-	"golang.org/x/oauth2/google"
-	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -121,15 +118,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
 			go func() { _ = server.Serve(lis) }()
 			t.Cleanup(server.Stop)
-			restore := gcpClientDial
-			gcpClientDial = func(ctx context.Context, _ *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
-				conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()), grpc.WithChainUnaryInterceptor(interceptor))
-				if err != nil {
-					return nil, err
-				}
-				return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
-			}
-			t.Cleanup(func() { gcpClientDial = restore })
+			useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 			useNoADC(t)
 			useNoGcloud(t)
 			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")

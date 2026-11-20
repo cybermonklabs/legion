@@ -335,14 +335,12 @@ func useProductionShapedDial(t *testing.T, fake *fakeSecretManager) {
 	t.Cleanup(listener.Close)
 	roots := x509.NewCertPool()
 	roots.AddCert(listener.Certificate())
-	restore := gcpClientDial
-	gcpClientDial = func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+	replaceGCPDial(t, func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
 		return secretmanager.NewClient(ctx, option.WithCredentials(creds), option.WithLogger(slog.New(slog.DiscardHandler)),
 			option.WithEndpoint(listener.Listener.Addr().String()),
 			option.WithGRPCDialOption(grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots}))),
 			option.WithGRPCDialOption(grpc.WithChainUnaryInterceptor(interceptor)))
-	}
-	t.Cleanup(func() { gcpClientDial = restore })
+	})
 }
 
 // TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass: a store call whose credential's token

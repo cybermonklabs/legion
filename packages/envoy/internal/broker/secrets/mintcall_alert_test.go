@@ -2,7 +2,6 @@ package secrets
 
 import (
 	"context"
-	"net/http"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/testport"
@@ -20,11 +19,7 @@ func TestATLSAlertReadsAsTheUpstreamAnswering(t *testing.T) {
 		{"control: a refused dial", testport.Refused(t), "could not be reached"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			response, err := http.Get("https://" + row.addr + "/")
-			if err == nil {
-				_ = response.Body.Close()
-				t.Fatalf("a GET at %s answered %d; want it to fail", row.addr, response.StatusCode)
-			}
+			err := tlsalerttest.Get(t, row.addr)
 			if got := transportFailure(context.Background(), err); got != row.want {
 				t.Fatalf("transportFailure(%v) = %q, want %q", err, got, row.want)
 			}
