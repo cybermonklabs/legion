@@ -321,10 +321,11 @@ func startIntakeProcess(t *testing.T, pool *store.Pool, natsURL string, block fu
 }
 
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
-// author, which the intake fetches from GitHub.
-func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) {
+// author, which the intake fetches from GitHub, and answers the stream sequence the stream stored
+// it at.
+func publishMergedPullRequest(t *testing.T, publisher *bus.Client, number int) uint64 {
 	t.Helper()
-	publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
+	return publishPullRequestEnvelope(t, publisher, "acme", "widgets", number, map[string]string{
 		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
 		"number": strconv.Itoa(number), "author": "octocat",
 	})

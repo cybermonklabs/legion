@@ -16,8 +16,8 @@ func TestACauseIsOneLineUnderThePrefix(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"what happened alone", "the daemon runs with no GitHub App, so it cannot read " + CheckSlug, nil,
-			"the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra"},
+		{"what happened alone", "the daemon runs with no GitHub App, so it cannot read example-org/deployment", nil,
+			"the shared public leak check could not be installed: the daemon runs with no GitHub App, so it cannot read example-org/deployment"},
 		{"with the error underneath", "the served check could not be run", errors.New("fork/exec: permission denied"),
 			"the shared public leak check could not be installed: the served check could not be run: fork/exec: permission denied"},
 		{"newlines become spaces", "the served check did not answer", errors.New("line one\nline two\r\nline three"),
@@ -71,8 +71,8 @@ func partOf(text, planted string) string {
 // maxCauseBytes, so a token that the cut of the sentence as written would split leaves no part of
 // itself: the cause is the cut of the sentence with the credential gone.
 func TestACauseCutAtItsBoundKeepsNoPartOfAURLCredential(t *testing.T) {
-	const what = "the daemon could not read " + CheckSlug + " at leak-check-v15"
-	const download = "codeload.example/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/leak-check-v15"
+	what := "the daemon could not read " + checkRepository.String() + " at leak-check-v15"
+	download := "codeload.example/" + checkRepository.String() + "/legacy.tar.gz/refs/tags/leak-check-v15"
 	for _, tc := range []struct{ name, url, credential string }{
 		{"a token in the query", "https://" + download + "?token=" + plantedToken, "?token=" + plantedToken},
 		{"a token in the userinfo", "https://" + plantedUserinfo + "@" + download, plantedUserinfo + "@"},

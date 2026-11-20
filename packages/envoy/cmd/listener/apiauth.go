@@ -16,7 +16,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -346,7 +346,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 		}
-		if _, presented := brokertoken.Presented(r); auth.brokers != nil && presented {
+		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -417,10 +417,10 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	case errors.Is(err, errBrokerTokensStarting):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
-	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
+	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
@@ -442,21 +442,21 @@ func brokerTokenReason(err error) string {
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
 		return "starting"
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		return "not_active"
-	case errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return "key_mismatch"
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented):
 		return "proof_invalid"
-	case errors.Is(err, brokertoken.ErrNotASession):
+	case errors.Is(err, ciphertoken.ErrNotASession):
 		return "not_a_session"
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		return "rate_limited"
-	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
+	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		return "unavailable"
 	}
 	// The residue is this listener's own failure to run the check — its spent-proof store did
-	// not answer — which brokertoken reports as neither the broker's nor the caller's.
+	// not answer — which ciphertoken reports as neither the broker's nor the caller's.
 	return brokerTokenCheckFailed
 }
 

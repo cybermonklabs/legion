@@ -24,13 +24,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -135,7 +135,7 @@ type Deps struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
@@ -146,7 +146,7 @@ type Deps struct {
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
-	AgentSecrets *agentsecrets.Client
+	AgentSecrets *cipher.Client
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -266,7 +266,7 @@ type DepsInput struct {
 	OIDC          ServiceTokenVerifier
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
@@ -355,9 +355,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
-	var agentSecretsClient *agentsecrets.Client
+	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
-		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
+		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
@@ -1150,7 +1150,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		return s.brokerTokenActor(r)
 	}
 	if token, present := auth.BearerToken(r); present {

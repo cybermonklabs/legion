@@ -31,7 +31,7 @@
 # the server is up with LOGIN CREATEDB CREATEROLE NOSUPERUSER, because a superuser can run
 # `copy … to program '…'`, which runs as the server process — in the roles container's own
 # namespace, where every role's tokens live. CREATEROLE is there because this repository's own
-# suites create a login role and connect as it (packages/envoy/internal/broker/store/iam_test.go,
+# suites create a login role and connect as it (packages/envoy/internal/cipher/store/iam_test.go,
 # packages/envoy/internal/dispatch/store/census_test.go), and a test that passes in CI and fails in
 # the pod is what sends an agent to the deployment's sessions database; measured on 18, a CREATEROLE
 # non-superuser can neither make a superuser, nor grant itself one, nor grant pg_execute_server_program.
