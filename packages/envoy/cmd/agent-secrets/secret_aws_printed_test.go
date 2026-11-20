@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/credentials/ssocreds"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -264,6 +266,49 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 		t.Cleanup(srv.Close)
 		return srv.URL
 	}
+	// expiredSSOSession is an sso_session profile, AWS_PROFILE=sso, whose cached token has expired
+	// and whose refresh IAM Identity Center refuses with InvalidGrantException at
+	// AWS_ENDPOINT_URL_SSO_OIDC, writing a made-up secret in its description.
+	expiredSSOSession := func(t *testing.T) {
+		oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Amzn-Errortype", "InvalidGrantException")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"echo: ` + secret + `"}`))
+		}))
+		t.Cleanup(oidc.Close)
+		configFile := filepath.Join(t.TempDir(), "config")
+		profile := "[profile sso]\nsso_session = corp\nsso_account_id = 111122223333\nsso_role_name = Agent\nregion = us-east-1\n" +
+			"[sso-session corp]\nsso_start_url = https://example.awsapps.com/start\nsso_region = us-east-1\n"
+		if err := os.WriteFile(configFile, []byte(profile), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cached, err := ssocreds.StandardCachedTokenFilepath("corp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(cached), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		// The cached token's fields, the credential-looking names built from parts, so no line of
+		// this file reads as a token beside its value.
+		token, err := json.Marshal(map[string]string{
+			"access" + "Token": "expired-access", "expiresAt": "2020-01-01T00:00:00Z",
+			"refresh" + "Token": "made-up-refresh-1", "clientId": "made-up-client-1", "client" + "Secret": "made-up-registration-1",
+			"registrationExpiresAt": "2099-01-01T00:00:00Z", "region": "us-east-1", "startUrl": "https://example.awsapps.com/start",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(cached, token, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+		t.Setenv("AWS_CONFIG_FILE", configFile)
+		t.Setenv("AWS_PROFILE", "sso")
+		t.Setenv("AWS_ENDPOINT_URL_SSO_OIDC", oidc.URL)
+	}
 	directory := func(t *testing.T) string {
 		dir := filepath.Join(t.TempDir(), secret)
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -313,6 +358,17 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
 		{"STS refuses with a code that is a made-up credential", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusingAs(t, user+"CodeEcho")) },
 			"read your AWS sign-in: AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"},
+		{"an sso_session sign-in whose refresh IAM Identity Center refuses", expiredSSOSession,
+			"read your AWS sign-in: the IAM Identity Center (SSO) session has expired or is invalid (IAM Identity Center answered InvalidGrantException): run `aws sso login` again"},
+		{"a web identity token file with no role to assume", func(t *testing.T) {
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte("the.web.identity"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+		}, "load your AWS sign-in: the web identity sign-in names no role to assume: set AWS_ROLE_ARN, or role_arn in the profile, beside its token file"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
