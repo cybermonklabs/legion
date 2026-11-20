@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -124,7 +125,11 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		if query.Direction == "out" && ref.Kind == "artifact" {
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1`, query.ID).Scan(&query.ID); err != nil {
+			// A document its reader may not read is a ref_key no row holds (access.DocumentClause),
+			// so it answers exactly as a missing one: the same refusal, naming the reference the
+			// caller wrote rather than the id the row holds, and the same one statement.
+			if err := s.deps.Store.Pool.QueryRow(r.Context(), `select id::text from artifacts where ref_key = $1 and `+
+				access.DocumentClause("artifacts", "$2"), query.ID, refs.VisibilityArg(who)).Scan(&query.ID); err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
 					s.writeHandlerError(w, errorf(http.StatusNotFound, "NOT_FOUND", "no document at %s", query.ID))
 					return
