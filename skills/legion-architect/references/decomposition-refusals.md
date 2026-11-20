@@ -8,7 +8,9 @@ release the rest again without the child it names.
   was handed over as a root of its own; or it is a member of a closed tree that holds an admission
   slot, which the daemon leaves where it stands. Leave it there, or ask the controller.
 - `CHILD_IN_OTHER_TREE`: re-parent it back in Dispatch, or ask that tree's architect or the
-  controller.
+  controller. A member of a closed tree, or a root held under an unreleased child of yours: read
+  "A root that joins your tree, and a refused release" in
+  `skill://legion-architect/references/wake-routing-children.md`.
 - `ISSUE_NOT_OWNED`: the issue is another architect's (the tree root, your own issue, a sibling of
   it or an issue under a sibling); send the move to the architect above you. A child's own
   architect cannot park or rerun its own issue, so it sends a restart of its issue there too.
