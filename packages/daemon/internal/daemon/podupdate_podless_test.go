@@ -294,15 +294,15 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 	// A member a project's pause stopped, suspended released, which the round never asked. The
 	// pause's hold of the pod ended a minute before the round opened, at the resume or at a role's
 	// ready (pauseKeepsThePod). No process runs in the pod and no ask reached the member. But the
-	// pause keeps the pod for the work on its disk until the wake pacing lets the member's held
-	// launch out (decision 12 of dispatch://INFRA-3759), so the sweep asks for no replacement by
-	// issue. That holds before the member's held start runs, while the stuck clock of its launch is
-	// still the moment of the resume, which is before the round opened. It holds after that start
+	// pause still keeps the pod for the work on its disk (decision 12 of dispatch://INFRA-3759,
+	// podHolds.owes), so the sweep asks for no replacement by issue. That holds before the member's
+	// held start runs, while the member is still suspended released. It holds after that start
 	// too, while the wake pacing parks the launch until ten minutes into the round: the member is
-	// then launching with no process, and its machine is in no decision (parkPauseHeldLaunch). Once
-	// the let-out has passed, the pause no longer keeps the pod, and the launch has not run yet. The
-	// sweep then replaces the pod by issue before the bound, and names the member as one that had
-	// not answered.
+	// then launching with no process, and its machine is in no decision (parkPauseHeldLaunch). At
+	// the let-out the pacing runs the launch, as the daemon runs it. The launch keeps the pod and
+	// comes up in it with one launch, the round asks the member once it is ready, and the round
+	// replaces the pod through the member's process once the member has answered. The sweep never
+	// replaces the pod by issue.
 	t.Run("not while the project's pause keeps the pod for a member it stopped", func(t *testing.T) {
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
 			rig.wantPodKept(fmt.Sprintf("the held start of the %s", pauseStoppedRole))
@@ -311,12 +311,24 @@ func TestAPodlessRoundIsReplacedByIssueOnceNothingHoldsIt(t *testing.T) {
 				t.Fatalf("the %s is in round %q, want the round kept open over its pod", pauseStoppedRole, c.UpdateRound)
 			}
 
-			rig.clockAt(pauseLetOut.Add(time.Minute))
-			rig.awaitIssueReplacement("once the let-out has passed")
-			for _, role := range []claim.Role{pauseStoppedRole, claim.RoleTester} {
-				rig.awaitClaim(role, "its round to end with the replacement by issue", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+			rig.intoRoundPod(pauseStoppedRole)
+			rig.runParkedLaunch(pauseStoppedRole, podUpdateStart, pauseLetOut)
+			rig.launchedIntoRoundPod(pauseStoppedRole)
+			rig.registerInto(pauseStoppedRole, podUpdatePod)
+			rig.awaitAsked(pauseStoppedRole, podUpdateRound)
+			rig.signal(pauseStoppedRole, "a1b2c3d")
+			rig.awaitReplacement(1, fmt.Sprintf("once the %s answered", pauseStoppedRole))
+			lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+			if len(lines) != 1 {
+				t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
 			}
-			wantPodlessEnd(t, rig, false, []claim.Role{pauseStoppedRole}, claim.RoleTester)
+			if lines[0]["atTheBound"] != false {
+				t.Errorf("the replacement's line says atTheBound=%v, want false: the %s answered before the bound", lines[0]["atTheBound"], pauseStoppedRole)
+			}
+			wantField(t, lines[0], "notWaitedFor")
+			if asked := rig.byIssueAsks(); len(asked) != 0 {
+				t.Errorf("the runtime was asked to replace the pod by issue %+v, want the replacement through the %s's process", asked, pauseStoppedRole)
+			}
 		})
 	})
 }
@@ -504,9 +516,19 @@ func (r *podUpdateRig) runParkedLaunch(role claim.Role, parkedAt, letOut time.Ti
 // does (writeLetOut).
 func (r *podUpdateRig) parkPauseHeldLaunch(role claim.Role, letOut time.Time) {
 	r.t.Helper()
+	r.parkPauseHeldLaunchWithNoLetOut(role, letOut)
+	r.writeLetOut(role, letOut)
+}
+
+// parkPauseHeldLaunchWithNoLetOut parks the held launch of role until letOut, as
+// parkPauseHeldLaunch does, and writes no let-out. The daemon writes the let-out on a goroutine of
+// its own after the park (projectPause.wakeLetOut): a read can come before that write lands, and a
+// write that fails is only logged. So the stuck clock of the role's resume stays the moment of the
+// project's resume (recordPause).
+func (r *podUpdateRig) parkPauseHeldLaunchWithNoLetOut(role claim.Role, letOut time.Time) {
+	r.t.Helper()
 	r.heldStart(role)
 	r.wantLaunchParked(role, letOut)
-	r.writeLetOut(role, letOut)
 }
 
 // parkedLaunchKeepsThePod parks the held launch of role until letOut (parkPauseHeldLaunch), and
@@ -1112,12 +1134,12 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 
 	// The members of the case above, and the implementer's own launch. Its held start has run, and
 	// the wake pacing parks its launch until its let-out (parkPauseHeldLaunch). The sweeps while it
-	// waits keep the pod for it. At the let-out the wake pacing runs the launch. The implementer is
-	// then launching, not suspended, and its let-out has come, so the round's sets no longer read
-	// it as the pause's (podHolds.owes), and the round never asked the implementer. But its launch
-	// is the one the pause held for it, and the pause still owes it that launch and kept the pod for
-	// its work (podHolds.pauseHeldLaunch, decision 12 of
-	// dispatch://INFRA-3759). So the launch goes into the round's own pod and replaces nothing, and
+	// waits keep the pod for it. At the let-out the wake pacing runs the launch, and the round never
+	// asked the implementer. The implementer is in the group the launch reads, launching with no
+	// process, and the pause still owes its role a launch, so the pause still keeps it
+	// (podHolds.owes, decision 12 of dispatch://INFRA-3759): what holds the pod of a round with no
+	// process in it holds the pod for its own launch (roundPodEnds), and the hook's reason names the
+	// launch the pause owes. So the launch goes into the round's own pod and replaces nothing, and
 	// the round then waits for the implementer's answer.
 	t.Run("the launch a project's pause held keeps the pod the pause kept", func(t *testing.T) {
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
@@ -1126,6 +1148,11 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 			rig.intoRoundPod(pauseStoppedRole)
 			rig.runParkedLaunch(pauseStoppedRole, podUpdateStart, pauseLetOut)
 			rig.launchedIntoRoundPod(pauseStoppedRole)
+			if reasons := rig.launchKeptBecause(pauseStoppedRole); len(reasons) != 1 ||
+				!strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", pauseStoppedRole)) {
+				t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch",
+					pauseStoppedRole, reasons, pauseStoppedRole)
+			}
 			rig.registerInto(pauseStoppedRole, podUpdatePod)
 			rig.wantPodKept(fmt.Sprintf("the %s's answer", pauseStoppedRole))
 		})

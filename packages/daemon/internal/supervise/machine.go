@@ -716,8 +716,8 @@ func (c Claim) RuleMayResume() bool {
 //
 // The round makes one exception that the claim does not carry: a claim a project's pause stopped
 // is suspended released too, and the round asks it once its agent is ready and waits for it while
-// the pause still keeps its pod (internal/daemon's roundClock.passesOver, which reads this method
-// and the pause's holds of the pod). PublishUpdateAsk still refuses an ask to every claim this
+// the daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver,
+// which reads this method and that rule). PublishUpdateAsk still refuses an ask to every claim this
 // method names, a claim the pause stopped included: a publish to a role with no holder raises a
 // role wake, and the sweep asks a claim only once its agent is ready, when the claim is no longer
 // suspended.

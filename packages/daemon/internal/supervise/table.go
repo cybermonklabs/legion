@@ -2927,9 +2927,10 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
 // sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
 // dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
-// pause still keeps its pod (internal/daemon's roundClock.passesOver). An operator's suspension
-// leaves the claim in both: if no ask has reached it, the sweep asks it once its agent is ready
-// again, and the round waits for the operator whatever its bound (dispatch://INFRA-2981 R5).
+// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). An
+// operator's suspension leaves the claim in both: if no ask has reached it, the sweep asks it once
+// its agent is ready again, and the round waits for the operator whatever its bound
+// (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

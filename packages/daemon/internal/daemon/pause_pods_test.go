@@ -475,6 +475,54 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 	})
 }
 
+// dispatch://INFRA-4109 review round 4: whether a project's pause still keeps the pod for a role it
+// stopped is read from the claim's own state, never from the let-out of the role's launch
+// (podHolds.owes). The daemon writes that let-out on a goroutine of its own after the wake pacing
+// parks the launch (projectPause.wakeLetOut), and a write that fails is only logged. So a sweep or
+// a launch can read the parked launch while the stuck clock of its resume is still the moment of
+// the project's resume, which is before the round opened.
+//
+// The members are those of pauseKeepsThePod: the implementer, which the pause stopped and the
+// round never asked, and the tester, which answered and which the daemon then suspended. The
+// implementer's held start runs, and the wake pacing parks its launch until ten minutes into the
+// round, but no let-out is written (parkPauseHeldLaunchWithNoLetOut). The implementer is then
+// launching with no process, its machine is in no decision, and the store still reads its role as
+// owed a launch. In the first case, the sweeps keep the pod at the opening and a minute before the
+// let-out, and ask for no replacement by issue. In the second case, an operator resumes the
+// tester, whose launch the pacing does not hold, and the tester's launch keeps the pod for the
+// implementer's work: the hook's reason names the implementer.
+//
+// Where the keep is read from a let-out still ahead of now (review round 3), the implementer's
+// stuck clock is behind now. The sweep then replaces the pod by issue, and the tester's launch
+// replaces the pod as the round's own replacement.
+func TestPodUpdateRoundKeepsThePodForAParkedLaunchWhoseLetOutIsNotWritten(t *testing.T) {
+	t.Run("the sweep keeps the pod", func(t *testing.T) {
+		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
+			rig.parkPauseHeldLaunchWithNoLetOut(pauseStoppedRole, pauseLetOut)
+			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
+			rig.clockAt(pauseLetOut.Add(-time.Minute))
+			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
+		})
+	})
+
+	t.Run("a sibling's launch keeps the pod", func(t *testing.T) {
+		const sibling = claim.RoleTester
+		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
+			rig.parkPauseHeldLaunchWithNoLetOut(pauseStoppedRole, pauseLetOut)
+			rig.intoRoundPod(sibling)
+			rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
+			rig.launchedIntoRoundPod(sibling)
+			if reasons := rig.launchKeptBecause(sibling); len(reasons) != 1 ||
+				!strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", pauseStoppedRole)) {
+				t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch",
+					sibling, reasons, pauseStoppedRole)
+			}
+			rig.registerInto(sibling, podUpdatePod)
+			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
+		})
+	})
+}
+
 // dispatch://INFRA-4109 R1 and R7 with the project pause carried, as its architect set the rule
 // in review round 3: an open resume of the pause whose role has come up keeps nothing. The pause
 // stopped the implementer, suspended released, and held its launch. Its resume ended the hold a
@@ -494,9 +542,9 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 // Nothing holds the pod. In the first case, the sweep replaces it by issue before the bound. In
 // the other two cases, a launch into the pod comes first, before any sweep: the reviewer's, or the
 // implementer's own, which its open resume of the pause does not make a launch the pause still
-// owes (podHolds.pauseHeldLaunch). The pause keeps the pod for neither. Each launch replaces the
-// pod as the round's own replacement and starts its role in the pod in its place, so the role is
-// launched once (R7).
+// owes (store.PausePodHold.Owed, podHolds.owes). The pause keeps the pod for neither. Each launch
+// replaces the pod as the round's own replacement and starts its role in the pod in its place, so
+// the role is launched once (R7).
 //
 // Where the open resume is read as owed whatever its ready, the implementer's own launch is read
 // as the launch the pause held, so it goes into the round's pod, which the round replaces later

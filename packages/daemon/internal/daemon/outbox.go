@@ -2128,8 +2128,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // wakeForDelivery first. The round does not ask a claim the daemon suspended (its own rule, a
 // root's exit, an idle release, or an unknown source), and does not wait for it
 // (dispatch://INFRA-4109 R1, the sweep's roundAsks). A claim a project's pause stopped is the one
-// exception: the pause suspends it as released, and while the pause still keeps its pod the round
-// waits for it and the sweep asks it once its agent is ready (the sweep's roundClock.passesOver).
+// exception while the pause still keeps it (the sweep's podHolds.owes, roundClock.passesOver): the
+// pause suspends it as released, and the round waits for it and the sweep asks it once its agent
+// is ready.
 // A row the sweep queued before any such suspension still runs, so the machine refuses the ask of
 // every claim the daemon suspended, a claim the pause stopped included, before any publish
 // (supervise.Machine.PublishUpdateAsk answers UpdateAskSuspended), and the row finishes with one
