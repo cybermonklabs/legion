@@ -87,10 +87,10 @@ export const BROKER_REDIAL_CAP_MS = 20_000;
 
 /**
  * How long nats.js leaves its redial handler uncalled, at most, while it redials: the longest wait
- * (the cap) or a failed dial that hangs on two addresses, nats.js's 20 s dial timeout for each
+ * (the cap) or a failed dial that hangs on up to five addresses, `NATS_DIAL_TIMEOUT_MS` for each
  * address the server's name resolves to (`protocol.js:417`; `_doDial` dials them in turn), and a
  * margin. A call later than this after the one before it finds that the connection was up in
- * between, so it starts a new outage. A dial that hangs on three or more addresses outlasts it:
+ * between, so it starts a new outage. A dial that hangs on six or more addresses outlasts it:
  * that session's next redial is then at once and its waits start over, which costs the auth service
  * nothing, since a dial that hangs never reaches it.
  */
@@ -121,9 +121,11 @@ export type RedialCredential = Pick<BrokerNatsCredential, "needsReconnect" | "ex
  * losing its connection, then waits `brokerRedialWaitBounds(1)`, `(2)` and so on between the starts
  * of its redials, each drawn anew, until one is admitted. A redial to present a token the
  * connection has not presented yet (`credential`: the keeper's renewal, a session switch's
- * `followNatsCredential`, or the trade a refused CONNECT started) is also at once, and starts the
- * waits over, once for each such token. One handler serves one connection, so
- * `natsConnectionOptions` makes a new one each time.
+ * `followNatsCredential`, or the trade a refused CONNECT started) is also at once, the next time
+ * nats.js asks (after a failed dial, or at the end of the wait it is in), and starts the waits
+ * over, once for each such token. One handler serves one connection, so `natsConnectionOptions`
+ * makes a new one each time; the dials `connectNats` makes to open that connection share it, and
+ * keep `NATS_DIAL_PLAN`'s schedule, since nats.js dials a server it has never dialed at once.
  *
  * Sized to the auth service's measured refusal throughput: one replica at its 0.5 CPU decided
  * 1,200 refusals a second, every one inside its budget, began to shed at about 1,350, and decided

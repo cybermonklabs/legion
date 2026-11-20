@@ -8,15 +8,10 @@
 // the flat 2 s redials several times as often, and that a session switch right after it is back
 // does not wait out the backoff.
 
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
-import * as path from "node:path";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import type { Socket } from "bun";
 import { type ConnectionOptions, connect, Events, type NatsConnection, nkeys } from "nats";
-import { forgetBrokerClients } from "../broker-credential";
-import type { EnvoyEnvironment } from "../envoy-settings";
 import {
   BROKER_REDIAL_CAP_MS,
   BROKER_REDIAL_FIRST_MS,
@@ -30,10 +25,11 @@ import {
   brokerNatsCredential,
   followNatsCredential,
 } from "../nats-credential";
+import { natsBrokerStandIns } from "./broker-stand-ins";
 
-afterEach(forgetBrokerClients);
-
-const tempDir = temporaryDirectories("nats-redial");
+// The broker's stand-in mints random tokens, and the pod's projected token is random too
+// (`fixtureSecret`); its file's cleanup forgets every broker client and stops the broker.
+const { stubBroker, podEnvironment } = natsBrokerStandIns("nats-redial");
 
 /** A clock, a draw and the token the connection has yet to present, each set by hand. */
 function handled(draw: () => number) {
@@ -327,36 +323,6 @@ function stubHub() {
   };
 }
 
-/** A secrets broker's token exchange that mints a token good for ten minutes for every trade. */
-function stubBroker() {
-  let minted = 0;
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: () =>
-      Response.json({
-        access_token: `session-access-${++minted}`,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: 600,
-      }),
-  });
-  return { url: `http://127.0.0.1:${server.port}`, stop: () => server.stop(true) };
-}
-
-/** The environment of a pod that trades its identity at `brokerUrl` for the session's token. */
-function podEnvironment(brokerUrl: string): EnvoyEnvironment {
-  const tokenFile = path.join(tempDir(), "token");
-  writeFileSync(tokenFile, "projected.service.account.token\n");
-  return {
-    HOME: tempDir(),
-    ENVOY_NATS_URL: "nats://nats.internal.example:4222",
-    AGENT_SECRETS_URL: brokerUrl,
-    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-    AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
-  };
-}
-
 /** `options` without `key`. */
 function without(options: ConnectionOptions, key: keyof ConnectionOptions): ConnectionOptions {
   const copy = { ...options };
@@ -377,7 +343,7 @@ interface Dialed {
 describe("a broker-token session refused by its hub", () => {
   test("is refused twice and more on the backoff's schedule, comes back by itself once admitted, and moves to a switch's token at once", async () => {
     const hub = stubHub();
-    const broker = stubBroker();
+    const broker = stubBroker(600);
     const env = podEnvironment(broker.url);
     const connections: NatsConnection[] = [];
     // The handler's clock: moved past the outage gap at the drop, so the drop starts an outage
@@ -408,13 +374,16 @@ describe("a broker-token session refused by its hub", () => {
       const closed = connection.closed().then((error) => ({ at: Date.now(), error }));
       return { connection, credential, session, reconnected, closed };
     };
-    /** How long a session switch takes: the host switches `client` to a session of its own, and
-     *  `followNatsCredential` moves the connection to that session's token. */
-    const follow = async (client: Dialed) => {
+    /** How long a session switch takes, and how it ended: the host switches `client` to a session
+     *  of its own, and `followNatsCredential` moves the connection to that session's token. */
+    const follow = async (client: Dialed): Promise<{ ms: number; error: unknown }> => {
       const started = Date.now();
       client.session.name = `${client.session.name}_next`;
-      await followNatsCredential(client.connection, client.credential);
-      return Date.now() - started;
+      const error = await followNatsCredential(client.connection, client.credential).then(
+        () => undefined,
+        (failed: unknown) => failed
+      );
+      return { ms: Date.now() - started, error };
     };
     try {
       // This change's options, its handler on the test's clock.
@@ -433,7 +402,8 @@ describe("a broker-token session refused by its hub", () => {
       }));
       // A session switch right after the hub admits again, and its control, a handler that never
       // sees the switch's token: both draw the lowest waits, so both redial at once, at 2 s, 6 s
-      // and 14 s, and the next redial each has due is 10 s after the one that is admitted.
+      // and 14 s, and the next redial each has due is 10 s after the one that is admitted, past
+      // the 8 s `followNatsCredential` gives the connection to come back as the new session.
       const switching = await dial("redial-switch", (options, credential) => ({
         ...options,
         reconnectDelayHandler: brokerRedialDelays(credential, () => 0, clock),
@@ -508,13 +478,17 @@ describe("a broker-token session refused by its hub", () => {
       expect(flat.connection.isClosed()).toBe(false);
 
       // A session switch right after the hub admitted it again: the switch's new token is
-      // presented at once, where the handler that never sees it waits out the 10 s it has due.
-      expect(switched, trace).toBeLessThan(2_000);
-      expect(switchedBlind, trace).toBeGreaterThan(5_000);
+      // presented at once, where the handler that never sees it waits out the 10 s it has due, so
+      // that switch fails at the 8 s its connection is given.
+      expect(switched.error, trace).toBeUndefined();
+      expect(switched.ms, trace).toBeLessThan(2_000);
+      expect(String(switchedBlind.error), trace).toContain(
+        "the NATS connection did not come back as the new session within"
+      );
+      expect(switchedBlind.ms, trace).toBeGreaterThan(5_000);
     } finally {
       for (const connection of connections) await connection.close().catch(() => {});
       hub.stop();
-      broker.stop();
     }
   }, 90_000);
 });

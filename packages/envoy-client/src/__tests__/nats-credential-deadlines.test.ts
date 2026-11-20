@@ -138,9 +138,10 @@ describe("renew", () => {
   test("CONNECTs with no live token while the registration is missing keep the broker's back-off", async () => {
     // The token client's retry loop trades for a pod session with no registration on its own
     // schedule, 2 s doubling to 30 s, each wait at least half its length, and no caller cuts a
-    // wait short. nats.js asks the authenticator at every attempt, every 2 s for a connection the
-    // server refuses, so an authenticator that traded at each one would trade at that pace. Inside
-    // the schedule's first slot, a CONNECT every 50 ms makes no trade of its own.
+    // wait short. nats.js asks the authenticator at every attempt, as often as every 2 s for a
+    // connection the server refuses (`brokerRedialDelays`), so an authenticator that traded at each
+    // one would trade at that pace. Inside the schedule's first slot, a CONNECT every 50 ms makes
+    // no trade of its own.
     //
     // On the fake clock the slot lasts as long as the row: no trade of the loop's own follows the
     // first, so every trade past it is one a CONNECT made. A round trip to the broker after each

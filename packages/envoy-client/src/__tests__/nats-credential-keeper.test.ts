@@ -270,7 +270,7 @@ describe("keepNatsCredential with a refused live token", () => {
 
   test("two refusals are warned of once, drop the token here and in the token client, and trade another", async () => {
     // A token the broker revoked before it lapsed: the auth service refuses every CONNECT that
-    // presents it, and nats.js redials every 2 s.
+    // presents it, and nats.js redials on its backoff (`brokerRedialDelays`).
     const broker = stubBroker(600);
     const env = podEnvironment(broker.url);
     const { credential, asked, dropped } = askedOf(brokerNatsCredential(env, "ses_a"));
@@ -618,8 +618,9 @@ describe("keepNatsCredential with a refused live token", () => {
 
   test("an auth service that refuses every token costs each session one trade for the outage", async () => {
     // The hub's auth service is away and the broker is up: every CONNECT is refused whatever its
-    // token, and nats.js redials every 2 s. 20 refusals, 40 s of it: one drop and one trade, not one
-    // every second refusal.
+    // token, and nats.js redials, here every 2 s, the shortest wait of its backoff
+    // (`brokerRedialDelays`). 20 refusals, 40 s of it: one drop and one trade, not one every second
+    // refusal.
     const broker = stubBroker(600);
     const env = podEnvironment(broker.url);
     const { credential, dropped } = askedOf(brokerNatsCredential(env, "ses_storm"));

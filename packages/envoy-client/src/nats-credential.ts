@@ -244,8 +244,8 @@ export function brokerNatsCredential(
   let waitingFor: string | undefined;
   let switched = new AbortController();
   // The authenticator's own renewal while it runs: one at a time, so the CONNECTs nats.js makes
-  // every 2 s for a refused connection trade no more often than one renewal's deadline allows, and
-  // leave the token client's back-off on a missing registration as it is.
+  // for a refused connection (`brokerRedialDelays`) trade no more often than one renewal's deadline
+  // allows, and leave the token client's back-off on a missing registration as it is.
   let connecting: Promise<void> | undefined;
   const live = (): boolean => held !== undefined && held.token.expiresAt.getTime() > Date.now();
   /** One wait on the token client's retry loop for the session the name reads now, failing fast
@@ -364,7 +364,7 @@ const RETRY_LAST_MS = 60_000;
 const WARN_AGAIN_MS = 30 * 60_000;
 /** How many refusals of the live token in hand the keeper waits for before it drops that token
  *  and trades for another: one refusal can be the auth service's own outage, which a new token
- *  does not cure, and nats.js redials every 2 s. */
+ *  does not cure, and nats.js redials within 20 s (`brokerRedialDelays`). */
 const REFUSALS_BEFORE_DROP = 2;
 /** The codes nats.js gives a status when the server refused the credential a CONNECT presented
  *  (`ErrorCode.AuthorizationViolation`, `ErrorCode.AuthenticationExpired`), written out as
@@ -428,8 +428,8 @@ function renewDelay(expiry: number, now: number): number {
  * it lapses. Refusals are counted per token (`tokenGeneration`), and a drop is made once per
  * session until the connection is back (`tokenSession`): after a switch, the new session's
  * revoked token is dropped in its turn, and an auth service that is away, which refuses every
- * token whatever it is while nats.js redials every 2 s, costs each session one trade for the
- * outage, never one every second refusal. A refusal of a token that lapsed, or of one the
+ * token whatever it is while nats.js redials (`brokerRedialDelays`), costs each session one trade
+ * for the outage, never one every second refusal. A refusal of a token that lapsed, or of one the
  * connection is about to move off, is the renewal's to cure.
  *
  * Returns the function that stops it, its status reader included; the connection closing stops
