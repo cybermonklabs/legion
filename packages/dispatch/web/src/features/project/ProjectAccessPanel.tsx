@@ -36,7 +36,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
  *  or the Slack channels its credentials may post to. */
 type AccessChange =
   | { readonly kind: "owner"; readonly owner: string }
-  | { readonly kind: "visibility"; readonly visibility: "public" | "private" }
+  | { readonly kind: "visibility"; readonly visibility: ProjectAccess["visibility"] }
   | { readonly kind: "add-person" | "remove-person"; readonly email: string }
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
@@ -125,7 +125,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
  *  project, and the switch itself can still be pressed. */
 function switchRefusal(
   project: string,
-  visibility: "public" | "private",
+  visibility: ProjectAccess["visibility"],
   code: string | undefined
 ): { readonly message: string; readonly retry: boolean } {
   switch (code) {
