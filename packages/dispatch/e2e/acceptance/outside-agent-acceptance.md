@@ -76,9 +76,16 @@ The tailnet leg does these steps, in this order:
    a session outside the project, `<peer>-foreign`, registered at the private listener, for row P6.
 5. It starts T5's hold login: `dispatch login --device --person <person>` with the client of this
    checkout, its file in the scratch directory. It reads the code.
+   Then the read sweep's full-member half: it runs `restricted-sweep.sh` (beside this file) in
+   its fills mode with the box's full member (`OUTSIDE_SWEEP_PROJECT`,
+   `OUTSIDE_SWEEP_FULL_TOKEN_FILE`, `OUTSIDE_SWEEP_CONVERSATION_FILE`, the test person as
+   `SWEEP_MEMBER`), and starts its writer, which comments on the scratch issue
+   `OUTSIDE_SWEEP_WRITE_ISSUE` every 15 s until the public leg ends. No full member's credential
+   goes to the runner: the fills file holds none, and is at most 40 KiB so that it fits one input.
 6. It starts the public leg, within the codes' 15 minutes: `gh workflow run` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, with
-   `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `tailnet_hold_code` and
+   `checks=all`, `project`, `peer_session`, `tailnet_user_code`, `tailnet_hold_code`,
+   `sweep_fills` (the fills file, base64, when fills mode made one) and
    `OUTSIDE_WORKFLOW_INPUTS`. With `OUTSIDE_PUBLIC_COMMAND` set, it runs that command here
    instead, for a local stack.
 7. It waits for the scratch login to be approved, and runs rows T1-T3.
@@ -150,6 +157,7 @@ Every process the leg starts runs with `env -i`, a HOME of its own, and these se
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's last step revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
 | T5 | Last. Before the prompt, which is the control: the test person is on the project's access list (read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and a trade of the hold login is answered. After the owner removes the person and Enter is pressed: the list no longer names them (else UNKNOWN), a fresh trade of the hold login is refused, and a relay socket opened at the edge with the token traded at the removal is closed, each within 325 s. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. The row also wants the test person's cookie answered 401 and their passkey sign-in refused; that browser is the public runner's and has ended by then, so the row reads UNKNOWN even when every part read here passes. No terminal, or no approved hold login, reads UNKNOWN. |
+| sweep | `restricted-sweep.sh` on the runner exits 0 (read from the run's `restricted-sweep` artifact), and at least one of the writer's comments was delivered to the full member's own feed strictly inside the sweep's `live window`, so its finding that nothing reached the test person's feed means something. With no such comment it reads UNKNOWN. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
 The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not

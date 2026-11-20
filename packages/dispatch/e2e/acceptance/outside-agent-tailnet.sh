@@ -29,6 +29,15 @@
 #   OUTSIDE_PERSON               the test person's address.
 #   OUTSIDE_CANARY               the name of the canary secret T2 and T3 ask for.
 #   OUTSIDE_REPOSITORY           owner/name of the repository the scratch project's issue names.
+#   OUTSIDE_SWEEP_PROJECT, OUTSIDE_SWEEP_FULL_TOKEN_FILE, OUTSIDE_SWEEP_CONVERSATION_FILE,
+#   OUTSIDE_SWEEP_WRITE_ISSUE    the read sweep's full-member half (restricted-sweep.sh, row
+#                                sweep): the project the test person must not see, a file holding a
+#                                full member's bearer for Dispatch's private origin, the
+#                                conversation file of a session that worked in that project alone,
+#                                and a scratch issue of it the writer comments on every 15 s while
+#                                the public leg runs. OUTSIDE_SWEEP_FULL_COOKIE_FILE, optional, a
+#                                full member's browser cookie, without which the sweep's proxy
+#                                rows are named unproven.
 #   OUTSIDE_WORKFLOW_REPO        owner/name of the repository whose workflow runs the public leg;
 #                                OUTSIDE_WORKFLOW names the workflow (outside-edge-e2e.yaml), and
 #                                OUTSIDE_WORKFLOW_INPUTS holds its other inputs, one name=value a
@@ -210,7 +219,7 @@ tools="$work/tools"
 emit "row${tab}want${tab}got${tab}verdict"
 
 # skip_rest REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
-rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows"
+rest_rows="pins issue T1 T2 T3 T4 T5 $public_rows sweep"
 skip_from() {
   local reason=$1 from=$2 name on=''
   for name in $rest_rows; do
@@ -300,14 +309,14 @@ if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
 fi
 if [ -n "$problem" ]; then
   row pins "$want_pins" "$problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows"
+  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "the pins were not read: $problem" issue
   gate
 fi
 read_pins
 if [ -n "$pins_problem" ]; then
   row pins "$want_pins" "$pins_problem" UNKNOWN
-  rest_rows="issue T1 T2 T3 T4 T5 $public_rows"
+  rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
   skip_from "the pins were not read" issue
   gate
 fi
@@ -343,13 +352,13 @@ case $held in
   yes) row pins "$want_pins" "$pins_line" PASS ;;
   no)
     row pins "$want_pins" "the broker's build $broker_revision does not hold $commit; $pins_line" FAIL
-    rest_rows="issue T1 T2 T3 T4 T5 $public_rows"
+    rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
     skip_from "the broker's pin lacks the enrollment refusal, so the legs do not start" issue
     gate
     ;;
   *)
     row pins "$want_pins" "$problem; $pins_line" UNKNOWN
-    rest_rows="issue T1 T2 T3 T4 T5 $public_rows"
+    rest_rows="issue T1 T2 T3 T4 T5 $public_rows sweep"
     skip_from "whether the broker's pin holds the enrollment refusal is unread" issue
     gate
     ;;
@@ -629,6 +638,50 @@ if [ -z "$hold_problem" ]; then
   [ -n "$hold_code" ] || hold_problem="dispatch login --device printed no code within 60 s: $(text_of "$work/hold.log")"
 fi
 
+# --- The read sweep's full-member half (restricted-sweep.sh beside this file): a full member has
+# no cookie at the outside origin, and no full member's credential goes on the runner. So this box
+# runs the sweep's fills mode, which makes the full member's half of every row, and passes the file
+# to the workflow as `sweep_fills`; and it runs the sweep's writer, which comments on the write
+# issue every 15 s and reads the full member's own feed, as the live socket's control. The token
+# reaches the sweep through the environment of a subshell alone. ---
+sweep_script="$here/restricted-sweep.sh"
+sweep_fills=''
+sweep_problem=$(lacking OUTSIDE_TAILNET_DISPATCH_URL OUTSIDE_SWEEP_PROJECT OUTSIDE_SWEEP_FULL_TOKEN_FILE OUTSIDE_SWEEP_CONVERSATION_FILE OUTSIDE_SWEEP_WRITE_ISSUE)
+[ -n "$sweep_problem" ] || [ -f "$sweep_script" ] || sweep_problem="restricted-sweep.sh is not beside this file in $here"
+[ -n "$sweep_problem" ] || [ -r "${OUTSIDE_SWEEP_FULL_TOKEN_FILE:-}" ] ||
+  sweep_problem="OUTSIDE_SWEEP_FULL_TOKEN_FILE names $OUTSIDE_SWEEP_FULL_TOKEN_FILE, which cannot be read"
+# sweep_run MODE OUT: the sweep in MODE with the box's full member, its output in OUT.
+sweep_run() {
+  (
+    SWEEP_FULL_TOKEN=$(tr -d '\r\n' <"$OUTSIDE_SWEEP_FULL_TOKEN_FILE")
+    export SWEEP_FULL_TOKEN
+    if [ -n "${OUTSIDE_SWEEP_FULL_COOKIE_FILE:-}" ]; then
+      SWEEP_FULL_COOKIE=$(tr -d '\r\n' <"$OUTSIDE_SWEEP_FULL_COOKIE_FILE")
+      export SWEEP_FULL_COOKIE
+    fi
+    SWEEP_MODE=$1 SWEEP_ORIGIN=$OUTSIDE_TAILNET_DISPATCH_URL SWEEP_PROJECT=$OUTSIDE_SWEEP_PROJECT \
+      SWEEP_MEMBER=$person SWEEP_CONVERSATION_FILE=$OUTSIDE_SWEEP_CONVERSATION_FILE \
+      SWEEP_FILLS_FILE="$work/sweep-fills" \
+      SWEEP_WRITE_ISSUE=$OUTSIDE_SWEEP_WRITE_ISSUE SWEEP_WRITE_SECONDS=3600 SWEEP_WRITE_EVERY=15 \
+      exec bash "$sweep_script" >"$2" 2>&1 </dev/null
+  )
+}
+if [ -z "$sweep_problem" ]; then
+  say "the sweep's fills mode"
+  if ! sweep_run fills "$work/sweep-fills.log" || [ ! -s "$work/sweep-fills" ]; then
+    sweep_problem="the sweep's fills mode made no file: $(text_of "$work/sweep-fills.log")"
+  elif [ "$(wc -c <"$work/sweep-fills")" -gt 40960 ]; then
+    sweep_problem="the sweep's fills file is $(wc -c <"$work/sweep-fills") bytes, past the 40 KiB one workflow input holds"
+  else
+    sweep_fills=$(base64 <"$work/sweep-fills" | tr -d '\n')
+    # The writer comments every 15 s until the public leg ends, when it is stopped: it runs on a
+    # scratch issue (OUTSIDE_SWEEP_WRITE_ISSUE), about four comments a minute of the run.
+    sweep_run writer "$work/sweep-writer.log" &
+    writer_pid=$!
+    background="$background $writer_pid"
+  fi
+fi
+
 # --- The public leg: the workflow on a runner on the public internet, or a local command. ---
 results="$work/public"
 mkdir -p "$results"
@@ -644,7 +697,7 @@ elif [ -n "${OUTSIDE_PUBLIC_COMMAND:-}" ]; then
   set +f
   (
     OUTSIDE_TAILNET_USER_CODE=$code OUTSIDE_TAILNET_HOLD_CODE=$hold_code OUTSIDE_PEER_SESSION=$peer \
-      OUTSIDE_PUBLIC_RESULTS=$results \
+      OUTSIDE_SWEEP_FILLS=$sweep_fills OUTSIDE_PUBLIC_RESULTS=$results \
       "$@" >"$work/public.log" 2>&1 </dev/null
     echo "$?" >"$work/public.exit"
   ) &
@@ -657,6 +710,7 @@ else
   else
     fields=(-f checks=all -f "project=$project" -f "peer_session=$peer" -f "tailnet_user_code=$code")
     [ -z "$hold_code" ] || fields+=(-f "tailnet_hold_code=$hold_code")
+    [ -z "$sweep_fills" ] || fields+=(-f "sweep_fills=$sweep_fills")
     while IFS= read -r pair; do
       [ -z "$pair" ] || fields+=(-f "$pair")
     done <<EOF
@@ -782,6 +836,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   gh run watch "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --interval 30 >/dev/null 2>&1 </dev/null
   gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-agent-public -D "$results" >/dev/null 2>&1 </dev/null
   gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n outside-edge-revocations -D "$results" >/dev/null 2>&1 </dev/null
+  gh run download "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" -n restricted-sweep -D "$results" >/dev/null 2>&1 </dev/null
   conclusion=$(gh run view "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --json url,conclusion --jq '.url + " " + .conclusion' 2>&1 </dev/null)
   say "run $run_id: $conclusion"
 elif [ -z "$public_problem" ]; then
@@ -790,6 +845,8 @@ elif [ -z "$public_problem" ]; then
   while [ ! -f "$work/public.exit" ] && [ "$(now)" -lt "$deadline" ]; do sleep 5; done
   [ -f "$work/public.exit" ] || public_problem="the public leg's command had not ended within an hour"
 fi
+# The public leg has ended, so the sweep's writer has nothing more to show it.
+[ -z "${writer_pid:-}" ] || kill "$writer_pid" 2>/dev/null
 public_tsv="$results/outside-agent-public.tsv"
 [ -n "$public_problem" ] || [ -f "$public_tsv" ] || public_problem="the public leg left no outside-agent-public.tsv"
 
@@ -1000,6 +1057,53 @@ EOF
     row "$name" "$want" "$got" "$verdict"
   fi
 done
+
+# --- sweep: the read sweep on the runner, held to this box's writer: its verdict, and at least one
+# of the full member's comments delivered strictly inside the window the sweep read the member's
+# feed over, which is what makes its "nothing reached the member" mean something. ---
+want_sweep="restricted-sweep.sh on the runner PASS, with a full member's comment delivered inside its live window"
+sweep_log="$results/restricted-sweep.log"
+if [ -n "$sweep_problem" ]; then
+  row sweep "$want_sweep" "$sweep_problem" UNKNOWN
+elif [ ! -f "$sweep_log" ]; then
+  row sweep "$want_sweep" "the run left no restricted-sweep.log${public_problem:+: $public_problem}" UNKNOWN
+else
+  sweep_exit=$(tr -d ' \n' <"$results/restricted-sweep.exit" 2>/dev/null)
+  window=''
+  while IFS= read -r line; do
+    case $line in 'live window '*) window=${line#live window } ;; esac
+  done <"$sweep_log"
+  w0=${window%% *}
+  w1=${window#* }
+  inside=''
+  while IFS= read -r line; do
+    case $line in 'write '*' delivered')
+      at=${line#write }
+      at=${at%% *}
+      [[ -n "$w0" && "$at" > "$w0" && "$at" < "$w1" ]] && inside=$at
+      ;;
+    esac
+  done <"$work/sweep-writer.log"
+  # The verdict is the sweep's last line; the log's first is the workflow's own note.
+  verdict_line=''
+  while IFS= read -r line; do
+    [ -z "$line" ] || verdict_line=$line
+  done <"$sweep_log"
+  verdict_line=${verdict_line:0:300}
+  case $sweep_exit in
+    1) row sweep "$want_sweep" "the sweep failed: $verdict_line" FAIL ;;
+    0)
+      if [ -z "$window" ]; then
+        row sweep "$want_sweep" "the sweep passed and printed no live window, so the writer's control cannot be held to it" UNKNOWN
+      elif [ -z "$inside" ]; then
+        row sweep "$want_sweep" "the sweep passed, and no comment of the writer was delivered inside its live window $window, so its live check proved nothing" UNKNOWN
+      else
+        row sweep "$want_sweep" "the sweep passed; the writer's comment at $inside was delivered inside its live window $window" PASS
+      fi
+      ;;
+    *) row sweep "$want_sweep" "the sweep exited ${sweep_exit:-with no code read}: $verdict_line" UNKNOWN ;;
+  esac
+fi
 
 # --- The gate, against pins read again: a pin that moved between the legs holds it. ---
 read_pins
