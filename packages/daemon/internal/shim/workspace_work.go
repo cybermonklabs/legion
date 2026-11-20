@@ -106,7 +106,7 @@ func cutAnswerError(reason string) string {
 // (refs/jj/keep). The read changes no file of the working copy, moves no bookmark and pushes
 // nothing, and it needs no git.
 func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, changed bool, work []string, err error) {
-	opened, done, err := s.openWorkspace("read", time.Duration(request.TimeoutMs)*time.Millisecond)
+	opened, done, err := s.openWorkspace("read", s.cfg.Env, time.Duration(request.TimeoutMs)*time.Millisecond)
 	if err != nil {
 		return "", false, nil, err
 	}

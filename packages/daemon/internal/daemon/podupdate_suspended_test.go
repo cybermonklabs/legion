@@ -4,7 +4,8 @@ package daemon
 // verification's c-suspended-asked). Such a claim, suspended by the daemon's own rule, by a
 // root's exit, by an idle release or by an unknown source (supervise's Claim.PassedOverByRound),
 // runs no process and no turn in the pod. So the round does not ask it, wait for it, wake it or
-// resume it. What it left unpushed goes with the pod: once every claim the round asks has answered
+// resume it. What it left unpushed goes with the pod, unless the pod's disk is a kept volume that
+// the issue's next pod mounts (roundKeptVolume). Once every claim the round asks has answered
 // and no turn runs, the replacement reads the issue's workspace through a role whose process runs
 // in the pod, names on its line each claim it did not wait for and what the read found, and,
 // where the read found work or failed, writes one message on the issue. An operator's suspension
@@ -193,9 +194,15 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // work (replacedOverPassedOverClaims), so what the read found decides nothing. Its line names both
 // suspended roles and the commit or the error, and one message on the issue names both roles,
 // each with its state, and the commit or the error. The sweeps after the round's end write no
-// second message. On a kept volume that the issue's next pod mounts (#4550), the same read's
-// message says the commit is still on that volume rather than lost, and the line says the volume
-// is kept: nothing went with the pod.
+// second message.
+//
+// Where the work is, as the line and the message say it, is roundKeptVolume's answer (#4550). On
+// a kept volume made before the round opened, which the issue's next pod mounts, the message says
+// the work is still on that volume rather than lost, and the line says the volume is kept: nothing
+// went with the pod. Over any other disk — an ephemeral one, or a kept volume made after the round
+// opened — the line names no kept volume, and the message says the pod and its disk are gone and
+// the work is lost, whatever the read found. A message that calls lost work safe tells a role not
+// to do that work again.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 	for _, read := range []struct {
 		name   string
@@ -204,6 +211,9 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 		line func(t *testing.T, line map[string]any)
 		// says is what the message must carry of the read.
 		says string
+		// kept is whether the issue's Sandbox holds a kept volume made before the round opened,
+		// which the issue's next pod mounts (roundKeptVolume).
+		kept bool
 	}{
 		{
 			name: "an unpushed commit",
@@ -225,11 +235,28 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 				rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
 			},
 			line: func(t *testing.T, line map[string]any) {
-				if line["workspaceRead"] != "found work" || line["keptVolume"] != true {
-					t.Errorf("the replacement's line names %+v, want a read that found work over a kept volume", line)
+				if line["workspaceRead"] != "found work" {
+					t.Errorf("the replacement's line names %+v, want a read that found work", line)
 				}
 			},
-			says: "Work that is not on a branch at origin is on that volume.",
+			says: passedOverCommit,
+			kept: true,
+		},
+		// A Sandbox made after the round opened holds a new volume, which holds nothing of the
+		// round's pod.
+		{
+			name: "an unpushed commit on a kept volume made after the round opened",
+			script: func(rig *podUpdateRig) {
+				rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+				rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(time.Minute))
+			},
+			line: func(t *testing.T, line map[string]any) {
+				commits, _ := line["workspaceCommits"].([]any)
+				if line["workspaceRead"] != "found work" || len(commits) != 1 || commits[0] != passedOverCommit || line["workspaceCommitCount"] != float64(1) {
+					t.Errorf("the replacement's line names the read %+v, want one that found the commit %s", line, passedOverCommit)
+				}
+			},
+			says: passedOverCommit,
 		},
 		{
 			name:   "a read that fails",
@@ -253,6 +280,31 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 			for _, want := range []string{"planner (suspended)", "reviewer (suspended)", read.says} {
 				if !strings.Contains(messages[0], want) {
 					t.Errorf("the message does not name %q:\n%s", want, messages[0])
+				}
+			}
+			if read.kept {
+				if line["keptVolume"] != true {
+					t.Errorf("the replacement's line says keptVolume=%v, want true: the disk is a kept volume that the issue's next pod mounts", line["keptVolume"])
+				}
+				for _, want := range []string{"Its disk is a kept volume, and the volume is still there.", "Work that is not on a branch at origin is on that volume."} {
+					if !strings.Contains(messages[0], want) {
+						t.Errorf("the message does not say %q:\n%s", want, messages[0])
+					}
+				}
+				if strings.Contains(messages[0], "is lost") {
+					t.Errorf("the message calls work lost on a kept volume that the issue's next pod mounts:\n%s", messages[0])
+				}
+			} else {
+				if kept, named := line["keptVolume"]; named {
+					t.Errorf("the replacement's line says keptVolume=%v, want no kept volume: the disk went with the pod", kept)
+				}
+				for _, want := range []string{"The pod and its disk are gone.", "Work that is not on a branch at origin is lost."} {
+					if !strings.Contains(messages[0], want) {
+						t.Errorf("the message does not say %q:\n%s", want, messages[0])
+					}
+				}
+				if strings.Contains(messages[0], "kept volume") {
+					t.Errorf("the message names a kept volume over a disk that went with the pod:\n%s", messages[0])
 				}
 			}
 
