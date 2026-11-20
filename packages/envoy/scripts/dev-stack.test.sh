@@ -8,7 +8,7 @@
 # stub at <dir>/<pkg> instead of compiling. The same fake go makes the prebuilt directory a
 # --binaries run is given, as the builds farm makes the real one. dev-stack.sh's own isolation,
 # port and stop logic lives entirely in the shell driver and never in the Go binaries it starts,
-# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/broker or
+# so a stub proves the driver's behaviour without depending on cmd/dispatch, cmd/cipherd or
 # cmd/listener compiling.
 #
 # Each stub logs the line the real process logs once it is listening — the issuer's
@@ -885,8 +885,8 @@ printf 'PASS: a run with no database URL names --database-url, LEGION_TEST_PG_DS
 # Every check a built run passes, (a) to (c), holds for it, and so does the stop of (e).
 prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
-prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
-  ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+prebuilt_packages=(./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
+  ./cmd/cipher ./cmd/cipher-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"

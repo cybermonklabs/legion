@@ -148,7 +148,8 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # One `go build -o <directory>/` writes one binary per package, each named after it:
-      # dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on the build
+      # dispatch, dev-oidc-issuer and requestseed; the second build names the broker's, from
+      # ./cmd/cipherd, broker. CGO_ENABLED=0 is pinned on the build
       # rather than left to the runner's default, so each binary is static by construction: the
       # shard and alone jobs run them in a container of this repository's own image, and a
       # binary with a PT_INTERP has a glibc there to disagree with. They are written under
@@ -156,7 +157,8 @@ jobs:
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.

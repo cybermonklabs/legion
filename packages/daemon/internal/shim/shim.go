@@ -105,7 +105,7 @@ type Config struct {
 	Env []string
 	// ProviderEnv is NAME=value pairs for OMP's environment only (--provider-env-dir).
 	ProviderEnv []string
-	// AgentSecrets is the pod's enrollment with the secrets broker (agentsecrets.go); nil on a
+	// AgentSecrets is the pod's enrollment with the secrets broker (cipher.go); nil on a
 	// tmux pane, which is never enrolled.
 	AgentSecrets *AgentSecrets
 	// WarmCodegraph, when set, is started once with the workspace the shim's LEGION_WORKSPACE
@@ -258,7 +258,7 @@ type shim struct {
 	thumbprint  string // agent-secrets keygen's thumbprint, generated once per shim
 	renewing    bool   // the agent-secrets renewer goroutine has been started
 
-	// renewers is the agent-secrets renewer goroutine (agentsecrets.go's startRenewer), reaped by
+	// renewers is the agent-secrets renewer goroutine (cipher.go's startRenewer), reaped by
 	// Run's deferred Wait before it returns.
 	renewers sync.WaitGroup
 

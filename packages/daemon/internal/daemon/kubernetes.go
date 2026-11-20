@@ -16,10 +16,10 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/experiment"
@@ -459,14 +459,14 @@ func providersSecrets(cfg config.Config, lookup func(string) (string, bool)) []s
 // client from runtime.kubernetes.agent_secrets and starts it at boot on a background context, so
 // the daemon logs in with its own projected ServiceAccount token (token_file) and keeps logging in
 // before each credential expires; no person approves any of it, a restart included. Every login
-// logs its own outcome (agentsecrets.Client.Login); one that fails is retried by the client, and
+// logs its own outcome (cipher.Client.Login); one that fails is retried by the client, and
 // pod enrollment waits for it. With the block's exchange_audience set, the same client is the
 // machines' Registrar too (newRegistrar), which registers each role's session for its pod; unset,
 // the Registrar is nil and no registration is ever made. The client itself is returned too,
 // read-only, so the state route can show the login's current status (source.State,
-// agentsecrets.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
+// cipher.Client.LoginStatus). Never part of launchSecrets, so no pod is ever handed the
 // daemon's key, token or credential. Nil, nil, nil without the block.
-func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *agentsecrets.Client) {
+func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, supervise.Registrar, *cipher.Client) {
 	k := cfg.Runtime.Kubernetes
 	if k == nil || k.AgentSecrets == nil {
 		return nil, nil, nil
@@ -480,18 +480,18 @@ func newSecretsLogin(cfg config.Config, log *slog.Logger) (supervise.Enroller, s
 		Timeout:       30 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	client := &agentsecrets.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
+	client := &cipher.Client{URL: k.AgentSecrets.URL, HTTP: broker, TokenFile: k.AgentSecrets.TokenFile, Log: log}
 	go func() { _ = client.Start(context.Background()) }()
 	return brokerEnroller{client: client}, newRegistrar(*k.AgentSecrets, client), client
 }
 
-// brokerEnroller is agentsecrets.Client as supervise.Enroller; an *agentsecrets.APIError is a
+// brokerEnroller is cipher.Client as supervise.Enroller; an *cipher.APIError is a
 // PermanentError when its status says so, which is how the machine tells a refusal from an outage,
 // and an ExpiredTokenError for POD_TOKEN_EXPIRED, a stale token under a key that stands.
-type brokerEnroller struct{ client *agentsecrets.Client }
+type brokerEnroller struct{ client *cipher.Client }
 
 func (b brokerEnroller) Enroll(ctx context.Context, e supervise.PodEnrollment) (string, error) {
-	enrolled, err := b.client.Enroll(ctx, agentsecrets.PodEnrollment{
+	enrolled, err := b.client.Enroll(ctx, cipher.PodEnrollment{
 		PodUID: e.PodUID, Slot: e.Slot, Thumbprint: e.Thumbprint, PodToken: e.PodToken, Session: e.Session, Claim: e.Claim,
 	})
 	if err != nil {

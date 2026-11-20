@@ -8,7 +8,7 @@
 // or an expiry, which is the broker's work, and nothing here parses a claim. Probe says, within
 // ProbeTimeout, whether a Google metadata server answers and which service account it names, and
 // AccessTokenSource reads that account's OAuth access token, for a store command's last
-// credential source (cmd/agent-secrets, newGCPBackend). An answer that does not carry
+// credential source (cmd/cipher, newGCPBackend). An answer that does not carry
 // Metadata-Flavor: Google is no metadata server to either of them.
 //
 // The transport has no proxy at all, as cloud.google.com/go/compute/metadata's does.

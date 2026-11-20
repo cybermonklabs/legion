@@ -217,7 +217,7 @@
     "lint": "bunx biome check src/ bin/ test/"
   },
   "dependencies": {
-    "@legion/broker-client": "workspace:*",
+    "@legion/cipher-client": "workspace:*",
     "@legion/contracts": "workspace:*",
     "@toon-format/toon": "^4.1.1",
     "nats": "^2.29.2",

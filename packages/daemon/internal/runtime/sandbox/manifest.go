@@ -204,8 +204,8 @@ const slackChannelsVariable = "LEGION_SLACK_CHANNELS"
 
 // machineIdentityVariable and machineTokenFileVariable are the two variables a pod's broker
 // clients read to decide which identity the machine proves and where its token is
-// (packages/broker-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
-// packages/envoy/internal/brokerclient's IdentityVar and MachineTokenFileVar), and
+// (packages/cipher-client/src/environment.ts's IDENTITY_VAR and MACHINE_TOKEN_FILE_VAR, and
+// packages/envoy/internal/cipherclient's IdentityVar and MachineTokenFileVar), and
 // kubernetesIdentity the value naming a projected Kubernetes ServiceAccount token. A role is told
 // them where its pod trades (launch.trades), and they are Legion's only where the deployment names
 // an exchange audience (exchangeOwned).
@@ -1573,7 +1573,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	}
 	// The identity the broker's exchange trades, gated on the one exchange decision (tradesIn) as
 	// the two above are on the enrollment: the pod's projected token for the exchange's audience,
-	// which the broker clients of every session in the role (packages/broker-client's
+	// which the broker clients of every session in the role (packages/cipher-client's
 	// environment.ts, machineIdentity) trade for a broker token of the session's own.
 	if l.trades(r) {
 		add(machineIdentityVariable, kubernetesIdentity)

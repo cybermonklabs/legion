@@ -26,7 +26,7 @@ type Deployment struct {
 	Probed bool
 	// AgentSecrets is whether runtime.kubernetes.agent_secrets is configured.
 	AgentSecrets bool
-	// SecretsLogin is the broker login's state (agentsecrets.LoginState.State: "none", "issued" or
+	// SecretsLogin is the broker login's state (cipher.LoginState.State: "none", "issued" or
 	// "failed"); "" with no broker.
 	SecretsLogin string
 	// UnreservedPods are the pods the daemon builds that reserve no CPU and memory, those whose

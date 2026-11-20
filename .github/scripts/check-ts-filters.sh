@@ -17,7 +17,7 @@
 # type, so this is no second typecheck: the job's own step is what compiles it.
 #
 # The pairs cover every gate whose job runs a typecheck, each read from that job's own steps:
-# contracts, envoy_client (packages/envoy-client and packages/broker-client), pi_shared,
+# contracts, envoy_client (packages/envoy-client and packages/cipher-client), pi_shared,
 # pi_envoy, pi_legion, claude_envoy, dispatch_ui (packages/dispatch and packages/proof-editor),
 # docs (docs/site, in the docs-site.yaml job ci.yaml's docs job calls), conflicts_script
 # (scripts/conflicts) and test (scripts/dispatch, scripts/github-apps, scripts/sessions and

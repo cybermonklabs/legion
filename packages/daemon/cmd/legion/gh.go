@@ -580,7 +580,7 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	// and SIGINT alone where they were inherited as SIG_IGN and marks them ignored
 	// (runtime's sigInitIgnored). agent-secrets asks the same question of the job-control
 	// signals with a raw sigaction, for which that bookkeeping holds no answer
-	// (packages/envoy/cmd/agent-secrets/secret_signal_linux.go's promptSignalIgnored).
+	// (packages/envoy/cmd/cipher/secret_signal_linux.go's promptSignalIgnored).
 	forwarded := []os.Signal{syscall.SIGTERM}
 	if !signal.Ignored(syscall.SIGHUP) {
 		forwarded = append(forwarded, syscall.SIGHUP)

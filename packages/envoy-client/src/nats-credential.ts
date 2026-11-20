@@ -3,7 +3,7 @@
 // The credential a session's NATS connection presents. It is one of three: the nkey user a seed
 // names, as every session presented before the hub ran an auth service; the session's broker
 // token, which the auth service of a hub that runs one admits as that session alone
-// (`packages/envoy/internal/broker/natscallout`); or none. Which one is the deployment's to say
+// (`packages/envoy/internal/cipher/natscallout`); or none. Which one is the deployment's to say
 // (`envoySettings`): a machine that can trade for a broker token says nothing about the hub, so
 // the broker token is presented only where `NATS_AUTH` or `envoy.natsAuth` says `broker`.
 //
@@ -13,9 +13,9 @@
 // answers with a NATS user that expires with the token, so the connection moves to the next token
 // before then (`keepNatsCredential`).
 
-import type { BrokerEnvironment } from "@legion/broker-client/environment";
-import { SIGNIN_COMMAND } from "@legion/broker-client/signins";
-import { DEFAULT_RENEW_BEFORE_MS } from "@legion/broker-client/token-client";
+import type { BrokerEnvironment } from "@legion/cipher-client/environment";
+import { SIGNIN_COMMAND } from "@legion/cipher-client/signins";
+import { DEFAULT_RENEW_BEFORE_MS } from "@legion/cipher-client/token-client";
 import {
   BrokerRefusedError,
   BrokerTradeFailedError,
@@ -24,7 +24,7 @@ import {
   TokenClientClosedError,
   TradeRetryingError,
   TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/token-errors";
 import { scrub } from "@legion/contracts/held-secrets";
 // Types alone: `envoySettings` imports this module, and every bundle of it — the `dispatch`
 // command's, each hook's — would otherwise carry nats.js whole.

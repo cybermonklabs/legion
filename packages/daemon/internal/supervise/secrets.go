@@ -80,7 +80,7 @@ type ExpiredTokenError interface{ TokenExpired() bool }
 // Registrar is the secrets broker's pod-session registration as the machine uses it (Deps.Registrar):
 // KeepPodSession writes r's registration now, answering that first write's outcome, and keeps it
 // written, again and again on r.After, until stop is called or ctx ends. stop returns only once a
-// write in flight has been answered, without cancelling it. The daemon's is agentsecrets.Client's
+// write in flight has been answered, without cancelling it. The daemon's is cipher.Client's
 // own KeepPodSession, which logs each write naming the pod and the session.
 type Registrar interface {
 	KeepPodSession(ctx context.Context, r PodSession) (stop func(), err error)

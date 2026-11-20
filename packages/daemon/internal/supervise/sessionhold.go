@@ -90,7 +90,7 @@ var ErrCarryUnanswered = errors.New("the secrets broker did not answer which of 
 var ErrCarryRefused = errors.New("the secrets broker refused the question of which of the names it still carries")
 
 // UnlistedCarryError is an answer of the secrets broker's too long for the daemon to read whole
-// (agentsecrets' CarriedAnswerTooLargeError): the broker answered, and an answer that long names
+// (cipher' CarriedAnswerTooLargeError): the broker answered, and an answer that long names
 // at least one enrollment, so a release reads it as a carry it cannot list (NamesCarriedError's
 // Unlisted), never as an outage (side review of #4355).
 type UnlistedCarryError interface{ UnlistedCarry() bool }

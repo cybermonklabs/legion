@@ -26,7 +26,7 @@ export const NATS_MAX_PINGS_OUT = 2;
  * the CONNECT (`noAuthService`, `./nats-credential`).
  *
  * That last one matters on a hub whose connections an auth service admits
- * (packages/envoy/internal/broker/natscallout): while that service is away, which a restart of the
+ * (packages/envoy/internal/cipher/natscallout): while that service is away, which a restart of the
  * hub itself causes, or while the session's token lapses with the broker away, the server refuses
  * the session. nats.js 2.29.3 closes a connection for good on a repeated authorization error unless
  * `ignoreAuthErrorAbort` is set (`protocol.js:657-661`; the default is false, `options.js:50`), and

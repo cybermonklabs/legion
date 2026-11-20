@@ -1,0 +1,21 @@
+# proxy-no-call-watcher: only a joined connection is watched, so a gRPC call whose answers
+# stream, a streamed answer and a long poll run on after their grant has ended.
+# must fail: TestAGRPCStreamEndsWhenItsGrantStopsCarryingIt
+# must fail: TestACarriedStreamEndsWhenItsGrantStopsCarryingIt
+# must fail: TestACallWaitingForItsAnswerIsRefusedWhenItsGrantEnds
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -446,7 +446,10 @@
+ 		// the connection the watcher ends, the command's side first (cutJoined).
+ 		end, message = func(*cutCall) { cutJoined(info.cut, decrypted) }, joinMessage
+ 	}
+-	go s.watchCarried(carried, info, r, chosen, id, message, end)
++	// MUTANT: only a joined connection is watched, as before every carried call was.
++	if message == joinMessage {
++		go s.watchCarried(carried, info, r, chosen, id, message, end)
++	}
+ 
+ 	upstreamFailed := s.badGateway(info.host, r.URL.Path)
+ 	// refusedByCut is whether the watcher ended the call before its service answered, which

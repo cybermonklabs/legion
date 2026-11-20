@@ -1,4 +1,4 @@
-import { TradeRetryingError } from "@legion/broker-client/token-errors";
+import { TradeRetryingError } from "@legion/cipher-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,

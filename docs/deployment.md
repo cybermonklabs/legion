@@ -430,7 +430,7 @@ minted from Dispatch's Settings → Agent tokens
 
 The agent-secrets helper holds a credential of its own: the machine login a person approves for
 `agent-secrets machine login`. The helper spends that credential on the broker's own routes
-(`packages/envoy/internal/broker/helper/broker.go`) and asks the broker for no Dispatch token. The
+(`packages/envoy/internal/cipher/helper/broker.go`) and asks the broker for no Dispatch token. The
 broker can exchange such a login's access token for one (`docs/kubernetes.md`, "The Dispatch
 identity the broker can issue"), and nothing on this box does that at this release.
 `dispatch://INFRA-267` is where the daemon and its workers get Dispatch tokens of their own, a dev

@@ -522,7 +522,7 @@ jobs:
           # worker_image's drop what the .dockerignore keeps out of the
           # worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
           # step of either job reads a Markdown file, so a guide written under a directory pattern
-          # of theirs (patches/**, packages/broker-client/**, .github/actions/install-crane/**)
+          # of theirs (patches/**, packages/cipher-client/**, .github/actions/install-crane/**)
           # starts neither. No Markdown file of the repository matches either filter today, so the
           # pattern holds no run back now; it keeps the next guide from riding in, which is what a
           # week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
@@ -586,7 +586,7 @@ jobs:
               - 'package.json'
               - 'bun.lock'
               - 'patches/**'
-              - 'packages/broker-client/package.json'
+              - 'packages/cipher-client/package.json'
               - 'packages/contracts/package.json'
               - 'packages/envoy-client/package.json'
               - 'packages/pi-envoy/package.json'
@@ -626,9 +626,9 @@ jobs:
             daemon_envoy_deps: &daemon_envoy_deps
               # The broker address every broker client holds, which prints only its redacted form
               # (internal/redact) and whose calls follow no redirect (internal/redirects).
-              - 'packages/envoy/brokeraddr/*'
-              - 'packages/envoy/brokerclient/*'
-              - 'packages/envoy/brokertest/*'
+              - 'packages/envoy/cipheraddr/*'
+              - 'packages/envoy/cipherclient/*'
+              - 'packages/envoy/ciphertest/*'
               - 'packages/envoy/natsgrant/*'
               # The cobra conformance harness cmd/legion's tests drive the built legion with.
               - 'packages/envoy/clitest/*'
@@ -641,34 +641,34 @@ jobs:
               # holds the model, which airlock-lean alone reads, and testdata/ the fuzz seeds and
               # the mutant patches, which the airlock package's own tests read - the daemon
               # compiles that package without running them.
-              - 'packages/envoy/internal/broker/airlock/*'
-              - 'packages/envoy/internal/broker/answer/*'
-              - 'packages/envoy/internal/broker/api/*'
+              - 'packages/envoy/internal/cipher/proxyrules/*'
+              - 'packages/envoy/internal/cipher/answer/*'
+              - 'packages/envoy/internal/cipher/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/enroll/*'
-              - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/machine/*'
-              - 'packages/envoy/internal/broker/oauth/*'
-              - 'packages/envoy/internal/broker/oauthstore/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              # The token exchange's Dispatch client (internal/broker/oauth imports it), and the
+              - 'packages/envoy/internal/cipher/approval/**'
+              - 'packages/envoy/internal/cipher/ciphertest/*'
+              - 'packages/envoy/internal/cipher/enroll/*'
+              - 'packages/envoy/internal/cipher/exchange/*'
+              - 'packages/envoy/internal/cipher/machine/*'
+              - 'packages/envoy/internal/cipher/oauth/*'
+              - 'packages/envoy/internal/cipher/oauthstore/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              # The token exchange's Dispatch client (internal/cipher/oauth imports it), and the
               # account-token reader it presents with.
-              - 'packages/envoy/internal/broker/projectaccess/*'
-              - 'packages/envoy/internal/broker/policy/**'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/**'
+              - 'packages/envoy/internal/cipher/projectaccess/*'
+              - 'packages/envoy/internal/cipher/policy/**'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/requests/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
+              - 'packages/envoy/internal/cipher/store/**'
               # The response shapes the broker's own handlers marshal, which Dispatch's OpenAPI
               # emitter names for the routes that relay them.
-              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
-              - 'packages/envoy/internal/brokerclient/**'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipherclient/**'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -688,7 +688,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
-              # internal/broker/policy, answer and secrets count on counters of this package.
+              # internal/cipher/policy, answer and secrets count on counters of this package.
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
@@ -735,16 +735,16 @@ jobs:
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
               # The relayed shapes routes_shapes.go names (internal/dispatch/api).
-              - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipher/wire/*'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/bus/*'
               # internal/bus presents a service's NATS credential through natscred, whose session
               # half trades through the token client, which holds the broker's address as a
-              # brokeraddr.Address.
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/brokeraddr/*'
+              # cipheraddr.Address.
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
@@ -752,7 +752,7 @@ jobs:
               # internal/session's repair lock (KnownSessions.repairMu).
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
-              - 'packages/envoy/internal/dispatch/agentsecrets/*'
+              - 'packages/envoy/internal/dispatch/cipher/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/architecture/*'
@@ -835,7 +835,7 @@ jobs:
             legion_command: &legion_command
               - 'packages/daemon/cmd/legion/*'
               - 'packages/daemon/internal/admit/*'
-              - 'packages/daemon/internal/agentsecrets/*'
+              - 'packages/daemon/internal/cipher/*'
               - 'packages/daemon/internal/api/*'
               - 'packages/daemon/internal/appauth/*'
               - 'packages/daemon/internal/backoff/*'
@@ -896,21 +896,21 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
-              - 'packages/envoy/brokeraddr/*'
-              - 'packages/envoy/brokerclient/*'
+              - 'packages/envoy/cipheraddr/*'
+              - 'packages/envoy/cipherclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
-              # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
+              # The broker's OAuth wire types: packages/envoy/internal/cipherclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter
               # naming this anchor already named the package through a second pattern of its
               # own (docs' own broker list, listener_command's, which go_notices takes), so the
               # line adds the package to no other filter's meaning.
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokerclient/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipherclient/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
@@ -947,15 +947,15 @@ jobs:
             # The listener's packages, `go list -deps ./cmd/listener` in packages/envoy.
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/bus/*'
               # internal/bus presents a service's NATS credential through natscred, whose session
               # half trades through the token client: it holds the broker's address as a
-              # brokeraddr.Address, prints a broker failure through internal/redact and follows no
+              # cipheraddr.Address, prints a broker failure through internal/redact and follows no
               # redirect (internal/redirects).
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -1170,13 +1170,13 @@ jobs:
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/daemon/cmd/**/*_test.go'
               - '!packages/daemon/internal/admit/**/*_test.go'
-              - '!packages/daemon/internal/agentsecrets/**/*_test.go'
               - '!packages/daemon/internal/api/**/*_test.go'
               - '!packages/daemon/internal/appauth/**/*_test.go'
               - '!packages/daemon/internal/backoff/**/*_test.go'
               - '!packages/daemon/internal/blockers/**/*_test.go'
               - '!packages/daemon/internal/bootprobe/**/*_test.go'
               - '!packages/daemon/internal/capabilities/**/*_test.go'
+              - '!packages/daemon/internal/cipher/**/*_test.go'
               - '!packages/daemon/internal/claim/**/*_test.go'
               - '!packages/daemon/internal/classify/**/*_test.go'
               - '!packages/daemon/internal/claudebridge/**/*_test.go'
@@ -1287,12 +1287,12 @@ jobs:
               - '.github/workflows/release.yaml'
               - 'packages/contracts/src/**'
               - 'packages/envoy-client/src/**'
-              # Its src/broker-credential.ts:21-22 imports @legion/broker-client, whose exports
+              # Its src/broker-credential.ts:21-22 imports @legion/cipher-client, whose exports
               # map every entry to ./src/<module>.ts, so a build compiles that package's seven
               # sources with envoy-client's. check-ci-filters.test.sh holds a hand-written list of
               # such pairs to this pattern, and ci_job_reads.py's envoy_client_dep is the one
               # place that declares the pair, which check-ci-filters.sh then holds to the filter.
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/pi-shared/src/**'
               # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
@@ -1897,7 +1897,7 @@ jobs:
               - 'packages/test-fixtures/src/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/listenfd/**/*_test.go'
@@ -1926,56 +1926,56 @@ jobs:
               - *go_workspace
               - 'docs/site/**'
               # docs/site/scripts/build-binaries.sh:17-20 builds the daemon's ./cmd/legion and
-              # envoy's ./cmd/{dispatch,broker,agent-secrets,agent-secrets-helper,broker-refgen};
+              # envoy's ./cmd/{dispatch,cipherd,cipher,cipher-helper,cipher-refgen};
               # the screenshots' harness starts the Dispatch server (packages/dispatch/e2e/harness-start.ts,
               # which docs/site/media/harness.ts:21,97 imports).
-              # broker-refgen also parses broker/api, broker/approval, broker/airlockproxy, broker/config,
-              # broker/helper, cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:14-15).
+              # broker-refgen also parses cipher/api, cipher/approval, cipher/proxy, cipher/config,
+              # cipher/helper, cmd/cipherd and cmd/cipher at run time (generators/broker-reference.sh:14-15).
               - *legion_command
               - *dispatch_server
-              # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+              # agentloop: the model loop cmd/cipherd's judge runs a model and its tools through.
               - 'packages/envoy/agentloop/*'
-              - 'packages/envoy/cmd/agent-secrets/*'
-              - 'packages/envoy/cmd/agent-secrets-helper/*'
-              - 'packages/envoy/cmd/broker/*'
-              - 'packages/envoy/cmd/broker-refgen/*'
-              - 'packages/envoy/internal/broker/airlock/*'
-              - 'packages/envoy/internal/broker/airlockproxy/*'
-              - 'packages/envoy/internal/broker/answer/*'
-              - 'packages/envoy/internal/broker/api/*'
+              - 'packages/envoy/cmd/cipher/*'
+              - 'packages/envoy/cmd/cipher-helper/*'
+              - 'packages/envoy/cmd/cipherd/*'
+              - 'packages/envoy/cmd/cipher-refgen/*'
+              - 'packages/envoy/internal/cipher/proxyrules/*'
+              - 'packages/envoy/internal/cipher/proxy/*'
+              - 'packages/envoy/internal/cipher/answer/*'
+              - 'packages/envoy/internal/cipher/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/config/*'
-              - 'packages/envoy/internal/broker/enroll/*'
-              - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/helper/*'
-              - 'packages/envoy/internal/broker/judge/*'
-              - 'packages/envoy/internal/broker/leasetime/*'
-              - 'packages/envoy/internal/broker/machine/*'
-              - 'packages/envoy/internal/broker/netaddr/*'
-              - 'packages/envoy/internal/broker/oauth/*'
-              - 'packages/envoy/internal/broker/oauthstore/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/policy/*'
-              - 'packages/envoy/internal/broker/projectaccess/*'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/reread/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/*'
-              - 'packages/envoy/internal/broker/store/migrations/**'
-              - 'packages/envoy/internal/broker/wake/*'
-              # The NATS auth service cmd/broker runs, and the grants it answers.
-              - 'packages/envoy/internal/broker/natscallout/*'
+              - 'packages/envoy/internal/cipher/approval/**'
+              - 'packages/envoy/internal/cipher/config/*'
+              - 'packages/envoy/internal/cipher/enroll/*'
+              - 'packages/envoy/internal/cipher/exchange/*'
+              - 'packages/envoy/internal/cipher/helper/*'
+              - 'packages/envoy/internal/cipher/judge/*'
+              - 'packages/envoy/internal/cipher/leasetime/*'
+              - 'packages/envoy/internal/cipher/machine/*'
+              - 'packages/envoy/internal/cipher/netaddr/*'
+              - 'packages/envoy/internal/cipher/oauth/*'
+              - 'packages/envoy/internal/cipher/oauthstore/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/policy/*'
+              - 'packages/envoy/internal/cipher/projectaccess/*'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/requests/*'
+              - 'packages/envoy/internal/cipher/reread/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
+              - 'packages/envoy/internal/cipher/store/*'
+              - 'packages/envoy/internal/cipher/store/migrations/**'
+              - 'packages/envoy/internal/cipher/wake/*'
+              # The NATS auth service cmd/cipherd runs, and the grants it answers.
+              - 'packages/envoy/internal/cipher/natscallout/*'
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/fileowner/*'
               - 'packages/envoy/internal/ratelimit/*'
-              # cmd/broker's rules-host grammar is internal/broker/rulehost, which reads
-              # weborigin's label rules; its log mask is internal/broker/logmask.
-              - 'packages/envoy/internal/broker/rulehost/*'
-              - 'packages/envoy/internal/broker/logmask/*'
+              # cmd/cipherd's rules-host grammar is internal/cipher/rulehost, which reads
+              # weborigin's label rules; its log mask is internal/cipher/logmask.
+              - 'packages/envoy/internal/cipher/rulehost/*'
+              - 'packages/envoy/internal/cipher/logmask/*'
               - 'packages/envoy/internal/weborigin/*'
               # The screenshots build packages/dispatch's web app, which aliases contracts' and the
               # proof editor's sources (web/vite.config.ts:63-81), and boot its e2e harness
@@ -2020,8 +2020,8 @@ jobs:
               - 'scripts/go-third-party-notices.sh'
               - *go_workspace
               - *legion_command
-              - 'packages/envoy/cmd/agent-secrets/*'
-              - 'packages/envoy/cmd/agent-secrets-helper/*'
+              - 'packages/envoy/cmd/cipher/*'
+              - 'packages/envoy/cmd/cipher-helper/*'
               - *listener_command
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/infra/go.mod'
@@ -2038,12 +2038,12 @@ jobs:
               - 'packages/envoy/infra/provider/*'
               - 'packages/envoy/infra/render/*'
               - 'packages/envoy/infra/seed/*'
-              - 'packages/envoy/internal/broker/helper/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/policy/*'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/secrets/*'
+              - 'packages/envoy/internal/cipher/helper/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/policy/*'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/redact/*'
@@ -2096,7 +2096,7 @@ jobs:
               - 'package.json'
               - 'bun.lock'
               - 'patches/**'
-              - 'packages/broker-client/package.json'
+              - 'packages/cipher-client/package.json'
               - 'packages/contracts/package.json'
               - 'packages/envoy-client/package.json'
               - 'packages/pi-envoy/package.json'
@@ -2133,12 +2133,12 @@ jobs:
             dispatch_server: &dispatch_server
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/wire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
@@ -2146,7 +2146,7 @@ jobs:
               # internal/session's repair lock (KnownSessions.repairMu).
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
-              - 'packages/envoy/internal/dispatch/agentsecrets/*'
+              - 'packages/envoy/internal/dispatch/cipher/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/architecture/*'
@@ -2219,11 +2219,11 @@ jobs:
               - 'packages/envoy/natsversion/*'
             listener_command: &listener_command
               - 'packages/envoy/cmd/listener/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/bus/*'
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -2277,13 +2277,13 @@ jobs:
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/bus/bustest/*'
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/cistore/*'
@@ -2323,7 +2323,7 @@ jobs:
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names.
-              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
             # The shared test fixtures every other Bun package's tests import: its own sources and
             # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
@@ -2368,9 +2368,9 @@ jobs:
               - 'packages/pi-shared/**'
               - *jj_install
               - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it: src/broker-credential.ts:21-22 imports it, so
+              # And @legion/cipher-client with it: src/broker-credential.ts:21-22 imports it, so
               # this job compiles its sources too (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/contracts/src/**'
@@ -2406,8 +2406,8 @@ jobs:
               # src/skills-guard.test.ts:23, scripts/prepack.test.ts:6).
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
+              # And @legion/cipher-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/cipher-client/**'
               # extensions/envoy.test.ts:57-65 imports test/envoy-stack, stall-proxy, stall-scenario
               # and subscribe-answer; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
               - 'packages/envoy-client/test/**'
@@ -2458,8 +2458,8 @@ jobs:
               # packages/pi-shared/test/omp-harness.ts:17 imports too, so the tsc program of this
               # package compiles that file and the tests read it.
               - 'packages/envoy-client/test/subscribe-answer.ts'
-              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
+              # And @legion/cipher-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/cipher-client/**'
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
@@ -2629,8 +2629,8 @@ jobs:
               # local-instance-support.test.ts:2-5, run in this job's test step and in no other,
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
+              # And @legion/cipher-client with it (ci_job_reads.py's envoy_client_dep).
+              - 'packages/cipher-client/**'
               - 'packages/envoy-client/test/**'
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
             # holds: the shards, the three `-alone` projects, the two-process job, the
@@ -2763,12 +2763,12 @@ jobs:
               - '.github/docker/browser.Dockerfile'
               - '.github/workflows/browser-image.yaml'
               # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its
-              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
+              # own process (e2e/dispatch-cli.ts:8), and @legion/cipher-client is compiled with
               # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/bin/dispatch.ts'
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # The one markdown fixture table: the browser row each of the seven parity families
               # whose shapes the corpus holds keeps reads it at
               # web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44. This
@@ -2789,51 +2789,51 @@ jobs:
               # the `weed` binary its own image carries instead, so neither file reaches it.
               # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
               # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
-              # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
-              # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
+              # pods: the packages `go list -deps ./cmd/cipherd ./cmd/dev-oidc-issuer
+              # ./internal/cipher/ciphertest/requestseed` lists in packages/envoy beyond the
               # Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
-              # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+              # agentloop: the model loop cmd/cipherd's judge runs a model and its tools through.
               - 'packages/envoy/agentloop/*'
-              - 'packages/envoy/cmd/broker/*'
+              - 'packages/envoy/cmd/cipherd/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
-              - 'packages/envoy/internal/broker/airlock/*'
-              - 'packages/envoy/internal/broker/airlockproxy/*'
-              - 'packages/envoy/internal/broker/answer/*'
-              - 'packages/envoy/internal/broker/api/*'
+              - 'packages/envoy/internal/cipher/proxyrules/*'
+              - 'packages/envoy/internal/cipher/proxy/*'
+              - 'packages/envoy/internal/cipher/answer/*'
+              - 'packages/envoy/internal/cipher/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/brokertest/requestseed/*'
-              - 'packages/envoy/internal/broker/config/*'
-              - 'packages/envoy/internal/broker/enroll/*'
-              - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/judge/*'
-              - 'packages/envoy/internal/broker/leasetime/*'
-              - 'packages/envoy/internal/broker/machine/*'
-              - 'packages/envoy/internal/broker/netaddr/*'
-              - 'packages/envoy/internal/broker/oauth/*'
-              - 'packages/envoy/internal/broker/oauthstore/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/policy/**'
-              - 'packages/envoy/internal/broker/projectaccess/*'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/reread/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/**'
-              - 'packages/envoy/internal/broker/wake/*'
-              - 'packages/envoy/internal/broker/natscallout/*'
+              - 'packages/envoy/internal/cipher/approval/**'
+              - 'packages/envoy/internal/cipher/ciphertest/*'
+              - 'packages/envoy/internal/cipher/ciphertest/requestseed/*'
+              - 'packages/envoy/internal/cipher/config/*'
+              - 'packages/envoy/internal/cipher/enroll/*'
+              - 'packages/envoy/internal/cipher/exchange/*'
+              - 'packages/envoy/internal/cipher/judge/*'
+              - 'packages/envoy/internal/cipher/leasetime/*'
+              - 'packages/envoy/internal/cipher/machine/*'
+              - 'packages/envoy/internal/cipher/netaddr/*'
+              - 'packages/envoy/internal/cipher/oauth/*'
+              - 'packages/envoy/internal/cipher/oauthstore/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/policy/**'
+              - 'packages/envoy/internal/cipher/projectaccess/*'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/requests/*'
+              - 'packages/envoy/internal/cipher/reread/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
+              - 'packages/envoy/internal/cipher/store/**'
+              - 'packages/envoy/internal/cipher/wake/*'
+              - 'packages/envoy/internal/cipher/natscallout/*'
               - 'packages/envoy/natsgrant/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg/testdb.
               - 'packages/envoy/internal/testpg/testdb/*'
-              # cmd/broker's rules-host grammar is internal/broker/rulehost, which reads
-              # weborigin's label rules; its log mask is internal/broker/logmask.
-              - 'packages/envoy/internal/broker/rulehost/*'
-              - 'packages/envoy/internal/broker/logmask/*'
+              # cmd/cipherd's rules-host grammar is internal/cipher/rulehost, which reads
+              # weborigin's label rules; its log mask is internal/cipher/logmask.
+              - 'packages/envoy/internal/cipher/rulehost/*'
+              - 'packages/envoy/internal/cipher/logmask/*'
               - 'packages/envoy/internal/weborigin/*'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -2876,7 +2876,7 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
@@ -2959,7 +2959,7 @@ jobs:
               # The second page production_check_rule_test.go:30 holds to the production check's
               # rule, beside concepts.md above.
               - 'scripts/e2e/README.md'
-              # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
+              # The guide packages/envoy/internal/cipher/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
               # way_back_doc_test.go:181).
@@ -2993,7 +2993,7 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -3031,7 +3031,7 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/edit_memory_test.go'
               - '!packages/envoy/cmd/dispatch/history_memory_test.go'
               - '!packages/envoy/cmd/dispatch/memory_harness_test.go'
@@ -3077,7 +3077,7 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/src/**'
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # The contracts modules that CLI loads, from its bundle (ci_ts_programs.py, BUNDLES):
               # not legion-api.ts.
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_two_builds_go's
@@ -3132,7 +3132,7 @@ jobs:
               - *bun_install
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -3176,7 +3176,7 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               - 'packages/envoy/scripts/build-dispatch-build.sh'
               - 'packages/envoy-client/**'
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # dispatch_ui's set, which the SPA and the e2e helpers load, with the CLI's bundle's
               # (ci_ts_programs.py, LISTED, says why): not legion-api.ts.
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
@@ -3236,7 +3236,7 @@ jobs:
               - *bun_install
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_flood_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_many_sockets_multiprocess_test.go'
               - '!packages/envoy/cmd/dispatch/awareness_simultaneous_multiprocess_test.go'
@@ -3286,19 +3286,19 @@ jobs:
               # The infra module's copy of the stop budget, which
               # cmd/listener/infra_stop_budget_test.go:18 reads and holds to stopBudget.
               - 'packages/envoy/infra/gcp/clusteredhub_listener.go'
-              - 'packages/envoy/brokeraddr/*'
-              - 'packages/envoy/internal/broker/proof/*'
+              - 'packages/envoy/cipheraddr/*'
+              - 'packages/envoy/internal/cipher/proof/*'
               # The token client cmd/listener trades its broker tokens through, with the wire
               # corpus its tests replay.
-              - 'packages/envoy/internal/brokerclient/**'
-              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
+              - 'packages/envoy/internal/cipherclient/**'
+              - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
               # The relayed shapes the Dispatch server its soak starts names (routes_shapes.go).
-              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
-              - 'packages/envoy/internal/dispatch/agentsecrets/*'
+              - 'packages/envoy/internal/dispatch/cipher/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/architecture/*'
@@ -3366,7 +3366,7 @@ jobs:
               - '.github/scripts/go-tagged-tests.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
@@ -3390,11 +3390,11 @@ jobs:
               - 'packages/envoy/scripts/fixtures/github/**'
               # e2e-local.sh:445-450 renders with @legion/envoy-client/delivery.
               - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it: the tsc program of envoy-client holds all seven
+              # And @legion/cipher-client with it: the tsc program of envoy-client holds all seven
               # of its modules, and at runtime, which is what this job's bun scripts do,
               # transport.ts's own closure holds two of them (delivery.ts's holds none), so the
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               - 'packages/contracts/src/**'
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
@@ -3427,9 +3427,9 @@ jobs:
               # The `Stall test of pi-envoy` step's envoy.test.ts imports @legion/test-fixtures/environment.
               - 'packages/test-fixtures/src/**'
               # The stall test of claude-envoy runs its bin/envoy-channel.ts, whose bun build
-              # loads six of @legion/broker-client's seven modules through envoy-client's
+              # loads six of @legion/cipher-client's seven modules through envoy-client's
               # src/broker-credential.ts:21-22.
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               - '.github/scripts/pg-connection-ceiling.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
@@ -3543,7 +3543,7 @@ jobs:
               - 'package.json'
               - 'bun.lock'
               - 'patches/**'
-              - 'packages/broker-client/package.json'
+              - 'packages/cipher-client/package.json'
               - 'packages/contracts/package.json'
               - 'packages/envoy-client/package.json'
               - 'packages/pi-envoy/package.json'
@@ -3573,13 +3573,13 @@ jobs:
               - '.github/workflows/ci-job-envoy-client.yaml'
               - *bun_install
               - 'packages/envoy-client/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, so this job's typecheck and tests compile them.
+              # src/broker-credential.ts:21-22 imports @legion/cipher-client/environment and
+              # @legion/cipher-client/token-client, so this job's typecheck and tests compile them.
               # That package's own typecheck and tests are the broker-client job's.
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               - 'packages/contracts/src/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
-              - 'packages/broker-client/src/**'
+              # src/broker-credential.ts:21-22 imports @legion/cipher-client/*.
+              - 'packages/cipher-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # src/__tests__/delivery.test.ts:17 and dispatch-text.test.ts:128 read the first,
@@ -3624,22 +3624,22 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-broker-client.yaml'
               - *bun_install
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # src/token-client.ts imports @legion/contracts/trailing-slash.
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
               # src/__tests__/dpop.test.ts reads both signers' connection proofs.
-              - 'packages/envoy/internal/brokertoken/testdata/connection-proof-*.json'
+              - 'packages/envoy/internal/ciphertoken/testdata/connection-proof-*.json'
               # src/__tests__/refusal-corpus.test.ts reads the broker's refusal texts and its OAuth
-              # codes as its library writes them (internal/broker/oauth's refusal-corpus test
+              # codes as its library writes them (internal/cipher/oauth's refusal-corpus test
               # writes both), and holds LIBRARY_OAUTH_ERROR_CODES to the codes.
-              - 'packages/envoy/internal/broker/oauth/testdata/refusal-descriptions.json'
-              - 'packages/envoy/internal/broker/oauth/testdata/refusal-codes.json'
+              - 'packages/envoy/internal/cipher/oauth/testdata/refusal-descriptions.json'
+              - 'packages/envoy/internal/cipher/oauth/testdata/refusal-codes.json'
               # The one corpus both clients read: src/__tests__/wire.test.ts reads the Go
               # package's own testdata by relative path (CORPUS_PATH), that file itself and never a
               # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
+              - 'packages/envoy/internal/cipherclient/testdata/wire.json'
             envoy_go:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go.yaml'
@@ -3704,7 +3704,7 @@ jobs:
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
               # The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
-              # and ./cmd/broker: each runs only what its tag adds, so a change that starts one
+              # and ./cmd/cipherd: each runs only what its tag adds, so a change that starts one
               # must start this job too (check-ci-filters.sh's rule 15).
               - '.github/workflows/ci-job-dispatch-memory.yaml'
               - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
@@ -3714,7 +3714,7 @@ jobs:
               - '.github/workflows/ci-job-dispatch-two-builds.yaml'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/src/**'
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/infra/**/*_test.go'
@@ -3822,16 +3822,16 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
-              - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
-              - '!packages/envoy/cmd/agent-secrets-devrelay/**/*_test.go'
-              - '!packages/envoy/cmd/agent-secrets-helper/**/*_test.go'
               - '!packages/envoy/cmd/architecture-check/**/*_test.go'
-              - '!packages/envoy/cmd/broker/**/*_test.go'
-              - '!packages/envoy/cmd/broker-refgen/**/*_test.go'
-              - '!packages/envoy/cmd/dev-airlock-stands/**/*_test.go'
+              - '!packages/envoy/cmd/cipher/**/*_test.go'
+              - '!packages/envoy/cmd/cipher-devrelay/**/*_test.go'
+              - '!packages/envoy/cmd/cipher-helper/**/*_test.go'
+              - '!packages/envoy/cmd/cipher-refgen/**/*_test.go'
+              - '!packages/envoy/cmd/cipherd/**/*_test.go'
               - '!packages/envoy/cmd/dev-oidc-issuer/**/*_test.go'
+              - '!packages/envoy/cmd/dev-proxy-stands/**/*_test.go'
               - '!packages/envoy/cmd/dispatch/**/*_test.go'
               - '!packages/envoy/cmd/dispatch-seed/**/*_test.go'
               - '!packages/envoy/cmd/natsprobe/**/*_test.go'
@@ -3840,42 +3840,42 @@ jobs:
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
-              - '!packages/envoy/internal/broker/airlock/**/*_test.go'
-              - '!packages/envoy/internal/broker/airlockproxy/**/*_test.go'
-              - '!packages/envoy/internal/broker/answer/**/*_test.go'
-              - '!packages/envoy/internal/broker/api/**/*_test.go'
-              - '!packages/envoy/internal/broker/approval/**/*_test.go'
-              - '!packages/envoy/internal/broker/brokertest/**/*_test.go'
-              - '!packages/envoy/internal/broker/config/**/*_test.go'
-              - '!packages/envoy/internal/broker/e2e/**/*_test.go'
-              - '!packages/envoy/internal/broker/enroll/**/*_test.go'
-              - '!packages/envoy/internal/broker/exchange/**/*_test.go'
-              - '!packages/envoy/internal/broker/helper/**/*_test.go'
-              - '!packages/envoy/internal/broker/judge/**/*_test.go'
-              - '!packages/envoy/internal/broker/leasetime/**/*_test.go'
-              - '!packages/envoy/internal/broker/logmask/**/*_test.go'
-              - '!packages/envoy/internal/broker/machine/**/*_test.go'
-              - '!packages/envoy/internal/broker/natscallout/open_image_test.go'
-              - '!packages/envoy/internal/broker/natscallout/race_disabled_test.go'
-              - '!packages/envoy/internal/broker/netaddr/**/*_test.go'
-              - '!packages/envoy/internal/broker/oauth/**/*_test.go'
-              - '!packages/envoy/internal/broker/oauthstore/**/*_test.go'
-              - '!packages/envoy/internal/broker/oauthwire/**/*_test.go'
-              - '!packages/envoy/internal/broker/policy/**/*_test.go'
-              - '!packages/envoy/internal/broker/projectaccess/**/*_test.go'
-              - '!packages/envoy/internal/broker/proof/**/*_test.go'
-              - '!packages/envoy/internal/broker/record/**/*_test.go'
-              - '!packages/envoy/internal/broker/requests/**/*_test.go'
-              - '!packages/envoy/internal/broker/reread/**/*_test.go'
-              - '!packages/envoy/internal/broker/rulehost/**/*_test.go'
-              - '!packages/envoy/internal/broker/secrets/**/*_test.go'
-              - '!packages/envoy/internal/broker/store/**/*_test.go'
-              - '!packages/envoy/internal/broker/wake/**/*_test.go'
-              - '!packages/envoy/internal/brokerclient/**/*_test.go'
-              - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/norace_test.go'
               - '!packages/envoy/internal/bus/session_consumer_scan_live_test.go'
               - '!packages/envoy/internal/bus/stream_max_consumers_live_test.go'
+              - '!packages/envoy/internal/cipher/answer/**/*_test.go'
+              - '!packages/envoy/internal/cipher/api/**/*_test.go'
+              - '!packages/envoy/internal/cipher/approval/**/*_test.go'
+              - '!packages/envoy/internal/cipher/ciphertest/**/*_test.go'
+              - '!packages/envoy/internal/cipher/config/**/*_test.go'
+              - '!packages/envoy/internal/cipher/e2e/**/*_test.go'
+              - '!packages/envoy/internal/cipher/enroll/**/*_test.go'
+              - '!packages/envoy/internal/cipher/exchange/**/*_test.go'
+              - '!packages/envoy/internal/cipher/helper/**/*_test.go'
+              - '!packages/envoy/internal/cipher/judge/**/*_test.go'
+              - '!packages/envoy/internal/cipher/leasetime/**/*_test.go'
+              - '!packages/envoy/internal/cipher/logmask/**/*_test.go'
+              - '!packages/envoy/internal/cipher/machine/**/*_test.go'
+              - '!packages/envoy/internal/cipher/natscallout/open_image_test.go'
+              - '!packages/envoy/internal/cipher/natscallout/race_disabled_test.go'
+              - '!packages/envoy/internal/cipher/netaddr/**/*_test.go'
+              - '!packages/envoy/internal/cipher/oauth/**/*_test.go'
+              - '!packages/envoy/internal/cipher/oauthstore/**/*_test.go'
+              - '!packages/envoy/internal/cipher/oauthwire/**/*_test.go'
+              - '!packages/envoy/internal/cipher/policy/**/*_test.go'
+              - '!packages/envoy/internal/cipher/projectaccess/**/*_test.go'
+              - '!packages/envoy/internal/cipher/proof/**/*_test.go'
+              - '!packages/envoy/internal/cipher/proxy/**/*_test.go'
+              - '!packages/envoy/internal/cipher/proxyrules/**/*_test.go'
+              - '!packages/envoy/internal/cipher/record/**/*_test.go'
+              - '!packages/envoy/internal/cipher/requests/**/*_test.go'
+              - '!packages/envoy/internal/cipher/reread/**/*_test.go'
+              - '!packages/envoy/internal/cipher/rulehost/**/*_test.go'
+              - '!packages/envoy/internal/cipher/secrets/**/*_test.go'
+              - '!packages/envoy/internal/cipher/store/**/*_test.go'
+              - '!packages/envoy/internal/cipher/wake/**/*_test.go'
+              - '!packages/envoy/internal/cipherclient/**/*_test.go'
+              - '!packages/envoy/internal/ciphertoken/**/*_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
@@ -3883,12 +3883,12 @@ jobs:
               - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
-              - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/**/*_test.go'
               - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
               - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/cipher/**/*_test.go'
               - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
               - '!packages/envoy/internal/dispatch/config/**/*_test.go'
               - '!packages/envoy/internal/dispatch/dashboard/**/*_test.go'
@@ -3984,44 +3984,44 @@ jobs:
               - *go_workspace
               # Its race step runs the package through this skip counter.
               - 'packages/envoy/scripts/database-skips.sh'
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
-              - 'packages/envoy/internal/broker/airlock/*'
-              - 'packages/envoy/internal/broker/answer/*'
-              - 'packages/envoy/internal/broker/api/*'
-              - 'packages/envoy/internal/broker/approval/*'
+              - 'packages/envoy/internal/cipher/proxyrules/*'
+              - 'packages/envoy/internal/cipher/answer/*'
+              - 'packages/envoy/internal/cipher/api/*'
+              - 'packages/envoy/internal/cipher/approval/*'
               # The approval page's embedded stylesheet and templates.
-              - 'packages/envoy/internal/broker/approval/assets/approve.css'
-              - 'packages/envoy/internal/broker/approval/templates/*'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/enroll/*'
-              - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/machine/*'
-              - 'packages/envoy/internal/broker/oauth/*'
-              - 'packages/envoy/internal/broker/oauthstore/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/policy/*'
-              - 'packages/envoy/internal/broker/policy/policytest/*'
-              - 'packages/envoy/internal/broker/projectaccess/*'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/*'
-              # internal/broker/store embeds every migration.
-              - 'packages/envoy/internal/broker/store/migrations/**'
-              - 'packages/envoy/internal/broker/store/storetest/*'
-              - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/internal/brokertoken/*'
-              - 'packages/envoy/internal/brokertoken/brokertokentest/*'
+              - 'packages/envoy/internal/cipher/approval/assets/approve.css'
+              - 'packages/envoy/internal/cipher/approval/templates/*'
+              - 'packages/envoy/internal/cipher/ciphertest/*'
+              - 'packages/envoy/internal/cipher/enroll/*'
+              - 'packages/envoy/internal/cipher/exchange/*'
+              - 'packages/envoy/internal/cipher/machine/*'
+              - 'packages/envoy/internal/cipher/oauth/*'
+              - 'packages/envoy/internal/cipher/oauthstore/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/policy/*'
+              - 'packages/envoy/internal/cipher/policy/policytest/*'
+              - 'packages/envoy/internal/cipher/projectaccess/*'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/requests/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
+              - 'packages/envoy/internal/cipher/store/*'
+              # internal/cipher/store embeds every migration.
+              - 'packages/envoy/internal/cipher/store/migrations/**'
+              - 'packages/envoy/internal/cipher/store/storetest/*'
+              - 'packages/envoy/internal/cipherclient/*'
+              - 'packages/envoy/internal/ciphertoken/*'
+              - 'packages/envoy/internal/ciphertoken/ciphertokentest/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/ctxlock/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
-              - 'packages/envoy/internal/dispatch/agentsecrets/*'
+              - 'packages/envoy/internal/dispatch/cipher/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/api/apitest/*'
@@ -4118,7 +4118,7 @@ jobs:
               - 'packages/envoy/roleholder/*'
               - 'packages/envoy/natsversion/*'
               # The relayed shapes routes_shapes.go names, which this job's own package compiles.
-              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
               # internal/dispatch/api/openapi_test.go's
               # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
               # so an edit of it alone must start this job.
@@ -4134,16 +4134,15 @@ jobs:
               - '.github/scripts/pg-connection-ceiling.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
-              - '!packages/envoy/internal/broker/**/*_test.go'
-              - '!packages/envoy/internal/brokerclient/**/*_test.go'
-              - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/cipher/**/*_test.go'
+              - '!packages/envoy/internal/cipherclient/**/*_test.go'
+              - '!packages/envoy/internal/ciphertoken/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
               - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
-              - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_checks_test.go'
               - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_run_test.go'
               - '!packages/envoy/internal/dispatch/api/comment_mention_claim_model_search_test.go'
@@ -4169,6 +4168,7 @@ jobs:
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
               - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/cipher/**/*_test.go'
               - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
               - '!packages/envoy/internal/dispatch/delivery/**/*_test.go'
               - '!packages/envoy/internal/dispatch/docs/**/*_test.go'
@@ -4245,16 +4245,16 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
-              - '!packages/envoy/internal/broker/**/*_test.go'
-              - '!packages/envoy/internal/brokerclient/**/*_test.go'
-              - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/cipher/**/*_test.go'
+              - '!packages/envoy/internal/cipherclient/**/*_test.go'
+              - '!packages/envoy/internal/ciphertoken/**/*_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
@@ -4262,11 +4262,11 @@ jobs:
               - '!packages/envoy/internal/ctxlock/**/*_test.go'
               - '!packages/envoy/internal/dedupe/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
-              - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
               - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/cipher/**/*_test.go'
               - '!packages/envoy/internal/dispatch/cireconcile/**/*_test.go'
               - '!packages/envoy/internal/dispatch/config/**/*_test.go'
               - '!packages/envoy/internal/dispatch/dashboard/**/*_test.go'
@@ -4456,7 +4456,7 @@ jobs:
             legion_command: &legion_command
               - 'packages/daemon/cmd/legion/*'
               - 'packages/daemon/internal/admit/*'
-              - 'packages/daemon/internal/agentsecrets/*'
+              - 'packages/daemon/internal/cipher/*'
               - 'packages/daemon/internal/api/*'
               - 'packages/daemon/internal/appauth/*'
               - 'packages/daemon/internal/backoff/*'
@@ -4517,21 +4517,21 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
-              - 'packages/envoy/brokeraddr/*'
-              - 'packages/envoy/brokerclient/*'
+              - 'packages/envoy/cipheraddr/*'
+              - 'packages/envoy/cipherclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
               # hold their text to (packages/daemon/internal/api): the splitter, the document
               # parser under it and the contracts both read come with it.
               - 'packages/envoy/dispatchbody/*'
-              # The broker's OAuth wire types: packages/envoy/internal/brokerclient below
+              # The broker's OAuth wire types: packages/envoy/internal/cipherclient below
               # imports them, so `go list -deps ./cmd/legion` lists this package and the anchor
               # was one package short of its own definition until this line. Every other filter
               # naming this anchor already named the package through a second pattern of its
               # own (docs' own broker list, listener_command's, which go_notices takes), so the
               # line adds the package to no other filter's meaning.
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/brokerclient/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipherclient/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
@@ -4593,61 +4593,61 @@ jobs:
               - '!**/*_test.go'
               # END generated
 
-            # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
-            # cmd/broker/outage_test.go:317-318 builds.
+            # `go test -tags multiprocess ./cmd/cipherd`, and the agent-secrets binary
+            # cmd/cipherd/outage_test.go:317-318 builds.
             broker_multiprocess:
               - *ci_router
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
               - *go_workspace
-              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/cipheraddr/*'
               - 'packages/envoy/agentloop/*'
-              - 'packages/envoy/cmd/broker/*'
-              - 'packages/envoy/cmd/agent-secrets/*'
-              # cmd/broker/main_test.go:348 (sslrootcert).
+              - 'packages/envoy/cmd/cipherd/*'
+              - 'packages/envoy/cmd/cipher/*'
+              # cmd/cipherd/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
-              - 'packages/envoy/internal/broker/airlock/*'
-              # cmd/broker/minters_test.go mints through the GitHub stand-in.
-              - 'packages/envoy/internal/broker/airlock/airlocktest/*'
-              - 'packages/envoy/internal/broker/airlockproxy/*'
-              - 'packages/envoy/internal/broker/answer/*'
-              - 'packages/envoy/internal/broker/api/*'
+              - 'packages/envoy/internal/cipher/proxyrules/*'
+              # cmd/cipherd/minters_test.go mints through the GitHub stand-in.
+              - 'packages/envoy/internal/cipher/proxyrules/proxyrulestest/*'
+              - 'packages/envoy/internal/cipher/proxy/*'
+              - 'packages/envoy/internal/cipher/answer/*'
+              - 'packages/envoy/internal/cipher/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/config/*'
-              - 'packages/envoy/internal/broker/enroll/*'
-              - 'packages/envoy/internal/broker/exchange/*'
-              - 'packages/envoy/internal/broker/helper/*'
-              - 'packages/envoy/internal/broker/judge/*'
-              - 'packages/envoy/internal/broker/leasetime/*'
-              - 'packages/envoy/internal/broker/machine/*'
-              - 'packages/envoy/internal/broker/netaddr/*'
-              - 'packages/envoy/internal/broker/oauth/*'
-              - 'packages/envoy/internal/broker/oauthstore/*'
-              - 'packages/envoy/internal/broker/oauthwire/*'
-              - 'packages/envoy/internal/broker/policy/**'
-              # The token exchange's Dispatch client and the stand-in cmd/broker's tests serve it.
-              - 'packages/envoy/internal/broker/projectaccess/**'
-              - 'packages/envoy/internal/broker/proof/*'
-              - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/requests/*'
-              - 'packages/envoy/internal/broker/reread/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/**'
-              - 'packages/envoy/internal/broker/wake/*'
-              - 'packages/envoy/internal/broker/natscallout/*'
+              - 'packages/envoy/internal/cipher/approval/**'
+              - 'packages/envoy/internal/cipher/ciphertest/*'
+              - 'packages/envoy/internal/cipher/config/*'
+              - 'packages/envoy/internal/cipher/enroll/*'
+              - 'packages/envoy/internal/cipher/exchange/*'
+              - 'packages/envoy/internal/cipher/helper/*'
+              - 'packages/envoy/internal/cipher/judge/*'
+              - 'packages/envoy/internal/cipher/leasetime/*'
+              - 'packages/envoy/internal/cipher/machine/*'
+              - 'packages/envoy/internal/cipher/netaddr/*'
+              - 'packages/envoy/internal/cipher/oauth/*'
+              - 'packages/envoy/internal/cipher/oauthstore/*'
+              - 'packages/envoy/internal/cipher/oauthwire/*'
+              - 'packages/envoy/internal/cipher/policy/**'
+              # The token exchange's Dispatch client and the stand-in cmd/cipherd's tests serve it.
+              - 'packages/envoy/internal/cipher/projectaccess/**'
+              - 'packages/envoy/internal/cipher/proof/*'
+              - 'packages/envoy/internal/cipher/record/*'
+              - 'packages/envoy/internal/cipher/requests/*'
+              - 'packages/envoy/internal/cipher/reread/*'
+              - 'packages/envoy/internal/cipher/secrets/*'
+              - 'packages/envoy/internal/cipher/store/**'
+              - 'packages/envoy/internal/cipher/wake/*'
+              - 'packages/envoy/internal/cipher/natscallout/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/natscred/*'
               - 'packages/envoy/natsgrant/*'
               # internal/bus reads the nats-server versions the listener refuses (natsversion).
               - 'packages/envoy/natsversion/*'
-              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/cipher/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
-              - 'packages/envoy/internal/brokerclient/**'
-              # internal/broker/judge/model.go mints the account token it reads Dispatch with
-              # through brokertoken.
-              - 'packages/envoy/internal/brokertoken/*'
+              - 'packages/envoy/internal/cipherclient/**'
+              # internal/cipher/judge/model.go mints the account token it reads Dispatch with
+              # through ciphertoken.
+              - 'packages/envoy/internal/ciphertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/ctxlock/*'
@@ -4675,10 +4675,10 @@ jobs:
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
-              # cmd/broker's rules-host grammar is internal/broker/rulehost, which reads
-              # weborigin's label rules; its log mask is internal/broker/logmask.
-              - 'packages/envoy/internal/broker/rulehost/*'
-              - 'packages/envoy/internal/broker/logmask/*'
+              # cmd/cipherd's rules-host grammar is internal/cipher/rulehost, which reads
+              # weborigin's label rules; its log mask is internal/cipher/logmask.
+              - 'packages/envoy/internal/cipher/rulehost/*'
+              - 'packages/envoy/internal/cipher/logmask/*'
               - 'packages/envoy/internal/weborigin/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
@@ -4687,8 +4687,8 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
-              - '!packages/envoy/brokeraddr/**/*_test.go'
-              - '!packages/envoy/cmd/agent-secrets/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
+              - '!packages/envoy/cmd/cipher/**/*_test.go'
               - '!packages/envoy/internal/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
@@ -4699,7 +4699,7 @@ jobs:
             # The Lean model of the airlock and the Go code it covers (airlock-lean): `lake build`
             # and the axiom print read the model's own project, and the two fuzz runs compile the
             # airlock package and compare it against the model's program, so a change to either
-            # side runs the job. Both sides live under internal/broker/airlock, which one glob
+            # side runs the job. Both sides live under internal/cipher/proxyrules, which one glob
             # names, and the Go side also compiles internal/fold, the case fold it compares names
             # in; the axiom check is a script of its own, which check k15 runs too; the Lean
             # toolchain comes from the elan the job's action installs, and that action reads the
@@ -4708,7 +4708,7 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-airlock-lean.yaml'
               - *go_workspace
-              - 'packages/envoy/internal/broker/airlock/**'
+              - 'packages/envoy/internal/cipher/proxyrules/**'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/scripts/airlock-lean-axioms.sh'
               - '.github/actions/install-elan/**'
@@ -4716,7 +4716,7 @@ jobs:
               - '.github/scripts/ci-tools.sh'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
-              - '!packages/envoy/internal/broker/airlock/airlocktest/**/*_test.go'
+              - '!packages/envoy/internal/cipher/proxyrules/proxyrulestest/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
               # END generated
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
@@ -4746,7 +4746,7 @@ jobs:
               - 'patches/**'
               - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/envoy-client/package.json'
-              - 'packages/broker-client/package.json'
+              - 'packages/cipher-client/package.json'
               - 'packages/pi-envoy/package.json'
               - 'packages/pi-legion/package.json'
               - 'packages/pi-shared/package.json'
@@ -4789,7 +4789,7 @@ jobs:
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
               - '!packages/envoy/agentloop/**/*_test.go'
-              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/cipheraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
@@ -4803,10 +4803,10 @@ jobs:
               - '!packages/envoy/infra/provider/**/*_test.go'
               - '!packages/envoy/infra/render/**/*_test.go'
               - '!packages/envoy/infra/seed/**/*_test.go'
-              - '!packages/envoy/internal/broker/**/*_test.go'
-              - '!packages/envoy/internal/brokerclient/**/*_test.go'
-              - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/cipher/**/*_test.go'
+              - '!packages/envoy/internal/cipherclient/**/*_test.go'
+              - '!packages/envoy/internal/ciphertoken/**/*_test.go'
               - '!packages/envoy/internal/cistore/**/*_test.go'
               - '!packages/envoy/internal/cmdtest/**/*_test.go'
               - '!packages/envoy/internal/config/**/*_test.go'
@@ -4892,16 +4892,16 @@ jobs:
               - 'packages/pi-legion/**'
               - 'packages/pi-shared/**'
               - 'packages/envoy-client/**'
-              - 'packages/broker-client/**'
+              - 'packages/cipher-client/**'
               - 'packages/contracts/**'
               - 'skills/**'
               - 'go.work'
               - 'go.work.sum'
               - 'packages/envoy/*'
               - 'packages/envoy/agentloop/**'
-              - 'packages/envoy/brokeraddr/**'
-              - 'packages/envoy/brokerclient/**'
-              - 'packages/envoy/brokertest/**'
+              - 'packages/envoy/cipheraddr/**'
+              - 'packages/envoy/cipherclient/**'
+              - 'packages/envoy/ciphertest/**'
               - 'packages/envoy/clitest/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/deploy/**'
@@ -5734,7 +5734,7 @@ jobs:
   # applies, natscred, whose service keeper probes with the connection's options while
   # internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
   # build compiles, so this lane is its one run), the NATS auth service
-  # (internal/broker/natscallout), which starts a goroutine per request from nats.go's delivery
+  # (internal/cipher/natscallout), which starts a goroutine per request from nats.go's delivery
   # callback, counts those waiting for a decision slot and waits them out at Close, and the
   # Dispatch API and the document service - all under the race detector. A read
   # that walks a live document without its lock races the room's peers, which no ordinary run
@@ -5972,8 +5972,8 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The two-process tests of the secrets broker (packages/envoy/cmd/broker/multiprocess_test.go,
-  # INFRA-236): each row starts real cmd/broker binaries against one Postgres - which is what the
+  # The two-process tests of the secrets broker (packages/envoy/cmd/cipherd/multiprocess_test.go,
+  # INFRA-236): each row starts real cmd/cipherd binaries against one Postgres - which is what the
   # broker's Deployment runs once it carries more than one replica - and drives them over real
   # HTTP and their own logs. They race one refresh token and one device code against both
   # processes, migrate one empty database with both at once, prove a retag read by one process is
@@ -5989,7 +5989,7 @@ jobs:
   # closure (broker_multiprocess) shares little with the Dispatch server's
   # (dispatch_multiprocess). They need no NATS and no test-container pull - the broker starts
   # nothing in a container - so neither step is here. The step runs only the tests the tag adds:
-  # `-tags multiprocess ./cmd/broker` would run the package's untagged tests a second time,
+  # `-tags multiprocess ./cmd/cipherd` would run the package's untagged tests a second time,
   # envoy-go's unit step having run them already, so the -run comes from
   # .github/scripts/go-tagged-tests.sh, which reads the names off the source at run time. The
   # assignment is a line of its own: under bash -e it carries the script's exit status, so an
