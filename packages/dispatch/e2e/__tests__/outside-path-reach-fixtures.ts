@@ -5,7 +5,9 @@
  *  origin's two answers and its classifier, none of which reaches a probe),
  *  `outside-path-reach.test.ts` (runs that probe), `outside-path-reach-blackhole.test.ts` (the
  *  two runs that need a network dropping TEST-NET-1) and `outside-path-reach-tmout.test.ts` (a
- *  list on a pipe under an inherited TMOUT).
+ *  list on a pipe under an inherited TMOUT). `outside-edge-refusals.test.ts`, the tests of the
+ *  sibling HTTPS check `e2e/acceptance/outside-edge-refusals.sh`, takes `fakeHost`, `closedPort`,
+ *  `bash`, `curl`, `verdict` and `Run` from here too.
  *  `bun test` collects only `*.test.ts` and its kin, so this module runs nowhere of its own.
  *
  *  Every row runs the script itself against real listeners: a fake Dispatch (`Bun.serve`, which
@@ -136,67 +138,77 @@ export function byteRefusal(where: string, offset: number): string {
   );
 }
 
-/** The fake Dispatch host's own program, which `fakeDispatch` runs. */
-const hostProgram = fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url));
-
-/** A fake Dispatch host: its control server's URL, and its process. */
+/** A host of fakes: its control server's URL, and its process. */
 interface Host {
   url: string;
   child: Subprocess;
 }
 
-/** This module's fake Dispatch host, which the first `fakeDispatch` starts, so one process serves
- *  every fake Dispatch of a test file rather than a Bun runtime of its own for each. It is kept
- *  here so the pipe to its stdin, whose closing ends it, is never collected. */
-let host: Promise<Host> | undefined;
+/** The control of a host of fakes, a process beside the test process that runs `program` as
+ *  `bun <program>` and serves every fake of a test file, rather than a Bun runtime of its own for
+ *  each. The program prints its control server's port on 127.0.0.1 as its first line on stdout and
+ *  nothing after it, and exits once its stdin closes, so it never outlives the test process.
+ *  `what` names the host in every error. The host starts at the first call of the returned
+ *  function, which sends one request to its control server at `path` and refuses an answer that
+ *  is not OK. The started host is kept in that function's closure, so the pipe to its stdin, whose
+ *  closing ends it, is never collected. `fakeDispatch` below calls it for
+ *  `outside-path-reach-origin.ts`, and `outside-edge-refusals.test.ts` for the stand-in edges of
+ *  `outside-edge-refusals-edge.ts`. */
+export function fakeHost(
+  program: string,
+  what: string
+): (path: string, init?: RequestInit) => Promise<Response> {
+  let host: Promise<Host> | undefined;
 
-async function startHost(): Promise<Host> {
-  const child = Bun.spawn([process.execPath, hostProgram], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "inherit",
-  });
-  // Its first line on stdout is its control server's port, and it prints nothing after it.
-  const reader = child.stdout.getReader();
-  const decoder = new TextDecoder();
-  let printed = "";
-  while (!printed.includes("\n")) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    printed += decoder.decode(value, { stream: true });
+  async function start(): Promise<Host> {
+    const child = Bun.spawn([process.execPath, program], {
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "inherit",
+    });
+    // Its first line on stdout is its control server's port, and it prints nothing after it.
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let printed = "";
+    while (!printed.includes("\n")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      printed += decoder.decode(value, { stream: true });
+    }
+    reader.releaseLock();
+    const port = Number(printed.split("\n")[0]);
+    if (!(port > 0)) {
+      child.stdin.end();
+      const code = await child.exited;
+      throw new Error(`${what} exited ${code} with no port printed: ${JSON.stringify(printed)}`);
+    }
+    return { url: `http://127.0.0.1:${port}`, child };
   }
-  reader.releaseLock();
-  const port = Number(printed.split("\n")[0]);
-  if (!(port > 0)) {
-    child.stdin.end();
-    const code = await child.exited;
-    throw new Error(
-      `the fake Dispatch host exited ${code} with no port printed: ${JSON.stringify(printed)}`
-    );
-  }
-  return { url: `http://127.0.0.1:${port}`, child };
+
+  return async (path, init) => {
+    host ??= start();
+    const { url } = await host;
+    const call = `${init?.method ?? "GET"} ${path}`;
+    let response: Response;
+    try {
+      response = await fetch(`${url}${path}`, init);
+    } catch (error) {
+      // A host that has died or refuses: Bun's own error names neither the host nor the call, and
+      // the test runner prints it beneath this one as the cause.
+      throw new Error(`${what} did not answer ${call}`, { cause: error });
+    }
+    if (!response.ok) {
+      throw new Error(`${what} answered ${call} with ${response.status}: ${await response.text()}`);
+    }
+    return response;
+  };
 }
 
-/** One request to the fake Dispatch host's control server, at `path`. */
-async function control(path: string, init?: RequestInit): Promise<Response> {
-  host ??= startHost();
-  const { url } = await host;
-  const call = `${init?.method ?? "GET"} ${path}`;
-  let response: Response;
-  try {
-    response = await fetch(`${url}${path}`, init);
-  } catch (error) {
-    // A host that has died or refuses: Bun's own error names neither the host nor the call, and
-    // the test runner prints it beneath this one as the cause.
-    throw new Error(`the fake Dispatch host did not answer ${call}`, { cause: error });
-  }
-  if (!response.ok) {
-    throw new Error(
-      `the fake Dispatch host answered ${call} with ${response.status}: ${await response.text()}`
-    );
-  }
-  return response;
-}
+/** One request to this module's fake Dispatch host, which the first `fakeDispatch` starts. */
+const control = fakeHost(
+  fileURLToPath(new URL("./outside-path-reach-origin.ts", import.meta.url)),
+  "the fake Dispatch host"
+);
 
 /** A fake Dispatch, served by the fake Dispatch host, whose head in `outside-path-reach-origin.ts`
  *  says what it answers for `health`, `projects` and `refusal`. `seen()` reads the list of every

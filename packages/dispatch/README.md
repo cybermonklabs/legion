@@ -823,6 +823,72 @@ a named pipe or a process substitution under an inherited `TMOUT`. Each row carr
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
+`e2e/acceptance/outside-edge-refusals.sh` is the HTTPS refusal check of an outside edge: a
+public load balancer with one IPv4 address, whose routes forward a few paths of a few hosts to
+their backends. It asks that address, on 443, for each path and Host the edge must not forward,
+and reads whether one of the edge's routes took the request. `outside-path-reach.sh` cannot see
+this: it measures TCP connects, and an address that answers on 443 forwards by path and by Host
+there. Every route of the edge sets the response header `X-Outside-Edge-Backend` to the backend it
+reached, so an answer without it came through none of them, and that marker is what the check
+reads. Like `outside-path-reach.sh` it is one file that sources nothing, and it needs bash (3.2,
+as macOS ships it, or later), curl 7.40 or later, `mktemp`, and `sha256sum` or `shasum` to hash
+each answer's body. Started by a shell that is not bash it prints `UNKNOWN: run this with bash`
+and stops. Its inputs:
+
+- `OUTSIDE_EDGE_ADDRESS`, the edge's IPv4 address, four numbers of 0 to 255 with no leading zero:
+  every probe goes to it, wherever the names it sends resolve where it runs (`curl --resolve`);
+- `OUTSIDE_EDGE_ROUTED`, a file of `name method sni host path backend` lines, the positive
+  controls: one or more per backend, each a request a route takes and marks with
+  `X-Outside-Edge-Backend: <backend>`;
+- `OUTSIDE_EDGE_REFUSALS`, a file of `name method sni host path` lines, each a request the edge
+  must refuse.
+
+Both lists split their fields on spaces and tabs, skip blank lines and lines whose first field
+starts with `#`, and take LF or CRLF line endings; any other byte outside printable ASCII and tab
+refuses the run. Each name belongs to one line across both lists. `method` is one of `GET`, `POST`,
+`PUT`, `PATCH`, `DELETE` and `OPTIONS`; `sni` and `host` are host names, never an address, since a
+route's hostname cannot be an address and no route could be planted for one; `path` starts with
+`/` and holds URL characters alone. `OUTSIDE_EDGE_CONNECT_SECONDS` and `OUTSIDE_EDGE_READ_SECONDS`
+bound each probe as curl's `--connect-timeout` and `--max-time`, 3 and 10 s when unset or empty,
+on the rule `outside-path-reach.sh`'s two settings follow. `OUTSIDE_EDGE_ALLOW_HTTP=1` lets the
+address be `http://127.0.0.1:<port>`, and nothing else, for the script's own tests.
+
+```bash
+OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
+  OUTSIDE_EDGE_REFUSALS=refusals.txt bash outside-edge-refusals.sh
+```
+
+Each probe is one HTTP/1.1 request, which keeps the Host it sends literal: `curl --http1.1
+--resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] https://<sni><path>`, with an
+empty body for `POST`, `PUT` and `PATCH`, and the certificate verified against the SNI. Its curls
+ignore `~/.curlrc` and any proxy, and read no URL as a pattern. The routed controls go first: each
+must answer with its backend's marker, whatever its status, or the run prints `UNKNOWN: the marker
+of <name> is not visible, so no refusal can be read` and reads no refusal line, since a 404 with no
+marker says nothing where no marker can be seen. Then each refusal line reads:
+
+| The answer | Line |
+|---|---|
+| 404 with no marker, read whole | `refused` |
+| a marker of any value, or a status other than 404 | `REACHED` |
+| no status (a connect or TLS failure, a timeout), or a 404 with no marker curl did not read whole | `UNKNOWN` |
+
+Each line prints the status, the marker (`none` for none) and the SHA-256 of the body, so two runs
+can be compared, and curl's exit code and first message where curl did not exit 0. `PASS` (exit 0)
+needs every control's marker and every refusal line refused; `FAIL` (exit 1) names each line
+reached, whatever else the run could not read; every run that proved nothing is `UNKNOWN` (exit
+2): an input refused, a tool missing, an empty or unreadable list, a control's marker not seen, a
+line whose answer could not be read, or a run a signal stopped before its verdict. The script's own
+header has every rule.
+`cd packages/dispatch && bun test e2e/__tests__/outside-edge-refusals.test.ts` drives it against a
+stand-in edge on the loopback (`outside-edge-refusals-edge.ts`, served from a process of its own),
+which routes by Host, method and path from a table, marks each routed answer and answers 404 with
+no marker otherwise, and through a `curl` of the row's own for the HTTPS command line and the
+answers no stand-in gives. It holds the check's planted-route control: against a table of the
+routes an edge serves and sixteen refusal lines (spoofed Hosts, cluster names, paths beside the
+routed ones), a route planted for exactly one line makes the run fail naming that line and no
+other, once for each line. Its rows that run the script under dash and zsh skip where either is
+missing; CI's `dispatch-ui` job installs zsh.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
