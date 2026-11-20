@@ -1,0 +1,6 @@
+# typecheck's fetch (.github/workflows/ci-job-typecheck.yaml): the modules its two vets of the
+# daemon module load, each with -test since a vet reads the tests too: linux with the e2e tag,
+# and darwin/arm64 with each tag set .github/scripts/go_build_tags.py prints for it (one today).
+# A new tag set there is a new line here, or the darwin vet names the module it cannot load.
+deps packages/daemon -test -tags e2e ./...
+GOOS=darwin GOARCH=arm64 deps packages/daemon -test -tags e2e ./...

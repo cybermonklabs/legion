@@ -48,9 +48,19 @@ jobs:
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
-      # on GitHub Actions without a tmux.
+      # on GitHub Actions without a tmux. It comes from the apt cache, with no mirror read, as
+      # .github/workflows/ci-job-daemon-go.yaml's step of this name says.
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          restore-keys: ${{ format('apt-{0}-{1}-{2}-', runner.os, runner.arch, steps.apt-image.outputs.image) }}
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh install .github/apt-packages.txt "$RUNNER_TEMP/apt" tmux
       - run: bun install --frozen-lockfile
       - name: Build contracts for pi-envoy
         run: bun run build

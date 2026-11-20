@@ -43,59 +43,16 @@ import (
 )
 
 // The tests in this file run what gcp:ClusteredNatsHub deploys on this machine, so they carry the
-// natslive tag. They need no container runtime: each installs the tools it runs with go install,
-// at the versions the hub runs, into its own temporary directory, and a tool that does not install
-// fails the test. The chart is the vendored archive, so no test reaches the chart repository.
-//
-// The tools are the helm pulumi-kubernetes v4.34.2's provider renders charts with (its
-// provider/go.mod), and the nats-server, config reloader and exporter chart 2.15.1 runs by default
-// (values.yaml: container.image.tag 2.15.1-alpine, reloader.image.tag 0.24.0,
-// promExporter.image.tag 0.20.2), the versions the hub's pinned images hold.
+// natslive tag. They need no container runtime and reach no network while they run: each takes
+// the tools it runs from testdata/live-tools.txt's pins, which are installed before the tests
+// (liveTool), and renders the vendored archive of the chart, so no test reaches a module proxy,
+// the checksum database or the chart repository.
 const (
-	helmTool       = "helm.sh/helm/v3/cmd/helm@v3.20.2"
-	natsServerTool = "github.com/nats-io/nats-server/v2@v2.15.1"
-	reloaderTool   = "github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0"
-	exporterTool   = "github.com/nats-io/prometheus-nats-exporter@v0.20.2"
-
 	// clusteredHubChartSHA256 is the SHA-256 the chart index
 	// (https://nats-io.github.io/k8s/helm/charts/index.yaml) publishes for nats 2.15.1, whose
 	// archive is vendored in testdata.
 	clusteredHubChartSHA256 = "b209c62784b1b24c714d5ff6503b4c7dd948ec187d4222beee16b579f1258cc1"
 )
-
-// installTool installs module, a main package at a pinned version, with go install into dir, and
-// returns the path of its binary, named binary, or why it did not install.
-func installTool(dir, module, binary string) (string, error) {
-	cmd := exec.Command("go", "install", module)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOBIN="+dir, "GOWORK=off")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("go install %s: %v\n%s", module, err, out)
-	}
-	path := filepath.Join(dir, binary)
-	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("go install %s wrote no %s: %w", module, binary, err)
-	}
-	return path, nil
-}
-
-// liveTool is a main package at a pinned version and the name of the binary it installs.
-type liveTool struct{ module, binary string }
-
-// installTools installs each of tools with installTool into dir, all at once, and returns their
-// binaries' paths in tools' order, failing the test with each tool that did not install.
-func installTools(t *testing.T, dir string, tools ...liveTool) []string {
-	t.Helper()
-	paths := make([]string, len(tools))
-	errs := make([]error, len(tools))
-	var wg sync.WaitGroup
-	for i, tool := range tools {
-		wg.Go(func() { paths[i], errs[i] = installTool(dir, tool.module, tool.binary) })
-	}
-	wg.Wait()
-	require.NoError(t, errors.Join(errs...))
-	return paths
-}
 
 // liveHubKeys are the keys of the users the live hub serves: the operator's and the host's seeds,
 // which the test's clients connect with, and the session user's public key, whose seed nobody
@@ -196,8 +153,7 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	require.NoError(t, err)
 	valuesFile := filepath.Join(dir, "values.json")
 	require.NoError(t, os.WriteFile(valuesFile, values, 0o600))
-	helm, err := installTool(dir, helmTool, "helm")
-	require.NoError(t, err)
+	helm := liveTool(t, "helm")
 	home := filepath.Join(dir, "helm-home")
 	cmd := exec.Command(helm, "template", release, archive, "-n", namespace, "-f", valuesFile)
 	cmd.Env = append(os.Environ(), "HELM_CACHE_HOME="+home, "HELM_CONFIG_HOME="+home, "HELM_DATA_HOME="+home)
@@ -212,8 +168,8 @@ func renderClusteredHubArgs(t *testing.T, keys liveHubKeys, args *gcp.ClusteredN
 	}
 	data := r.one(t, "ConfigMap", release+"-config")["data"].(map[string]any)
 	r.natsConf, r.authConf = data["nats.conf"].(string), data[clusteredHubAuthConfKey].(string)
-	t.Logf("%s rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
-		helmTool, release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
+	t.Logf("helm rendered release %s in namespace %s from %s (sha256 %s) with the values of the hub's chart registration: %d manifests",
+		release, namespace, archive, clusteredHubChartSHA256, len(r.manifests))
 	return r
 }
 
@@ -1021,12 +977,7 @@ func awaitLastSeqs(t *testing.T, ports []int, stream string, want int, value flo
 // only on a restart, which is why the hub rolls its pods for one.
 func TestClusteredNatsHubCluster(t *testing.T) {
 	r := renderClusteredHub(t)
-	bin := t.TempDir()
-	tools := installTools(t, bin,
-		liveTool{natsServerTool, "nats-server"},
-		liveTool{reloaderTool, "nats-server-config-reloader"},
-		liveTool{exporterTool, "prometheus-nats-exporter"})
-	natsServer, reloader, exporter := tools[0], tools[1], tools[2]
+	natsServer, reloader, exporter := liveTool(t, "nats-server"), liveTool(t, "nats-server-config-reloader"), liveTool(t, "prometheus-nats-exporter")
 
 	// The nine server ports, each reserved for the whole test, so a server binds its three at its
 	// first start and at each restart; the exporters' ports are reserved apart from these.

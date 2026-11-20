@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # Stage 3's devbox gate for the Go coordinator. It drives the durable workflow through the real
 # surfaces: a scratch Dispatch, real Envoy/NATS, the Go daemon, real OMP panes, and GitHub's
 # sjawhar/legion-smoke sandbox. Its host-side rig helpers and the workflow's vocabulary are the

@@ -47,7 +47,7 @@ func TestTheNativesCacheRunsOmpOnceAndEveryHomeLinksTheOneCopy(t *testing.T) {
 	caches, errs := make([]string, 8), make([]error, 8)
 	var lookups sync.WaitGroup
 	for i := range caches {
-		lookups.Go(func() { caches[i], errs[i] = fillNativesCache(root, omp) })
+		lookups.Go(func() { caches[i], errs[i] = fillNativesCache(t, root, omp) })
 	}
 	lookups.Wait()
 	for i, err := range errs {
@@ -105,13 +105,13 @@ func TestANativesFillShortOfAnEmbeddedSizeCachesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := fillNativesCache(root, omp); err == nil || !strings.Contains(err.Error(), "embeds pi_natives.test-modern.node at 6 bytes, but extracted it at 3") {
+	if _, err := fillNativesCache(t, root, omp); err == nil || !strings.Contains(err.Error(), "embeds pi_natives.test-modern.node at 6 bytes, but extracted it at 3") {
 		t.Fatalf("the fill whose extraction is short of the modern file's size = %v, want it refused naming that file and both sizes", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, digest)); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("after the refused fill the cache stats %v, want no cache", err)
 	}
-	cache, err := fillNativesCache(root, omp)
+	cache, err := fillNativesCache(t, root, omp)
 	if err != nil {
 		t.Fatalf("the fill whose extraction holds the modern file whole = %v, want it cached", err)
 	}
@@ -135,7 +135,7 @@ func TestANativesFillHoldingALeftoverTemporaryFileCachesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := fillNativesCache(root, omp); err == nil || !strings.Contains(err.Error(), "extracted pi_natives.test.node.tmp.1.2 under") {
+	if _, err := fillNativesCache(t, root, omp); err == nil || !strings.Contains(err.Error(), "extracted pi_natives.test.node.tmp.1.2 under") {
 		t.Fatalf("the fill holding a leftover temporary file = %v, want it refused naming that file", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, digest)); !errors.Is(err, fs.ErrNotExist) {
@@ -155,7 +155,7 @@ func TestANativesFillThatExtractsNothingCachesNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := fillNativesCache(root, omp); err == nil || !strings.Contains(err.Error(), "extracted no native under") {
+	if _, err := fillNativesCache(t, root, omp); err == nil || !strings.Contains(err.Error(), "extracted no native under") {
 		t.Fatalf("the fill whose extraction wrote nothing = %v, want it refused", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, digest)); !errors.Is(err, fs.ErrNotExist) {
@@ -170,7 +170,7 @@ func TestANativesFillRefusesABinaryThatListsNoEmbeddedNatives(t *testing.T) {
 	dir := t.TempDir()
 	runs := filepath.Join(dir, "runs")
 	omp := standIn(t, dir, nil, "echo run >>"+runs+"\nmkdir -p \"$HOME/.omp/natives/9.9.9\"\nprintf native >\"$HOME/.omp/natives/9.9.9/pi_natives.test.node\"\n")
-	if _, err := fillNativesCache(filepath.Join(dir, "cache"), omp); err == nil || !strings.Contains(err.Error(), "lists no embedded natives") {
+	if _, err := fillNativesCache(t, filepath.Join(dir, "cache"), omp); err == nil || !strings.Contains(err.Error(), "lists no embedded natives") {
 		t.Fatalf("the fill of a binary that lists no natives = %v, want it refused", err)
 	}
 	if _, err := os.Stat(runs); !errors.Is(err, fs.ErrNotExist) {

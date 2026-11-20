@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The live proof that a Legion worker a provider refused stays off that model for the whole of the
 # plugin's cooldown and goes back to it when the cooldown ends (dispatch://INFRA-956 R1, the check
 # c-r1-chain). It is a script of its own because the window it measures is longer than any CI job

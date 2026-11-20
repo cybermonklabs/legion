@@ -1,0 +1,3 @@
+# lint's fetch (.github/workflows/ci-job-lint.yaml): the natsfloor build the NATS pin scan's test
+# (scripts/e2e/lib/nats-image.test.ts) makes through @legion/test-fixtures/go-command.
+deps packages/envoy ./natsversion/cmd/natsfloor

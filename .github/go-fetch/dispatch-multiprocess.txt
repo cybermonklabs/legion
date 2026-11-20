@@ -1,0 +1,5 @@
+# dispatch-multiprocess' fetch (.github/workflows/ci-job-dispatch-multiprocess.yaml): the Dispatch
+# store's connections command its sizing step runs, and the modules of the multiprocess-tagged tests
+# of ./cmd/dispatch, which build the server itself (cmdtest.Build, cmdtest.BuildStamped).
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test -tags multiprocess ./cmd/dispatch

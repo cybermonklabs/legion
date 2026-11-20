@@ -27,6 +27,8 @@
 # A mutant nothing catches is a hole in the tests or in the proofs, and this script fails on
 # it. The patches are never applied to this repository: every one is applied inside the copy,
 # and the run ends with jj's or git's status of the repository to show it is untouched.
+# go-offline-file: a person runs it, by hand or through airlock-check.sh's check k15; no CI job
+# runs it.
 #
 # Usage: packages/envoy/scripts/airlock-mutants.sh [<name>...]
 #        with no name, every mutant of both testdata/mutants directories; a name is a patch's

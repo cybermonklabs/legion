@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The pod proof of the three session states (dispatch://INFRA-392): a session is live,
 # unresponsive or gone by its registration record's age alone, and an unresponsive session is not
 # dead — it keeps its role claim and its issue claim, messages are stored for it, no replacement is

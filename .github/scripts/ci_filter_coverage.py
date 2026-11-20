@@ -3,7 +3,9 @@ beside it, is the data it reads: each ci.yaml gate's go commands and static read
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
 read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
 ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
-of this repository running on a merge group - and main() runs them.
+of this repository running on a merge group - and ci_go_cache_rules.py those about the Go module
+caches: which fetch files each Go module cache fill must run and which files each Go module cache
+key must hash. main() runs them all.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
@@ -12,7 +14,8 @@ import ...` gets these very classes.
 A step an exact entry pins (Exact) is refused, never read as reading everything, when it is not
 what the entry pins (refuse_off_pin): its script or directory differs, named by the first line
 that differs (pin_difference, name_list_difference) or by both directories, or something around
-it (an env name outside ENV_ALLOWED, a shell, a container, an environment write that reaches it)
+it (an env name outside ENV_ALLOWED and ENV_ALLOWED_VALUES, a shell, a container, an environment
+write that reaches it)
 can change what it compiles or which tests it runs. The pin is also the table's word for which
 tests the step runs, and reading everything says nothing where a filter selects every Go file
 already. What surrounds a go command is read over the steps whose writes reach it: a pinned step
@@ -348,6 +351,8 @@ class Session:
         rather than which download it could not make.
         """
         if workdir not in self.toolchains:
+            # go-offline: go env GOROOT reads no module; in CI setup-go has installed the go that
+            # go.mod names, so it fetches no toolchain either.
             root = subprocess.run(["go", "env", "GOROOT"], cwd=REPO / workdir,
                                   capture_output=True, text=True).stdout.strip()
             exe = Path(root) / "bin" / "go" if root else None
@@ -1190,6 +1195,7 @@ def reduce_line(line: str) -> tuple:
     if len(words) > 1 and words[1] == "-C":
         if len(words) < 3 or words[2].startswith("-"):
             return *unreduced, "`go -C` names no directory"
+        # go-offline: the words of a go command a step runs, rebuilt to be read; nothing starts it.
         chdir, words = words[2], ["go", *words[3:]]
     if len(words) < 2 or words[1] not in ("test", "vet", "build"):
         return *unreduced, f"`{' '.join(words[:2])}` is not go test, vet or build"
@@ -1228,6 +1234,17 @@ def reduce_line(line: str) -> tuple:
 # to ci-ok.sh, and CI_OK_EXEMPT is read by this check alone. LEGION_RUN_FUZZ_ITERS and
 # LEGION_KEPT_PROPERTY_RUNS are the counts the pull-request lane reduces: each is read at run
 # time by the test it governs, so go compiles the same files with them set as without.
+# GO_FETCH_PROXY is the proxy .github/scripts/go-fetch.sh fetches through, read by that script
+# alone: go reads it nowhere.
+#
+# GOFLAGS is the one name allowed with one value alone, which ENV_ALLOWED_VALUES below holds: the
+# whole value, as YAML parses it, `-mod=readonly`. go compiles the same files and runs the same
+# tests with it, since -mod=readonly is what go build, test, vet and list already default to with
+# a go.mod and no vendor directory, as every module of this repository is, and in a workspace;
+# what it changes is only that a command that would have to add or update a requirement fails
+# instead, which is what a required test step that must not fetch wants. Every other GOFLAGS value
+# stays outside (-tags, -run and -skip move what compiles or runs), and so does a GOFLAGS
+# assignment in front of the command, which reduce_line reads against ENV_ALLOWED alone.
 ENV_ALLOWED = frozenset({
     "AIRLOCK_MODEL",
     "BROKER_TEST_DATABASE_URL", "CI_OK_ALWAYS_RUN", "CI_OK_EXEMPT", "CI_OK_PULL_REQUEST_ONLY", "CI_OK_SELECTED_BY",
@@ -1241,7 +1258,7 @@ ENV_ALLOWED = frozenset({
     # unreduced and go_notices would have to match every Go file of the repository again. go reads
     # it nowhere.
     "GH_TOKEN",
-    "GOPROXY",
+    "GO_FETCH_PROXY", "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     # The commit envoy-go-checks' edited-migrations step compares a bypass run's tree with:
@@ -1256,18 +1273,20 @@ ENV_ALLOWED = frozenset({
     # it nowhere.
     "PRIVATE_NAME_TERMS",
 })
+ENV_ALLOWED_VALUES = {"GOFLAGS": "-mod=readonly"}
 
 
 def env_reason(document: dict, job: dict, steps: list) -> str:
     """The first env: block of the workflow, the job or one of the steps that can change what a go
-    command compiles (an expression, or a name outside ENV_ALLOWED), or ''."""
+    command compiles (an expression, or a name outside ENV_ALLOWED set to anything but the one value
+    ENV_ALLOWED_VALUES gives it), or ''."""
     blocks = [("the workflow's", document.get("env")), ("the job's", job.get("env"))]
     blocks += [(f'step "{step_label(s)}"\'s', s.get("env")) for s in steps]
     for where, env in blocks:
         if env is not None and not isinstance(env, dict):
             return f"{where} env is an expression"
-        for name in env or {}:
-            if name not in ENV_ALLOWED:
+        for name, value in (env or {}).items():
+            if name not in ENV_ALLOWED and not (name in ENV_ALLOWED_VALUES and value == ENV_ALLOWED_VALUES[name]):
                 return f"{where} env sets {name}"
     return ""
 
@@ -2731,9 +2750,10 @@ def check() -> int:
     documents = workflow_documents(problems)
     document = documents[WORKFLOW]
     import ci_job_reads as data  # imported here so its at() citations land in this module's CITED
-    # The rules of ci.yaml that read no filter and no go command's closure, in a module of their
-    # own. It is imported here, not at the top, because it imports this module's constants and
+    # The rules of ci.yaml that read no filter and no go command's closure, in modules of their
+    # own. They are imported here, not at the top, because they import this module's constants and
     # helpers: by the time main() runs, this module is loaded whole.
+    import ci_go_cache_rules as go_cache
     import ci_workflow_rules as rules
 
     # The filters, and the text of .github/ci-filters.yaml they were read from, which rule 17 and
@@ -2749,6 +2769,9 @@ def check() -> int:
     rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
+    # Rules 22 and 23 each return the line that says what they compared, on a pass.
+    report = go_cache.check_go_fetch_fills(documents, problems)
+    report += go_cache.check_go_cache_keys(documents, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)
@@ -2757,7 +2780,6 @@ def check() -> int:
     # after that work, where the files each gate reads exist.
     check_dead_patterns(data, filters, expander, problems)
     session = Session()
-    report = []
     # Per filter, the files the gates on it read and how the check names those gates: what rule
     # 9's second direction is judged over, collected as each gate's set is built rather than
     # computed a second time.

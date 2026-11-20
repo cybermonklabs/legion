@@ -374,7 +374,8 @@ func TestRegisterExecWarnsWhenWaitedButNotEnrolled(t *testing.T) {
 // it — it is the launch-ordering case tmux-resurrect hits at boot.
 func TestRegisterExecWithoutHelperWarnsAndStillExecs(t *testing.T) {
 	cmd := exec.Command("go", "run", ".", "register", "--exec", "--", "sh", "-c", "echo ran")
-	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+filepath.Join(shortTempDir(t), "absent.sock"))
+	// The module cache alone: this package's own modules, which the go test running it loaded.
+	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+filepath.Join(shortTempDir(t), "absent.sock"), "GOPROXY=off")
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

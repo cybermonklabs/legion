@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The operator-launched controller's live proof on tmux (LEGION-208 Stage 4b, task 4b.5): the Go
 # daemon on a real Postgres with this checkout's two plugins in an isolated OMP profile, a real Envoy
 # listener and NATS, and `legion controller start` run in real tmux panes as an operator would. It

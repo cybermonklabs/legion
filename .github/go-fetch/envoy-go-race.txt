@@ -1,0 +1,5 @@
+# envoy-go-race's fetch (.github/workflows/ci-job-envoy-go-race.yaml): the Dispatch store's
+# connections command its sizing step runs, and the modules of the packages its race step tests
+# (ci_job_reads.py's ENVOY_RACE_LANE names them).
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/broker/natscallout/

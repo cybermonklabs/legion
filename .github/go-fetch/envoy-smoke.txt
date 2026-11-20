@@ -1,0 +1,18 @@
+# envoy-smoke's fetch (.github/workflows/ci-job-envoy-smoke.yaml): the modules of the container smoke
+# test (smoke-tagged internal/smoke, and the cgo-less systemroots probe it builds), the envoy-infra
+# plugin its fetch step, its live tests (pulumitest.Plugin) and its schema step build, the live
+# tests of host, and the go commands of its two image builds. The SDK consumer's own modules are
+# that step's `go-fetch.sh pulumi-consumer`.
+deps packages/envoy -test -tags smoke ./internal/smoke/
+CGO_ENABLED=0 deps packages/envoy ./internal/smoke/systemroots
+deps packages/envoy/infra ./cmd/pulumi-resource-envoy-infra
+deps packages/envoy/infra -test -tags pulumilive ./host/
+# The image builds, for the image's platform: linux on this runner's architecture, which the job's
+# own GOOS and GOARCH are, with cgo off. packages/envoy/docker/Dockerfile's build stage copies
+# packages/envoy alone, outside the root go.work, so its go.mod alone selects the versions
+# (GOWORK=off), and its notices step installs go-licenses; the held-port wrapper
+# (packages/envoy/infra/host/heldportwrapper/Dockerfile) builds in packages/envoy/infra's
+# workspace, as this line does.
+CGO_ENABLED=0 GOWORK=off deps packages/envoy ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets
+CGO_ENABLED=0 deps packages/envoy/infra ./host/heldportwrapper
+tools scripts/go-third-party-notices-tools.txt

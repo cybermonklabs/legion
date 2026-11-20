@@ -23,7 +23,12 @@
 # the key and the paths every restore of that family names, ci.yaml's and any other workflow's,
 # its own restores being lookups,
 # ci-caches.yaml's race build must compile exactly the packages ci_job_reads.py's
-# DAEMON_RACE_PACKAGES names,
+# DAEMON_RACE_PACKAGES names, each fill of a Go module cache must run exactly the fetch files the
+# jobs that restore its family run after their restores - in ci.yaml, in a workflow it calls or in
+# one that workflow calls - each once and in path order, with no go-fetch.sh deps or tools line in
+# either, every key of a Go module cache must hash go-fetch.sh, its family's fetch files, the tools
+# files they name and the module files of their deps lines' workspaces, a step env may hold
+# GOFLAGS only as `-mod=readonly`,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
 # passes -run must have a filter covering every file the tag step reads and every file of its
@@ -40,7 +45,7 @@
 # filters it gates them by, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
+# (ci_workflow_rules.py, ci_go_cache_rules.py) and the path model they import (workflow_paths.py) into it, so the code
 # under test is the code CI runs. It needs go and a
 # python3 with PyYAML.
 #
@@ -78,7 +83,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py ci_go_cache_rules.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"
@@ -290,7 +295,7 @@ check_report_section() {
 }
 
 unescaped_workflow_commands() {
-  local line unsafe='' token stopped=false
+  local line unsafe='' token='' stopped=false
   while IFS= read -r line; do
     if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
       token=${BASH_REMATCH[1]}
@@ -1729,6 +1734,39 @@ run_check "$root"
 check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
 check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
 
+# `GOFLAGS: -mod=readonly` is the one value of GOFLAGS an env: block may hold while the step stays
+# reduced (ENV_ALLOWED_VALUES): go compiles the same files and runs the same tests with it. Any
+# other value of GOFLAGS still drops the command to everything, as an unknown name does.
+for holder in step job workflow; do
+  echo "case: GOFLAGS: -mod=readonly in the $holder env of a claimed simple go command"
+  root=$(fixture "goflags-readonly-$holder")
+  case $holder in
+    step)
+      replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+        $'        working-directory: mod\n        env:\n          GOFLAGS: -mod=readonly' ;;
+    job)
+      replace "$root/.github/workflows/ci.yaml" $'    steps:\n      - name: Test the app' \
+        $'    env:\n      GOFLAGS: -mod=readonly\n    steps:\n      - name: Test the app' ;;
+    workflow)
+      replace "$root/.github/workflows/ci.yaml" "  CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'" \
+        "  CI_OK_EXEMPT: '[\"ci-ok\", \"pr-title\"]'"$'\n  GOFLAGS: -mod=readonly\n  GOPROXY: "off"\n  GO_FETCH_PROXY: https://proxy.golang.org|direct' ;;
+  esac
+  run_check "$root"
+  check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+  check "counts the job's files" "$(contains "$out" '^report: app: 7 files, 0 uncovered (filter app)$')"
+done
+
+for value in '-mod=mod' '"-mod=readonly -tags=probe"'; do
+  echo "case: GOFLAGS: $value in the step env of a claimed simple go command"
+  root=$(fixture "goflags-${value//[^a-z]/}")
+  replace "$root/.github/workflows/ci.yaml" "        working-directory: mod" \
+    $'        working-directory: mod\n        env:\n          GOFLAGS: '"$value"
+  run_check "$root"
+  check "fails" "$(is "$status" 1)"
+  check "names the command and the env that keeps it from being reduced" \
+    "$(contains "$out" 'job app step "Test the app" runs `go test ./cmd/app ./lib`, which this check does not reduce (step "Test the app".s env sets GOFLAGS)')"
+done
+
 echo "case: an assignment outside ENV_ALLOWED in front of a claimed simple go command"
 root=$(fixture goos-assignment)
 replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: GOOS=linux go test ./cmd/app ./lib"
@@ -2300,11 +2338,18 @@ check "exits 0" "$(is "$status" 0)"
 
 # cache_workflow <root>: the shape .github/workflows/ci-caches.yaml and ci.yaml have here - a fill
 # job that looks the family's key up, builds only on a miss and saves the entry, and a restore of
-# that same key and those same paths in the job that reads it. The fill's second build is the race
-# one, which must compile exactly what DAEMON_RACE_PACKAGES names (mod/lib here), since it fills
-# the cache a race step of ci.yaml restores.
+# that same key and those same paths in the job that reads it. The fill's race build must compile
+# exactly what DAEMON_RACE_PACKAGES names (mod/lib here), since it fills the cache a race step of
+# ci.yaml restores. go-app is a Go family, so rules 22 and 23 hold it too: the app job runs its
+# fetch file .github/go-fetch/app.txt after its restore, the fill runs that same file, and every
+# key of the family hashes go-fetch.sh, that file and the module files of its deps line's
+# workspace (go.work binds mod).
+app_hash="\${{ hashFiles('.github/scripts/go-fetch.sh', '.github/go-fetch/app.txt', 'go.work', 'go.work.sum', 'mod/go.mod', 'mod/go.sum') }}"
+app_key="go-app-\${{ runner.os }}-$app_hash"
 cache_workflow() {
-  cat > "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  mkdir -p "$1/.github/go-fetch"
+  printf 'deps mod ./cmd/app\n' > "$1/.github/go-fetch/app.txt"
+  cat > "$1/.github/workflows/ci-caches.yaml" <<YAML
 name: CI caches
 on:
   push:
@@ -2319,8 +2364,10 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-app-${{ runner.os }}
+          key: $app_key
           lookup-only: true
+      - if: steps.go-app.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/app.txt
       - if: steps.go-app.outputs.cache-hit != 'true'
         run: go test -count=1 ./cmd/app ./lib
         working-directory: mod
@@ -2333,10 +2380,20 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-app-${{ runner.os }}
+          key: $app_key
 YAML
   replace "$1/.github/workflows/ci.yaml" "      - name: Test the app" \
-    $'      - id: go-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-app-${{ runner.os }}\n          restore-keys: ${{ format(\'go-app-{0}-\', runner.os) }}\n      - name: Test the app'
+    "      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: $app_key
+          restore-keys: \${{ format('go-app-{0}-', runner.os) }}
+      - name: Fetch the modules of the app
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/app.txt
+      - name: Test the app"
 }
 
 echo "case: a family ci-caches.yaml saves under the key and paths ci.yaml restores"
@@ -2399,7 +2456,7 @@ YAML
 echo "case: a release workflow restoring a filled family under the key ci-caches.yaml saves"
 root=$(fixture cache-release-same)
 cache_workflow "$root"
-release_restore "$root" 'go-app-${{ runner.os }}'
+release_restore "$root" "$app_key"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
@@ -2415,7 +2472,7 @@ check "names the release workflow's job and both keys" \
 echo "case: a family only a release workflow restores"
 root=$(fixture cache-release-only)
 cache_workflow "$root"
-release_restore "$root" 'go-app-${{ runner.os }}'
+release_restore "$root" "$app_key"
 replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
@@ -2425,7 +2482,7 @@ check "still names the family ci.yaml restores nowhere" \
 echo "case: a lookup of ci-caches.yaml whose key drifted from the key its own save writes"
 root=$(fixture cache-lookup-drift)
 cache_workflow "$root"
-replace "$root/.github/workflows/ci-caches.yaml" $'          key: go-app-${{ runner.os }}\n          lookup-only: true' $'          key: go-app-${{ runner.os }}-v2\n          lookup-only: true'
+replace "$root/.github/workflows/ci-caches.yaml" "          key: $app_key"$'\n          lookup-only: true' "          key: go-app-\${{ runner.os }}-v2-$app_hash"$'\n          lookup-only: true'
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the lookup's job and both keys" \
@@ -2449,6 +2506,447 @@ check "fails" "$(is "$status" 1)"
 check "names the job and the family" \
   "$(contains "$out" "job fill's actions/cache/restore of family go-app has restore-keys")"
 
+# replace_every <file> <old> <new>: every occurrence replaced, failing the case loudly if <old> is
+# absent.
+replace_every() {
+  local file=$1 old=$2 new=$3 text
+  text=$(<"$file")
+  if [[ $text != *"$old"* ]]; then
+    echo "  FAIL: $file has no '$old' to replace" >&2
+    return 1
+  fi
+  printf '%s\n' "${text//"$old"/"$new"}" > "$file"
+}
+
+# Rules 22 and 23. fetch_tree <root>: Go families as ci-caches.yaml fills them in this repository,
+# each reader where the tree has one. go-app (cache_workflow) is read by ci.yaml's own app job.
+# go-fetch-suite holds one fetch and no build, as the go-fetch families do, and its readers are in
+# workflows ci.yaml calls, as every one of theirs is: the rows job of suite.yaml, which ci.yaml's
+# suite job calls (calls_workflow), and the deep job of deep.yaml, which suite.yaml's nested job
+# calls in turn. Its fill runs the two readers' fetch files once each, deep.txt before suite.txt,
+# the ascending order of their paths. suite.txt's command carries the platform prefix and a
+# trailing comment; deep.txt names a tools pin file, which the family's keys hash beside the fetch
+# files, go-fetch.sh and the module files of the workspace both deps lines run in.
+suite_hash="\${{ hashFiles('.github/scripts/go-fetch.sh', '.github/go-fetch/deep.txt', '.github/go-fetch/suite.txt', 'mod/tools.txt', 'go.work', 'go.work.sum', 'mod/go.mod', 'mod/go.sum') }}"
+suite_key="go-fetch-suite-\${{ runner.os }}-$suite_hash"
+fill_lines=$'          .github/scripts/go-fetch.sh file .github/go-fetch/deep.txt\n          .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt'
+rows_fetch="        run: .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt"
+fetch_tree() {
+  local root=$1
+  cache_workflow "$root"
+  calls_workflow "$root"
+  printf '# The modules the suite builds, with its tests.\nGOOS=linux GOARCH=amd64 CGO_ENABLED=0 deps mod -test ./cmd/app # the app\n' \
+    > "$root/.github/go-fetch/suite.txt"
+  printf 'deps mod ./lib\ntools mod/tools.txt\n' > "$root/.github/go-fetch/deep.txt"
+  printf 'example.com/tool@v1.0.0\n' > "$root/mod/tools.txt"
+  cat >> "$root/.github/workflows/ci-caches.yaml" <<YAML
+  fetch-suite:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: go-fetch-suite
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: $suite_key
+          lookup-only: true
+      - name: Fetch what the suite's readers fetch
+        if: steps.go-fetch-suite.outputs.cache-hit != 'true'
+        run: |
+$fill_lines
+      - if: steps.go-fetch-suite.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: $suite_key
+YAML
+  replace "$root/.github/workflows/suite.yaml" "      - name: Build the app" \
+    "      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: $suite_key
+      - name: Fetch the modules of the suite
+$rows_fetch
+      - name: Build the app"
+  cat >> "$root/.github/workflows/suite.yaml" <<'YAML'
+  nested:
+    uses: ./.github/workflows/deep.yaml
+YAML
+  cat > "$root/.github/workflows/deep.yaml" <<YAML
+name: Deep
+on:
+  workflow_call:
+jobs:
+  deep:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: $suite_key
+      - name: Fetch the modules of the library
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/deep.txt
+YAML
+}
+
+echo "case: each Go fill runs its readers' fetch files, the readers in ci.yaml, a workflow it calls and one that workflow calls"
+root=$(fixture fetch-fills-same)
+fetch_tree "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the families and the readers rule 22 compared" \
+  "$(contains "$out" "^report: rule 22: 2 Go families ci-caches.yaml saves, 3 readers, each fill runs its readers' fetch files$")"
+
+echo "case: a Go fill missing a fetch file one of its readers runs"
+root=$(fixture fetch-fills-missing)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" "          .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family, the fill job, the file, the reader that runs it and both lists" \
+  "$(contains "$out" 'job fetch-suite fills Go family go-fetch-suite without `.github/scripts/go-fetch.sh file .github/go-fetch/deep.txt`, which job deep of .github/workflows/deep.yaml run after restoring it (the fill runs .github/go-fetch/suite.txt, and job rows of .github/workflows/suite.yaml; job deep of .github/workflows/deep.yaml run .github/go-fetch/deep.txt, .github/go-fetch/suite.txt)')"
+
+echo "case: a Go fill running a fetch file none of its readers runs"
+root=$(fixture fetch-fills-extra)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" $'          .github/scripts/go-fetch.sh file .github/go-fetch/app.txt\n'"$fill_lines"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family, the fill job, the extra file, the readers and both lists" \
+  "$(contains "$out" 'job fetch-suite fills Go family go-fetch-suite with `.github/scripts/go-fetch.sh file .github/go-fetch/app.txt`, which no job that restores it runs (the fill runs .github/go-fetch/app.txt, .github/go-fetch/deep.txt, .github/go-fetch/suite.txt, and job rows of .github/workflows/suite.yaml; job deep of .github/workflows/deep.yaml run .github/go-fetch/deep.txt, .github/go-fetch/suite.txt)')"
+
+echo "case: a Go fill running one of its readers' fetch files twice"
+root=$(fixture fetch-fills-repeat)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" "$fill_lines"$'\n          .github/scripts/go-fetch.sh file .github/go-fetch/deep.txt'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family, the fill job, the repeated file and both lists" \
+  "$(contains "$out" 'job fetch-suite runs `.github/scripts/go-fetch.sh file .github/go-fetch/deep.txt` 2 times to fill Go family go-fetch-suite (the fill runs .github/go-fetch/deep.txt, .github/go-fetch/suite.txt, .github/go-fetch/deep.txt, and job rows of .github/workflows/suite.yaml; job deep of .github/workflows/deep.yaml run .github/go-fetch/deep.txt, .github/go-fetch/suite.txt)')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+echo "case: a Go fill running its readers' fetch files in another order than their paths'"
+root=$(fixture fetch-fills-order)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" \
+  $'          .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt\n          .github/scripts/go-fetch.sh file .github/go-fetch/deep.txt'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family, the fill job and both orders" \
+  "$(contains "$out" 'job fetch-suite fills Go family go-fetch-suite with its readers. fetch files in another order than the ascending one of their repository paths (the fill runs .github/go-fetch/suite.txt, .github/go-fetch/deep.txt, and job rows of .github/workflows/suite.yaml; job deep of .github/workflows/deep.yaml run .github/go-fetch/deep.txt, .github/go-fetch/suite.txt)')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+# A fetch before the restore runs before the entry is there, so it is no fetch the entry serves.
+echo "case: a reader whose fetch file runs before its restore"
+root=$(fixture fetch-fills-before-restore)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" $'      - name: Fetch the modules of the suite\n'"$rows_fetch"$'\n' ""
+replace "$root/.github/workflows/suite.yaml" "      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0" \
+  $'      - name: Fetch the modules of the suite\n'"$rows_fetch"$'\n      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the reader, its file and the family" \
+  "$(contains "$out" '::error file=.github/workflows/suite.yaml::job rows of .github/workflows/suite.yaml restores Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line after it')"
+
+echo "case: a reader whose only go-fetch.sh line is a comment"
+root=$(fixture fetch-fills-reader-comment)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" "$rows_fetch" \
+  $'        run: |\n          # .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt\n          echo fetched'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the comment as no fetch" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml restores Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line after it')"
+
+echo "case: a Go fill whose only go-fetch.sh lines are comments"
+root=$(fixture fetch-fills-fill-comment)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" \
+  $'          # .github/scripts/go-fetch.sh file .github/go-fetch/deep.txt\n          # .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt\n          echo fetched'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the comments as no fetch" \
+  "$(contains "$out" 'job fetch-suite saves Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line before it, so it fills nothing its readers fetch')"
+
+# An actions/cache/save saves what the steps before it left: a fetch after it fills nothing.
+echo "case: a Go fill whose fetch runs after its save"
+root=$(fixture fetch-fills-after-save)
+fetch_tree "$root"
+fill_step=$'      - name: Fetch what the suite\'s readers fetch\n        if: steps.go-fetch-suite.outputs.cache-hit != \'true\'\n        run: |\n'"$fill_lines"
+save_step=$'      - if: steps.go-fetch-suite.outputs.cache-hit != \'true\'\n        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: ~/go/pkg/mod\n          key: '"$suite_key"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_step"$'\n'"$save_step" "$save_step"$'\n'"$fill_step"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family and the fill job that saves before it fetches" \
+  "$(contains "$out" 'job fetch-suite saves Go family go-fetch-suite and runs no `.github/scripts/go-fetch.sh file <fetch file>` line before it, so it fills nothing its readers fetch')"
+
+# A deps or tools line takes its arguments on the line, in no file a key hashes (rule 23), so a
+# change to them would change no key.
+echo "case: a reader running a go-fetch.sh deps line after its restore"
+root=$(fixture fetch-fills-reader-deps)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" "$rows_fetch" "        run: .github/scripts/go-fetch.sh deps mod -test ./cmd/app"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the reader, the line and the family" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml runs `.github/scripts/go-fetch.sh deps mod -test ./cmd/app` after restoring Go family go-fetch-suite, a go-fetch.sh deps line: its arguments are in no file the family.s key hashes')"
+
+echo "case: a Go fill running a go-fetch.sh deps line"
+root=$(fixture fetch-fills-fill-deps)
+fetch_tree "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" "$fill_lines"$'\n          .github/scripts/go-fetch.sh deps mod ./lib'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the fill job, the line and the family" \
+  "$(contains "$out" 'job fetch-suite fills Go family go-fetch-suite with `.github/scripts/go-fetch.sh deps mod ./lib`, a go-fetch.sh deps line: its arguments are in no file the family.s key hashes')"
+check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+
+# A fetch file is resolved against its step's directory: the reader's own working-directory, the
+# fill job's defaults.run.working-directory.
+echo "case: fetch files named from the directories their steps run in"
+root=$(fixture fetch-fills-workdir)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" "$rows_fetch" \
+  $'        run: ../.github/scripts/go-fetch.sh file ../.github/go-fetch/suite.txt\n        working-directory: mod'
+replace "$root/.github/workflows/ci-caches.yaml" $'  fetch-suite:\n    runs-on: ubuntu-24.04\n' \
+  $'  fetch-suite:\n    runs-on: ubuntu-24.04\n    defaults:\n      run:\n        working-directory: mod\n'
+replace "$root/.github/workflows/ci-caches.yaml" "$fill_lines" \
+  $'          ../.github/scripts/go-fetch.sh file ../.github/go-fetch/deep.txt\n          ../.github/scripts/go-fetch.sh file ../.github/go-fetch/suite.txt'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "and counts what it compared" \
+  "$(contains "$out" "^report: rule 22: 2 Go families ci-caches.yaml saves, 3 readers, each fill runs its readers' fetch files$")"
+
+echo "case: a reader's fetch file that names another file from its step's directory"
+root=$(fixture fetch-fills-workdir-other)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" "$rows_fetch" \
+  $'        run: ../.github/scripts/go-fetch.sh file .github/go-fetch/suite.txt\n        working-directory: mod'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file as the step's directory resolves it" \
+  "$(contains "$out" 'job fetch-suite fills Go family go-fetch-suite without `.github/scripts/go-fetch.sh file mod/.github/go-fetch/suite.txt`, which job rows of .github/workflows/suite.yaml run after restoring it')"
+
+echo "case: a reader's pulumi-consumer line after its restore is no fetch file"
+root=$(fixture fetch-fills-pulumi-consumer)
+fetch_tree "$root"
+replace "$root/.github/workflows/suite.yaml" "$rows_fetch" \
+  $'        run: |\n          .github/scripts/go-fetch.sh file .github/go-fetch/suite.txt\n          .github/scripts/go-fetch.sh pulumi-consumer mod/consumer "$RUNNER_TEMP/plugin"'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a Go family ci-caches.yaml saves that no job restores, beside one that is read"
+root=$(fixture fetch-fills-unread-family)
+fetch_tree "$root"
+replace_every "$root/.github/workflows/suite.yaml" "key: $suite_key" "key: go-fetch-moved-\${{ runner.os }}-$suite_hash"
+replace_every "$root/.github/workflows/deep.yaml" "key: $suite_key" "key: go-fetch-moved-\${{ runner.os }}-$suite_hash"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the family no job restores and its fill job" \
+  "$(contains "$out" 'job fetch-suite saves Go family go-fetch-suite, which no job of .github/workflows/ci.yaml or of a workflow it calls, followed through every call, restores')"
+check "and is no UNKNOWN, since it read go-app's reader" "$(is "$(contains "$out" 'rule 22 UNKNOWN')" false)"
+
+echo "case: a ci-caches.yaml whose Go families no job restores is UNKNOWN to rule 22"
+root=$(fixture fetch-fills-unread)
+cache_workflow "$root"
+replace "$root/.github/workflows/ci.yaml" 'key: go-app-${{ runner.os }}' 'key: go-other-${{ runner.os }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says it read no reader, naming the families" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches.yaml::rule 22 UNKNOWN: no job of .github/workflows/ci.yaml or of a workflow it calls, followed through every call, restores a Go family this workflow saves (go-app), so this rule read no reader.s fetch files')"
+check "and refuses the family no job restores" \
+  "$(contains "$out" 'job fill saves Go family go-app, which no job of .github/workflows/ci.yaml or of a workflow it calls, followed through every call, restores')"
+
+echo "case: a ci-caches.yaml none of whose saves holds the Go module cache is UNKNOWN to rule 22"
+root=$(fixture fetch-fills-no-go)
+cache_workflow "$root"
+tilde='~'
+replace_every "$root/.github/workflows/ci-caches.yaml" "$tilde/go/pkg/mod" "$tilde/.cache/other"
+replace_every "$root/.github/workflows/ci.yaml" "$tilde/go/pkg/mod" "$tilde/.cache/other"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "says it found no Go family" \
+  "$(contains "$out" '::error file=.github/workflows/ci-caches.yaml::rule 22 UNKNOWN: no actions/cache/save or actions/cache step of this workflow names ~/go/pkg/mod in its path:')"
+
+# docs_pages <root>: a docs-pages.yaml that restores go-docs, runs its fetch file and saves the
+# entry under its restore's primary key, as the docs-site.yaml build job docs-pages.yaml calls
+# does here: a Go family ci-caches.yaml does not save, so rule 23 holds it alone.
+docs_hash="\${{ hashFiles('.github/scripts/go-fetch.sh', '.github/go-fetch/docs.txt', 'go.work', 'go.work.sum', 'mod/go.mod', 'mod/go.sum') }}"
+docs_pages() {
+  printf 'deps mod ./cmd/app\n' > "$1/.github/go-fetch/docs.txt"
+  cat > "$1/.github/workflows/docs-pages.yaml" <<YAML
+name: Docs pages
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: go-docs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-docs-\${{ runner.os }}-$docs_hash
+      - name: Fetch the modules of the docs build
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/docs.txt
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: \${{ steps.go-docs.outputs.cache-primary-key }}
+YAML
+}
+
+# drop_from_suite_keys <root> <text>: every key of go-fetch-suite with <text> taken out of its
+# hashFiles list, so the keys still agree with each other and rule 23 alone can refuse them.
+drop_from_suite_keys() {
+  local file
+  for file in ci-caches.yaml suite.yaml deep.yaml; do
+    replace_every "$1/.github/workflows/$file" "$suite_hash" "${suite_hash/"$2"/}"
+  done
+}
+
+echo "case: every Go module cache key hashes go-fetch.sh, its family's fetch files and what they name"
+root=$(fixture cache-keys-whole)
+fetch_tree "$root"
+docs_pages "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the keys rule 23 read, docs-pages.yaml's two among them" \
+  "$(contains "$out" "^report: rule 23: 9 Go module cache keys, each hashing go-fetch.sh, its family's fetch files and the files they name$")"
+
+echo "case: a Go module cache key that does not hash go-fetch.sh"
+root=$(fixture cache-keys-no-script)
+fetch_tree "$root"
+drop_from_suite_keys "$root" "'.github/scripts/go-fetch.sh', "
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the workflow, the job, the step, the family and the file" \
+  "$(contains "$out" '::error file=.github/workflows/deep.yaml::job deep of .github/workflows/deep.yaml step "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks .github/scripts/go-fetch.sh:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a Go module cache key that does not hash a fetch file a reader runs"
+root=$(fixture cache-keys-no-fetch-file)
+fetch_tree "$root"
+drop_from_suite_keys "$root" "'.github/go-fetch/suite.txt', "
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the fetch file the list lacks" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml step "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks .github/go-fetch/suite.txt:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a Go module cache key that does not hash a go.sum of its fetches' workspace"
+root=$(fixture cache-keys-no-go-sum)
+fetch_tree "$root"
+drop_from_suite_keys "$root" ", 'mod/go.sum'"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the go.sum the list lacks" \
+  "$(contains "$out" 'job fetch-suite of .github/workflows/ci-caches.yaml step "go-fetch-suite" keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks mod/go.sum:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a Go module cache key that does not hash a tools file a fetch file names"
+root=$(fixture cache-keys-no-tools)
+fetch_tree "$root"
+drop_from_suite_keys "$root" "'mod/tools.txt', "
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the tools file the list lacks" \
+  "$(contains "$out" 'keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks mod/tools.txt:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a Go module cache key with no hashFiles"
+root=$(fixture cache-keys-no-hash)
+fetch_tree "$root"
+for file in ci-caches.yaml suite.yaml deep.yaml; do
+  replace_every "$root/.github/workflows/$file" "$suite_key" "go-fetch-suite-\${{ runner.os }}"
+done
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, the family and every file its key must hash" \
+  "$(contains "$out" 'job rows of .github/workflows/suite.yaml step "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" keys Go family go-fetch-suite with `go-fetch-suite-${{ runner.os }}`, which does not end .*; hash .github/go-fetch/deep.txt, .github/go-fetch/suite.txt, .github/scripts/go-fetch.sh, go.work, go.work.sum, mod/go.mod, mod/go.sum, mod/tools.txt$')"
+
+echo "case: a fetch file line that is neither deps nor tools"
+root=$(fixture cache-keys-bad-line)
+fetch_tree "$root"
+printf 'install example.com/tool@v1.0.0\n' >> "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file and the line" \
+  "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 3 of .github/go-fetch/deep.txt is `install example.com/tool@v1.0.0`, which is neither')"
+
+# A tidy line's `go mod tidy` reads no go.work: what decides the modules it fetches is the go.mod
+# and go.sum of the module the line names, and the go.mod of each directory a replace directive of
+# that go.mod names. tidy_tree <root>: fetch_tree with `tidy tidier` in deep.txt, tidier a module
+# in no workspace whose go.mod replaces a module with ../other, and with a replacement that is a
+# module version, which names no file. tidy_keys <root>: every key of the family hashing those
+# three files too.
+tidy_tree() {
+  fetch_tree "$1"
+  mkdir -p "$1/tidier" "$1/other"
+  printf 'module example.com/tidier\n\ngo 1.27.3\n\nrequire example.com/other v0.0.0\n\nreplace (\n\texample.com/other => ../other // the sibling\n\texample.com/far v1.0.0 => example.com/near v1.0.1\n)\n' \
+    > "$1/tidier/go.mod"
+  : > "$1/tidier/go.sum"
+  printf 'module example.com/other\n\ngo 1.27.3\n' > "$1/other/go.mod"
+  printf 'tidy tidier  # what check-go-tidy.sh reads\n' >> "$1/.github/go-fetch/deep.txt"
+}
+tidy_keys() {
+  local file tidy_suite_hash
+  tidy_suite_hash="${suite_hash/"'mod/go.sum') }}"/"'mod/go.sum', 'tidier/go.mod', 'tidier/go.sum', 'other/go.mod') }}"}"
+  for file in ci-caches.yaml suite.yaml deep.yaml; do
+    replace_every "$1/.github/workflows/$file" "$suite_hash" "$tidy_suite_hash"
+  done
+}
+
+echo "case: a Go module cache key that hashes a tidy line's go.mod, go.sum and replaced module's go.mod"
+root=$(fixture cache-keys-tidy)
+tidy_tree "$root"
+tidy_keys "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts the keys rule 23 held" "$(contains "$out" '^report: rule 23: 7 Go module cache keys')"
+
+echo "case: a Go module cache key that does not hash the files a tidy line's module reads"
+root=$(fixture cache-keys-no-tidy-files)
+tidy_tree "$root"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the module's go.mod and go.sum and the replaced module's go.mod, and no go.sum of that" \
+  "$(contains "$out" 'job deep of .github/workflows/deep.yaml step "actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9" keys Go family go-fetch-suite with `go-fetch-suite-.*`, whose hashFiles list lacks other/go.mod, tidier/go.mod, tidier/go.sum:')"
+check "and is one problem for each of the family's four keys" "$(contains "$out" '^::error::4 CI filter problem(s)$')"
+
+echo "case: a tidy line in a directory that holds no go.mod"
+root=$(fixture cache-keys-tidy-no-module)
+tidy_tree "$root"
+tidy_keys "$root"
+printf 'tidy mod/lib\n' >> "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file, the line and the directory" \
+  "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 4 of .github/go-fetch/deep.txt runs tidy in mod/lib, which holds no go.mod')"
+
+echo "case: a tidy line naming more than its module"
+root=$(fixture cache-keys-tidy-extra)
+tidy_tree "$root"
+tidy_keys "$root"
+printf 'tidy tidier ./...\n' >> "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line as no command" \
+  "$(contains "$out" '::error file=.github/go-fetch/deep.txt::line 4 of .github/go-fetch/deep.txt is `tidy tidier ./...`, which is neither')"
+
+echo "case: a fetch file a reader runs that the repository does not have"
+root=$(fixture cache-keys-no-file)
+fetch_tree "$root"
+rm "$root/.github/go-fetch/deep.txt"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the reader and the file" \
+  "$(contains "$out" '::error file=.github/workflows/deep.yaml::job deep of .github/workflows/deep.yaml runs `.github/scripts/go-fetch.sh file .github/go-fetch/deep.txt` after restoring Go family go-fetch-suite, and the repository has no .github/go-fetch/deep.txt')"
+
 # A job of ci.yaml that calls a local workflow gives it its steps, cache steps among them: the
 # real dispatch-browser job restores go-envoy and go-envoy-test in the binaries, multiprocess,
 # embedder and visual jobs of dispatch-browser.yaml. So the rule reads those jobs' restores as it
@@ -2458,17 +2956,26 @@ check "names the job and the family" \
 # suite_cache <root>: a second family, go-suite, that ci-caches.yaml's fill job saves and only
 # the called workflow's `rows` job restores. Call it after cache_workflow and calls_workflow.
 suite_cache() {
-  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<YAML
       - if: steps.go-app.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-suite-${{ runner.os }}
+          key: go-suite-\${{ runner.os }}-$app_hash
 YAML
   replace "$1/.github/workflows/suite.yaml" "      - name: Build the app" \
-    $'      - id: go-suite-cache\n        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0\n        with:\n          path: |\n            ~/go/pkg/mod\n            ~/.cache/go-build\n          key: go-suite-${{ runner.os }}\n      - name: Build the app'
+    "      - id: go-suite-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-suite-\${{ runner.os }}-$app_hash
+      - name: Fetch the modules of the suite
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/app.txt
+      - name: Build the app"
 }
 
 echo "case: a family only a called workflow's job restores"
@@ -2531,6 +3038,7 @@ check "names both orders" \
 echo "case: the fill job with no race build at all"
 root=$(fixture race-fill-gone)
 cache_workflow "$root"
+# go-offline: this test fixture's quoted workflow text starts no command.
 replace "$root/.github/workflows/ci-caches.yaml" $'      - if: steps.go-app.outputs.cache-hit != \'true\'\n        run: go test -c -o /dev/null -race ./lib/\n        working-directory: mod\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"

@@ -40,6 +40,8 @@ func ompTree(t *testing.T, n int) (int, []int) {
 	if err := os.Symlink(sh, launcher); err != nil {
 		t.Fatal(err)
 	}
+	// omp-offline: launcher is sh under the name omp, for the kernel comm the launcher check reads;
+	// no Oh My Pi runs.
 	cmd := exec.Command(launcher, "-c", `i=0; while [ "$i" -lt "$1" ]; do sleep 30 & echo "$!"; i=$((i + 1)); done; wait`, "omp", strconv.Itoa(n))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()

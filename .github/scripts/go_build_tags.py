@@ -56,6 +56,8 @@ LISTED = ("GoFiles", "CgoFiles", "TestGoFiles", "XTestGoFiles")
 def go(module: Path, args: list, **env) -> str:
     """The output of a go command run in the module, so with its own toolchain, with `env` added
     to the environment (GOOS and GOARCH, for a listing of another platform)."""
+    # go-offline: the vet steps and check-ci-filters.sh run this as a step, over the module the job
+    # restored; its test runs it over fixture modules that require no other.
     result = subprocess.run(["go", *args], cwd=module, env={**os.environ, **env}, capture_output=True, text=True)
     if result.returncode != 0:
         raise SystemExit(f"go_build_tags.py: in {module}, go {' '.join(args[:3])} ... failed: "

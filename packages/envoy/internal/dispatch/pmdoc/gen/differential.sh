@@ -20,6 +20,8 @@
 # (engine-readonly.jsonl), and the editing engine what DisplayVersion must.
 #
 # Needs go, bun and jq, and `bun install` run in the repository.
+# go-offline-file: a person runs the differential by hand; no CI job runs it, and the tests it
+# builds skip unless the PMDOC_DIFF_* variables it sets name their inputs.
 set -euo pipefail
 
 gen=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)

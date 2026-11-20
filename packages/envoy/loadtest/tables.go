@@ -1060,6 +1060,8 @@ func pprofTops(dir, bin string) {
 			args = append(args, bin)
 		}
 		args = append(args, profile)
+		// go-offline: go tool pprof is the toolchain's own tool and loads no module; the load
+		// generator runs it, no test.
 		top, err := exec.Command("go", args...).Output()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "loadgen tables: go %s: %v\n", strings.Join(args, " "), err)

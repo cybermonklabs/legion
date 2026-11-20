@@ -870,6 +870,10 @@ func containerImporters(t *testing.T) []containerImport {
 	const format = `{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}`
 	list := exec.Command("go", "list", "-f", format, "./...")
 	list.Dir = envoyRoot
+	// The module cache alone: envoy-go's step lists every package of the module to its go test,
+	// which loads all their modules before any test runs, and a fetch while a test runs fails it
+	// whenever the module proxy does.
+	list.Env = append(os.Environ(), "GOPROXY=off")
 	out, err := list.Output()
 	if err != nil {
 		var exit *exec.ExitError

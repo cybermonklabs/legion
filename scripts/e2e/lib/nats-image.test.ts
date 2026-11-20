@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { goCommandSync } from "@legion/test-fixtures/go-command";
 
 // The listener and the Legion daemon refuse a nats-server below the floor packages/envoy/natsversion
 // holds (every 2.10 among them), so whatever starts a NATS server for them must start one the floor
@@ -91,15 +92,18 @@ const knownDrivers = [
 /**
  * natsversion's own rule, built once from packages/envoy/natsversion/cmd/natsfloor: the scanner
  * asks it whether the floor takes a version rather than hold a copy of the rule, so the floor the
- * listener and the daemon refuse a server by is the one this scan holds every pin to.
+ * listener and the daemon refuse a server by is the one this scan holds every pin to. The build
+ * reads the module cache alone (goCommandSync): the lint and test jobs fetch its modules in a step
+ * before this file runs.
  */
 const floorDir = mkdtempSync(join(tmpdir(), "natsfloor-"));
 afterAll(() => rmSync(floorDir, { recursive: true, force: true }));
 const floor = join(floorDir, "natsfloor");
-const build = Bun.spawnSync(["go", "build", "-o", floor, "./natsversion/cmd/natsfloor"], {
+const build = goCommandSync({
+  command: "build",
   cwd: join(root, "packages/envoy"),
-  stdout: "pipe",
-  stderr: "pipe",
+  flags: ["-o", floor],
+  packages: ["./natsversion/cmd/natsfloor"],
 });
 if (build.exitCode !== 0) {
   throw new Error(`go build ./natsversion/cmd/natsfloor exited ${build.exitCode}: ${build.stderr}`);

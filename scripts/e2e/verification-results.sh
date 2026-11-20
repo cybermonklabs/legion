@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: e2e.yaml runs this proof, nightly and on the e2e label; no required job runs it.
 # The live proof that a recorded check result says where its commit stands against the commits and
 # branches its check compares with (comparisonReader,
 # packages/envoy/internal/dispatch/api/results_comparison.go), and that the head it is compared with

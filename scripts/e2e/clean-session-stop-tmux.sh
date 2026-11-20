@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The daemon's clean stop, measured end to end (dispatch://INFRA-392): a Legion role whose agent
 # process is SIGKILLed under its worker shim is `gone` to the Envoy listener within ten seconds,
 # because the daemon deletes that session's registration the moment its probe finds the process

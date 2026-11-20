@@ -194,6 +194,7 @@ def tool_directories() -> list[str]:
     build and module caches, and Docker's data root, where the images the live tests build go."""
     found = []
     for name in ("GOCACHE", "GOMODCACHE"):
+        # go-offline: go env prints the cache's directory and reads no module.
         said = tool_says(["go", "env", name])
         if said:
             found.append(said)

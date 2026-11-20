@@ -299,44 +299,45 @@ func TestLiveSeedReachesNATS(t *testing.T) {
 }
 
 // TestLiveGoConsumersCanUseTheSDK generates the Go SDK from the plugin, as a consumer's
-// `pulumi package add` does, and builds a program that constructs a listener through it.
+// `pulumi package add` does, and builds a program that constructs a listener through it: the
+// consumer module in testdata/sdk-consumer, copied.
+//
+// It fetches no module while it runs. The `go mod tidy` package add runs resolves every module
+// the program and the generated SDK read, and a fetch of them while the test ran failed it
+// whenever the module proxy or the checksum database did. So envoy-smoke's fetch step makes that
+// same resolution once before the tests, on the same consumer and the same plugin, tried again on
+// failure (.github/workflows/ci-job-envoy-smoke.yaml), and this test makes it again against the
+// module cache alone: GOPROXY is a file proxy over the cache's own download directory, which
+// answers what the step fetched and nothing else, and the checksum database is read from what the
+// step's own lookups left. A module the cache lacks fails package add with GOPROXY's refusal.
 func TestLiveGoConsumersCanUseTheSDK(t *testing.T) {
 	plugin := pulumitest.Plugin(t)
 	dir := t.TempDir()
-	for file, content := range map[string]string{
-		"Pulumi.yaml": "name: sdk-consumer\nruntime: go\n",
-		"go.mod":      "module example.com/sdkconsumer\n\ngo 1.27.1\n",
-		"main.go": `package main
-
-import (
-	"github.com/pulumi/pulumi/sdk/v3/go/pulumi"
-
-	"github.com/sjawhar/envoy/infra/sdk/go/envoyinfra/host"
-)
-
-func main() {
-	pulumi.Run(func(ctx *pulumi.Context) error {
-		_, err := host.NewListener(ctx, "example-host-a", &host.ListenerArgs{
-			MachineId: "example-host-a",
-			NatsUrls:  pulumi.StringArray{pulumi.String("nats://127.0.0.1:4222")},
-			Image:     "ghcr.io/cybermonklabs/legion/envoy:example",
-			Seed:      pulumi.String("SUEXAMPLESEED"),
-			Adopt:     host.AdoptArgs{Container: pulumi.String("listener-example-host-a")},
-		})
-		return err
-	})
-}
-`,
-	} {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, file), []byte(content), 0o600))
-	}
+	require.NoError(t, os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "sdk-consumer"))))
 
 	// package add writes the SDK under sdks/, points go.mod at it and resolves the program's
 	// imports. The program is a module of its own, outside this workspace.
 	t.Setenv("GOWORK", "off")
+	t.Setenv("GOPROXY", moduleCacheProxy(t))
 	pulumitest.NewCLI(t, dir).Run("package", "add", plugin)
+	// go-offline: GOPROXY is moduleCacheProxy's file:// proxy over the module cache, set above, so
+	// the build reads what envoy-smoke's fetch step put there and nothing else.
 	build := exec.Command("go", "build", "./...")
 	build.Dir = dir
 	out, err := build.CombinedOutput()
 	require.NoError(t, err, "go build ./... of the SDK consumer:\n%s", out)
+}
+
+// moduleCacheProxy is a GOPROXY that serves the module cache's own download directory and
+// nothing else: a go command under it resolves and downloads only what the cache already holds.
+func moduleCacheProxy(t *testing.T) string {
+	t.Helper()
+	// go-offline: go env of one setting, in a directory outside any module, loads no module.
+	env := exec.Command("go", "env", "GOMODCACHE")
+	env.Dir = t.TempDir()
+	out, err := env.Output()
+	require.NoError(t, err, "go env GOMODCACHE")
+	cache := strings.TrimSpace(string(out))
+	require.NotEmpty(t, cache, "go env GOMODCACHE printed nothing")
+	return "file://" + filepath.ToSlash(filepath.Join(cache, "cache", "download"))
 }

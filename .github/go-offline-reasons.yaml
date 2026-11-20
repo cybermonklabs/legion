@@ -1,0 +1,12 @@
+# Reasons of .github/scripts/check-go-offline.sh that stand here, not beside the go command they
+# cover: for a site whose file a `go-offline:` comment may not change, because a cache key hashes
+# that file's bytes, so a comment there would make the next run's build cold. Each entry names the
+# file, the command as its line reads (stripped), and the reason, which the check reads and counts
+# as a line reason. An entry whose file is gone, or whose command is no go command of that file
+# that needs a reason, is refused, so the list cannot go stale silently.
+- path: packages/envoy/scripts/build-dispatch-build.sh
+  command: GOTOOLCHAIN=auto go build -ldflags "-X main.buildCommit=$sha" -o "$out/envoy-dispatch" ./cmd/dispatch) ||
+  reason: >-
+    dispatch-two-builds' steps run this before the tests, to build an earlier release with the
+    toolchain its go.mod names, and no test runs it. ci-job-dispatch-two-builds.yaml's cache keys
+    hash this file, so the reason stands here.

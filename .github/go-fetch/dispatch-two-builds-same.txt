@@ -1,0 +1,8 @@
+# dispatch-two-builds-same's fetch (.github/workflows/ci-job-dispatch-two-builds.yaml): the Dispatch
+# server build-dispatch-build.sh makes of this tree as the previous build (its `go build` of
+# ./cmd/dispatch reads this tree's module files), the Dispatch store's connections command its
+# sizing step runs, and the modules of the twobuild-tagged tests of ./cmd/dispatch, which it runs
+# against that build.
+deps packages/envoy ./cmd/dispatch
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test -tags twobuild ./cmd/dispatch

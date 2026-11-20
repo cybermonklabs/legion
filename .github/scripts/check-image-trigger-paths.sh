@@ -30,9 +30,12 @@
 #     what the refusal exists to catch. A job-level `uses:` must be a `./.github/workflows/`
 #     call, which triggers_for traces.
 #   * The build action's `with:` keys are an ALLOWLIST (BUILD_ACTION_INPUTS). A key this check
-#     has not read may name another tree the build receives — `build-contexts`, `secret-files`
-#     — which the trigger would then owe, so an unlisted key is refused. `cache-from` is
-#     listed but also read, since `type=local,src=…` is a local tree.
+#     has not read may name another tree the build receives — `secret-files` — which the
+#     trigger would then owe, so an unlisted key is refused. `cache-from` is listed but also
+#     read, since `type=local,src=…` is a local tree, and so is `build-contexts`, whose one
+#     admitted entry is the job's own Go module cache named by a step's output
+#     (`gomodcache=${{ steps.<id>.outputs.<name> }}`, GOMODCACHE_CONTEXT); any other named
+#     context is a tree the trigger would owe, and is refused.
 #   * A file COMPUTED INTO a build's inputs is DATA (COMPUTED_BUILD_INPUTS). A `with:` value
 #     may be a step's output rather than a literal — browser-image.yaml's `labels:` is the
 #     recipe hash its row step computes — and the file that computes it decides the bytes the
@@ -804,13 +807,17 @@ NON_BUILDING_ACTIONS = {
     "oven-sh/setup-bun",
 }
 # `docker/build-push-action` inputs this check has read and found to add no build input, so a
-# build using only these is fully described by its `context` and `file`. `build-contexts` is
-# deliberately absent: a named context is another tree the build reads, and the trigger would
-# owe it, and so is `secret-files`, which names a path. `secrets` IS on the list below: it
-# takes `id=value` pairs, which are values, not paths.
+# build using only these is fully described by its `context` and `file`. `secret-files` is
+# deliberately absent: it names a path. `secrets` IS on the list below: it takes `id=value`
+# pairs, which are values, not paths. `build-contexts` is READ: a named context is another tree
+# the build reads, which the trigger would owe, so the one entry admitted is GOMODCACHE_CONTEXT,
+# the job's own Go module cache, a directory a step of the job names and no file of this
+# repository (its contents are the job's fetch of the go.sum files the build's context holds,
+# .github/scripts/go_offline_images.py says why a build reads it); every other entry is refused.
 BUILD_ACTION_INPUTS = {
     "annotations",  # metadata on the result
     "build-args",  # values, not paths
+    "build-contexts",  # READ: GOMODCACHE_CONTEXT alone
     "builder",  # which builder runs it
     "cache-from",  # where layers are reused from
     "cache-to",  # where layers are written
@@ -832,6 +839,7 @@ BUILD_ACTION_INPUTS = {
     "tags",  # names on the result
     "target",  # which stage to stop at; narrows what is read, never widens
 }
+GOMODCACHE_CONTEXT = re.compile(r"gomodcache=\$\{\{\s*steps\.[A-Za-z0-9_-]+\.outputs\.[A-Za-z0-9_-]+\s*\}\}")
 # The `outputs` exporters that write the result somewhere other than a registry: BuildKit's
 # exporters are image, registry, local, tar, oci, docker and cacheonly, and the first two are
 # the ones that publish.
@@ -1532,6 +1540,16 @@ def scan_step(workflow, job_name, step: dict, gate_step: dict, origin: str, dept
                 f"you have checked what it reads"
             )
             return
+        for entry in [e.strip() for e in re.split(r"[\n,]", str(options.get("build-contexts") or "")) if e.strip()]:
+            if not GOMODCACHE_CONTEXT.fullmatch(entry):
+                problems.append(
+                    f"::error file={workflow}::{place} passes build-contexts {entry} to "
+                    f"docker/build-push-action, an input this check has not read but for the job's Go "
+                    f"module cache (`gomodcache=${{{{ steps.<id>.outputs.<name> }}}}`); any other "
+                    f"named context is another tree the build reads, so the trigger would owe its "
+                    f"files too"
+                )
+                return
         cache = str(options.get("cache-from", ""))
         if re.search(r"type=local\b", cache):
             problems.append(

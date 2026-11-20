@@ -17,7 +17,8 @@ others, and reads the directory to find them) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list and DAEMON_RACE_FILL_JOB job main() hands it the same way, since what this module imports is
 the engine's names, never the data's, and the merge-group rule over the workflow directory, which
-it reads itself.
+it reads itself. The two rules about the Go module caches' fills and keys (22 and 23) are in
+ci_go_cache_rules.py, which reads this module's cache families and workflow directory.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks

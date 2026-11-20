@@ -1,0 +1,32 @@
+# The Ubuntu packages CI's jobs install, one pin a line (name=version), each from the cache entry
+# .github/workflows/ci-caches.yaml's apt job fills on a push to main and installed by
+# .github/scripts/apt-cache.sh with no network; that script's header says how. The fill, the
+# install and the cache key's hashFiles all read this file, so moving a package to another version
+# is one line here, and the next push to main fills an entry that holds it.
+#
+# Each version is the one these jobs ran with before this file existed, so no test reads another
+# build than it did: in run 44533492400 daemon-go's step printed `tmux is already the newest version
+# (3.4-1ubuntu0.2)` (the ubuntu-24.04 image carries it), and claude-envoy's and dispatch-ui's
+# fetched zsh and zsh-common 5.9-6ubuntu2 from ports.ubuntu.com on ubuntu-24.04-arm;
+# postgresql-client is the candidate `apt-cache policy` names in an ubuntu:24.04 container
+# (2026-11-19), and ports.ubuntu.com's indexes hold the same three versions for arm64. Ubuntu's
+# archive keeps only the newest version of a pocket: once noble-updates publishes a newer tmux,
+# 3.4-1ubuntu0.2 is in no index, and a fill from an empty cache fails naming this pin. The entry
+# already filled keeps installing it, since its key moves only with this file and the script;
+# move the pin then.
+#
+# Who installs what (each job's step says why its tests need it):
+#   tmux               daemon-go and pi-envoy; e2e.yaml's stage1-skeleton proof
+#   zsh                claude-envoy and dispatch-ui; dispatch-unit-repeat.yaml's harness lane
+#   postgresql-client  e2e.yaml's proofs whose row in .github/e2e-scripts.json names it
+# e2e.yaml installs the words of a row's `apt` list, so each of them needs a line here.
+#
+# tmux 3.8, tmux's current release, whose JSON #{window_layout} pull request #4513 reads, is in no
+# archive this runner reads: noble holds 3.4 alone (3.4-1build1, and 3.4-1ubuntu0.2 in
+# noble-updates), and noble-backports holds none. Nor would a newer Ubuntu's .deb do: 26.04's
+# archive holds 3.6a (3.6a-2ubuntu0.2), whose package needs libc6 2.42 where noble has 2.39. A 3.8
+# for noble would have to be a package built for noble, from an apt source the fill and the miss
+# then read; once such a source is in the runner's apt, the change is this one line.
+tmux=3.4-1ubuntu0.2
+zsh=5.9-6ubuntu2
+postgresql-client=16+257build1.1

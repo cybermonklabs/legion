@@ -1,0 +1,7 @@
+# envoy-go-race-api's fetch (.github/workflows/ci-job-envoy-go-race-api.yaml): the Dispatch store's
+# connections command its sizing step runs, the modules of the Dispatch API's tests, which its step
+# runs under the race detector through scripts/database-skips.sh, and the Dispatch server the
+# copy-lock guard among them lists with -export.
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test ./internal/dispatch/api/
+deps packages/envoy ./cmd/dispatch

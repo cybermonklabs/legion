@@ -19,6 +19,7 @@
 # server: the run makes a database of its own on it and drops it at the end, both because the
 # binary migrates whatever database it is given and because the pod's own test server
 # (LEGION_TEST_PG_DSN) hands its role no table of the database that DSN names.
+# go-offline-file: a person runs this smoke against a booted server; no CI job runs it.
 set -euo pipefail
 
 usage() {

@@ -1,4 +1,5 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # root, work and evidence are the caller's (lib/rig.sh); the arrays are the caller's to read
+# go-offline-file: the four proofs that source it run on a devbox alone; e2e.yaml refuses each.
 # Dispatch's own identity at the Envoy listener, for a stage proof that runs both, as a deployment
 # gives Dispatch one: a send for a `role:` route carries its role mark, which the listener takes from
 # Dispatch's verified identity alone, and a Dispatch with no identity refuses every such send. It runs

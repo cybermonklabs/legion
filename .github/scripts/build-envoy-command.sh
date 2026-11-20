@@ -44,6 +44,8 @@ cd "$module"
 #   cannot run.
 # - GOMODCACHE and GOCACHE: the action's own caches, so an entry holds this build alone and never
 #   the caller's.
+# go-offline: the composite actions' build step, which runs before the caller's tests and is no
+# test itself; it reads and fills the action's own module cache.
 env -u GOOS -u GOARCH \
   GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off \
   GOMODCACHE="$module_cache" GOCACHE="$build_cache" \

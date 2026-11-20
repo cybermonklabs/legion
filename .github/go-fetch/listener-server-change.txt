@@ -1,0 +1,3 @@
+# listener-server-change's fetch (.github/workflows/ci-job-listener-server-change.yaml): the modules
+# of the serverchange-tagged tests of ./cmd/listener, which build the listener itself (cmdtest.Build).
+deps packages/envoy -test -tags serverchange ./cmd/listener

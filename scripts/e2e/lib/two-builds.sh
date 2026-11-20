@@ -1,4 +1,5 @@
 # shellcheck shell=bash disable=SC2154 # the variables below are the caller's (see the header)
+# go-offline-file: the two proofs that source it run on a devbox alone; e2e.yaml refuses both.
 # The harness the two live two-builds proofs share: scripts/e2e/dispatch-two-builds.sh and
 # scripts/e2e/dispatch-search-two-builds.sh, each of which runs the `envoy-dispatch` binary of an
 # older commit beside this checkout's against one PostgreSQL, the way a rolling release serves

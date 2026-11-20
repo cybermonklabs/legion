@@ -1,0 +1,4 @@
+# envoy-go-race-docs' fetch (.github/workflows/ci-job-envoy-go-race-docs.yaml): the Dispatch store's
+# connections command its sizing step runs, and the modules of the document service's tests.
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test ./internal/dispatch/docs/

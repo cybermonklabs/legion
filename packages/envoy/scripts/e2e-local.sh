@@ -293,12 +293,15 @@ rm -rf "$nats_store_dir"
 : >"$nocursor_session_log_file"
 mkfifo "$session_ready_fifo" "$subscriber_ready_fifo" "$nocursor_ready_fifo"
 
+# The two builds read the module cache alone (go_build_offline, GOPROXY=off): the envoy-e2e-local
+# job fetches their modules in a step before this run, and a module the cache lacks fails the build
+# here, with that fetch named after go's own output.
+# shellcheck source=.github/scripts/go-build-offline.sh
+source "${repo_root}/.github/scripts/go-build-offline.sh"
+
 printf 'building listener and NATS server\n'
-(
-  cd "$envoy_dir"
-  go build -o "$listener_binary" ./cmd/listener
-  go build -o "$nats_binary" ./internal/testnats/cmd/natsd
-)
+go_build_offline packages/envoy "$listener_binary" ./cmd/listener
+go_build_offline packages/envoy "$nats_binary" ./internal/testnats/cmd/natsd
 
 printf 'starting NATS\n'
 "$nats_binary" -p "${E2E_NATS_PORT:--1}" -store_dir "$nats_store_dir" >"$nats_log_file" 2>&1 &

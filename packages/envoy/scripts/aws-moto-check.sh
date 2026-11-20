@@ -11,6 +11,8 @@
 #
 # BINARY is how a negative control runs an older release against the same moto. It needs uv
 # (uvx), curl, python3 and go.
+# go-offline-file: a person runs it beside moto; CI vets the moto-tagged test it runs (envoy-go)
+# and runs neither.
 set -euo pipefail
 
 binary="${1:-}"

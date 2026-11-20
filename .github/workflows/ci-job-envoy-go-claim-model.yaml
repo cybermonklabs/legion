@@ -20,15 +20,14 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow reads the module cache alone (GOPROXY=off and
+# GOFLAGS=-mod=readonly), so a module the restored cache lacks fails the step instead of
+# downloading while the claim-model test runs. The fetch step after the restore is the one that
+# goes online, through GO_FETCH_PROXY, and it fetches this job's module set before the test.
 env:
-  GOPROXY: https://proxy.golang.org|direct
-
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 jobs:
   envoy-go-claim-model:
     runs-on: ubuntu-24.04
@@ -66,14 +65,18 @@ jobs:
           cache: false
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
-      # package of the envoy module holds. It saves none.
+      # package of the envoy module holds. Its key hashes this job's fetch file alongside every
+      # other reader's, so a fetch change gets a fresh entry. It saves none.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-claim-model.txt
+
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
       # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built

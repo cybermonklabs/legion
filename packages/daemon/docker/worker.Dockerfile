@@ -428,11 +428,16 @@ RUN apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
+# go-offline: in a required workflow only ci.yaml's worker-image job builds this file, and its if:
+# runs it only on a pull request whose own files match the worker_image filter, so a module fetch
+# here fails only a change to this image's inputs, never a change it does not touch.
 RUN go-third-party-notices.sh --install
 # gopls, in a layer of its own before the module files for the same reason: `go install pkg@version`
 # builds the module at that tag with its own go.mod, whatever this checkout's go.work says, so the
 # binary changes only with GOPLS_VERSION (or GO_VERSION), never with a commit.
 ARG GOPLS_VERSION
+# go-offline: as above, ci.yaml's worker-image job, the one required build of this file, runs only
+# on a pull request whose own files match its worker_image filter (its if:).
 RUN set -eu; \
     mkdir -p /out; \
     CGO_ENABLED=0 GOBIN=/out go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
@@ -457,6 +462,8 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # a 404 from the file proxy and falls through to the public proxy, while the `.info`, `.mod` and
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
+# go-offline: as above, ci.yaml's worker-image job, the one required build of this file, runs only
+# on a pull request whose own files match its worker_image filter (its if:).
 RUN go mod download \
     && find /gomodcache/cache/download \( -path '*/@v/list' -o -name '@latest' \) -delete
 COPY packages/daemon packages/daemon
@@ -465,12 +472,16 @@ WORKDIR /src/packages/daemon
 # The licenses of the Go modules `legion` and `agent-secrets` compile in, with the build's CGO_ENABLED
 # (which decides them, with the GOARCH this stage builds for); fails the build when one's license
 # cannot be determined.
+# go-offline: as above, ci.yaml's worker-image job, the one required build of this file, runs only
+# on a pull request whose own files match its worker_image filter (its if:).
 RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
     ./cmd/legion github.com/sjawhar/envoy/cmd/agent-secrets
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
+# go-offline: as above, ci.yaml's worker-image job, the one required build of this file, runs only
+# on a pull request whose own files match its worker_image filter (its if:).
 RUN test -n "$LEGION_REVISION" \
     && ldflags="-X main.revision=${LEGION_REVISION}" \
     && if [ -n "$PI_LEGION_VERSION" ] && [ -n "$PI_ENVOY_VERSION" ]; then ldflags="$ldflags -X main.piLegionVersion=${PI_LEGION_VERSION} -X main.piEnvoyVersion=${PI_ENVOY_VERSION}"; fi \
@@ -1356,6 +1367,8 @@ ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=
 # every role of an issue pod: a loopback host, no password, and legion_test for both the login and
 # the database — the non-superuser role `ensure` creates, not the cluster's own superuser, and the
 # database `ensure` creates with that role as its owner.
+# go-offline: its go version and go env run outside any module (WORKDIR /home/legion), so they read
+# no module and switch to no toolchain.
 RUN set -eu; \
     scratch="$(mktemp -d)"; \
     export TMPDIR="$scratch" COREPACK_HOME="$scratch/corepack" XDG_CONFIG_HOME="$scratch/config" \

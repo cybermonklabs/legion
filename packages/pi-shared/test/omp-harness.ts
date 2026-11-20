@@ -19,6 +19,7 @@ import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
+import { ompOffline } from "./omp-offline";
 
 export interface Request {
   readonly path: string;
@@ -383,10 +384,10 @@ export interface Rpc {
  * Starts `omp --mode rpc` in `workspace` with only `extensions` loaded — absolute paths, since this
  * module lives in another package than its callers (pass `path.join(import.meta.dir, …)`) — no
  * skills, rules, LSP or title call, its transcripts under `sessions`, `home` as HOME and `bin`, when
- * given, first on PATH. `args` go on the command line after those flags, which is where a second
- * life of one pane names `--resume <session>`. `onFrame` gets each RPC frame omp prints, in order.
- * Both of omp's streams are read to the end, so a full pipe never blocks it, and the child is
- * killed at cleanup.
+ * given, first on PATH, and `ompOffline`'s proxy, so it reaches no network. `args` go on the command
+ * line after those flags, which is where a second life of one pane names `--resume <session>`.
+ * `onFrame` gets each RPC frame omp prints, in order. Both of omp's streams are read to the end, so
+ * a full pipe never blocks it, and the child is killed at cleanup.
  */
 export function spawnRpc(
   binary: string,
@@ -406,7 +407,7 @@ export function spawnRpc(
     [binary, "--mode", "rpc", ...ompFlags(options), ...(options.args ?? [])],
     {
       cwd: options.workspace,
-      env: { ...ompEnv(options), ...options.env },
+      env: { ...ompEnv(options, cleanup), ...options.env },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -469,14 +470,15 @@ function ompFlags(options: {
 }
 
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH. */
-function ompEnv(options: { readonly home: string; readonly bin?: string }): {
-  HOME: string;
-  PATH: string;
-} {
+ * on PATH, and `ompOffline`'s proxy, whose listener stops at `cleanup`. */
+function ompEnv(
+  options: { readonly home: string; readonly bin?: string },
+  cleanup: Cleanup
+): { readonly HOME: string; readonly PATH: string; readonly HTTPS_PROXY: string } {
   return {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
+    ...ompOffline(cleanup),
   };
 }
 
@@ -549,7 +551,12 @@ export function spawnInteractive(
   });
   const child = Bun.spawn([binary, ...ompFlags(options), ...options.args], {
     cwd: options.workspace,
-    env: { ...ompEnv(options), TERM: "xterm-256color", OMP_SKIP_SETUP: "1", ...options.env },
+    env: {
+      ...ompEnv(options, cleanup),
+      TERM: "xterm-256color",
+      OMP_SKIP_SETUP: "1",
+      ...options.env,
+    },
     terminal,
   });
   cleanup.push(async () => {

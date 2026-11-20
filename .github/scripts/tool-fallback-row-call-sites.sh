@@ -17,6 +17,8 @@ set -euo pipefail
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
+# This listing intentionally selects every row, with no optional source selector.
+# shellcheck disable=SC2119
 rows=$(ci_tools_rows)
 unread=""
 for row in $rows; do

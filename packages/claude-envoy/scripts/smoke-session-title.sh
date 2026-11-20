@@ -21,6 +21,7 @@
 # Code's own documentation.
 #
 # Like smoke-clear-rebind.sh, this is a manual smoke and never a CI step.
+# go-offline-file: a person runs this smoke by hand; no CI job runs it.
 #
 #   bash packages/claude-envoy/scripts/smoke-session-title.sh
 #

@@ -1,0 +1,5 @@
+# The notices tool scripts/go-third-party-notices.sh installs (its GO_LICENSES_VERSION), as a pin a
+# fetch file's `tools` line names (.github/scripts/go-fetch.sh), so a job that builds an image whose
+# notices step runs that script offline fetches it first. Keep it the script's version: an offline
+# install of another one fails at once, naming the module.
+github.com/google/go-licenses/v2@v2.0.1

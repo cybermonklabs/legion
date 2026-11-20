@@ -288,17 +288,33 @@ func proofCheckoutRoot(t *testing.T) string {
 }
 
 // buildProofLegion builds the `legion` every pane's shim and every operator command in either
-// proof is, from this checkout.
+// proof is, from this checkout. The build reads the module cache alone (GOPROXY=off), since a
+// fetch while a test runs fails it whenever the module proxy does; the jobs that run these tests
+// fetch ./cmd/legion's modules in a step before them.
 func buildProofLegion(t *testing.T, root, work string) string {
 	t.Helper()
 	binary := filepath.Join(work, "legion")
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = filepath.Join(root, "packages", "daemon")
-	build.Env = append(os.Environ(), "GOFLAGS=")
+	build.Env = append(os.Environ(), "GOFLAGS=", "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build legion from %s: %v\n%s", build.Dir, err, out)
 	}
 	return binary
+}
+
+// noteOmpVersion notes the version of the Oh My Pi the run's panes run, read under OMPOffline's
+// proxy, as every Oh My Pi a proof starts runs.
+func (r *liveAgentProof) noteOmpVersion() {
+	r.t.Helper()
+	version := exec.Command(r.omp, "--version")
+	version.Env = append(os.Environ(), testbin.OMPOffline(r.t))
+	out, err := version.Output()
+	if err != nil {
+		r.t.Fatalf("read the Oh My Pi version of %s: %v", r.omp, err)
+	}
+	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
+		strings.TrimSpace(string(out)), r.omp)
 }
 
 // installProofPlugins packs this checkout's two Oh My Pi plugins as the release packs them
@@ -314,6 +330,9 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 		t.Fatalf("make the run's Oh My Pi home %s: %v", home, err)
 	}
 	testbin.OMPHome(t, omp, home)
+	// One proxy for every Oh My Pi run below: under the run's fresh HOME the pin fetches model
+	// catalogs over HTTPS, which OMPOffline's listener refuses.
+	offline := testbin.OMPOffline(t)
 	for _, pkg := range []string{"pi-envoy", "pi-legion"} {
 		packed := filepath.Join(work, "pack-"+pkg)
 		pack := exec.Command("bash", filepath.Join(root, "scripts", "e2e", "lib", "pack-plugin.sh"), pkg, packed)
@@ -332,13 +351,13 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 		}
 		install := exec.Command(omp, "plugin", "install", dest)
 		install.Dir = dest
-		install.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OMP_PROFILE=" + profile}
+		install.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OMP_PROFILE=" + profile, offline}
 		if out, err := install.CombinedOutput(); err != nil {
 			t.Fatalf("install %s into the profile %s: %v\n%s", pkg, profile, err, out)
 		}
 	}
 	list := exec.Command(omp, "plugin", "list", "--json")
-	list.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OMP_PROFILE=" + profile}
+	list.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "OMP_PROFILE=" + profile, offline}
 	out, err := list.Output()
 	if err != nil {
 		t.Fatalf("read the profile's plugins: %v", err)

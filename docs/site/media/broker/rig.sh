@@ -155,6 +155,8 @@ trap 'exit 130' INT TERM
 # --- Binaries: the broker and its local token issuer, and the client and host helper the agent
 # machine runs. ---------------------------------------------------------------------------------
 note "building the broker, dev-oidc-issuer, agent-secrets and agent-secrets-helper"
+# go-offline: no CI job runs this rig: a person runs it to retake the broker's committed
+# screenshots and walkthrough (docs/site/media/broker/README.md), so it may fetch what it builds.
 (cd "$root/packages/envoy" && CGO_ENABLED=0 go build -o "$work/bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/agent-secrets ./cmd/agent-secrets-helper)
 
 # --- The broker's database, beside DATABASE_URL's, named for this run (as dev-broker.sh names

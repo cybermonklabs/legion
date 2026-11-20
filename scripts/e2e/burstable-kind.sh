@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The Burstable issue pod live proof on a throwaway kind cluster: an issue pod given a memory
 # request below its limit (`runtime.kubernetes.resources.issue`, here `issue: {memory: 32Gi,
 # memory_request: 8Gi}`) is one the API server admits, schedules and records as `Burstable`, its

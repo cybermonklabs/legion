@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   envoy-go:
@@ -81,14 +91,26 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
       # go-envoy-test: this job builds and runs the test binary of every package of the envoy
-      # module, a set no other job builds, so it keeps a family of its own.
+      # module, a set no other job builds, so it keeps a family of its own. Its key hashes the root
+      # workspace's module files, every fetch file its readers run and go-fetch.sh, so an entry
+      # holds what the fetch step below fetches; a pull request that changes one of them restores
+      # the newest entry by prefix, which that step tops up.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the test
+      # steps' own go test with each tag they add, the sizing step's `go run`, the skip counter's
+      # runs and its test's listing of ./internal/broker/..., the builds the tests make while they
+      # run for other platforms (cmd/agent-secrets/modules_test.go) and the local stack
+      # callout-check.sh builds. A fetch while a test runs fails it whenever the module proxy
+      # does, on a change that touched nothing it tests, so this step fetches all of it first, from
+      # the go-envoy-test entry restored above, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go.txt
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # The server's version and the pgvector version it offers, read from the service itself, so
@@ -187,6 +209,12 @@ jobs:
       # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
+      # database-skips.test.sh runs every go command with GOPROXY=off, since a fetch inside a test
+      # fails it whenever the module proxy does, on a change that touched nothing it tests: the
+      # counter's runs of ./internal/broker/api/, ./cmd/broker/ and ./internal/dispatch/api/, and
+      # its listing of ./internal/broker/... for its default table. The fetch step after the
+      # restore above fetched the modules of those packages and of their tests (-test).
+      #
       # The step below is the one skip counter of the module's database-backed packages, which
       # envoy-go-race-api runs the Dispatch API through too, so its own test runs first:
       # packages/envoy/scripts/database-skips.test.sh plants a skipped test in
@@ -197,6 +225,8 @@ jobs:
       # holds a copy of it with one line of its expected-skip table deleted, in a temporary
       # checkout of this commit, to counting that test's skip. Each control stands beside a run
       # the counter passes, and each run is narrowed with -run to the tests it is about.
+      # go-offline: the counter's packages come from its arguments and its DEFAULT_PACKAGES table,
+      # which check-go-offline.sh does not read; the fetch step after the restore fetches each one.
       - name: Test the database skip counter
         timeout-minutes: 15
         run: packages/envoy/scripts/database-skips.test.sh

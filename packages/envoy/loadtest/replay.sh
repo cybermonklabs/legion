@@ -1,6 +1,8 @@
 # shellcheck shell=bash
 # replay.sh: the LINUX replay's own stack.sh commands (README.md), sourced by stack.sh, which
 # dispatches them and documents them in its header. Not executable.
+# A person runs these commands through stack.sh on a load-test box; run-step.test.sh, the one test
+# that runs stack.sh, puts a stand-in go first on PATH, and no CI job runs them otherwise.
 #
 # It holds replay-seed-patch-check and replay-seed (the seed build at REPLAY_COMMIT, the work
 # Dispatch still owes, the dump and its parts), replay-manifest, replay-get (the manifest's parts,
@@ -42,6 +44,8 @@ cmd_replay_seed_patch_check() {
   build_dispatch_at "$REPLAY_COMMIT" "$BIN/dispatch-seed" "$REPLAY_PATCH"
   local log=$LOGS/replay-seed-patch-check.log status=0
   note "go test ./internal/dispatch/pmdoc -run TestLen16Seed in $BUILT_TREE, corpus $bundle; log $log"
+  # go-offline: a person runs the patch's tests on a load-test box, at the seed's commit; the one
+  # test that runs stack.sh, run-step.test.sh, puts a stand-in go first on PATH.
   (cd -- "$BUILT_TREE" && GOWORK=off GOTOOLCHAIN=local LOADTEST_LEN16_CORPUS=$bundle \
     go test ./internal/dispatch/pmdoc -run 'TestLen16Seed' -count=1 -v) >"$log" 2>&1 || status=$?
   grep -E 'len16 corpus:|^(--- |ok |FAIL|PASS)' -- "$log" || true

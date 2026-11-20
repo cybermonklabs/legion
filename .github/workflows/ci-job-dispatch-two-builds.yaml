@@ -34,14 +34,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   dispatch-two-builds:
@@ -109,10 +119,41 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-fetch-dispatch-two-builds: the modules of the fetch step below, under the key
+      # .github/workflows/ci-caches.yaml's fetch-dispatch-two-builds job fills: the runner's
+      # architecture, the Go version and the hash of the module files that fetch reads in the root
+      # workspace, of the fetch files of this file's two jobs and of go-fetch.sh. Restored here,
+      # before the first go command of the job. A pull request that changes those files restores
+      # the newest entry by prefix, and the fetch then downloads only what moved. Only a push to
+      # main fills the family, so a change before its first fill, or after GitHub evicted its
+      # entries, finds none; the second restore key then takes main's newest go-envoy-test entry
+      # of this runner's architecture, which a push to main fills with the test binary of every
+      # package of packages/envoy: it holds every module archive this fetch reads and the objects
+      # the Dispatch server's builds and its twobuild tests compile from, so the fetch downloads
+      # nothing. The path names the build cache as that entry was saved with: a restore matches
+      # only an entry saved with the same paths, and the family's own fill saves both too.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
+          restore-keys: |
+            ${{ format('go-fetch-dispatch-two-builds-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step of this job reads the module cache alone (GOPROXY=off, this file's env) but
+      # the two builds of earlier releases below: the sizing step's `go run`, the twobuild tests,
+      # the Dispatch server's build, and the build e2e/run-server.sh makes inside the browser tests
+      # with GOPROXY=off. A fetch while a test runs fails it whenever the module proxy does, on a
+      # change that touched nothing it tests, so this step fetches all of it first, from the cache
+      # restored above, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds.txt
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile
@@ -132,8 +173,14 @@ jobs:
       # A restored directory holds the complete build of that commit, which the script leaves as it
       # is. The runner context is not available in a job's env, so each step that reads the build's
       # directory names it in its own.
+      #
+      # This build and the first-rollout build below go online while they run: each is an earlier
+      # release's server, built from that release's own module files with the toolchain its go.mod
+      # names (GOTOOLCHAIN=auto), which this tree's fetch files cannot name, and neither is a test.
+      # go-offline: an earlier release's build, from that release's own go.mod and toolchain, before the tests, and no test.
       - name: Build the previous build
         env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
@@ -158,8 +205,10 @@ jobs:
             ${{ runner.temp }}/dispatch-first-rollout
             !${{ runner.temp }}/dispatch-first-rollout/src
           key: dispatch-first-rollout-build-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/scripts/build-dispatch-build.sh') }}-${{ env.FIRST_ROLLOUT_COMMIT }}
+      # go-offline: an earlier release's build, from that release's own go.mod and toolchain, before the tests, and no test.
       - name: Build the first-rollout build
         env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
           DISPATCH_FIRST_ROLLOUT_BUILD: ${{ runner.temp }}/dispatch-first-rollout
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
@@ -189,6 +238,9 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # The browser tests' harness builds Dispatch A's server (e2e/run-server.sh) with
+      # GOPROXY=off: the fetch step above fetched that build's modules, and the build step and the
+      # tests after it read them from the module cache.
       - name: Build the Dispatch server
         # Dispatch A's; run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, A finds it current
@@ -333,10 +385,31 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-fetch-dispatch-two-builds, the job above's family: its key hashes this job's fetch file
+      # too, and ci-caches.yaml's fill runs both files, so an entry holds what the fetch step below
+      # fetches. A pull request that changes the hashed files restores the newest entry by prefix,
+      # which that step tops up; with no entry of the family, the second restore key takes main's
+      # go-envoy-test entry, as the job above says.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
+          restore-keys: |
+            ${{ format('go-fetch-dispatch-two-builds-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step of this job reads the module cache alone (GOPROXY=off, this file's env): the
+      # build of this tree as the previous build (its own module files, the ones the fetch file
+      # names), the sizing step's `go run` and the twobuild tests. This step fetches what they load
+      # first, from the cache restored above, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds-same.txt
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
       - run: bun install --frozen-lockfile

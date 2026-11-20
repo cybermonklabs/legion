@@ -19,8 +19,12 @@ set -euo pipefail
 
 # shellcheck source=.github/scripts/ci-tools.sh
 . .github/scripts/ci-tools.sh
+# ci_tools_registry takes no argument; this step deliberately has no positional input.
+# shellcheck disable=SC2119
 registry=$(ci_tools_registry)
 token=$(ci_tools_ghcr_token)
+# ghcr-mirror is ci_tools_rows' explicit optional source selector.
+# shellcheck disable=SC2119
 rows=$(ci_tools_rows ghcr-mirror)
 cold=""
 for row in $rows; do

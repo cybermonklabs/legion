@@ -54,6 +54,8 @@ trap 'rm -rf "$work"' EXIT
 events="$work/events.json"
 
 go_test_exit=0
+# go-offline: the go test of envoy-go's step that runs this script, as a `go test` on a step's own
+# line is: the step's run of its tests, which no test starts.
 go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
 if [ ! -s "$events" ]; then
   echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2

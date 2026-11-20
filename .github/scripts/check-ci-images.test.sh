@@ -799,6 +799,26 @@ run_check tree "$root"
 check "a third-party default fails" "$(is "$status" 1)"
 check "names the image the build fetches" "$(contains "$out" 'docker.io/library/debian:trixie-slim')"
 
+echo "case: FROM scratch names no image, and an image called scratch-something still does"
+# A module cache stage a named build context replaces is `FROM scratch AS gomodcache`:
+# BuildKit's empty base, which no registry holds and nothing pulls.
+root=$(fixture from-scratch)
+printf 'FROM scratch AS gomodcache\n' >> "$root/packages/envoy/docker/Dockerfile"
+run_check tree "$root"
+check "FROM scratch passes" "$(is "$status" 0)"
+root=$(fixture from-scratch-lookalike)
+printf 'FROM docker.io/library/scratchpad:1 AS pad\n' >> "$root/packages/envoy/docker/Dockerfile"
+run_check tree "$root"
+check "a third-party image whose name starts scratch fails" "$(is "$status" 1)"
+check "  and is named" "$(contains "$out" 'names docker.io/library/scratchpad')"
+# The same image named bare, as Docker Hub's library images are: only `scratch` itself is passed
+# over, never a name that starts with it.
+root=$(fixture from-scratch-lookalike-bare)
+printf 'FROM scratchpad:1 AS pad\n' >> "$root/packages/envoy/docker/Dockerfile"
+run_check tree "$root"
+check "a bare image whose name starts scratch fails" "$(is "$status" 1)"
+check "  and is named" "$(contains "$out" 'scratchpad')"
+
 echo "case: a file of the \`no CI job runs it\` ground, moved into CI's reach"
 # scripts/e2e/stage3-devbox-workflow.sh may name mirror.gcr.io, because no CI job runs it. The
 # same line in stage1-skeleton.sh, which the test job runs, is refused.

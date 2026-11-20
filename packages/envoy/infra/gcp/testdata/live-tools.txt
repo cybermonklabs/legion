@@ -1,0 +1,15 @@
+# The tools gcp's natslive tests run, one `go install` argument per line. The tests install none
+# of them: .github/scripts/go-fetch.sh installs them before the tests run, in envoy-infra-go and
+# in ci-caches.yaml's envoy-infra fill, into legion-live-tools under the first entry of
+# `go env GOPATH`, and each test takes its tool from there after checking the binary's build
+# information against its line (clusteredhub_live_tools_test.go).
+#
+# helm, at the version pulumi-kubernetes v4.34.2's provider renders charts with (its
+# provider/go.mod).
+helm.sh/helm/v3/cmd/helm@v3.20.2
+# nats-server, the config reloader and the exporter, at the versions chart nats 2.15.1 runs by
+# default (its values.yaml: container.image.tag 2.15.1-alpine, reloader.image.tag 0.24.0,
+# promExporter.image.tag 0.20.2), the versions the hub's pinned images hold.
+github.com/nats-io/nats-server/v2@v2.15.1
+github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0
+github.com/nats-io/prometheus-nats-exporter@v0.20.2

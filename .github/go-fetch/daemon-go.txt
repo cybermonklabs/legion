@@ -1,0 +1,6 @@
+# daemon-go's fetch (.github/workflows/ci-job-daemon-go.yaml): the modules of every test package of
+# the daemon module (its plain, race and launcher steps), the envoy commands those tests build while
+# they run (testbuild.EnvoyBinary), and ./cmd/legion, which the stage 1 proof builds.
+deps packages/daemon -test ./...
+deps packages/envoy ./cmd/dispatch ./cmd/listener
+deps packages/daemon ./cmd/legion

@@ -67,7 +67,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -264,12 +263,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	// Five trees hold a slot each, which is one over the fixture's cap (testConfig): admission
 	// reads the cap over the slots it repairs, and every tree here must be one it holds.
 	r.cfg.AdmissionCap = len(r.panes)
-	version, err := exec.Command(omp, "--version").Output()
-	if err != nil {
-		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
-	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.noteOmpVersion()
 
 	root := proofCheckoutRoot(t)
 	r.note("the daemon, legion and both plugins are this checkout's: %s", root)

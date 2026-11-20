@@ -887,6 +887,7 @@ prebuilt="${temporary_dir}/prebuilt"
 # One list of the stack's packages; the binary names the copy check reads come from it.
 prebuilt_packages=(./cmd/broker ./cmd/dev-oidc-issuer ./cmd/dispatch ./cmd/listener
   ./cmd/agent-secrets ./cmd/agent-secrets-helper ./internal/testnats/cmd/natsd ./cmd/natsprobe)
+# go-offline: this test's stand-in go, which writes a stub of each binary and reads no module.
 env -u DEV_STACK_TEST_BROKER_FAILS -u DEV_STACK_TEST_GO_CALL_FILE "${fake_bin_dir}/go" build -o "${prebuilt}/" \
   "${prebuilt_packages[@]}"
 go_calls_prebuilt="${temporary_dir}/go-calls-prebuilt"

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,9 +52,27 @@ func WriteOMPProfile(t *testing.T, home, models, config string) string {
 
 // OMPEnviron is the whole environment a real-binary test's Oh My Pi runs under: the test's own
 // home and profile and nothing of the machine's, so neither a PI_CONFIG_FILES an operator's pod
-// exports nor any credential it carries reaches the measurement.
-func OMPEnviron(home string) []string {
-	return []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+// exports nor any credential it carries reaches the measurement, and OMPOffline's proxy, so the
+// run reaches no network.
+func OMPEnviron(t *testing.T, home string) []string {
+	t.Helper()
+	return []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true", OMPOffline(t)}
+}
+
+// OMPOffline is the environment entry that keeps a test's Oh My Pi off the network. Under a fresh
+// HOME the pin fetches model catalogs over HTTPS, on `omp models` and at every session start
+// (catalog.stencil.so, and the public model lists of the providers that need no key), and no
+// setting of the pin stops all of it. So HTTPS_PROXY, which Bun's fetch reads, names a listener of
+// the test's own that refuses every request until the test ends. A stand-in a test serves over
+// plain HTTP on loopback is reached directly, as before. .github/scripts/check-omp-offline.sh
+// refuses a test that starts Oh My Pi with an environment of its own and no reason.
+func OMPOffline(t *testing.T) string {
+	t.Helper()
+	refuser := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "a test's Oh My Pi reaches no network", http.StatusForbidden)
+	}))
+	t.Cleanup(refuser.Close)
+	return "HTTPS_PROXY=" + refuser.URL
 }
 
 // AnthropicAnswer writes one short streaming answer in the shape an `anthropic-messages` provider

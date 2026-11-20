@@ -1066,6 +1066,8 @@ export async function classifyCorpus(corpus: string, work: string): Promise<Clas
       // differential's dump test, which writes ReadForDisplay's two readings with the block ids
       // dropped. It is one package, never ./... : packages/daemon holds a test that pushes this
       // pod's workspace.
+      // go-offline: a person runs the census against a live Dispatch (its main); its test imports
+      // only the functions that start no command, never classifyCorpus.
       await run(
         ["go", "test", GO_PACKAGE, "-run", "^TestDifferentialDump$", "-count=1", "-timeout", "0"],
         GO_MODULE,

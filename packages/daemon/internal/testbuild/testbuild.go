@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +99,13 @@ func memo(command string) *build {
 // buildEnvoy builds command into the process's build directory and logs one line naming it and
 // how long it took: a run that logs two of one command has lost the memoisation this package
 // exists for.
+//
+// The build fetches no module: it runs with GOPROXY=off, so it builds from the module cache
+// alone. The daemon's own tests never compile the envoy commands, so a cache their job filled
+// for them can lack a module a command needs, and a fetch while a test runs would turn a fault of
+// the module proxy into that test's failure, on a change that touched nothing it tests. A module
+// the cache lacks fails the build instead, with the command that fetches what it needs before
+// the tests.
 func buildEnvoy(command string) (string, error) {
 	module, err := envoyModule()
 	if err != nil {
@@ -110,8 +118,15 @@ func buildEnvoy(command string) (string, error) {
 	binary := filepath.Join(dir, path.Base(command))
 	started := time.Now()
 	build := exec.Command("go", "build", "-C", module, "-o", binary, command)
+	build.Env = append(os.Environ(), "GOPROXY=off")
 	if output, err := build.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("build %s in %s: %v\n%s", command, module, err, output)
+		hint := ""
+		if strings.Contains(string(output), "GOPROXY=off") {
+			hint = "\nThe module cache lacks a module this build needs, and a test fetches no module while it " +
+				"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
+				module + " " + command
+		}
+		return "", fmt.Errorf("build %s in %s: %v\n%s%s", command, module, err, output, hint)
 	}
 	fmt.Fprintf(os.Stderr, "testbuild: built %s in %s\n", command, time.Since(started).Round(time.Millisecond))
 	return binary, nil

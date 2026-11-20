@@ -2,12 +2,15 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { existsSync, readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { type AddressInfo, connect, createServer, type Server, type Socket } from "node:net";
 import { join } from "node:path";
+import { goCommandSync } from "@legion/test-fixtures/go-command";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 // held-port.py's real-process tests: the helper hands its socket to the real envoy-listener of
 // this branch, which serves on it through ENVOY_LISTEN_FD. They read /proc, so they run on Linux,
 // and they build the listener with go; a host that is neither skips them, naming what it lacks.
+// The build reads the module cache alone (goCommandSync): the test job fetches the listener's
+// modules in a step before this file runs.
 
 const helper = join(import.meta.dir, "held-port.py");
 const envoy = join(import.meta.dir, "..", "..", "..", "packages", "envoy");
@@ -43,13 +46,14 @@ const skip = !onLinux || withoutGo;
 
 beforeAll(async () => {
   if (skip) return;
-  const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {
+  const build = goCommandSync({
+    command: "build",
     cwd: envoy,
-    stdout: "pipe",
-    stderr: "pipe",
+    flags: ["-o", listener],
+    packages: ["./cmd/listener"],
   });
   if (build.exitCode !== 0) {
-    throw new Error(`build envoy-listener: ${build.stdout.toString()}${build.stderr.toString()}`);
+    throw new Error(`build envoy-listener: ${build.stdout}${build.stderr}`);
   }
   // A NATS address that accepts and never answers: the listener serves before it connects, so its
   // /healthz answers "starting" while its connect waits out its attempts (about a minute).

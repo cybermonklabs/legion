@@ -66,7 +66,7 @@ func TestTheAgentArgvImportsTheRepositorysExtensionsHooksAndCommands(t *testing.
 			t.Fatal(err)
 		}
 	}
-	environ := []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+	environ := testbin.OMPEnviron(t, home)
 
 	pod := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
 	for _, root := range []struct{ image, test string }{{envoyPlugin, envoy}, {legionPlugin, plugin}} {

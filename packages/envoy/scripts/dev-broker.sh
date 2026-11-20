@@ -320,6 +320,8 @@ DISPLAY_URL="$(printf '%s' "$POSTGRES_URL" | sed -E 's#^(postgres(ql)?://[^:/@?]
 echo "dev-broker: building broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper and agent-secrets-devrelay..." >&2
 mkdir -p "$BIN_DIR"
 for cmd in broker dev-oidc-issuer dev-airlock-stands agent-secrets agent-secrets-helper agent-secrets-devrelay; do
+  # go-offline: a person runs this on a devbox; dev-broker.test.sh and dev-airlock.test.sh, the
+  # tests that run it, put a stand-in go first on PATH, which reads no module.
   ( cd "$ENVOY_DIR" && GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/$cmd" "./cmd/$cmd" )
 done
 # The end of the build, which github-narrowing-check.sh waits for under a bound of its own: on a

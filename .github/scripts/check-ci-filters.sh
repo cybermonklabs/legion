@@ -326,7 +326,50 @@
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
-#      nothing would say so.
+#      nothing would say so,
+#  22. a Go family .github/workflows/ci-caches.yaml saves - any family whose actions/cache/save,
+#      or actions/cache, names ~/go/pkg/mod in its path:, the families of its builds too - whose
+#      fill job does not run, before that save, exactly the fetch files the family's readers
+#      run. A reader is a job that restores the family (actions/cache/restore or actions/cache)
+#      in ci.yaml or in a workflow it calls, followed through every call, and its fetch files
+#      are its `.github/scripts/go-fetch.sh file <fetch file>` lines after that restore - a line
+#      before it runs before the entry is there, and a comment is no line - each file resolved
+#      against its step's working directory (its own, else the job's or the workflow's
+#      defaults.run, else the root). The fill runs the union of its readers' files, each once,
+#      in ascending order of their repository paths, so two fills of one set read alike: a
+#      missing file, an extra one, a repeat and another order are each refused, naming the
+#      family, the fill job, the readers and both lists. So are a fill with no `file` line, a
+#      reader with none after its restore, a go-fetch.sh `deps` or `tools` line in a fill or in a
+#      reader after its restore - its arguments are in no file a key hashes (rule 23), so a
+#      change to them changes no key and the entry found lacks what they now name - and a family
+#      no reader restores; a `pulumi-consumer` line builds a program at run time and is no fetch
+#      file. The entry is there so each reader's fetch downloads nothing, and a fill that drifted
+#      from its readers saves one that lacks what a fetch then downloads on every run, with
+#      nothing failing: rule 11's silence, one level down. A family ci-caches.yaml does not save
+#      (go-docs, saved by docs-pages.yaml) has no fill here to hold. On a pass it reports how
+#      many families and readers it compared; a ci-caches.yaml that saves no Go family, or whose
+#      Go families no job restores, fails as `rule 22 UNKNOWN: ...`, since a rule that compared
+#      nothing has not passed and this check has no exit status for that but a failure,
+#  23. a restore or save of a Go family in ci.yaml, in a workflow it calls (followed through
+#      every call), in ci-caches.yaml or in docs-pages.yaml (with the docs-site.yaml build job it
+#      calls, which restores and saves go-docs) whose key does not end
+#      `-${{ hashFiles(<files>) }}` with every file the family's entry depends on in that list:
+#      .github/scripts/go-fetch.sh; each fetch file the family's readers run, read as rule 22
+#      reads them; each `tools <file>` those fetch files name; the module files of each
+#      `deps <dir>` line's workspace - the nearest go.work at or above <dir>, its go.work.sum
+#      and the go.mod and go.sum of each directory it uses, or with no go.work the nearest go.mod
+#      and its go.sum; and those of each `tidy <dir>` line's module, which `go mod tidy` reads
+#      with no go.work: <dir>'s go.mod and go.sum, and the go.mod of each directory a replace
+#      directive of that go.mod names. It names the workflow, the job, the step, the family and
+#      each file the list lacks. A file beyond those is allowed, and the list is read as the
+#      literal paths it names, so a glob in it covers nothing. A fetch file holds one command a
+#      line, `#` starting a comment: `[GOOS=<v>] [GOARCH=<v>] [CGO_ENABLED=<0|1>] deps <dir>
+#      [go list flags and packages...]`, `tools <file>` or `tidy <dir>`, each path from the
+#      repository root; a line that is none of them, a tidy line whose <dir> holds no go.mod,
+#      and a fetch file a reader runs that the repository does not have, are refused too. A
+#      save keyed by its restore's `${{ steps.<id>.outputs.cache-primary-key }}` is held as that
+#      restore's key. A key that leaves out such a file is found unchanged after the file moves,
+#      so every reader downloads the difference on each run and nothing fails.
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
 # in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
@@ -341,9 +384,14 @@
 # script (split at \n alone, stripped of spaces and tabs, comments and blank lines aside; a
 # script holding any character outside printable ASCII, tab and \n is not simple), with no shell:
 # on the step and no defaults.run.shell on the job or the workflow, no container: on the job, no
-# name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
-# XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
-# the command itself, no step of the job up to and including its own writing $GITHUB_ENV or
+# name outside ENV_ALLOWED (test configuration go never reads, GO_FETCH_PROXY, which go-fetch.sh
+# alone reads, and GOPROXY; GO*, CGO_*, BASH_ENV, ENV, HOME, XDG_CONFIG_HOME and PATH are outside
+# it) in the workflow's, job's or step's env or in front of the command itself - but for
+# `GOFLAGS: -mod=readonly` in an env: block, that whole value as YAML parses it
+# (ENV_ALLOWED_VALUES): go compiles the same files and runs the same tests with it, since
+# -mod=readonly is what go build, test, vet and list already default to with a go.mod and no
+# vendor directory, while every other GOFLAGS value, and a GOFLAGS= in front of the command,
+# stays outside -, no step of the job up to and including its own writing $GITHUB_ENV or
 # $GITHUB_PATH or running `go env -w` on a line of its script that is not a comment (each reaches
 # every later go command unseen, and a write after the step reaches none of its), and the step's
 # working directory (its own, else the job's or workflow's defaults.run, else the root) joined
@@ -374,7 +422,8 @@
 # pin once did, says nothing where the filter already selects every Go file, as text_checks'
 # does. For the same reason a pinned step fails, naming what does it, when its env, shell,
 # container or job could move what it compiles or which tests it runs: an env of the step, the
-# job or the workflow naming anything outside ENV_ALLOWED, a step of the job before it writing
+# job or the workflow naming anything outside ENV_ALLOWED (GOFLAGS as anything but -mod=readonly
+# among it), a step of the job before it writing
 # $GITHUB_ENV or $GITHUB_PATH or running `go env -w` (a write in its own script is the pin's to
 # hold, and a write after it reaches none of its commands), a shell: or defaults.run.shell, or a
 # container: - `GOFLAGS: -skip=^TestOnlyTheBrokerInsertsEvents$` in the guard step's env would
@@ -471,7 +520,7 @@ export CI_FILTERS_MODE="${1:-check}"
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
 # and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
 # given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
+# one reading .github/workflows itself; ci_go_cache_rules.py: rules 22 and 23) and the path
 # model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
@@ -488,6 +537,7 @@ with warnings.catch_warnings(record=True) as caught:
     import ci_filter_coverage
     import ci_job_reads
     import ci_workflow_rules
+    import ci_go_cache_rules
 print(f"::{token}::", flush=True)
 for import_warning in caught:
     ci_filter_coverage.print_import_warning(import_warning)

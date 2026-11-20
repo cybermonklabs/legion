@@ -139,10 +139,22 @@ jobs:
       check_private_names_keys_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
+      check_go_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_go_offline_test }}
+      check_omp_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_omp_offline_test }}
+      source_scan_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.source_scan_test }}
       check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
+      go_fetch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_fetch_test }}
+      go_offline_jobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_offline_jobs_test }}
+      go_build_offline_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_build_offline_test }}
+      check_go_tidy_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_go_tidy_test }}
+      # The test job's step that runs @legion/test-fixtures/go-command's own rows against the real
+      # go, which a test-fixtures job without Go no longer runs.
+      go_command_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
+      apt_cache_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_cache_test }}
+      package_installs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.package_installs_test }}
       go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
@@ -344,10 +356,20 @@ jobs:
       check_private_names_keys_test: ${{ needs.changes.outputs.check_private_names_keys_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
+      check_go_offline_test: ${{ needs.changes.outputs.check_go_offline_test }}
+      check_omp_offline_test: ${{ needs.changes.outputs.check_omp_offline_test }}
+      source_scan_test: ${{ needs.changes.outputs.source_scan_test }}
       check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
+      go_fetch_test: ${{ needs.changes.outputs.go_fetch_test }}
+      go_offline_jobs_test: ${{ needs.changes.outputs.go_offline_jobs_test }}
+      go_build_offline_test: ${{ needs.changes.outputs.go_build_offline_test }}
+      check_go_tidy_test: ${{ needs.changes.outputs.check_go_tidy_test }}
+      go_command_test: ${{ needs.changes.outputs.go_command_test }}
       select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
+      apt_cache_test: ${{ needs.changes.outputs.apt_cache_test }}
+      package_installs_test: ${{ needs.changes.outputs.package_installs_test }}
       go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
       ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
       ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}

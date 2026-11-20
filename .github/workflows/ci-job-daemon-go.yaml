@@ -56,14 +56,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   daemon-go:
@@ -122,20 +132,38 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
-      # go-daemon, shared with typecheck and pi-legion.
+      # go-daemon, shared with typecheck, plugin-pack and pi-legion. Its key hashes the root
+      # workspace's module files, every fetch file its readers run and go-fetch.sh, so an entry
+      # holds what the fetch step below fetches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176). Its .deb files come from the
+      # apt cache .github/workflows/ci-caches.yaml's apt job fills, keyed on the runner's release
+      # (the first step), its architecture and the hash of the pins and the script, and the
+      # install reads no mirror. A miss fetches under the bound .github/scripts/apt-cache.sh's
+      # header gives, 240 s at most, inside the step's 5 minutes: a mirror that hangs, as the azure
+      # one did for 68 minutes of this job's limit in run 44523167376, fails this step naming the
+      # pin and the host instead. On a change to the pins or the script the key misses and the
+      # prefix restores the newest entry, which the install takes when it holds tmux's pin.
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          restore-keys: ${{ format('apt-{0}-{1}-{2}-', runner.os, runner.arch, steps.apt-image.outputs.image) }}
       - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh install .github/apt-packages.txt "$RUNNER_TEMP/apt" tmux
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and
@@ -175,6 +203,17 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
+
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the test
+      # steps' own go test, and the builds inside them. The tests of internal/daemon and
+      # internal/intake run a real listener and a real Dispatch, which they build from
+      # packages/envoy while they run (testbuild.EnvoyBinary), and the daemon's own build never
+      # loads those commands; tests of other packages build ./cmd/legion while they run, and the
+      # Stage 1 proof below builds it too. A fetch inside a test fails it whenever the module proxy
+      # does, on a change that touched nothing it tests, so this step fetches all of it first, from
+      # the restored cache and tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/daemon-go.txt
 
       # The step runs every package of the module except the three the race step below tests and
       # internal/textcheck, whose tests are the text-check job's: so each of the three runs once

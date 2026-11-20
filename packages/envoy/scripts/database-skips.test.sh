@@ -52,6 +52,13 @@
 # with either unset it fails, naming it, since every control but 2 and 3 runs database tests.
 set -euo pipefail
 
+# Every go command this test starts, the counter's runs and the listing below, reads the module
+# cache alone: a go command a test starts that fetches fails it whenever the module proxy does, on
+# a change that touched nothing it tests. envoy-go, the job that runs this test, restores
+# go-envoy-test, whose fill builds the test binary of every package of the module, these three
+# among them.
+export GOPROXY=off
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY="$(cd "$SCRIPT_DIR/.." && pwd)"
 COUNTER="$SCRIPT_DIR/database-skips.sh"

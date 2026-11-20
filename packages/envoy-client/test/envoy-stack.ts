@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { goCommand } from "@legion/test-fixtures/go-command";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
 import { z } from "zod";
@@ -100,22 +101,26 @@ export interface GoBuild {
   readonly binaries: string;
 }
 
-/** Builds `build.packages` from this checkout into `build.bin`, a binary each. */
+/**
+ * Builds `build.packages` from this checkout into `build.bin`, a binary each. The build reads the
+ * module cache alone (`goCommand`, which names the fetch a module it lacks needs): the job that
+ * runs these rigs fetches their modules in a step before its tests.
+ */
 export async function buildGoBinaries(build: GoBuild): Promise<void> {
   if (Bun.which("go") === null) {
     throw new Error(`the ${build.stack} stack needs go on PATH to build ${build.binaries}`);
   }
   // An -o ending in a separator names a directory: each main package's binary goes in it, named
   // after the package's directory.
-  const spawned = Bun.spawn(["go", "build", "-o", `${build.bin}${path.sep}`, ...build.packages], {
+  const built = await goCommand({
+    command: "build",
     cwd: ENVOY_MODULE,
-    stdout: "pipe",
-    stderr: "pipe",
+    flags: ["-o", `${build.bin}${path.sep}`],
+    packages: build.packages,
   });
-  const [stderr, code] = await Promise.all([new Response(spawned.stderr).text(), spawned.exited]);
-  if (code !== 0) {
+  if (built.exitCode !== 0) {
     throw new Error(
-      `go build ${build.packages.join(" ")} in ${ENVOY_MODULE} exited ${code}: ${stderr}`
+      `go build ${build.packages.join(" ")} in ${ENVOY_MODULE} exited ${built.exitCode}: ${built.stderr}`
     );
   }
 }

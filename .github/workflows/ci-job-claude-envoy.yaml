@@ -58,9 +58,19 @@ jobs:
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
-      # zsh is missing; the runner image has no zsh.
+      # zsh is missing; the runner image has no zsh. It comes from the apt cache, with no mirror
+      # read, as .github/workflows/ci-job-daemon-go.yaml's `Install tmux` step says.
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          restore-keys: ${{ format('apt-{0}-{1}-{2}-', runner.os, runner.arch, steps.apt-image.outputs.image) }}
       - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh install .github/apt-packages.txt "$RUNNER_TEMP/apt" zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy

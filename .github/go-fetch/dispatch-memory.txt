@@ -1,0 +1,5 @@
+# dispatch-memory's fetch (.github/workflows/ci-job-dispatch-memory.yaml): the Dispatch store's
+# connections command its sizing step runs, and the modules of the memory-tagged tests of
+# ./cmd/dispatch, which build the server itself (cmdtest.Build).
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test -tags memory ./cmd/dispatch

@@ -1,0 +1,13 @@
+# envoy-go-checks' fetch (.github/workflows/ci-job-envoy-go-checks.yaml): the modules of the test
+# packages its go test steps run, the commands its steps `go run` and `go build`, the listener
+# clients its wire test lists with GOPROXY=off (listenerwire/clients_test.go, two lines kept as
+# .github/scripts/ci_job_reads.py's LISTENER_CLIENTS builds them), its darwin vet with each tag set
+# .github/scripts/go_build_tags.py prints for the module (one today: a new set there is a new line
+# here), and the helm loadtest/cluster/cluster.test.sh renders with.
+deps packages/envoy -test ./internal/dispatch/architecture/notes/ ./internal/runnerlog/ ./internal/dispatch/specgraph/ ./cmd/architecture-check/ ./cmd/spec-check/
+deps packages/envoy ./internal/broker/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig ./loadtest
+deps packages/daemon ./internal/notify ./internal/controller
+deps packages/envoy -test ./listenerwire/ ./internal/wirecheck/ ./internal/dispatch/pmdoc/
+deps packages/envoy ./cmd/dispatch ./cmd/spec-check ./cmd/listener ./internal/pgmigrate/cmd/edited-migrations
+GOOS=darwin GOARCH=arm64 deps packages/envoy -test -tags gcplive,memory,modellive,moto,multiprocess,natslive,serverchange,smoke,twobuild ./...
+tools packages/envoy/loadtest/cluster/tools.txt

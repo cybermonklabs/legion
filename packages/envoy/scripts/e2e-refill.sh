@@ -22,6 +22,7 @@
 # the "envoy-listener ready" line, so no tick falls while the listener is stopped. recreate-live
 # leaves the listener running and recreates 26 to 28 s before a tick, so the tick cannot be what
 # reads the new bucket.
+# go-offline-file: a person runs this proof on a devbox; no CI job runs it.
 set -euo pipefail
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's

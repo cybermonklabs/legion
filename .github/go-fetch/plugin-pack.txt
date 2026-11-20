@@ -1,0 +1,6 @@
+# plugin-pack's fetch (.github/workflows/ci-job-plugin-pack.yaml): the modules of internal/daemon's
+# tests, which its one go test step runs, the envoy commands they build (testbuild.EnvoyBinary) and
+# the legion binary the pack builds.
+deps packages/daemon -test ./internal/daemon/
+deps packages/envoy ./cmd/dispatch ./cmd/listener
+deps packages/daemon ./cmd/legion

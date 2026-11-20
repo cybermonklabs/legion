@@ -55,7 +55,7 @@ func TestTheResumedPaneRunsTheConfiguredModel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "role.md"), []byte("The test's role prompt.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	environ := testbin.OMPEnviron(home)
+	environ := testbin.OMPEnviron(t, home)
 	run := func(command, stdin string) (stdout, stderr string, exitErr error) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)

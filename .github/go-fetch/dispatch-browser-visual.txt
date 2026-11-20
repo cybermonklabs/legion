@@ -1,0 +1,4 @@
+# dispatch-browser.yaml's visual job: the commands the visual stack builds, and the connections
+# command its own step runs.
+deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+deps packages/envoy ./internal/dispatch/store/cmd/connections

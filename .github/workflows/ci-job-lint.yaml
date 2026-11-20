@@ -23,13 +23,13 @@ on:
       changes-result:
         description: >-
           ci.yaml's `needs.changes.result`: the two notices steps below run when `changes` did
-          not succeed, as they do in ci.yaml.
+          not succeed, as they do in ci.yaml, and the go-fetch-lint restore when they do not.
         type: string
         required: true
       go_notices:
         description: >-
           ci.yaml's `needs.changes.outputs.go_notices`: the two notices steps below run when
-          that filter matched.
+          that filter matched, and the go-fetch-lint restore when they do not.
         type: string
         required: true
     secrets:
@@ -40,14 +40,24 @@ on:
           an unset list does on each event).
         required: false
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   lint:
@@ -103,6 +113,19 @@ jobs:
       - name: Check every fireEvent call of the Dispatch suite carries its own reason
         run: .github/scripts/check-fireevent-reasons.sh
 
+      # A go command a test starts reads the module cache alone (GOPROXY=off), and a job fetches
+      # what its tests build in a step before them. This holds every place a Go, TypeScript, Python
+      # or shell file starts a go command to that rule, or to a go-offline reason beside it, and
+      # every job that runs a test built through testbuild to a fetch step before it.
+      - name: Check that no test of a required job fetches a Go module while it runs
+        run: .github/scripts/check-go-offline.sh
+
+      # Under a fresh HOME the pinned Oh My Pi fetches model catalogs over HTTPS. This holds every
+      # place a Go or TypeScript test starts it to its language's offline helper (testbin.OMPOffline,
+      # ompOffline), or to an omp-offline reason beside it.
+      - name: Check every test that starts Oh My Pi runs it offline
+        run: .github/scripts/check-omp-offline.sh
+
       # Only on a pull request and a merge group, the two events that have a base to compare
       # with: this job also runs on the bypass check's dispatched run at main's tip, where the
       # change has already merged. The condition tests `github.event_name` and no output of the
@@ -125,8 +148,9 @@ jobs:
           # shellcheck disable=SC2046 # the file is the package list, split on purpose
           .github/scripts/release-push.sh fold-orphans $(<.github/changelog-packages)
 
-      # No setup-go cache: gofmt needs none, and the notices step below keeps its own (go-notices),
-      # keyed on the Go version this step installs.
+      # No setup-go cache: gofmt needs none, and the two module caches below, go-notices and
+      # go-fetch-lint, are restored in steps of their own, keyed on the Go version this step
+      # installs.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -168,29 +192,23 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
-      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
-      # floor, so a live proof that starts one, and a script or page that installs one, must name
-      # one the floor takes. The test scans every tracked shell script and every tracked text file
-      # for those, so it runs here, on every change: the test job runs it too, but only when its
-      # filter selects scripts/e2e, and a new driver or page can be anywhere.
-      - name: Check every NATS server a script starts or installs is one the floor takes
-        run: bun test scripts/e2e/lib/nats-image.test.ts
-
-      # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
-      # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
-      # loads with `bun build --metafile`, and holds every such file to that gate's filter,
-      # so the TypeScript half of what those filters must select is derived rather than
-      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
-      # because this one is gated by no `changes` output, so a change anywhere can start it.
-      - name: Check every Bun gate's filter selects the files its typecheck compiles
-        run: .github/scripts/check-ts-filters.sh
-
-      # The notices step below builds go-licenses and loads every release binary's modules. It
-      # keeps them in a cache family of its own, go-notices: one entry, read on every run, so never
-      # evicted, and refreshed only when Go is bumped. Keyed on the go.sum files it would leave a
-      # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
-      # changed modules and rebuilds the changed packages, since Go's build cache is
-      # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      # One module cache is restored before the fetch below, and never two: a restore extracts its
+      # tar over ~/go/pkg/mod, whose module directories Go makes read-only, so a second entry
+      # restored over a first fails on every file the two share (GNU tar 1.35, the runner's:
+      # "Cannot open: File exists", exit 2). When the notices step at the end of this job runs,
+      # the one is go-notices, which that step needs and which holds every module its builds load,
+      # natsfloor's among them; when it does not, it is go-fetch-lint, which holds what the fetch
+      # below fetches and nothing else. The two conditions are each other's negation.
+      #
+      # go-notices: the notices step builds go-licenses and loads every release binary's modules.
+      # It keeps them in a cache family of its own, restored only when the notices step runs and
+      # filled by ci-caches.yaml. Its key hashes the module files of both workspaces the step
+      # builds in, the notices scripts and the target lists that decide what it builds, the fetch
+      # file below and go-fetch.sh, so a change to any of them fills a fresh entry on the push to
+      # main that lands it, and ci-caches.yaml's superseded job deletes the entry it replaced, about
+      # 2.2 GB, rather than leaving it to hold its space for seven days; a go.sum change in a pull
+      # request restores the newest entry by prefix, and the step builds only what moved, Go's
+      # build cache being content-addressed.
       #
       # The runner's architecture comes before the OS in this family's key, where the other Go
       # families put it after: the entry holds go-licenses, a program of the runner that built it,
@@ -214,8 +232,51 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', '.github/scripts/go-release-notices.sh', 'scripts/go-third-party-notices.sh', '.github/go-release-targets.json', '.github/agent-secrets-client-targets.json', '.github/envoy-infra-targets.json', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
+      # go-fetch-lint: the modules of the fetch below, about 50 MB, under the key
+      # .github/workflows/ci-caches.yaml's fetch-lint job fills: the runner's architecture, the Go
+      # version and the hash of the module files that fetch reads in the root workspace, of its
+      # fetch file and of go-fetch.sh. A pull request that changes those files restores the newest
+      # entry by prefix, and the fetch then downloads only what moved. Only a push to main fills
+      # the family, so a change before its first fill, or after GitHub evicted its entries, finds
+      # none; the second restore key then takes main's newest go-envoy entry of this runner's
+      # architecture, which holds every module archive this fetch reads, so the fetch downloads
+      # nothing. The path names the build cache as that entry was saved with: a restore matches
+      # only an entry saved with the same paths, and the family's own fill saves both too.
+      - if: inputs.changes-result == 'success' && inputs.go_notices != 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
+          restore-keys: |
+            ${{ format('go-fetch-lint-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # The test below builds natsfloor while it runs, with GOPROXY=off
+      # (@legion/test-fixtures/go-command): a fetch inside a test fails it whenever the module
+      # proxy does, on a change that touched nothing it tests. This step fetches that build's
+      # modules first, from the module cache restored above, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/lint.txt
+
+      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
+      # floor, so a live proof that starts one, and a script or page that installs one, must name
+      # one the floor takes. The test scans every tracked shell script and every tracked text file
+      # for those, so it runs here, on every change: the test job runs it too, but only when its
+      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      - name: Check every NATS server a script starts or installs is one the floor takes
+        run: bun test scripts/e2e/lib/nats-image.test.ts
+
+      # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
+      # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
+      # loads with `bun build --metafile`, and holds every such file to that gate's filter,
+      # so the TypeScript half of what those filters must select is derived rather than
+      # hand-kept. In this job because the ci-filters job has neither Bun nor node_modules, and
+      # because this one is gated by no `changes` output, so a change anywhere can start it.
+      - name: Check every Bun gate's filter selects the files its typecheck compiles
+        run: .github/scripts/check-ts-filters.sh
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
@@ -232,9 +293,17 @@ jobs:
       #
       # The loops are in .github/scripts/go-release-notices.sh, which
       # .github/workflows/ci-caches.yaml's notices job runs too, to fill the go-notices entry this
-      # step restores: one script, so the fill cannot warm anything but what this step builds.
+      # job restores before the natsfloor fetch above: one script, so the fill cannot warm anything
+      # but what this step builds.
+      #
+      # The one step of this job that goes online while it runs: it is a release's build, run as
+      # the release runs it, and no test. Its go-licenses install and the cross builds of every
+      # release target read the go-notices entry restored above first, and fetch what that lacks.
+      # go-offline: the release archives' notices step builds go-licenses and every release target as the releases do, online, and runs no test.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
+        env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
 
       - name: Report ci-ok when this job decides a merge-group run

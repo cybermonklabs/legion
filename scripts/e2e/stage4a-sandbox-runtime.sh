@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # Stage 4a's gate for the Go coordinator: the Agent Sandbox runtime (packages/daemon/internal/
 # runtime/sandbox) proven on a real cluster, in namespace `legion`, from the devbox. A Go harness
 # (sandbox/live_test.go, build tag e2e) drives the runtime through the Legion daemon's own

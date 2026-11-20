@@ -22,6 +22,10 @@
 # own status.
 set -euo pipefail
 
+# The required CI job calls this script after its fetch step; make the script's own commands
+# offline too so it fails on a cache miss rather than downloading while a test runs.
+export GOPROXY=off GOFLAGS=-mod=readonly
+
 EXCLUDE='/internal/textcheck$'
 
 if [ "$#" -ne 1 ]; then

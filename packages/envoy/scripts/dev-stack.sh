@@ -509,6 +509,8 @@ else
   echo "dev-stack: building ${STACK_BINARIES[*]}..." >&2
   (
     cd "$ENVOY_DIR"
+    # go-offline: a person runs this on a devbox; dev-stack.test.sh, the one test that runs it,
+    # puts a stand-in go first on PATH, which reads no module.
     GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"
   )
 fi

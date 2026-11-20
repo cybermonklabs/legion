@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   pi-legion:
@@ -91,14 +101,23 @@ jobs:
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
-      # go-daemon, shared with typecheck and daemon-go.
+      # go-daemon, shared with typecheck, daemon-go and plugin-pack. Its key hashes the root
+      # workspace's module files, every fetch file its readers run and go-fetch.sh, so an entry
+      # holds what the fetch step below fetches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
+      # daemon-pane.ts runs daemon-pane.go with GOPROXY=off (@legion/test-fixtures/go-command): a
+      # fetch inside a test fails it whenever the module proxy does, on a change that touched
+      # nothing it tests. This step fetches first, from the cache restored above and tried again
+      # on failure, the modules of every package of the daemon module: the program's main exists
+      # only in its overlay, and it imports the daemon's own packages alone.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/pi-legion.txt
       - run: bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The share volumes live proof on a throwaway kind cluster: an existing network share, named in
 # `runtime.kubernetes.pod.volumes` as a PersistentVolumeClaim and as an NFS export, reaches an issue
 # pod the daemon's own code launches under gVisor, which reads a file from the claim's share, is

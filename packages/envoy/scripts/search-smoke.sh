@@ -7,6 +7,7 @@
 # The server runs with a throwaway HOME, a made-up agent token and a trusted identity header, so it
 # reads no operator configuration and holds no credential; NATS is off. It migrates the database
 # it is given, as it does at every start, so point it only at a copy.
+# go-offline-file: a person runs this smoke against a corpus copy; no CI job runs it.
 set -euo pipefail
 
 usage() {

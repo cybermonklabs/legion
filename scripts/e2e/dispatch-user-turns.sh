@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # LEGION-394's live proof: a person's direct Send or Aside from Dispatch's conversation page reaches
 # a real Oh My Pi session as that person's own user turn, and everything else keeps its Envoy card.
 # One real session — the pinned Oh My Pi (`.omp-pin`, run as a mise tool spec) with

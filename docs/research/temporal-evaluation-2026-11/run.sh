@@ -5,6 +5,8 @@
 #
 #   bash docs/research/temporal-evaluation-2026-11/run.sh
 #
+# go-offline-file: a person runs this evaluation by hand; no CI job runs it.
+#
 # The directory is named temporal-evaluation because the issue started as a question
 # about Temporal; the evaluation now measures five products:
 #

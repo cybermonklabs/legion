@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The Claude Code backend's live proof under Legion's Kubernetes runtime, on a real cluster. A real
 # Go daemon on the devbox, whose legion.yaml puts the implementer on Claude Code
 # (`worker_backends: {implementer: claude}`) and whose runtime is `kubernetes`, drives one scratch

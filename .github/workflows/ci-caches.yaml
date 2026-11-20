@@ -1,76 +1,8 @@
 name: CI caches
 
-# Fills the Actions caches ci.yaml's jobs restore, so a pull request or a merge group finds
-# them warm. ci.yaml runs on a pull request, a merge group and a dispatch, and no longer on a push
-# to main: the queue tests every change on the tree it lands as, so a run on main would only test
-# that tree again (.github/ci-notes/ci.md#why-the-router-runs-on-these-events-and-no-others says
-# it). No step of that workflow saves a cache entry any
-# more, and the actions it calls save only in a dispatched run, so the families it restores need
-# a filler of their own, and this workflow is it.
-#
-# Why the filler runs on a push: a run reads the cache scope of its own branch and that of the
-# default branch, and only an event that writes the default branch's scope - a push to main among
-# them - leaves an entry every later run can read. A save made in a merge group or on a pull
-# request lands in that run's own scope, which the next pull request's run cannot read, so it
-# would reach nobody.
-#
-# Five Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
-# architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
-# of its module files too, for the reason its job gives): go-notices (lint's notices step),
-# go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-checks,
-# envoy-go-race-docs, envoy-go-docs-finalizers, listener-server-change, envoy-e2e-local and
-# envoy-session-stall, and the embedder job of .github/workflows/dispatch-browser.yaml),
-# go-envoy-test (envoy-go, envoy-go-claim-model, which builds the API's test binary of that set,
-# and the binaries, multiprocess and visual jobs of
-# .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser job calls: those three
-# build the Dispatch server and the real broker's commands, whose packages the go-envoy entry's
-# build of the listener and natsd alone does not hold) and go-envoy-infra (envoy-infra-go, and
-# the build job of release-envoy-infra.yaml).
-# The key carries `runner.arch` because Go's build cache holds the objects of the architecture
-# that compiled them: an entry an x86_64 runner filled gives an arm64 job its modules and none of
-# its objects. So each family is filled on every architecture one of its readers runs on, one
-# matrix leg per runner: go-notices on ubuntu-24.04-arm alone, where lint runs, and go-daemon,
-# go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on ubuntu-24.04 both, since
-# each has a reader on each (typecheck and the envoy lanes but one on the first; daemon-go,
-# plugin-pack, pi-legion, envoy-go-checks, envoy-go-claim-model, the browser lane and the release
-# builds on the second). A leg builds
-# what that runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its
-# arm64 leg runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
-# go-notices carries the architecture before the OS (go-notices-<arch>-<os>-go<version>) and the
-# other four after it: the go-notices entry holds go-licenses, a program lint's notices step
-# runs, and a run of a workflow file older than the architecture in the key restores by
-# go-notices-<os>-, which an <os>-<arch> key starts with (ci-job-lint.yaml's restore step says what
-# that did). One
-# Go setup per leg, since the key carries the version that module's go.mod names: the daemon's
-# go.mod for go-daemon and for go-notices, which lint installs the daemon's Go for; the envoy
-# module's for go-envoy and go-envoy-test; the infra module's for go-envoy-infra. Each family is
-# first looked up (`lookup-only`, and no `restore-keys`: the question is whether that exact key
-# exists, and the answer downloads nothing), and only a miss runs the build the ci.yaml job runs
-# and saves what it left in the module cache and the build cache. A family whose key is already
-# there builds nothing, so a run that finds every key costs a checkout and a setup-go. Where a
-# job fills two families it fills the smaller one first, so the entry that carries the other's
-# objects too is the one that was large already. A leg of a matrix that fails leaves the other
-# running (`fail-fast: false`): a cancelled leg saves nothing, and one architecture's fill has no
-# reason to cost the other's.
-#
-# Beside those five, the architecture-check job fills
-# architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
-# .github/actions/architecture-check, and the spec-check job fills
-# spec-check-<os>-<arch>-go<version>-<hash>, the family of .github/actions/spec-check; ci.yaml's
-# envoy-go-checks runs both actions. Neither is a lookup step of this workflow: each action
-# restores and saves its entry itself, keyed on the runner's architecture, on the Go version its
-# own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum,
-# so both jobs run on ubuntu-24.04, the runner envoy-go-checks runs on.
-# On a miss it restores the newest entry of that Go version (restore-keys, which this workflow's
-# own lookups do not use). It saves only on a miss of the exact key in a push, schedule or
-# workflow_dispatch run: a run of any other event (pull_request, pull_request_target,
-# merge_group, issue_comment, workflow_run and the rest) may hold another person's code, so it
-# restores the entry and never saves it. This workflow's push to main is where the entry lands in
-# the scope every later run reads. check-ci-filters.sh's cache-family rule reads this workflow's
-# own actions/cache steps and not a composite action's, so it holds nothing of these two families;
-# the "Caches" paragraph of
-# .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
-# record of their restores and saves.
+# why: .github/ci-notes/ci-caches.md#what-this-workflow-fills-and-why-it-runs-on-a-push
+# why: .github/ci-notes/ci-caches.md#the-go-families-their-keys-and-how-each-is-filled
+# why: .github/ci-notes/ci-caches.md#the-two-families-the-check-actions-keep-themselves
 #
 # One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
 # content of the Lean toolchain the model names rather than a Go version. Two others that were
@@ -81,14 +13,13 @@ name: CI caches
 # restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
 # with them.
 #
-# go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
-# with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
-# writes it on main, and five workflows that run there call it.
+# why: .github/ci-notes/ci-caches.md#the-apt-entry-which-is-no-go-family
+# why: .github/ci-notes/ci-caches.md#what-this-workflow-does-not-fill
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
 # by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
-# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for
-# go-envoy-infra, the hash of the infra workspace's module files, not a file list, so what the
+# a Go version, that toolchain file's hash, the hash of packages/envoy/go.sum or, for each Go
+# family, the hash of the files that decide what its readers fetch, not a file list, so what the
 # push touched decides nothing, and a run whose keys are all there is seconds.
 on:
   push:
@@ -104,9 +35,9 @@ concurrency:
   cancel-in-progress: false
 
 # Reading the tree and the caches is all this workflow does but in one job: the cache scope needs no
-# token scope of its own, and nothing here reports a check or writes an artifact. The
-# envoy-infra-superseded job alone takes `actions: write`, to delete the go-envoy-infra entries a
-# fill replaced, and builds nothing.
+# token scope of its own, and nothing here reports a check or writes an artifact. The superseded
+# job alone takes `actions: write`, to delete the Go families' entries a fill replaced, and builds
+# nothing.
 permissions:
   contents: read
 
@@ -120,9 +51,10 @@ jobs:
   # go-daemon. It keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack
   # and pi-legion set Go up from it. One leg per runner, because typecheck runs on
   # ubuntu-24.04-arm and the other three on ubuntu-24.04, and the key carries the runner's
-  # architecture. Each leg builds what its runner's readers build: typecheck's vet on both, and
-  # the test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry
-  # runs them.
+  # architecture. Each leg fetches what every reader's fetch step fetches and builds what its
+  # runner's readers build: typecheck's vet on both, and the test and race builds on the x86_64
+  # leg alone, since no job that reads the arm64 entry runs them. The superseded job deletes the
+  # entry each leg's fill replaced.
   daemon:
     strategy:
       fail-fast: false
@@ -132,6 +64,13 @@ jobs:
     # The limit this job carried while it filled go-notices too, whose build is the long one; no
     # leg of the daemon build alone has been measured near it.
     timeout-minutes: 90
+    outputs:
+      # The key each leg looked up, and whether it filled it, by the leg's architecture, as the
+      # envoy-infra job below names its own and for the reason it gives.
+      key-x64: ${{ steps.leg.outputs.key-x64 }}
+      filled-x64: ${{ steps.leg.outputs.filled-x64 }}
+      key-arm64: ${{ steps.leg.outputs.key-arm64 }}
+      filled-arm64: ${{ steps.leg.outputs.filled-arm64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -143,14 +82,41 @@ jobs:
           go-version-file: packages/daemon/go.mod
           cache: false
 
+      # The key hashes the root workspace's module files, every fetch file go-daemon's readers
+      # run and go-fetch.sh, as each reader's restore does: a change to any of them misses this
+      # lookup and fills a fresh entry that holds what the readers' fetch steps now fetch.
       - id: go-daemon
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
+
+      # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
+      # is X64 or ARM64, lowercased here.
+      - name: Name this leg's key by its architecture
+        id: leg
+        env:
+          KEY: ${{ steps.go-daemon.outputs.cache-primary-key }}
+          FILLED: ${{ steps.go-daemon.outputs.cache-hit != 'true' }}
+        run: |
+          arch=${RUNNER_ARCH,,}
+          echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
+          echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
+
+      # What the readers' fetch steps fetch, each reader's fetch file in the order of their paths,
+      # so an entry this fill saves leaves each of those steps nothing to download: typecheck's two
+      # vets (darwin's included), daemon-go's and plugin-pack's tests and the envoy commands they
+      # build (testbuild.EnvoyBinary), the legion binary and pi-legion's daemon packages.
+      - name: Fetch what go-daemon's readers fetch
+        if: steps.go-daemon.outputs.cache-hit != 'true'
+        run: |
+          .github/scripts/go-fetch.sh file .github/go-fetch/daemon-go.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/pi-legion.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/plugin-pack.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/typecheck.txt
 
       # What typecheck builds: the vet behind the e2e tag. It is the one build of this family an
       # arm64 job makes (.github/workflows/ci-job-typecheck.yaml), so both legs run it.
@@ -185,19 +151,24 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
 
   # go-notices, in a job of its own on ubuntu-24.04-arm, the runner of lint, whose notices step the
   # family belongs to. It keys on packages/daemon/go.mod's Go, which lint installs, though that
   # step also builds the envoy and infra modules' commands, and on the runner's architecture
   # before the OS, as lint's restore does: the entry holds the go-licenses that step runs, and an
   # <os>-<arch> key would start with the go-notices-<os>- prefix of a run of a workflow file older
-  # than the architecture in the key, which then restores this arm64 program on x86_64.
+  # than the architecture in the key, which then restores this arm64 program on x86_64. The key
+  # hashes what decides what that step builds, as lint's restore says, so the superseded job
+  # deletes the entry each fill replaced.
   notices:
     runs-on: ubuntu-24.04-arm
     # The notices build is the long one: it writes the notices of, and cross-compiles, every
     # release target of three modules on a cold module cache.
     timeout-minutes: 90
+    outputs:
+      key-arm64: ${{ steps.go-notices.outputs.cache-primary-key }}
+      filled-arm64: ${{ steps.go-notices.outputs.cache-hit != 'true' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -216,8 +187,13 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', '.github/scripts/go-release-notices.sh', 'scripts/go-third-party-notices.sh', '.github/go-release-targets.json', '.github/agent-secrets-client-targets.json', '.github/envoy-infra-targets.json', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
+
+      # What lint's fetch step fetches after it restores this entry, so that step finds it here.
+      - name: Fetch what go-notices' reader fetches
+        if: steps.go-notices.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/lint.txt
 
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
@@ -237,22 +213,34 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', 'packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', '.github/scripts/go-release-notices.sh', 'scripts/go-third-party-notices.sh', '.github/go-release-targets.json', '.github/agent-secrets-client-targets.json', '.github/envoy-infra-targets.json', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
 
-  # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
-  # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
-  # independent, and each build is gated on its own lookup. One leg per runner: the envoy lanes
-  # that restore them run on ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were
-  # measured on ubuntu-24.04, and the browser lane's jobs restore them on ubuntu-24.04.
+  # go-envoy and go-envoy-test key on packages/envoy/go.mod's Go, the module every job that
+  # restores them sets Go up from. The envoy lanes that restore go-envoy run on ubuntu-24.04-arm,
+  # and envoy-go-checks and the browser lane's embedder job on ubuntu-24.04. The go-envoy-test
+  # readers run on ubuntu-24.04-arm, and envoy-go-claim-model, whose deadlines were measured on
+  # ubuntu-24.04, and the browser lane's jobs restore it on ubuntu-24.04. Their lookups and
+  # builds are independent, and each build is gated on its own lookup: an entry saves the module
+  # cache every step before its save left, so one job that filled both families filled the second
+  # with the first one's fetch too.
   envoy:
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # Compiling the test binary of every package of the envoy module on a cold module cache is
-    # the long step; the listener and natsd are minutes.
+    # The fetch and the listener and natsd are minutes; this was the limit of the job that also
+    # compiled every test binary of the envoy module, and no leg of the go-envoy fill alone has
+    # been measured near it.
     timeout-minutes: 60
+    outputs:
+      # The go-envoy key each leg looked up, and whether it filled it, by the leg's architecture,
+      # as the envoy-infra job below names its own and for the reason it gives: the superseded job
+      # deletes the go-envoy entries each fill replaced.
+      key-x64: ${{ steps.leg.outputs.key-x64 }}
+      filled-x64: ${{ steps.leg.outputs.filled-x64 }}
+      key-arm64: ${{ steps.leg.outputs.key-arm64 }}
+      filled-arm64: ${{ steps.leg.outputs.filled-arm64 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,14 +252,58 @@ jobs:
           go-version-file: packages/envoy/go.mod
           cache: false
 
+      # go-envoy's key carries the hash of the files that decide what its readers' fetch steps
+      # fetch, as every Go family's does: the root workspace's module files (a build in
+      # packages/envoy runs in the root workspace, so go.work, go.work.sum and the go.mod and
+      # go.sum of both modules it binds), every fetch file its readers run, the helm pin
+      # (loadtest/cluster/tools.txt) envoy-go-checks' fetch file names, and go-fetch.sh. Keyed on
+      # less, an entry went stale as those files moved, and every reader then fetched what moved;
+      # with the hash, a push to main that changes one misses the lookup and fills a fresh entry,
+      # and a pull request that changes one restores the newest by prefix.
       - id: go-envoy
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
+
+      # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
+      # is X64 or ARM64, lowercased here.
+      - name: Name this leg's key by its architecture
+        id: leg
+        env:
+          KEY: ${{ steps.go-envoy.outputs.cache-primary-key }}
+          FILLED: ${{ steps.go-envoy.outputs.cache-hit != 'true' }}
+        run: |
+          arch=${RUNNER_ARCH,,}
+          echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
+          echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
+
+      # What the readers' fetch steps fetch, each reader's fetch file in the order of their paths,
+      # so an entry this fill saves leaves each of those steps nothing to download: the modules of
+      # each lane's tests and of the commands they build with GOPROXY=off, the listener clients
+      # envoy-go-checks' wire test lists, its darwin vet's modules, and the helm
+      # loadtest/cluster/tools.txt pins, installed, so its modules, its version list and its
+      # compiled packages are in the entry and go-fetch.sh's tools mode on the reader asks the
+      # network nothing. go list compiles nothing, so the darwin lines add modules and no objects.
+      - name: Fetch what go-envoy's readers fetch
+        if: steps.go-envoy.outputs.cache-hit != 'true'
+        run: |
+          .github/scripts/go-fetch.sh file .github/go-fetch/airlock-lean.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/broker-multiprocess.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-embedder.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-memory.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-multiprocess.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-e2e-local.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-checks.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-docs-finalizers.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-race-api.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-race-docs.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-race.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-session-stall.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/listener-server-change.txt
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
@@ -280,7 +312,7 @@ jobs:
       # envoy-go-checks' darwin vet is left out: its darwin objects, about 1.6 GB of build cache on
       # a devbox, would ride in an entry every job that restores go-envoy downloads, and the step
       # builds them in under three minutes (run 43990864191).
-      - name: Build the listener and natsd of the envoy module
+      - name: Build the listener and natsd
         if: steps.go-envoy.outputs.cache-hit != 'true'
         run: go build -o "$RUNNER_TEMP/envoy-bin/" ./cmd/listener ./internal/testnats/cmd/natsd
         working-directory: packages/envoy
@@ -291,16 +323,72 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
 
+  # go-envoy-test, on packages/envoy/go.mod's Go as go-envoy is. One leg per runner: envoy-go
+  # runs on ubuntu-24.04-arm, and the browser lane's binaries, multiprocess and visual jobs on
+  # ubuntu-24.04.
+  envoy-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # Compiling the test binary of every package of the envoy module on a cold module cache is
+    # the long step.
+    timeout-minutes: 60
+    outputs:
+      # As the envoy job's: the superseded job deletes the go-envoy-test entries each fill
+      # replaced.
+      key-x64: ${{ steps.leg.outputs.key-x64 }}
+      filled-x64: ${{ steps.leg.outputs.filled-x64 }}
+      key-arm64: ${{ steps.leg.outputs.key-arm64 }}
+      filled-arm64: ${{ steps.leg.outputs.filled-arm64 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # The key hashes the root workspace's module files, every fetch file go-envoy-test's
+      # readers run (including envoy-go-claim-model's API test) and go-fetch.sh, as go-envoy's
+      # does and for its reason.
       - id: go-envoy-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
+
+      # The lookup's key and whether this leg fills it, as the job's outputs name them.
+      - name: Name this leg's key by its architecture
+        id: leg
+        env:
+          KEY: ${{ steps.go-envoy-test.outputs.cache-primary-key }}
+          FILLED: ${{ steps.go-envoy-test.outputs.cache-hit != 'true' }}
+        run: |
+          arch=${RUNNER_ARCH,,}
+          echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
+          echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
+
+      # What the readers' fetch steps fetch, each reader's fetch file in the order of their paths:
+      # envoy-go's tests with each tag its steps add and the other platforms its tests build, the
+      # claim-model job's API test, and the commands the browser lane's three jobs build.
+      - name: Fetch what go-envoy-test's readers fetch
+        if: steps.go-envoy-test.outputs.cache-hit != 'true'
+        run: |
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-binaries.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-multiprocess.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-browser-visual.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-claim-model.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go.txt
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
@@ -320,7 +408,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-browser-binaries.txt', '.github/go-fetch/dispatch-browser-multiprocess.txt', '.github/go-fetch/dispatch-browser-visual.txt', '.github/go-fetch/envoy-go-claim-model.txt', '.github/go-fetch/envoy-go.txt', '.github/scripts/go-fetch.sh') }}
 
   # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-checks runs it. The action sets
@@ -367,19 +455,22 @@ jobs:
 
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
   # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
-  # as ci.yaml's envoy-infra-go does. Unlike the other families, its key also carries the hash of
-  # the files that choose the module versions it builds: that go.work and its go.work.sum, and the
-  # go.mod and go.sum of both modules it binds. An entry keyed on the Go version alone was refreshed
-  # only by a Go bump and went stale as those files moved: restoring the entry of 2026-11-06, eleven
-  # days old, envoy-infra-go's linux vet took 175, 229 and 177 s in runs 43990864191, 43996496498
-  # and 44008055050, 83 to 85% of what its darwin vet took in the same run with nothing cached,
-  # because google.golang.org/api, gax-go, the AWS SDK and nats had moved under it. With the hash, a
-  # push to main that changes those files misses the lookup and fills a fresh entry; a pull request
+  # as ci.yaml's envoy-infra-go does. Its key carries the hash of the files that choose the module
+  # versions it builds and fetches: that go.work and its go.work.sum, the go.mod and go.sum of both
+  # modules it binds, the root workspace's module files (the envoy commands its readers' tests
+  # build read them), gcp's live tests' tool pins (gcp/testdata/live-tools.txt), which the fill
+  # installs, every fetch file its readers run and go-fetch.sh. An entry keyed on the Go version
+  # alone was refreshed only by a Go bump and went stale as those files moved: restoring the entry
+  # of 2026-11-06, eleven days old, envoy-infra-go's linux vet took 175, 229 and 177 s in runs
+  # 43990864191, 43996496498 and 44008055050, 83 to 85% of what its darwin vet took in the same run
+  # with nothing cached, because google.golang.org/api, gax-go, the AWS SDK and nats had moved
+  # under it. With the hash, a push to main that changes those files misses the lookup and fills a
+  # fresh entry; a pull request
   # that changes none of them restores one built from the same module versions, and one that
   # changes them restores the newest entry by prefix and builds what moved. One leg per runner:
-  # envoy-infra-go runs on ubuntu-24.04-arm, and release-envoy-infra.yaml's build, which restores
-  # the family too, on ubuntu-24.04. The superseded job below deletes the entry each leg's fill
-  # replaced.
+  # envoy-infra-go runs on ubuntu-24.04-arm, and envoy-smoke and release-envoy-infra.yaml's build,
+  # which restore the family too, on ubuntu-24.04. The superseded job below deletes the entry each
+  # leg's fill replaced.
   envoy-infra:
     strategy:
       fail-fast: false
@@ -414,7 +505,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
       # The lookup's key and whether this leg fills it, as the job's outputs name them: RUNNER_ARCH
@@ -428,6 +519,16 @@ jobs:
           arch=${RUNNER_ARCH,,}
           echo "key-$arch=$KEY" >>"$GITHUB_OUTPUT"
           echo "filled-$arch=$FILLED" >>"$GITHUB_OUTPUT"
+
+      # What the readers' fetch steps fetch, each reader's fetch file in the order of their paths,
+      # so an entry this fill saves leaves each of those steps nothing to download: envoy-infra-go's
+      # vets, tests, gcp's live tools, installed, and the envoy commands its tests build, and
+      # envoy-smoke's smoke test, plugin and host live tests.
+      - name: Fetch what go-envoy-infra's readers fetch
+        if: steps.go-envoy-infra.outputs.cache-hit != 'true'
+        run: |
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-infra-go.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/envoy-smoke.txt
 
       # What envoy-infra-go and the release build build: the vet with both live-test tags, for
       # linux and for darwin, the natslive binaries of the three packages envoy-infra-go's live step
@@ -460,62 +561,327 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
 
-  # The go-envoy-infra entries the fill above superseded, deleted once it has saved the new one. A
-  # module-file change gives the family a new key, and the entry under the old key, about 1.4 GB,
-  # is then read by no run of this ref: left alone it would hold its space until GitHub drops it
-  # after seven days unread, and over the repository's cache limit GitHub evicts the least recently
-  # used entries, which can be another family's live one. An entry the new one supersedes is one of
-  # this ref whose key is the new key but for its 64-hex module-file hash: the same family, runner
-  # and Go, with older module files, the hashless key of the fill before this one included. An
-  # entry of another runner or another Go is no such entry and stays, so a fill that runs once per
-  # architecture deletes nothing the other leg saved. None is deleted unless the new key is among
-  # this ref's entries, so a save that did not land leaves the old entry in place. A job of its
-  # own, so the token that may delete caches is in no job that builds code. A cache key is text any
-  # build that saves on this ref chose, so the step never splits or prints one raw: the list stays
-  # JSON, jq selects the numeric ids of the superseded entries, and each id is checked to be a
-  # number before `gh cache delete` gets it. A key holding a newline then cannot add a line of its
-  # own, such as `--all`, to that list. One leg per architecture of the fill, each keeping the key
-  # that architecture's leg saved, under the output names the envoy-infra job gives it; a leg whose
-  # architecture filled nothing skips its step. Both legs run on ubuntu-24.04-arm: gh and jq need
-  # nothing of an x64 machine.
-  envoy-infra-superseded:
-    needs: envoy-infra
-    if: needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true'
+  # The five go-fetch families: each holds what one job's fetch step fetches and nothing else, for
+  # the five jobs of ci.yaml that have a fetch step and restore no family above: text-checks, lint,
+  # test, private-names-port and dispatch-two-builds. Each family above that holds those modules
+  # holds its own readers' build cache too (go-envoy-infra, go-daemon and go-envoy hold 0.17 to 1.4
+  # GB on main), which these five jobs would download on every run to read a few hundred of its
+  # modules. A module cache that one of these fetches leaves on an empty runner is 48 MB (lint), 70
+  # MB (test), 202 MB (dispatch-two-builds), 253 MB (text-checks) and 328 MB (private-names-port) as
+  # a zstd tar, measured on a devbox; go-envoy's 165 MB took 2 to 3 s to restore in run
+  # 44433142648's arm64 jobs. Each entry is saved with the two paths every family above is saved
+  # with, ~/go/pkg/mod and ~/.cache/go-build, though a fetch compiles nothing and leaves next to
+  # nothing in the second: a restore matches only an entry saved with the same paths, and each of
+  # the five jobs restores, where its own family has no entry (before this workflow's first fill of
+  # it on main, or after GitHub evicted it), main's entry of the family above that holds most of
+  # what its fetch reads: go-envoy-test for text-checks and dispatch-two-builds, go-envoy for lint
+  # and test, go-daemon for private-names-port. A job of its own for each family, on the one
+  # runner its reader runs on and with the Go that reader sets up: each fill runs its readers'
+  # fetch files in the module cache of a fresh runner, so the entry holds exactly what their fetch
+  # steps fetch, and a restore of it leaves those steps nothing to download. Each key carries the
+  # hash of the module files that fetch reads, of its fetch files and of go-fetch.sh, as every Go
+  # family's does: a fetch reads the module graph, so an entry keyed on the Go version alone would
+  # hold the versions of the push that filled it, and its reader would fetch on every run what
+  # moved since. The superseded job below deletes the entry each fill replaced, so each job names
+  # its key and whether it filled it under the output names that job reads. Each of the five
+  # saves only on main (`github.ref == 'refs/heads/main'`, the ref every reader's restore can
+  # read): a fill dispatched on another ref fetches and saves nothing, since over the repository's
+  # 10 GB a branch's entries evict main's, which every other run restores.
+  #
+  # go-fetch-text-checks: text-checks' fetch, in both workspaces (packages/envoy/infra/go.work binds
+  # that module and packages/envoy; the root go.work binds packages/envoy and packages/daemon),
+  # whose module files the key hashes, and what `go mod tidy` reads in each of the three modules
+  # for the job's tidy check (the fetch file's tidy lines), which reads no go.work.
+  fetch-text-checks:
+    runs-on: ubuntu-24.04-arm
+    # One download of the modules, the fetch step's 8 s in run 44433142648; a run whose key is
+    # there costs a checkout and a setup-go.
+    timeout-minutes: 15
+    outputs:
+      key-arm64: ${{ steps.go-fetch-text-checks.outputs.cache-primary-key }}
+      filled-arm64: ${{ steps.go-fetch-text-checks.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      - id: go-fetch-text-checks
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
+          lookup-only: true
+
+      - name: Fetch what text-checks' fetch step fetches
+        if: steps.go-fetch-text-checks.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/text-checks.txt
+
+      - if: steps.go-fetch-text-checks.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
+
+  # go-fetch-lint: lint's fetch for the natsfloor build of its NATS pin scan, in the root
+  # workspace (go.work binds packages/daemon and packages/envoy), with packages/daemon/go.mod's
+  # Go, as lint sets it up.
+  fetch-lint:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      key-arm64: ${{ steps.go-fetch-lint.outputs.cache-primary-key }}
+      filled-arm64: ${{ steps.go-fetch-lint.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      - id: go-fetch-lint
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
+          lookup-only: true
+
+      - name: Fetch what lint's fetch step fetches
+        if: steps.go-fetch-lint.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/lint.txt
+
+      - if: steps.go-fetch-lint.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
+
+  # go-fetch-test: the test job's fetch for the listener and natsfloor builds its e2e library
+  # tests make, in the root workspace, with packages/daemon/go.mod's Go, as that job sets it up.
+  fetch-test:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      key-arm64: ${{ steps.go-fetch-test.outputs.cache-primary-key }}
+      filled-arm64: ${{ steps.go-fetch-test.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      - id: go-fetch-test
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
+          lookup-only: true
+
+      - name: Fetch what the test job's fetch step fetches
+        if: steps.go-fetch-test.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/test.txt
+
+      - if: steps.go-fetch-test.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
+
+  # go-fetch-private-names-port: that job's fetch for the `legion` build its harness makes, in
+  # the root workspace, with packages/daemon/go.mod's Go, as that job sets it up.
+  fetch-private-names-port:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    outputs:
+      key-arm64: ${{ steps.go-fetch-private-names-port.outputs.cache-primary-key }}
+      filled-arm64: ${{ steps.go-fetch-private-names-port.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      - id: go-fetch-private-names-port
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
+          lookup-only: true
+
+      - name: Fetch what private-names-port's fetch step fetches
+        if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true'
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/private-names-port.txt
+
+      - if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
+
+  # go-fetch-dispatch-two-builds: the fetches of that file's two jobs, dispatch-two-builds and
+  # dispatch-two-builds-same, in the root workspace, on ubuntu-24.04, the runner both run on, with
+  # packages/envoy/go.mod's Go, as they set it up.
+  fetch-dispatch-two-builds:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      key-x64: ${{ steps.go-fetch-dispatch-two-builds.outputs.cache-primary-key }}
+      filled-x64: ${{ steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      - id: go-fetch-dispatch-two-builds
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
+          lookup-only: true
+
+      - name: Fetch what the two dispatch-two-builds jobs' fetch steps fetch
+        if: steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true'
+        run: |
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds-same.txt
+          .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds.txt
+
+      - if: steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
+
+  # The entries the hashed fills above superseded - every Go family's: go-daemon's, go-notices',
+  # go-envoy's, go-envoy-test's, go-envoy-infra's and the five go-fetch families' - deleted once
+  # each has saved the new one. A change to a hashed file gives each family it names a new key, and
+  # the entry under the old key, about 1.4 GB for go-envoy-infra and 2.2 GB for go-notices, is then
+  # read by no run of this ref: left alone it would hold its space until GitHub drops it after
+  # seven days unread, and over the repository's cache limit GitHub evicts the least recently used
+  # entries, which can be another family's live one. An entry the new one supersedes is one of this
+  # ref whose key is the new key but for its 64-hex hash: the same family, runner and Go, with
+  # older hashed files, the hashless key of the fill before this one included. An entry of another
+  # runner, another Go or another family is no such entry and stays: go-envoy-test's key and
+  # go-envoy-infra's differ from go-envoy's before any hash, and each go-fetch family's key from
+  # every other family's, so a deletion of one family's entries reaches no other, and a fill that
+  # runs once per architecture deletes nothing the other leg saved. None is deleted unless the new
+  # key is among this ref's entries, so a save that did not land leaves the old entry in place. A
+  # job of its own, so the token that may delete caches is in no job that builds code. A cache key
+  # is text any build that saves on this ref chose, so the step never splits or prints one raw: the
+  # list stays JSON, jq selects the numeric ids of the superseded entries, and each id is checked to
+  # be a number before `gh cache delete` gets it. A key holding a newline then cannot add a line of
+  # its own, such as `--all`, to that list. One leg per family and architecture of the fills, each
+  # keeping the key that leg of that fill saved, under the output names its fill job gives it; a
+  # leg whose fill filled nothing skips its step. Every leg runs on ubuntu-24.04-arm: gh and jq
+  # need nothing of an x64 machine.
+  superseded:
+    needs: [daemon, notices, envoy, envoy-test, envoy-infra, fetch-text-checks, fetch-lint, fetch-test, fetch-private-names-port, fetch-dispatch-two-builds]
+    # !cancelled(), not the default success(): a failed leg of one fill must not keep the other
+    # fill's superseded entries. Each step below runs only for a leg that filled, and a leg whose
+    # save did not land leaves a key that is not among this ref's entries, so it deletes nothing.
+    if: >-
+      !cancelled() && (needs.daemon.outputs.filled-x64 == 'true' || needs.daemon.outputs.filled-arm64 == 'true'
+      || needs.notices.outputs.filled-arm64 == 'true'
+      || needs.envoy.outputs.filled-x64 == 'true' || needs.envoy.outputs.filled-arm64 == 'true'
+      || needs.envoy-test.outputs.filled-x64 == 'true' || needs.envoy-test.outputs.filled-arm64 == 'true'
+      || needs.envoy-infra.outputs.filled-x64 == 'true' || needs.envoy-infra.outputs.filled-arm64 == 'true'
+      || needs.fetch-text-checks.outputs.filled-arm64 == 'true' || needs.fetch-lint.outputs.filled-arm64 == 'true'
+      || needs.fetch-test.outputs.filled-arm64 == 'true' || needs.fetch-private-names-port.outputs.filled-arm64 == 'true'
+      || needs.fetch-dispatch-two-builds.outputs.filled-x64 == 'true')
     strategy:
       fail-fast: false
       matrix:
-        arch: [x64, arm64]
+        include:
+          - { fill: daemon, family: go-daemon, arch: x64 }
+          - { fill: daemon, family: go-daemon, arch: arm64 }
+          - { fill: notices, family: go-notices, arch: arm64 }
+          - { fill: envoy, family: go-envoy, arch: x64 }
+          - { fill: envoy, family: go-envoy, arch: arm64 }
+          - { fill: envoy-test, family: go-envoy-test, arch: x64 }
+          - { fill: envoy-test, family: go-envoy-test, arch: arm64 }
+          - { fill: envoy-infra, family: go-envoy-infra, arch: x64 }
+          - { fill: envoy-infra, family: go-envoy-infra, arch: arm64 }
+          - { fill: fetch-text-checks, family: go-fetch-text-checks, arch: arm64 }
+          - { fill: fetch-lint, family: go-fetch-lint, arch: arm64 }
+          - { fill: fetch-test, family: go-fetch-test, arch: arm64 }
+          - { fill: fetch-private-names-port, family: go-fetch-private-names-port, arch: arm64 }
+          - { fill: fetch-dispatch-two-builds, family: go-fetch-dispatch-two-builds, arch: x64 }
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     permissions:
       actions: write
     steps:
-      - name: Delete this ref's go-envoy-infra entries the new one supersedes
-        if: needs.envoy-infra.outputs[format('filled-{0}', matrix.arch)] == 'true'
+      - name: Delete this ref's entries of the family the new one supersedes
+        if: needs[matrix.fill].outputs[format('filled-{0}', matrix.arch)] == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          KEEP: ${{ needs.envoy-infra.outputs[format('key-{0}', matrix.arch)] }}
+          FAMILY: ${{ matrix.family }}
+          KEEP: ${{ needs[matrix.fill].outputs[format('key-{0}', matrix.arch)] }}
           REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          entries=$(gh cache list --ref "$REF" --key go-envoy-infra- --limit 100 --json id,key,ref)
+          entries=$(gh cache list --ref "$REF" --key "$FAMILY-" --limit 100 --json id,key,ref)
           if ! jq -e --arg keep "$KEEP" --arg ref "$REF" 'any(.[]; .key == $keep and .ref == $ref)' <<<"$entries" >/dev/null; then
-            echo "::warning::the new go-envoy-infra entry is not among this ref's entries, so none is deleted"
+            echo "::warning::the new $FAMILY entry is not among this ref's entries, so none is deleted"
             exit 0
           fi
-          jq -r --arg keep "$KEEP" --arg ref "$REF" \
+          jq -r --arg keep "$KEEP" --arg ref "$REF" --arg family "$FAMILY" \
             'def base: gsub("-[0-9a-f]{64}"; "");
-             .[] | select(.ref == $ref and (.key | startswith("go-envoy-infra-")) and .key != $keep
+             .[] | select(.ref == $ref and (.key | startswith($family + "-")) and .key != $keep
                           and (.key | base) == ($keep | base)) | .id' <<<"$entries" |
             while read -r id; do
               if ! [[ $id =~ ^[0-9]+$ ]]; then
                 echo "::error::the cache list gave an id that is not a number, so nothing more is deleted"
                 exit 1
               fi
-              echo "Deleting go-envoy-infra entry $id, which the new entry supersedes"
+              echo "Deleting $FAMILY entry $id, which the new entry supersedes"
               gh cache delete "$id"
             done
 
@@ -558,3 +924,50 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+
+  # The apt entry: the .deb files of every pin of .github/apt-packages.txt with what each depends
+  # on, and their checksums, which the install steps of daemon-go, pi-envoy, claude-envoy,
+  # dispatch-ui, dispatch-unit-repeat.yaml and e2e.yaml read with no network. One leg per runner
+  # those jobs run on: daemon-go, pi-envoy, dispatch-unit-repeat's legs and e2e's proofs on
+  # ubuntu-24.04, claude-envoy and dispatch-ui on ubuntu-24.04-arm, since a .deb is a binary of its
+  # architecture. The first step reads the runner's release for the key, as each reader's does,
+  # so the two keys are the same text (check-ci-filters.sh holds them to it). The fetch runs as the
+  # runner's user, into directories of its own, and installs nothing; it retries as an install's
+  # miss does, under the bound .github/scripts/apt-cache.sh's header gives, which the step's 5
+  # minutes are above. Entries are small - about 30 MB, measured in an ubuntu:24.04 container on
+  # 2026-11-19 - so no job deletes the one a new key supersedes: GitHub drops it after seven days
+  # unread.
+  apt:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # A checkout, the lookup and, on a miss, one fetch: the step's own bound and the save.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the runner's release for the apt cache key
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+
+      - id: apt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          lookup-only: true
+
+      - name: Fetch every pinned package with what it depends on
+        if: steps.apt.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: .github/scripts/apt-cache.sh fill .github/apt-packages.txt "$RUNNER_TEMP/apt"
+
+      - if: steps.apt.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}

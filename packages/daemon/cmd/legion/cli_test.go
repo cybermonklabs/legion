@@ -23,10 +23,15 @@ var legionBuildDir string
 
 // legionBuild builds this package's `legion` once for the whole test binary and answers its
 // path: the binary a caller runs, with no test code linked in, which is what clitest and the
-// invocation table drive. Every test that runs it only runs it, so one build serves them all.
+// invocation table drive. Every test that runs it only runs it, so one build serves them all. The
+// build reads the module cache alone (GOPROXY=off): a fetch while a test runs fails it whenever
+// the module proxy does, and the go test that runs this package has already loaded every module
+// this package's own build needs.
 var legionBuild = sync.OnceValues(func() (string, error) {
 	binary := filepath.Join(legionBuildDir, "legion")
-	if out, err := exec.Command("go", "build", "-o", binary, ".").CombinedOutput(); err != nil {
+	build := exec.Command("go", "build", "-o", binary, ".")
+	build.Env = append(os.Environ(), "GOPROXY=off")
+	if out, err := build.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("go build: %v\n%s", err, out)
 	}
 	return binary, nil

@@ -1,7 +1,6 @@
 package listenerwire_test
 
 import (
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -11,10 +10,7 @@ import (
 // nothing and fails as UNKNOWN.
 func TestListenerwireImportsOnlyTheStandardLibrary(t *testing.T) {
 	const self = "github.com/sjawhar/envoy/listenerwire"
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", ".").Output()
-	if err != nil {
-		t.Fatalf("go list -deps: %v", err)
-	}
+	out := goList(t, "./listenerwire", "-deps", "-f", "{{.ImportPath}} {{.Standard}}", ".")
 	listed, found := 0, false
 	for line := range strings.Lines(string(out)) {
 		path, standard, ok := strings.Cut(strings.TrimSpace(line), " ")

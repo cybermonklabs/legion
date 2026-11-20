@@ -431,6 +431,7 @@ func goGitProgram(t *testing.T, source string) string {
 		t.Fatal(err)
 	}
 	out := filepath.Join(t.TempDir(), "git")
+	// go-offline: the build is of a module of its own that requires nothing, so it loads no module.
 	build := exec.Command(goTool, "build", "-o", out, ".")
 	build.Dir = src
 	if output, err := build.CombinedOutput(); err != nil {

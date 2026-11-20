@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The Claude Code backend's live proof on tmux. A real Go daemon whose legion.yaml puts the
 # implementer on Claude Code (`worker_backends: {implementer: claude}`) drives one scratch Dispatch
 # issue: a real Oh My Pi architect and planner take it to implementing, and the implementer then runs

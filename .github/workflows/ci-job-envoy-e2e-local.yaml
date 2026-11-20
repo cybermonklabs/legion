@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   envoy-e2e-local:
@@ -44,14 +54,24 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # go-envoy: the listener and natsd e2e-local.sh builds.
+      # go-envoy: the listener and natsd e2e-local.sh builds, under the key
+      # .github/workflows/ci-caches.yaml's envoy job fills: the runner's architecture, the Go
+      # version and the hash of the root workspace's module files, of every fetch file the
+      # family's readers run and of go-fetch.sh.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # e2e-local.sh builds the listener and natsd with GOPROXY=off, in both steps below: a fetch
+      # inside a test fails it whenever the module proxy does, on a change that touched nothing it
+      # tests. This step fetches their modules first, from the cache restored above and tried
+      # again on failure: a pull request that changes the module files restores an older entry by
+      # prefix, and this fetches what moved.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-e2e-local.txt
       # scripts/e2e-local.test.sh drives the driver's refusals, which the acceptance run below
       # never reaches: an unknown option, --help, and an E2E_NATS_PORT, E2E_PORT or E2E_SESSION_PORT
       # another process already holds, which the driver uses as given and fails on rather than

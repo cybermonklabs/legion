@@ -1,0 +1,3 @@
+# pi-legion's fetch (.github/workflows/ci-job-pi-legion.yaml): the daemon packages
+# scripts/skill-scenarios/daemon-pane.go imports, which its tests `go run` with an overlay.
+deps packages/daemon ./...

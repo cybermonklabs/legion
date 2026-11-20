@@ -1,0 +1,11 @@
+# envoy-infra-go's fetch (.github/workflows/ci-job-envoy-infra-go.yaml): the modules of the infra
+# module's vets (linux with both live-test tags, darwin/arm64 with each tag set
+# .github/scripts/go_build_tags.py prints for it, one today), its unit tests and its natslive
+# tests; gcp's live tools; and the envoy commands those tests build under the repository's root
+# go.work (cmdtest.BuildCommand of ../../cmd/listener and ../../cmd/dispatch).
+deps packages/envoy/infra -test -tags pulumilive,natslive ./...
+deps packages/envoy/infra -test ./...
+deps packages/envoy/infra -test -tags natslive ./core ./seed ./gcp
+GOOS=darwin GOARCH=arm64 deps packages/envoy/infra -test -tags natslive,pulumilive ./...
+tools packages/envoy/infra/gcp/testdata/live-tools.txt
+deps packages/envoy ./cmd/listener ./cmd/dispatch

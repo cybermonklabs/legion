@@ -23,6 +23,7 @@ for target in $(jq -r '.legion[]' .github/go-release-targets.json); do
   arch=${target#*/}
   dir="legion-$os-$arch"
   mkdir -p "out/$dir"
+  # go-offline: release.yaml's legion_build job alone runs this, to build the release archives; no test runs it.
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go -C packages/daemon build -buildvcs=false \
     -ldflags "-X main.revision=$GITHUB_SHA -X main.release=v$VERSION -X main.piLegionVersion=$PI_LEGION_VERSION -X main.piEnvoyVersion=$PI_ENVOY_VERSION" \
     -o "$GITHUB_WORKSPACE/out/$dir/legion" ./cmd/legion

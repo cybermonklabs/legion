@@ -1,6 +1,7 @@
 package textcheck
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -26,11 +27,23 @@ func TestCoreCompilesNoListenerConfigPackage(t *testing.T) {
 // moduleDeps is the whole import graph of one package pattern of this module, its tests' imports
 // aside. go list resolves a relative pattern against the directory it runs in, which is this
 // package's, so the command runs at the module root and names the package from there.
+//
+// It fetches no module: go list reads the module cache alone (GOPROXY=off), since a fetch while
+// the test runs would fail it whenever the module proxy or the checksum database does, on a
+// change that touched nothing it checks. The text-check job fetches the graph's modules in a step
+// before the tests; a module the cache lacks fails the listing with the command that does it.
 func moduleDeps(t *testing.T, pattern string) []string {
 	t.Helper()
 	list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", pattern)
 	list.Dir = filepath.Join("..", "..")
+	list.Env = append(os.Environ(), "GOPROXY=off")
 	out, err := list.CombinedOutput()
-	require.NoError(t, err, string(out))
+	hint := ""
+	if strings.Contains(string(out), "GOPROXY=off") {
+		hint = "\nThe module cache lacks a module this listing needs, and a test fetches no module while it " +
+			"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
+			"packages/envoy/infra " + pattern
+	}
+	require.NoError(t, err, string(out)+hint)
 	return strings.Fields(string(out))
 }

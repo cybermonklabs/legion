@@ -167,7 +167,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/daemon-go.txt', '.github/go-fetch/pi-legion.txt', '.github/go-fetch/plugin-pack.txt', '.github/go-fetch/typecheck.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: go-daemon-${{ runner.os }}-${{ runner.arch }}-
       # why: .github/ci-notes/release.md#what-the-legion-build-writes-and-why-it-is-static
       - name: Build legion

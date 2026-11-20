@@ -1,0 +1,3 @@
+# envoy-go-claim-model's fetch (.github/workflows/ci-job-envoy-go-claim-model.yaml): the
+# internal/dispatch/api test package the claim model's named tests compile.
+deps packages/envoy -test ./internal/dispatch/api

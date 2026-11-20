@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # Live acceptance for LEGION-208 task 4b.13b (PR sjawhar/legion#1333). It stands up the Stage 3 rig
 # (scratch Postgres, NATS, Envoy listener, native Dispatch, the subscribe-only GitHub bridge, the
 # branch plugin in an isolated OMP profile, the Go daemon built from ACCEPT_ROOT) exactly as

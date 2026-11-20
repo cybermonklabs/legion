@@ -333,9 +333,13 @@ daemon_go_tests:
   - *ci_filters_data
   - '.github/workflows/ci-job-daemon-go.yaml'
   - *go_workspace
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/daemon-go.txt'
   - 'packages/daemon/**'
   - *daemon_envoy_deps
   - *dispatch_server
+  - '.github/scripts/apt-cache.sh'
+  - '.github/apt-packages.txt'
   - *listener_command
   - 'packages/envoy/internal/contracts/**'
   - 'packages/contracts/fixtures/capability-redaction.json'
@@ -412,6 +416,8 @@ plugin_pack:
   - *ci_filters_data
   - '.github/workflows/ci-job-plugin-pack.yaml'
   - *go_workspace
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/plugin-pack.txt'
   - *bun_install
   - *omp_install
   - 'packages/daemon/**'
@@ -512,6 +518,7 @@ plugin_pack:
   - '!packages/daemon/internal/stream/**/*_test.go'
   - '!packages/daemon/internal/supervise/**/*_test.go'
   - '!packages/daemon/internal/testbin/**/*_test.go'
+  - '!packages/daemon/internal/testbuild/**/*_test.go'
   - '!packages/daemon/internal/testnats/**/*_test.go'
   - '!packages/daemon/internal/testpg/**/*_test.go'
   - '!packages/daemon/internal/testtmp/**/*_test.go'
@@ -527,6 +534,8 @@ typecheck:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-typecheck.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/typecheck.txt'
   - *go_workspace
   - 'packages/daemon/**'
   - *daemon_envoy_deps
@@ -560,6 +569,8 @@ claude_envoy:
   - *claude_envoy_build
   - '.claude-code-pin'
   - '.github/actions/install-claude-code/**'
+  - '.github/scripts/apt-cache.sh'
+  - '.github/apt-packages.txt'
   - 'packages/contracts/fixtures/daemon-api/**'
   - 'packages/contracts/fixtures/envelope-without-role.json'
   - 'packages/envoy-client/test/**'
@@ -793,6 +804,60 @@ check_fireevent_reasons_test: &check_fireevent_reasons_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-fireevent-reasons.test.sh'
   - '.github/scripts/check-fireevent-reasons.sh'
+check_go_offline_test: &check_go_offline_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-go-offline.test.sh'
+  - '.github/scripts/check-go-offline-cases-*.sh'
+  - '.github/scripts/check-go-offline.sh'
+  - '.github/scripts/go_offline_sites.py'
+  - '.github/scripts/go_offline_walk.py'
+  - '.github/scripts/go_offline_restore.py'
+  - '.github/scripts/go_offline_fetched.py'
+  - '.github/scripts/go_offline_argv.py'
+  - '.github/scripts/go_offline_jobs.py'
+  - '.github/scripts/package_installs.py'
+  - '.github/scripts/go_offline_images.py'
+  - '.github/scripts/source_scan.py'
+  - '.github/scripts/source_statements.py'
+  - '.github/scripts/source_env.py'
+  - '.github/scripts/source_python.py'
+  - '.github/scripts/source_shell.py'
+check_omp_offline_test: &check_omp_offline_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-omp-offline.test.sh'
+  - '.github/scripts/check-omp-offline-cases-*.sh'
+  - '.github/scripts/check-omp-offline.sh'
+  - '.github/scripts/source_scan.py'
+  - '.github/scripts/source_statements.py'
+  - '.github/scripts/source_env.py'
+  - '.github/scripts/source_shell.py'
+source_scan_test: &source_scan_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/source_scan.test.sh'
+  - '.github/scripts/source_scan.py'
+  - '.github/scripts/source_statements.py'
+  - '.github/scripts/source_env.py'
+  - '.github/scripts/source_python.py'
+  - '.github/scripts/source_shell.py'
+  - '.github/scripts/check-go-offline.sh'
+  - '.github/scripts/go_offline_sites.py'
+  - '.github/scripts/go_offline_walk.py'
+  - '.github/scripts/go_offline_restore.py'
+  - '.github/scripts/go_offline_fetched.py'
+  - '.github/scripts/go_offline_argv.py'
+  - '.github/scripts/go_offline_jobs.py'
+  - '.github/scripts/package_installs.py'
+  - '.github/scripts/go_offline_images.py'
+  - '.github/scripts/check-omp-offline.sh'
 check_daemon_api_contract_test: &check_daemon_api_contract_test
   - *ci_router
   - *ci_filters_data
@@ -815,6 +880,44 @@ repo_paths_test: &repo_paths_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/repo-paths.test.sh'
   - '.github/scripts/repo-paths.sh'
+go_command_test: &go_command_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - 'packages/test-fixtures/src/go-command.test.ts'
+  - 'packages/test-fixtures/src/go-command.ts'
+  - 'packages/test-fixtures/src/host-tools.ts'
+  - 'packages/test-fixtures/src/temporary-directories.ts'
+  - 'packages/test-fixtures/package.json'
+  - 'packages/daemon/go.mod'
+go_fetch_test: &go_fetch_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/go-fetch.test.sh'
+  - '.github/scripts/go-fetch.sh'
+go_offline_jobs_test: &go_offline_jobs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/go-offline-jobs.test.sh'
+  - '.github/scripts/go_offline_jobs.py'
+go_build_offline_test: &go_build_offline_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/go-build-offline.test.sh'
+  - '.github/scripts/go-build-offline.sh'
+check_go_tidy_test: &check_go_tidy_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-go-tidy.test.sh'
+  - '.github/scripts/check-go-tidy.sh'
 select_e2e_proofs_test: &select_e2e_proofs_test
   - *ci_router
   - *ci_filters_data
@@ -824,6 +927,22 @@ select_e2e_proofs_test: &select_e2e_proofs_test
   - '.github/scripts/select-e2e-proofs.sh'
   - '.github/e2e-scripts.json'
   - 'scripts/e2e/*.sh'
+apt_cache_test: &apt_cache_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/apt-cache.test.sh'
+  - '.github/scripts/apt-cache.sh'
+package_installs_test: &package_installs_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/package-installs.test.sh'
+  - '.github/scripts/package_installs.py'
+  - '.github/scripts/source_shell.py'
+  - '.github/scripts/source_scan.py'
 go_tagged_tests_test: &go_tagged_tests_test
   - *ci_router
   - *ci_filters_data
@@ -943,6 +1062,7 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/check-ci-filters.sh'
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/ci_workflow_rules.py'
+  - '.github/scripts/ci_go_cache_rules.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
   - '.github/scripts/ci_job_reads.py'
@@ -981,6 +1101,8 @@ test:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/test.txt'
   - *bun_install
   - *biome
   # why: .github/ci-notes/ci.md#test-the-workspace-of-the-one-go-command-left-here---the-listener
@@ -1012,10 +1134,20 @@ test:
   - *check_private_names_keys_test
   - *check_plugin_names_test
   - *check_fireevent_reasons_test
+  - *check_go_offline_test
+  - *check_omp_offline_test
+  - *source_scan_test
   - *check_daemon_api_contract_test
   - *check_release_credentials_test
   - *repo_paths_test
+  - *go_fetch_test
+  - *go_offline_jobs_test
+  - *go_build_offline_test
+  - *check_go_tidy_test
+  - *go_command_test
   - *select_e2e_proofs_test
+  - *apt_cache_test
+  - *package_installs_test
   - *go_tagged_tests_test
   - *ci_ok_test
   - *ci_ok_report_test
@@ -1084,6 +1216,8 @@ docs:
   - *ci_filters_data
   - '.github/workflows/docs-pages.yaml'
   - '.github/workflows/docs-site.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/docs.txt'
   - *bun_install
   - *go_workspace
   - 'docs/site/**'
@@ -1130,6 +1264,7 @@ docs:
   - 'packages/envoy/internal/weborigin/*'
   - 'packages/dispatch/**'
   - 'scripts/e2e/lib/held-port.py'
+  - '.github/scripts/go-build-offline.sh'
   - 'packages/proof-editor/src/**'
   - 'packages/contracts/src/**'
   - 'packages/envoy-client/src/**'
@@ -1205,6 +1340,7 @@ dispatch_command_tests: &dispatch_command_tests
   - 'packages/envoy/natscred/*'
   - 'packages/envoy/internal/cistore/*'
   - 'packages/envoy/internal/cmdtest/*'
+  - 'packages/envoy/internal/gofetch/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/envconf/*'
   - 'packages/envoy/internal/fold/*'
@@ -1301,6 +1437,8 @@ pi_envoy:
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-envoy.yaml'
   - *bun_install
+  - '.github/scripts/apt-cache.sh'
+  - '.github/apt-packages.txt'
   - 'packages/pi-envoy/**'
   - 'packages/pi-shared/src/**'
   - 'packages/pi-shared/test/**'
@@ -1328,6 +1466,8 @@ pi_legion:
   - *ci_filters_data
   - '.github/workflows/ci-job-pi-legion.yaml'
   - *bun_install
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/pi-legion.txt'
   - 'packages/pi-legion/**'
   - 'packages/pi-envoy/**'
   # why: .github/ci-notes/ci.md#pi_legion-srcskills-guardtestts-spawns-packagesclaude-envoyscriptsbuildts
@@ -1385,6 +1525,8 @@ dispatch_ui:
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
   - *bun_install
+  - '.github/scripts/apt-cache.sh'
+  - '.github/apt-packages.txt'
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
   - 'packages/test-fixtures/src/**'
@@ -1454,6 +1596,11 @@ dispatch_ui:
 # why: .github/ci-notes/ci.md#dispatch_browser-the-browser-suite-dispatch-browser-which-githubworkflowsdispatch-browseryaml
 dispatch_browser:
   - *ci_router
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/dispatch-browser-binaries.txt'
+  - '.github/go-fetch/dispatch-browser-embedder.txt'
+  - '.github/go-fetch/dispatch-browser-multiprocess.txt'
+  - '.github/go-fetch/dispatch-browser-visual.txt'
   - *ci_filters_data
   - *bun_install
   - 'packages/dispatch/**'
@@ -1511,6 +1658,7 @@ dispatch_browser:
   - *go_workspace
   - *dispatch_server
   - 'scripts/e2e/lib/held-port.py'
+  - '.github/scripts/go-build-offline.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'scripts/third-party-notices.ts'
@@ -1597,6 +1745,7 @@ envoy_infra_go:
   - *listener_command
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/internal/cmdtest/*'
+  - 'packages/envoy/internal/gofetch/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/dispatch/githubapp/**'
   - 'packages/envoy/internal/fixtureenv/*'
@@ -1611,6 +1760,8 @@ envoy_infra_go:
   - 'packages/envoy/internal/weborigin/*'
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-infra-go.txt'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!packages/envoy/brokeraddr/**/*_test.go'
@@ -1652,6 +1803,11 @@ envoy_go:
   - '.github/scripts/pg-connection-ceiling.sh'
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/database-skips.test.sh'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-go.txt'
+  - '.github/go-fetch/dispatch-memory.txt'
+  - '.github/go-fetch/dispatch-multiprocess.txt'
+  - '.github/go-fetch/broker-multiprocess.txt'
   - 'packages/daemon/docker/legion-testpg'
   # why: .github/ci-notes/ci.md#envoy_go-the-three-jobs-whose-tag-steps-lean-on-this-jobs-untagged
   - '.github/workflows/ci-job-dispatch-memory.yaml'
@@ -1672,6 +1828,8 @@ envoy_go_checks:
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-checks.yaml'
   - *bun_install
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-go-checks.txt'
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/daemon/internal/claim/*'
@@ -1706,6 +1864,8 @@ text_checks:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-text-checks.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/text-checks.txt'
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/daemon/**/*.go'
@@ -1745,6 +1905,8 @@ dispatch_memory:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-memory.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/dispatch-memory.txt'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1782,6 +1944,8 @@ dispatch_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/dispatch-multiprocess.txt'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1913,6 +2077,9 @@ dispatch_two_builds:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-two-builds.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/dispatch-two-builds.txt'
+  - '.github/go-fetch/dispatch-two-builds-same.txt'
   - *go_workspace
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
@@ -1920,6 +2087,7 @@ dispatch_two_builds:
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
+  - '.github/scripts/go-build-offline.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
   - 'packages/envoy-client/**'
   - 'packages/broker-client/**'
@@ -2008,6 +2176,8 @@ listener_server_change:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-listener-server-change.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/listener-server-change.txt'
   - *go_workspace
   - *listener_command
   # why: .github/ci-notes/ci.md#listener_server_change-what-cmdlisteners-test-binary-compiles-that-go-list
@@ -2025,6 +2195,7 @@ listener_server_change:
   - 'packages/envoy/internal/broker/wire/*'
   - 'packages/envoy/internal/bus/bustest/*'
   - 'packages/envoy/internal/cmdtest/*'
+  - 'packages/envoy/internal/gofetch/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/dispatch/accesslog/*'
   - 'packages/envoy/internal/dispatch/agentsecrets/*'
@@ -2102,6 +2273,8 @@ broker_multiprocess:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-broker-multiprocess.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/broker-multiprocess.txt'
   - *go_workspace
   - 'packages/envoy/brokeraddr/*'
   - 'packages/envoy/agentloop/*'
@@ -2146,6 +2319,7 @@ broker_multiprocess:
   - 'packages/envoy/internal/brokertoken/*'
   - 'packages/envoy/internal/buildversion/*'
   - 'packages/envoy/internal/cmdtest/*'
+  - 'packages/envoy/internal/gofetch/*'
   - 'packages/envoy/internal/ctxlock/*'
   - 'packages/envoy/internal/contracts/**'
   - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
@@ -2190,6 +2364,8 @@ airlock_lean:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-airlock-lean.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/airlock-lean.txt'
   - *go_workspace
   - 'packages/envoy/internal/broker/airlock/**'
   - 'packages/envoy/internal/fold/*'
@@ -2208,6 +2384,8 @@ envoy_smoke:
   - *ci_filters_data
   # why: .github/ci-notes/ci.md#envoy_smoke-the-jobs-steps-which-build-the-image-and-smoke-it
   - '.github/workflows/ci-job-envoy-smoke.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-smoke.txt'
   - '.dockerignore'
   - '.bun-version'
   - 'package.json'
@@ -2228,6 +2406,7 @@ envoy_smoke:
   - 'scripts/third-party-notices.ts'
   - 'scripts/go-third-party-notices.sh'
   - 'scripts/assemble-third-party-notices.sh'
+  - 'scripts/go-third-party-notices-tools.txt'
   # why: .github/ci-notes/ci.md#envoy_smoke-the-envoy-module-which-the-images-go-stage-copies-whole
   - 'packages/envoy/**'
   - 'go.work'
@@ -2275,6 +2454,7 @@ envoy_smoke:
   - '!packages/envoy/internal/fileowner/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/ghrename/**/*_test.go'
+  - '!packages/envoy/internal/gofetch/**/*_test.go'
   - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
   - '!packages/envoy/internal/integration/**/*_test.go'
@@ -2320,6 +2500,8 @@ envoy_e2e_local:
   - '.github/workflows/ci-job-envoy-e2e-local.yaml'
   - *bun_install
   - *go_workspace
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-e2e-local.txt'
   - 'packages/envoy/scripts/e2e-local.sh'
   - 'packages/envoy/scripts/e2e-local.test.sh'
   - 'packages/envoy/scripts/fixtures/github/**'
@@ -2327,6 +2509,7 @@ envoy_e2e_local:
   # why: .github/ci-notes/ci.md#envoy_e2e_local-and-legionbroker-client-with-it-the-tsc-program-of
   - 'packages/broker-client/**'
   - 'packages/contracts/src/**'
+  - '.github/scripts/go-build-offline.sh'
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
@@ -2343,6 +2526,9 @@ envoy_session_stall:
   - '.github/workflows/ci-job-envoy-session-stall.yaml'
   - *bun_install
   - *go_workspace
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-session-stall.txt'
+  - '.github/scripts/go-build-offline.sh'
   - 'packages/envoy/**'
   - 'packages/envoy-client/**'
   - 'packages/pi-envoy/**'
@@ -2436,6 +2622,7 @@ browser_image:
 ci_filters:
   # why: .github/ci-notes/ci.md#ci_filters-the-directory-rather-than-the-workflows-the-check-names-one-by-one
   - '.github/workflows/**'
+  - '.github/go-fetch/**'
   - '.github/ci-filters.yaml'
   - '.github/scripts/check-ci-filters.sh'
   - '.github/scripts/check-workflow-files.sh'
@@ -2444,6 +2631,7 @@ ci_filters:
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/ci_job_reads.py'
   - '.github/scripts/ci_workflow_rules.py'
+  - '.github/scripts/ci_go_cache_rules.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
   - '.github/go-release-targets.json'
@@ -2543,6 +2731,9 @@ envoy_go_race:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-go-race.txt'
+  - '.github/go-fetch/listener-server-change.txt'
   - *go_workspace
   - 'packages/envoy/**'
   # why: .github/ci-notes/ci.md#envoy_go_race-listener-server-change-takes-its--run-from-this-script
@@ -2664,6 +2855,7 @@ envoy_go_race:
   - '!packages/envoy/internal/fileowner/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/ghrename/**/*_test.go'
+  - '!packages/envoy/internal/gofetch/**/*_test.go'
   - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
   - '!packages/envoy/internal/integration/**/*_test.go'
@@ -2705,6 +2897,8 @@ envoy_go_race_api:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-go-race-api.txt'
   - *go_workspace
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/brokeraddr/*'
@@ -2931,6 +3125,8 @@ envoy_go_claim_model:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-envoy-go-claim-model.yaml'
+  - '.github/go-fetch/envoy-go-claim-model.txt'
+  - '.github/scripts/go-fetch.sh'
   - *go_workspace
   - 'packages/envoy/**'
   - 'packages/contracts/fixtures/live/**'
@@ -3003,6 +3199,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/fileowner/**/*_test.go'
   - '!packages/envoy/internal/fold/**/*_test.go'
   - '!packages/envoy/internal/ghrename/**/*_test.go'
+  - '!packages/envoy/internal/gofetch/**/*_test.go'
   - '!packages/envoy/internal/googleidentity/**/*_test.go'
   - '!packages/envoy/internal/goroutinetest/**/*_test.go'
   - '!packages/envoy/internal/integration/**/*_test.go'
@@ -3050,6 +3247,9 @@ envoy_go_race_docs:
   # why: .github/ci-notes/ci.md#envoy_go_race_docs-two-jobs-run-this-package-under-the-detector-and-share
   - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
   - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/envoy-go-race-docs.txt'
+  - '.github/go-fetch/envoy-go-docs-finalizers.txt'
   - '.github/scripts/race_memory.py'
   - '.github/scripts/pg-connection-ceiling.sh'
   - *go_workspace
@@ -3133,6 +3333,8 @@ private_names_port:
   - *go_workspace
   - *legion_command
   - '.github/scripts/check-private-names-port.test.sh'
+  - '.github/scripts/go-fetch.sh'
+  - '.github/go-fetch/private-names-port.txt'
   # why: .github/ci-notes/ci.md#private_names_port-test-libsh-which-the-harness-sources-for-checkissummary
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-private-names.sh'

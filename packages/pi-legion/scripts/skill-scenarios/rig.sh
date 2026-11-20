@@ -797,6 +797,8 @@ services_up() {
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
   until_true 60 "NATS to be ready" sh -c "docker logs '$tag-nats' 2>&1 | grep -q 'Server is ready'"
+  # go-offline: no CI job runs this: services_up is reached only through `rig.sh batch`, which a
+  # person runs against real models, and rig.test.ts runs `score` and `judge-omp` alone.
   (cd "$root/packages/envoy" && go build -o "$S/envoy-listener" ./cmd/listener)
   (umask 077 && openssl rand -hex 24 >"$S/envoy-token" && printf 'e2e-token\n' >"$S/dispatch-token")
   start_listener
@@ -1223,9 +1225,11 @@ judge_keys() {
   fi
   # $(cat) drops trailing newlines and keeps a key whose file has none, as the host's key command
   # does with $(<file).
+  # shellcheck disable=SC2016 # the key command's own text, expanded when it runs, not here
   (umask 077 && printf '#!/bin/sh\nkey=$(cat %s) && [ -n "$key" ] && printf "%%s\\n" "$key"\n' "$read_from" >"$keys/anthropic-key")
   chmod 0700 "$keys/anthropic-key"
   sed "s#!exec $host_command\"#!exec /opt/key/anthropic-key\"#g" "$agent/models.yml" >"$keys/models.yml"
+  # shellcheck disable=SC2015 # either check failing is the refusal fail names
   grep -q '!exec /opt/key/anthropic-key"' "$keys/models.yml" && ! grep -qF "$host_command" "$keys/models.yml" ||
     fail "judge-omp: $agent/models.yml does not name the key command $host_command"
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"

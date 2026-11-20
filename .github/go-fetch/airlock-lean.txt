@@ -1,0 +1,3 @@
+# airlock-lean's fetch (.github/workflows/ci-job-airlock-lean.yaml): the modules of the airlock
+# package's tests, which its seed-corpus and fuzz steps run.
+deps packages/envoy -test ./internal/broker/airlock/

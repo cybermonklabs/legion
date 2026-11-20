@@ -74,7 +74,7 @@ func TestThePinnedOhMyPiRefusesToResumeAClaudeCodeTranscript(t *testing.T) {
 		defer cancel()
 		cmd := exec.CommandContext(ctx, shell, "-c", inner)
 		cmd.Dir = work
-		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+		cmd.Env = []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true", testbin.OMPOffline(t)}
 		// The pane's own pairs, as tmux hands them to the pane's environment.
 		for i := 1; i < len(pairs); i += 2 {
 			cmd.Env = append(cmd.Env, pairs[i])

@@ -311,7 +311,7 @@ func TestARepositorysSettingsReachTheAgentUnderTheOperators(t *testing.T) {
 		"the operator's overlay outranks the repository's": {setting: "compaction.remoteEndpoint", pod: []string{"PI_CONFIG_FILES=" + operator}, want: "https://operator.example/compact"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			env := append([]string{"HOME=" + home, "PATH=/usr/bin:/bin"}, tc.pod...)
+			env := append([]string{"HOME=" + home, "PATH=/usr/bin:/bin", testbin.OMPOffline(t)}, tc.pod...)
 			if !tc.noApply {
 				env = Apply(env)
 			}
@@ -359,7 +359,9 @@ func TestThePinnedOhMyPiRootsItsStateUnderTheStateHomeOnlyWhereTheShimMadeThePro
 			if err := os.Mkdir(work, 0o700); err != nil {
 				t.Fatal(err)
 			}
-			env := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "OMP_PROFILE=legion", "XDG_STATE_HOME=" + stateHome}
+			// OMPOffline's proxy refuses the model catalogs `omp models list` asks for over HTTPS, so
+			// the run reaches no network and still writes the log this test reads.
+			env := []string{"HOME=" + home, "PATH=/usr/bin:/bin", "OMP_PROFILE=legion", "XDG_STATE_HOME=" + stateHome, testbin.OMPOffline(t)}
 			underStateHome := filepath.Join(stateHome, "omp", "profiles", "legion")
 			underHome := filepath.Join(home, ".omp", "profiles", "legion")
 			want, others := underHome, []string{underStateHome}

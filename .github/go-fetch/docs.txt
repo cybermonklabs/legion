@@ -1,0 +1,6 @@
+# The docs build's fetch (.github/workflows/docs-site.yaml, the build job ci.yaml's docs job and
+# docs-pages.yaml call): the commands the screenshots' harness builds (e2e/run-server.sh and the
+# rig the shots start), and those docs/site/scripts/build-binaries.sh builds for the generators.
+deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+deps packages/envoy ./cmd/agent-secrets ./cmd/agent-secrets-helper ./cmd/broker-refgen
+deps packages/daemon ./cmd/legion

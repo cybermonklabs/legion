@@ -234,12 +234,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 		number:         int(number) + 1,
 		panes:          map[claim.Token]*completionStandin{},
 	}
-	version, err := exec.Command(omp, "--version").Output()
-	if err != nil {
-		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
-	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.noteOmpVersion()
 
 	root := proofCheckoutRoot(t)
 	r.dispatch = startHandoffDispatch(t, root)

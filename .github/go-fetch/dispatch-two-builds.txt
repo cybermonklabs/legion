@@ -1,0 +1,8 @@
+# dispatch-two-builds' fetch (.github/workflows/ci-job-dispatch-two-builds.yaml): the Dispatch store's
+# connections command its sizing step runs, the modules of the twobuild-tagged tests of
+# ./cmd/dispatch, and the Dispatch server its browser half builds (its build step, and
+# e2e/run-server.sh). The earlier releases' builds are build-dispatch-build.sh's, which reads each
+# release's own module files online.
+deps packages/envoy ./internal/dispatch/store/cmd/connections
+deps packages/envoy -test -tags twobuild ./cmd/dispatch
+deps packages/envoy ./cmd/dispatch

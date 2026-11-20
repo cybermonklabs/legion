@@ -127,7 +127,7 @@ func TestOhMyPiAppendsTheWholePromptFileItIsNamed(t *testing.T) {
 		"providers:\n  operator:\n    baseUrl: "+server.URL+"\n    auth: apiKey\n    api: anthropic-messages\n"+
 			"    apiKey: unused\n    models:\n      - id: configured\n        name: Configured\n",
 		"modelRoles:\n  default: operator/configured\n")
-	environ := testbin.OMPEnviron(home)
+	environ := testbin.OMPEnviron(t, home)
 
 	const size = 200_000
 	line, last := "A line of a system prompt longer than one argv string may be.\n", "The prompt's own last line."
@@ -194,7 +194,7 @@ func TestTheResumedAgentRunsTheConfiguredModel(t *testing.T) {
 		"providers:\n  operator:\n    baseUrl: "+server.URL+"\n    auth: apiKey\n    api: anthropic-messages\n"+
 			"    apiKey: unused\n    models:\n      - id: saved\n        name: Saved\n      - id: configured\n        name: Configured\n",
 		"modelRoles:\n  default: operator/saved\n")
-	environ := testbin.OMPEnviron(home)
+	environ := testbin.OMPEnviron(t, home)
 
 	// A session of the profile's own, saved on operator/saved: print mode answers one short turn
 	// through the test's provider and writes the file the resume below names. The launch argv is
@@ -319,7 +319,7 @@ func TestAFallbackChainStillWalksUnderAnExplicitModel(t *testing.T) {
 			"retry:\n  modelFallback: true\n  maxDelayMs: 1000\n  fallbackChains:\n    first/first-model:\n      - second/second-model\n")
 
 	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
-	frames, stderr := promptOnce(t, argv, work, testbin.OMPEnviron(home), "Reply ok.")
+	frames, stderr := promptOnce(t, argv, work, testbin.OMPEnviron(t, home), "Reply ok.")
 	answered := ""
 	for _, frame := range frames {
 		if frame.Type == "message_end" {
@@ -357,7 +357,7 @@ func TestMeasuredNoDefaultRoleLaunchesOnABuiltInModel(t *testing.T) {
 		"enabledModels:\n  - operator/configured\n")
 
 	argv := withPromptFile(t, launch{}.agentArgv([]string{omp}), "The test's system prompt.")
-	stdout, stderr, err := runOmp(t, argv, work, testbin.OMPEnviron(home), `{"type":"get_state","id":"1"}`+"\n")
+	stdout, stderr, err := runOmp(t, argv, work, testbin.OMPEnviron(t, home), `{"type":"get_state","id":"1"}`+"\n")
 	if err != nil {
 		t.Fatalf("omp %s: %v, want a launch\nstdout: %s\nstderr: %s", strings.Join(argv[1:], " "), err, stdout, stderr)
 	}

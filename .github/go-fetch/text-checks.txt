@@ -1,0 +1,15 @@
+# text-checks' fetch (.github/workflows/ci-job-text-checks.yaml): the modules of each module's text
+# checks, of the Dispatch API's source guards and of the supervise table's pins, which its go test
+# steps run; the Dispatch server the copy-lock guard lists with -export
+# (internal/dispatch/api/copy_lock_order_test.go); the infra packages the infra text checks
+# list (internal/textcheck/core_imports_test.go); and what `go mod tidy` reads in each module a
+# required job builds, which the tidy check (.github/scripts/check-go-tidy.sh) reads with the proxy
+# off: more than any build of those modules loads, one `tidy` line a module.
+deps packages/envoy -test ./internal/textcheck/ ./internal/dispatch/api/
+deps packages/envoy ./cmd/dispatch
+deps packages/envoy/infra -test ./internal/textcheck/
+deps packages/envoy/infra ./core ./gcp
+deps packages/daemon -test ./internal/textcheck/ ./internal/supervise/
+tidy packages/daemon
+tidy packages/envoy
+tidy packages/envoy/infra

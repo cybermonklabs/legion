@@ -1373,6 +1373,29 @@ run_check "$root"
 check "build-contexts is refused" "$(is "$status" 1)"
 check "  and says what to do" "$(contains "$out" 'an input this check has not read')"
 
+# The one named context admitted: the job's Go module cache, a step's output, which no file of the
+# repository is; a second entry beside it, or the same name on a repository path, is refused.
+with_contexts() { # with_contexts <name> <build-contexts value>
+  root=$(fixture "$1")
+  python3 - "$root/.github/workflows/image.yaml" "$2" <<'PYEOF'
+import sys
+path, given = sys.argv[1], sys.argv[2]
+text = open(path).read()
+open(path, "w").write(text.replace(
+    "          file: docker/Dockerfile\n",
+    f"          file: docker/Dockerfile\n          build-contexts: {given}\n",
+))
+PYEOF
+  run_check "$root"
+}
+with_contexts with-gomodcache-context 'gomodcache=${{ steps.gomodcache.outputs.dir }}'
+check "the job's module cache as gomodcache passes" "$(is "$status" 0)"
+with_contexts with-gomodcache-and-other 'gomodcache=${{ steps.gomodcache.outputs.dir }},other=packages/other'
+check "  another entry beside it is refused" "$(is "$status" 1)"
+check "  naming it" "$(contains "$out" 'passes build-contexts other=packages/other')"
+with_contexts with-gomodcache-path 'gomodcache=packages/other'
+check "  gomodcache on a repository path is refused" "$(is "$status" 1)"
+
 root=$(fixture with-secret-files)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'
 import sys

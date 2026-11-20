@@ -393,7 +393,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="b09bf6fe60a6d033eeccd41b2256662fee4f986526c3a1e2953c8fb2f9b2daa6",
+        sha256="02a83e0f48e4db0973ebfc92353ec9cf9f45b3c07e3f1a10b5376dc8d4077dbc",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
@@ -407,7 +407,7 @@ AUDITED_SCRIPTS = {
                 f"go test -json -count=1 -timeout 5m -run '^({'|'.join(BACKEND_COUNT_TESTS)})$' "
                 "./cmd/agent-secrets/ ./internal/broker/api/",
         },
-        sha256="034c00d5c296c9f1ef112e2a0d2df27b5aac0754ac1cdd29d9551e45c1750ae1",
+        sha256="429afa268b520b1b80087b8dfb4ea056595348524bc4e12f63000b68743c6b1e",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
@@ -750,6 +750,8 @@ def build_flags(command: GoTest) -> list[str]:
 
 def resolve(command: GoTest) -> None:
     """The import path of each package argument, with ./... expanded under the step's flags."""
+    # go-offline: a person runs this script by hand (the module's docstring); its test calls no
+    # function of it that starts go.
     out = go(["go", "list", "-f", "{{.ImportPath}}", *build_flags(command), *command.packages],
              command.step.directory, f"{command.step.label}: go list of `{command.text}`")
     command.resolved = out.split()
@@ -760,6 +762,8 @@ def resolve(command: GoTest) -> None:
 def listing(command: GoTest, pattern: str) -> dict[str, list[str]]:
     """The names each package of one command prints for one `go test -list` pattern, under the
     command's own build flags."""
+    # go-offline: a person runs this script by hand (the module's docstring); its test calls no
+    # function of it that starts go.
     out = go(["go", "test", "-count=1", "-list", pattern, *build_flags(command), *command.resolved],
              command.step.directory,
              f"{command.step.label}: go test -list {pattern} of `{command.text}`")

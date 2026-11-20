@@ -136,8 +136,10 @@ func newHome() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("make the tests' PULUMI_HOME: %w", err)
 	}
+	// A file backend, as every pulumi command of these tests has (NewCLI): a command with no
+	// backend set that needs one logs in to a new ephemeral Pulumi Cloud account.
 	install := exec.Command("pulumi", "plugin", "install", "resource", "docker", "v"+DockerPluginVersion, "--file", tarball)
-	install.Env = append(os.Environ(), "PULUMI_HOME="+dir, "PULUMI_SKIP_UPDATE_CHECK=true")
+	install.Env = append(os.Environ(), "PULUMI_HOME="+dir, "PULUMI_BACKEND_URL=file://"+dir, "PULUMI_SKIP_UPDATE_CHECK=true")
 	if out, err := install.CombinedOutput(); err != nil {
 		return dir, fmt.Errorf("install the docker plugin from %s=%s: %v\n%s", DockerPluginEnv, tarball, err, out)
 	}
@@ -161,16 +163,25 @@ func Plugin(t testing.TB) string {
 }
 
 // buildPlugin builds the plugin into a temporary directory. It returns the directory even when
-// the build fails, so Main removes it.
+// the build fails, so Main removes it. The build fetches no module: it runs with GOPROXY=off, so
+// a fault of the module proxy cannot fail the live tests, and a module the cache lacks fails the
+// build with the command that fetches it before the tests, as envoy-smoke runs it.
 func buildPlugin() (string, error) {
 	dir, err := os.MkdirTemp("", "envoy-infra-plugin-")
 	if err != nil {
 		return "", fmt.Errorf("make the plugin's directory: %w", err)
 	}
-	build := exec.Command("go", "build", "-ldflags", "-X main.version=0.0.1", "-o", filepath.Join(dir, PluginName),
-		"github.com/sjawhar/envoy/infra/cmd/pulumi-resource-envoy-infra")
+	const plugin = "github.com/sjawhar/envoy/infra/cmd/pulumi-resource-envoy-infra"
+	build := exec.Command("go", "build", "-ldflags", "-X main.version=0.0.1", "-o", filepath.Join(dir, PluginName), plugin)
+	build.Env = append(os.Environ(), "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
-		return dir, fmt.Errorf("build the plugin: %v\n%s", err, out)
+		hint := ""
+		if strings.Contains(string(out), "GOPROXY=off") {
+			hint = "\nThe module cache lacks a module the plugin needs, and a test fetches no module while it " +
+				"runs. Fetch them before the tests, from the repository root:\n  .github/scripts/go-fetch.sh deps " +
+				"packages/envoy/infra ./cmd/pulumi-resource-envoy-infra"
+		}
+		return dir, fmt.Errorf("build the plugin: %v\n%s%s", err, out, hint)
 	}
 	return dir, nil
 }
@@ -183,15 +194,21 @@ type CLI struct {
 }
 
 // NewCLI returns a CLI that runs pulumi in dir with the caller's environment plus the test
-// binary's PULUMI_HOME, a file backend in a temporary directory, the test passphrase, and no
-// update check.
+// binary's PULUMI_HOME, a file backend in a temporary directory, the test passphrase, no update
+// check, and no Pulumi Cloud API to reach.
 func NewCLI(t testing.TB, dir string) *CLI {
 	t.Helper()
 	return &CLI{t: t, dir: dir, env: append(os.Environ(),
 		"PULUMI_HOME="+pulumiHome(t),
 		"PULUMI_BACKEND_URL=file://"+t.TempDir(),
 		"PULUMI_CONFIG_PASSPHRASE=test",
+		// The update check asks api.pulumi.com for the CLI's latest version.
 		"PULUMI_SKIP_UPDATE_CHECK=true",
+		// The Pulumi Cloud API at a local port that refuses. Where a variable of an AI coding agent
+		// is set (CLAUDECODE and the others the CLI's agentdetect reads), `package add` asks the
+		// registry at api.pulumi.com for the package it added, and no setting of the CLI turns that
+		// lookup off. Refused here, it gives up after its four tries and the command goes on.
+		"PULUMI_API=http://127.0.0.1:1",
 	)}
 }
 

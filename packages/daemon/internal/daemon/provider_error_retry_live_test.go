@@ -75,7 +75,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -201,12 +200,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 		r.seeded[i].task = "Say the word " + seeded.marker + " and nothing else."
 	}
 	r.ladderTask = r.seededFor(r.ladder).task
-	version, err := exec.Command(omp, "--version").Output()
-	if err != nil {
-		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
-	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.noteOmpVersion()
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()

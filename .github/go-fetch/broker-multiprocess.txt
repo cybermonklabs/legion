@@ -1,0 +1,5 @@
+# broker-multiprocess' fetch (.github/workflows/ci-job-broker-multiprocess.yaml): the modules of the
+# multiprocess-tagged tests of ./cmd/broker, which build the broker itself and agent-secrets
+# (cmdtest.BuildCommand of ../agent-secrets, outage_test.go).
+deps packages/envoy -test -tags multiprocess ./cmd/broker
+deps packages/envoy ./cmd/agent-secrets

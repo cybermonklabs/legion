@@ -66,6 +66,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
@@ -99,6 +100,7 @@ type localRuntime struct {
 	omp       string
 	home      string
 	profile   string
+	offline   string // the OMPOffline entry every pane's environment carries
 	daemonURL string
 	envoyURL  string
 	natsURLs  []string
@@ -143,7 +145,7 @@ func newLocalRuntime(t *testing.T, stateDir, legion, omp, home, profile string) 
 		t.Fatalf("make the pane log directory %s: %v", logs, err)
 	}
 	r := &localRuntime{
-		t: t, stateDir: stateDir, legion: legion, omp: omp, home: home, profile: profile,
+		t: t, stateDir: stateDir, legion: legion, omp: omp, home: home, profile: profile, offline: testbin.OMPOffline(t),
 		overlays: func(claim.Token) []string { return nil },
 		paneLogs: logs, panes: map[claim.Token]*localPane{}, obs: make(chan runtime.Observation, 256),
 		held: map[claim.Token]*localHold{},
@@ -415,10 +417,10 @@ func (r *localRuntime) workDir(issue string) string {
 // paneEnvironment is the child's whole environment: the variables a pane is told, the PATH a pane
 // is told (the daemon's launcher directory first, as workerbin.Path puts it), the HOME and
 // OMP_PROFILE that select the run's own Oh My Pi profile — which under tmux reach a pane from the
-// daemon's own environment through the tmux server — and TMPDIR. Nothing of the test process's own
-// environment rides through: this test runs inside a Legion pod, whose environment names that
-// pod's workspace, daemon and credentials, and a pane that inherited them would register with the
-// wrong daemon.
+// daemon's own environment through the tmux server — TMPDIR, and OMPOffline's proxy, which keeps
+// the pane's Oh My Pi off the network. Nothing of the test process's own environment rides
+// through: this test runs inside a Legion pod, whose environment names that pod's workspace,
+// daemon and credentials, and a pane that inherited them would register with the wrong daemon.
 func (r *localRuntime) paneEnvironment(variables []string, workDir string) []string {
 	env := []string{
 		"PATH=" + workerbin.Path(os.Getenv("PATH"), r.stateDir),
@@ -426,6 +428,7 @@ func (r *localRuntime) paneEnvironment(variables []string, workDir string) []str
 		"OMP_PROFILE=" + r.profile,
 		"TMPDIR=" + filepath.Join(workDir, "tmp"),
 		"LANG=C.UTF-8",
+		r.offline,
 	}
 	_ = os.MkdirAll(filepath.Join(workDir, "tmp"), 0o700)
 	return append(env, variables...)

@@ -1062,18 +1062,25 @@ the build of the previous commit that job compares against; three actions its jo
 save one too, and only in a dispatched run (setup-bun, and architecture-check and spec-check at
 this paragraph's end).
 setup-go caches nothing here (`cache: false` on every step, the two check actions'
-included). The jobs that cache Go restore, in steps of their own, one of six families with
+included). The jobs that cache Go restore, in steps of their own, one of eleven families with
 actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
 internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
 it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-listener, and envoy-go-race-docs and envoy-go-docs-finalizers), go-envoy-test (envoy-go, which
-builds the test binary of every package of the envoy module, envoy-go-claim-model, which builds
-the API's of that set, and the binaries, multiprocess
+listener, envoy-go-race-docs and envoy-go-docs-finalizers, and dispatch-browser.yaml's embedder
+job, whose harness builds the Dispatch server and the real broker's commands from the modules
+the fill fetches), go-envoy-test (envoy-go, which builds the test binary of every package of the
+envoy module, envoy-go-claim-model, which builds the API's test binary of that set, and the
+binaries, multiprocess
 and visual jobs of dispatch-browser.yaml, which build the Dispatch server and the real
-broker's commands out of that same set), go-envoy-infra
-(envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
+broker's commands out of that same set), go-envoy-infra (envoy-infra-go and envoy-smoke),
+go-notices (lint, when its notices step runs), and five that hold no build cache, each the
+modules one job's fetch step fetches and nothing else, for the five jobs with a fetch step that
+restore no family above: go-fetch-text-checks, go-fetch-lint (lint, when its notices step does
+not run: a second entry restored into ~/go/pkg/mod fails on every file the two share),
+go-fetch-test, go-fetch-private-names-port and go-fetch-dispatch-two-builds, each restored by
+the job it is named for before its fetch step. Every family but go-docs is filled by
 .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 entry per runner architecture, keyed on the runner's architecture and on the Go version its
@@ -1086,10 +1093,15 @@ older than the architecture in the key restores by go-notices-<os>-, which an <o
 starts with (ci-job-lint.yaml's restore step says what that did). An entry is
 refreshed only when Go is bumped. A go.sum change downloads only the changed modules, and Go's
 build cache is content-addressed, so a stale entry costs a run only what changed; a key on the
-go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy-infra is
-the exception: what changed under it in eleven days cost its linux vet 83 to 85% of what the
-same vet for darwin took with nothing cached, so its key carries the hash of its module files
-too, and ci-caches.yaml deletes the entry each fill replaces (its envoy-infra job says how). The
+go.sum files left a whole entry, up to a gigabyte, per change for seven days. go-envoy,
+go-envoy-infra and the five go-fetch families are the exceptions. What changed under
+go-envoy-infra in eleven days cost its linux vet 83 to 85% of what the same vet for darwin took
+with nothing cached; go-envoy's readers build commands inside their tests that read the module
+cache alone (GOPROXY=off), after a fetch step that downloads whatever the entry lacks; and a
+go-fetch entry is what its reader's fetch step fetches, so one keyed on the Go version alone
+would leave that step downloading on every run whatever moved since the push that filled it. So
+those keys carry the hash of their module files too, and ci-caches.yaml deletes the entry each
+fill replaces (its superseded job says how). The
 fallback by
 prefix, when the exact key misses, now applies on every run, a dispatched one on main
 included: it was held off main so that the entry a run saved after a Go bump held nothing the
@@ -1104,9 +1116,9 @@ ci-caches.yaml's browsers job, the only writer of that entry, is gone with the r
 (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-stand in for the install each of their cases is a reading of. A seventh family,
+stand in for the install each of their cases is a reading of. A twelfth family,
 `architecture-check-<os>-<arch>-go<version>-<hash>`, is the composite action
-.github/actions/architecture-check's own, and an eighth,
+.github/actions/architecture-check's own, and a thirteenth,
 `spec-check-<os>-<arch>-go<version>-<hash>`, is .github/actions/spec-check's; envoy-go-checks runs
 both. Each action restores its family and saves it itself, from $RUNNER_TEMP/architecture-check
 or $RUNNER_TEMP/spec-check and not from the Go caches above, keyed on the Go version its own
@@ -1117,6 +1129,11 @@ runs on no push and no schedule, only a dispatched run can save it (the bypass c
 one at main), only on a miss of the exact key, and into the scope of the ref it was dispatched
 on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache steps and not a
 composite action's, so this paragraph is the one record of the two actions' restores and saves.
+One family more is no Go family: `apt-<os>-<arch>-<release>-<hash>`, the .deb files and checksums
+of .github/apt-packages.txt's pins, which daemon-go, pi-envoy, claude-envoy and dispatch-ui
+restore before their install step and install with no network (.github/scripts/apt-cache.sh),
+and ci-caches.yaml's apt job fills; .github/scripts/package_installs.py refuses any other
+package install in this workflow's jobs.
 
 Runners: a job of this workflow, or of a workflow it calls, runs on ubuntu-24.04-arm unless it
 needs an x86_64 machine, and runs on ubuntu-24.04 then. The two pools queue apart, and both
@@ -1731,9 +1748,10 @@ nats-server and Postgres, on testnats.Image, testnats.HubImage and testpg.Image,
 for the reason .github/actions/pull-test-images gives. That step runs only the tests the tag
 adds, one call per package: the "Unit test envoy-infra" step already ran every untagged test of core, seed
 and gcp, so each call takes its -run from .github/scripts/go-tagged-tests.sh, which reads the
-names off the source at run time. The gcp natslive tests pull no image:
-they install helm, nats-server, the config reloader and the exporter with go install, at the
-versions the clustered hub runs, and render the vendored chart in gcp/testdata. The per-target
+names off the source at run time. The gcp natslive tests pull no image and download nothing:
+they run helm, nats-server, the config reloader and the exporter at the versions the
+clustered hub runs, which the job's fetch step installs before the tests
+(gcp/testdata/live-tools.txt), and render the vendored chart in gcp/testdata. The per-target
 compile runs in the lint job's notices step.
 
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch

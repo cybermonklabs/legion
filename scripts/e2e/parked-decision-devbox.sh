@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The devbox proof that a person's decision on a parked Legion tree reaches the controller
 # (INFRA-214, A3 and A4). A scratch Dispatch, NATS, a real Envoy listener, the Go daemon and the
 # operator-launched controller, all built from this checkout, run on this box with real agents.

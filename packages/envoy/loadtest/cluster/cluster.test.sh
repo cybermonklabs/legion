@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # packages/envoy/loadtest/cluster/cluster.test.sh
 #
-# Proves cluster.sh's behaviour without a cluster and without a network (but for (h)'s fresh render,
-# below, whose go fetches helm): fakes `kubectl`, `gh`, `curl`, `go`, `git`, `uv`, `dispatch`,
-# `hostname` and `sleep` on PATH. The fake kubectl records
+# Proves cluster.sh's behaviour without a cluster and without a network ((h)'s fresh render, below,
+# runs helm with the module proxy off, from the module cache alone): fakes `kubectl`, `gh`, `curl`,
+# `go`, `git`, `uv`, `dispatch`, `hostname` and `sleep` on PATH. The fake kubectl records
 # every call and answers from files the test writes (the run's pods, the lock ConfigMap, cpu.max,
 # the errors an apply fails with), and runs the stored-order check's runner script on the fake
 # runner's /work, where the fake go's envoy-dispatch prints a summary line; the fake curl answers
@@ -73,9 +73,9 @@
 # render-nats.sh refuses its vendored chart archive with one byte changed, naming it and both
 # sha256s, before it runs go or writes a render, and, when go is on PATH, re-renders nats.yaml from
 # the unchanged archive with no curl call, equal to the committed file (else it says it skipped
-# that). That render runs helm through `go run`, so it needs go's module proxy, or offline
-# GOPROXY=file://$(go env GOMODCACHE)/cache/download with helm in the module cache; it fails rather
-# than skips without one, so that a helm pin go cannot fetch fails CI; (i) the run's residual
+# that). That render runs the helm go-fetch.sh's tools mode installed at tools.txt's pin (the
+# command tools.txt names), under GOPROXY=off, so it fetches nothing; it fails rather than skips
+# without that helm, so that a pin the job's fetch step left uninstalled fails CI; (i) the run's residual
 # notes are replay-residual.md's lines, then the seed
 # check's anchors by placement rule (with the share on the nearest surviving block) and its
 # sign-flipped versions, a count the check lacks written as "not recorded"; (j) stored-order.json
@@ -2297,7 +2297,7 @@ pass "two starts of one runner job name get directories of their own, a start ne
   tree=$(cd -- "$tree" && pwd -P) # Match the directory spelling in render-nats.sh's refusal.
   chart=$tree/loadtest/cluster/nats-$version.tgz
   cp -- "$here/../common.sh" "$tree/loadtest/"
-  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
+  cp -- "$here/cluster.sh" "$here/render-nats.sh" "$here/tools.txt" "$here/nats-values.yaml" "$here/nats-$version.tgz" "$tree/loadtest/cluster/"
   vendored=$(sha256sum -- "$chart" | cut -d' ' -f1)
   [ "$vendored" = "$want" ] || fail "nats-$version.tgz has sha256 $vendored, not render-nats.sh's CHART_SHA256 '$want'"
   size=$(wc -c <"$chart")
@@ -2318,7 +2318,7 @@ pass "two starts of one runner job name get directories of their own, a start ne
 pass "render-nats.sh refuses its vendored chart with one byte changed, naming it and both sums, before it runs go or writes a render"
 
 # The render runs on the real PATH for go, behind a curl that records each call and fails it: with
-# --pin-from it fetches nothing but helm, which go fetches itself through its module proxy.
+# --pin-from it fetches nothing, and under GOPROXY=off it renders with the installed helm alone.
 # shellcheck disable=SC2031 # (e) to (g) source cluster.sh in subshells; its here and tmp stay there
 if PATH=$real_path command -v go >/dev/null; then
   mkdir -p "$tmp/no-curl"
@@ -2329,10 +2329,10 @@ exit 1
 EOF
   chmod +x "$tmp/no-curl/curl"
   status=0
-  PATH=$tmp/no-curl:$real_path bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
+  PATH=$tmp/no-curl:$real_path GOPROXY=off bash "$here/render-nats.sh" --pin-from "$here/manifests/nats.yaml" --out "$tmp/nats.yaml" 2>"$tmp/out" ||
     status=$?
   [ ! -s "$fake/no-curl.log" ] || fail "render-nats.sh --pin-from ran curl, which reads the network: $(cat "$fake/no-curl.log")"
-  [ "$status" = 0 ] || fail "render-nats.sh failed; if go could not fetch helm with no network, run with GOPROXY=file://$(PATH=$real_path go env GOMODCACHE)/cache/download"
+  [ "$status" = 0 ] || fail "render-nats.sh failed: $(tail -n 3 "$tmp/out"); under GOPROXY=off it renders with the helm tools.txt pins, installed first by .github/scripts/go-fetch.sh tools packages/envoy/loadtest/cluster/tools.txt"
   diff -u "$here/manifests/nats.yaml" "$tmp/nats.yaml" >"$tmp/out" ||
     fail "manifests/nats.yaml differs from a fresh render; run render-nats.sh and commit its output"
   pass "manifests/nats.yaml equals a fresh render of the vendored chart with nats-values.yaml, which ran no curl"

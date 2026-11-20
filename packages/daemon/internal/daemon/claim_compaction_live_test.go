@@ -68,6 +68,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -196,12 +197,7 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// every copy of the Config shares it, which is how internal/daemon's own pod-update tests
 	// put a role on this backend too (podupdate_test.go:1986).
 	r.cfg.WorkerBackends = r.backends
-	version, err := exec.Command(omp, "--version").Output()
-	if err != nil {
-		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
-	}
-	r.note("Oh My Pi %s at %s (the pod's build, which is the fleet's pin and not this branch's fetch)",
-		strings.TrimSpace(string(version)), omp)
+	r.noteOmpVersion()
 
 	root := proofCheckoutRoot(t)
 	work := t.TempDir()
@@ -1558,14 +1554,16 @@ func (r *claimCompactionLive) paneModels(token claim.Token) []paneModel {
 	return listing.Models
 }
 
-// paneOmp is one Oh My Pi command under a pane's own environment: the run's home and profile, and
-// the claim's own PI_CONFIG_FILES in the order the runtime composes it.
+// paneOmp is one Oh My Pi command under a pane's own environment: the run's home and profile, the
+// claim's own PI_CONFIG_FILES in the order the runtime composes it, and OMPOffline's proxy, as the
+// runtime gives a pane (localRuntime.paneEnvironment).
 func (r *claimCompactionLive) paneOmp(token claim.Token, args ...string) *exec.Cmd {
 	cmd := exec.Command(r.omp, args...)
 	cmd.Dir = r.t.TempDir()
 	cmd.Env = []string{
 		"PATH=" + os.Getenv("PATH"), "HOME=" + r.home, "OMP_PROFILE=" + r.profile,
 		"PI_CONFIG_FILES=" + strings.Join(r.overlays[token], ":"), "TMPDIR=" + os.Getenv("TMPDIR"),
+		testbin.OMPOffline(r.t),
 	}
 	return cmd
 }

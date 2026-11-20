@@ -1,0 +1,3 @@
+# The test job's fetch (.github/workflows/ci-job-test.yaml): the listener and natsfloor builds the
+# e2e library tests make (scripts/e2e/lib), through @legion/test-fixtures/go-command.
+deps packages/envoy ./cmd/listener ./natsversion/cmd/natsfloor

@@ -145,6 +145,10 @@
       "types": "./test/omp-natives.ts",
       "bun": "./test/omp-natives.ts"
     },
+    "./test/omp-offline": {
+      "types": "./test/omp-offline.ts",
+      "bun": "./test/omp-offline.ts"
+    },
     "./test/skills-guard": {
       "types": "./test/skills-guard.ts",
       "bun": "./test/skills-guard.ts"

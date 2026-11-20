@@ -65,14 +65,23 @@ checkout, and the merge job's `actions: read` (it reads the run's jobs through t
 dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
 `ci-ok-changes` either, so the report step skips there and no check is posted.
 
-## Why GOPROXY falls through to direct
+## Why every go command runs with the module proxy off, and GO_FETCH_PROXY falls through to direct
 
-A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-straight from the source and checks them against go.sum, so this is a second path, not a weaker
-check.
+Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+and names the module, where it would otherwise be downloaded while a test runs and fail the test
+whenever the module proxy or the checksum database fails, on a change that touched nothing it
+tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+`go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+
+GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+"GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+same bytes straight from the source and checks them against go.sum, so this is a second path,
+not a weaker check.
 
 ## Why the binaries job builds what the suite runs
 
@@ -123,7 +132,16 @@ job 129055096326 of run 42585736615, where this build still sat inside the alone
 3-minute browser step. go-envoy-test is filled by `go test -c -o /dev/null ./...` over
 the whole envoy module, so it carries every package built here: 4 downloads and a 17 s
 restore of 646 MB in job 129071749416 of run 42590831386, against 9 s of 153 MB. No job
-here saves either one.
+here saves either one. The key hashes the root workspace's module files, every fetch file
+the family's readers run and go-fetch.sh, so an entry holds what the "Fetch the modules this
+job's go steps load" step fetches.
+
+## Why the binaries job fetches its modules first
+
+Both go steps of this job read the module cache alone (GOPROXY=off, this file's env): the
+cgo-less build and the connections command's `go run`. The "Fetch the modules this job's go
+steps load" step fetches what they load first, from the entry the restore before it brought
+back, tried again on failure.
 
 ## What the binaries build writes, and why it is static
 
@@ -790,7 +808,7 @@ go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
 this job builds the Dispatch server and the dev OIDC issuer, which only that family's
-entry holds. It saves none.
+entry holds. It saves none. Its key is the binaries job's.
 
 ## Why the two-process job builds contracts
 
@@ -798,6 +816,15 @@ The shard job's step of this name, for the reason it gives: Playwright's Node ru
 reads `@legion/contracts` out of a build this checkout has to make before the config
 loads, and the entries Dispatch imports are all it needs. `bun run e2e:multiprocess`
 in the "Browser-test dispatch dashboard against two server processes" step makes the same build again (packages/dispatch's build:contracts).
+
+## Why the two-process job fetches its modules first
+
+The browser tests' harness builds the Dispatch server (e2e/run-server.sh) and, for the
+sign-in run, the dev OIDC issuer (e2e/run-signin-issuer.sh) with GOPROXY=off, as every go
+step of this job runs (this file's env): a fetch inside a test fails it whenever the
+module proxy does, on a change that touched nothing it tests. The "Fetch the modules this
+job's go steps load" step fetches both builds' modules first, tried again on failure, and the
+build step and the tests after it read them from the module cache.
 
 ## Why the two-process job builds the Dispatch server itself
 
@@ -911,12 +938,28 @@ added that job's two steps for it at that job's figures: the pull at 120 s and t
 connections read at its two-minute floor. 4 + 4 + 2 min plus 135 s and 120 s = 14 min 15 s
 -> 15 min.
 
+## Why the embedder job restores go-envoy
+
+go-envoy, restored only, under the key .github/workflows/ci-caches.yaml's envoy job fills,
+whose fill runs the fetch file of this job's fetch step, with every other fetch file of the
+family's readers, which the key hashes with the root workspace's module files and
+go-fetch.sh.
+
 ## Why the embedder job builds contracts
 
 The e2e helpers the specs import read some of contracts' values from its built dist/,
 through Playwright's own Node resolution (the shard job's step of the same name), which
 takes the entries Dispatch imports alone. `bun run e2e:embedder`, the "Browser-test the bar's two tiers against a counting embedder" step, makes the same
 build again (packages/dispatch's build:contracts).
+
+## Why the embedder job fetches its modules first
+
+The one-process harness builds the Dispatch server (e2e/run-server.sh) and the real
+broker's three commands (e2e/run-broker.sh) with GOPROXY=off, as every go step of this job
+runs (this file's env): a fetch inside a test fails it whenever the module proxy does, on a
+change that touched nothing it tests. The "Fetch the modules this job's go steps load" step
+fetches those builds' modules first, from the cache the restore brought back and tried again
+on failure.
 
 ## Why the embedder job's server build carries the lane in its name
 
@@ -1022,7 +1065,7 @@ six columns above, the sixth being run 42614920253 (job 129152410516). So the su
 
 go-envoy-test, restored only, for the reason the binaries job's step of this name gives:
 this job's run-server.sh builds the Dispatch server, which only that family's entry
-holds. It saves none.
+holds. It saves none. Its key is the binaries job's.
 
 ## Why the visual job builds contracts
 
@@ -1058,6 +1101,16 @@ start, so the 120 s is the bound this pull is given, not a measure of the pull a
 digest is written three times, here and in the two browser steps (the normal order and
 the reverse), and the three must stay the same: a pull of another digest here leaves the
 browser steps to pull their own inside their budgets again.
+
+## Why the visual job fetches its modules first
+
+The stack e2e/visual-run.sh starts builds the Dispatch server (e2e/run-server.sh) and the
+real broker's three commands (e2e/run-broker.sh) inside the browser step, with
+GOPROXY=off, as every go step of this job runs (this file's env): a fetch inside a test
+fails it whenever the module proxy does, on a change that touched nothing it tests, and
+here it would count inside that step's 4 minutes too. The "Fetch the modules this job's go
+steps load" step fetches those builds' modules, and the connections command's after it,
+first, from the cache the restore brought back and tried again on failure.
 
 ## Why the visual job runs its rows again in reverse order
 

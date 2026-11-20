@@ -161,10 +161,15 @@ cd "$e2e_dir/../../envoy"
 # starting at once build them once: the second waits, and Go rewrites nothing that did not change.
 # out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
 # this run builds: the fake secrets file below is written in it, and with the binaries handed
-# over it is the only thing this script still writes there.
+# over it is the only thing this script still writes there. The build reads the module cache
+# alone (go_build_offline, GOPROXY=off), as e2e/run-server.sh's does and for its reason: each CI
+# job whose tests start this script fetches these three commands' modules in a step before them.
+# The lock is the subshell's fd 9, held for the build alone.
 mkdir -p "$work"
 if [ -z "$prebuilt_bin" ]; then
-  flock "$work/.build.lock" go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+  # shellcheck source=.github/scripts/go-build-offline.sh
+  source ../../.github/scripts/go-build-offline.sh
+  ( flock 9 && go_build_offline packages/envoy "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed ) 9>"$work/.build.lock" || exit 1
 fi
 
 if [ "$mode" = issuer ]; then

@@ -12,11 +12,13 @@
 # repository out in its first step, above every step below it, so this script, the helper it
 # sources and the rig it runs are all in the checkout when the step runs.
 #
-# Run from the repository root: LEGION_TEST_UV=<uv binary> .github/scripts/tool-fallback-installed-versions.sh <tarball>
+# Run from the repository root: LEGION_TEST_UV=<uv binary> RUNNER_TEMP=<directory> .github/scripts/tool-fallback-installed-versions.sh <tarball>
 # LEGION_TEST_UV is the uv binary the install-uv action fetched, which that action writes to
 # GITHUB_ENV; the script runs it for uv's version. It reads it only inside a command
 # substitution, so an unset one ends that subshell alone (`set -u`): uv's reading is empty, and
 # the script ends naming uv among the tools that answered a version their rows do not pin.
+# RUNNER_TEMP is the runner's temporary directory, which GitHub sets; pulumi's file backend goes
+# there, and it is read the same way, so an unset one names pulumi-cli among those tools.
 # CI runs it in ci-job-tool-fallback.yaml's tool-fallback job, at the step "Check every tool is
 # the version its row pins".
 set -euo pipefail
@@ -31,7 +33,11 @@ wrong=""
 "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
 "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
 "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
-"$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+# A file backend: a pulumi command with no backend set that needs one logs in to a new
+# ephemeral Pulumi Cloud account, and `version` gets one too so no edit here can reach one.
+# No update check either: every command starts one, which asks api.pulumi.com for the
+# CLI's latest version.
+"$proof" version-answers pulumi-cli "$(PULUMI_BACKEND_URL="file://$RUNNER_TEMP" PULUMI_SKIP_UPDATE_CHECK=true pulumi version)" || wrong="$wrong pulumi-cli"
 # The docker provider plugin prints no version of its own: nothing is installed, and
 # what the action hands back is the tarball the live tests are given. Its reading is
 # therefore the row's own digest, read by the one digest reader of this repository.

@@ -21,6 +21,7 @@ set -euo pipefail
 container=${1:?the service container id}
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+# go-offline: the step that sizes a lane's service before its tests runs this, and is no test.
 server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
 reserved=$(docker exec "$container" psql -U postgres -Atc "select current_setting('superuser_reserved_connections')")
 want=$((server + reserved))

@@ -39,7 +39,7 @@ import (
 // to one is a change to both.
 func OMPHome(t *testing.T, omp, home string) {
 	t.Helper()
-	cache, err := nativesCache(omp)
+	cache, err := nativesCache(t, omp)
 	if err != nil {
 		t.Fatalf("the natives cache for %s: %v", omp, err)
 	}
@@ -49,16 +49,17 @@ func OMPHome(t *testing.T, omp, home string) {
 }
 
 // nativesCaches holds each omp path's one lookup in this process, since naming the cache reads the
-// whole binary.
+// whole binary. The lookup runs once, inside the first test that asks, which is the test whose
+// OMPOffline proxy the fill's omp runs under.
 var nativesCaches sync.Map
 
-func nativesCache(omp string) (string, error) {
+func nativesCache(t *testing.T, omp string) (string, error) {
 	lookup, _ := nativesCaches.LoadOrStore(omp, sync.OnceValues(func() (string, error) {
 		cache, err := os.UserCacheDir()
 		if err != nil {
 			return "", err
 		}
-		return fillNativesCache(filepath.Join(cache, "legion", "test-omp-natives"), omp)
+		return fillNativesCache(t, filepath.Join(cache, "legion", "test-omp-natives"), omp)
 	}))
 	return lookup.(func() (string, error))()
 }
@@ -81,7 +82,7 @@ func nativesCache(omp string) (string, error) {
 // not a regular file, or not at its embedded size, is refused as well. Among the fills a failed
 // write can leave, one is accepted: a failed write of the selected variant whose fallback variant
 // was then written whole. That set loads, so it is a usable cache.
-func fillNativesCache(root, omp string) (string, error) {
+func fillNativesCache(t *testing.T, root, omp string) (string, error) {
 	digest, embedded, err := readBinary(omp)
 	if err != nil {
 		return "", err
@@ -119,9 +120,10 @@ func fillNativesCache(root, omp string) (string, error) {
 	}
 	defer os.RemoveAll(staging)
 	home := filepath.Join(staging, "home")
-	// Any command that loads the natives extracts them; this one reads a setting and calls nothing.
+	// Any command that loads the natives extracts them; this one reads a setting and calls nothing,
+	// and OMPOffline's proxy refuses anything a later pin would fetch.
 	extract := exec.Command(omp, "config", "get", "compaction.remoteEndpoint", "--json")
-	extract.Dir, extract.Env = staging, []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	extract.Dir, extract.Env = staging, []string{"HOME=" + home, "PATH=/usr/bin:/bin", OMPOffline(t)}
 	if out, err := extract.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%s config get under the fresh HOME %s: %w\n%s", omp, home, err, out)
 	}

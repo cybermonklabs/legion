@@ -7,6 +7,7 @@
 # scripts/airlock-check.sh for the judge's own seven checks - k10, k10b, k10c, k10d, k10e,
 # k10f and k10g - and copies that script's shape: the same stack, the same helpers, the same
 # result block.
+# go-offline-file: a person runs each check against a local stack; no CI job runs this script.
 #
 # What one run proves is the check's own sentence and nothing wider. The script starts the
 # local stack the check needs (scripts/dev-airlock.sh), drives every case the check names,

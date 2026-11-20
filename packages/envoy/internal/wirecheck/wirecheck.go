@@ -25,6 +25,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/gofetch"
 )
 
 // Finding is one value a call to the other party encodes or decodes with a type the wire package
@@ -168,16 +170,21 @@ type listedPackage struct {
 }
 
 // goList is `go list -deps -export -json` of pkgs in dir: every package pkgs reach, each with the
-// export data the compiler wrote for it.
+// export data the compiler wrote for it. It fetches no module: go list reads the module cache alone
+// (GOPROXY=off), since a fetch while a test runs would fail the test whenever the module proxy or
+// the checksum database does, on a change that touched nothing it checks. The job that runs the
+// check fetches the modules of pkgs in a step before the tests; a module the cache lacks fails the
+// listing with the command that does it (gofetch.Hint).
 func goList(dir string, pkgs []string) ([]listedPackage, error) {
 	args := append([]string{"list", "-deps", "-export", "-json=ImportPath,Dir,Export,GoFiles,CgoFiles,ImportMap,DepOnly,Error"}, pkgs...)
 	command := exec.Command("go", args...)
 	command.Dir = dir
+	command.Env = append(os.Environ(), "GOPROXY=off")
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
-		return nil, fmt.Errorf("go %s in %s: %v\n%s", strings.Join(args, " "), dir, err, stderr.String())
+		return nil, fmt.Errorf("go %s in %s: %v\n%s%s", strings.Join(args, " "), dir, err, stderr.String(), gofetch.Hint(dir, pkgs, stderr.String()))
 	}
 	var listed []listedPackage
 	decoder := json.NewDecoder(bytes.NewReader(out))
@@ -189,7 +196,7 @@ func goList(dir string, pkgs []string) ([]listedPackage, error) {
 			return nil, fmt.Errorf("read go list's answer in %s: %v", dir, err)
 		}
 		if p.Error != nil {
-			return nil, fmt.Errorf("go list in %s: %s: %s", dir, p.ImportPath, p.Error.Err)
+			return nil, fmt.Errorf("go list in %s: %s: %s%s", dir, p.ImportPath, p.Error.Err, gofetch.Hint(dir, pkgs, p.Error.Err))
 		}
 		listed = append(listed, p)
 	}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: e2e.yaml runs this proof, nightly and on the e2e label; no required job runs it.
 # scripts/e2e/nats-callout-sessions.sh — the live proof of the NATS auth service's r-kinds and
 # r-refusal with sessions (its verification's checks c-callout-kinds-plugins, the default mode,
 # and c-callout-kinds, --real-hosts): an Oh My Pi session, a Claude Code session and two Codex

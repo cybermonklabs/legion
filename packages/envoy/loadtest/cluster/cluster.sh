@@ -1876,6 +1876,7 @@ tree_has() { git -C "$REPO_DIR" cat-file -e "$1:$2" 2>/dev/null; }
 build_at_commit() {
   local commit=$1 pkg=$2 out=$3 source=${4:-} src rc=0
   src=$(mktemp -d "${out%/*}/.build-src.XXXXXX") || return 1
+  # go-offline: an operator runs up against a cluster; cluster.test.sh puts a stand-in go first on PATH.
   { git -C "$REPO_DIR" archive "$commit" packages/envoy | tar -C "$src" -xf - &&
     { [ -z "$source" ] || stored_order_overlay "$src" "$commit" "$source"; } &&
     (cd -- "$src/packages/envoy" && CGO_ENABLED=0 GOWORK=off go build -buildvcs=false -o "$out" "$pkg"); } || rc=$?
@@ -3570,6 +3571,7 @@ up_run() {
   start_daemon heartbeat
 
   note "building loadgen (static) into $LOADGEN"
+  # go-offline: an operator runs up against a cluster; cluster.test.sh puts a stand-in go first on PATH.
   (cd -- "$ENVOY_DIR" && CGO_ENABLED=0 go build -o "$LOADGEN" ./loadtest) || die "go build of loadgen failed"
   if [ -n "$bt_commit" ]; then
     # shellcheck disable=SC2016 # $c and $s are jq's variables

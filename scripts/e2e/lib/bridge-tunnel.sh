@@ -1,4 +1,5 @@
 # shellcheck shell=bash disable=SC2154,SC2034 # the variables below are the caller's (listed below)
+# go-offline-file: the devbox proofs that source it run on no CI job (e2e.yaml refuses both).
 # A reverse tunnel from the devbox to a scratch pod+Service of the run's own, for a cluster whose
 # pods cannot reach the devbox at all (no tailnet bridge, no routable private address — GKE's
 # pattern, unlike AWS's directly-reachable private address). Shared by two callers:

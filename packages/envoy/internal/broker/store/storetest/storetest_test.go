@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -20,6 +21,8 @@ const containerModule = "github.com/testcontainers/testcontainers-go"
 // Control: import internal/testpg here again (or in testdb) and this fails, naming the path.
 func TestStoretestLinksNoContainerRuntime(t *testing.T) {
 	list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
+	// The module cache alone: this package's own graph, which the go test running it loaded.
+	list.Env = append(os.Environ(), "GOPROXY=off")
 	out, err := list.Output()
 	if err != nil {
 		var exit *exec.ExitError

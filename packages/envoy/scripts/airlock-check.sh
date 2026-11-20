@@ -2130,8 +2130,11 @@ check_k15() {
 		"${bad:-every one of the $count rests on propext, Classical.choice and Quot.sound alone, and none on sorryAx}"
 
 	echo "airlock-check: fuzzing the Go airlock against the model for ten minutes..." >&2
+	# go-offline: a person runs this fuzz test against a checkout; airlock-check.test.sh, the one test
+	# that runs this script, stops it before its work directory, long before this line.
 	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/seed-corpus.log" 2>&1
 	local seed_status=$?
+	# go-offline: the same fuzz test, run for ten minutes; no test reaches it either.
 	(cd "$ENVOY_DIR" && AIRLOCK_MODEL="$model" go test -fuzz FuzzAirlock -fuzztime=600s -run FuzzAirlock ./internal/broker/airlock/) >"$WORK_DIR/fuzz.log" 2>&1
 	local fuzz_status=$?
 	observe "the seed corpus comparison exited $seed_status: $(tail -n 2 "$WORK_DIR/seed-corpus.log" | tr '\n' ' ')"

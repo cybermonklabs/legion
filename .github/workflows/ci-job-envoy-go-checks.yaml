@@ -30,14 +30,24 @@ on:
         required: false
         default: ''
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   envoy-go-checks:
@@ -72,9 +82,14 @@ jobs:
       # Go toolchain". The checkout removes the problem matcher it adds before it ends, so no
       # matcher of an earlier step reads the check's lines (README.md, "What the runner reads from
       # the check's lines"). A refused note set fails the job before its other checks run.
+      # The action builds its command with its own module cache, keyed on packages/envoy/go.sum,
+      # as a caller in another repository runs it, so it goes online as it does there.
+      # go-offline: the composite action builds its own command from its own module cache, as other repositories run it, and runs no test.
       - id: architecture-notes
         name: Check this repository's architecture notes with the composite action
         uses: ./.github/actions/architecture-check
+        env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
       # A caller reads the count through env, never inside run:, and so does this step. It runs
       # only when the action succeeded, which without allow-empty means a valid set of one note or
       # more, so a count that is missing or not a positive whole number is the action's fault.
@@ -92,10 +107,14 @@ jobs:
       # exercised here, and it runs before this job's own setup-go. Its own setup-go adds the `go`
       # matcher again and it removes it again. Main holds no spec file yet, so the directory does
       # not exist and allow-empty reads it as the empty tree; a pull request that adds a spec file
-      # is judged by every rule. A refused tree fails the job before its other checks run.
+      # is judged by every rule. A refused tree fails the job before its other checks run. It goes
+      # online for the reason the architecture-note action above does.
+      # go-offline: the composite action builds its own command from its own module cache, as other repositories run it, and runs no test.
       - id: spec-files
         name: Check this repository's spec files with the composite action
         uses: ./.github/actions/spec-check
+        env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
         with:
           allow-empty: 'true'
       # It runs only when the action succeeded: a valid tree, or with allow-empty the empty one, so
@@ -116,13 +135,32 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-envoy, the module and build cache .github/workflows/ci-caches.yaml fills for the envoy
+      # lanes on this runner, keyed on the root workspace's module files, on every fetch file its
+      # readers run, on the helm pin the fetch file below names and on go-fetch.sh, so an entry
+      # holds what the fetch step below fetches. A pull request that changes one of them restores
+      # the newest entry by prefix, which that step tops up.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env) but the
+      # pack step: the test steps' own go test; the listener clients the wire test lists with
+      # `go list -deps -export` and `go list` (wirecheck.go's goList, listenerwire/golist_test.go),
+      # the fetch file's two lines .github/scripts/ci_job_reads.py's LISTENER_CLIENTS builds and
+      # check-ci-filters.sh holds to that test's table (hold_listener_clients); the commands the
+      # steps `go run` and `go build`; the darwin vet with each of its tag sets; and the helm
+      # cluster.test.sh renders with, installed from loadtest/cluster/tools.txt into
+      # legion-live-tools under GOPATH, where render-nats.sh takes it from after checking its
+      # build against the pin. A fetch while a test runs fails it whenever the module proxy or the
+      # checksum database does, on a change that touched nothing it tests, so this step fetches
+      # all of it first, from the go-envoy entry restored above and tried again on failure: on a
+      # filled entry it asks the network nothing (.github/scripts/go-fetch.sh, tools).
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-go-checks.txt
       - name: Check Go formatting
         run: |
           unformatted=$(gofmt -l .)
@@ -142,7 +180,10 @@ jobs:
       # type-checks the daemon's listener clients, so they run here, their one run, and a change to
       # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
       # leaves both packages out, its `grep -Ev` and this step's package list built from
-      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py.
+      # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py. The clients test lists the
+      # clients' packages with `go list -deps -export`, which compiles them, and the load-test
+      # package with `go list`, both with GOPROXY=off: the fetch step above fetched what those
+      # listings read.
       - name: Test the listener's wire package, its clients and wirecheck
         run: go test -count=1 ./listenerwire/ ./internal/wirecheck/
         working-directory: packages/envoy
@@ -204,6 +245,9 @@ jobs:
       - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
         run: bash loadtest/common.test.sh
         working-directory: packages/envoy
+      # cluster.test.sh renders nats.yaml with the helm the fetch step above installed, under
+      # GOPROXY=off, since a fetch inside a test fails it whenever the module proxy does, on a
+      # change that touched nothing it tests.
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         run: bash loadtest/cluster/cluster.test.sh
         working-directory: packages/envoy
@@ -262,6 +306,7 @@ jobs:
       # reads off the module's own build constraints, so a file under a tag that lands later, or
       # under a negated one, is vetted too rather than passed over in silence. One
       # darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # go-offline: the one tag set go_build_tags.py prints is fetched by go-fetch/envoy-go-checks.txt's GOOS=darwin GOARCH=arm64 deps line.
       - name: Vet envoy for darwin, its tagged tests included
         run: |
           flags=$(python3 ../../.github/scripts/go_build_tags.py . darwin arm64)
@@ -270,8 +315,13 @@ jobs:
             GOOS=darwin GOARCH=arm64 go vet "$flag" ./...
           done <<< "$flags"
         working-directory: packages/envoy
-      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included.
+      # The release's archives (release-envoy-listener.yaml), THIRD_PARTY_NOTICES included. It goes
+      # online as the release does: scripts/go-third-party-notices.sh installs go-licenses
+      # (`go install` of its pin), and each cross build reads the restored entry first.
+      # go-offline: the release archives' build, run as release-envoy-listener.yaml runs it, installs go-licenses and runs no test.
       - name: Pack envoy binaries
+        env:
+          GOPROXY: ${{ env.GO_FETCH_PROXY }}
         run: |
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             out="../../out/pr-artifacts/envoy-$arch"

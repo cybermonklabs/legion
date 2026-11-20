@@ -15,6 +15,7 @@
 # script'''s. Search compares a query only with vectors its server's embedder made, and that
 # server's coverage pass drops every other vector from the copy when it boots, so score an
 # embedder on a copy it has finished embedding (GET /api/v1/search/coverage answering lacking 0).
+# go-offline-file: a person runs this benchmark against a corpus copy; no CI job runs it.
 set -euo pipefail
 
 usage() {

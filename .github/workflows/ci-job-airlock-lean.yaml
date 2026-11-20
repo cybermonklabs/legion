@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   airlock-lean:
@@ -43,14 +53,30 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # No Go cache family: the airlock package imports the standard library and internal/fold,
-      # which imports nothing, so this job downloads no module and compiles no third-party code,
-      # as envoy-go-race-api does.
-      #
+      # go-envoy, the module and build cache .github/workflows/ci-caches.yaml fills for the envoy
+      # lanes on this runner, keyed on the root workspace's module files, on every fetch file its
+      # readers run and on go-fetch.sh, so an entry holds what the fetch step below fetches. The
+      # airlock package imports the standard library and internal/fold, which imports nothing, so
+      # the two go steps below build no third-party code; their go test still loads the
+      # workspace's module graph, which reads the go.mod of each module it requires, and with the
+      # module proxy off a go.mod the cache lacks fails them. A pull request that changes one of the
+      # hashed files restores the newest entry by prefix, which the fetch step tops up.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
+          restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env): this step
+      # fetches what they load first, tried again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/airlock-lean.txt
       # elan and the Lean toolchain it installs, under the ELAN_HOME
       # .github/actions/install-elan sets ($RUNNER_TEMP/elan, under the runner's work directory),
       # keyed on the runner's architecture, since elan and the toolchain are binaries of it, and on

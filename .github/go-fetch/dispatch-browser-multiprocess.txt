@@ -1,0 +1,4 @@
+# dispatch-browser.yaml's multiprocess job: the server and the sign-in issuer the two-process
+# harness builds (e2e/run-server.sh), and the connections command its own step runs.
+deps packages/envoy ./cmd/dispatch ./cmd/dev-oidc-issuer
+deps packages/envoy ./internal/dispatch/store/cmd/connections

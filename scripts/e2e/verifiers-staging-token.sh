@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # LEGION-208's live proof of the OIDC verifiers: the branch's own `dispatch` and `listener`
 # binaries authenticate a real projected service-account token minted by the staging EKS
 # cluster, refuse a token minted for the other binary's audience, refuse a request with no

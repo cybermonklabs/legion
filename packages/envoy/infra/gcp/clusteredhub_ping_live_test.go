@@ -183,7 +183,7 @@ func TestClusteredNatsHubRoutesKeepTheirPingBesideACallout(t *testing.T) {
 	require.Len(t, routePinEntry.FindAllString(r.natsConf, -1), 2, "the pin's two entries:\n%s", r.natsConf)
 	withoutPin := routePinEntry.ReplaceAllString(r.natsConf, "")
 	require.NotContains(t, withoutPin, "ping_")
-	natsServer := installTools(t, t.TempDir(), liveTool{natsServerTool, "nats-server"})[0]
+	natsServer := liveTool(t, "nats-server")
 
 	// Each bound is measured from the clock that makes it exact. The first tick that queues a PING
 	// behind the burst comes after the burst began, so the routes' own 30 s close the route later

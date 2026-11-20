@@ -82,7 +82,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-
       - name: Determine next version
         id: version
@@ -227,11 +227,15 @@ jobs:
       # install, so it is compared literally, and jq takes it as an --arg rather than reading it
       # as part of an expression. The binary's path is absolute: `pulumi package get-schema` reads
       # a path that starts with neither `/` nor `./` as a package name to resolve. The linux/amd64
-      # command prints the same version.
+      # command prints the same version. The CLI runs on a file backend: a pulumi command with no
+      # backend set that needs one logs in to a new ephemeral Pulumi Cloud account. It runs with no
+      # update check, which asks api.pulumi.com for the CLI's latest version while it runs.
       - name: Smoke test
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          PULUMI_BACKEND_URL: file://${{ runner.temp }}
+          PULUMI_SKIP_UPDATE_CHECK: "true"
         run: |
           schema=$(pulumi package get-schema "$GITHUB_WORKSPACE/out/linux-amd64/pulumi-resource-envoy-infra")
           jq '{name, version, pluginDownloadURL}' <<<"$schema"

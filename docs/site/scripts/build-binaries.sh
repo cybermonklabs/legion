@@ -25,6 +25,7 @@ legion_module=packages/daemon
 envoy_module=packages/envoy
 
 mkdir -p "$bin"
+# go-offline: the docs site's build step runs this (scripts/generate.ts), a build and no test.
 go -C "$root/$legion_module" build -o "$bin/legion" ./cmd/legion
 go -C "$root/$envoy_module" build -o "$bin/envoy-dispatch" ./cmd/dispatch
 go -C "$root/$envoy_module" build -o "$bin/envoy-broker" ./cmd/broker

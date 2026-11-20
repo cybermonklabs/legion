@@ -11,6 +11,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { ompOffline } from "@legion/pi-shared/test/omp-offline";
 
 // Where a session sits in tmux, as the real Oh My Pi reports it (envoy-client's `readTmuxPlace`,
 // the cached reading extensions/envoy.ts takes a registration's place from without waiting on it,
@@ -80,6 +81,8 @@ async function tmuxCommand(
   args: readonly string[],
   environment: Record<string, string>
 ): Promise<string> {
+  // omp-offline: `binary` is tmux. The server's environment, which every pane and so the Oh My Pi
+  // in one inherits, is paneEnvironment's, which carries ompOffline's proxy.
   const child = Bun.spawn([binary, "-u", "-S", socket, "-f", "/dev/null", ...args], {
     env: environment,
     stdout: "pipe",
@@ -95,14 +98,16 @@ async function tmuxCommand(
 }
 
 /** The environment the case's tmux server, and with it every pane, runs under: the harness's own
- *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane.
- *  `LD_LIBRARY_PATH` goes with it, as a tmux outside the system directories needs its libraries
- *  named the way whatever put it on PATH named them. */
+ *  HOME and PATH, with tmux's directory first, since the reading runs `tmux` from inside the pane,
+ *  and ompOffline's proxy, so the binary in a pane reaches no network. `LD_LIBRARY_PATH` goes with
+ *  it, as a tmux outside the system directories needs its libraries named the way whatever put it
+ *  on PATH named them. */
 function paneEnvironment(home: string, binary: string): Record<string, string> {
   const named = process.env.LD_LIBRARY_PATH;
   return {
     HOME: home,
     PATH: [path.dirname(binary), "/usr/local/bin", "/usr/bin", "/bin"].join(":"),
+    ...ompOffline(cleanup),
     ...(named === undefined ? {} : { LD_LIBRARY_PATH: named }),
   };
 }

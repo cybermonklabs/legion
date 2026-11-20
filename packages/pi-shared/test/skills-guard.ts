@@ -10,6 +10,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } 
 import * as os from "node:os";
 import * as path from "node:path";
 import { linkOmpNatives } from "./omp-natives";
+import { ompOffline } from "./omp-offline";
 
 export const SPILL_THRESHOLD_BYTES = 50 * 1024;
 /** The repository root, where `skills/` and the prepack script live. */
@@ -274,25 +275,33 @@ export function agentDispatches(roots: readonly string[]): AgentDispatch[] {
  * The task agents the Oh My Pi binary `omp` resolves with no plugin installed: the names of the
  * files `omp agents unpack` writes under a fresh HOME. That HOME is a temporary directory holding
  * only the binary's natives (hardlinks to the shared copy, omp-natives.ts), and the binary's
- * environment names no profile or config directory, so it writes where a person's does. The
+ * environment names no profile or config directory, so it writes where a person's does; it also
+ * names ompOffline's proxy, so the run reaches no network. The binary runs asynchronously, since
+ * the proxy's listener is this process's own and answers only while its event loop runs. The
  * directory is removed before returning.
  */
 export async function bundledAgents(omp: string): Promise<string[]> {
   const home = mkdtempSync(path.join(os.tmpdir(), "omp-bundled-agents-"));
+  const offline: (() => Promise<void>)[] = [];
   try {
     await linkOmpNatives(omp, home);
-    const unpacked = Bun.spawnSync([omp, "agents", "unpack"], {
-      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
+    const unpacked = Bun.spawn([omp, "agents", "unpack"], {
+      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin", ...ompOffline(offline) },
+      stdout: "ignore",
+      stderr: "pipe",
     });
-    if (unpacked.exitCode !== 0) {
-      throw new Error(
-        `${omp} agents unpack exited ${unpacked.exitCode}:\n${unpacked.stderr.toString()}`
-      );
+    const [stderr, code] = await Promise.all([
+      new Response(unpacked.stderr).text(),
+      unpacked.exited,
+    ]);
+    if (code !== 0) {
+      throw new Error(`${omp} agents unpack exited ${code}:\n${stderr}`);
     }
     return files(path.join(home, ".omp"))
       .filter((file) => file.endsWith(".md"))
       .map((file) => path.basename(file, ".md"));
   } finally {
+    for (const undo of offline) await undo();
     rmSync(home, { recursive: true, force: true });
   }
 }

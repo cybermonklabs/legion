@@ -57,14 +57,24 @@ on:
           callers pass it.
         required: false
 
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-  # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-  # proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-  # go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-  # straight from the source and checks them against go.sum, so this is a second path, not a weaker
-  # check.
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   build:
@@ -104,7 +114,9 @@ jobs:
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
       # holds the listener and natsd alone, so one key for both let whichever job saved first own
       # it. .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs says
-      # how every family is kept. This step restores go-docs in the form
+      # how every family is kept. Its key hashes the root workspace's module files, the fetch file
+      # below and go-fetch.sh, so a change to any of them saves a fresh entry on the push to main
+      # that lands it. This step restores go-docs in the form
       # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
       # main by the exact key alone. The save-cache input names the one caller that writes the
       # entry, and that caller is docs-pages.yaml.
@@ -114,7 +126,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/docs.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-{1}-', runner.os, runner.arch) || '' }}
       - run: bun install --frozen-lockfile
       - name: Typecheck the docs site
@@ -139,8 +151,26 @@ jobs:
         # the image already. With the apt call goes this step's removal of the runner image's
         # chrome-stable apt source, which it carried only because that source's index
         # intermittently failed `apt-get update` and took `--with-deps` down with it.
+        #
+        # The 4-minute bound is the one dispatch-browser.yaml's multiprocess job gives its step of
+        # this name, for the same three archives (Chrome for Testing, its headless shell and
+        # ffmpeg) and Playwright's up to five attempts across its download hosts inside it; this
+        # step took 10 s in job 135592911448 of run 44533492400. Without a bound a hung download
+        # would hold the job to its 25 minutes, which .github/scripts/package_installs.py refuses
+        # in a required workflow.
+        timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: docs/site
+      # Every go command of this job reads the module cache alone (GOPROXY=off, this file's env):
+      # the screenshots' harness builds the Dispatch server (packages/dispatch/e2e/run-server.sh)
+      # and the real broker's three commands (e2e/run-broker.sh), and the docs build's
+      # docs/site/scripts/build-binaries.sh the generators' commands. A fetch inside the run fails
+      # it whenever the module proxy does, on a change that touched nothing it shows. This step
+      # fetches those builds' modules first, from the cache restored above and tried again on
+      # failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/docs.txt
+
       # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
       # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit
       # waits for the runner's disk. With them on, a write a closed page left in flight can hold a

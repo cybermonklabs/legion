@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# go-offline-file: the live proofs that source it run in e2e.yaml alone, which no required job is.
 # The run a whole-daemon live proof makes around its driver: every entry script that sources
 # this file differs from the others only in what its driver proves, so each is this run;
 # merged-root-waits.sh and no-required-checks.sh have gone with the daemon's merge and its read of

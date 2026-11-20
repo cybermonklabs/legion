@@ -76,6 +76,7 @@ done
 for target in $(jq -r '.["agent-secrets-client"][]' .github/agent-secrets-client-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
+    # go-offline: lint's notices step and ci-caches.yaml's notices job run this; neither is a test.
     go -C packages/envoy build -buildvcs=false -o /dev/null ./cmd/agent-secrets
     cd packages/envoy
     ../../scripts/go-third-party-notices.sh "$notices/agent-secrets-${target%/*}-${target#*/}" ./cmd/agent-secrets
@@ -84,6 +85,7 @@ done
 for target in $(jq -r '.["envoy-infra"][]' .github/envoy-infra-targets.json); do
   (
     export CGO_ENABLED=0 GOOS="${target%/*}" GOARCH="${target#*/}"
+    # go-offline: lint's notices step and ci-caches.yaml's notices job run this; neither is a test.
     go -C packages/envoy/infra build -buildvcs=false -o /dev/null ./cmd/...
     cd packages/envoy/infra
     ../../../scripts/go-third-party-notices.sh "$notices/pulumi-resource-envoy-infra-${target%/*}-${target#*/}" ./cmd/pulumi-resource-envoy-infra

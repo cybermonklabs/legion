@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   envoy-smoke:
@@ -46,23 +56,69 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # go-envoy-infra, restored only, under the key .github/workflows/ci-caches.yaml's envoy-infra
+      # job fills on this runner (its x64 leg, which release-envoy-infra.yaml's build reads too):
+      # the runner's architecture, the Go version and the hash of both workspaces' module files,
+      # gcp's live tools, the notices tool's pin (the image builds' go-licenses), every fetch file
+      # the family's readers run and go-fetch.sh. Its fill runs
+      # this job's fetch file, so the fetch step below finds the modules there and downloads only
+      # what moved since; the SDK consumer's `go mod tidy` reads modules beyond them, which the
+      # later fetch step resolves. The Go version is packages/envoy/go.mod's, which this job
+      # builds with and which names the same version as packages/envoy/infra/go.mod; a version the
+      # two do not share misses the key and restores the newest entry by prefix.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
+          restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+      # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the smoke
+      # test and the cgo-less systemroots probe it builds, the plugin's builds (the live tests'
+      # pulumitest.Plugin, the consumer's plugin below and the schema step's), the live tests of
+      # host, and the go commands of the two image builds, which read this cache's download
+      # directory as their `gomodcache` context. This step fetches what they load first, tried
+      # again on failure.
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-smoke.txt
+      # The module cache's download directory (its .info, .mod and .zip files), which each image
+      # build below takes as its `gomodcache` named context: each go RUN of the two Dockerfiles
+      # mounts it and runs with the module proxy off, so a module the fetch above left out fails
+      # the build at once, naming it, and the build downloads nothing
+      # (.github/scripts/go_offline_images.py holds both Dockerfiles to this). The directory alone,
+      # not the whole cache: the build extracts the few modules it compiles, and the context the
+      # build is sent is a quarter of the cache's bytes and a twentieth of its files.
+      - name: Name the module cache the image builds read
+        id: gomodcache
+        run: echo "dir=$(go env GOMODCACHE)/cache/download" >> "$GITHUB_OUTPUT"
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
-      # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
-      # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
-      # nothing today; it stays because a FROM written as an ARG would otherwise be pulled as
-      # the literal `${NAME}`.
+      # images) is pulled first, for the reason .github/actions/pull-test-images gives. A FROM
+      # line's image is its first word after FROM that is no `--flag` (`--platform=...`), with
+      # each ARG it names substituted, so a FROM written as an ARG is not pulled as the literal
+      # `${NAME}`. A FROM that names no image a pull can fetch is passed over: `scratch`,
+      # BuildKit's empty base (the gomodcache stage), which `docker pull` refuses as a reserved
+      # name, and a stage an earlier FROM of the file named with `AS`, which the build makes and
+      # no registry holds. Instructions and stage names are read in any case, as Docker reads them.
       - name: Read the smoke image's base images
         id: base-images
         run: |
           {
             echo "images<<IMAGES"
             awk '
-              $1 == "ARG" { eq = index($2, "="); if (eq > 0) args[substr($2, 1, eq - 1)] = substr($2, eq + 1) }
-              $1 == "FROM" { image = $2; for (name in args) gsub("[$][{]" name "[}]", args[name], image); print image }
+              toupper($1) == "ARG" { eq = index($2, "="); if (eq > 0) args[substr($2, 1, eq - 1)] = substr($2, eq + 1) }
+              toupper($1) == "FROM" {
+                i = 2
+                while (i <= NF && substr($i, 1, 2) == "--") i++
+                image = $i
+                for (name in args) gsub("[$][{]" name "[}]", args[name], image)
+                if (image != "" && tolower(image) != "scratch" && !(tolower(image) in stages)) print image
+                if (toupper($(i + 1)) == "AS" && $(i + 2) != "") stages[tolower($(i + 2))] = 1
+              }
             ' docker/Dockerfile
             echo "IMAGES"
           } >> "$GITHUB_OUTPUT"
@@ -97,6 +153,7 @@ jobs:
         with:
           context: .
           file: packages/envoy/docker/Dockerfile
+          build-contexts: gomodcache=${{ steps.gomodcache.outputs.dir }}
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_IMAGE }}
@@ -117,6 +174,7 @@ jobs:
           context: .
           file: packages/envoy/infra/host/heldportwrapper/Dockerfile
           build-args: BASE=${{ env.ENVOY_SMOKE_IMAGE }}
+          build-contexts: gomodcache=${{ steps.gomodcache.outputs.dir }}
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_HELD_PORT_IMAGE }}
@@ -151,6 +209,20 @@ jobs:
       - name: Download the docker provider plugin the live tests install
         id: docker-plugin
         uses: ./.github/actions/install-docker-plugin
+      # The live tests fetch no module while they run: a fetch inside a test fails it whenever the
+      # module proxy or the checksum database does, on a change that touched nothing it tests.
+      # The plugin's build (pulumitest.Plugin) reads the module cache with GOPROXY=off, which the
+      # fetch step above filled, and TestLiveGoConsumersCanUseTheSDK makes its
+      # `pulumi package add` and build of host/testdata/sdk-consumer against a file proxy over
+      # that cache. So this step makes the same resolution the test makes first, tried again on
+      # failure, on the same consumer and a plugin built as pulumitest.Plugin builds it: its
+      # `go mod tidy` reads modules no package of this repository loads, and go-fetch.sh runs it
+      # through GO_FETCH_PROXY.
+      - name: Fetch the modules the SDK consumer's resolution reads
+        run: |
+          plugin="$RUNNER_TEMP/sdk-consumer-plugin/pulumi-resource-envoy-infra"
+          go -C packages/envoy/infra build -ldflags "-X main.version=0.0.1" -o "$plugin" ./cmd/pulumi-resource-envoy-infra
+          .github/scripts/go-fetch.sh pulumi-consumer packages/envoy/infra/host/testdata/sdk-consumer "$plugin"
       # The live tests build container images on this runner's disk, and a job that runs out of
       # space says only that it did. The pair around the step measures it, and measures the two
       # readings beside it: `start` prints what each file system the job writes to has free and
@@ -182,13 +254,16 @@ jobs:
       # serve cybermonklabs/legion here and fail. ${VERSION} is Pulumi's own placeholder, filled in at
       # install, so the URL is compared literally. The step runs in the module, so the script is
       # reached by its path from the repository root, and the binary goes under $RUNNER_TEMP as
-      # the docker provider's tarball above does.
+      # the docker provider's tarball above does. The CLI runs on a file backend, as every pulumi
+      # command of this job does: one with no backend set that needs one logs in to a new
+      # ephemeral Pulumi Cloud account. It runs with no update check, which asks api.pulumi.com
+      # for the CLI's latest version while the command runs.
       - name: The envoy-infra plugin's schema carries the version and the download URL it was built with
         run: |
           url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)
           go build -ldflags "-X main.version=1.2.3 -X 'github.com/sjawhar/envoy/infra/provider.downloadURL=$url'" -o "$RUNNER_TEMP/pr" ./cmd/pulumi-resource-envoy-infra
           # shellcheck disable=SC2016 # ${VERSION} is Pulumi's placeholder, not a shell expansion
-          pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
+          PULUMI_BACKEND_URL="file://$RUNNER_TEMP" PULUMI_SKIP_UPDATE_CHECK=true pulumi package get-schema "$RUNNER_TEMP/pr" | jq -e '.version == "1.2.3" and .pluginDownloadURL == "https://github.com/cybermonklabs/legion/releases/download/envoy-infra-v${VERSION}"'
         working-directory: packages/envoy/infra
 
       - name: Report ci-ok when this job decides a merge-group run

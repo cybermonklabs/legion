@@ -1,0 +1,14 @@
+# envoy-go's fetch (.github/workflows/ci-job-envoy-go.yaml): the modules of every test package of the
+# envoy module (the unit step, what the race build cannot run, the skip counter and its test, the
+# store-form count, the integration test, the local stack callout-check.sh builds, the Dispatch
+# store's connections command its sizing step runs), each tag its steps add, and the builds its
+# tests make for other platforms (cmd/agent-secrets/modules_test.go, cmd/broker's outage test).
+deps packages/envoy -test ./...
+deps packages/envoy -test -tags natslive ./internal/testnats/ ./internal/bus/ ./internal/broker/natscallout/
+deps packages/envoy -test -tags modellive ./agentloop/
+deps packages/envoy -test -tags moto ./cmd/agent-secrets/
+GOOS=darwin CGO_ENABLED=0 deps packages/envoy ./cmd/agent-secrets
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 deps packages/envoy ./cmd/agent-secrets
+GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 deps packages/envoy ./cmd/agent-secrets
+GOOS=linux GOARCH=386 CGO_ENABLED=0 deps packages/envoy ./cmd/agent-secrets
+GOOS=linux CGO_ENABLED=0 deps packages/envoy ./cmd/broker

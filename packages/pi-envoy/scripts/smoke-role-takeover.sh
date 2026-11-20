@@ -369,6 +369,9 @@ end_row() {
 
 # ---- the services ------------------------------------------------------------------------------
 note "scratch ${work}"
+# go-offline: `go version` prints the version of the go on PATH and loads no module; in the
+# envoy-session-stall job that go is the one setup-go installs from packages/envoy/go.mod, the
+# version the workspace names, so no toolchain line makes it fetch another.
 note "bun $(bun --version), $(go version)"
 
 listener_source="${repo_root}/packages/envoy"

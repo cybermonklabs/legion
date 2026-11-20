@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -18,7 +17,9 @@ import (
 // package declares, and copy none, whole or in part: the broker's wake, Dispatch's client, the
 // load-test rigs' listener client and the refill rig, and the daemon's publisher and controller
 // probe, which is another module and so is read by its own directory. A type with the same
-// fields, a map and an anonymous struct are each a finding.
+// fields, a map and an anonymous struct are each a finding. The table is LISTENER_CLIENTS of
+// .github/scripts/ci_job_reads.py, whose modules envoy-go-checks fetches before this test runs,
+// and check-ci-filters.sh refuses the two when they differ.
 func TestListenerClientsUseListenerwire(t *testing.T) {
 	const wire = "github.com/sjawhar/envoy/listenerwire"
 	for _, clients := range []struct {
@@ -97,10 +98,7 @@ func TestTheRouteGuardNamesEveryFormOfAListenerRoute(t *testing.T) {
 // from no literal at all, which nothing in the package writes, is outside it. A package whose
 // source this read finds no file of has read nothing and fails as UNKNOWN.
 func TestTheLoadTestCallsTheListenerOnlyThroughItsClient(t *testing.T) {
-	out, err := exec.Command("go", "list", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest").Output()
-	if err != nil {
-		t.Fatalf("go list ../loadtest: %v", err)
-	}
+	out := goList(t, "./loadtest", "-f", "{{.Dir}}{{range .GoFiles}} {{.}}{{end}}", "../loadtest")
 	fields := strings.Fields(string(out))
 	if len(fields) < 2 {
 		t.Fatalf("UNKNOWN: go list ../loadtest named %q, no directory and Go file to read", out)

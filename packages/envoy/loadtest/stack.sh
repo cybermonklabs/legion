@@ -2,6 +2,8 @@
 # stack.sh: the load test's local stack (README.md): Postgres with pgvector from the pgserver wheel,
 # the 1 ms latency proxy toward it, nats-server with JetStream, the Envoy listener and Dispatch, all
 # built from this checkout and kept under LOADTEST_ROOT.
+# A person runs it to stand a load-test stack up; run-step.test.sh, the one test that runs it,
+# puts a stand-in go first on PATH, and no CI job runs it otherwise. Each go command says so.
 #
 #   stack.sh setup          build envoy-dispatch, envoy-listener and loadgen into $LOADTEST_ROOT/bin,
 #                           install nats-server (the version packages/envoy/go.mod pins) and Postgres,
@@ -669,6 +671,8 @@ migration_versions() {
 # build's record (an empty TREE, PATCH or PATCH_SHA256 is null).
 write_build_json() {
   local binary=$1 dir=$2
+  # go-offline: go version reads the build record of a binary this script built; a person runs it
+  # on a load-test box, and run-step.test.sh, the one test that reaches it, puts a stand-in go first.
   jq -n --arg commit "$3" --arg tree "$4" --argjson dirty "$5" --arg patch "$6" --arg patch_sha "$7" \
     --argjson overlay "$8" --arg binary_sha "$(sha256_of "$binary")" \
     --arg go "$(go version "$binary" | awk '{ print $NF }')" --argjson migration "$(newest_migration "$dir")" \
@@ -715,6 +719,8 @@ build_dispatch_at() {
     overlay=true
   fi
   note "building $out from $sha${patch:+ + $patch_name} (pprof overlay: $overlay)"
+  # go-offline: a person builds Dispatch at a commit on a load-test box; run-step.test.sh, the one
+  # test that reaches it, puts a stand-in go first on PATH.
   (cd -- "$BUILT_TREE" && GOWORK=off GOTOOLCHAIN=local go build -o "$out" ./cmd/dispatch)
   write_build_json "$out" "$BUILT_TREE" "$sha" "$(git -C "$SRC" rev-parse "$sha:packages/envoy")" false \
     "$patch_name" "$patch_sha" "$overlay"
@@ -737,10 +743,14 @@ cmd_setup() {
   if [ -n "$commit" ]; then
     build_dispatch_at "$commit" "$BIN/envoy-dispatch"
   else
+    # go-offline: a person builds the stack's binaries on a load-test box; run-step.test.sh, the
+    # one test that reaches these builds, puts a stand-in go first on PATH.
     note "building envoy-dispatch from $DISPATCH_SRC/packages/envoy into $BIN"
     (cd -- "$DISPATCH_SRC/packages/envoy" && go build -o "$BIN/envoy-dispatch" ./cmd/dispatch)
   fi
   note "building envoy-listener, dev-oidc-issuer and loadgen from $ENVOY_SRC into $BIN"
+  # go-offline: the same builds, from the listener's checkout: a person's, or run-step.test.sh's
+  # stand-in go.
   (cd -- "$ENVOY_SRC" &&
     go build -o "$BIN/envoy-listener" ./cmd/listener &&
     go build -o "$BIN/dev-oidc-issuer" ./cmd/dev-oidc-issuer &&
@@ -762,6 +772,8 @@ cmd_setup() {
     # own go, under its own GOROOT. mise's go shim replaces a caller's GOBIN when go.set_gobin is
     # true, and, on mise before 2026.9.0, in any shell `mise activate` set up. Separately, an
     # activated shell exports mise's Go's GOROOT, whose compiler a newer toolchain's go refuses.
+    # go-offline: a person installs nats-server on a load-test box; run-step.test.sh, the one test
+    # that reaches it, puts a stand-in go first on PATH.
     local goroot
     goroot=$(go env GOROOT)
     GOBIN=$BIN GOROOT=$goroot "$goroot/bin/go" install "github.com/nats-io/nats-server/v2@$nats_version"

@@ -202,6 +202,9 @@ fi
 # DEFAULT_EXCEPT, which they take as they take a pattern. The messages name the patterns.
 if [ ${#packages[@]} -eq 0 ]; then
   packages=("${DEFAULT_PACKAGES[@]}")
+  # go-offline: envoy-go's and envoy-go-race-api's steps run this script as their own run of
+  # the tests, which no test starts; database-skips.test.sh, the one test that runs it, runs
+  # it with GOPROXY=off.
   go list "${race[@]}" "${DEFAULT_PACKAGES[@]}" >"$work/default" 2>"$work/list" || {
     echo "database_skips=UNKNOWN"
     echo "database-skips.sh: go list ${DEFAULT_PACKAGES[*]} failed, so no test ran and no skip was counted:" >&2
@@ -224,6 +227,9 @@ fi
 # The packages the patterns name, as go lists them under the run's own flags (GOFLAGS, -race):
 # each by its canonical import path, which is how the report names it whatever spelling the
 # pattern used, with how many test files it has.
+# go-offline: envoy-go's and envoy-go-race-api's steps run this script as their own run of the
+# tests, which no test starts; database-skips.test.sh, the one test that runs it, runs it with
+# GOPROXY=off.
 go list "${race[@]}" -f '{{.ImportPath}} {{len .TestGoFiles}} {{len .XTestGoFiles}}' "${runs[@]}" >"$work/listed" 2>"$work/list" || {
   echo "database_skips=UNKNOWN"
   echo "database-skips.sh: go list ${packages[*]} failed, so no test ran and no skip was counted:" >&2
@@ -237,6 +243,9 @@ under='def under($pkg): $listed[$pkg] == true;'
 if [ -z "$report" ]; then
   report="$work/report.json"
   go_test_exit=0
+  # go-offline: envoy-go's and envoy-go-race-api's steps run this script as their own run of
+  # the tests, which no test starts; database-skips.test.sh, the one test that runs it, runs
+  # it with GOPROXY=off.
   go test -json -count=1 "${race[@]}" "${skip[@]}" -timeout "${timeout:-${GO_TEST_TIMEOUT:-15m}}" "${runs[@]}" >"$report" 2>"$work/stderr" || go_test_exit=$?
 fi
 

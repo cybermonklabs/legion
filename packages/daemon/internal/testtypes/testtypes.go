@@ -55,9 +55,13 @@ func CompiledDependencies(pattern string) (importer.Lookup, error) {
 }
 
 // listExports asks the go command where the compiler left the types of pattern and of each
-// package it imports, and answers the lookup that opens them by import path.
+// package it imports, and answers the lookup that opens them by import path. The go command reads
+// the module cache alone (GOPROXY=off): pattern is a package the test's own build loaded, and a
+// fetch while a test runs fails it whenever the module proxy does.
 func listExports(pattern string) (importer.Lookup, error) {
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", pattern).Output()
+	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", pattern)
+	list.Env = append(os.Environ(), "GOPROXY=off")
+	listed, err := list.Output()
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {

@@ -1141,6 +1141,10 @@ def scan_dockerfile(path: Path, lines: list[str]) -> None:
             stages.add(rest[2].lower())
         if image.lower() in stages:
             continue
+        # `scratch` is BuildKit's empty base: no registry holds it and nothing is pulled for it (a
+        # module cache stage a named build context replaces is one).
+        if image.lower() == "scratch":
+            continue
         if VARIABLE.search(image):
             resolved = expand(image, defaults)
             left = sorted(set(VARIABLE.findall(resolved)))

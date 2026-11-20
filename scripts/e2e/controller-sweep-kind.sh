@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # The controller orphan sweep's live proof on a throwaway kind cluster: the project controller the
 # daemon launches (`controller: daemon`) keeps its Sandbox through an orphan sweep at grace 0 whose
 # known set was read before the launch, because the store holds its claim unretired, and loses it,

@@ -1,0 +1,4 @@
+# dispatch-browser.yaml's binaries job: the cgo-less build of the binaries the browser suite runs,
+# and the connections command it runs for the shard and alone jobs, which have no Go.
+CGO_ENABLED=0 deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+deps packages/envoy ./internal/dispatch/store/cmd/connections

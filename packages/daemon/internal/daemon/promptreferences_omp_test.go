@@ -63,7 +63,7 @@ func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			environ := []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+			environ := testbin.OMPEnviron(t, home)
 			if testCase.settings != "" {
 				config, err := os.OpenFile(filepath.Join(agentDir, "config.yml"), os.O_APPEND|os.O_WRONLY, 0)
 				if err != nil {
@@ -112,6 +112,7 @@ func TestThePromptReferenceProbeOnTheRealOhMyPi(t *testing.T) {
 func installPlugins(t *testing.T, omp string, environ []string, roots ...string) {
 	t.Helper()
 	for _, root := range roots {
+		// omp-offline: environ is the caller's, which testbin.OMPEnviron makes.
 		install := exec.Command(omp, "plugin", "install", root)
 		install.Env = environ
 		if out, err := install.CombinedOutput(); err != nil {
@@ -151,7 +152,7 @@ func TestTheRealPluginsOnTheRealOhMyPi(t *testing.T) {
 					"    apiKey: unused\n    models:\n      - id: probe-test\n        name: Probe test\n",
 				"config.yml": "modelRoles:\n  default: operator/probe-test\n",
 			})
-			environ := []string{"HOME=" + home, "OMP_PROFILE=legion", "PATH=/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED=true"}
+			environ := testbin.OMPEnviron(t, home)
 			installPlugins(t, omp, environ, testCase.installed...)
 			env := map[string]string{}
 			for _, pair := range environ {

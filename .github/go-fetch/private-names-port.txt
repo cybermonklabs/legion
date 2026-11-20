@@ -1,0 +1,3 @@
+# private-names-port's fetch (.github/workflows/ci-job-private-names-port.yaml): the legion binary
+# check-private-names-port.test.sh builds.
+deps packages/daemon ./cmd/legion

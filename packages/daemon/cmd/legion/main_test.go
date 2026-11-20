@@ -531,6 +531,8 @@ func TestVersionPrintsTheReleaseTheLinkerSets(t *testing.T) {
 	const commit = "0123456789abcdef0123456789abcdef01234567"
 	binary := filepath.Join(t.TempDir(), "legion")
 	build := exec.Command("go", "build", "-ldflags", "-X main.revision="+commit+" -X main.release=v9.9.9", "-o", binary, ".")
+	// The module cache alone: this package's own modules, which the go test running it loaded.
+	build.Env = append(os.Environ(), "GOPROXY=off")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}

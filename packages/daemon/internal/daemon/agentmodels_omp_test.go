@@ -114,7 +114,11 @@ func TestTheAgentModelCheckOnTheRealOhMyPi(t *testing.T) {
 			} else {
 				root = agentModelPlugin(t, dir)
 			}
-			env := map[string]string{"HOME": home, "OMP_PROFILE": "legion", "PATH": "/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED": "true"}
+			env := map[string]string{}
+			for _, pair := range testbin.OMPEnviron(t, home) {
+				name, value, _ := strings.Cut(pair, "=")
+				env[name] = value
+			}
 			for name, value := range testCase.env {
 				env[name] = value
 			}
@@ -207,7 +211,11 @@ func TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName(t *testing.T) {
 	}
 	imageReferences := references("Consult `task(agent=\"oracle\")`.\n")
 	daemonReferences := references("Consult `task(agent=\"oracle\")`, then `task(agent=\"daemon-only\")`.\n")
-	env := map[string]string{"HOME": home, "OMP_PROFILE": "legion", "PATH": "/usr/local/bin:/usr/bin:/bin", "AWS_EC2_METADATA_DISABLED": "true"}
+	env := map[string]string{}
+	for _, pair := range testbin.OMPEnviron(t, home) {
+		name, value, _ := strings.Cut(pair, "=")
+		env[name] = value
+	}
 	probe := func(references promptrefs.Names) error {
 		return ProbeImage(context.Background(), ImageProbe{Omp: omp, Contract: 3, Env: env, WorkDir: dir, PluginRoot: root, EnvoyPluginRoot: envoyRoot,
 			RoleReferences: references, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})

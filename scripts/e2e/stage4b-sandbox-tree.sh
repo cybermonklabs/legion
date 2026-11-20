@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # Stage 4b's gate for the Go coordinator: the Go daemon drives real issue trees on the Agent Sandbox
 # runtime, in the production cluster's namespace `legion`, against production Dispatch, the
 # production Envoy listener and production NATS, in the disposable Dispatch project LEGSMOKE and the

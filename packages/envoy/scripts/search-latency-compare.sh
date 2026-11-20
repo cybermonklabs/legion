@@ -3,6 +3,7 @@
 # copy: it compiles internal/dispatch/api's tests in each, runs TestSearchLatencyOnCorpus from the
 # two alternately, so both see the same machine load, and prints every run's p50 and p95. It exits
 # 1 when this checkout's median p95 is more than 10% above the base's.
+# go-offline-file: a person runs this comparison on a corpus copy; no CI job runs it.
 set -euo pipefail
 
 if (($# < 1 || $# > 2)); then

@@ -181,7 +181,11 @@ project="E2E$$$(date +%s)"        # daemon_boot counts per project; a fresh key 
 # names that port, and each start serves on a copy of the socket (LEGION_LISTEN_FD), so the restart
 # serves the same port and nothing else can take it in between.
 keep_port daemon_keeper port
-go build -o "$work/legion" ./cmd/legion
+# The build reads the module cache alone: a fetch while the proof runs would fail it whenever the
+# module proxy or the checksum database does. daemon-go fetches ./cmd/legion's modules in a step
+# before it; on a machine whose cache lacks one, run .github/scripts/go-fetch.sh deps
+# packages/daemon ./cmd/legion first.
+GOPROXY=off go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
 # CI passes its service's DSN; the devbox brings its own container on an ephemeral port.

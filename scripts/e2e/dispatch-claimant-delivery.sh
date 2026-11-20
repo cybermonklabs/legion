@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: e2e.yaml runs this proof, nightly and on the e2e label; no required job runs it.
 # The live proof that Dispatch's outbox publishes a person's answer, comment or untargeted message
 # on an issue a session has claimed to that session's own topic, `notifications.agent.<session>`
 # (addClaimantRoute, packages/envoy/internal/dispatch/outbox/publisher.go). It runs the real

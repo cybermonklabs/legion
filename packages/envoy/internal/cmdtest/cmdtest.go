@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/gofetch"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
@@ -36,8 +37,8 @@ func BuildStamped(t testing.TB, name, commit string) string {
 
 // Command is a binary to build: Name is what the binary is called under the test's own
 // directory, Dir the directory go build runs in (the test's own when empty), Target what it
-// builds ("." when empty), Flags the flags before the target, and Env the whole environment of
-// the go command (the process's when nil).
+// builds ("." when empty), Flags the flags before the target, and Env the environment of the go
+// command (the process's when nil), to which the build adds GOPROXY=off (runBuild says why).
 type Command struct {
 	Name   string
 	Dir    string
@@ -92,6 +93,11 @@ func BuildCommand(t testing.TB, c Command) string {
 
 // runBuild is one go build of c, into a binary named c.Name under a directory of this test's
 // own. It returns the empty path where the build failed, having failed the test.
+//
+// The build fetches no module: it runs with GOPROXY=off, after c.Env, so it builds from the
+// module cache alone. A fetch while a test runs would turn a fault of the module proxy into this
+// test's failure, on a change that touched nothing it tests; a module the cache lacks fails the
+// build instead, with the command that fetches what it needs before the tests (gofetch.Hint).
 func runBuild(t testing.TB, c Command, overlay string) string {
 	t.Helper()
 	binary := filepath.Join(t.TempDir(), c.Name)
@@ -105,10 +111,14 @@ func runBuild(t testing.TB, c Command, overlay string) string {
 		target = "."
 	}
 	args = append(args, target)
+	env := c.Env
+	if env == nil {
+		env = os.Environ()
+	}
 	cmd := exec.Command("go", args...)
-	cmd.Dir, cmd.Env = c.Dir, c.Env
+	cmd.Dir, cmd.Env = c.Dir, append(env[:len(env):len(env)], "GOPROXY=off")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("build %s: %v\n%s", c.Name, err, out)
+		t.Errorf("build %s: %v\n%s%s", c.Name, err, out, gofetch.Hint(c.Dir, []string{target}, string(out)))
 		return ""
 	}
 	return binary

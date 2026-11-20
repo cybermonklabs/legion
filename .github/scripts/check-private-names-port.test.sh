@@ -67,8 +67,12 @@ command -v go > /dev/null || { echo "  FAIL: go is required: this test builds th
 
 echo "building the engine: the legion binary of this head, once for the whole run"
 engine="$work/legion"
-(cd "$repo_root/packages/daemon" && go build -o "$engine" ./cmd/legion) || {
-  echo "  FAIL: the legion binary did not build, so there is no port to compare with" >&2
+# From the module cache alone: a fetch while the harness runs would fail it whenever the module
+# proxy or the checksum database does, on a change that touched nothing it tests. The
+# private-names-port job fetches ./cmd/legion's modules in a step before it; elsewhere, run
+# .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion first.
+(cd "$repo_root/packages/daemon" && GOPROXY=off go build -o "$engine" ./cmd/legion) || {
+  echo "  FAIL: the legion binary did not build, so there is no port to compare with; if the module cache lacks a module, fetch it first: .github/scripts/go-fetch.sh deps packages/daemon ./cmd/legion" >&2
   exit 1
 }
 

@@ -5,6 +5,8 @@
  *
  *   cd packages/proof-editor && bun run parity-fuzz
  *
+ * go-offline-file: a person runs this fuzz by hand; no CI job runs it.
+ *
  * What it compares, over every document it generates and every document it reads:
  *
  * - **The four patches** (`patches/micromark@4.0.2.patch`,

@@ -79,9 +79,19 @@ RUN bun run gen:go
 WORKDIR /repo/packages/dispatch
 RUN bun run build:web
 
+# The Go stage's module cache. Every go command of the build stage below reads a module cache alone:
+# the stage `gomodcache`, the download directory of a module cache (its .info, .mod and .zip files,
+# which go extracts what it builds from), mounted where go reads it, with the module proxy off, so a
+# module that directory lacks fails the build at once, naming it, and nothing is downloaded while
+# the image builds. ci.yaml's envoy-smoke job hands the build its own under that name
+# (`build-contexts: gomodcache=<its GOMODCACHE>/cache/download`), which its fetch step filled before
+# (.github/go-fetch/envoy-smoke.txt), so the two stages below are not built there. A build that
+# hands none (the release's, a local compose or hand build) builds them: they download what the
+# build stage reads online, in layers that only a change to go-licenses' pin or to a module file
+# rebuilds.
 # Go version must match go.mod.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)
-FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS gomodcache-online
 
 WORKDIR /src
 
@@ -91,13 +101,39 @@ WORKDIR /src
 # (sjawhar/legion#2512).
 ENV GOPROXY=https://proxy.golang.org|direct
 
-# The image's third-party notices: go-licenses (pinned in go-third-party-notices.sh) is built in a
-# layer of its own, before the module files, so neither a source change nor a dependency bump
-# rebuilds it.
-COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /usr/local/bin/
+# go-licenses' modules (pinned in go-third-party-notices.sh), then the module's, each in a layer of
+# its own, before any source.
+COPY scripts/go-third-party-notices.sh /usr/local/bin/
 RUN go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
 RUN go mod download
+
+# The download directory the build stage mounts, at the root, as the named context a CI job hands
+# in its place holds it.
+FROM scratch AS gomodcache
+COPY --from=gomodcache-online /go/pkg/mod/cache/download/ /
+
+# Go version must match go.mod.
+# ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)
+FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS build
+
+WORKDIR /src
+
+# The module cache alone: no proxy, go.mod read only, and this image's own Go, never a toolchain a
+# go line names (.github/scripts/go_offline_images.py holds every go RUN of a required job's image
+# build to these and to the mount of the job's module cache). Each go RUN below mounts that
+# directory read-write, so go may write its lock files there; what it writes is dropped with the
+# mount.
+ENV GOPROXY=off GOFLAGS=-mod=readonly GOTOOLCHAIN=local
+
+# The image's third-party notices: go-licenses (pinned in go-third-party-notices.sh) is built in a
+# layer of its own, before the module files, so neither a source change nor a dependency bump
+# rebuilds it. `go install pkg@version` reads the module's version list even at an exact pin, which
+# GOPROXY=off refuses, so the install reads the mounted download directory as its proxy and nothing
+# after it (.github/scripts/go-fetch.sh says more at its `tools`).
+COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /usr/local/bin/
+RUN --mount=type=bind,from=gomodcache,target=/go/pkg/mod/cache/download,rw \
+    GOPROXY=file:///go/pkg/mod/cache/download go-third-party-notices.sh --install
 
 # The whole module, so a binary that imports a new package of it builds here with no edit to this
 # file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
@@ -114,7 +150,8 @@ COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listen
 # own GOARCH, which decide them) and of the npm packages the SPA inlines and the typeface it ships. Fails the build when a
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
-RUN mkdir -p /out \
+RUN --mount=type=bind,from=gomodcache,target=/go/pkg/mod/cache/download,rw \
+    mkdir -p /out \
     && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
       ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
@@ -128,7 +165,8 @@ RUN mkdir -p /out \
 # pull-request lane's smoke image, which publishes nothing to match — the binary reports null;
 # anything else must be a full commit sha, so no placeholder is ever reported as a commit.
 ARG LEGION_COMMIT=
-RUN if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then \
+RUN --mount=type=bind,from=gomodcache,target=/go/pkg/mod/cache/download,rw \
+    if [ -n "$LEGION_COMMIT" ] && ! printf '%s' "$LEGION_COMMIT" | grep -Eqx '[0-9a-f]{40}'; then \
       echo "LEGION_COMMIT must be a full 40-character commit sha or empty, got '$LEGION_COMMIT'" >&2; exit 1; \
     fi \
     && CGO_ENABLED=0 GOOS=linux GOARCH=$(go env GOARCH) \

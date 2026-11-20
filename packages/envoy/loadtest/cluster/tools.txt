@@ -1,0 +1,7 @@
+# The tool render-nats.sh renders manifests/nats.yaml with, one `go install` argument per line:
+# helm. `.github/scripts/go-fetch.sh tools packages/envoy/loadtest/cluster/tools.txt` installs it
+# into legion-live-tools under the first entry of `go env GOPATH`, and render-nats.sh runs that
+# binary when its build information names this line, else `go run` at this pin. cluster.test.sh
+# renders under GOPROXY=off, so it fetches nothing: envoy-go-checks runs that command in a step
+# before the test, and a person runs it once before the test.
+helm.sh/helm/v3/cmd/helm@v3.20.2

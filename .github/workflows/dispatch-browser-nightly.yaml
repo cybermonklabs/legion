@@ -129,7 +129,7 @@ jobs:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/airlock-lean.txt', '.github/go-fetch/broker-multiprocess.txt', '.github/go-fetch/dispatch-browser-embedder.txt', '.github/go-fetch/dispatch-memory.txt', '.github/go-fetch/dispatch-multiprocess.txt', '.github/go-fetch/envoy-e2e-local.txt', '.github/go-fetch/envoy-go-checks.txt', '.github/go-fetch/envoy-go-docs-finalizers.txt', '.github/go-fetch/envoy-go-race-api.txt', '.github/go-fetch/envoy-go-race-docs.txt', '.github/go-fetch/envoy-go-race.txt', '.github/go-fetch/envoy-session-stall.txt', '.github/go-fetch/listener-server-change.txt', 'packages/envoy/loadtest/cluster/tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-{1}-', runner.os, runner.arch) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
@@ -140,6 +140,13 @@ jobs:
       - name: Build contracts for dispatch e2e
         run: bun run build:dispatch
         working-directory: packages/contracts
+      # The one-process harness the recording step starts builds the Dispatch server
+      # (e2e/run-server.sh) and the real broker's three commands (e2e/run-broker.sh) with
+      # GOPROXY=off, as the embedder job of dispatch-browser.yaml does: this step fetches those
+      # builds' modules first, from the cache restored above and tried again on failure, so a
+      # go-envoy miss fails no build here.
+      - name: Fetch the modules of the commands the recording's harness builds
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
       # Built here rather than left to run-server.sh, which would build it inside the harness's
       # own boot wait, as the multiprocess job does for the same reason.
       - name: Build the Dispatch server

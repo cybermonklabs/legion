@@ -96,6 +96,8 @@ async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   }
   const named = `\`go ${connectionsArgs.join(" ")}\` in ${envoyDirectory}`;
   let stdout: string;
+  // go-offline: every required job that starts stacks on a Postgres provider sets the variable
+  // above, so only a person's run and dispatch-browser-nightly.yaml, no job of ci-ok's, get here.
   try {
     ({ stdout } = await execFileAsync("go", connectionsArgs, { cwd: envoyDirectory }));
   } catch (error) {

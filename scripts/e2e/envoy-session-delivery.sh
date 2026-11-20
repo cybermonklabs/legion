@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # envoy-session-delivery.sh — live proof that every Envoy event reaches a real Oh My Pi session and
 # a real Claude Code session exactly once, also when it was published while the session, its NATS
 # connection, either listener or Dispatch was down (INFRA-594), and when it was stored for a

@@ -116,6 +116,8 @@ mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
 # prints of its invocation names the run's directory and nothing of the machine's tool layout.
 printf '#!/bin/sh\nexec %q "$@"\n' "$(mise where "$pin")/bin/omp" >"$work/bin/omp"
 chmod +x "$work/bin/omp"
+# go-offline: no CI job runs this: a person records the casts against a live daemon
+# (docs/site/media/README.md), so the two builds may fetch what they need.
 (cd "$root/packages/daemon" && nice -n 19 go build -o "$work/bin/legion" ./cmd/legion)
 (cd "$root/packages/envoy" && nice -n 19 go build -o "$work/envoy-listener" ./cmd/listener)
 # Every port is one the kernel chose, held from that choice until its process serves on it

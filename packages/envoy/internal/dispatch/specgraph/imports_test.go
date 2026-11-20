@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"os"
 	"os/exec"
 	"slices"
 	"strings"
@@ -12,7 +13,10 @@ import (
 // whole import graph, its tests' imports aside.
 func TestSpecgraphReachesNoStore(t *testing.T) {
 	t.Parallel()
-	out, err := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".").CombinedOutput()
+	list := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", ".")
+	// The module cache alone: this package's own graph, which the go test running it loaded.
+	list.Env = append(os.Environ(), "GOPROXY=off")
+	out, err := list.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go list -deps: %v\n%s", err, out)
 	}

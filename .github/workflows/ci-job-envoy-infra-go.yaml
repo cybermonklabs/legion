@@ -20,14 +20,24 @@ on:
         type: string
         required: true
 
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
+# Every go command of this workflow runs with the module proxy off (GOPROXY=off) and go.mod read
+# only (GOFLAGS=-mod=readonly), so a module the cache its job restored lacks fails the step at once
+# and names the module, where it would otherwise be downloaded while a test runs and fail the test
+# whenever the module proxy or the checksum database fails, on a change that touched nothing it
+# tests. A job's fetch step (.github/scripts/go-fetch.sh file, after its restore and before its
+# first go step) is the one step that goes online, through GO_FETCH_PROXY, tried again on failure;
+# a step that must go online and is no fetch step sets its own GOPROXY to GO_FETCH_PROXY, with a
+# `go-offline:` line saying why. .github/scripts/go_offline_jobs.py holds every job to this.
+# GO_FETCH_PROXY: a `|` between proxy entries makes a go command fall through to the next source
+# after ANY error, where a `,` falls through only after a 404 or a 410 (Go's module reference,
+# "GOPROXY protocol"). proxy.golang.org reset a download mid-stream and turned a Go lane red on a
+# module whose hash go.sum already holds (sjawhar/legion#2512); with `|direct` the fetch takes the
+# same bytes straight from the source and checks them against go.sum, so this is a second path,
+# not a weaker check.
 env:
-  GOPROXY: https://proxy.golang.org|direct
+  GO_FETCH_PROXY: https://proxy.golang.org|direct
+  GOPROXY: "off"
+  GOFLAGS: -mod=readonly
 
 jobs:
   envoy-infra-go:
@@ -58,15 +68,31 @@ jobs:
           cache: false
       # go-envoy-infra, under the key .github/workflows/ci-caches.yaml's envoy-infra job fills: the
       # runner's architecture, the Go version and the hash of the files that choose the module
-      # versions, so a run whose module files main has already filled restores an entry built from
-      # the same versions.
+      # versions - the infra workspace's module files, the root workspace's (the envoy commands
+      # the tests build read them), the live tests' tool pins - of every fetch file its readers run
+      # and of go-fetch.sh, so a run whose files main has already filled restores an entry that
+      # holds what the fetch step below fetches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum') }}
+          key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
           restore-keys: ${{ format('go-envoy-infra-{0}-{1}-', runner.os, runner.arch) }}
+      # No test of this job fetches anything while it runs: a fetch from the module proxy or the
+      # checksum database inside a test fails that test whenever the service does, on a change
+      # that touched nothing it tests (run 44317642380 failed so, on a `go install` of helm inside
+      # gcp's TestClusteredNatsHubChart that could not read sum.golang.org). Every go step below
+      # reads the module cache alone (GOPROXY=off, this file's env), so this step fetches what
+      # they load first, from the module cache this job restored and tried again on failure: the
+      # modules of both vets (linux with both live-test tags; darwin/arm64 with each tag set
+      # .github/scripts/go_build_tags.py prints, a line of the fetch file each), of the unit and
+      # natslive tests, the tools gcp's natslive tests run, which they take from
+      # $(go env GOPATH)/legion-live-tools and never install (gcp/testdata/live-tools.txt), and the
+      # modules of the envoy commands that heldportwrapper's unit test and core's and gcp's
+      # natslive tests build under the repository's root go.work (cmdtest.BuildCommand).
+      - name: Fetch the modules this job's go steps load
+        run: .github/scripts/go-fetch.sh file .github/go-fetch/envoy-infra-go.txt
       - name: Pull the NATS and Postgres test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -92,6 +118,7 @@ jobs:
       # runs once per tag set .github/scripts/go_build_tags.py reads off the module's own build
       # constraints, so a file under a tag that lands later, or under a negated one, is vetted too.
       # One darwin architecture is enough: no file of the module tells amd64 from arm64 on darwin.
+      # go-offline: the one tag set go_build_tags.py prints (natslive,pulumilive) is fetched by go-fetch/envoy-infra-go.txt's GOOS=darwin GOARCH=arm64 deps line.
       - name: Vet envoy-infra for darwin, its live-test tags included
         run: |
           flags=$(python3 ../../../.github/scripts/go_build_tags.py . darwin arm64)
@@ -116,9 +143,11 @@ jobs:
       - name: Unit test envoy-infra
         run: scripts/race-unit.sh run
         working-directory: packages/envoy/infra
+      # go-offline: go-fetch/envoy-infra-go.txt's `deps packages/envoy/infra -test -tags natslive ./core ./seed ./gcp` fetches each package of the loop's list.
       - name: Live tests of envoy-infra against nats-server (natslive)
-        # gcp's live tests build helm, nats-server, the config reloader and the exporter with go
-        # install first, minutes on a cold cache, so the package gets more than go test's 10 m.
+        # The 30 m -timeout dates from when gcp's live tests built helm, nats-server, the config
+        # reloader and the exporter with go install first, minutes on a cold cache; the fetch step
+        # installs them now, and the limit stays as headroom over go test's 10 m default.
         # One call per package, never one union -run over the three: a name an untagged test of
         # one package shares with a natslive test of another would then run a second time with
         # nothing to say so. Each assignment is a line of its own, so under bash -e an empty or

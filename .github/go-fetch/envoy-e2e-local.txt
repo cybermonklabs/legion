@@ -1,0 +1,3 @@
+# envoy-e2e-local's fetch (.github/workflows/ci-job-envoy-e2e-local.yaml): the listener and natsd
+# scripts/e2e-local.sh builds with GOPROXY=off (go-build-offline.sh).
+deps packages/envoy ./cmd/listener ./internal/testnats/cmd/natsd

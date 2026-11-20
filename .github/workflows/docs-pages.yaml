@@ -33,6 +33,9 @@ on:
       - '.github/ci-filters.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
+      # The build job's fetch step runs this script over its fetch file.
+      - '.github/scripts/go-fetch.sh'
+      - '.github/go-fetch/docs.txt'
       # ci-filters.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'
@@ -270,6 +273,7 @@ on:
       - 'packages/envoy/internal/weborigin/*'
       - 'packages/dispatch/**'
       - 'scripts/e2e/lib/held-port.py'
+      - '.github/scripts/go-build-offline.sh'
       - 'packages/proof-editor/src/**'
       - 'packages/contracts/src/**'
       - 'packages/envoy-client/src/**'

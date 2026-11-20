@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # INFRA-195's local-stack proof: Dispatch's live view shows an Oh My Pi session's current model and
 # thinking level and switches them, on a real session. Oh My Pi runs in `--mode rpc`, as a Legion
 # pane runs it, with this checkout's Envoy plugin in an isolated agent directory

@@ -8,10 +8,10 @@
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
 # both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
-# v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
-# manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
-# write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
-# __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+# through go run, at the one pin of tools.txt beside it) and nats-values.yaml, with each image
+# pinned to the digest a registry manifest read gives its tag, and refuses a render that holds a
+# kind the load-test Role cannot write or an image not pinned by digest. The output keeps the
+# placeholders __NAMESPACE__, __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
 # from FILE (an earlier render) instead of the registry: cluster.test.sh re-renders that way and
@@ -38,7 +38,12 @@ CHART_REPO=https://nats-io.github.io/k8s/helm/charts
 CHART_VERSION=2.15.1
 CHART_SHA256=b209c62784b1b24c714d5ff6503b4c7dd948ec187d4222beee16b579f1258cc1
 CHART=$here/nats-$CHART_VERSION.tgz
-HELM=helm.sh/helm/v3/cmd/helm@v3.20.2
+# The helm this renders with: the one pin of tools.txt, which .github/scripts/go-fetch.sh tools
+# installs, so the job that runs cluster.test.sh installs this same helm before the test.
+HELM=$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' -- "$here/tools.txt") ||
+  die "$here/tools.txt, the pin of the helm this renders with, cannot be read"
+[[ $HELM == helm.sh/helm/v3/cmd/helm@v* && $HELM != *$'\n'* ]] ||
+  die "$here/tools.txt pins '$HELM', not one helm.sh/helm/v3/cmd/helm@<version>"
 # Each image: the chart value that names it, and the tag render-nats.sh pins (the chart's own
 # defaults, on mirror.gcr.io).
 IMAGES=(
@@ -92,8 +97,34 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
-  die "helm template failed"
+# pinned_helm prints the helm `.github/scripts/go-fetch.sh tools tools.txt` installed, in
+# legion-live-tools under the first entry of `go env GOPATH`, when its build information names
+# HELM's package and version, and fails when there is none such.
+pinned_helm() {
+  local gopath bin info
+  # go-offline: go env prints a directory and reads no module.
+  gopath=$(go env GOPATH) || return 1
+  bin=${gopath%%:*}/legion-live-tools/helm
+  [ -x "$bin" ] || return 1
+  # go-offline: go version -m reads the build information the binary carries, and no module.
+  info=$(go version -m "$bin") || return 1
+  awk -v pkg="${HELM%@*}" -v version="${HELM##*@}" '$1 == "path" && $2 == pkg { p = 1 }
+    $1 == "mod" && $3 == version { m = 1 } END { exit !(p && m) }' <<<"$info" || return 1
+  printf '%s\n' "$bin"
+}
+
+# The installed helm renders when it is there, so a render reads no module: cluster.test.sh's job
+# installs it in a step before the test. Without it go runs helm at the pin, fetching what the
+# module cache lacks; cluster.test.sh runs this under GOPROXY=off, so there that fails instead.
+if helm_bin=$(pinned_helm); then
+  (cd -- "$tmp" && "$helm_bin" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+    die "helm template failed"
+else
+  # go-offline: a person who regenerates nats.yaml fetches helm here; cluster.test.sh runs this
+  # with GOPROXY=off, under which this fails, naming the module it could not look up.
+  (cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+    die "helm template failed, and no helm at $HELM is installed: run .github/scripts/go-fetch.sh tools packages/envoy/loadtest/cluster/tools.txt"
+fi
 
 while read -r kind; do
   [[ $ALLOWED_KINDS == *" $kind "* ]] || die "the render holds a $kind, which the load-test Role cannot write; turn it off in nats-values.yaml"
@@ -105,7 +136,7 @@ fi
 {
   printf '# nats.yaml: rendered by render-nats.sh (do not edit): chart nats/nats %s from\n' "$CHART_VERSION"
   printf '# %s/\n# (archive sha256 %s),\n' "$CHART_REPO" "$CHART_SHA256"
-  printf '# helm template --skip-tests at helm v3.20.2 with nats-values.yaml, each image pinned to\n'
+  printf '# helm template --skip-tests at helm %s with nats-values.yaml, each image pinned to\n' "${HELM##*@}"
   printf '# its digest:\n'
   printf '#   %s\n' "${pins[@]}"
   printf '# cluster.sh fills the namespace, storage class and run id placeholders.\n'

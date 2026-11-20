@@ -263,6 +263,10 @@ func buildCopyLockGraph() (*lockGraph, error) {
 	}
 	command := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Dir,GoFiles,Export,Module", "./cmd/dispatch")
 	command.Dir = root
+	// The module cache alone: every module ./cmd/dispatch needs is one this package's tests need,
+	// which the go test running them loaded, and a fetch while a test runs fails it whenever the
+	// module proxy does.
+	command.Env = append(os.Environ(), "GOPROXY=off")
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()

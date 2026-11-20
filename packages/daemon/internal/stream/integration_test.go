@@ -154,8 +154,12 @@ func buildLegion(t *testing.T) string {
 		if legionDir, legionErr = os.MkdirTemp("", "legion-it-bin"); legionErr != nil {
 			return
 		}
-		out, err := exec.Command("go", "build", "-o", filepath.Join(legionDir, "legion"),
-			"github.com/sjawhar/legion/daemon/cmd/legion").CombinedOutput()
+		// The module cache alone (GOPROXY=off): a fetch while a test runs fails it whenever the
+		// module proxy does, and daemon-go fetches ./cmd/legion's modules before its tests.
+		build := exec.Command("go", "build", "-o", filepath.Join(legionDir, "legion"),
+			"github.com/sjawhar/legion/daemon/cmd/legion")
+		build.Env = append(os.Environ(), "GOPROXY=off")
+		out, err := build.CombinedOutput()
 		if err != nil {
 			legionErr = fmt.Errorf("go build cmd/legion: %v\n%s", err, out)
 		}

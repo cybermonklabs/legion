@@ -22,6 +22,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { ompOffline } from "@legion/pi-shared/test/omp-offline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // What people wrote to a session, on every request of the real Oh My Pi's main loop
@@ -458,10 +459,11 @@ async function runSession(
     // that work holds its event loop for one to two seconds (measured with --cpu-prof: the model
     // registry's refresh), whatever any extension does: a request waits on it as long with an
     // answers route that answers at once. A pane's profile has the catalog already. Building it
-    // first keeps that host cost out of a case that times the answers read.
+    // first keeps that host cost out of a case that times the answers read. ompOffline's proxy
+    // refuses the catalogs the refresh asks for over HTTPS, so the refresh reaches no network.
     const built = Bun.spawn([binary, "models", "refresh"], {
       cwd: workspace,
-      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
+      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin", ...ompOffline(cleanup) },
       stdout: "ignore",
       stderr: "pipe",
     });

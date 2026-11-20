@@ -133,16 +133,30 @@ jobs:
 
       # Only a proof whose own header asks for a package pays for it: stage1-skeleton.sh needs
       # tmux, which the daemon refuses to start without, and dispatch-claimant-delivery.sh needs
-      # psql, which it resets its schema with. A proof with no package installs none.
+      # psql, which it resets its schema with. A proof with no package installs none. The packages
+      # come from the apt cache ci-caches.yaml fills on main, which a scheduled, dispatched or
+      # labelled run reads, with no mirror read, as ci-job-daemon-go.yaml's `Install tmux` step
+      # says; each word of a row's `apt` list needs its pin in .github/apt-packages.txt, and the
+      # install refuses one that has none, naming it.
+      - name: Read the runner's release for the apt cache key
+        if: matrix.apt != ''
+        id: apt-image
+        run: .github/scripts/apt-cache.sh image >> "$GITHUB_OUTPUT"
+      - if: matrix.apt != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/apt
+          key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.apt-image.outputs.image }}-${{ hashFiles('.github/apt-packages.txt', '.github/scripts/apt-cache.sh') }}
+          restore-keys: ${{ format('apt-{0}-{1}-{2}-', runner.os, runner.arch, steps.apt-image.outputs.image) }}
       - name: Install this proof's packages
         if: matrix.apt != ''
+        timeout-minutes: 5
         env:
           PACKAGES: ${{ matrix.apt }}
         run: |
-          sudo apt-get update
           # Each word is one package name of .github/e2e-scripts.json.
           # shellcheck disable=SC2086
-          sudo apt-get install -y --no-install-recommends $PACKAGES
+          .github/scripts/apt-cache.sh install .github/apt-packages.txt "$RUNNER_TEMP/apt" $PACKAGES
 
       # dispatch-claimant-delivery.sh runs its driver and the fake Envoy listener with bun, and
       # both import this repository's packages.
@@ -165,6 +179,16 @@ jobs:
           # Only a workflow that runs on a push to main writes an Actions cache entry here, and
           # this workflow saves none (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs, "Caches").
           cache: false
+
+      # A daemon proof's driver is internal/daemon's test binary, whose tests build Dispatch and
+      # the listener from packages/envoy while they run (testbuild.EnvoyBinary), from the module
+      # cache alone: GOPROXY=off, since a fetch inside a test fails it whenever the module proxy
+      # or the checksum database does. The driver's own build loads none of those commands'
+      # modules, so this step fetches them first, tried again on failure. Every proof takes it:
+      # the job runs whichever script the matrix names, and .github/scripts/check-go-offline.sh
+      # holds each job that can run such a test to a fetch before it.
+      - name: Fetch the modules of the envoy commands the proof's tests build
+        run: .github/scripts/go-fetch.sh deps packages/envoy ./cmd/dispatch ./cmd/listener
 
       - name: Run the proof
         env:

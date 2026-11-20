@@ -52,6 +52,7 @@ refuse() {
   exit 1
 }
 for binary in "$@"; do
+  # go-offline: go version -m reads the build information the binary carries, and no module.
   info=$(go version -m "$binary" 2>&1) || refuse "$binary carries no Go build information: $info"
   revision=$(awk '$2 ~ /^vcs\.revision=/ { sub(/^vcs\.revision=/, "", $2); print $2 }' <<<"$info")
   modified=$(awk '$2 ~ /^vcs\.modified=/ { sub(/^vcs\.modified=/, "", $2); print $2 }' <<<"$info")

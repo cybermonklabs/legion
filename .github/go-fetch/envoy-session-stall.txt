@@ -1,0 +1,7 @@
+# envoy-session-stall's fetch (.github/workflows/ci-job-envoy-session-stall.yaml): the envoy commands
+# its stacks build with GOPROXY=off (natsd and the listener, test/envoy-stack.ts and
+# packages/pi-envoy/scripts/local-stack.sh for the role takeover smoke; the Dispatch server,
+# test/dispatch-stack.ts; natsd and calloutd, src/__tests__/nats-credential.test.ts), and the
+# Dispatch store's connections command its sizing step runs.
+deps packages/envoy ./cmd/listener ./internal/testnats/cmd/natsd ./cmd/dispatch ./internal/testnats/cmd/calloutd
+deps packages/envoy ./internal/dispatch/store/cmd/connections

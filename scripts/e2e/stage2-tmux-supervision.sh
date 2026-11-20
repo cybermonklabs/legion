@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# go-offline-file: a person runs this proof on a devbox; e2e.yaml refuses it, and no CI job runs it.
 # Stage 2's gate for the Go coordinator: supervision on tmux, proven against the real things. The
 # Go daemon launches a real Oh My Pi — the pinned build (.omp-pin; the operator's own build under
 # the box-login route, below)

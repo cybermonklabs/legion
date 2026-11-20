@@ -23,6 +23,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import * as path from "node:path";
+import { ompOffline } from "./omp-offline";
 
 /** Each binary's one lookup in this process, since naming its cache reads the whole binary. */
 const caches = new Map<string, Promise<string>>();
@@ -86,12 +87,14 @@ export async function fillNativesCache(root: string, binary: string): Promise<st
       if (name.startsWith(`${digest}.fill-`)) await rm(path.join(root, name), { recursive: true });
     }
     const staging = await mkdtemp(path.join(root, `${digest}.fill-`));
+    const offline: (() => Promise<void>)[] = [];
     try {
       const home = path.join(staging, "home");
-      // Any command that loads the natives extracts them; this one reads a setting and calls nothing.
+      // Any command that loads the natives extracts them; this one reads a setting and calls
+      // nothing, and ompOffline's proxy refuses anything a later pin would fetch.
       const extract = Bun.spawn([binary, "config", "get", "compaction.remoteEndpoint", "--json"], {
         cwd: staging,
-        env: { HOME: home, PATH: "/usr/bin:/bin" },
+        env: { HOME: home, PATH: "/usr/bin:/bin", ...ompOffline(offline) },
         stdout: "pipe",
         stderr: "pipe",
       });
@@ -138,6 +141,7 @@ export async function fillNativesCache(root: string, binary: string): Promise<st
       await rename(natives, cache);
       return cache;
     } finally {
+      for (const undo of offline) await undo();
       await rm(staging, { recursive: true, force: true });
     }
   } finally {
