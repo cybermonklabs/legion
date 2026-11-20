@@ -104,7 +104,8 @@
 // fork and its exec, as at 18c3c5bb in `4g-latepool-rjm8m`, where the probe's growers so read
 // ranked at nothing as forks of the 2.4 GB parent and the parent ended first. A held process every
 // read of which before the kill is of another program has 0 as its size as of the kill
-// (keepKillSizes, run r40 at 7512cc38). It reads the band's growers first, the most grown across
+// (keepKillSizes, run r40 at 7512cc38), and so has one that runs another program after the kill's
+// reading (keepGrowth). It reads the band's growers first, the most grown across
 // the stay first, then those new to the stay that held memory of their own at their band read, the
 // newest first (INFRA-3531 R1 of spec versions 31 and 38), for half the interval
 // from the reading at the mark by its clock, the first of them always and none after the read in
@@ -180,17 +181,22 @@
 // assessment of that reading in act, at the mark its held size, its read again or the search's
 // read of it before the kill, and at an urgent reading of the wait its read again before the first
 // early kill (endKnown). Where every read of it before the kill is of another program, as where the
-// band read it between its fork and its exec, its size is 0. Only a process the guard never read
-// before the kill takes its first read after it, since a fork reports its parent's shared pages as
-// its own. So a step that lands after a process's last read before the kill's reading counts as
-// growth since the kill: at 7356e0f6, in `8g-latepool-q56hm`, the growers stepped between the
-// reading at the mark and the read after its kill, and a guard that kept that read saw no growth
-// at the next two readings, not fallen and 28 MiB above the kill's reading, and waited; at
-// 0028eb7d, in r31, the growers stepped between a reading and act's reads at it, and a guard that
-// kept those reads ended nothing at the next reading, 155 MiB above the reading at the kill; and at
-// 7512cc38, in r40, a guard that kept the read after the kill of a grower the band read before its
-// exec saw no growth since, and after a fall ended the probe's parent by rule=largest while the
-// grower lived. So a process that grows in steps wider than the window
+// band read it between its fork and its exec, its size is 0. A size as of a kill counts only while
+// the process runs the program it is of: at a reading that finds it running another, as where it
+// exec'd after the kill's reading, its size as of the kill is 0, and all that program holds is
+// growth since the kill once it is growthNoise or more, as any growth is (keepGrowth;
+// INFRA-3368's architect's ruling of 2026-11-20,
+// dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9). Only a process the guard
+// never read before the kill takes its first read after it, since a fork reports its parent's
+// shared pages as its own. So a step that lands after a process's last read before the kill's
+// reading counts as growth since the kill: at 7356e0f6, in `8g-latepool-q56hm`, the growers
+// stepped between the reading at the mark and the read after its kill, and a guard that kept that
+// read saw no growth at the next two readings, not fallen and 28 MiB above the kill's reading, and
+// waited; at 0028eb7d, in r31, the growers stepped between a reading and act's reads at it, and a
+// guard that kept those reads ended nothing at the next reading, 155 MiB above the reading at the
+// kill; and at 7512cc38, in r40, a guard that kept the read after the kill of a grower the band
+// read before its exec saw no growth since, and after a fall ended the probe's parent by
+// rule=largest while the grower lived. So a process that grows in steps wider than the window
 // still counts, and six growers that together outrun what one kill frees, which this issue's
 // tester measured ending a 4 GiB pod while the guard waited the whole wait, are ended one at each
 // reading below the urgent share, and at a reading at or above it every one that grew over
@@ -539,8 +545,9 @@ type sizeRead struct {
 // The rest is what its size as of a kill sent at its newest read's reading is taken from
 // (asOfKill): program, the program its newest read found it running; before, its last read at a
 // reading before that one, where it has one (readBefore); and atReading, its read at that reading
-// that such a size can take: the latest made before that reading's first kill, or, where none was,
-// the first made after it (readAfterKill).
+// that such a size can take: of its reads made before that reading's first kill, the lowest of
+// the program the latest of them found, or, where none was, the first made after that kill
+// (readAfterKill).
 type procReads struct {
 	window        []sizeRead
 	readings      int
@@ -565,7 +572,8 @@ func programOf(p *Process) program { return program{exe: p.Exe, args: p.Args} }
 // is whether p and q are one program: the same executable with the same arguments.
 func (p program) is(q program) bool { return p.exe == q.exe && slices.Equal(p.args, q.args) }
 
-// programRead is one read of a process's size, with the program the read found it running.
+// programRead is one read of a process's size, with the program the read found it running; and a
+// size as of a kill, with the program it is a size of (asOfKill, keepGrowth).
 type programRead struct {
 	size    uint64
 	program program
@@ -723,20 +731,21 @@ type Guard struct {
 	// guard drops its reads (forgetSizes); the reads at and above the mark are none of its. They
 	// keep their storage from one reading to the next.
 	stays map[procKey]bandStay
-	// atKill are the sizes, by process, as of the previous kill of the rise, from which growth
-	// since that kill is measured (grownSinceKill), which says whether the guard goes on after it:
-	// each process's that the guard read in this stay, kept once that kill's reading is read
-	// (keepKillSizes, asOfKill), and for a process it first read after the kill, that first read
+	// atKill are the sizes, by process, as of the previous kill of the rise, each with the program
+	// it is a size of, from which growth since that kill is measured (grownSinceKill), which says
+	// whether the guard goes on after it: each process's that the guard read in this stay, kept once
+	// that kill's reading is read (keepKillSizes, asOfKill), and for a process it first read after
+	// the kill, that first read (keepGrowth). A size counts only while its process runs its program
 	// (keepGrowth). A size is dropped once the reading's table no longer lists its process
 	// (dropEnded), and not for a reading that did not read it. They are emptied when the wait after
 	// the kill ends (endWait) and at the next kill; their storage is kept from one kill to the next.
-	atKill map[procKey]uint64
+	atKill map[procKey]programRead
 	// atFirstKill are the sizes, by process, as of the first kill of this stay in the band, kept
 	// the same way, from which the order's third tier measures growth (sinceStayKill);
 	// firstKillKept is whether the stay has had that kill. Both are let go of where the stay ends
 	// (forgetSizes): below the band, while the guard is off and where it gives a rise up. A
 	// reading below the mark that is in the band ends a rise and keeps them.
-	atFirstKill   map[procKey]uint64
+	atFirstKill   map[procKey]programRead
 	firstKillKept bool
 	// sent are the kills sent at one reading (sendFirst, sendUrgent), whose lines and reports
 	// reportKills writes once every one of them is sent; their storage is kept from one reading's
@@ -795,8 +804,8 @@ func New(cfg Config) *Guard {
 		memfdLink:    memfdPrefix,
 		memfds:       map[memfdID]bool{},
 		sizes:        map[procKey]procReads{},
-		atKill:       map[procKey]uint64{},
-		atFirstKill:  map[procKey]uint64{},
+		atKill:       map[procKey]programRead{},
+		atFirstKill:  map[procKey]programRead{},
 		stays:        map[procKey]bandStay{},
 		rereads:      map[procKey]uint64{},
 		scanMemfds:   map[memfdID]bool{},
@@ -1980,7 +1989,8 @@ func (g *Guard) watch(now time.Time, s Settings, reading, limit, mark uint64) {
 // the processes the guard may end that it read at the reading before (lastRead), one at a time, in
 // the order that reading ranked them (rank), and answers whether it sent a kill. It ends each one
 // whose read shows it grew since the previous kill, its size as of that kill (atKill) plus
-// growthNoise or more, as soon as it has read it, before the next read: the first by its tier
+// growthNoise or more, of the program the reading before read it running, since it reads no
+// executable (keepGrowth), as soon as it has read it, before the next read: the first by its tier
 // (sendFirst), where the processes it read at the reading before hold the floor at their sizes
 // there, with the sizes read again, and every other by the urgent rule (sendUrgent). It reads no
 // process killed in this wait or whose kill failed (triedHere). Each read has the process's
@@ -2021,10 +2031,10 @@ func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64) bool 
 		c.size = size + c.descriptorBytes
 		g.keepSize(now, &c)
 		g.discountFork(&c, g.lastTable, &cache)
-		c.sinceFirstKill = keepGrowth(g.atFirstKill, key, c.size)
+		c.sinceFirstKill = keepGrowth(g.atFirstKill, &c)
 		kept = append(kept, c)
 		switch {
-		case keepGrowth(g.atKill, key, c.size) == 0:
+		case keepGrowth(g.atKill, &c) == 0:
 		case sent:
 			g.sendUrgent(c)
 		case sizeSum(kept)+sizeSum(known[i+1:]) >= floor:
@@ -2130,8 +2140,9 @@ func fell(atKill, reading, mark uint64) bool { return reading < atKill || readin
 // process of a is not new to the stay, every one new to it with memory of its own, are endAt's
 // (endUrgent). a is what the next reading of the wait reads again first (lastRead). Its reads come
 // after the reading, so a step between the reading and them is in them: a size as of the kills is
-// the lower of a process's last read before the reading and its read in a, of those of the program
-// it runs (keepKillSizes; run r31 at 0028eb7d).
+// the lowest of a process's last read before the reading and its reads at it before the kill, its
+// read in a and any read at the mark before it among them, of those of the program it runs
+// (keepKillSizes; run r31 at 0028eb7d).
 func (g *Guard) act(now time.Time, s Settings, reading, limit uint64, a *assessment) {
 	if len(a.endable) == 0 || a.endableBytes < share(limit, s.FloorPercent) {
 		g.stopRise(now, reasonNothingToEnd, reading, limit, a)
@@ -2679,32 +2690,37 @@ func (g *Guard) keepSizes(now time.Time, cs []candidate, t *Table) {
 //
 // It keeps too what c's size as of a kill sent at now is taken from (asOfKill), with the program
 // it read c running (c's executable and arguments): at the first read of c at now, its newest read
-// before it as its last read before this reading (before); and as its read at this reading, the
-// latest read before this reading's first kill (sendFirst, which sets the wait's at to now), the
-// decision's, or, where none came before that kill, the first read after it. So a read after a
-// kill at the mark replaces the decision's read in the window, and not in atReading. All of it
-// keeps its storage, so a process read before allocates nothing.
+// before it as its last read before this reading (before); and as its read at this reading, of its
+// reads before this reading's first kill (sendFirst, which sets the wait's at to now), the lowest
+// of the program the latest of them found, since a read of a program c ran before lowers nothing;
+// or, where none came before that kill, the first read after it. A reading can read c more than
+// once before its kill: at the mark, the reads again (rereadHeld) and, where they send no kill
+// (endHeld), the assessment act decides on, and a step between two of them is growth since the
+// kill. So a read after a kill at the mark replaces the decision's read in the window, and not in
+// atReading. All of it keeps its storage, so a process read before allocates nothing.
 func (g *Guard) keepSize(now time.Time, c *candidate) {
 	key := procKey{pid: c.PID, start: c.StartTime}
 	r := g.sizes[key]
 	read := programRead{size: c.size, program: programOf(c.Process)}
 	killed := g.wait.at.Equal(now)
-	switch n := len(r.window); {
-	case n > 0 && r.window[n-1].at.Equal(now):
-		if !killed {
-			r.atReading = read
-		}
-	default:
+	n := len(r.window)
+	// again is whether c has a read at now already: windowStart never drops it, so it stays the
+	// window's newest.
+	again := n > 0 && r.window[n-1].at.Equal(now)
+	switch {
+	case !again:
 		if n > 0 {
 			r.before = programRead{size: r.window[n-1].size, program: r.program}
 		}
 		r.readBefore = n > 0
 		r.atReading, r.readAfterKill = read, killed
+	case !killed && (read.size < r.atReading.size || !read.program.is(r.atReading.program)):
+		r.atReading = read
 	}
 	r.program = read.program
 	reads := r.window[:copy(r.window, r.window[windowStart(r.window, now):])]
-	if n := len(reads); n > 0 && reads[n-1].at.Equal(now) {
-		reads = reads[:n-1]
+	if again {
+		reads = reads[:len(reads)-1]
 		r.readings--
 	}
 	c.newToStay = r.readings < 2
@@ -2785,7 +2801,9 @@ func (g *Guard) forgetSizes() {
 // lowest of the process's reads of the program it runs now, from its last read that finished
 // before the kills' reading up to the decision's read; 0 where every read of it before the kills
 // is of another program; and its first read after the kills only where the guard never read it
-// before them. That anchors the sizes at the same reading as R1's "the reading at the kill".
+// before them. That anchors the sizes at the same reading as R1's "the reading at the kill". Each
+// size is kept with the program it is of, and counts only while the process runs that program:
+// at a reading that finds it running another, its size as of the kills is 0 (keepGrowth).
 //
 // Each size is kept as the size as of the previous kill of the rise (atKill), from which
 // grownSinceKill measures growth until the next kill, a go-on; the sizes of the kill before go.
@@ -2810,53 +2828,60 @@ func (g *Guard) forgetSizes() {
 //     Every read of it before the kill is of another program, so its size as of the kill is 0.
 //   - A held process whose read again at the mark fails has its band read before the kill, so it
 //     keeps that read, not its read after the kill.
+//   - A process the band read between its fork and its exec that execs only after the kill's
+//     reading has its parent's program at every read up to the last of that reading, and so its
+//     parent's size as of the kill. Its own program's size as of the kill is 0, so all that its
+//     program holds counts as growth since the kill, as in r40.
 func (g *Guard) keepKillSizes() {
 	first := !g.firstKillKept
 	g.firstKillKept = true
 	clear(g.atKill)
 	for key, r := range g.sizes {
-		size := r.asOfKill(g.wait.at)
-		g.atKill[key] = size
+		asOf := r.asOfKill(g.wait.at)
+		g.atKill[key] = asOf
 		if first {
-			g.atFirstKill[key] = size
+			g.atFirstKill[key] = asOf
 		}
 	}
 }
 
-// asOfKill is the size of the process whose reads r are as of a kill sent at the reading taken at
-// at, r's newest read being at that reading or before it (keepKillSizes). The program the process
-// runs now is the one its newest read found.
+// asOfKill is the size as of a kill sent at the reading taken at at of the process whose reads r
+// are, r's newest read being at that reading or before it (keepKillSizes), with the program it is
+// a size of. The program the process runs now is the one its newest read found.
 //   - Where that reading did not read it, its newest read is its last before that reading, and
-//     that read's size is its size.
+//     that read is its size.
 //   - Where it did, its size is the lowest of its reads of the program it runs now among its last
-//     read before that reading (before) and the decision's read, its latest read at that reading
-//     before the reading's first kill (atReading).
+//     read before that reading (before) and its reads at that reading before the reading's first
+//     kill, of which keepSize keeps the lowest of that program (atReading).
 //   - Where each of those reads is of another program, it has run a new program since, and its
 //     size is 0: all that program holds came after them.
 //   - Where it has neither of those reads, the guard never read it before the kill, and its size
-//     is its first read after the kill (atReading). Only that process takes a read after the kill,
-//     since a fork reports its parent's shared pages as its own.
-func (r *procReads) asOfKill(at time.Time) uint64 {
+//     is its first read after the kill, of the program that read found (atReading). Only that
+//     process takes a read after the kill, since a fork reports its parent's shared pages as its
+//     own.
+func (r *procReads) asOfKill(at time.Time) programRead {
 	if newest := r.window[len(r.window)-1]; !newest.at.Equal(at) {
-		return newest.size
+		return programRead{size: newest.size, program: r.program}
 	}
 	if !r.readBefore && r.readAfterKill {
-		return r.atReading.size
+		return r.atReading
 	}
-	var size uint64
-	found := r.readBefore && r.before.program.is(r.program)
-	if found {
-		size = r.before.size
+	asOf := programRead{program: r.program}
+	switch before, decided := r.readBefore && r.before.program.is(r.program), !r.readAfterKill && r.atReading.program.is(r.program); {
+	case before && decided:
+		asOf.size = min(r.before.size, r.atReading.size)
+	case before:
+		asOf.size = r.before.size
+	case decided:
+		asOf.size = r.atReading.size
 	}
-	if !r.readAfterKill && r.atReading.program.is(r.program) && (!found || r.atReading.size < size) {
-		size = r.atReading.size
-	}
-	return size
+	return asOf
 }
 
 // grownSinceKill answers whether a process of cs, the processes the guard may end at a reading
 // whose table is t, has grown since the previous kill of the rise: its size is its size as of the
-// kill (atKill) plus growthNoise or more, a go-on of watch; the other, at a reading at or above the
+// kill (atKill), 0 where it runs another program than that size's (keepGrowth), plus growthNoise or
+// more, a go-on of watch; the other, at a reading at or above the
 // urgent share in a stay with history, is a process new to the stay with memory of its own
 // (urgentNew), which has not grown since the kill at its first read after it. It sets each one's
 // sinceFirstKill to its growth since the stay's first kill too (sinceStayKill). Growth since a
@@ -2871,7 +2896,7 @@ func (g *Guard) grownSinceKill(cs []candidate, t *Table) bool {
 	dropEnded(g.atKill, t)
 	grew := false
 	for i := range cs {
-		grew = keepGrowth(g.atKill, procKey{pid: cs[i].PID, start: cs[i].StartTime}, cs[i].size) > 0 || grew
+		grew = keepGrowth(g.atKill, &cs[i]) > 0 || grew
 	}
 	return grew
 }
@@ -2895,8 +2920,7 @@ func (g *Guard) sinceStayKill(cs []candidate, t *Table) bool {
 	}
 	dropEnded(g.atFirstKill, t)
 	for i := range cs {
-		c := &cs[i]
-		c.sinceFirstKill = keepGrowth(g.atFirstKill, procKey{pid: c.PID, start: c.StartTime}, c.size)
+		cs[i].sinceFirstKill = keepGrowth(g.atFirstKill, &cs[i])
 	}
 	return true
 }
@@ -2911,7 +2935,7 @@ func (g *Guard) sinceStayKill(cs []candidate, t *Table) bool {
 // with no go-on for its growth (INFRA-3531 R1). At the reading at the mark t is the band's table
 // (heldTable), which lists every held process; a process the search found started since has its
 // size kept after the drop.
-func dropEnded(kept map[procKey]uint64, t *Table) {
+func dropEnded(kept map[procKey]programRead, t *Table) {
 	for key := range kept {
 		if !lists(t, key) {
 			delete(kept, key)
@@ -2929,16 +2953,28 @@ func lists(t *Table, key procKey) bool {
 	return listed && p.StartTime == key.start
 }
 
-// keepGrowth is how much size, the size of the process key read at a reading, grew since the kill
-// whose sizes kept holds, growthNoise or more, and 0 otherwise; a process kept holds no size of
-// keeps size as its size as of the kill, its first read after it, and has not grown at it.
-func keepGrowth(kept map[procKey]uint64, key procKey, size uint64) uint64 {
-	atKill, known := kept[key]
-	switch {
-	case !known:
-		kept[key] = size
-	case size >= atKill+growthNoise:
-		return size - atKill
+// keepGrowth is how much c, a process read at a reading, grew since the kill whose sizes kept
+// holds: its size less its size as of the kill, where that is growthNoise or more, and 0
+// otherwise. A size as of a kill counts only while c runs the program it is a size of: where c
+// runs another at this reading, as where it exec'd after the kill's reading, its size as of the
+// kill is 0, and all its program holds is growth since the kill, from growthNoise on as any
+// growth is. By INFRA-3368's architect's decision of 2026-11-20
+// (dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837) and ruling of 2026-11-20
+// (dispatch://INFRA-3531/comment/a81dfa03-66d1-4f14-a0c8-d5ad7af91df9), "the program it runs
+// now" is the program at the reading that measures growth. A process kept holds no size of keeps
+// c's read as its size as of the kill, its first read after it, and has not grown at it.
+func keepGrowth(kept map[procKey]programRead, c *candidate) uint64 {
+	key := procKey{pid: c.PID, start: c.StartTime}
+	asOf, known := kept[key]
+	if !known {
+		kept[key] = programRead{size: c.size, program: programOf(c.Process)}
+		return 0
+	}
+	if !asOf.program.is(programOf(c.Process)) {
+		asOf.size = 0
+	}
+	if c.size >= asOf.size+growthNoise {
+		return c.size - asOf.size
 	}
 	return 0
 }

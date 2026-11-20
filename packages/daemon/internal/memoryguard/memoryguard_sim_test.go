@@ -6,20 +6,19 @@ import (
 	"maps"
 	"math/rand/v2"
 	"os"
-	"path/filepath"
 	"slices"
-	"strconv"
 	"testing"
 	"time"
 )
 
 // The seeded simulation of the latepool probe under check c-choice (INFRA-3531 R1 of spec version
-// 43, the architect's addition of 2026-11-20 and the decision of 02:55Z above sizeAsOfAKill). It
-// drives the guard with the fake clock and the fake pod, and puts each grower's steps at random
-// instants, so that a step lands between two readings, between a reading and the guard's read of
-// the grower at it, inside a read, and between a kill and the guard's next read. Over a fixed list
-// of seeds it checks the three rules of R1 the probe has broken, from the guard's kills (the Sink's
-// Kill values) and the processes' true sizes:
+// 43, the architect's addition of 2026-11-20, and INFRA-3368's architect's decision of 2026-11-20,
+// dispatch://INFRA-3531/comment/b3d48079-f88b-4b86-838b-dd06ccb53837). It drives the guard with
+// the fake clock and the fake pod, and puts each grower's steps at random instants, so that a step
+// lands between two readings, between a reading and the guard's read of the grower at it, inside a
+// read, and between a kill and the guard's next read. Over a fixed list of seeds it checks the
+// three rules of R1 the probe has broken, from the guard's kills (the Sink's Kill values) and the
+// processes' true sizes:
 //
 //   - first: the first kill of a rise ends a process that grew over the window, where one the guard
 //     read at that reading did;
@@ -38,7 +37,7 @@ import (
 // failure names its seed, the rule, the kill it is about and its case:
 //
 //   - (a) the guard had read the process running its program before the kill's reading, and did not
-//     read it at that reading before the kill, its read failing while its step was under way: the
+//     read it at that reading before the kill (it read no smaps there, or the read failed): the
 //     step it missed landed after the kill, before its next read;
 //   - (b) every read of it before the kill was of another program, its parent's at its parent's
 //     size, the guard having read it between its fork and its exec: the guard took its first read
@@ -112,6 +111,9 @@ const (
 )
 
 // simProcess is one process of the model: its files as the fake pod writes them, and its state.
+// Its smaps reads fp.anon: the block for the parent, a sleeping fork and a grower before its exec,
+// and its own memory for a grower after it; and it cannot be read while a step is under way
+// (fp.unreadableSmaps).
 type simProcess struct {
 	fp     fakeProcess
 	grower bool
@@ -119,10 +121,6 @@ type simProcess struct {
 	// program.
 	forkAt               time.Duration
 	forked, execd, alive bool
-	faulting             bool
-	// size is what its smaps reads now: the block for the parent, a sleeping fork and a grower
-	// before its exec, and its own memory for a grower after it.
-	size uint64
 }
 
 // The kinds of a simEvent.
@@ -141,14 +139,14 @@ type simEvent struct {
 	by   uint64
 }
 
-// simReading is one reading of the run: when the guard's clock took it, its instant in the model's
-// time, the reading, each living process's smaps size at that instant, the model's time at the end
-// of the reading's work, and whether the guard gave the rise up there.
+// simReading is one reading of the run: when the guard's clock took it, the reading, each living
+// process's smaps size when it was taken, the model's time at the end of the reading's work, and
+// whether the guard gave the rise up there.
 type simReading struct {
-	now, at, end time.Duration
-	reading      uint64
-	size         map[int]uint64
-	stopped      bool
+	now, end time.Duration
+	reading  uint64
+	size     map[int]uint64
+	stopped  bool
 }
 
 // simRead is one read of a process's smaps by the guard's loop: the reading it was at, its instant
@@ -199,31 +197,33 @@ type simRun struct {
 	readings []simReading
 	reads    []simRead
 	kills    []simKill
+	// byPID are the reads by pid, in order, indexed once the run is done (readsOf).
+	byPID map[int][]simRead
 }
 
 var (
 	simBlockHolders = []int{700, 701, 702, 703}
 	simGrowers      = []int{800, 801, 802, 803, 804, 805}
 	// simEndable are the processes the guard may end.
-	simEndable = append(slices.Clone(simBlockHolders), simGrowers...)
+	simEndable = slices.Concat(simBlockHolders, simGrowers)
 )
 
 func newSimRun(t *testing.T, seed uint64) *simRun {
 	t.Helper()
 	s := &simRun{t: t, seed: seed, rng: rand.New(rand.NewPCG(seed, 0x6c61746570)), procs: map[int]*simProcess{}}
-	mark := share(podLimit, 85)
+	mark := share(podLimit, Defaults().ActPercent)
 	s.rest = mark - simAgent - latepoolBlock - (5+s.rng.Uint64N(56))*mib
 	s.readCost = s.uniform(2*time.Millisecond, 8*time.Millisecond)
 	s.pod = newFakePod(t)
 	omp := agent(simAgent)
-	s.procs[omp.pid] = &simProcess{fp: omp, alive: true, execd: true, size: simAgent}
+	s.procs[omp.pid] = &simProcess{fp: omp, alive: true, execd: true}
 	s.pod.add(omp)
 	for i, pid := range simBlockHolders {
 		fp := fakeProcess{pid: pid, ppid: 700, start: uint64(5000 + 100*i), exe: "/usr/bin/python3.13", args: latepoolArgs, anon: latepoolBlock}
 		if i == 0 {
 			fp.ppid = 100
 		}
-		s.procs[pid] = &simProcess{fp: fp, alive: true, execd: true, size: latepoolBlock}
+		s.procs[pid] = &simProcess{fp: fp, alive: true, execd: true}
 		s.pod.add(fp)
 	}
 	s.schedule()
@@ -233,7 +233,7 @@ func newSimRun(t *testing.T, seed uint64) *simRun {
 		s.op(s.readCost)
 		r := simRead{pid: pid, reading: len(s.readings) - 1, at: s.vt}
 		if p := s.procs[pid]; p != nil {
-			r.ok, r.own, r.size = p.alive && !p.faulting, !p.grower || p.execd, p.size
+			r.ok, r.own, r.size = p.alive && !p.fp.unreadableSmaps, !p.grower || p.execd, p.fp.anon
 		}
 		s.reads = append(s.reads, r)
 	}
@@ -315,18 +315,19 @@ func (s *simRun) change(e simEvent) {
 	p := s.procs[e.pid]
 	switch {
 	case e.kind == simFork && s.procs[700].alive:
-		p.forked, p.forkAt, p.alive, p.size = true, e.at, true, latepoolBlock
-		p.fp.anon = p.size
+		p.forked, p.forkAt, p.alive, p.fp.anon = true, e.at, true, latepoolBlock
 		s.pod.add(p.fp)
 	case e.kind == simFork || !p.alive:
 	case e.kind == simExec:
-		p.execd, p.size = true, simGrowerBase
-		p.fp.args, p.fp.anon = growArgs, p.size
+		p.execd = true
+		p.fp.args, p.fp.anon = growArgs, simGrowerBase
 		s.pod.add(p.fp)
 	case e.kind == simStepStart:
-		// A read of the smaps fails while the step is under way, as a directory's does.
-		p.faulting = true
-		smaps := filepath.Join(s.pod.proc, strconv.Itoa(p.fp.pid), "smaps")
+		// A read of the smaps fails while the step is under way, as a directory's does. A step
+		// rewrites the smaps alone: fakePod.add rewrites every file of the process, and costs the
+		// simulation about 30% of its time.
+		p.fp.unreadableSmaps = true
+		smaps := s.h.g.smapsPath(p.fp.pid)
 		if err := os.Remove(smaps); err != nil {
 			s.t.Fatal(err)
 		}
@@ -334,10 +335,9 @@ func (s *simRun) change(e simEvent) {
 			s.t.Fatal(err)
 		}
 	case e.kind == simStepEnd:
-		p.faulting = false
-		p.size += e.by
-		p.fp.anon = p.size
-		smaps := filepath.Join(s.pod.proc, strconv.Itoa(p.fp.pid), "smaps")
+		p.fp.unreadableSmaps = false
+		p.fp.anon += e.by
+		smaps := s.h.g.smapsPath(p.fp.pid)
 		if err := os.Remove(smaps); err != nil {
 			s.t.Fatal(err)
 		}
@@ -354,7 +354,7 @@ func (s *simRun) total() uint64 {
 	}
 	for _, pid := range simGrowers {
 		if p := s.procs[pid]; p.alive && p.execd {
-			total += p.size
+			total += p.fp.anon
 		}
 	}
 	return total
@@ -376,10 +376,10 @@ func (s *simRun) snapshot(now time.Duration) {
 	s.apply(now-1, true)
 	s.vt = max(s.vt, now)
 	s.pod.setAnon(s.total())
-	r := simReading{now: now, at: s.vt, reading: s.pod.anon, size: map[int]uint64{}}
+	r := simReading{now: now, reading: s.pod.anon, size: map[int]uint64{}}
 	for pid, p := range s.procs {
 		if p.alive {
-			r.size[pid] = p.size
+			r.size[pid] = p.fp.anon
 		}
 	}
 	s.readings = append(s.readings, r)
@@ -409,6 +409,10 @@ func (s *simRun) run() *simRun {
 		}
 	}
 	s.h.stop()
+	s.byPID = map[int][]simRead{}
+	for _, r := range s.reads {
+		s.byPID[r.pid] = append(s.byPID[r.pid], r)
+	}
 	reported := s.h.killed()
 	if len(reported) != len(s.kills) {
 		s.t.Fatalf("seed %d: the guard sent %d kills and reported %d", s.seed, len(s.kills), len(reported))
@@ -434,15 +438,7 @@ func (s *simRun) killsAt(i int) []simKill {
 }
 
 // readsOf are the guard's reads of pid's smaps, in order.
-func (s *simRun) readsOf(pid int) []simRead {
-	var out []simRead
-	for _, r := range s.reads {
-		if r.pid == pid {
-			out = append(out, r)
-		}
-	}
-	return out
-}
+func (s *simRun) readsOf(pid int) []simRead { return s.byPID[pid] }
 
 // readAt is pid's read the guard decided on at reading i before the instant before: its last read
 // at reading i before it, false where it has none or that read failed.
@@ -548,13 +544,9 @@ func (s *simRun) grownSince(k, i int, before time.Duration) (pid int, grown, rea
 // check judges the run by the three rules, following the guard's phase in each rise and its stays
 // in the band from the readings, the kills and the stopped lines.
 func (s *simRun) check() []simFailure {
-	mark, band, floor := share(podLimit, 85), bandStart(podLimit, 85), share(podLimit, 10)
+	d := Defaults()
+	mark, band, floor := share(podLimit, d.ActPercent), bandStart(podLimit, d.ActPercent), share(podLimit, d.FloorPercent)
 	var out []simFailure
-	const (
-		armed = iota
-		waiting
-		stopped
-	)
 	phase, stayFirst, rise := armed, -1, -1
 	for i, r := range s.readings {
 		kills := s.killsAt(i)

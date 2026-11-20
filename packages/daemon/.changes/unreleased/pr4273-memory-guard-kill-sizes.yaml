@@ -1,10 +1,12 @@
 kind: Fixed
 body: |-
-    After a kill, the launcher's memory guard measures each process's growth since that kill from a
-    size no later than the kill's reading: the lowest of its reads of the program it runs, from its
-    last read before that reading to the read the kill was decided on, or 0 for a process that has
-    run a new program since. A grower that steps between a reading and the guard's reads at it, or
-    whose read at the kill failed, now counts as grown, so the guard ends it at the next reading
-    rather than waiting or ending a larger process that never grew.
+    After a kill, the launcher's memory guard measures each process's growth since that kill from
+    its size as of the kill: the lowest of its reads of the program it runs, from its last read
+    before the kill's reading to the read the kill was decided on; for a process it first read after
+    the kill, that first read; and 0 for a process every read of which before the kill was of
+    another program, or that runs another program than the one its size as of the kill was read of.
+    A grower that steps between a reading and the guard's reads at it, whose read at the kill
+    failed, or that runs its own program only after the kill's reading, now counts as grown, so the
+    guard ends it rather than waiting or ending a larger process that never grew.
 custom:
     Issue: pr4273
