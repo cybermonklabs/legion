@@ -294,3 +294,181 @@ func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testi
 		t.Fatalf("legion launcher volume-trim-delete %q, the launcher's own command line: exit %d, %q; want exit 1 and the refusal of a process that is not the init of a PID namespace of its own, every flag read", argv[3:], code, stderr.String())
 	}
 }
+
+// Every line the launcher writes passes the URL rule. A far side at --connect that is no daemon
+// answers the hello with a line that is no frame, which the launcher quotes in the line that says
+// the connection failed: in the controller pod's container on the launcher's own stderr, in an
+// issue pod's behind the role's name. There the test database's script also writes a DSN with a
+// user name and a query, which the launcher copies into the container's log behind the script's
+// name. And a --token-file the launcher cannot read is quoted in its refusal. Each line keeps the
+// URL's host and path, and no user name or query reaches the container's log.
+func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
+	connect := notADaemon(t, "moved to https://legion-reader@d.example/launch?token=planted-query-token-4")
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	rolesDir := t.TempDir()
+	for _, name := range []string{"launcher", "private"} {
+		if err := os.MkdirAll(filepath.Join(rolesDir, "tester", name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(rolesDir, "tester", "launcher", "LAUNCHER_TOKEN"), []byte("token-tester\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	// The test database's script, first on PATH: it names a server that does not answer, by a DSN
+	// with a user name and a query, and fails.
+	bin := t.TempDir()
+	script := "#!/bin/sh\necho 'the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer'\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		// until is what stderr holds once every line under test is written, after which the
+		// container is stopped; "" for a refusal, which ends the command by itself.
+		until string
+		code  int
+		// shown is each line as the log must show it; planted is each query's token.
+		shown, planted []string
+	}{
+		{
+			name:    "the controller pod's container",
+			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
+			until:   "launcher: daemon connection:",
+			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
+			planted: []string{"planted-query-token-4"},
+		},
+		{
+			name:  "an issue pod's container",
+			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
+			until: "tester: launcher: daemon connection:",
+			shown: []string{
+				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
+				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
+			},
+			planted: []string{"planted-query-token-4", "planted-query-token-5"},
+		},
+		{
+			name: "a token file it cannot read",
+			args: []string{"--connect", connect, "--token-file", "https://legion-reader@d.example/token?token=planted-query-token-6", "--role", "controller", "--private-dir", t.TempDir()},
+			code: 1,
+			// The query runs to the white space after it, so the ":" the line writes there goes
+			// with it.
+			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
+			planted: []string{"planted-query-token-6"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var stdout, stderr syncBuffer
+			exited := make(chan int, 1)
+			go func() {
+				exited <- run(ctx, append([]string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s"}, tc.args...), &stdout, &stderr)
+			}()
+			if tc.until != "" {
+				deadline := time.Now().Add(10 * time.Second)
+				for !strings.Contains(stderr.String(), tc.until) {
+					if time.Now().After(deadline) {
+						t.Fatalf("the launcher logged %q, want %q", stderr.String(), tc.until)
+					}
+					time.Sleep(10 * time.Millisecond)
+				}
+				cancel()
+			}
+			var code int
+			select {
+			case code = <-exited:
+			case <-time.After(10 * time.Second):
+				t.Fatal("the launcher did not exit")
+			}
+			logged := stdout.String() + stderr.String()
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d; the launcher wrote %q", code, tc.code, logged)
+			}
+			for _, want := range tc.shown {
+				if !strings.Contains(logged, want) {
+					t.Errorf("the launcher wrote %q, want %q", logged, want)
+				}
+			}
+			for _, credential := range append([]string{"legion-reader"}, tc.planted...) {
+				if strings.Contains(logged, credential) {
+					t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
+				}
+			}
+		})
+	}
+}
+
+// A line the launcher quotes is cut to 80 runes (shimwire.Decode's refusal of a line that is no
+// frame). A cut made before the URL rule would stop inside a URL's userinfo, before its "@", where
+// the rule finds no userinfo in what is left and keeps the start of the user name and the password
+// as the URL's host. The launcher writes no part of either.
+func TestTheLauncherCommandWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// The user name and the password go into the URL as the other tests of this package build one,
+	// so the pre-push leak check reads no credential in the source. The line's first 80 runes end
+	// inside the password, before the "@".
+	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
+	connect := notADaemon(t, strings.Replace("moved to https://d.example/launch", "://", "://"+user+":"+pass+"@", 1))
+	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
+	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout, stderr syncBuffer
+	exited := make(chan int, 1)
+	go func() {
+		exited <- run(ctx, []string{"legion", "launcher", "--sandbox", "s", "--pod-uid", "p", "--stop-grace", "2s",
+			"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()}, &stdout, &stderr)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(stderr.String(), "launcher: daemon connection:") {
+		if time.Now().After(deadline) {
+			t.Fatalf("the launcher logged %q, want its failed daemon connection", stderr.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-exited:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the launcher did not exit")
+	}
+	logged := stdout.String() + stderr.String()
+	for _, credential := range []string{user, pass[:12]} {
+		if strings.Contains(logged, credential) {
+			t.Errorf("the launcher wrote %q, which holds %q", logged, credential)
+		}
+	}
+}
+
+// notADaemon is a far side at a launcher's --connect that is no daemon: it answers every hello
+// with answer, a line that is no frame, and hangs up. It answers the tcp:// address to dial.
+func notADaemon(t *testing.T, answer string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				if _, err := bufio.NewReader(conn).ReadBytes('\n'); err == nil {
+					_, _ = conn.Write([]byte(answer + "\n"))
+				}
+			}()
+		}
+	}()
+	return "tcp://" + listener.Addr().String()
+}

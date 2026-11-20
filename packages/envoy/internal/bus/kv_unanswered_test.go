@@ -23,21 +23,21 @@ import (
 const unansweredBucket = "envoy_unanswered_test"
 
 // openSubject is the request a lookup of a bucket sends: the STREAM.INFO of the bucket's stream,
-// which nats.go builds from the bucket's name for the legacy js.KeyValue (nats.go@v1.53.1
-// kv.go:396-411, js.go:189-192) and for the jetstream handle wrapKeyValue opens on it.
+// which nats.go builds from the bucket's name for the legacy js.KeyValue (nats.go@v1.55.0
+// kv.go:397-418, js.go:193-199) and for the jetstream handle wrapKeyValue opens on it.
 func openSubject(bucket string) string { return "$JS.API.STREAM.INFO.KV_" + bucket }
 
 // createSubject is the request a create of a bucket sends: the STREAM.CREATE of the bucket's
-// stream, which nats.go builds from the bucket's name for js.CreateKeyValue (nats.go@v1.53.1
-// kv.go:524-534, js.go:189-192).
+// stream, which nats.go builds from the bucket's name for js.CreateKeyValue (nats.go@v1.55.0
+// kv.go:422-548, js.go:193-199).
 func createSubject(bucket string) string { return "$JS.API.STREAM.CREATE.KV_" + bucket }
 
 // updateSubject is the request an update of a bucket's stream sends, a raise or a new age: the
-// STREAM.UPDATE of the bucket's stream (nats.go@v1.53.1 jsm.go UpdateStream, js.go:189-192).
+// STREAM.UPDATE of the bucket's stream (nats.go@v1.55.0 jsm.go's UpdateStream).
 func updateSubject(bucket string) string { return "$JS.API.STREAM.UPDATE.KV_" + bucket }
 
 // accountInfoSubject is the request js.CreateKeyValue sends before its STREAM.CREATE: the
-// account's JetStream info, which nats.go asks for first (nats.go@v1.53.1 kv.go:432-434,
+// account's JetStream info, which nats.go asks for first (nats.go@v1.55.0 kv.go:422-434,
 // jsm.go:409). It names no bucket, so a row that drops it drops the account info of whatever
 // this connection asks the server for next, and only a row that makes one call may use it.
 func accountInfoSubject() string { return "$JS.API.INFO" }
@@ -436,7 +436,7 @@ func TestAnUnansweredMaxAgeUpdateIsSentAgain(t *testing.T) {
 // A start whose account info draws no answer sends the create step again and goes on, rather than
 // ending the program with "open envoy_unanswered_info KV bucket: KV_envoy_unanswered_info create:
 // context deadline exceeded" with no bucket made. That request is nats.go's own, sent inside
-// js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.53.1 kv.go:432-434), and a member that is
+// js.CreateKeyValue before the STREAM.CREATE (nats.go@v1.55.0 kv.go:422-434), and a member that is
 // not the metadata leader leaves it unanswered behind the same gate it leaves the create behind
 // (sentAgain). The first account info never reaches the server, so the bucket is the second
 // send's, and the handle on it is usable.

@@ -49,3 +49,52 @@ func TestALongCauseIsCutAtARuneBoundary(t *testing.T) {
 		t.Errorf("the cause %q lost its beginning", got)
 	}
 }
+
+// plantedToken is the credential the URL credential tests plant in a URL, of no real token's
+// shape: a text that holds any four bytes of it in a row holds a part of it (partOf).
+const plantedToken = "qZxVkWjYpQrTfHbN"
+
+// plantedUserinfo is a userinfo whose password is plantedToken, written apart from any URL.
+const plantedUserinfo = "user:" + plantedToken
+
+// partOf is the first four bytes in a row of planted that text holds, and "" where it holds none.
+func partOf(text, planted string) string {
+	for i := 0; i+4 <= len(planted); i++ {
+		if piece := planted[i : i+4]; strings.Contains(text, piece) {
+			return piece
+		}
+	}
+	return ""
+}
+
+// The query and the userinfo of a URL are removed from the whole sentence before it is cut at
+// maxCauseBytes, so a token that the cut of the sentence as written would split leaves no part of
+// itself: the cause is the cut of the sentence with the credential gone.
+func TestACauseCutAtItsBoundKeepsNoPartOfAURLCredential(t *testing.T) {
+	const what = "the daemon could not read " + CheckSlug + " at leak-check-v15"
+	const download = "codeload.example/theorem-labs/agent-infra/legacy.tar.gz/refs/tags/leak-check-v15"
+	for _, tc := range []struct{ name, url, credential string }{
+		{"a token in the query", "https://" + download + "?token=" + plantedToken, "?token=" + plantedToken},
+		{"a token in the userinfo", "https://" + plantedUserinfo + "@" + download, plantedUserinfo + "@"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			head := RefusalPrefix + what + ": "
+			// The padding puts the token's first eight bytes before the cut of the sentence as
+			// written, and the rest after it.
+			pad := strings.Repeat("x", maxCauseBytes-8-len(head)-len(` Get "`)-strings.Index(tc.url, plantedToken))
+			text := pad + ` Get "` + tc.url + `": dial tcp 127.0.0.1:9: connect: connection refused` + strings.Repeat(", and the words go on", 12)
+			if written := head + text; partOf(written[:maxCauseBytes], plantedToken) == "" {
+				t.Fatalf("the sentence as written, cut at %d bytes, holds no part of the token: the case tests nothing", maxCauseBytes)
+			}
+
+			got := Cause(what, errors.New(text))
+
+			if want := (head + strings.Replace(text, tc.credential, "", 1))[:maxCauseBytes]; got != want {
+				t.Errorf("Cause = %q, want %q: the sentence with its URL credential removed, then cut", got, want)
+			}
+			if part := partOf(got, plantedToken); part != "" {
+				t.Errorf("the cause %q holds %q of the planted token", got, part)
+			}
+		})
+	}
+}

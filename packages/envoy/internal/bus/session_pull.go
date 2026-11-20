@@ -288,7 +288,7 @@ func (p *SessionPull) Detach() error {
 		// unread, which is what Release returns. A drain hands those messages to receive, which
 		// queues them.
 		if err := p.sub.Drain(); err != nil {
-			// Drain fails only on a closed connection (nats.go v1.53.1: ErrConnectionClosed;
+			// Drain fails only on a closed connection (nats.go v1.55.0: ErrConnectionClosed;
 			// its other error, a subscription with no connection, cannot arise here). The close
 			// has already ended the subscription and thrown away what nats.go held unread, so
 			// those messages reach neither Release nor the server and are delivered again only

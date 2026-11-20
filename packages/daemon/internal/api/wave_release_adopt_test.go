@@ -258,11 +258,13 @@ func TestReleaseAdoptsAQueuedRootThatWaitsOnAnUnfinishedIssueAndAnswersItHeld(t 
 	const blocker = "LEGION-400"
 	a.observe(adoptionChild, 1, "todo", "", true)
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		for _, row := range []record.DispatchIssueRow{
-			{Key: adoptionChild, Project: testProject, Status: "todo", Blockers: []string{blocker}, Seq: 1},
-			{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1},
+		for _, reading := range []record.DispatchReading{
+			{Key: adoptionChild, Project: testProject, Seq: 1,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{blocker})},
+			{Key: blocker, Project: testProject, Seq: 1,
+				Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)},
 		} {
-			if err := a.records.PutDispatchIssue(context.Background(), tx, row); err != nil {
+			if err := a.records.PutDispatchIssue(context.Background(), tx, reading); err != nil {
 				return err
 			}
 		}
@@ -595,8 +597,8 @@ func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.
 		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
 	// The mirror knows the blocker is unfinished and nothing of the link to it.
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return a.records.PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the blocker's mirror row: %v", err)
 	}
@@ -657,8 +659,8 @@ func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 	// The mirror knows the blocker is unfinished and nothing of the link to it: the child's own
 	// row is the one its event wrote, under no parent and waiting on nothing.
 	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
-		return a.records.PutDispatchIssue(context.Background(), tx,
-			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+		return a.records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: blocker, Project: testProject, Seq: 1,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 	}); err != nil {
 		t.Fatalf("seed the blocker's mirror row: %v", err)
 	}
