@@ -129,8 +129,8 @@ export interface AskSnoozeManyWrite {
  * before, not to null, which would un-snooze a row that was already deferred - and the ones the
  * server took stay where they landed. A read of the Inbox asked while the set is out waits until
  * the last of them is decided, or until as many snooze events as asks have come, as the single
- * snooze's does; an ask Dispatch refused with no unanswered attempt before the refusal publishes
- * no event, and the hold waits for none of it.
+ * snooze's does; an ask Dispatch refused with no earlier attempt of its snooze that may have
+ * landed unseen publishes no event, and the hold waits for none of it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -152,8 +152,8 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         keys: [inboxKey],
       });
       let failed: AskSnoozeFailure[];
-      // How many of the asks Dispatch refused with no unanswered attempt before the refusal
-      // (`refusedByDispatch`), which publish no event.
+      // How many of the asks Dispatch refused with no earlier attempt of their snooze that may
+      // have landed unseen (`refusedByDispatch`), which publish no event.
       let refusals = 0;
       try {
         await queryClient.cancelQueries({ queryKey: inboxKey });

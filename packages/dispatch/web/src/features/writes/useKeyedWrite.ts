@@ -92,8 +92,9 @@ export interface UnansweredLanding<TVariables> {
 const pressHolds = new WeakMap<MutationFunctionContext, EndReadHold>();
 
 /** Ends the hold of the press TanStack runs under `context`, if it keeps one still: `refused` is
- *  whether Dispatch refused the press with no unanswered attempt before the refusal
- *  (`refusedByDispatch`), which then publishes no event for the hold to wait for. */
+ *  whether Dispatch refused the press with no earlier attempt of it that may have landed unseen,
+ *  in any try of the press (`refusedByDispatch`), which then publishes no event for the hold to
+ *  wait for. */
 function endHold(context: MutationFunctionContext, refused = false): void {
   pressHolds.get(context)?.(refused ? 1 : 0);
   pressHolds.delete(context);
