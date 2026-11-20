@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished: session_projects places every
@@ -138,45 +139,56 @@ func TestTheFillMarkerIsReadOncePerStatement(t *testing.T) {
 // over it would measure nothing.
 func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scans, total int) {
 	t.Helper()
-	var plan []map[string]any
-	if err := q.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) `+sql, args...).Scan(&plan); err != nil {
+	return relationLoops(t, relation, analyzedPlan(t, q, sql, args...))
+}
+
+// analyzedPlan is the raw answer of explaining sql, run with args through q, with what it measured
+// (explain analyze): the one plan explaintest.OnePlan reads.
+func analyzedPlan(t *testing.T, q Querier, sql string, args ...any) []byte {
+	t.Helper()
+	var raw []byte
+	if err := q.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) `+sql, args...).Scan(&raw); err != nil {
 		t.Fatalf("explain the read: %v", err)
 	}
-	var walk func(node map[string]any)
-	walk = func(node map[string]any) {
-		if node["Relation Name"] == relation {
+	return raw
+}
+
+// relationLoops is planLoops over raw, an analyzed plan: how many of its nodes scan relation and
+// how many loops they ran in all, failing the test where no node scans it.
+func relationLoops(t *testing.T, relation string, raw []byte) (scans, total int) {
+	t.Helper()
+	for _, scan := range explaintest.Scans(t, explaintest.OnePlan(t, raw)) {
+		if scan.Relation == relation {
 			scans++
-			loops, _ := node["Actual Loops"].(float64)
-			total += int(loops)
-		}
-		children, _ := node["Plans"].([]any)
-		for _, child := range children {
-			if child, ok := child.(map[string]any); ok {
-				walk(child)
-			}
-		}
-	}
-	for _, root := range plan {
-		if node, ok := root["Plan"].(map[string]any); ok {
-			walk(node)
+			total += int(scan.Loops)
 		}
 	}
 	if scans == 0 {
+		var plan []map[string]any
+		_ = json.Unmarshal(raw, &plan)
 		encoded, _ := json.Marshal(plan)
 		t.Fatalf("the plan reads %s nowhere, so this measures nothing:\n%s", relation, encoded)
 	}
 	return scans, total
 }
 
-// TestTheListenerRecordUsesItsPrimaryKey: SessionClause reads the listener's stored projects
-// through listener_session_projects, whose body probes route_roster_session_projects by its
-// primary key. The migration's trigger wrote one object from a roster of fifty sessions; with
-// sequential scans disabled, the direct projection query takes its one key through one plan node
-// and one loop.
+// TestTheListenerRecordUsesItsPrimaryKey (M15): SessionClause is the statement's own SQL, so a
+// read that binds it plans the listener record's read with the statement, where EXPLAIN shows it:
+// a read over fifty sessions none of which has a pair, for an open viewer and for one that is not
+// open, of a deployment that holds a private project and has filled session_projects, reads
+// route_roster_session_projects through its primary key, keyed on id, and no node of it runs
+// more than once, since the read names no column of the row the clause tests (an InitPlan): the
+// open arm reads it once in all. A clause that called a database function would show no such
+// read, since a function's body is not part of the plan (and a SQL function whose body reads a
+// table is never inlined), and the test fails there reading the relation nowhere.
+//
+// Control: drop route_roster_session_projects_pkey in the test's own transaction; the plan reads
+// the projection by a sequential scan, and the test fails naming the index it searches nowhere.
 func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
 		insert into route_roster (answered, sessions, sent_at, expires_at)
 		select true, jsonb_agg(jsonb_build_object('session_id', 'ses_' || n, 'projects', jsonb_build_array(case when n % 2 = 0 then 'PUB' else 'PRIV' end))),
 			now(), now() + interval '1 hour'
@@ -184,16 +196,43 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the listener's record of fifty sessions: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the indexed listener-record plan: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
-		t.Fatalf("prefer the listener-record index: %v", err)
-	}
-	if scans, total := planLoops(t, tx, "route_roster_session_projects",
-		`select projects from route_roster_session_projects where id = true`); scans != 1 || total != 1 {
-		t.Errorf("the listener-record lookup scans route_roster_session_projects in %d nodes, %d loops in all; want one index scan node and one loop", scans, total)
+	for _, person := range []string{alice, bob} {
+		viewer, err := Resolve(ctx, database.Pool, cookie(person))
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", person, err)
+		}
+		if !viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", person, viewer)
+		}
+		subject := "the read of fifty sessions' listener records for " + person
+		explained := func() []byte {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin %s's plan: %v", person, err)
+			}
+			// Rolled back however the read ends, so a failed plan leaves no transaction holding a
+			// connection the test database's drop waits on.
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
+				t.Fatalf("prefer the listener-record index: %v", err)
+			}
+			raw := analyzedPlan(t, tx, `select count(*) from generate_series(1, 50) as n where `+SessionClause("'ses_' || n", "$1"), viewerArg(t, viewer))
+			explaintest.NewIndexKeys(tx).RequireIndexKeyed(t, explaintest.OnePlan(t, raw), "route_roster_session_projects_pkey", subject, explaintest.CondRequired)
+			return raw
+		}
+		raw := explained()
+		scans, total := relationLoops(t, "route_roster_session_projects", raw)
+		plan := explaintest.OnePlan(t, raw)
+		for _, scan := range explaintest.Scans(t, plan) {
+			if scan.Relation == "route_roster_session_projects" && scan.Loops > 1 {
+				t.Errorf("%s reads route_roster_session_projects %v times in one node, want at most once a statement:\n%s", subject, scan.Loops, plan)
+			}
+		}
+		if person == alice && total != 1 {
+			t.Errorf("%s reads route_roster_session_projects in %d nodes, %d loops in all; want one loop:\n%s", subject, scans, total, plan)
+		}
+		if total < 1 {
+			t.Errorf("%s ran no read of route_roster_session_projects, so the arm under test never ran:\n%s", subject, plan)
+		}
 	}
 }

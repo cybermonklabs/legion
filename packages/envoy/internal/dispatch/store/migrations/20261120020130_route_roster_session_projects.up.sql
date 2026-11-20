@@ -5,8 +5,9 @@
 -- an InitPlan of unrelated statements: a roster table a route-status test made unreadable then
 -- broke an issue read, and every backlink count paid its scan. This one-row projection precomputes
 -- the jsonb object from each session id to its projects. A SessionClause reaches the row through
--- its primary key and reads the object once per statement; it never names route_roster or expands
--- every listener row in the statement that reads a graph.
+-- its primary key and reads the object once per statement (an InitPlan of the statement's own
+-- plan, access.SessionClause, which is the statement's SQL and calls no function); it never names
+-- route_roster or expands every listener row in the statement that reads a graph.
 --
 -- The object holds a session only when its listener record lists its projects: a list, [] for a
 -- credential that lists none. A record with no projects key, or a null one, is a listener that does
@@ -50,55 +51,3 @@ $$;
 create trigger route_roster_session_projects_sync
     after insert or update of sessions on route_roster
     for each row execute function sync_route_roster_session_projects();
-
-create function listener_session_projects() returns jsonb
-language sql stable cost 0.0001
-set search_path to pg_catalog, public
-as $$
-    select projects from route_roster_session_projects where id = true
-$$;
-
-create function session_clause_visible(session_id text, viewer jsonb, filled boolean) returns boolean
-language sql stable cost 0.0001
-set search_path to pg_catalog, public
-as $$
-    select coalesce(case
-        when coalesce(($2->>'all')::boolean, false) or $1 = $2->>'session' then true
-        when coalesce(($2->>'open')::boolean, false) then case
-            when not coalesce(($2->>'private')::boolean, false) then true
-            when not $3 then false
-            when exists (
-                select 1 from session_projects unseen
-                where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)
-                offset 0
-            ) then false
-            when exists (
-                select 1 from session_projects acted where acted.session_id = $1
-                offset 0
-            ) then true
-            else coalesce((
-                select projects from route_roster_session_projects where id = true
-            )->$1 <@ ($2->'sees'), false)
-        end
-        when exists (
-            select 1 from session_projects acted
-            where acted.session_id = $1 and ($2->'sees') ? acted.project_key
-            offset 0
-        ) then
-            not coalesce(($2->>'private')::boolean, false) or not exists (
-                select 1 from session_projects unseen
-                join projects hidden on hidden.key = unseen.project_key and hidden.visibility = 'private'
-                where unseen.session_id = $1 and not (($2->'sees') ? unseen.project_key)
-                offset 0
-            )
-        when coalesce(($2->>'private')::boolean, false) and not exists (
-            select 1 from session_projects acted where acted.session_id = $1
-            offset 0
-        ) then
-            coalesce((
-                select jsonb_array_length(record.listed) > 0 and record.listed <@ ($2->'sees')
-                from (select projects->$1 as listed from route_roster_session_projects where id = true) record
-            ), false)
-        else false
-    end, false)
-$$;
