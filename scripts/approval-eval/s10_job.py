@@ -45,6 +45,8 @@ SERVICE_ACCOUNT = "s10-judge-sandbox"
 RETRY_PAUSES = (5, 15, 45, 90)
 # How long the preflight's Job may run, in seconds: its checks, and no judge.
 PREFLIGHT_DEADLINE = 900
+# Where Kubernetes writes the namespace of the driver's own pod, in which each Job runs.
+NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
 BOOT = ("import base64, lzma, os; exec(compile(lzma.decompress(base64.b64decode(os.environ['S10_SANDBOX'])), "
         "'s10_sandbox.py', 'exec'))")
@@ -272,7 +274,7 @@ class KubeRunner:
 
     def own_pod(self):
         if self._pod is None:
-            with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as handle:
+            with open(NAMESPACE_FILE) as handle:
                 self.namespace = handle.read().strip()
             self._pod = self.kubectl_json("get", "pod", socket.gethostname(), "-o", "json")
         return self._pod

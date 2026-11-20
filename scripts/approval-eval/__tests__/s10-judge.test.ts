@@ -4,7 +4,13 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
-import { INPUTS_VERSION, type InventoryLine } from "../s10-inputs-io";
+import {
+  INPUTS_VERSION,
+  type InventoryLine,
+  inventoryLinesOf,
+  pageRecordOf,
+  requestInputsOf,
+} from "../s10-inputs-io";
 import { admissionOf, JUDGE_COMMAND, main } from "../s10-judge-admit";
 import {
   COUNTING_RULE,
@@ -247,7 +253,31 @@ describe("s10_judge.py and the modules beside it", () => {
       stageVersion: JUDGED_VERSION,
       startedFile: STARTED_FILE,
       startedReason: STARTED_REASON,
+      inputsVersion: INPUTS_VERSION,
     });
+    // Every inputs stage the suite wrote reads back through the inputs stage's own parsers, so no
+    // row there judges a shape the inputs stage does not write.
+    let requestsRead = 0;
+    for (const name of (await readdir(join(keep, "inputs"))).sort()) {
+      const directory = join(keep, "inputs", name);
+      const lines = inventoryLinesOf(
+        await readFile(join(directory, "inventory.jsonl"), "utf8"),
+        join(directory, "inventory.jsonl")
+      );
+      expect(lines.length).toBeGreaterThan(0);
+      const requests = await readdir(join(directory, "requests")).catch(() => []);
+      for (const file of requests) {
+        const path = join(directory, "requests", file);
+        requestInputsOf(await readFile(path, "utf8"), path);
+        requestsRead += 1;
+      }
+      const pages = await readdir(join(directory, "pages")).catch(() => []);
+      for (const file of pages) {
+        const path = join(directory, "pages", file);
+        pageRecordOf(await readFile(path, "utf8"), path);
+      }
+    }
+    expect(requestsRead).toBeGreaterThan(0);
     // Every stage the suite judged whole reads back, and between them every kind of outcome it writes.
     const stages = new Map<string, JudgedStage>();
     for (const name of (await readdir(join(keep, "stages"))).sort()) {

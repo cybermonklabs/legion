@@ -25,11 +25,12 @@ before any answer is compared ("The claim's bundle and its arguments", version 6
     the skill tree the same before the first judge and after the last.
   Each target is checked as given, as the tool's default fills it, and normalized as it resolves
   on the sandbox's file system (`target_of`, `resolved`), and so is every scope the tool's result
-  says it read; every path the result returns must lie inside the trees its version manifests
-  (`detail_paths`, `in_trees`). A target is read in the grammar this check models of omp
-  18.16.0's path and glob syntax (`expansions`, `SELECTOR`); one that holds any other syntax, or
-  brace alternatives or a character class that could spell a parent step, a `/` or an absolute
-  part, is refused, not placed.
+  says it read. Under every version, every path a text read's result returns must be its own
+  bundle file or a skill file (`text_returned_problem`), and every path a listing's result returns
+  must lie inside the trees its version manifests (`detail_paths`, `in_trees`). A target is read
+  in the grammar this check models of omp 18.16.0's path and glob syntax (`expansions`,
+  `SELECTOR`); one that holds any other syntax, or brace alternatives or a character class that
+  could spell a parent step, a `/` or an absolute part, is refused, not placed.
 - Each judge was asked point 2's model, none is marked a fallback, and each model omp reports
   serving it is that model (`model_problems`).
 - Each answer is valid by the frozen `JUDGE_SCHEMA` (`answer_problem`), which may use only the
@@ -471,16 +472,26 @@ def text_or_listing_problem(tool, call, targets, returned, scope):
             what = "a listing its answer does not establish" if tool == "read" else "a text read"
             return f"{raw!r}, {what} of neither its own bundle file nor a skill file"
     listing = tool == "glob" or kinds == {"listing"}
+    if not listing:
+        return text_returned_problem(tool, returned, scope)
     for raw in returned:
         target = target_of(raw, tool, scope)
-        if not listing:
-            if target is None or target[1] or target[0] not in files:
-                return f"{raw!r}, a path a text read's result returns that is neither its own bundle file nor a skill file"
-            continue
         if not in_trees(target, (scope.work_tree, scope.skill_dir)):
             return f"{raw!r}, a path its result returns outside the manifested trees"
         if target[0] not in scope.manifested:
             return f"{raw!r}, an entry its result returns that its tree's manifest does not hold"
+    return None
+
+
+def text_returned_problem(tool, returned, scope):
+    """Why a path a text read's result returns (a `grep`'s matches, a `read`'s reported files) is
+    not its own bundle file or a skill file, or None: under every version a text read reaches those
+    files alone, so its result may report no other."""
+    files = {scope.bundle, *scope.skill_files}
+    for raw in returned:
+        target = target_of(raw, tool, scope)
+        if target is None or target[0] is None or target[1] or target[0] not in files:
+            return f"{raw!r}, a path a text read's result returns that is neither its own bundle file nor a skill file"
     return None
 
 
@@ -511,12 +522,20 @@ def detail_paths(details, work):
 
 def scoped_problem(globs, directory_reads):
     """Versions 3 to 5's check of one `read`, `grep` or `glob` call, or None where it passes: every
-    target and every scope its result says it read in that version's scope (`in_scope`), and every
-    path its result returns inside the bundle directory or the skill tree (`in_trees`)."""
+    target and every scope its result says it read in that version's scope (`in_scope`); and every
+    path its result returns, for a listing (a `glob` where the version allows one, a `read` of a
+    directory where it allows that) inside the bundle directory or the skill tree (`in_trees`), and
+    for a text read its own bundle file or a skill file (`text_returned_problem`)."""
     def problem(tool, call, targets, returned, scope):
-        for raw in targets:
-            if not in_scope(tool, target_of(raw, tool, scope), scope, globs, directory_reads):
+        placed = [target_of(raw, tool, scope) for raw in targets]
+        for raw, target in zip(targets, placed):
+            if not in_scope(tool, target, scope, globs, directory_reads):
                 return repr(raw)
+        files = {scope.bundle, *scope.skill_files}
+        listing = (globs and tool == "glob") or (directory_reads and tool == "read" and all(
+            not target[1] and target[0] not in files for target in placed))
+        if not listing:
+            return text_returned_problem(tool, returned, scope)
         for raw in returned:
             if not in_trees(target_of(raw, tool, scope), (scope.bundle_dir, scope.skill_dir)):
                 return f"{raw!r}, a path its result returns outside the manifested trees"

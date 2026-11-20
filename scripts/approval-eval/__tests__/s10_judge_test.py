@@ -11,12 +11,15 @@ the session's transcript, each judge's transcript in omp's own entries, and the 
 layout whose emptyDir is the test's own root, where the bundles and the calls are; and its
 preflight.
 
-Under `s10-judge.test.ts`, two variables join this suite to the TypeScript side:
+Under `s10-judge.test.ts`, three variables join this suite to the TypeScript side:
 `S10_INPUTS_FIXTURE` names an inputs stage that test wrote and read back through
 `s10-inputs-io.ts`'s parsers, with the admission `s10-judge-admit.ts` gave over it, which a test
-here judges; and `S10_JUDGED_KEEP` names a directory where every stage a run here judges whole is
-copied (`keep_for_typescript`), with the constants both sides hold equal, which that test reads
-back through `s10-judged-io.ts`: so every kind of outcome this stage writes is parsed there.
+here judges; `S10_JUDGED_KEEP` names a directory where every inputs stage written here
+(`admitted`) and every stage a run here judges whole (`keep_for_typescript`) is copied, with the
+constants both sides hold equal, which that test reads back through `s10-inputs-io.ts` and
+`s10-judged-io.ts`: so every inputs stage judged here is one the inputs stage writes, and every
+kind of outcome this stage writes is parsed there; and `S10_BUN` names the Bun the read-back test
+runs `s10-judged-check.ts` with.
 """
 
 import sys
@@ -25,6 +28,7 @@ sys.dont_write_bytecode = True
 
 import contextlib  # noqa: E402
 import hashlib  # noqa: E402
+import http.client  # noqa: E402
 import importlib.util  # noqa: E402
 import inspect  # noqa: E402
 import io  # noqa: E402
@@ -61,6 +65,9 @@ HARNESS = "/opt/legion/pi-envoy/dist/skills/approval-review"
 OPENED = "2026-11-17T10:00:00.000001Z"
 EARLIER = "2026-11-16T09:00:00.000001Z"
 KEY = b"gateway-key-of-the-tests-0123456789"
+# The inputs stage's version, which `s10-inputs-io.ts` gives as `INPUTS_VERSION`; `s10-judge.test.ts`
+# compares the two, and reads every inputs stage written here with that module's parsers.
+INPUTS_VERSION = 4
 
 
 def sha(data):
@@ -120,7 +127,10 @@ def candidate(tail, *, issue="ACME-9", at=EARLIER, kind="approval", document="do
 
 
 def request_of(tail, issue_key, *, hold=False, fact=None, pages=None, candidates=None, ask_changes=None):
-    """One request file, and the page records its search uses."""
+    """One request file, in the inputs stage's shape (`s10-inputs-io.ts`'s `RequestInputs`), and the
+    page records its search uses: a search, candidates and counts unless its fact holds, as the
+    inputs stage writes one. `fact` stands in for the fact the stage would compute from its ask and
+    issue, for a row where S10's own `legion_fact` must read them otherwise."""
     ask = {"id": ask_id(tail), "kind": "approval", "state": "open", "issue_key": issue_key,
            "question": f"Approve the spec of {issue_key}?",
            "approval": {"artifact_id": f"doc-{tail}", "name": "spec.md", "version": 2},
@@ -129,7 +139,7 @@ def request_of(tail, issue_key, *, hold=False, fact=None, pages=None, candidates
              "labels": ["legion"] if hold else [], "parent": None, "primary_artifact_id": None}
     markdown = f"# The spec of {issue_key}\n"
     computed = {"holds": hold, "legion": hold, "primary": hold, "root": True, "status": issue["status"]}
-    request = {"version": 4, "askId": ask_id(tail), "issueKey": issue_key, "group": "report", "cases": 1,
+    request = {"version": INPUTS_VERSION, "askId": ask_id(tail), "issueKey": issue_key, "group": "report", "cases": 1,
                "judged": {"eventId": 50, "type": "ask.opened", "createdAt": OPENED}, "ask": ask, "issue": issue,
                "issueAsOfEventId": 10,
                "documents": [{"artifact_id": f"doc-{tail}", "name": "spec.md", "version": 2, "markdown": markdown,
@@ -137,7 +147,7 @@ def request_of(tail, issue_key, *, hold=False, fact=None, pages=None, candidates
                "fact": fact or computed, "factHold": (fact or computed)["holds"],
                "search": None, "candidates": None, "counts": None, "dropScanThrough": None}
     records = {}
-    if not hold:
+    if not request["factHold"]:
         if candidates is None:
             candidates = {ask_id("c1"): candidate("c1"), ask_id("c2"): {"held": True, "reserve": "held"},
                           ask_id("c3"): {"dropped": "later-event", "seen": "log"}}
@@ -445,6 +455,7 @@ class Base(unittest.TestCase):
             "stageVersion": STORE.STAGE_VERSION,
             "startedFile": STORE.STARTED_FILE,
             "startedReason": STORE.STARTED_REASON,
+            "inputsVersion": INPUTS_VERSION,
         }))
 
     def outcome(self, tail):
@@ -462,11 +473,25 @@ class Base(unittest.TestCase):
         with open(os.path.join(self.out, STORE.STAGE_FILE)) as handle:
             return json.load(handle)
 
+    def admitted(self, *entries):
+        """The inputs stage of `entries` (each a request and its pages, as `request_of` gives them,
+        or an inventory line), written for this test, and the admission over it. Where
+        `s10-judge.test.ts` asks (`S10_JUDGED_KEEP`), a copy goes under `inputs/`, which it reads
+        with `s10-inputs-io.ts`'s own parsers: no stage written here holds a shape the inputs stage
+        does not write."""
+        admission = write_inputs(self.inputs, self.out, entries)
+        keep = os.environ.get("S10_JUDGED_KEEP")
+        if keep:
+            kept = os.path.join(keep, "inputs")
+            os.makedirs(kept, exist_ok=True)
+            shutil.copytree(self.inputs, os.path.join(kept, f"{self.id().rsplit('.', 1)[-1]}-{len(os.listdir(kept))}"))
+        return admission
+
     def one_request(self, **changes):
-        return write_inputs(self.inputs, self.out, [request_of("a1", "ACME-1", **changes)])
+        return self.admitted(request_of("a1", "ACME-1", **changes))
 
     def two_requests(self):
-        return write_inputs(self.inputs, self.out, [request_of("a1", "ACME-1"), request_of("a2", "ACME-2")])
+        return self.admitted(request_of("a1", "ACME-1"), request_of("a2", "ACME-2"))
 
     def judged_kind(self, **sandbox):
         """The outcome's deviation kind, or its verdict, of one request judged by this sandbox."""
@@ -585,7 +610,7 @@ class FrozenCodeTest(Base):
 class ReaderTest(Base):
     def shadow_over(self, request, records):
         shadow = shadow_of(self)
-        admission = write_inputs(self.inputs, self.out, [(request, records)])
+        admission = self.admitted((request, records))
         reader = J.RequestReader(request, J.Inputs(admission))
         shadow.api, shadow.reserved_neighbour = reader.api, reader.reserved_neighbour
         return shadow, reader
@@ -700,9 +725,8 @@ class JudgingTest(Base):
                                                               "deviation": "tool-call"})
 
     def test_a_deviation_of_the_inputs_and_a_fact_that_holds_start_no_judge(self):
-        admission = write_inputs(self.inputs, self.out, [
-            deviation_line("b1", "the log gives no title of ACME-5 as of event 7"),
-            request_of("a2", "ACME-2", hold=True)])
+        admission = self.admitted(deviation_line("b1", "the log gives no title of ACME-5 as of event 7"),
+                                  request_of("a2", "ACME-2", hold=True))
         sandbox = FakeSandbox(self)
         self.assertEqual(self.judge(admission, sandbox), 0, self.stderr)
         self.assertEqual(sandbox.runs, [])
@@ -713,18 +737,16 @@ class JudgingTest(Base):
         self.assertEqual([line["outcome"] for line in self.outcomes()], ["deviation", "hold"])
 
     def test_a_fact_the_frozen_check_reads_otherwise_is_a_deviation(self):
-        request, records = request_of("a1", "ACME-1", hold=True)
-        request["fact"] = dict(request["fact"], holds=False)
-        request["factHold"] = False
+        held = {"holds": False, "legion": True, "primary": True, "root": True, "status": "backlog"}
         sandbox = FakeSandbox(self)
-        self.judge(write_inputs(self.inputs, self.out, [(request, records)]), sandbox)
+        self.judge(self.admitted(request_of("a1", "ACME-1", hold=True, fact=held)), sandbox)
         self.assertEqual(self.outcome("a1")["deviation"]["kind"], "fact")
         self.assertEqual(sandbox.runs, [])
 
     def test_an_input_the_inputs_cannot_give_is_a_deviation_before_any_judge(self):
         full = [{"id": f"ACME-{number}", "kind": "issue", "rank": 1.0} for number in range(50)]
         sandbox = FakeSandbox(self)
-        self.judge(write_inputs(self.inputs, self.out, [request_of("a1", "ACME-1", pages=[full])]), sandbox)
+        self.judge(self.admitted(request_of("a1", "ACME-1", pages=[full])), sandbox)
         self.assertEqual(self.outcome("a1")["deviation"]["kind"], "inputs")
         self.assertEqual(sandbox.runs, [])
         self.assertFalse(os.path.exists(os.path.join(self.work, "bundles", ask_id("a1"))))
@@ -733,7 +755,7 @@ class JudgingTest(Base):
         request, records = request_of("a1", "ACME-1")
         del request["ask"]["question"]
         sandbox = FakeSandbox(self)
-        self.assertEqual(self.judge(write_inputs(self.inputs, self.out, [(request, records)]), sandbox), 0)
+        self.assertEqual(self.judge(self.admitted((request, records)), sandbox), 0)
         found = self.outcome("a1")
         self.assertEqual(found["deviation"]["kind"], "inputs")
         self.assertIn("S10's own code stopped on its inputs: KeyError", found["deviation"]["reason"])
@@ -925,6 +947,29 @@ class JudgingTest(Base):
             with self.subTest(name=name):
                 shutil.rmtree(self.out, ignore_errors=True)
                 self.assertEqual(self.judged_kind(judge_tools=tools), "tool-call")
+
+    def test_a_text_read_reporting_another_bundle_is_refused_under_every_version(self):
+        def other(bundle):
+            directory = os.path.dirname(bundle)
+            return os.path.join(directory, "judge-2.md" if bundle.endswith("judge-1.md") else "judge-1.md")
+
+        cases = {
+            "read": lambda index, bundle: [
+                ("read", {"path": bundle}, {"resolvedPath": bundle, "fileMatches": [{"path": other(bundle)}]})],
+            "grep": lambda index, bundle: [
+                ("grep", {"pattern": "x", "path": bundle}, {"searchPath": bundle, "fileMatches": [{"path": other(bundle)}]})],
+        }
+        for tool, tools in cases.items():
+            with self.subTest(tool=tool):
+                shutil.rmtree(self.out, ignore_errors=True)
+                self.assertEqual(self.judged_kind(judge_tools=tools), "tool-call")
+                by_rule = self.outcome("a1")["byRule"]
+                for version in ("v3", "v4", "v5", "v6"):
+                    refused = [one for one in by_rule[version]["toolCallDeviations"] if one["tools"] == [tool]]
+                    self.assertEqual(by_rule[version]["deviation"], "tool-call", version)
+                    self.assertEqual(len(refused), 5, version)
+                    self.assertTrue(all("neither its own bundle file nor a skill file" in one["reason"]
+                                        for one in refused), version)
 
     def test_a_listings_sizes_are_printed_as_omp_prints_them(self):
         cases = {0: "0B", 10: "10B", 1023: "1023B", 1024: "1.0KB", 1280: "1.3KB", 27156: "26.5KB",
@@ -1185,7 +1230,7 @@ class StageTest(Base):
         self.assertEqual(self.judge(self.two_requests(), sandbox), 0, self.stderr)
         self.assertEqual(len(sandbox.preflights), 1)
         shutil.rmtree(self.out)
-        only_deviations = write_inputs(self.inputs, self.out, [deviation_line("b1", "no title")])
+        only_deviations = self.admitted(deviation_line("b1", "no title"))
         sandbox = FakeSandbox(self)
         self.assertEqual(self.judge(only_deviations, sandbox), 0, self.stderr)
         self.assertEqual(sandbox.preflights, [])
@@ -1540,20 +1585,33 @@ class SandboxTest(unittest.TestCase):
             threading.Thread(target=loop, daemon=True).start()
             return f"http://127.0.0.1:{listener.getsockname()[1]}"
 
+        # A port held bound and never listening refuses every connection, and stays held for the test.
         closed = socket.socket()
         closed.bind(("127.0.0.1", 0))
         refused = f"http://127.0.0.1:{closed.getsockname()[1]}"
-        closed.close()
+        silent = server(False)
+        original = http.client.HTTPConnection.getresponse
+
+        def getresponse(connection):
+            # The silent server takes the request and never answers: its wait ends as the
+            # probe's timeout ends it, at once rather than after the seconds it gives.
+            if f"http://{connection.host}:{connection.port}" == silent:
+                raise TimeoutError("timed out")
+            return original(connection)
+
         try:
             urls = (f"{server(True)}/computeMetadata/v1/token", f"{refused}/computeMetadata/v1/token",
-                    f"{server(False)}/computeMetadata/v1/token")
-            with mock.patch.object(SANDBOX, "METADATA_REQUESTS", urls):
-                asked = SANDBOX.ask_metadata(timeout=1)
-                self.assertEqual([(one["connected"], one["status"]) for one in asked],
-                                 [(True, 404), (False, None), (True, None)])
+                    f"{silent}/computeMetadata/v1/token")
+            with mock.patch.object(SANDBOX, "METADATA_REQUESTS", urls), \
+                    mock.patch.object(http.client.HTTPConnection, "getresponse", getresponse):
+                asked = SANDBOX.ask_metadata()
+                self.assertEqual([(one["connected"], one["status"], one.get("error")) for one in asked],
+                                 [(True, 404, None), (False, None, "ConnectionRefusedError"),
+                                  (True, None, "TimeoutError")])
                 self.assertIn("no proof", SANDBOX.metadata_refusal(asked))
                 self.assertIsNone(SANDBOX.metadata_refusal(asked[:2] + [asked[1]]))
         finally:
+            closed.close()
             for listener in listeners:
                 listener.close()
         self.assertTrue(seen and all(b"Metadata-Flavor: Google" in one for one in seen))
@@ -1774,25 +1832,48 @@ class JobSpecTest(unittest.TestCase):
         self.assertIn("own pod runs as", JOB.account_refusal(pod, "default"))
 
 
+class ScriptedRunner(JOB.KubeRunner):
+    """`KubeRunner`, built by its own constructor, over a stand-in `kubectl`: each call answered from
+    `script` by its verb, the driver's own pod (`get pod`) the one the constructor reads, running the
+    image the runner is given. `calls` holds the verbs called after the constructor's."""
+
+    def __init__(self, script, namespace_file):
+        pod = own_pod()
+        container = pod["spec"]["containers"][0]
+        pod["status"] = {"containerStatuses": [{"name": container["name"], "imageID": container["image"]}]}
+        self.script = {"get pod": [(0, json.dumps(pod))], **script}
+        self.calls = []
+        with mock.patch.object(JOB, "NAMESPACE_FILE", namespace_file), \
+                mock.patch.object(SANDBOX, "gateway_key", return_value=None):
+            super().__init__(container["image"], JOB.SERVICE_ACCOUNT, {}, poll=0, pauses=(0, 0))
+        self.constructed = list(self.calls)
+        self.calls.clear()
+
+    def invoke(self, arguments, stdin):
+        verb = arguments[0] if arguments[0] != "get" else f"get {arguments[1]}"
+        self.calls.append(verb)
+        answers = self.script.get(verb) or [(0, "")]
+        code, out = answers.pop(0) if len(answers) > 1 else answers[0]
+        return subprocess.CompletedProcess(arguments, code, out if code == 0 else "", "" if code == 0 else out)
+
+
 class KubeRunnerTest(unittest.TestCase):
-    """The runner over a stand-in `kubectl`: each call answered from a script, by its verb."""
+    """The runner over a stand-in `kubectl` (`ScriptedRunner`)."""
+
+    def setUp(self):
+        root = tempfile.mkdtemp(prefix="s10-runner-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        self.namespace_file = os.path.join(root, "namespace")
+        put(self.namespace_file, "sessions\n")
 
     def runner(self, script):
-        runner = object.__new__(JOB.KubeRunner)
-        runner.image, runner.account, runner.environ = IMAGE, JOB.SERVICE_ACCOUNT, {}
-        runner.poll, runner.pauses, runner.program, runner.key = 0, (0, 0), "program", None
-        runner.namespace, runner._pod = "sessions", own_pod()
-        runner.calls = []
+        return ScriptedRunner(script, self.namespace_file)
 
-        def invoke(arguments, stdin):
-            verb = arguments[0] if arguments[0] != "get" else f"get {arguments[1]}"
-            runner.calls.append(verb)
-            answers = script.get(verb) or [(0, "")]
-            code, out = answers.pop(0) if len(answers) > 1 else answers[0]
-            return subprocess.CompletedProcess(arguments, code, out if code == 0 else "", "" if code == 0 else out)
-
-        runner.invoke = invoke
-        return runner
+    def test_the_constructor_reads_the_drivers_own_pod_and_namespace(self):
+        runner = self.runner({})
+        self.assertEqual(runner.constructed, ["get pod"])
+        self.assertEqual((runner.namespace, runner.own_pod()["metadata"]["name"]), ("sessions", "session-1"))
+        self.assertEqual(runner.calls, [])
 
     def pods(self):
         return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": {
