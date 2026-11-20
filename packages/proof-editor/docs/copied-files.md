@@ -1,7 +1,12 @@
 # Edits allowed in a copied file
 
-A file under `src/` copied from the `sjawhar/proof-sdk` fork (`AGENTS.md`, "Copied code", says which) differs from its counterpart only by the kinds of edit below, and by no others.
+A file under `src/` is a copy when the `sjawhar/proof-sdk` fork's commit 24a5fc94915cda5704897c497af6312c140db40d holds it at the same path; `src/directive-factories.ts` and `src/html-flow.ts` are copies from micromark (below), and the rest are legion's own.
+That commit stays the audit source when the upstream pin (`docs/upstream.md`) moves.
+The copies and the generated `upstream/` keep their MIT license (`LICENSE`); legion's own files, `scripts/` and `tests/` are Apache-2.0.
+
+A file copied from the fork differs from its counterpart only by the kinds of edit below, and by no others.
 Diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 root:src/<file>`: every line that differs is one of these kinds.
+Biome's formatter, linter and `assist` are off over the copies, in the first override of the root `biome.json`, so that this diff stays readable; an editor that organizes imports on save still reorders them.
 
 1. The import specifiers of upstream modules.
 

@@ -65,7 +65,7 @@ type IdleClaim struct {
 	// LastTurnAt is the newest moment a turn of this claim is known to have been under way: the
 	// latest of its pending delivery's send acknowledgement and the confirmation of the turn that
 	// send started, zero for a claim holding no delivery. A session's report counts only when it
-	// was read after it (IdleClaim.Reported).
+	// was read at or after it (claim.ReadSessionWork).
 	LastTurnAt time.Time
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the last
 	// activity report of the process the claim runs now (POST /legion/v1/claims/activity): when
@@ -112,14 +112,6 @@ func (c IdleClaim) Live() bool {
 // supervise.Claim (IdleClaim), so the predicate is the view's.
 func (c IdleClaim) OperatorSuspended() bool {
 	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
-}
-
-// Reported is whether the session read what it was doing after its last turn: a claim with no
-// report at all, or one whose newest report predates its last turn, has said nothing about the
-// turn that just ran. Such a claim is never released, which is what makes a host that cannot
-// report degrade safely rather than lose work it was still doing.
-func (c IdleClaim) Reported() bool {
-	return !c.ActivityAt.IsZero() && !c.ActivityAt.Before(c.LastTurnAt)
 }
 
 // IdleRoot is the tree root of the issue the idle rule is deciding, read with it.

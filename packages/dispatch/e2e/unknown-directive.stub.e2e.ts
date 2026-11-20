@@ -1,5 +1,5 @@
 /** A directive the schema does not know, drawn wherever the page draws a body: what the renderer
- *  does with one fixed answer, so it runs against a recording (packages/dispatch/AGENTS.md, "The
+ *  does with one fixed answer, so it runs against a recording (packages/dispatch/README.md, "The
  *  stubbed layer").
  */
 import { expect } from "@playwright/test";
@@ -27,7 +27,7 @@ import { stubbed } from "./stub/stub-test";
 // turn id, so the bodies do not have to be told apart by their content.
 //
 // The row reads what the Conversation draws from bodies the server already stored, so it runs
-// against a recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed
+// against a recording rather than against a harness (packages/dispatch/README.md, "The stubbed
 // layer").
 
 const agent = {

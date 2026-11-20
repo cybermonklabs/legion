@@ -16,6 +16,16 @@ export const EXPECTS_REPLY_VALUES = [false, "optional", "required"] as const;
 
 export type ExpectsReply = (typeof EXPECTS_REPLY_VALUES)[number];
 
+/**
+ * The envelope the Envoy listener stores and delivers. A field added to it is optional, and every
+ * reader of a delivered envelope takes one it does not know without refusing it: the readers in
+ * `@legion/envoy-client`, claude-envoy and pi-envoy parse with a stripping or passthrough zod
+ * object, and the Legion daemon with Go's `encoding/json` without `DisallowUnknownFields`. Each
+ * reader has a row that reads one envelope with a field it does not know and one without it
+ * (`envoy-client/src/__tests__/transport.test.ts`, `claude-envoy/tests/envelope-role-field.test.ts`,
+ * `pi-envoy/extensions/envoy.test.ts`, and the daemon's `…Envelope…` tests in `internal/notify`,
+ * `internal/intake` and `internal/daemon`), so a reader that refuses an unknown key fails its row.
+ */
 export const EnvelopeSchema = z.object({
   event_id: z.string().min(1),
   source: z.enum([
@@ -57,6 +67,13 @@ export const EnvelopeSchema = z.object({
    * mentioned session that claims the role.
    */
   mention_dedupe_keys: z.record(z.string(), z.string()).optional(),
+  /**
+   * The role this message was sent for, set only on a direct send Dispatch's API made to a role's
+   * holder for a route to that role. The listener takes it only from Dispatch's own caller
+   * identity, and reads it to find the message when another session takes the role, so the role's
+   * next holder receives it. A reader that does not know the field ignores it.
+   */
+  role: z.string().min(1).optional(),
   payload_summary: z.string().min(1),
   payload: z.string().optional(),
   payload_ref: z.string().optional(),

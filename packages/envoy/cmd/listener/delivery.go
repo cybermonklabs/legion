@@ -93,6 +93,14 @@ type listenerDeliveryHandlerConfig struct {
 	// roleKeptUndecodable counts the kept copies a walk ended because no read can decode them
 	// (envoy_role_kept_undecodable_total, judgeKeptRoleCopy).
 	roleKeptUndecodable *metrics.Counter
+	// takeoverFaults holds the takeover copy's test seams (takeoverFaultSet), shared by every copy
+	// of this configuration - its routes, relays and sweep - and nil in main.go, which forces no
+	// fault.
+	takeoverFaults *takeoverFaultHooks
+	// keepPublish is the stored publish a keep makes (keepRoleMessage): main.go sets it to
+	// client.PublishStoredAck, and so does every test that builds a config, while a test that
+	// answers a keep's publish itself replaces it on its copy.
+	keepPublish keptRolePublish
 	// publishDeadLetter stores a dead letter, item, on subject - the agent subject of the session
 	// whose kept copy a walk dropped - under the Nats-Msg-Id msgID, and returns the stream's
 	// refusal or failure; a duplicate the stream drops is no error (endKeptCopyWithDeadLetter).
@@ -618,25 +626,34 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	// The lane names its role in either form (contracts.CanonicalRole); the claim it resolves is
-	// keyed by the bare role name either way (store.Registry.ClaimedRole).
-	_, role, _ := contracts.CanonicalRole(strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix))
+	if forward, ok := resolveRoleForward(cfg, item); ok {
+		cfg.roleForwards.enqueue(forward)
+	}
+	message.finalize(false)
+}
+
+// resolveRoleForward resolves the holder of item's role, judges the forward to it by the lane's
+// rules (resolveCoreRoleHolder, beforeForward) with the dedupe and attempt caches as the record of
+// what the holder already took, reports a refusal with the lane's own lines, and returns the
+// forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
+// to make one. The lane names its role in either form; the claim it resolves is keyed by the bare
+// role name either way (roleOfLaneTopic, store.Registry.ClaimedRole).
+func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
+	role, _ := roleOfLaneTopic(item.Topic)
+	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)
 	if !ok {
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	verdict := beforeForward(item, sessionID, holder, func(key, recipient string) bool {
 		return cfg.dedupeCache.Seen(key, recipient) || cfg.attemptCache.Seen(key, recipient)
 	})
 	if verdict.kind != forwardAllowed {
 		applyDeliveryOutcome(cfg, item, refusedRoleForwardOutcome(verdict, item, sessionID, roleLaneRefusalLines))
-		message.finalize(false)
-		return
+		return roleForward{}, false
 	}
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
-	cfg.roleForwards.enqueue(roleForward{item: item, sessionID: sessionID})
-	message.finalize(false)
+	return roleForward{item: item, sessionID: sessionID, resolvedAt: resolvedAt}, true
 }
 
 // roleForwardRefusalLines are one forward path's lines for each refusal beforeForward can return.

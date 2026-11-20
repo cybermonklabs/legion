@@ -64,11 +64,15 @@ func (k iapSocketKeys) assertion(t *testing.T, exp time.Time) http.Header {
 	return header
 }
 
-// expiring is an assertion that stays valid about lifetime more: its exp is already past, and the
-// skew is what still admits it.
+// expiring is an assertion that stays valid at least lifetime more, and at most a second beyond
+// it: its exp is already past, and the skew is what still admits it. An assertion carries its exp
+// in whole seconds (assertion's exp.Unix()), so the exp is rounded up to the next whole second;
+// rounded down, the fraction of the second at the mint would come off lifetime, and an open that
+// took longer than what was left of a one-second lifetime was refused 401.
 func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Header {
 	t.Helper()
-	return k.assertion(t, time.Now().Add(-oidc.IAPClockSkew+lifetime))
+	exp := time.Now().Add(-oidc.IAPClockSkew + lifetime).Truncate(time.Second).Add(time.Second)
+	return k.assertion(t, exp)
 }
 
 // IAP signs an assertion for every request and Google gives one at most ten minutes, but a live
@@ -151,7 +155,7 @@ var iapChanges = []iapChange{
 // admitted, is wrong, not merely old: the heartbeat that meets it closes the live socket with 1008,
 // the close that says its caller no longer resolves, never the 4001 rotation, and the reopen with a
 // fresh assertion is judged again and refused. The heartbeat is 3 s, so by the first one the
-// upgrade's assertion, which had about a second left, is past its exp and the skew.
+// upgrade's assertion, which had one to two seconds left, is past its exp and the skew.
 func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
@@ -278,7 +282,7 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 // The document socket's side of the same rule: an expired assertion that IAP's keys no longer
 // verify, or whose person is no longer admitted, ends the socket as any refusal does, with no close
 // frame (1006), never the 4412 on which the provider reconnects as after a rotation. The heartbeat
-// is 4 s, so by the first one the upgrade's assertion, which had about 2 s left, is past its exp.
+// is 4 s, so by the first one the upgrade's assertion, which had 2 to 3 s left, is past its exp.
 func TestADocumentSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing.T) {
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {

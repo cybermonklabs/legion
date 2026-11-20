@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { WriteBounds, WriteMethod } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
+import { askWritten } from "../../api/write-events";
 import {
   type KeyedWriteResult,
   livePress,
@@ -72,8 +73,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
   readonly method: WriteMethod;
   readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
   /** Whether a press takes its ask's row out of the Inbox and holds the ask: false for one that
-   *  leaves both alone. Read as each press goes, so a refusal restores exactly what that press
-   *  took out. Every press does by default. */
+   *  leaves both alone. Read as each press goes - for its hold on the Inbox's reads, then for the
+   *  removal, in the one step - so a refusal restores exactly what that press took out. Every
+   *  press does by default. */
   readonly removesRow?: (variables: TVariables) => boolean;
   /** Called after the row is back, so a refusal the surface reads is read on the restored list. */
   readonly onError?: (error: Error, variables: TVariables, before: InboxRowsBefore) => void;
@@ -95,7 +97,11 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
  * hold lasts the same `pending || failed` liveness the snooze reports its own write by
  * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
- * the card goes.
+ * the card goes. A write that takes the row out holds the Inbox's reads until Dispatch has taken
+ * it (`holds`: its answer, or the ask's `ask.answered` or `ask.resolved` event, and at most
+ * `SEND_DEADLINE_MS`): one asked before could be answered with the row still in it. The Inbox
+ * lists the asks other people open, so the hold ends on the event rather than wait out an answer
+ * that is late.
  */
 export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
   label,
@@ -112,6 +118,10 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
 > {
   const queryClient = useQueryClient();
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
+    holds: (press) => ({
+      endsOn: askWritten(press.ask.id, ["ask.answered", "ask.resolved"]),
+      keys: removesRow === undefined || removesRow(press) ? [inboxQuery().queryKey] : [],
+    }),
     inline: true,
     label,
     method,

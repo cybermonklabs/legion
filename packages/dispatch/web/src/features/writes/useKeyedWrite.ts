@@ -1,6 +1,7 @@
 import {
   type DefaultError,
   type MutateOptions,
+  type MutationFunctionContext,
   type UseMutateAsyncFunction,
   type UseMutateFunction,
   type UseMutationOptions,
@@ -15,8 +16,14 @@ import {
   type WriteMethod,
   type WriteRequest,
 } from "../../api/client";
+import { type EndReadHold, holdBackReads, type ReadHold } from "../../api/query-client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "./keyed-write";
+import {
+  refusedByDispatch,
+  retriesUnderItsKey,
+  SendStoppedError,
+  stoppedWriteNote,
+} from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -39,6 +46,13 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Whether the write ends the person's session (a sign-out): a lapse of that session lands it
    *  rather than holding it for the next sign-in (`WriteSpec.endsWithSession`). */
   readonly endsWithSession?: boolean;
+  /** The queries this write's optimistic value stands in, whose reads that start from the press
+   *  wait while it is out (`holdBackReads`): until its answer or its refusal is in, its own live
+   *  event says Dispatch took it (`ReadHold.endsOn`), or `SEND_DEADLINE_MS` has passed. The press's
+   *  `onMutate` writes that value, and its `onSuccess` or `onError` puts the answer or the
+   *  rollback in its place before the hold ends. A write of queries other people write names its
+   *  event, or holds nothing. */
+  readonly holds?: (variables: TVariables) => ReadHold;
   /** `false` for a write that goes under no key whatever its method (`WriteSpec.keyed`). */
   readonly keyed?: false;
 } & KeyedWriteMade<TData, TVariables>;
@@ -71,6 +85,19 @@ export type KeyedWriteMade<TData, TVariables> =
 export interface UnansweredLanding<TVariables> {
   readonly variables: TVariables;
   readonly at: number;
+}
+
+/** The end of each press's hold on the reads it writes over (`KeyedWriteOptions.holds`), by the
+ *  context TanStack makes for that press's run and hands to each of its callbacks. */
+const pressHolds = new WeakMap<MutationFunctionContext, EndReadHold>();
+
+/** Ends the hold of the press TanStack runs under `context`, if it keeps one still: `refused` is
+ *  whether Dispatch refused the press with no earlier attempt of it that may have landed unseen,
+ *  in any try of the press (`refusedByDispatch`), which then publishes no event for the hold to
+ *  wait for. */
+function endHold(context: MutationFunctionContext, refused = false): void {
+  pressHolds.get(context)?.(refused ? 1 : 0);
+  pressHolds.delete(context);
 }
 
 /** One press of a keyed write: the variables it was made with and, out of a surface's reach, the
@@ -273,10 +300,17 @@ function pressCallbacks<TData, TVariables, TContext>(
  * network that is down, and a mutation TanStack paused offline would make none, never go late and
  * never offer Stop trying. A press that lands with no answer is kept as `unanswered` for the
  * surface to say so, until the next press or `forgetUnanswered`.
+ *
+ * A write given `holds` holds back the reads of those queries from its press until Dispatch has
+ * taken it (`KeyedWriteOptions.holds`): TanStack counts the write as pending until its
+ * `onSettled` has run, which may itself read those queries again, so the hold ends as `onSuccess`
+ * or `onError` returns, if its event or its deadline has not ended it first, rather than when the
+ * write settles.
  */
 export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   endsWithSession,
   file,
+  holds,
   inline,
   keyed,
   label,
@@ -354,6 +388,38 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     onSuccess:
       onSuccess &&
       ((data, press, result, context) => onSuccess(data, press.variables, result, context)),
+    ...(holds === undefined
+      ? {}
+      : {
+          onMutate: (press: Press<TVariables>, context: MutationFunctionContext) => {
+            pressHolds.set(context, holdBackReads(context.client, holds(press.variables)));
+            return onMutate?.(press.variables, context) as TContext | Promise<TContext>;
+          },
+          onSuccess: (
+            data: TData | null,
+            press: Press<TVariables>,
+            result: TContext,
+            context: MutationFunctionContext
+          ) => {
+            try {
+              return onSuccess?.(data, press.variables, result, context);
+            } finally {
+              endHold(context);
+            }
+          },
+          onError: (
+            error: DefaultError,
+            press: Press<TVariables>,
+            result: TContext | undefined,
+            context: MutationFunctionContext
+          ) => {
+            try {
+              return onError?.(error, press.variables, result, context);
+            } finally {
+              endHold(context, refusedByDispatch(error));
+            }
+          },
+        }),
   });
   const { mutate: makePress, mutateAsync: makePressAsync } = mutation;
   const mutate = useCallback(
