@@ -25,7 +25,9 @@ maxima read at different instants. In that sample a pack mapping counts once per
 (pack_mappings; pack_mappings_resident counts those with a resident page) and its file once per
 path, however many mappings or processes share it (pack_files). A peak shorter than one interval
 can fall between two samples; GNU time's figure, the largest resident set of any one process of
-the tree, is the one that sees it, which is why the probe bounds a row by both.
+the tree, is the one that sees it, which is why the probe bounds each row of R3 to R5's jj by
+both. A git row it bounds by the pod's charge, a push by its own tree's total, and an R10 row by
+its pack figure and its derived figure, the latter made from GNU time's.
 
 The tree is stopped while a sample reads it, so a sample is one instant: the sampler lists the
 tree, sends each of its processes SIGSTOP, waits up to 50 ms for every thread of each to reach the
@@ -75,9 +77,10 @@ Beside the tree it reads the pod's cgroup memory charge, cgroup v1's
 and at every sample, right after the tree's. It reports the largest charge a sample read
 (cgroup_peak_kib), that peak less the baseline (cgroup_peak_less_baseline_kib), which is the
 pod's charge of the command, and the charge at the sample of the tree's largest total less the
-baseline (cgroup_at_largest_sample_kib); each is null when no sample was taken and "unreadable"
-when neither file reads. Under gVisor a file that two processes map is charged to the cgroup
-once, where the tree's total counts it in each, which is why the charge differs from the total.
+baseline (cgroup_at_largest_sample_kib); each of these three is null when no sample was taken,
+and all four are "unreadable" when neither file reads. Under gVisor a file that two processes map
+is charged to the cgroup once, where the tree's total counts it in each, which is why the charge
+differs from the total.
 The charge is the whole pod's, so it also holds what a process outside the tree did meanwhile:
 --daemon PID samples the tree under PID at every sample too, a server COMMAND talks to that was
 started outside its tree, and reports that tree's largest total (daemon_tree_peak_kib) beside

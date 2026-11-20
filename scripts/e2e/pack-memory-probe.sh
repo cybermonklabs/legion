@@ -63,13 +63,22 @@
 #      the clone did not hold. Each commit, by the setup git too, appends one line to the walk file
 #      and commits it with `git add` and `git commit`, as the handoff commit is made, with the
 #      probe's identity and both of git's dates fixed; its setup verdict holds when HEAD moved to
-#      it, a child of the HEAD before. The two copies' commits differ only in their parents, each
-#      copy's own handoff commit, which a verdict checks. describedArgs, the next command, imports
-#      the new refs and the new HEAD at its start and snapshots against that HEAD's tree, and
-#      adoptionArgs, the command after the second commit, imports that one's HEAD the same way,
-#      as jj does in a workspace colocated with git, which a workspace whose .git is a worktree of
-#      the clone is: what a role's jj does once git has fetched new branches into the shared clone
-#      and committed in the workspace.
+#      it, a child of the HEAD before. The two copies' commits before each command differ only in
+#      their parents, which a verdict checks: the commit before describedArgs is made on each
+#      copy's own handoff commit, and the one before adoptionArgs on that copy's commit before
+#      describedArgs. describedArgs, the next command, imports the new refs and the new HEAD at its
+#      start and snapshots against that HEAD's tree, and adoptionArgs, the command after the
+#      second commit, imports that one's HEAD the same way, as jj does in a workspace colocated
+#      with git, which a workspace whose .git is a worktree of the clone is: what a role's jj does
+#      once git has fetched new branches into the shared clone and committed in the workspace.
+#      That import makes the new working-copy commit under the command's own identity, so the
+#      adopter is @'s author already when the measured adoptionArgs's metaedit runs, which then
+#      changes nothing. The author is shown on an unmeasured run instead, after the measured one
+#      and outside every measured tree: `jj new` as the probe, @'s author read with
+#      --ignore-working-copy, the same adoptionArgs argv as the adopter, @'s author read again,
+#      and `jj op log -n1`'s description. c-shim-adoption-memory's author verdict holds when @'s
+#      author was the probe's before that adoptionArgs and is the adopter's after it, and the
+#      operation is metaedit's, `edit commit metadata for commit <id>`.
 #   8. R3 to R5's verdicts.
 #   9. R10's role commands on each R10 copy, with its jj and budget, JJ_TIMESTAMP and
 #      JJ_OP_TIMESTAMP fixed, and a JJ_RANDOMNESS_SEED for each command, the same on every copy:
@@ -393,11 +402,12 @@ stops() {
 # peak less its baseline from just before the command started, then the peak, the baseline and
 # the charge over the baseline at the sample of the tree's largest total; and, for a row the git
 # daemon served, the daemon's largest tree total, which the charge holds and the row's tree does
-# not. No verdict reads either.
+# not. The c-git-rows verdicts of git log, git status and the fetch read that charge, the
+# result's charge_field; no verdict reads the git daemon's total.
 charge() {
   local less daemon text
   less=$(field "$1" .cgroup_peak_less_baseline_kib)
-  if [[ $less =~ ^-?[0-9]+$ ]]; then
+  if signed "$less"; then
     text="pod charge $(group "$less") KiB (cgroup peak $(group "$(field "$1" .cgroup_peak_kib)") KiB less baseline $(group "$(field "$1" .cgroup_baseline_kib)") KiB; $(group "$(field "$1" .cgroup_at_largest_sample_kib)") KiB over the baseline at the tree's largest sample)"
   elif [ "$less" = null ]; then
     text="pod charge unread: no sample was taken"
@@ -411,11 +421,10 @@ charge() {
 
 whole() { [[ $1 =~ ^[0-9]+$ ]]; }
 
-# under_bound <name> <label> [void reason]: a row of the image's jj or of the role's settings: it
-# exits 0 and both figures are under the bound. A reason makes the row void instead, whatever its
-# figures (a fetch whose pack was too small to show anything).
+# under_bound <name> <label>: a row of the image's jj: it exits 0 and both figures are under the
+# bound.
 under_bound() {
-  local name=$1 label=$2 void=${3:-} maxrss sampled want
+  local name=$1 label=$2 maxrss sampled want
   want="exit 0, GNU time and sampled both under $(group "$bound_kib") KiB"
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the row did not run"
@@ -427,8 +436,6 @@ under_bound() {
     verdict "$name" fail "$(figures "$label")" "$want" "the command failed"
   elif ! whole "$maxrss" || ! whole "$sampled"; then
     verdict "$name" fail "$(figures "$label")" "$want" "a figure is missing"
-  elif [ -n "$void" ]; then
-    verdict "$name" void "$(figures "$label")" "$want" "$void"
   elif [ "$maxrss" -lt "$bound_kib" ] && [ "$sampled" -lt "$bound_kib" ]; then
     verdict "$name" pass "$(figures "$label")" "$want"
   else
@@ -436,11 +443,11 @@ under_bound() {
   fi
 }
 
-# reaches_bound <name> <label> <bound KiB> <what the bound is> [void reason]: a control row. It
-# must reach its bound by either figure, or its line is VOID: a control that stays under its bound
-# shows nothing about the row it controls. A control that never ran is a broken run, a MISMATCH.
+# reaches_bound <name> <label> <bound KiB> <what the bound is>: a control row. It must reach its
+# bound by either figure, or its line is VOID: a control that stays under its bound shows nothing
+# about the row it controls. A control that never ran is a broken run, a MISMATCH.
 reaches_bound() {
-  local name=$1 label=$2 bound=$3 what=$4 void=${5:-} maxrss sampled top want
+  local name=$1 label=$2 bound=$3 what=$4 maxrss sampled top want
   want="GNU time or sampled at or over $(group "$bound") KiB ($what)"
   if ! has_result "$label"; then
     verdict "$name" fail "no result for $label" "$want" "the control did not run"
@@ -452,9 +459,7 @@ reaches_bound() {
   whole "$sampled" || sampled=0
   top=$maxrss
   [ "$sampled" -gt "$top" ] && top=$sampled
-  if [ -n "$void" ]; then
-    verdict "$name" void "$(figures "$label")" "$want" "$void"
-  elif ! whole "$bound"; then
+  if ! whole "$bound"; then
     verdict "$name" fail "$(figures "$label")" "$want" "the bound could not be read"
   elif [ "$(field "$label" .exit)" != 0 ]; then
     verdict "$name" void "$(figures "$label")" "$want" "the control did not run to its end"
@@ -1255,8 +1260,9 @@ fetch_rows() {
   absent=present
   setup_git --git-dir="$lack" cat-file -e "$tip" 2> /dev/null || absent=absent
   got="exit $status; $branch at ${held:-nothing}; $(grep -c . <<< "$lack_pack") packs; $tip $absent"
-  same "setup fetch lacking clone" "$got" "exit 0; $branch at $base; 1 packs; $tip absent"
-  if [ "$got" != "exit 0; $branch at $base; 1 packs; $tip absent" ]; then
+  want="exit 0; $branch at $base; 1 packs; $tip absent"
+  same "setup fetch lacking clone" "$got" "$want"
+  if [ "$got" != "$want" ]; then
     rm -rf "$lack"
     return
   fi
@@ -1331,7 +1337,6 @@ if going; then
   fi
 
   fetch_rows
-  cd "$ws" || stop "cd $ws"
 fi
 
 # --------------------------------------------------------------------------------------------
@@ -1527,7 +1532,27 @@ commit_before() {
   fi
 }
 
-declare -A pushed=()
+# shim_rows <copy> <workspace> <jj> <clone> <seed> [sampler options…]: the shim's adoption on one
+# copy, as steps 7 and 9 both run it: the fetch of the feed's heads, a commit, describedArgs, a
+# second commit and adoptionArgs, each of the shim's two commands measured as the adopter, with
+# the caller's sampler options first and JJ_RANDOMNESS_SEED <seed> for describedArgs and
+# <seed> + 1 for adoptionArgs.
+shim_rows() {
+  local copy=$1 dir=$2 jj=$3 shared=$4 seed=$5
+  local -a adopter=(--env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email")
+  shift 5
+  fetch_feed_heads "$copy" "$shared"
+  commit_before "$copy" "$dir" describedArgs
+  measure "$copy-described" "$@" --env "JJ_RANDOMNESS_SEED=$seed" "${adopter[@]}" \
+    -- "$jj" "${described_args[@]}" -R "$dir"
+  commit_before "$copy" "$dir" adoptionArgs
+  measure "$copy-adoption" "$@" --env "JJ_RANDOMNESS_SEED=$((seed + 1))" "${adopter[@]}" \
+    -- "$jj" "${adoption_args[@]}" -R "$dir"
+}
+
+# pushed keeps the commit each copy pushed, and authored, by <copy>/before, <copy>/after and
+# <copy>/operation, what the unmeasured adoptionArgs after the measured one showed.
+declare -A pushed=() authored=()
 jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
   local copy=$1 dir=$2 jj=$3 shared=$4
   echo
@@ -1550,15 +1575,20 @@ jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
   # `jj new`. describedArgs runs right after the fetch and a commit, so it is the command that
   # imports the fetch's refs and the commit's HEAD, and adoptionArgs right after a second commit,
   # so it imports a new HEAD too: each of the two reads its tree from the pack.
-  fetch_feed_heads "$copy" "$shared"
-  commit_before "$copy" "$dir" describedArgs
-  measure "$copy-described" --env JJ_RANDOMNESS_SEED=104 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" "${described_args[@]}" -R "$dir"
-  commit_before "$copy" "$dir" adoptionArgs
-  measure "$copy-adoption" --env JJ_RANDOMNESS_SEED=105 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" "${adoption_args[@]}" -R "$dir"
-  JJ_RANDOMNESS_SEED=106 "$jj" --ignore-working-copy -R "$dir" log -r @ --no-graph -T 'author.email()' > "$out/$copy-author.out" 2>&1
-  echo "the working copy's author after adoptionArgs: $(cat "$out/$copy-author.out")"
+  shim_rows "$copy" "$dir" "$jj" "$shared" 104
+  # The author adoptionArgs sets, on an unmeasured run outside every measured tree: the measured
+  # adoptionArgs's import of the new HEAD made the working-copy commit under the adopter's
+  # identity, so its metaedit had nothing to change. `jj new` as the probe gives @ the probe's
+  # author, and the same adoptionArgs argv as the adopter must make it the adopter's, in an
+  # operation of metaedit's own.
+  echo "the author adoptionArgs sets, unmeasured: jj new as the probe, then adoptionArgs as the adopter:"
+  JJ_RANDOMNESS_SEED=106 "$jj" -R "$dir" new 2>&1
+  authored[$copy/before]=$(JJ_RANDOMNESS_SEED=107 "$jj" --ignore-working-copy -R "$dir" log -r @ --no-graph -T 'author.email()' 2>&1)
+  JJ_RANDOMNESS_SEED=108 JJ_USER=$adopter_name JJ_EMAIL=$adopter_email "$jj" "${adoption_args[@]}" -R "$dir" 2>&1
+  echo "adoptionArgs exited $?"
+  authored[$copy/after]=$(JJ_RANDOMNESS_SEED=109 "$jj" --ignore-working-copy -R "$dir" log -r @ --no-graph -T 'author.email()' 2>&1)
+  authored[$copy/operation]=$(JJ_RANDOMNESS_SEED=110 "$jj" --ignore-working-copy -R "$dir" op log -n1 --no-graph -T description 2>&1)
+  echo "@'s author ${authored[$copy/before]} before it and ${authored[$copy/after]} after it; the newest operation: ${authored[$copy/operation]}"
 }
 
 if going; then
@@ -1568,12 +1598,16 @@ if going; then
   jj_rows control "$control_ws" "$control_jj" "$control_clone"
 fi
 
-# The image and control copies' commits before each shim command: each is made on its copy's own
-# handoff commit (and the second on the first), whose message names the copy and whose dates are the
-# clock's, so their ids differ, and everything else of them must be the same.
+# The image and control copies' commits before each shim command: the one before describedArgs is
+# made on its copy's own handoff commit, whose message names the copy and whose dates are the
+# clock's, and the one before adoptionArgs on that copy's commit before describedArgs, so their
+# ids differ, and everything else of them must be the same.
 if going; then
-  want="one commit but for its parent, each copy's own handoff commit"
   for command in describedArgs adoptionArgs; do
+    case $command in
+      describedArgs) want="one commit but for its parent, each copy's own handoff commit" ;;
+      adoptionArgs) want="one commit but for its parent, each copy's own commit before describedArgs" ;;
+    esac
     image_commit=${committed[image/$command]:-}
     control_commit=${committed[control/$command]:-}
     if [ -z "$image_commit" ] || [ -z "$control_commit" ]; then
@@ -1615,7 +1649,14 @@ if going; then
     fi
     undescribed=$(cat "$out/$copy-described.out" 2> /dev/null)
     same "c-shim-adoption-memory undescribed $copy" "describedArgs printed [$undescribed]" "describedArgs printed []"
-    same "c-shim-adoption-memory author $copy" "$(cat "$out/$copy-author.out" 2> /dev/null)" "$adopter_email"
+    got="@'s author ${authored[$copy/before]:-unread} before the unmeasured adoptionArgs and ${authored[$copy/after]:-unread} after it; the newest operation: ${authored[$copy/operation]:-unread}"
+    want="@'s author $JJ_EMAIL, the probe's, before the unmeasured adoptionArgs and $adopter_email after it; the newest operation: edit commit metadata for commit <id>, metaedit's"
+    if [ "${authored[$copy/before]:-}" = "$JJ_EMAIL" ] && [ "${authored[$copy/after]:-}" = "$adopter_email" ] &&
+      [[ ${authored[$copy/operation]:-} == "edit commit metadata for commit "* ]]; then
+      verdict "c-shim-adoption-memory author $copy" pass "$got" "$want"
+    else
+      verdict "c-shim-adoption-memory author $copy" fail "$got" "$want"
+    fi
   done
   under_bound "c-handoff-head-read-memory standing image" image-standing
   reaches_bound "c-handoff-head-read-memory standing control" control-standing "${control_pack_kib:-unread}" "the pack's size"
@@ -1642,13 +1683,7 @@ r10_rows() { # r10_rows <copy>
   }
   measure "$copy-file-list" "${limit[@]}" --env JJ_RANDOMNESS_SEED=201 -- "$jj" --ignore-working-copy -R "$dir" file list -r @-
   measure "$copy-standing" "${limit[@]}" --env JJ_RANDOMNESS_SEED=202 -- "$jj" -R "$dir" "${standing_args[@]}"
-  fetch_feed_heads "$copy" "$(copy_clone "$copy")"
-  commit_before "$copy" "$dir" describedArgs
-  measure "$copy-described" "${limit[@]}" --env JJ_RANDOMNESS_SEED=203 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" "${described_args[@]}" -R "$dir"
-  commit_before "$copy" "$dir" adoptionArgs
-  measure "$copy-adoption" "${limit[@]}" --env JJ_RANDOMNESS_SEED=204 --env "JJ_USER=$adopter_name" --env "JJ_EMAIL=$adopter_email" \
-    -- "$jj" "${adoption_args[@]}" -R "$dir"
+  shim_rows "$copy" "$dir" "$jj" "$(copy_clone "$copy")" 203 "${limit[@]}"
   measure "$copy-new" "${limit[@]}" --env JJ_RANDOMNESS_SEED=205 -- "$jj" -R "$dir" new
   edit_two_dirs "$dir"
   measure "$copy-diff" "${limit[@]}" --env JJ_RANDOMNESS_SEED=206 -- "$jj" -R "$dir" diff
