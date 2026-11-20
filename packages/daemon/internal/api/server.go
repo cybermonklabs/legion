@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -55,6 +54,7 @@ type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
 	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
+	// Unset, it is Pool; a test sets it to a fake that opens no database transaction.
 	StateTransactions store.TxPool
 	// StateReadBound is how long the state route's read may take before it answers a failure and
 	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
@@ -400,9 +400,13 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	if serving == nil {
 		serving = func(recorded ghrepo.Repository) ghrepo.Repository { return recorded }
 	}
+	stateTransactions := opts.StateTransactions
+	if stateTransactions == nil && opts.Pool != nil {
+		stateTransactions = opts.Pool
+	}
 	s := &server{
 		state:              opts.State,
-		stateTransactions:  opts.StateTransactions,
+		stateTransactions:  stateTransactions,
 		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
@@ -741,21 +745,25 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	var state State
 	var claims []supervise.Claim
+	// The step that failed names the log line: the begin or the commit (the default), the
+	// statement bound, or the state source.
+	failed := "api: state transaction failed"
 	err := store.TransactWith(reading, s.stateTransactions, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	}, func(ctx context.Context, tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
-			return fmt.Errorf("bound the state transaction's statements: %w", err)
+			failed = "api: bound the state transaction's statements failed"
+			return err
 		}
 		var err error
 		state, claims, err = s.state.State(ctx, tx)
 		if err != nil {
-			return fmt.Errorf("read the state source: %w", err)
+			failed = "api: state source failed"
 		}
-		return nil
+		return err
 	})
 	if err != nil {
-		s.logRequestFailure(r, err, "api: state transaction failed")
+		s.logRequestFailure(r, err, failed)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}

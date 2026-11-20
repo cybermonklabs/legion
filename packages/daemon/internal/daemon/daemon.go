@@ -2606,7 +2606,6 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			noPluginInstall: func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
 			architectStalls: architectStalls,
 		},
-		StateTransactions:  st.Pool(),
 		ConsumerLag:        consumerLag,
 		CallerPod:          callerPodOf(s.runtime),
 		Ready:              ready.serving,
