@@ -23,6 +23,8 @@ body: |-
   Where Dispatch cannot read its own list of the issue's links, the record is refused with
   `500 INTERNAL` and nothing is stored; before this change such a result was stored, or refused
   with `400 RESULT_COMMIT_UNKNOWN`.
+  The record's dry run, `POST /api/v1/issues/{key}/results/dry-run`, answers each of these
+  refusals as the record does, and stores nothing.
   The read of the pull requests GitHub names for the commit, after the write, reads the
   repository the commit is taken to be of.
 

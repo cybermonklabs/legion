@@ -382,9 +382,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}, nil
 }
 
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each repository is
-// read as a mapping's path is (refs.ParseExternalRepo: trimmed, lower-cased and one trailing
-// `.git` trimmed), and the name it reads is held to the names GitHub allows
+// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
+// trimmed, and its repository is read as a mapping's path is (refs.ParseExternalRepo:
+// lower-cased and one trailing `.git` trimmed, and refused with a space in it, so `acme/x =KEY`
+// is refused), and the name it reads is held to the names GitHub allows
 // (refs.SplitGitHubRepo), as the settings route holds the name it stores, so the seed stores no
 // mapping the route refuses: `acme/.git=KEY`, which reads as `acme/`, a mapping no request
 // reaches, or `acme/..=KEY`. Such an entry is refused, naming it, and the boot with it.
