@@ -147,6 +147,55 @@ test("the press `stopped` handed back, made again, goes under its own key", asyn
   }
 });
 
+// The shell's Retry makes a stopped press again under its key, outside the surface's hook
+// (`Writes.retry`), for a write the shell shows: one its surface does not show the refusal of
+// itself, as a header's pin. Once it lands, the hook holds that press no longer and its newest
+// press no longer ends stopped: the surface's note that Dispatch has not confirmed it goes, and
+// its own Retry has nothing to make again.
+test("a stopped press the store's Retry lands is the hook's stopped press no longer", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const { client, hook } = renderOnQueue(() =>
+    useKeyedWrite({
+      label: () => "Answer to “Ship?”",
+      method: "POST",
+      write: (input: { selected: string[] }, bounds) =>
+        api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+    })
+  );
+
+  try {
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+    await stopTheLateWrite(client);
+    expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
+    const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
+    const tries = answerAsk.mock.calls.length;
+    const [row, ...more] = writesOf(client).rows();
+    expect(row?.key, "the shell shows no stopped write to retry").toBe(stoppedKey);
+    expect(more).toEqual([]);
+
+    answerAsk.mockResolvedValueOnce({ id: "ask-1" } as never);
+    act(() => writesOf(client).retry(row?.id ?? 0));
+    await tick(0);
+
+    expect(answerAsk.mock.calls.length).toBe(tries + 1);
+    expect(answerAsk.mock.calls.at(-1)?.[2]?.key).toBe(stoppedKey);
+    expect(writesOf(client).rows(), "the store's Retry did not land").toEqual([]);
+    expect(hook.result.current.error, "the landed press still ends stopped").toBeNull();
+    expect(hook.result.current.method).toBeUndefined();
+    expect(
+      hook.result.current.stopped(() => true),
+      "the hook still holds the landed press"
+    ).toBe(undefined);
+  } finally {
+    hook.unmount();
+    answerAsk.mockRestore();
+    tab.close();
+    realClock();
+  }
+});
+
 // A key belongs to the press that made it, not to what the press carries, and a string carries
 // nothing but its text: a title typed again is the very string a stopped press of that title was
 // made with. Here the stopped rename to "X" had reached Dispatch, a rename to "Y" landed after it,

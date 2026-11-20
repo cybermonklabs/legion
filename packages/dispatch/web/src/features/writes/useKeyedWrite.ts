@@ -110,11 +110,12 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   readonly retry: () => void;
   /** The press the reader stopped that `wanted` picks out by its variables, or `undefined` where
    *  the hook holds no stopped press that is that one. The hook holds every press that ended
-   *  stopped and has not been made again, newest first, each under the key its attempts went out
-   *  under. More than one press of a hook can be out at once - a paste of several files is several
-   *  presses - and the refusal a surface shows follows its newest press, which is not always the
-   *  press the reader stopped last. So such a surface's Retry names the press its refusal is
-   *  about, under `retriesUnderItsKey` of that refusal, and makes that press again (`again`). */
+   *  stopped and has not been made again or landed by the shell's Retry, newest first, each under
+   *  the key its attempts went out under. More than one press of a hook can be out at once - a
+   *  paste of several files is several presses - and the refusal a surface shows follows its
+   *  newest press, which is not always the press the reader stopped last. So such a surface's
+   *  Retry names the press its refusal is about, under `retriesUnderItsKey` of that refusal, and
+   *  makes that press again (`again`). */
   readonly stopped: (
     wanted: (variables: TVariables) => boolean
   ) => KeyedPress<TVariables> | undefined;
@@ -250,7 +251,9 @@ function pressCallbacks<TData, TVariables, TContext>(
  * same change however often it is made. So the hook holds every press that ended stopped,
  * under its key, and that press belongs to the press that made it: only the surface's
  * own Retry reaches it, through `retry` where the Retry is of the surface's newest press, or
- * through the handle `stopped` gives and `again` where more than one press is out at once. A
+ * through the handle `stopped` gives and `again` where more than one press is out at once. The
+ * shell's Retry makes it again outside the hook, and once that lands the hook holds it no longer
+ * (`Writes.onOutcome`). A
  * `mutate` or `mutateAsync` is a press the person made anew and always goes under a new key,
  * whatever its variables are: the hook never matches a press by its variables, by identity or by
  * value, so a later press of equal values - a title typed again, Approve after a change request -
@@ -407,6 +410,23 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   const retry = useCallback(() => {
     if (newest !== undefined && !again(newest)) mutate(newest.variables);
   }, [again, mutate, newest]);
+  // A press the reader stopped can also land by the shell's Retry, which makes it again under its
+  // own key outside this hook (`Writes.retry`). Once it lands the hook holds it no longer, and
+  // where it is the newest press the surface's stopped note goes (`reset`): what the note said
+  // Dispatch had not confirmed, Dispatch has. Its surface reads what it wrote again with the
+  // store's refresh of a landing no press awaited (`Writes.#landed`).
+  const { reset } = mutation;
+  const newestKey = newest?.key;
+  useEffect(
+    () =>
+      writes.onOutcome((outcome) => {
+        const { key } = outcome.write;
+        if (outcome.kind !== "landed" || !held.current.some((press) => press.key === key)) return;
+        held.current = held.current.filter((press) => press.key !== key);
+        if (key === newestKey) reset();
+      }),
+    [newestKey, reset, writes]
+  );
   // TanStack's result is a union over `status`, each member with the press it ran, and the
   // press's own variables stand in for it member by member, which the spread does not show.
   return {

@@ -7,7 +7,7 @@ import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -32,6 +32,7 @@ import { buildDispatchReference, DECISIONS_DOCUMENT_SLUG, parseIssuePath } from 
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { ACTION_WORDS } from "./approval-chip-box";
 import { CONTROL_LABELS } from "./page-words";
 import { ShellNavigationContext } from "./shell-navigation";
@@ -649,6 +650,50 @@ test("a pin the reader stopped says it may have been saved, not that it failed",
       })
     );
     expect(within(view.container).queryByText("Could not save pin status.")).toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+    putIssueState.mockRestore();
+    state.mockRestore();
+    restore();
+  }
+});
+
+// The shell's pending writes make a stopped pin again as well as the header's own Retry does
+// (`Writes.retry`). Once that lands the pin is saved, so the header's line that Dispatch has not
+// confirmed it goes, as today's header's does (`useKeyedWrite`).
+test("a stopped pin's line goes once the shell's Retry of it lands", async () => {
+  const restore = stubHeader(issue);
+  const state = spyOn(api, "getMyState").mockResolvedValue({});
+  const putIssueState = spyOn(api, "putIssueState").mockRejectedValue(
+    new NetworkError("/api/v1/me/issues/CORE-1/state", new TypeError("Failed to fetch"))
+  );
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    await within(view.container).findByRole("heading", { level: 1, name: issue.title });
+    await openIssueActions();
+    const pin = within(view.container).getByRole("button", { name: "Pin issue" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(pin);
+    await stopTheLateWrite(queryClient);
+    expect(
+      within(view.container).queryByText(/^Dispatch has not confirmed the pin status/)
+    ).not.toBeNull();
+    const stoppedTries = putIssueState.mock.calls.length;
+    putIssueState.mockResolvedValue({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
+    const [row] = writesOf(queryClient).rows();
+    act(() => writesOf(queryClient).retry(row?.id ?? 0));
+    await tick(1_000);
+    expect(putIssueState.mock.calls.length, "the shell's Retry sent the pin again").toBe(
+      stoppedTries + 1
+    );
+    expect(writesOf(queryClient).rows(), "the shell's Retry of the pin did not land").toEqual([]);
+    expect(
+      within(view.container).queryByText(/^Dispatch has not confirmed the pin status/),
+      "the stopped pin's line stayed after the shell's Retry of it landed"
+    ).toBeNull();
   } finally {
     realClock();
     view.unmount();
