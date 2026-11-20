@@ -92,7 +92,9 @@ interface Press<TVariables> extends KeyedPress<TVariables> {
 /** `useMutation`'s result, with the one "made, but Dispatch lost its answer" state every create
  *  form shows (`LandedWithoutAnswer`): the last press that landed with `null`, until the next
  *  press starts or the form lets it go (`forgetUnanswered`, on an edit); and the Retry of a press
- *  the reader stopped, which only the surface's own Retry makes (`retry`, `stopped`, `again`). */
+ *  the reader stopped, which the surface makes again (`retry`, `stopped`, `again`). The shell's
+ *  pending writes can make a stopped press again too; once that lands the hook lets the press go
+ *  and, where it is the newest press, clears its error, as `useKeyedWrite` says. */
 export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   TData | null,
   DefaultError,
@@ -249,11 +251,9 @@ function pressCallbacks<TData, TVariables, TContext>(
  * A press the reader stopped is no verdict: it may have reached Dispatch, which answers the key
  * of a `POST` or a `PATCH` with what it did there; a `PUT` or a `DELETE` sends no key, and is the
  * same change however often it is made. So the hook holds every press that ended stopped,
- * under its key, and that press belongs to the press that made it: only the surface's
- * own Retry reaches it, through `retry` where the Retry is of the surface's newest press, or
- * through the handle `stopped` gives and `again` where more than one press is out at once. The
- * shell's Retry makes it again outside the hook, and once that lands the hook holds it no longer
- * (`Writes.onOutcome`). A
+ * under its key, and that press belongs to the press that made it: the surface's own Retry
+ * makes it again, through `retry` where the Retry is of the surface's newest press, or
+ * through the handle `stopped` gives and `again` where more than one press is out at once. A
  * `mutate` or `mutateAsync` is a press the person made anew and always goes under a new key,
  * whatever its variables are: the hook never matches a press by its variables, by identity or by
  * value, so a later press of equal values - a title typed again, Approve after a change request -
@@ -263,6 +263,15 @@ function pressCallbacks<TData, TVariables, TContext>(
  * now, an upload's base the document has moved past - and the person reads that refusal, and a
  * field ends at the value the person chose last. A Retry after Dispatch's own refusal is a press
  * of its own too, since Dispatch would answer the old key with that refusal.
+ *
+ * The shell's pending writes can make a stopped press again as well (`Writes.retry`). Once that
+ * lands, the hook holds the press no longer and, where it is the newest press, clears its error
+ * (`reset`), so the surface's note that Dispatch has not confirmed it goes. No press of the hook
+ * awaited that landing, so none of the surface's own callbacks run for it; the store reads every
+ * query again instead, as it does for each landing of a plain write no press awaited
+ * (`plainWrite`, `Writes.#landed`). The newest press is the one the hook made last, not the one
+ * React drew last: a press made just before that landing is not drawn yet, and it keeps its own
+ * pending state and its refusal.
  *
  * A Retry (`retry`, `again`) runs the newest render's `write` or `request`, and its callbacks,
  * with the press's own variables. So a press carries every value they read - an upload's base
@@ -294,9 +303,13 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   ...options
 }: KeyedWriteOptions<TData, TVariables, TContext>): KeyedWriteResult<TData, TVariables, TContext> {
   const writes = useWrites();
-  /** Every press the reader stopped and has not made again, newest first. Each is reached by its
-   *  own object alone: `again` of the handle `stopped` gave, or `retry` of the newest press. */
+  /** Every press the reader stopped that is neither made again nor landed by the shell's Retry,
+   *  newest first. Each is reached by its own object alone: `again` of the handle `stopped` gave,
+   *  or `retry` of the newest press. */
   const held = useRef<readonly Press<TVariables>[]>([]);
+  /** The press the hook made last (`mutate`, `mutateAsync`, `again`), set as it is made, before
+   *  TanStack tells React of it. */
+  const newestMade = useRef<Press<TVariables> | undefined>(undefined);
   const [unanswered, setUnanswered] = useState<UnansweredLanding<TVariables> | undefined>(
     undefined
   );
@@ -364,11 +377,11 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       ...[variables, callbacks]: Parameters<
         UseMutateFunction<TData | null, DefaultError, TVariables, TContext>
       >
-    ) =>
-      makePress(
-        { key: newSendKey(), variables: variables as TVariables },
-        pressCallbacks(callbacks)
-      ),
+    ) => {
+      const press = { key: newSendKey(), variables: variables as TVariables };
+      newestMade.current = press;
+      makePress(press, pressCallbacks(callbacks));
+    },
     [makePress]
   );
   const mutateAsync = useCallback(
@@ -376,11 +389,11 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       ...[variables, callbacks]: Parameters<
         UseMutateAsyncFunction<TData | null, DefaultError, TVariables, TContext>
       >
-    ) =>
-      makePressAsync(
-        { key: newSendKey(), variables: variables as TVariables },
-        pressCallbacks(callbacks)
-      ),
+    ) => {
+      const press = { key: newSendKey(), variables: variables as TVariables };
+      newestMade.current = press;
+      return makePressAsync(press, pressCallbacks(callbacks));
+    },
     [makePressAsync]
   );
   const stopped = useCallback(
@@ -395,6 +408,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         return false;
       }
       held.current = held.current.filter((each) => each !== made);
+      newestMade.current = made;
       makePress(made);
       return true;
     },
@@ -410,22 +424,20 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   const retry = useCallback(() => {
     if (newest !== undefined && !again(newest)) mutate(newest.variables);
   }, [again, mutate, newest]);
-  // A press the reader stopped can also land by the shell's Retry, which makes it again under its
-  // own key outside this hook (`Writes.retry`). Once it lands the hook holds it no longer, and
-  // where it is the newest press the surface's stopped note goes (`reset`): what the note said
-  // Dispatch had not confirmed, Dispatch has. Its surface reads what it wrote again with the
-  // store's refresh of a landing no press awaited (`Writes.#landed`).
+  // A held press the shell's Retry lands (the hook's doc says what follows): it is let go, and
+  // where it is the press the hook made last, its error is cleared. That is read from the press as
+  // it was made (`newestMade`) and not as React last drew it, so a press made just before the
+  // landing, which React has not drawn yet, keeps its own state.
   const { reset } = mutation;
-  const newestKey = newest?.key;
   useEffect(
     () =>
       writes.onOutcome((outcome) => {
         const { key } = outcome.write;
         if (outcome.kind !== "landed" || !held.current.some((press) => press.key === key)) return;
         held.current = held.current.filter((press) => press.key !== key);
-        if (key === newestKey) reset();
+        if (key === newestMade.current?.key) reset();
       }),
-    [newestKey, reset, writes]
+    [reset, writes]
   );
   // TanStack's result is a union over `status`, each member with the press it ran, and the
   // press's own variables stand in for it member by member, which the spread does not show.

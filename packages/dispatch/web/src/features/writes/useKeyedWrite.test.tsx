@@ -2,7 +2,8 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { onlineManager } from "@tanstack/react-query";
 import { act } from "@testing-library/react";
 
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { type HeldNotifications, holdNotifications } from "../../__tests__/commits";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
 import { renderOnQueue } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -19,6 +20,19 @@ function renderAnswerWrite() {
   return renderOnQueue(() =>
     useKeyedWrite({
       inline: true,
+      label: () => "Answer to “Ship?”",
+      method: "POST",
+      write: (input: { selected: string[] }, bounds) =>
+        api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+    })
+  );
+}
+
+/** The same write of an answer, but one the shell's pending writes show, with their Retry, once
+ *  the reader stopped it, as they show a header's pin: its surface shows no refusal itself. */
+function renderShownAnswerWrite() {
+  return renderOnQueue(() =>
+    useKeyedWrite({
       label: () => "Answer to “Ship?”",
       method: "POST",
       write: (input: { selected: string[] }, bounds) =>
@@ -156,14 +170,7 @@ test("a stopped press the store's Retry lands is the hook's stopped press no lon
   jest.useFakeTimers();
   const tab = keptTab();
   const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
-  const { client, hook } = renderOnQueue(() =>
-    useKeyedWrite({
-      label: () => "Answer to “Ship?”",
-      method: "POST",
-      write: (input: { selected: string[] }, bounds) =>
-        api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
-    })
-  );
+  const { client, hook } = renderShownAnswerWrite();
 
   try {
     act(() => hook.result.current.mutate({ selected: ["Ship"] }));
@@ -189,6 +196,68 @@ test("a stopped press the store's Retry lands is the hook's stopped press no lon
       "the hook still holds the landed press"
     ).toBe(undefined);
   } finally {
+    hook.unmount();
+    answerAsk.mockRestore();
+    tab.close();
+    realClock();
+  }
+});
+
+// The order review 11 traced: the reader makes a new press, and the shell's Retry of the stopped
+// press lands before React draws that new press. TanStack tells React of a press on a timer of its
+// own (`holdNotifications`), and here the press and the landing fall in one task, so React draws
+// neither before both are done. The landing lets the stopped press go and nothing more: the new
+// press stays pending, and Dispatch's refusal of it is the hook's error, which a surface says.
+test("a stopped press the store's Retry lands before a newer press is drawn leaves that press its state", async () => {
+  jest.useFakeTimers();
+  const tab = keptTab();
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+  const { client, hook } = renderShownAnswerWrite();
+  let notifications: HeldNotifications | undefined;
+
+  try {
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+    await stopTheLateWrite(client);
+    const [row] = writesOf(client).rows();
+    const stoppedKey = row?.key;
+    const retried = Promise.withResolvers<{ id: string }>();
+    const newer = Promise.withResolvers<never>();
+    answerAsk
+      .mockImplementationOnce(() => retried.promise as never)
+      .mockImplementationOnce(() => newer.promise);
+    act(() => writesOf(client).retry(row?.id ?? 0));
+    await tick(0);
+    expect(answerAsk.mock.calls.at(-1)?.[2]?.key, "the shell's Retry did not go out").toBe(
+      stoppedKey
+    );
+
+    notifications = holdNotifications();
+    await act(async () => {
+      hook.result.current.mutate({ selected: ["Hold"] });
+      await settle();
+      retried.resolve({ id: "ask-1" });
+      await settle();
+    });
+    expect(answerAsk.mock.calls.at(-1)?.[1]?.selected, "the newer press did not go out").toEqual([
+      "Hold",
+    ]);
+    expect(
+      writesOf(client)
+        .rows()
+        .map((write) => write.key),
+      "the shell's Retry did not land"
+    ).not.toContain(stoppedKey);
+    notifications.tell();
+
+    expect(hook.result.current.status, "the stopped press's landing reset the newer press").toBe(
+      "pending"
+    );
+    expect(hook.result.current.variables).toEqual({ selected: ["Hold"] });
+    newer.reject(verdict);
+    await tick(0);
+    expect(hook.result.current.error, "the newer press's refusal left the hook").toBe(verdict);
+  } finally {
+    notifications?.tell();
     hook.unmount();
     answerAsk.mockRestore();
     tab.close();
