@@ -188,12 +188,12 @@ import (
 // back, in the same statement, the person's row there least recently presented (mintClient), and
 // where each of them is live the admission is refused for now, DocumentBusyCloseCode, which the
 // editor retries. A row is live while an open socket holds it: the socket presents it again every
-// clientPresenceInterval until an edit lands under it (keepPresenting), and a row presented within
-// clientPresenceLapses intervals is no mint's to give back, on this process or another. A page
-// whose row was given back is minted the same id at its next admission where no other row names
-// it by then, and keeps what it typed offline under it; otherwise it is given a fresh id, and
-// loses only what it typed offline under the old one that never landed. A row no edit landed
-// under that nothing has presented for unusedClientIDAge is deleted by the hourly compaction
+// clientPresenceInterval until its row records an edit landed under it (keepPresenting), and a row
+// presented within clientPresenceLapses intervals is no mint's to give back, on this process or
+// another. A page whose row was given back is minted the same id at its next admission where no
+// other row names it by then, and keeps what it typed offline under it; otherwise it is given a
+// fresh id, and loses only what it typed offline under the old one that never landed. A row no edit
+// landed under that nothing has presented for unusedClientIDAge is deleted by the hourly compaction
 // sweep (sweepUnusedClientIDs), and a page presenting its id after that is minted it as a page
 // whose row was given back is. A row whose id landed an edit is neither given back nor swept, and
 // neither is a claimed row: a socket marks its own row once the room holds a struct under the id
@@ -251,11 +251,11 @@ const (
 	// person in one document over every honest drive of round 9 was 5
 	// (dispatch://INFRA-179/artifact/infra179-r9-caps-measure-md).
 	maxUnlandedMintsADocument = 64
-	// clientPresenceInterval is how often an open socket presents its own id again while no edit
-	// has landed under it (keepPresenting), and clientPresenceLapses how many such intervals a row
-	// may go unpresented and still be live: no mint gives back a row presented more recently than
-	// that (mintClient). Three intervals leave room for two presentations that came late or
-	// failed before the row of a socket still open could be given back.
+	// clientPresenceInterval is how often an open socket presents its own id again while its row
+	// records no edit landed under it (keepPresenting), and clientPresenceLapses how many such
+	// intervals a row may go unpresented and still be live: no mint gives back a row presented more
+	// recently than that (mintClient). Three intervals leave room for two presentations that came
+	// late or failed before the row of a socket still open could be given back.
 	clientPresenceInterval = 5 * time.Minute
 	clientPresenceLapses   = 3
 	// maxComparedClaims is the most ids another person claimed whose structs at clocks the room

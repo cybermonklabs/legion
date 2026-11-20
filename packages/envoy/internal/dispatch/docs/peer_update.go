@@ -29,11 +29,12 @@ import (
 //
 // The hook does not run applyLive's checks. Those weigh what a write leaves, which costs a fork
 // of the document, a tree build and a full markdown render - about 420 ms for the fork alone at
-// 1 MiB and a whole further copy of the document, with the render about 160 ms (applyLive, buildForkHeld) - against a keystroke on such a document that already takes between half a second and
-// a second. What it does instead is hand ygo an allowance built from what it can see without
-// reading the update at all - the update's own length, the structs the room's last committed
-// apply reported it holding (crdt.ApplyReport.Structs, roomApplies.structsHeld), what its
-// pending queue holds (crdt.Doc.PendingStats), the room's last published rendering
+// 1 MiB and a whole further copy of the document, with the render about 160 ms (applyLive,
+// buildForkHeld) - against a keystroke on such a document that already takes between half a
+// second and a second. What it does instead is hand ygo an allowance built from what it can see
+// without reading the update at all - the update's own length, the structs the room's last
+// committed apply reported it holding (crdt.ApplyReport.Structs, roomApplies.structsHeld), what
+// its pending queue holds (crdt.Doc.PendingStats), the room's last published rendering
 // (renderedReplica.publishSize), and its tracked state bytes with what its queue holds beside
 // them - and let the apply itself count what the update decodes, integrates and adds against that
 // allowance, rolling the whole apply back where it passes (crdt.WithApplyBudget). For a keystroke
@@ -1541,12 +1542,13 @@ func (s *Service) refusedBeforeApply(info websocket.PeerUpdateInfo, weighing *ro
 			deleted, deletedAt, retiredAt, replaced = client, clock, at, true
 		}
 	})
-	if replaced && read {
-		return refuse("a delete range", deleted, deletedAt, retiredAt)
-	}
 	if !read {
 		slog.Info("dispatch: a browser's update whose delete set the retired-client scan could not read; the apply will judge it",
 			"room", info.Room, "update_bytes", len(info.Update))
+		return nil
+	}
+	if replaced {
+		return refuse("a delete range", deleted, deletedAt, retiredAt)
 	}
 	return nil
 }

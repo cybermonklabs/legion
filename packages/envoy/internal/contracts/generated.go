@@ -369,7 +369,8 @@ const DocumentSchemaCloseReason = "DOC_SCHEMA"
 // one whose update holds content the document does not take - bytes the decoder refuses, content
 // the Proof editor never sends, or a document this build cannot render, with the browsers whose
 // parked edits a drain refused for that held - and DocumentClientIdRefusedCloseReason the one whose
-// update carries an edit under a client id that is not the sender's; DocumentBusyCloseCode and
+// update carries an edit under a client id that is not the sender's, or would take its socket past
+// the client ids one socket may write under; DocumentBusyCloseCode and
 // DocumentBusyCloseReason close a browser the room-memory budget has no room for, one whose
 // person holds every client id no edit has landed under that a document allows them, each held by
 // a socket still open, the one whose update would grow a document while that budget is full, the

@@ -140,9 +140,10 @@ func refuseMintsLive(w http.ResponseWriter, r *http.Request, room string, cause 
 // them, the 500 of a writer that is no http.Hijacker, where nothing is written and this reports
 // false. A refusal is written as gorilla writes its own (returnError): its status, with
 // Sec-WebSocket-Version 13 beside it. The admission asks this before it gives the page a client
-// id, so a request that never becomes a socket stores nothing. It cannot see the connection: a
-// client that sends bytes before the 101 arrives is dropped by the upgrade with no answer, after
-// its id was given out.
+// id, so a request the upgrade refuses is given no id and stores nothing; the refusals that can
+// come after the id are named in ServeHTTP's doc. It cannot see the connection: a client that
+// sends bytes before the 101 arrives is dropped by the upgrade with no answer, after its id was
+// given out.
 func refusedAtUpgrade(w http.ResponseWriter, r *http.Request) bool {
 	refused := false
 	upgrader := gws.Upgrader{
@@ -175,10 +176,11 @@ func sameOrigin(r *http.Request) bool {
 	return err == nil && strings.EqualFold(parsed.Host, r.Host)
 }
 
-// closeAtUpgrade completes the upgrade only to close the socket with code and reason. The zero
-// upgrader keeps the same-origin rule ygo's own upgrade applies with no AllowedOrigins configured.
+// closeAtUpgrade completes the upgrade only to close the socket with code and reason, under the
+// same-origin rule ygo's own upgrade applies with no AllowedOrigins configured (sameOrigin), so
+// a request that upgrade would admit is closed with code and not answered 403.
 func closeAtUpgrade(w http.ResponseWriter, r *http.Request, code int, reason string) {
-	var upgrader gws.Upgrader
+	upgrader := gws.Upgrader{CheckOrigin: sameOrigin}
 	connection, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return // the upgrader has answered the request
@@ -434,8 +436,8 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	connection.clients = clients
-	// An open socket presents its page's id again while no edit has landed under it, so no mint of
-	// its person's gives that id back while the socket is open (keepPresenting).
+	// An open socket presents its page's id again while its row records no edit landed under it, so
+	// no mint of its person's gives that id back while the socket is open (keepPresenting).
 	defer s.keepPresenting(room, actor, clients)()
 	// The state the admission read is offered to the room's load only now, once the budget has
 	// made room for that load: a socket refused above makes no room and leaves nothing behind

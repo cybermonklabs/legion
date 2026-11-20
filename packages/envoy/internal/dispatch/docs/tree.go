@@ -578,10 +578,10 @@ type roomWeighing struct {
 	// bytes is the size of the replica's latest published rendering, published beside it, for
 	// the peer update hook to load (Service.weighPeerUpdate): the byte bound's measure of the
 	// document. The hook runs on the peer's read loop, where taking the replica's mu would put
-	// every browser in the room behind its load, since the update observer holds it for each commit, so the measurement travels
-	// as an atomic rather than under the lock the rendering itself is kept under. It is
-	// sizeUnmeasured while the room has no rendering to measure, which is a document outside the
-	// schema.
+	// every browser in the room behind its load, since the update observer holds it for each
+	// commit, so the measurement travels as an atomic rather than under the lock the rendering
+	// itself is kept under. It is sizeUnmeasured while the room has no rendering to measure,
+	// which is a document outside the schema.
 	bytes atomic.Int64
 	// rendered is the replica's rendering as of the commit position it last stood at, which it
 	// publishes after each commit it takes (renderedReplica.publishRendered): what the room's

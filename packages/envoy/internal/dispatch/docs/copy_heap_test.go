@@ -517,12 +517,12 @@ func TestAStateAnswerAtMidSizesHoldsNoMoreLiveHeapThanItsGrant(t *testing.T) {
 // begins those afresh (crdt/split.go, newPiece and encodePiece), so what is held at once is one
 // update's scratch and the updates written so far, while what is allocated grows with every
 // update. Garbage is not the pool's to bound but the Go memory limit's, which the collector
-// steers the whole heap to (cmd/dispatch's memlimit.Set, memory_bounds.go). The pool bounds what copies hold at
-// once, and this holds the cut's grant to that for the rooms whose answers allocate the most past
-// it - each row is checked to allocate more than its grant, and to hold less: a run of 50,000 and
-// one of 200,000 GC structs of one client, the smallest struct a browser can send, which
-// allocated 5,914,928 and 17,982,416 bytes against grants of 1,412,776 and 3,202,248 and held
-// 999,328 to 1,004,664 and 2,112,224 to 2,178,240; 20,000 clients of one GC struct each,
+// steers the whole heap to (cmd/dispatch's memlimit.Set, memory_bounds.go). The pool bounds what
+// copies hold at once, and this holds the cut's grant to that for the rooms whose answers allocate
+// the most past it - each row is checked to allocate more than its grant, and to hold less: a run
+// of 50,000 and one of 200,000 GC structs of one client, the smallest struct a browser can send,
+// which allocated 5,914,928 and 17,982,416 bytes against grants of 1,412,776 and 3,202,248 and
+// held 999,328 to 1,004,664 and 2,112,224 to 2,178,240; 20,000 clients of one GC struct each,
 // 11,025,984 to 11,237,656 against 8,212,436, holding 4,476,384 to 4,476,864; and a run of
 // 102,400 characters with every other one deleted, 11,575,360 against 8,405,672, holding
 // 2,411,016. A grant without the update term (answerFrameWeight) held the first of them short,

@@ -11,24 +11,20 @@ package docs
 // Review 8's repro is kept as it was written, and only its two reads of the charge moved: each
 // reads the charge the room budget holds for the room (chargedWeight), as
 // TestParkedDeleteRangesAreChargedToTheRoomBudgetUntilTheyLand does, the room charged as a load
-// charges it (chargeLoadedRoom), where the repro read the two copies' weight alone (roomWeight).
-// Round 8's fix computed roomChargeWeight itself here, over a room the budget charged nothing,
-// so it passed with the hook's re-weigh of the room taken out (the round 9 class search, D4). The
-// fix charges a parked range outside roomCopies by design, since only the live copy holds one, so
-// roomWeight cannot carry it.
+// charges it (chargedPeerRoom, chargeLoadedRoom), where the repro read the two copies' weight
+// alone (roomWeight). Round 8's fix computed roomChargeWeight itself here, over a room the budget
+// charged nothing, so it passed with the hook's re-weigh of the room taken out (the round 9 class
+// search, D4). The fix charges a parked range outside roomCopies by design, since only the live
+// copy holds one, so roomWeight cannot carry it.
 
 import (
 	"runtime"
 	"testing"
-
-	"github.com/reearth/ygo/crdt"
 )
 
 func TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge(t *testing.T) {
-	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+	service, room, replica, charge := chargedPeerRoom(t)
 	defer runtime.KeepAlive(replica)
-	service.budget.limit = roomBudgetBytes
-	charge := service.chargeLoadedRoom("room", replica, int64(len(crdt.EncodeStateAsUpdateV1(room, nil))))
 	applies := service.roomWeighingOf(room).applies()
 	n := capHeadroom(heldStructs(room)) - 1
 	frame := deleteRangesFrom(8_200_001, n)
