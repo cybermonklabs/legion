@@ -123,7 +123,7 @@ type outbox struct {
 	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
 	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
 	// places only, each once the runtime's own call has answered that the pod is gone: an idle
-	// release's teardown, after SuspendIssue returns and before the release's mark is cleared
+	// release's teardown, after ReleaseIssue returns and before the release's mark is cleared
 	// (releaseIssue); an issue close, after SuspendIssue returns nil on a close the store did not
 	// refuse (suspendIssue, the record.IssueSuspend case of execute); and a workflow tree close,
 	// after the tree's cleanup, for each issue of the tree (endTreePods). Never after a pod

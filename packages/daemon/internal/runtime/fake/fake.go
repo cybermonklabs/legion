@@ -549,8 +549,9 @@ func (r *Runtime) IssuePod(issue string) (string, bool) {
 
 // IssueKeepsVolume answers what ScriptKeptVolume set for the issue: true where its kept Sandbox
 // was made before since, cut to the second as the Sandbox runtime cuts it, since the API server
-// records a creation time to the second. It records no call: the daemon asks it only for the
-// words of a message, which a test reads instead.
+// records a creation time to the second. It records no call: the daemon asks it for the words of a
+// message and for the rename pass's live-pod rules (bootKeep, podEndKeep), whose effects a test
+// reads instead.
 func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

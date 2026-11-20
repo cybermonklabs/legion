@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -26,7 +27,7 @@ import (
 const (
 	renameTableLine   = "rename pass: wrote each configured rename's new name over its old one on the stored rows of a table"
 	renameLeftLine    = "rename pass: left a configured rename's stored names as they are, since GitHub does not show its transfer yet; a later boot or pod end writes them once it does"
-	renameKeptLine    = "rename pass: kept an issue's stored repository names as they are, since its pod may be live"
+	renameKeptLine    = "rename pass: kept an issue's stored repository names as they are, since its workspace may still be under the old name"
 	renameDeletedLine = "rename pass: deleted an issue's pull request row, since another issue's row holds its branch under the new name"
 	renameFailedLine  = "rename pass: the write of an issue's stored repository names failed; the next boot or pod end writes them again"
 	renameUnreadLine  = "rename pass: the stored rows that name a rename's old name could not be read; the next boot or pod end reads them again"
@@ -53,9 +54,10 @@ const (
 // (intake.SerializeFacts), so no fact applies with a copy of the issue read before the pass wrote
 // it. An issue whose pod may still be live is left as it is (keep), so a role launched into that
 // pod keeps the workspace the pod made under the old name; the issue's next pod starts under the
-// new one. A write that fails is logged with its error and changes nothing else: the pass goes on
-// with the next issue, and the next boot or pod end writes the rows again. Nothing it meets stops
-// the boot.
+// new one. An issue whose volume the runtime keeps for its next pod is left as it is too, since
+// that pod mounts the volume with its workspace under the old name (podEndKeep). A write that
+// fails is logged with its error and changes nothing else: the pass goes on with the next issue,
+// and the next boot or pod end writes the rows again. Nothing it meets stops the boot.
 type renamePass struct {
 	pool    *store.Pool
 	project string
@@ -67,7 +69,7 @@ type renamePass struct {
 	transferred func(ctx context.Context, pair ghrepo.Rename) (to ghrepo.Repository, left string)
 	// keep is the live-pod rule: why issue's rows are left as they are, "" for none, asked with
 	// each spelling of the old name its rows hold and the pair's own (workspace.Location keeps
-	// the case it is handed). Nil keeps nothing: the end of a pod that the runtime proved gone.
+	// the case it is handed).
 	keep renameKeep
 	log  *slog.Logger
 }
@@ -75,10 +77,17 @@ type renamePass struct {
 // renameKeep is a rename pass's live-pod rule (renamePass.keep).
 type renameKeep func(issue string, names []string) string
 
+// renameKeptVolume is why both live-pod rules of a runtime that runs a pod per issue keep an issue
+// whose volume the runtime keeps for the issue's next pod (runtime.IssueVolumeReader).
+const renameKeptVolume = "the runtime keeps its volume for the issue's next pod"
+
 // bootKeep is the live-pod rule at boot. Under a runtime that runs a pod per issue (issuePods, the
 // one question every rule of the daemon asks a runtime of that) it keeps an issue while the runtime
-// holds its Sandbox or its pod, or cannot say whether it holds a pod of it: the Kubernetes runtime
-// answers both from its informers' stores, which sandbox.New syncs before it returns. Under tmux,
+// holds its Sandbox, keeps its volume for the issue's next pod (IssueKeepsVolume, as podEndKeep
+// does), holds its pod, or cannot say whether it holds a pod of it: the Kubernetes runtime answers
+// each from its informers' stores, which sandbox.New syncs before it returns. The volume is asked
+// on its own, because the Kubernetes runtime answers the Sandbox an idle release keeps under
+// keep_volume absent (sandbox.Runtime.IssueSandbox), and that Sandbox holds no pod. Under tmux,
 // which runs no pod, it keeps an issue while a workspace directory of the issue is under the old
 // name (workspaceKeep, INFRA-4401 P2).
 func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
@@ -89,6 +98,9 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 	return func(issue string, _ []string) string {
 		if name, present := pods.IssueSandbox(issue); present {
 			return "the runtime holds its Sandbox " + name
+		}
+		if pods.IssueKeepsVolume(issue, time.Now()) {
+			return renameKeptVolume
 		}
 		pod, read := pods.IssuePod(issue)
 		switch {
@@ -101,18 +113,36 @@ func bootKeep(rt runtime.Runtime, stateDir string) renameKeep {
 	}
 }
 
-// podEndKeep is the live-pod rule at the end of an issue's pod. Under a runtime that runs a pod per
-// issue (issuePods) it keeps nothing: the hook that runs the pass is the proof that no pod of the
-// issue is live (SuspendIssue's nil return, which comes once the pod and its Sandbox are gone, or
-// the tree's cleanup's, which waits until no Sandbox of the tree is left), and the informer's
-// store, which may still hold the Sandbox for a moment, is not read. Under tmux, whose tree
-// cleanup does nothing and which suspends no issue, P2's workspace-directory rule decides
-// (workspaceKeep).
+// podEndKeep is the live-pod rule at the end of an issue's pod. The hook that runs the pass is the
+// proof that no pod of the issue is live. A close's teardown (SuspendIssue) deletes the issue's
+// Sandbox, and so does a tree's cleanup, which waits until no Sandbox of the tree is left. An idle
+// release's teardown (ReleaseIssue) deletes it too, but under keep_volume it keeps a Sandbox that
+// owns the issue's kept volume, Suspended, with that volume, for the issue's next pod. That pod
+// mounts the volume, and the workspace directory on it is under the name the record holds now
+// (workspace.Location): with the new name written, the pod would make a fresh workspace under the
+// new name and leave the work under the old one. So under a runtime that runs a pod per issue
+// (issuePods) the rule keeps an issue on its old name while the runtime keeps its volume for the
+// issue's next pod (IssueKeepsVolume), and keeps no other issue. A later pass writes such an issue:
+// the pass of its close, once SuspendIssue has deleted the Sandbox and its volume, or a later boot
+// that finds no kept volume. The informer's store can still hold a deleted kept Sandbox for a
+// moment, so the pass of a close under keep_volume may leave the write to the next boot, which
+// errs toward keeping.
+//
+// The rule does not read the Sandbox (IssueSandbox). The informer's store can still hold a Sandbox
+// that the teardown has just deleted, and a keep on that Sandbox would hold the write of an
+// ordinary release, with keep_volume off, until the next boot. Under tmux, whose tree cleanup does
+// nothing and which suspends no issue, P2's workspace-directory rule decides (workspaceKeep).
 func podEndKeep(rt runtime.Runtime, stateDir string) renameKeep {
-	if _, ok := rt.(issuePods); ok {
-		return nil
+	pods, ok := rt.(issuePods)
+	if !ok {
+		return workspaceKeep(stateDir)
 	}
-	return workspaceKeep(stateDir)
+	return func(issue string, _ []string) string {
+		if pods.IssueKeepsVolume(issue, time.Now()) {
+			return renameKeptVolume
+		}
+		return ""
+	}
 }
 
 // workspaceKeep is the live-pod rule of a daemon whose runtime works each issue in a workspace
@@ -232,15 +262,13 @@ func (p renamePass) run(ctx context.Context, keys []string) (wrote bool) {
 // rename writes to over from on candidate's rows unless keep keeps them, counting what it did on
 // tallies, and answers whether it wrote or deleted a row.
 func (p renamePass) rename(ctx context.Context, candidate record.RenameCandidate, from, to string, tallies map[record.RenameTable]*renameTally) bool {
-	if p.keep != nil {
-		names := candidate.Spellings
-		if !slices.Contains(names, from) {
-			names = append(slices.Clone(names), from)
-		}
-		if why := p.keep(candidate.Issue, names); why != "" {
-			p.log.Info(renameKeptLine, "issue", candidate.Issue, "from", from, "to", to, "reason", why)
-			return false
-		}
+	names := candidate.Spellings
+	if !slices.Contains(names, from) {
+		names = append(slices.Clone(names), from)
+	}
+	if why := p.keep(candidate.Issue, names); why != "" {
+		p.log.Info(renameKeptLine, "issue", candidate.Issue, "from", from, "to", to, "reason", why)
+		return false
 	}
 	written, err := p.write(ctx, candidate.Issue, from, to)
 	if err != nil {

@@ -471,8 +471,72 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 	}
 }
 
+// An idle release under keep_volume keeps the issue's Sandbox, Suspended, with its kept volume, for
+// the issue's next pod (sandbox.Runtime.ReleaseIssue), and that pod mounts the volume with the
+// workspace directory under the name the record holds (workspace.Location). So the end of that
+// release's pod leaves the issue's stored names on the old name, logs one kept line that names the
+// issue and says the runtime keeps its volume, and keeps the bundle the release saved. With the
+// new name written, the next pod would make a fresh workspace under the new name, the runtime
+// would drop the saved bundle, since the kept volume holds that work
+// (runtime.HeldWorkspaceBundleDrop), and the work would stay under the old name. Control: the
+// same release with no kept volume writes the new name at the pod end and logs no kept line, as
+// an ordinary release does (TestAnIssueWithALivePodKeepsItsNamesUntilItsPodEnds); with podEndKeep
+// keeping nothing under a runtime that runs a pod per issue, the release that keeps the volume
+// writes the new name too.
+func TestAReleaseThatKeepsTheVolumeLeavesTheIssueOnItsOldName(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		kept   bool
+		want   string
+		issues renameTableTally
+	}{
+		{name: "a release that keeps the issue's volume", kept: true, want: renameFrom, issues: renameTableTally{left: 1}},
+		{name: "a release that keeps no volume", kept: false, want: renameTo, issues: renameTableTally{written: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			key := rig.issue.Key
+			if _, err := rig.pool.Exec(ctx, "update issues set repo = $2, github_repo = $2 where key = $1", key, renameFrom); err != nil {
+				t.Fatal(err)
+			}
+			var logged syncBuffer
+			rig.w.log = slog.New(slog.NewJSONHandler(&logged, nil))
+			rig.w.repositories = transferredRepositories()
+			rig.runner.podEnded = rig.w.podEndsOn(renamePodRuntime{rig.rt})
+			if tc.kept {
+				// The Sandbox and its volume were made an hour ago, at the issue's first pod.
+				rig.rt.ScriptKeptVolume(key, time.Now().Add(-time.Hour))
+			}
+
+			rig.w.releaseIdlePods(ctx)
+			rig.drain(t)
+			if _, suspended := rig.rt.reads(); suspended != 1 {
+				t.Fatalf("Sandbox teardowns = %d, want the release's one", suspended)
+			}
+			if names := storedRepositoryNames(t, rig.pool, key); !namedAll(names, tc.want) {
+				t.Errorf("%s's stored names after its release's pod end = %v, want each on %s", key, names, tc.want)
+			}
+			kept := renameLines(t, logged.String(), renameKeptLine)
+			switch {
+			case tc.kept && (len(kept) != 1 || kept[0].Issue != key || kept[0].Reason != renameKeptVolume):
+				t.Errorf("kept lines = %+v, want one naming %s with the reason %q", kept, key, renameKeptVolume)
+			case !tc.kept && len(kept) != 0:
+				t.Errorf("kept lines = %+v, want none: the runtime keeps no volume of %s", kept, key)
+			}
+			if got := renameTables(t, logged.String())["issues"]; got != tc.issues {
+				t.Errorf("the pod end's issues line = %+v, want %+v", got, tc.issues)
+			}
+			if !rig.bundled(t) {
+				t.Errorf("%s holds no saved bundle after its release's pod end, want the one the release saved", key)
+			}
+		})
+	}
+}
+
 // presenceRuntime answers, by issue, the pod a Kubernetes runtime holds, with no Sandbox of any,
-// each on the configured image.
+// each on the configured image, and, through the embedded fake, whether the runtime keeps an
+// issue's volume for its next pod (fake.Runtime.ScriptKeptVolume).
 type presenceRuntime struct {
 	*fake.Runtime
 	pods   map[string]string
@@ -519,6 +583,40 @@ func TestAnIssueTheRuntimeCannotSayOfKeepsItsNames(t *testing.T) {
 	}
 	if got := renameTables(t, logged.String())["issues"]; got != (renameTableTally{written: 1, left: 2}) {
 		t.Errorf("issues line = %+v, want one written and the two kept left", got)
+	}
+}
+
+// At boot the pass keeps an issue whose volume the runtime keeps for the issue's next pod, though
+// the runtime answers no Sandbox and no pod of it. That is how the Kubernetes runtime answers the
+// Sandbox an idle release kept under keep_volume (sandbox.Runtime.IssueSandbox), and the next pod
+// mounts that volume with the workspace directory under the old name. The kept line says why.
+// Control: the issue the runtime holds nothing of and keeps no volume of is written; with bootKeep
+// not asking the runtime about the volume, the issue whose volume it keeps is written too.
+func TestABootKeepsAnIssueWhoseVolumeTheRuntimeKeeps(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	seedRenameRecords(t, pool, "LEGION", renameSeed{key: "LEGION-1", repo: renameFrom}, renameSeed{key: "LEGION-2", repo: renameFrom})
+	var logged syncBuffer
+	w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: transferredRepositories(),
+		log: slog.New(slog.NewJSONHandler(&logged, nil))}
+	rt := presenceRuntime{Runtime: fake.NewRuntime()}
+	// LEGION-1's Sandbox and its volume were made an hour ago, at its first pod.
+	rt.ScriptKeptVolume("LEGION-1", time.Now().Add(-time.Hour))
+	w.renameAtBoot(context.Background(), rt)
+
+	for key, repo := range map[string]string{"LEGION-1": renameFrom, "LEGION-2": renameTo} {
+		if names := storedRepositoryNames(t, pool, key); !namedAll(names, repo) {
+			t.Errorf("%s's stored names = %v, want them on %s", key, names, repo)
+		}
+	}
+	reasons := map[string]string{}
+	for _, line := range renameLines(t, logged.String(), renameKeptLine) {
+		reasons[line.Issue] = line.Reason
+	}
+	if want := map[string]string{"LEGION-1": renameKeptVolume}; !reflect.DeepEqual(reasons, want) {
+		t.Errorf("kept lines = %v, want %v", reasons, want)
+	}
+	if got := renameTables(t, logged.String())["issues"]; got != (renameTableTally{written: 1, left: 1}) {
+		t.Errorf("issues line = %+v, want one written and the kept one left", got)
 	}
 }
 

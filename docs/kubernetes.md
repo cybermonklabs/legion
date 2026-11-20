@@ -6428,6 +6428,7 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
   After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
   A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
   The next launch removes the record before it writes the first Secret again.
+  The one-time rename pass of `repository_renames` leaves such an issue on its old name until no kept volume is left, because the next pod finds its workspace on the volume under that name, and the pass at the issue's close or a later boot writes the new name.
 
 - The relabel of the Sandbox for the issue's new tree (`ensureSandbox`).
 

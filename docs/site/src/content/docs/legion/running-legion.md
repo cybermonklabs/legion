@@ -595,8 +595,12 @@ What each part is for:
   Both names are compared without case, wherever the daemon compares a repository name. The
   daemon also writes each pair's `to` over its `from` in its stored records, once: at boot, for
   every issue that has no live pod then (under tmux, no workspace under the old name), and when an
-  issue's pod ends, for that issue. It writes a pair only once GitHub shows the transfer, both role
-  Apps installed on the `to` and neither on the `from`, and writes the `to` as GitHub spells it;
+  issue's pod ends, for that issue. Under `runtime.kubernetes.sandbox.microvm.keep_volume: true`,
+  an idle release keeps the issue's Sandbox and its volume for the issue's next pod. That pod
+  mounts the volume, and the workspace on it is under the old name. So such an issue keeps its old
+  name until no kept volume is left. The pass at the issue's close, or a later boot, writes it then.
+  The daemon writes a pair only once GitHub shows the transfer, both role Apps installed on the
+  `to` and neither on the `from`, and writes the `to` as GitHub spells it;
   until then it leaves the pair's records as they are and logs one `rename pass: left …` line, so a
   pair may still be configured before the transfer. Each run logs one `rename pass: …` line per
   table, with the rows it wrote, the rows whose write failed and the rows still `left` on each
