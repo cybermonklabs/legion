@@ -257,16 +257,17 @@ export function IssueMarginPanel({
     )
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
-  // Three reads Details makes beyond the issue - the titles of the issues this one waits on, what
-  // waits on it, and its links on GitHub - are made only while the drawer is open, so a load that
-  // leaves it shut costs no request for them.
+  // Four reads Details makes beyond the issue - the titles of the issues this one waits on, what
+  // waits on it, its links on GitHub, and what references it - are made only while the drawer is
+  // open, so a load that leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
-  // A closed section keeps its rows, hidden (`PropertySection`), and each of those three reads is
-  // of a row in Development - a link reads GitHub as it is drawn - so each is made only while
-  // Development is open too: a reader who keeps the section closed costs none of the three, nor
-  // any of them again on an event. The section's other rows make their own reads, as they do
-  // while Details itself is closed.
+  // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
+  // only while its own section is open too - the first three are of rows in Development, where a
+  // link reads GitHub as it is drawn, and the fourth is the References row's list: a reader who
+  // keeps a section closed costs none of its reads, nor any of them again on an event. The
+  // section's other rows make their own reads, as they do while Details itself is closed.
   const readingDevelopment = reading && sections.isOpen("development");
+  const readingReferences = reading && sections.isOpen("references");
   const blockers = issue.blocked_by ?? [];
   const blockerTitles = useQuery({
     ...referenceTargetsQuery(blockers.map((key) => buildDispatchReference({ key, kind: "issue" }))),
@@ -401,9 +402,13 @@ export function IssueMarginPanel({
   // heading of a section the reader had already left. An element that still takes a press as the
   // focus leaves it was left by the reader, so it is forgotten. The elements a close takes the
   // focus from stay noted: a control a close disables takes no press as Chromium blurs it, and
-  // React sends no `onBlur` for an element it takes off the page.
+  // React sends no `onBlur` for an element it takes off the page. A switch to another window or
+  // tab blurs the control too, but leaves it the document's active element, where the focus comes
+  // back on return, so a blur that leaves the element active forgets nothing.
   const forgetLeftDevelopmentFocus: FocusEventHandler<HTMLElement> = (event) => {
-    if (usableControl(event.target)) developmentFocus.current = null;
+    if (event.target !== document.activeElement && usableControl(event.target)) {
+      developmentFocus.current = null;
+    }
   };
   useEffect(() => {
     // In the capture phase of the document, so it runs before the section's `onFocus`, which
@@ -782,7 +787,7 @@ export function IssueMarginPanel({
               References of an open Details. A closed section keeps its rows on the page, hidden
               (`PropertySection`), as a closed Details keeps the panel (`slots/details.tsx`), and
               either would keep the list's read live with them. */}
-          {referencesOpen && reading && sections.isOpen("references") ? (
+          {referencesOpen && readingReferences ? (
             <ReferencedBy
               className="w-full"
               reference={issueReference}

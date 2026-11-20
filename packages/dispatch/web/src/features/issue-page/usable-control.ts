@@ -72,7 +72,7 @@ export function firstUsable(
 }
 
 /** A row's first control that takes a press, in the order the row draws them. */
-export function firstUsableIn(container: ParentNode | null | undefined): HTMLElement | undefined {
+export function firstUsableIn(container: ParentNode | null): HTMLElement | undefined {
   return firstUsable(
     ...(container?.querySelectorAll<HTMLElement>("input, textarea, select, button, a[href]") ?? [])
   );

@@ -83,6 +83,13 @@ const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 /** The fixture's issue, closed. */
 const closedIssue: IssueDetails = { ...issue, closed_at: "2026-09-10T00:00:00Z", status: "done" };
 
+/** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
+const OPEN_DRAWER: MarginDrawer = {
+  open: true,
+  setOpen: () => undefined,
+  setPage: () => undefined,
+};
+
 /** The page's words the labels control, the components picker and the Repository row's text
  *  control are named from inside `NoTooltips` (`labelsControlName`, `componentsControlName`,
  *  `repoTextControlName`). */
@@ -563,7 +570,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
     ).length;
   const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
   window.localStorage.setItem(kept, "development");
-  const shut: MarginDrawer = { open: false, setOpen: () => undefined, setPage: () => undefined };
+  const shut: MarginDrawer = { ...OPEN_DRAWER, open: false };
   const { redraw, unmount } = renderDetails(undefined, shut);
 
   try {
@@ -571,7 +578,7 @@ test("Details open with Development closed reads no GitHub link, title or Blocks
       name: MARGIN_SECTION_NAMES.development,
     });
     await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
-    redraw({ ...shut, open: true });
+    redraw(OPEN_DRAWER);
     // The open drawer's reads start in the commit that opens it: its effects run here.
     await act(async () => {});
     expect(
@@ -955,8 +962,7 @@ test("Details' Blocks is read again when another issue starts waiting on this on
     getReferences.mock.calls.filter(
       ([to, options]) => to === reference && options?.kind === "blocked_by"
     ).length;
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await waitFor(() => expect(blocksReads()).toBe(1));
@@ -1032,8 +1038,7 @@ test("Details' Blocks says nothing while its read is out, and None once it answe
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const answer = Promise.withResolvers<GraphReferences>();
   const getReferences = spyOn(api, "getReferences").mockImplementation(() => answer.promise);
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await waitFor(() =>
@@ -1078,8 +1083,7 @@ test("Retry keeps the focus while the read it sent again is out, and a second pr
   });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
   const retried = Promise.withResolvers<ReferenceTargets>();
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const stopBlurring = emulateChromiumFocusFixup();
   const retryOfTitles = () =>
     within(detailsRow(PROPERTY_LABELS.blocked_by)).queryByRole("button", {
@@ -1140,8 +1144,7 @@ test("a read that fails again in the same words is said again, while Retry keeps
   });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValueOnce({ targets: [] });
   const retried = Promise.withResolvers<ReferenceTargets>();
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
@@ -1203,8 +1206,7 @@ test("a read that failed on its first load keeps its Retry, with the focus, whil
   const getReferences = spyOn(api, "getReferences").mockRejectedValueOnce(
     new ApiError(500, { code: "INTERNAL", error: "read failed" })
   );
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
   const stopBlurring = emulateChromiumFocusFixup();
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
@@ -1309,8 +1311,7 @@ test("Blocks hands the focus of its Retry to its None when the read answers with
       node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
     })
     .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
   try {
@@ -1346,8 +1347,7 @@ test("Blocks says a read that fails again in the same words again, while its Ret
     })
     .mockRejectedValueOnce(new ApiError(500, { code: "INTERNAL", error: "read failed" }));
   const retried = Promise.withResolvers<GraphReferences>();
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
   const stopBlurring = emulateChromiumFocusFixup();
   const blocksRow = () => within(detailsRow(PROPERTY_LABELS.blocks));
 
@@ -1405,8 +1405,7 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
     new ApiError(500, { code: "INTERNAL", error: "read failed" })
   );
   const answered = Promise.withResolvers<ReferenceTargets>();
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
   try {
@@ -1454,8 +1453,7 @@ test("on a closed issue, the titles' Retry hands its focus to the first issue th
     new ApiError(500, { code: "INTERNAL", error: "read failed" })
   );
   const answered = Promise.withResolvers<ReferenceTargets>();
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
   try {
@@ -1505,8 +1503,7 @@ test("while the Blocked by editor is open, the titles' Retry hands its focus to 
   const titles = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(
     new ApiError(500, { code: "INTERNAL", error: "read failed" })
   );
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { queryClient, unmount } = renderDetails(undefined, drawer);
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
   const blockedBy = () => within(detailsRow(PROPERTY_LABELS.blocked_by));
 
   try {
@@ -1573,8 +1570,7 @@ test("Show all gives the focus to the first entry it opens", async () => {
     })),
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
@@ -1616,8 +1612,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     const toggle = await screen.findByRole("button", { name: "Referenced by (3)" });
@@ -1659,8 +1654,7 @@ test("closing References or Details takes an open Referenced by list, and its re
     edges: [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { queryClient, redraw, unmount } = renderDetails(undefined, drawer);
+  const { queryClient, redraw, unmount } = renderDetails(undefined, OPEN_DRAWER);
   // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
   const listReaders = () =>
     queryClient
@@ -1685,14 +1679,14 @@ test("closing References or Details takes an open Referenced by list, and its re
       "References opened again without the Referenced by list the reader left open"
     ).toBeInTheDocument();
 
-    redraw({ ...drawer, open: false });
+    redraw({ ...OPEN_DRAWER, open: false });
     expect(
       screen.queryByRole("region", { name: "Referenced by" }),
       "a closed Details still draws the Referenced by list"
     ).not.toBeInTheDocument();
     expect(listReaders(), "a closed Details still reads what references the issue").toBe(0);
 
-    redraw(drawer);
+    redraw(OPEN_DRAWER);
     expect(
       await screen.findByRole("region", { name: "Referenced by" }),
       "Details opened again without the Referenced by list the reader left open"
@@ -2624,8 +2618,7 @@ test("Add lists Repository on an empty repository row and presses None, which op
     parent: "CORE-2",
     route: "role:legion-controller-core",
   });
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -2698,8 +2691,7 @@ test("Add lists Repository on a row that inherits its repository and presses its
     repo: null,
     resolved_repo: "acme/web",
   });
-  const drawer: MarginDrawer = { open: true, setOpen: () => undefined, setPage: () => undefined };
-  const { unmount } = renderDetails(undefined, drawer);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
     await screen.findByRole("link", { name: "CORE-3" });
@@ -3595,7 +3587,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
     const empty = renderDetails();
     await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
     const none = document.querySelector(`[${DETAILS_ROW_ATTRIBUTE}="parent"]`);
-    expect(firstUsableIn(none) ?? null).toHaveTextContent(CONTROL_LABELS.set_parent);
+    expect(firstUsableIn(none)).toHaveTextContent(CONTROL_LABELS.set_parent);
     expect(none).toHaveTextContent(CONTROL_LABELS.none);
     empty.unmount();
 
@@ -3604,7 +3596,7 @@ test("the Parent row's first control opens the parent's editor, before the paren
     const link = await screen.findByRole("link", { name: "CORE-2" });
     const row = link.closest(`[${DETAILS_ROW_ATTRIBUTE}="parent"]`);
     expect(row, "the parent's link is outside the Parent row").not.toBeNull();
-    const control = firstUsableIn(row) ?? null;
+    const control = firstUsableIn(row);
     expect(control).toHaveTextContent(CONTROL_LABELS.edit_parent);
     expect(
       (control?.compareDocumentPosition(link) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -3682,7 +3674,7 @@ test("Details clears the parent with an empty editor save", async () => {
     // The row's first control is the one the header's Set parent issue presses.
     await waitFor(() =>
       expect(
-        firstUsableIn(detailsRow(PROPERTY_LABELS.parent)) ?? null,
+        firstUsableIn(detailsRow(PROPERTY_LABELS.parent)),
         "the Parent row still offers to edit a parent the issue no longer has"
       ).toHaveTextContent(CONTROL_LABELS.set_parent)
     );
@@ -4149,7 +4141,7 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
     const control = await screen.findByRole("button", { name: "Messages default to no route" });
     act(() => control.focus());
     // As a press on plain text does: the focus leaves the control for the body.
-    act(() => (document.activeElement as HTMLElement).blur());
+    act(() => control.blur());
     expect(document.activeElement, "the blur left the focus on the route's control").toBe(
       document.body
     );
@@ -4161,6 +4153,42 @@ test("a close made elsewhere leaves the focus on the body once the reader left t
       document.activeElement,
       "the reader had left the route's control, and the close moved the focus to Development's heading"
     ).toBe(document.body);
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// A switch to another window or tab blurs the route's control but leaves it the document's
+// active element, where the focus comes back on return, so the panel still keeps it, and a close
+// made elsewhere meanwhile hands its focus to Development's heading as it would with the reader
+// still on the page.
+test("a window switch keeps the route's control noted, and a close made elsewhere then hands its focus to Development's heading", async () => {
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const control = await screen.findByRole("button", { name: "Messages default to no route" });
+    act(() => control.focus());
+    // As a switch to another window does: the control hears the focus leave (`focusout` is what
+    // React's `onBlur` listens to) and stays the document's active element.
+    act(() => {
+      control.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+    });
+    expect(
+      document.activeElement,
+      "the window switch moved the focus off the route's control"
+    ).toBe(control);
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() =>
+      expect(control, "the close left the route's control enabled").toBeDisabled()
+    );
+    expect(
+      document.activeElement,
+      "the reader only switched windows, and the close did not move the focus to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
   } finally {
     stopBlurring();
     unmount();
