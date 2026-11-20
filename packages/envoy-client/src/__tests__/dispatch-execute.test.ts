@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
@@ -50,7 +50,6 @@ import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
 const makeDirectory = temporaryDirectories("dispatch-execute");
-
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

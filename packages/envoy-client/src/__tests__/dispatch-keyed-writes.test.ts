@@ -1031,10 +1031,11 @@ describe("DispatchClient's writes", () => {
     expect(error.message).toContain("may or may not have taken effect");
   });
 
-  // F4 (the review of 215510405b): once an attempt may have landed, only an answer about the
-  // write's key settles it — a 2xx, or a refusal Dispatch's keyed layer judged (the key echoed
-  // back). A final answer nothing judged for the key says nothing of the earlier attempt, so the
-  // write is unsettled, carrying its key, never a refusal that reads as nothing written.
+  // F4 (the review of 215510405b): once an attempt may have landed, only a 2xx read whole or a
+  // refusal Dispatch decided settles it. A page something in Dispatch's place wrote, or a refusal
+  // Dispatch's auth made before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`), says nothing of
+  // the earlier attempt, so the write is unsettled, carrying its key, never a refusal that reads as
+  // nothing written.
   const unjudged: readonly (readonly [string, () => Response, number])[] = [
     ["a gateway's 403 page", () => page(403, "Forbidden"), 403],
     ["a gateway's 404 page", () => page(404, "Not Found"), 404],
@@ -1096,7 +1097,6 @@ describe("DispatchClient's writes", () => {
       sent[0]?.headers["Idempotency-Key"] as string
     );
   });
-
 
   test.each(unjudged)("%s with nothing landed stands as the refusal", async (_, answer, status) => {
     const { fetchImpl, sent } = scripted([answer()], { echo: false });
@@ -1475,7 +1475,6 @@ describe("DispatchClient's writes", () => {
     expect(pauses).toEqual([3_000]);
   });
 
-
   // A credential refused for good (a sign-in its issuer ended) ends the write at once, in its own
   // words: no presentation after it can succeed, and nothing was sent.
   test("a credential refused for good ends the write at once with its refusal", async () => {
@@ -1741,7 +1740,6 @@ describe("DispatchClient's writes", () => {
 
     expect(sent).toHaveLength(2);
   });
-
 
   // The client's 60 s deadline counts from when it was made, so a write that begins late in the
   // client's life asks no later than 55 s after that, not 55 s after its own first attempt.

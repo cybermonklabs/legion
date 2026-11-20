@@ -662,7 +662,7 @@ async function drive(script: readonly Kind[]): Promise<{ run: Run; error?: unkno
     stale: () => {},
     secret: () => "live",
   };
-  const fetchImpl = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+  const fetchImpl = async (_input: RequestInfo | URL, init: RequestInit = {}) => {
     const headers = (init.headers ?? {}) as Record<string, string>;
     const key = headers["Idempotency-Key"];
     run.keys.push(key);
@@ -818,7 +818,6 @@ const STATE_PREFIXES: readonly (readonly Kind[])[] = [
 
 /** Endings that say which state the write was in when they came. */
 const STATE_PROBES: readonly Kind[] = [kind("401 auth"), kind("302 redirect"), kind("deadline")];
-
 
 test("every (state, event) pair goes as the rule says", async () => {
   const findings = new Set<string>();

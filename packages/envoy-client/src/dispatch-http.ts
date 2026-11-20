@@ -512,15 +512,6 @@ function retryAfterMs(response: Response): number {
   return Number.isNaN(at) ? 0 : Math.max(0, at - Date.now());
 }
 
-/**
- * A call's `Idempotency-Key` when `method` writes (POST or PATCH): the caller's own, else one
- * minted for this call, which every attempt and every retry of the call then carries. Undefined
- * for a read, a PUT or a DELETE, which carry none.
- */
-function writeKey(method: string, callerKey: string | undefined): string | undefined {
-  return method === "POST" || method === "PATCH" ? (callerKey ?? crypto.randomUUID()) : undefined;
-}
-
 /** A request body encoded once, so every attempt of a write sends the bytes the first one did. */
 interface EncodedBody {
   readonly content: string | Uint8Array<ArrayBuffer>;
@@ -2507,9 +2498,7 @@ export class DispatchClient {
       own = new Error(
         answer.notJson
           ? `${request} answered ${status} with ${bodyForText(answer.text, this.#sent.with(this.token), "JSON")}, though every Dispatch write answers JSON, so something in Dispatch's place answered`
-          : event === "foreign-2xx"
-            ? `${request} answered ${status} without carrying back its ${IDEMPOTENCY_KEY_HEADER}, though this Dispatch answers every keyed write with it, so something in Dispatch's place answered`
-            : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
+          : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
       );
     } else if (answer !== undefined) {
       own =
@@ -2546,7 +2535,6 @@ export class DispatchClient {
     }
     return new DispatchWriteUnsettledError(last, progress.sent, write.key, unanswered);
   }
-
 
   #url(path: readonly string[], query?: object): string {
     const url = new URL(
