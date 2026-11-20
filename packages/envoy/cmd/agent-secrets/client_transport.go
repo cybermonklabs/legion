@@ -78,21 +78,41 @@ func callWords(base brokeraddr.Address, callURL, route string) string {
 // withoutTypedID is err, the failure of a call whose path holds an id the person typed, with that
 // id left out of the URL it prints: route is the call's path with the id spelled as
 // `(the machine id, not printed)`. Only a call that did not complete prints its URL
-// (unreachableError, cutOffError); a broker's refusal prints none, and every other error is err.
-// The result is of err's own type and unwraps as err does, so errors.Is and errors.As still
-// classify it, and retryable still reads it.
+// (unreachableError, cutOffError, the routed failures); a broker's refusal prints none, and an
+// error whose chain holds no routed failure is err. The routed failure is found wherever err's
+// chain holds it (errors.As). Where err is that failure, the result is of err's own type with the
+// route set, so errors.Is and errors.As still classify it, and retryable still reads it. Where a
+// layer wraps it, that layer's text already holds the URL, so the result fails closed: it prints
+// the failure's own words with the route set, in place of every layer's, and still unwraps to err.
 func withoutTypedID(err error, route string) error {
-	switch failed := err.(type) {
-	case *unreachableError:
-		typed := *failed
-		typed.route = route
-		return &typed
-	case *cutOffError:
-		typed := *failed
-		typed.route = route
-		return &typed
+	var failed routed
+	if !errors.As(err, &failed) {
+		return err
 	}
-	return err
+	typed := failed.withRoute(route)
+	if error(failed) == err {
+		return typed
+	}
+	return redact.Masked(err, typed.Error())
+}
+
+// routed is a failure that prints its call's URL, which withRoute answers as a copy whose route,
+// the call's path with the id a person typed left out, is route.
+type routed interface {
+	error
+	withRoute(route string) error
+}
+
+func (e *unreachableError) withRoute(route string) error {
+	typed := *e
+	typed.route = route
+	return &typed
+}
+
+func (e *cutOffError) withRoute(route string) error {
+	typed := *e
+	typed.route = route
+	return &typed
 }
 
 // unreachable classifies a failed HTTP exchange, sending its reader to the layer that failed.
