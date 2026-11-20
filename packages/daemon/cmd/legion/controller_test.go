@@ -52,12 +52,22 @@ type memoryController struct {
 	minted [][]byte
 }
 
-func (m *memoryController) MintController(_ context.Context, _ string, hash []byte) (uint64, error) {
+func (m *memoryController) mint(hash []byte) uint64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.record = controller.Record{Generation: m.record.Generation + 1, CapabilityHash: hash}
 	m.minted = append(m.minted, hash)
-	return m.record.Generation, nil
+	return m.record.Generation
+}
+
+// MintControllerThen is the in-memory mint's committed continuation.
+func (m *memoryController) MintControllerThen(_ context.Context, _ string, hash []byte, onCommit func(generation uint64)) (uint64, error) {
+	if onCommit == nil {
+		return 0, errors.New("a controller mint needs its commit hook")
+	}
+	generation := m.mint(hash)
+	onCommit(generation)
+	return generation, nil
 }
 
 func (m *memoryController) Controller(context.Context, string) (controller.Record, bool, error) {

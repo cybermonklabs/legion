@@ -18,13 +18,35 @@ const controllerSelect = `select generation, capability_hash, session, secret_ha
 // moves on by one (the first mint is 1), and whatever session registered with the capability it
 // replaces is no longer registered.
 func (s *Store) MintController(ctx context.Context, project string, capabilityHash []byte) (uint64, error) {
+	return s.mintController(ctx, project, capabilityHash, nil)
+}
+
+// MintControllerThen records a new controller capability and runs onCommit only once its
+// transaction committed, with the generation it recorded. onCommit is required. Like every commit
+// hook, it can run after this method returns ErrCommitOutcomeUnknown, and it joins an open
+// transaction on the store's own pool.
+func (s *Store) MintControllerThen(ctx context.Context, project string, capabilityHash []byte, onCommit func(generation uint64)) (uint64, error) {
+	if onCommit == nil {
+		return 0, errors.New("a controller mint needs its commit hook")
+	}
+	return s.mintController(ctx, project, capabilityHash, onCommit)
+}
+
+func (s *Store) mintController(ctx context.Context, project string, capabilityHash []byte, onCommit func(generation uint64)) (uint64, error) {
 	var generation uint64
 	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		return tx.QueryRow(ctx, `insert into controllers (project, capability_hash, generation)
+		if err := tx.QueryRow(ctx, `insert into controllers (project, capability_hash, generation)
 			values ($1, $2, 1)
 			on conflict (project) do update set capability_hash = excluded.capability_hash,
 				generation = controllers.generation + 1, session = '', secret_hash = null, registered_at = null
-			returning generation`, project, capabilityHash).Scan(&generation)
+			returning generation`, project, capabilityHash).Scan(&generation); err != nil {
+			return err
+		}
+		if onCommit != nil {
+			minted := generation
+			OnCommit(ctx, func() { onCommit(minted) })
+		}
+		return nil
 	})
 	if err != nil {
 		return 0, fmt.Errorf("record the controller capability for %s: %w", project, err)

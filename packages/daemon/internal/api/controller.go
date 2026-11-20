@@ -10,22 +10,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // ControllerStore is the project's controller record: the capability `legion controller start`
 // was last issued, and the session that registered with it (`store.Store`).
 type ControllerStore interface {
-	MintController(ctx context.Context, project string, capabilityHash []byte) (uint64, error)
+	MintControllerThen(ctx context.Context, project string, capabilityHash []byte, onCommit func(generation uint64)) (uint64, error)
 	Controller(ctx context.Context, project string) (controller.Record, bool, error)
 	RegisterController(ctx context.Context, project string, generation uint64, session string, secretHash []byte, at time.Time, pluginContract int) (bool, error)
 }
@@ -160,18 +157,10 @@ func (s *server) controllerSecret(w http.ResponseWriter, r *http.Request) {
 	secret := rand.Text()
 	s.controllerMu.Lock()
 	defer s.controllerMu.Unlock()
-	// The revocation of the grants the mint replaces is the commit's hook, fenced by the
-	// generation it confirms: a mint whose reply is lost and that the store says committed still
-	// revokes them once it says so, and a confirmation that arrives after a newer mint revokes
-	// nothing of that mint's (credential.Grants.RevokeControllersBelow).
-	if err := store.Transact(context.WithoutCancel(r.Context()), s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		generation, err := s.controller.MintController(ctx, s.project, capabilityHash(secret))
-		if err != nil {
-			return err
-		}
-		store.OnCommit(ctx, func() { s.revokeReplacedControllers(generation) })
-		return nil
-	}); err != nil {
+	// The controller store runs the revocation as the mint's commit hook, fenced by the generation
+	// it confirms: a lost reply whose commit landed still revokes replaced grants once the store
+	// says so, and an older confirmation leaves a newer mint's grants standing.
+	if _, err := s.controller.MintControllerThen(context.WithoutCancel(r.Context()), s.project, capabilityHash(secret), s.revokeReplacedControllers); err != nil {
 		s.log.Error("api: mint a controller capability", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("controller secret failed: the daemon could not record it"))
 		return
@@ -378,16 +367,8 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 		s.claimFailure(w, "register", launch.Claim, err)
 		return
 	}
-	var generation uint64
-	if err := store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		if generation, err = s.controller.MintController(ctx, s.project, controller.UnheldCapability()); err != nil {
-			return err
-		}
-		minted := generation
-		store.OnCommit(ctx, func() { s.revokeReplacedControllers(minted) })
-		return nil
-	}); err != nil {
+	generation, err := s.controller.MintControllerThen(ctx, s.project, controller.UnheldCapability(), s.revokeReplacedControllers)
+	if err != nil {
 		s.logFailure("api: record the launched controller's capability", "claim", launch.Claim, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not record its controller"))
 		return
