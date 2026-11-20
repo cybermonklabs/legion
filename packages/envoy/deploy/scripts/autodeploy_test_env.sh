@@ -352,17 +352,20 @@ left=$(find "$compose" -maxdepth 1 -name '.env.stage.*' | head -n 1)
 
 # Outside that write no trap is set, so a deployer stopped by TERM while it waits out its poll stops
 # at once, as one with no trap does, where a trap set for the whole run made bash wait for the
-# running `sleep` to end first (60 s here, POLL's 300 s by default). Every process the row starts is
-# stopped by its own process ID.
+# running `sleep` to end first. The poll is an hour, so a deployer that waits out its sleep stops
+# after an hour and one that does not stops at once; the row's bound, 120 s of the clock (SECONDS),
+# guards only against never, so the load of the box cannot move a run across it. Every process the
+# row starts is stopped by its own process ID.
 # The deploy before it lands new-image, so the poll's pass finds nothing to deploy and sleeps.
 fresh_env
 output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_once) || true
 [[ "$output" == *"deployed new-image ("* ]] ||
   fail 'UNKNOWN: the deploy before the poll did not land, so the stop was not judged'
-POLL=60 AUTODEPLOY_TEST_SLEEP_REAL=1 run_deployer >"$root/poll.out" 2>&1 &
+POLL=3600 AUTODEPLOY_TEST_SLEEP_REAL=1 run_deployer >"$root/poll.out" 2>&1 &
 job=$!
 poll_sleep=
-for _ in $(seq 300); do
+deadline=$((SECONDS + 30))
+while ((SECONDS < deadline)); do
   # The deployer is the background job itself or its one child, and its poll is its `sleep` child.
   for pid in "$job" $(pgrep -P "$job" || true); do
     poll_sleep=$(pgrep -P "$pid" -x sleep) && break 2
@@ -370,13 +373,23 @@ for _ in $(seq 300); do
   sleep 0.1
 done
 if [[ -z "$poll_sleep" ]]; then
+  # The deployer is the job's child: stop it, and anything it started, before the job itself.
+  for pid in $(pgrep -P "$job" || true); do
+    for child in $(pgrep -P "$pid" || true); do
+      kill "$child" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+  done
   kill "$job" 2>/dev/null || true
+  wait "$job" || true
   fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged: $(<"$root/poll.out")"
 fi
 deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')
 kill -TERM "$deployer"
 stopped=false
-for _ in $(seq 50); do
+termed=$SECONDS
+deadline=$((SECONDS + 120))
+while ((SECONDS <= deadline)); do
   state=$(ps -o stat= -p "$deployer") || { stopped=true; break; }
   [[ ${state// /} != Z* ]] || { stopped=true; break; }
   sleep 0.1
@@ -384,7 +397,7 @@ done
 $stopped || kill -KILL "$deployer" 2>/dev/null || true
 kill "$poll_sleep" 2>/dev/null || true
 wait "$job" || true
-$stopped || fail 'a deployer stopped by TERM while it waited out its poll did not stop within 5 s'
+$stopped || fail "a deployer stopped by TERM while it waited out its hour's poll was still running $((SECONDS - termed)) s later"
 
 # With the schema already recorded for the serving tag, the deploy's first write of the env file is
 # its tag's, after the new image serves; BACKUPS on another filesystem than the env file changes
