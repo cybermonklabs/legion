@@ -328,8 +328,6 @@ jobs:
       - name: Browser-test dispatch dashboard against two server processes
         # why: .github/ci-notes/dispatch-browser.md#what-the-two-process-dashboard-step-runs-against
         # 202 s x 1.15 = 232 s -> 4 min.
-        # multiprocess specs through the round-robin proxy.
-        # 202 s x 1.15 = 232 s -> 4 min.
         timeout-minutes: 4
         run: |
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
