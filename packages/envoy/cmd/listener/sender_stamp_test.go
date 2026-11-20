@@ -50,14 +50,14 @@ func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
 	// gate is taken here, before the freeze.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestTheSenderStampReadsTheInterestRecordBeforeTheSessionEntry(t *testing.T)
 	registry.EndWatch(endCtx)
 	sessions.EndWatch(endCtx)
 	cancel()
-	writer, err := store.Open(setupPublishTestClient(t).Conn, store.WithReplicas(1))
+	writer, err := store.Open(t.Context(), setupPublishTestClient(t).Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the writing listener's registry: %v", err)
 	}
