@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // errCutOff is every statement of a process the test has cut off from Postgres.
@@ -98,7 +99,7 @@ func startNATSCut(t *testing.T, natsURL string, latency time.Duration) (*natsCut
 	if err != nil {
 		t.Fatalf("parse the NATS URL: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the NATS relay: %v", err)
 	}

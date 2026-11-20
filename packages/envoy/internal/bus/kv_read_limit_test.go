@@ -3,6 +3,8 @@ package bus
 import (
 	"context"
 	"errors"
+	"slices"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,8 +14,9 @@ import (
 )
 
 // countedReads is ctx with the first read limit at the caller's whole wait (firstReadLimitKey),
-// for a row that counts a start's requests: a read a loaded machine answers past firstReadLimit is
-// then waited for rather than abandoned and read again, so the count is the requests' own.
+// for a row that counts a start's requests: a read, a create or an update a loaded machine answers
+// past firstReadLimit is then waited for rather than abandoned and sent or read again, so the count
+// is the requests' own.
 func countedReads(ctx context.Context) context.Context {
 	return context.WithValue(ctx, firstReadLimitKey{}, RequestTimeout)
 }
@@ -307,5 +310,89 @@ func TestTheStepsOfOneStartShareOneRunOfReads(t *testing.T) {
 	}
 	if readLimitOf(ctx) != readLimitOf(ctx) {
 		t.Fatal("two reads of one context's run of reads found two runs")
+	}
+}
+
+// slowWritesJetStream applies and answers each stream update writeDelay after its send, while it
+// answers every read of the stream, and of the account its metadata leader answers
+// (metadataLeader), at once, as a server whose writes wait on its JetStream API queue and its
+// metadata group's commit does while its info queue answers reads (writeLimitOf). No server is
+// behind it. sent is when each update went out and answers when each read of the stream after
+// began was answered, measured from began.
+type slowWritesJetStream struct {
+	nats.JetStreamContext
+	began   time.Time
+	mu      sync.Mutex
+	cfg     nats.StreamConfig
+	sent    []time.Duration
+	answers []time.Duration
+}
+
+const writeDelay = 2 * time.Second
+
+func (js *slowWritesJetStream) StreamInfo(string, ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	if !js.began.IsZero() {
+		js.answers = append(js.answers, time.Since(js.began))
+	}
+	return &nats.StreamInfo{Config: js.cfg}, nil
+}
+
+func (js *slowWritesJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
+}
+
+func (js *slowWritesJetStream) UpdateStream(cfg *nats.StreamConfig, _ ...nats.JSOpt) (*nats.StreamInfo, error) {
+	js.mu.Lock()
+	js.sent = append(js.sent, time.Since(js.began))
+	js.mu.Unlock()
+	time.Sleep(writeDelay)
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	js.cfg = *cfg
+	return &nats.StreamInfo{Config: js.cfg}, nil
+}
+
+// A write the server answers later than the first limit, beside reads it answers at once, is sent
+// again only after its own limit, which doubles at each send the limit cuts, and not at every read
+// limit: a read's answer sets the run of reads and never the run of writes (writeLimitOf). Here
+// each update lands, and is answered, 2 s after its send: the first send is cut at 630 ms, read
+// back and sent again under a limit of 1.26 s, and that send is cut and sent again under 2.52 s, so
+// each send comes at least the whole limit of the send before it after the read-back before that
+// send (sentInsideItsLimit, which needs no allowance for scheduling), and there are no more than
+// three. A write limit the read-back's answer set back to 630 ms sent the update at 0, 0.66, 1.31
+// and 1.97 s. The reads keep their own limit: each is answered at once, so the run of reads ends at
+// the first limit.
+func TestAWriteTheServerAnswersLaterThanItsReadsIsSentAgainOnlyAfterItsOwnLimit(t *testing.T) {
+	const stream = "KV_envoy_slow_writes_test"
+	js := &slowWritesJetStream{cfg: nats.StreamConfig{Name: stream, MaxAge: time.Minute}}
+	ctx := withReadLimit(t.Context())
+	info, _ := js.StreamInfo(stream)
+	js.mu.Lock()
+	js.began = time.Now()
+	js.mu.Unlock()
+	_, err := updateStream(ctx, js, info,
+		func(current *nats.StreamInfo) (nats.StreamConfig, bool) {
+			aged := current.Config
+			aged.MaxAge = time.Hour
+			return aged, true
+		},
+		func(again *nats.StreamInfo) bool { return again.Config.MaxAge == time.Hour })
+	if err != nil {
+		t.Fatalf("the update the server answers after %s = %v, want it landed", writeDelay, err)
+	}
+	js.mu.Lock()
+	sent, answers := slices.Clone(js.sent), slices.Clone(js.answers)
+	js.mu.Unlock()
+	t.Logf("the update the server answers after %s was sent %d times, at %v", writeDelay, len(sent), sent)
+	if i, gap, limit, inside := sentInsideItsLimit(sent, answers); inside {
+		t.Fatalf("the update was sent at %v: send %d came %s after the read before the send before it, inside that send's own limit, %s", sent, i+1, gap.Round(time.Millisecond), limit)
+	}
+	if len(sent) > 3 {
+		t.Fatalf("the update was sent %d times, at %v, want at most three: one send for each write limit, 630ms, 1.26s and 2.52s, the last of which outlasts the %s answer", len(sent), sent, writeDelay)
+	}
+	if reads := readLimitOf(ctx).limit; reads != firstReadLimit {
+		t.Fatalf("the run of reads ended at a limit of %s after reads answered at once, want %s: the writes set the reads' limit", reads, firstReadLimit)
 	}
 }

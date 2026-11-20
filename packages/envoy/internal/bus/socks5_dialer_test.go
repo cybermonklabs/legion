@@ -3,11 +3,12 @@ package bus
 import (
 	"context"
 	"errors"
-	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.
@@ -25,7 +26,7 @@ func proxiedLookup(address string) func(string) (string, bool) {
 // never answers the SOCKS5 greeting holds the dial open: the client closes it at the connect's
 // one-second deadline, not at the bus's five-second connect timeout.
 func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the silent proxy: %v", err)
 	}

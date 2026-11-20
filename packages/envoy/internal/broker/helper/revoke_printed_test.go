@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"syscall"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestARevokeThatCannotReachTheBrokerPrintsNoID: the id of a revoke ends its request URL, and for
@@ -138,23 +138,19 @@ func TestNoLineMadeFromARevokesFailurePrintsItsID(t *testing.T) {
 	}
 }
 
-// closedBroker is the address of a port nothing listens on: a connection to it is refused.
+// closedBroker is the address of a port no listener holds: a connection to it is refused. The port
+// is testport.Refused's, held bound for the test's life, so no other process can take it and
+// answer.
 func closedBroker(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := "http://" + listener.Addr().String()
-	listener.Close()
-	return address
+	return "http://" + testport.Refused(t)
 }
 
 // brokenHTTPBroker is the address of a server that answers every request with a status line HTTP
 // cannot read, so net/http's error quotes the request URL.
 func brokenHTTPBroker(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -44,14 +44,17 @@ func memberJetStream(t *testing.T, cluster *testnats.Cluster, i int) (*nats.Conn
 // has applied it: a probe over 25 fresh three-member clusters asked every member for a bucket's
 // stream the instant CreateKeyValue answered, and 67 of the 75 member reads still said "stream not
 // found", the slowest 206 ms later, including the member the create was sent through.
+//
+// Its count of lookups is atomic: a start sends each lookup on a goroutine of its own (Bounded),
+// and one it abandoned at its limit runs on beside the next.
 type behindMember struct {
 	nats.JetStreamContext
-	misses int
+	misses  int32
+	lookups atomic.Int32
 }
 
 func (b *behindMember) KeyValue(bucket string) (nats.KeyValue, error) {
-	if b.misses > 0 {
-		b.misses--
+	if b.lookups.Add(1) <= b.misses {
 		return nil, nats.ErrBucketNotFound
 	}
 	return b.JetStreamContext.KeyValue(bucket)

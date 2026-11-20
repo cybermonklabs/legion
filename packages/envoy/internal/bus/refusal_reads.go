@@ -26,12 +26,13 @@ func jsAPI(kind string, names ...string) string {
 // consumer. It is the one path for those: the client's own JetStream context is one (install,
 // ensureConnWithContext), and EnsureKeyValue, SetKeyValueMaxAge, OpenKeyValue, the stream's ensure
 // and the stream's subject read take one over the context their caller hands them. A context
-// already wrapped is returned as it is. Every other method is js's own: ConsumerNames, since its
-// list reports no error a refusal could answer; Publish and the asynchronous publishes, which the
-// bus makes for every message it stores and whose refusal they read off the same record
-// themselves, after the publish (sendStored) or as the refusal arrives (window.acknowledged); and
-// GetLastMsg, a read of one key that GetFromLeader reads the record for after the read
-// (refusedAfter). On a connection no client owns, every method sends as js does.
+// already wrapped is returned as it is. Every other method is js's own: ConsumerNames, whose list
+// reports no error a refusal could answer, so the one caller that must know of its refusal, the
+// role-lane migrate, reads that list through refusedVia itself (consumerNames); Publish and the
+// asynchronous publishes, which the bus makes for every message it stores and whose refusal they
+// read off the same record themselves, after the publish (sendStored) or as the refusal arrives
+// (window.acknowledged); and GetLastMsg, a read of one key that GetFromLeader reads the record for
+// after the read (refusedAfter). On a connection no client owns, every method sends as js does.
 func readsRefusals(conn *nats.Conn, js nats.JetStreamContext) nats.JetStreamContext {
 	if _, ok := js.(refusalReads); ok {
 		return js
@@ -79,6 +80,10 @@ func (r refusalReads) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (
 	})
 }
 
+// PurgeStream is one request, the stream's purge (nats.go@v1.55.0 jsm.go:1529-1576). nats.go reads
+// only the purge request among its options and waits its JetStream context's own wait, ten
+// seconds, whatever context it is handed, so a caller that must not wait that long bounds its wait
+// itself: a start's purge of a role lane is waited for up to its write limit (purgeRoleLane).
 func (r refusalReads) PurgeStream(stream string, opts ...nats.JSOpt) error {
 	_, err := refusedVia(r, []string{jsAPI("STREAM.PURGE", stream)}, func() (struct{}, error) {
 		return struct{}{}, r.JetStreamContext.PurgeStream(stream, opts...)

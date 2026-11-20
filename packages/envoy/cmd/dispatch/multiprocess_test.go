@@ -72,6 +72,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -2046,7 +2047,7 @@ func startNATSTap(t *testing.T, target string) *natsTap {
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the tap relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the NATS tap: %v", err)
 	}
@@ -2407,13 +2408,8 @@ func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...str
 	for _, holder := range holders {
 		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}
-	update := func(config *natsgo.StreamConfig, what string) {
-		if _, err := js.UpdateStream(config); err != nil {
-			t.Fatalf("%s the stream's agent subjects: %v", what, err)
-		}
-	}
-	update(&narrowed, "narrow")
-	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	testnats.UpdateStream(t, js, narrowed)
+	restore := sync.OnceFunc(func() { testnats.UpdateStream(t, js, capturing) })
 	t.Cleanup(restore)
 	return restore
 }

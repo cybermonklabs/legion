@@ -106,10 +106,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		// within a period, as it does every other setting this binary owns (keepStream).
 		lowered := deployedStream(t, js).Config
 		lowered.MaxConsumers = streamMaxConsumers / 2
-		down, err := js.UpdateStream(&lowered)
-		if err != nil {
-			t.Fatalf("operator lowering of the cap: %v", err)
-		}
+		down := testnats.UpdateStream(t, js, lowered)
 		if down.Config.MaxConsumers != streamMaxConsumers/2 {
 			t.Fatalf("the stream's consumer cap after the operator lowered it = %d, want %d", down.Config.MaxConsumers, streamMaxConsumers/2)
 		}
@@ -136,10 +133,7 @@ func TestAStartRaisesAnUncappedStreamAndTheKeeperPutsBackACapAnOperatorLoweredOr
 		// raise (keepPass).
 		unset := deployedStream(t, js).Config
 		unset.MaxConsumers = -1
-		off, err := js.UpdateStream(&unset)
-		if err != nil {
-			t.Fatalf("operator unsetting of the cap: %v", err)
-		}
+		off := testnats.UpdateStream(t, js, unset)
 		if off.Config.MaxConsumers != -1 {
 			t.Fatalf("the stream's consumer cap after the operator unset it = %d, want the -1 this server answers for a stream with no cap", off.Config.MaxConsumers)
 		}

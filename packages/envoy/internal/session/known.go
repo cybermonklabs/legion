@@ -304,7 +304,7 @@ func knownJetStream(conn *nats.Conn) (nats.JetStreamContext, error) {
 // The attempt asks for the bucket with one request first, waiting knownBucketOpenWait, and only a
 // bucket the server says it does not hold goes through bus.EnsureKeyValue's create. That function
 // sends a lookup the server leaves unanswered again until ctx ends or the start's hang guard
-// passes (its sentAgain), and reads a refusal only on a connection a bus.Client owns, so a user
+// passes (its readAgain), and reads a refusal only on a connection a bus.Client owns, so a user
 // whose grant does not carry the bucket would cost an attempt that whole wait rather than one
 // send; the one request costs a denied attempt what it costs, the wait, and a granted one an
 // answer. A create the server answers only at the bucket's first leader election is waited for

@@ -92,7 +92,6 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			_, uri := testnats.Start(t)
 			proxy := startRelayProxy(t, uri)
-			logs := captureBusLogs(t)
 			name := t.Name()
 			client, err := bus.ConnectOwningStream([]string{proxy.url()}, bus.WithReplicas(1), bus.WithName(name))
 			if err != nil {
@@ -100,6 +99,7 @@ func TestADrainHookLosingTheConnectionWarns(t *testing.T) {
 			}
 			t.Cleanup(client.Close)
 			watcher, consumers := watchedBucket(t, client, uri, "drain_hook_lost")
+			logs := captureBusLogs(t)
 			lose := test.lose(t, proxy, client)
 			client.AddDrainHook(func(ctx context.Context) {
 				lose()
@@ -219,7 +219,6 @@ func TestADeliveryKeepsTenSecondsOfTheListenersDrain(t *testing.T) {
 // the watchers still subscribed would leave their consumers for the server to time out.
 func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	_, uri := testnats.Start(t)
-	logs := captureBusLogs(t)
 	name := t.Name()
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(name))
 	if err != nil {
@@ -227,6 +226,7 @@ func TestAStuckDeliveryStillEndsTheKVWatchers(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	watcher, consumers := watchedBucket(t, client, uri, "drain_hook_stuck")
+	logs := captureBusLogs(t)
 	client.AddDrainHook(watcher.End)
 	started := make(chan struct{})
 	if _, err := client.SubscribeCore("notifications.role.drain-stuck", func(*natsgo.Msg) {

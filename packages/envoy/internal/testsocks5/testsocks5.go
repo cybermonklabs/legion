@@ -1,7 +1,9 @@
 // Package testsocks5 is the in-process SOCKS5 server Envoy's tests reach NATS through, as testnats
 // is the NATS they reach: one implementation of the proxy side of RFC 1928 (no authentication,
 // CONNECT only) for every suite that tests ENVOY_NATS_SOCKS5_PROXY, so the bus's proof and the
-// Dispatch settings table's agree on the protocol. It listens on loopback only and resolves nothing.
+// Dispatch settings table's agree on the protocol. It listens on this test binary's own loopback
+// address (testport.Loopback), where no client of another test binary reaches it, and resolves
+// nothing.
 package testsocks5
 
 import (
@@ -15,6 +17,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Request is one CONNECT a Server received: its address type (0x01 an IPv4 address, 0x03 a domain
@@ -24,10 +28,11 @@ type Request struct {
 	Address     string
 }
 
-// Server is a SOCKS5 server on a loopback port. Started with Start, it serves every request from
-// one target, whatever address the request names, so a name that resolves nowhere is served; started
-// with StartRefusing, it answers every request with one reply code and relays nothing. Either way it
-// records each request (Requests) and counts every connection it accepts (Accepted).
+// Server is a SOCKS5 server on a port of this test binary's own loopback address. Started with
+// Start, it serves every request from one target, whatever address the request names, so a name
+// that resolves nowhere is served; started with StartRefusing, it answers every request with one
+// reply code and relays nothing. Either way it records each request (Requests) and counts every
+// connection it accepts (Accepted).
 type Server struct {
 	// Addr is the server's host:port, the value an ENVOY_NATS_SOCKS5_PROXY names.
 	Addr string
@@ -57,7 +62,7 @@ func StartRefusing(t testing.TB, reply byte) *Server {
 
 func start(t testing.TB, server *Server) *Server {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the SOCKS5 test server: %v", err)
 	}

@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // relayProxy relays NATS connections to a server, so a test can act on the link between a client
@@ -40,11 +42,12 @@ type relayLink struct {
 	swallow        atomic.Bool
 }
 
-// startRelayProxy relays to the server uri names, from loopback. Its url is uri pointed at the
-// proxy.
+// startRelayProxy relays to the server uri names, from this test binary's own loopback address
+// (testport.Loopback), where no client of another test binary reaches it. Its url is uri pointed
+// at the proxy.
 func startRelayProxy(t *testing.T, uri string) *relayProxy {
 	t.Helper()
-	return startRelayProxyFrom(t, "127.0.0.1", uri)
+	return startRelayProxyFrom(t, testport.Loopback, uri)
 }
 
 // startRelayProxyFrom relays to the server uri names from a port it holds on host, so a test that

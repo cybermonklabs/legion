@@ -132,9 +132,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		// within a period, as it does every other setting this binary owns (keepStream).
 		lowered := capped.Config
 		lowered.MaxConsumers = streamMaxConsumers / 2
-		if _, err := js.UpdateStream(&lowered); err != nil {
-			t.Fatalf("operator lowering of the cap: %v", err)
-		}
+		testnats.UpdateStream(t, js, lowered)
 		raised := awaitKept(t, js, Stream, "the consumer cap", func(info *nats.StreamInfo) bool {
 			return info.Config.MaxConsumers == streamMaxConsumers
 		})
@@ -146,10 +144,7 @@ func TestAnUncappedStreamIsCappedOnTheHubsServerAndLeftAloneOnTheOlderOneWhereAL
 		// value the keeper reads back is the one a deployment that never set a cap leaves.
 		unset := raised.Config
 		unset.MaxConsumers = -1
-		off, err := js.UpdateStream(&unset)
-		if err != nil {
-			t.Fatalf("operator unsetting of the cap: %v", err)
-		}
+		off := testnats.UpdateStream(t, js, unset)
 		if off.Config.MaxConsumers != -1 {
 			t.Fatalf("the stream's consumer cap after the operator unset it = %d, want the -1 this server answers for a stream with no cap", off.Config.MaxConsumers)
 		}

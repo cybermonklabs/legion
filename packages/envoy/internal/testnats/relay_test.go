@@ -1,8 +1,15 @@
 package testnats
 
 import (
+	"errors"
+	"io"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // clientStream is a client's stream to the server with the operations the relay must see in it:
@@ -126,5 +133,93 @@ func TestTheRelayRefusesAStreamItCannotRead(t *testing.T) {
 				t.Fatalf("broken is %v, want an error saying %q", stream.broken, row.says)
 			}
 		})
+	}
+}
+
+// failingListener is a listener whose accepts fail, closing the connection each takes, while
+// failures lasts, as accepts fail on a process out of file descriptors; then it accepts as its own
+// listener does. accepts counts the calls of Accept.
+type failingListener struct {
+	net.Listener
+	failures atomic.Int32
+	accepts  atomic.Int32
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	l.accepts.Add(1)
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if l.failures.Add(-1) >= 0 {
+		_ = conn.Close()
+		return nil, errors.New("accept failed")
+	}
+	return conn, nil
+}
+
+// A relay whose accepts fail goes on accepting once they pass, and joins the next connection to
+// its server: a relay that stopped at the first failed accept held its port with nothing accepting
+// on it (relay.serve). Here three accepts fail; the fourth connection reaches the server. The
+// relay's Close still ends serve at once, and no accept is made after it.
+func TestARelayAcceptsAgainAfterAnAcceptFails(t *testing.T) {
+	upstream, err := testport.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = upstream.Close() })
+	listener, err := testport.Listen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failingListener{Listener: listener}
+	failing.failures.Store(3)
+	relay := newRelay(failing, func() (string, error) { return upstream.Addr().String(), nil }, false)
+	t.Cleanup(relay.Close)
+	for attempt := 1; attempt <= 3; attempt++ {
+		conn, err := net.DialTimeout("tcp", listener.Addr().String(), dialTimeout)
+		if err != nil {
+			t.Fatalf("dial %d of the relay: %v", attempt, err)
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(connectTimeout))
+		if _, err := conn.Read(make([]byte, 1)); err == nil {
+			t.Fatalf("dial %d of the relay, whose accept fails, read a byte, want the connection closed", attempt)
+		}
+		_ = conn.Close()
+	}
+	conn, err := net.DialTimeout("tcp", listener.Addr().String(), dialTimeout)
+	if err != nil {
+		t.Fatalf("dial the relay after its failed accepts: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("PING\r\n")); err != nil {
+		t.Fatalf("write through the relay: %v", err)
+	}
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		server, err := upstream.Accept()
+		if err == nil {
+			accepted <- server
+		}
+	}()
+	select {
+	case server := <-accepted:
+		defer func() { _ = server.Close() }()
+		_ = server.SetReadDeadline(time.Now().Add(connectTimeout))
+		got := make([]byte, 6)
+		if _, err := io.ReadFull(server, got); err != nil || string(got) != "PING\r\n" {
+			t.Fatalf("the server read %q (%v) through the relay, want the client's PING", got, err)
+		}
+	case <-time.After(connectTimeout):
+		t.Fatalf("the relay joined no connection to its server within %s after three failed accepts: its serve stopped at the first", connectTimeout)
+	}
+	relay.Close()
+	select {
+	case <-relay.served:
+	case <-time.After(connectTimeout):
+		t.Fatalf("the relay's serve did not end within %s of its Close", connectTimeout)
+	}
+	if calls := failing.accepts.Load(); calls > 5 {
+		t.Fatalf("the relay called Accept %d times, want at most five: four connections and the call its Close ended", calls)
 	}
 }

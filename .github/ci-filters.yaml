@@ -3092,6 +3092,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/pglisten/*'
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/stacktest/*'
+  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
@@ -3122,6 +3123,7 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/pglisten/**/*_test.go'
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
+  - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   # END generated

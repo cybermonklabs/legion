@@ -4,12 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	natsserver "github.com/nats-io/nats-server/v2/server"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Cluster is n nats-servers in this test process, routed to each other with JetStream clustered
@@ -51,7 +54,7 @@ func StartClusterConfig(t testing.TB, n int, config string) *Cluster {
 	routes := make([]string, n)
 	listeners := make([]net.Listener, n)
 	for i := range n {
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		listener, err := testport.Listen()
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
@@ -88,12 +91,12 @@ func clusterConfig(i int, routes []string) string {
 jetstream {}
 cluster {
   name: "envoy-test"
-  listen: "127.0.0.1:-1"
+  listen: %q
   advertise: %q
   no_advertise: true
   routes: [ %s ]
 }
-`, memberName(i), routes[i], strings.Join(urls, ", "))
+`, memberName(i), net.JoinHostPort(testport.Loopback, "-1"), routes[i], strings.Join(urls, ", "))
 }
 
 // memberName is member i's server_name.
@@ -133,7 +136,10 @@ func (c *Cluster) URL() string { return strings.Join(c.URLs(), ",") }
 //
 // A member that no other running member's meta group hears from within muteAfter is restarted, at
 // most muteRestarts times in one call. Each restart starts the listening, and the connectTimeout
-// wait, over for every member, since a restarted member has heard no one yet.
+// wait, over for every member, since a restarted member has heard no one yet. The line each
+// restart writes, and the failure when the wait runs out, carry every member's own view of the
+// meta group (metaViews), so a wait that fails says who heard whom and how many votes each member
+// counts as a quorum, where a count of leaders says only that none was elected.
 //
 // nats-server 2.10.29, the server these tests linked before v2.15.1, could start a member whose
 // every Raft message is dropped: its setSystemAccount started the Raft send queue's goroutine
@@ -159,7 +165,7 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 		}
 		if restarts < muteRestarts {
 			if i := c.mute(time.Since(listening)); i >= 0 {
-				t.Logf("restart cluster member %s: no other member's JetStream meta group heard from it within %s (%v)", c.Name(i), muteAfter, err)
+				t.Logf("restart cluster member %s: no other member's JetStream meta group heard from it within %s (%v; %s)", c.Name(i), muteAfter, err, c.metaViews())
 				c.Servers[i].stop()
 				c.Servers[i].launch(t)
 				restarts++
@@ -168,7 +174,7 @@ func (c *Cluster) AwaitReady(t testing.TB) {
 			}
 		}
 		if time.Since(listening) >= connectTimeout {
-			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v", connectTimeout, restarts, err)
+			t.Fatalf("JetStream was not ready within %s (%d members restarted): %v; %s", connectTimeout, restarts, err, c.metaViews())
 		}
 		time.Sleep(retryInterval)
 	}
@@ -245,6 +251,45 @@ func metaGroup(srv *natsserver.Server) *natsserver.RaftzGroup {
 		}
 	}
 	return nil
+}
+
+// metaViews is each member's own Raft view of the JetStream meta group, for AwaitReady's lines: a
+// running member's state, the leader it follows, its term, the group's size and quorum as it
+// counts them, how far it has applied what it committed, and each peer it knows with how long ago
+// it last heard from it ("never" for a peer it has not heard from since its start).
+func (c *Cluster) metaViews() string {
+	views := make([]string, len(c.Servers))
+	for i, server := range c.Servers {
+		srv := server.natsServer()
+		if srv == nil {
+			views[i] = c.Name(i) + " stopped"
+			continue
+		}
+		group := metaGroup(srv)
+		if group == nil {
+			views[i] = c.Name(i) + " has no meta group"
+			continue
+		}
+		peers := make([]string, 0, len(group.Peers))
+		for _, peer := range group.Peers {
+			heard := "never"
+			if peer.LastSeen != "" {
+				heard = peer.LastSeen + " ago"
+			}
+			peers = append(peers, peer.Name+" heard "+heard)
+		}
+		slices.Sort(peers)
+		leader := "none"
+		if peer, ok := group.Peers[group.Leader]; ok {
+			leader = peer.Name
+		} else if group.Leader != "" && group.Leader == group.ID {
+			leader = c.Name(i)
+		}
+		views[i] = fmt.Sprintf("%s %s, leader %s, term %d, size %d, quorum %d, applied %d of %d, peers %s",
+			c.Name(i), strings.ToLower(group.State), leader, group.Term, group.Size, group.QuorumNeeded,
+			group.Applied, group.Committed, strings.Join(peers, ", "))
+	}
+	return "meta views: " + strings.Join(views, "; ")
 }
 
 // metaReady reports why the meta group is not ready yet, or nil when it is.

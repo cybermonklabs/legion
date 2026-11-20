@@ -969,11 +969,19 @@ RULES = {
         for path in files_but_tests(f"{ENVOY}/{root}", tree=True, skip=("testdata",))],
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
+    f"{ENVOY}/internal/textcheck/loopback_listeners_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/loopback_listeners_test.go:545 fixedAddressListeners walks packages/envoy (../.., infra "
+                             "included) at :113, testdata, node_modules, vendor and hidden folders passed over, and parses every .go file "
+                             "it finds, test files included (:126, :221)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
         (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     f"{ENVOY}/internal/textcheck/refusal_codes_test.go": reads(
         (f"{ENVOY}/**/*.go", "internal/textcheck/refusal_codes_test.go:44 calls refusalCodeCopies on ../.. (refusalCodeRoots, :32), whose walk at :108 reads every .go file under packages/envoy, infra included"),
         (f"{DAEMON}/**/*.go", "internal/textcheck/refusal_codes_test.go:44 calls refusalCodeCopies on ../../../daemon (refusalCodeRoots, :32), whose walk at :108 reads every .go file under packages/daemon")),
+    f"{ENVOY}/internal/textcheck/stream_updates_test.go": reads(
+        (f"{ENVOY}/**/*.go", "internal/textcheck/stream_updates_test.go:124 directStreamUpdates walks packages/envoy (../.., infra "
+                             "included) at :48, testdata, node_modules, vendor and hidden folders passed over, and parses every test "
+                             "file and every .go file of a folder whose name begins or ends with test (:62, :70)")),
     f"{ENVOY}/internal/textcheck/visible_markdown_copy_test.go": reads(
         (f"{DAEMON}/internal/textcheck/visible_markdown_test.go", "internal/textcheck/visible_markdown_copy_test.go:50 os.ReadFile (readGoTokens, called with daemonVisibleMarkdown :14, ../../../daemon/internal/textcheck/visible_markdown_test.go, at :21)")),
     # The listener's Go clients held to its wire package: wirecheck.Check type-checks them over

@@ -3,6 +3,7 @@ package testnats
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,4 +120,38 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 	}
 	cluster.Servers[0].Start(t)
 	cluster.AwaitReady(t)
+}
+
+// AwaitReady's lines carry each member's own view of the meta group (metaViews). With one member
+// of three stopped, the view names that member stopped and, for each running member, the leader
+// both follow, a group of three that needs two votes, and the other running member heard from.
+func TestAClusterNamesEachMembersViewOfTheMetaGroup(t *testing.T) {
+	cluster := StartCluster(t, 3)
+	cluster.Servers[2].Stop(t)
+	cluster.AwaitReady(t)
+	leader := ""
+	for i := range 2 {
+		if cluster.Servers[i].natsServer().JetStreamIsLeader() {
+			leader = cluster.Name(i)
+		}
+	}
+	views := cluster.metaViews()
+	t.Logf("the meta leader is %s; %s", leader, views)
+	if leader == "" {
+		t.Fatalf("no running member leads the meta group after AwaitReady: %s", views)
+	}
+	for want, count := range map[string]int{
+		"n3 stopped":             1,
+		"leader " + leader + ",": 2,
+		"size 3, quorum 2,":      2,
+		"n1 heard ":              1,
+		"n2 heard ":              1,
+		"n3 heard ":              2,
+		"has no meta group":      0,
+		"leader none":            0,
+	} {
+		if got := strings.Count(views, want); got != count {
+			t.Errorf("the views name %q %d times, want %d: %s", want, got, count, views)
+		}
+	}
 }

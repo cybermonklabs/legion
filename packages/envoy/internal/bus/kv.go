@@ -69,9 +69,9 @@ type KeyValue struct {
 // key's history. It is the JetStream MaxWait the listener and Dispatch open their legacy handles
 // with, so a read moved off the legacy handle waits no longer than it did there, and no less,
 // whatever MaxWait the legacy handle carries. A start that sends a request again because the
-// server left it unanswered takes that bound once per send (sentAgain, wrapKeyValue for a
-// start's caller), so the bound is one send's and not one step's: what a step of EnsureKeyValue
-// costs is counted in that function's doc.
+// server left it unanswered waits for each send up to its read limit, which grows to this bound at
+// most (readLimit, readAgain), so the bound is one send's and not one step's: what a step of
+// EnsureKeyValue costs is counted in that function's doc.
 const RequestTimeout = 10 * time.Second
 
 // OpenKeyValue opens the existing KV bucket named bucket on conn, through js, and creates nothing,
@@ -102,7 +102,7 @@ func WrapKeyValue(conn *nats.Conn, kv nats.KeyValue) (KeyValue, error) {
 
 // startSendsAgain and oneSend are wrapKeyValue's sendAgain, named at the call so the two readings
 // of an unanswered handle open are told apart where they are chosen: a program's start sends the
-// open again (sentAgain), and every other caller sends it once.
+// open again (readAgain), and every other caller sends it once.
 const (
 	startSendsAgain = true
 	oneSend         = false
@@ -126,7 +126,8 @@ const (
 // differently: the first is a member that has not applied the create and is read again until it
 // has, the second is a request that drew nothing and is sent again. So a start's send is waited
 // for up to its read limit, 630 ms first and twice that after each send left unanswered, up to
-// RequestTimeout (readAgain); a start's waits, on the member and on an answer, last as long as its
+// limitCeiling, 9 s, and copied every 630 ms while it waits past the first (readAgain,
+// limitedRead); a start's waits, on the member and on an answer, last as long as its
 // ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
 // caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again

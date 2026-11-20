@@ -289,7 +289,7 @@ func clientOwning(conn *nats.Conn) *Client {
 // request's whole wait, RequestTimeout for a start, on a request refused at once.
 //
 // A request the connection's grant does not cover is refused however often it is sent, so naming
-// the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
+// the refusal is also what keeps it from being sent again: readAgain stops at the first answer
 // that is not unanswered, so a step wrapped in this makes one send and ends with an error naming
 // the subject the server refused. subjects are listed in the order a send publishes them, so the
 // refusal a step ends on is the one of the request it stopped at.

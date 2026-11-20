@@ -8,12 +8,15 @@ import (
 )
 
 // requestsUnder is js with every request the stream's ensure and its subject read make (the
-// methods below) bounded by ctx as well as by js's own MaxWait: nats.go's legacy JetStream context
-// takes a context per call only (nats.Context; one given to JetStream() itself is not read by
-// these calls), so each call here adds it. A reconnect hook gives it the run's context
-// (whileConnected), so a request sent on a connection that then drops ends with the connection
-// rather than at its MaxWait. A caller must not pass nats.MaxWait to these methods: nats.go refuses
-// a context and a wait together. Every other method is js's own and is not bounded by ctx.
+// methods below) bounded by ctx, which nats.go then waits on in place of js's own MaxWait:
+// nats.go's legacy JetStream context takes a context per call only (nats.Context; one given to
+// JetStream() itself is not read by these calls), so each call here adds it. A reconnect hook
+// gives it the run's context (whileConnected), so a request sent on a connection that then drops
+// ends with the connection rather than at its MaxWait. A caller must not pass nats.MaxWait to
+// these methods: nats.go refuses a context and a wait together. Every other method is js's own and
+// is not bounded by ctx, the purge among them, which nats.go sends under js's own wait whatever
+// context it is handed; the stream ensure's purges are waited for up to the start's write limit
+// instead (purgeRoleLane).
 func requestsUnder(ctx context.Context, js nats.JetStreamContext) nats.JetStreamContext {
 	return contextRequests{JetStreamContext: js, ctx: ctx}
 }
@@ -37,10 +40,6 @@ func (r contextRequests) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (
 
 func (r contextRequests) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
 	return r.JetStreamContext.UpdateStream(cfg, r.with(opts)...)
-}
-
-func (r contextRequests) PurgeStream(stream string, opts ...nats.JSOpt) error {
-	return r.JetStreamContext.PurgeStream(stream, r.with(opts)...)
 }
 
 func (r contextRequests) ConsumerInfo(stream, consumer string, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {

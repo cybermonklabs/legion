@@ -102,7 +102,7 @@ func TestACreateTheServerLeavesUnansweredIsSentAgainAndTheStartGoesOn(t *testing
 	losing := &unansweredJetStream{JetStreamContext: js, unansweredCreate: 1}
 	cfg := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 
-	if _, err := ensureStreamWithConfig(t.Context(), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
+	if _, err := ensureStreamWithConfig(countedReads(t.Context()), losing, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose first create drew no answer = %v, want it to go on", err)
 	}
 
@@ -168,7 +168,7 @@ func TestAStreamReadTheServerNeverAnswersIsGivenUpOn(t *testing.T) {
 
 // A start that finds its bucket reads the bucket's stream for its copies, and that read is sent
 // again when the server leaves it unanswered, as the lookup before it is: a member that is not
-// the stream's leader leaves it unanswered while that leader is gone (sentAgain). Sent once, it
+// the stream's leader leaves it unanswered while that leader is gone (readAgain). Sent once, it
 // ended the start with the bare deadline of one wait. The context here drops the first read of
 // the stream the start makes itself (nats.go's lookup reads it through its own request, which
 // this context does not see), on a bucket that already has the deployment's three copies.

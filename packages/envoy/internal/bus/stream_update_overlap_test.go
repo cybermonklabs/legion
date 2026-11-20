@@ -92,9 +92,9 @@ func raisedToThree(current *nats.StreamInfo) (nats.StreamConfig, bool) {
 // above, between this update's sends.
 const otherWriterMaxBytes = 7 << 20
 
-// An update the server never answers is sent again, each send waiting the caller's JetStream wait,
-// until ctx ends, and the step then ends naming the update and ctx's cause: only the caller's
-// context, which every caller bounds by a hang guard, ends it, and no send's own wait does.
+// An update the server never answers is sent again, each send waiting its read limit (here the
+// caller's JetStream wait, countedReads), until ctx ends, and the step then ends naming the update
+// and ctx's cause: only the caller's context, which every caller bounds by a hang guard, ends it.
 func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) {
 	js := &scriptedUpdateJetStream{config: nats.StreamConfig{Name: Stream, Replicas: 1}, neverAnswers: true}
 	ctx, cancel := context.WithTimeout(countedReads(t.Context()), 300*time.Millisecond)
@@ -240,6 +240,12 @@ func (js *scriptedUpdateJetStream) StreamInfo(string, ...nats.JSOpt) (*nats.Stre
 	defer js.mu.Unlock()
 	js.reads++
 	return &nats.StreamInfo{Config: js.config}, nil
+}
+
+// AccountInfo answers at once, as the metadata leader of a cluster that has one does: the read a
+// write that waits past one read period sends (metadataLeader).
+func (js *scriptedUpdateJetStream) AccountInfo(...nats.JSOpt) (*nats.AccountInfo, error) {
+	return &nats.AccountInfo{}, nil
 }
 
 // counts is the updates js was sent and the reads it answered so far.

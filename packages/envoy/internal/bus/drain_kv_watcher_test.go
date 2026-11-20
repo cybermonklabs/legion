@@ -35,8 +35,6 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, uri := testnats.Start(t)
-			logs := captureBusLogs(t)
-
 			name := t.Name()
 			client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(name))
 			if err != nil {
@@ -54,6 +52,7 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			if err := watcher.WaitReady(ctx); err != nil {
 				t.Fatalf("wait for the watcher: %v", err)
 			}
+			logs := captureBusLogs(t)
 			client.AddDrainHook(watcher.End)
 
 			admin := testnats.Connect(t, uri)
@@ -160,13 +159,12 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 // callback.
 func TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing(t *testing.T) {
 	_, uri := testnats.Start(t)
-	logs := captureBusLogs(t)
-
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1), bus.WithName(t.Name()))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
+	logs := captureBusLogs(t)
 
 	if got := warnOrErrorRecords(t, logs, t.Name()); len(got) != 0 {
 		t.Fatalf("the records of a client that has logged nothing = %q, want none", got)
@@ -194,6 +192,12 @@ func consumerNames(js natsgo.JetStreamContext, stream string) []string {
 // drop every record that names a client, the client under test's among them. A record naming no
 // client is kept, since the records these tests require are a watcher's and a reconcile's, which
 // name none.
+//
+// A caller starts the capture once its client has started, its buckets and watchers with it: a
+// start's request that draws no answer within its read limit is sent again with the WARN "envoy
+// nats stream request unanswered; sending it again", which names no client (readAgain), and a
+// loaded machine leaves some start request unanswered that long. Captured from before the start,
+// that line of the set-up reads as the drain's own.
 func warnOrErrorRecords(t *testing.T, logs *busLogs, name string) []string {
 	t.Helper()
 	if name == "" {

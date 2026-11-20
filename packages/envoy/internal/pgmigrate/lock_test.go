@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testpg"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // What the watch reports after a sequence of readings. One empty reading of a wait that named its
@@ -142,7 +143,7 @@ func startForwarder(t *testing.T, dsn string) *stallingForwarder {
 		t.Fatalf("parse the test database's URL: %v", err)
 	}
 	network, address := pgconn.NetworkAddress(config.Host, config.Port)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

@@ -8,6 +8,7 @@ package bus
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -153,17 +154,141 @@ func TestAStartAtOneCopyThatFindsAJustRaisedBucketAnswersOnceItHasALeader(t *tes
 	}
 }
 
+// updateWaitJetStream records when the first update of stream was sent through it, when the start
+// stopped waiting on that update (the update's answer, or the next read of the stream the start
+// began, which follows an update whose answer did not come), when the first update's own call
+// returned an answer (firstAnswered), and when the update was sent the second time (resent). It
+// reaches the cluster for everything, but for the first read of stream when answered is set: that
+// read is answered with it, a read the test made itself.
+type updateWaitJetStream struct {
+	nats.JetStreamContext
+	stream                               string
+	answered                             *nats.StreamInfo
+	sent, settled, firstAnswered, resent atomic.Int64
+	sends, reads                         atomic.Int32
+}
+
+func (js *updateWaitJetStream) settle() {
+	if js.sent.Load() != 0 {
+		js.settled.CompareAndSwap(0, time.Now().UnixNano())
+	}
+}
+
+func (js *updateWaitJetStream) StreamInfo(stream string, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if stream == js.stream {
+		if js.reads.Add(1) == 1 && js.answered != nil {
+			return js.answered, nil
+		}
+		js.settle()
+	}
+	return js.JetStreamContext.StreamInfo(stream, opts...)
+}
+
+func (js *updateWaitJetStream) UpdateStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
+	if cfg.Name != js.stream {
+		return js.JetStreamContext.UpdateStream(cfg, opts...)
+	}
+	send := js.sends.Add(1)
+	switch send {
+	case 1:
+		js.sent.Store(time.Now().UnixNano())
+	case 2:
+		js.resent.Store(time.Now().UnixNano())
+	}
+	defer js.settle()
+	info, err := js.JetStreamContext.UpdateStream(cfg, opts...)
+	if send == 1 && err == nil {
+		js.firstAnswered.Store(time.Now().UnixNano())
+	}
+	return info, err
+}
+
+// updateAnswerBound is how long a start may wait on one update of a stream before it reads the
+// stream back: half the JetStream wait the update is sent under. A start that waited out an update
+// no member answered took that whole wait, RequestTimeout, and one that reads the stream back after
+// its read limit (firstReadLimit) takes a fraction of a second, so the bound sits far from both.
+const updateAnswerBound = RequestTimeout / 2
+
+// updateHoldBound is how long the row below keeps the stream's group without a leader while it
+// waits for the start to stop waiting on its update: past RequestTimeout, so a start that waits
+// for the update's answer stops waiting inside it, and the row ends in a failure that names that
+// wait rather than at the test binary's deadline when a start never stops waiting.
+const updateHoldBound = 2 * RequestTimeout
+
+// A start that sets a bucket's maximum age, as the session registry's start does, while the
+// bucket's stream elects its leader, reads the stream back within its read limit rather than
+// waiting out the JetStream wait for an answer no member gives then, and sends the update again
+// only when that read shows it did not land. nats-server v2.15.1 answers no update of a stream
+// whose group has no leader, and the start once waited the whole ten seconds before it read the
+// stream and found the age there.
+//
+// The row holds the election itself. The bucket's stream has three copies on a cluster of five, so
+// the metadata group keeps its quorum when two members stop. Once the start has read the stream
+// (the test's own read, handed to it as its first answer), the row stops the stream's leader and
+// one other copy, so the update goes to a group that cannot elect a leader. A server that shuts
+// down hands the leadership of its streams to a copy that is still up, and the copy left running
+// can then lead the group alone for a while and answer the update at once; so the row reads that
+// copy until a read is answered, each read cut at firstReadLimit as a start's reads are
+// (testnats.HoldStreamWithoutLeader), goes on only on an answer that names no leader, and when the
+// answer names one it starts both again and chooses anew. It keeps the two stopped until the start
+// has sent its update and stopped waiting on it, and only then starts them again, so the group
+// elects a leader and the start's read-back and its update sent again are answered. A start that
+// waits for the update's answer waits RequestTimeout with the group leaderless, past
+// updateAnswerBound, in every run; and an update answered while the two were stopped fails the
+// row, which then held nothing.
+func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t *testing.T) {
+	cluster := testnats.StartCluster(t, 5)
+	const bucket = "envoy_update_during_election_test"
+	stream := "KV_" + bucket
+	cluster.CreateKeyValue(t, clusterConn(t, cluster), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3})
+	held := testnats.HoldStreamWithoutLeader(t, cluster, stream, firstReadLimit)
+	conn, js := memberJetStream(t, cluster, held.Kept)
+	done := make(chan error, 1)
+	timed := &updateWaitJetStream{JetStreamContext: js, stream: stream, answered: held.Info}
+	go func() {
+		age, err := SetKeyValueMaxAge(t.Context(), conn, timed, bucket, time.Hour)
+		if err == nil && age != time.Hour {
+			err = fmt.Errorf("the age set is %s", age)
+		}
+		done <- err
+	}()
+	if !testwait.Holds(updateHoldBound, testwait.Poll, func() bool { return timed.settled.Load() != 0 || len(done) != 0 }) {
+		t.Errorf("the start did not stop waiting on its update within %s of a group with no leader", updateHoldBound)
+	}
+	restarted := time.Now().UnixNano()
+	held.Restart(t)
+	if err := <-done; err != nil {
+		t.Fatalf("set the age of the bucket whose stream elects its leader = %v; want 1h0m0s and no error", err)
+	}
+	sent, settled, answered := timed.sent.Load(), timed.settled.Load(), timed.firstAnswered.Load()
+	if sent == 0 || settled == 0 {
+		t.Fatalf("the start sent its update at %d and stopped waiting on it at %d, want both: this row holds nothing", sent, settled)
+	}
+	if answered != 0 && answered < restarted {
+		t.Fatalf("the first update was answered %s after it was sent, while two of the stream's three copies were stopped: a leader answered it, so this row holds nothing",
+			time.Duration(answered-sent).Round(time.Millisecond))
+	}
+	if waited := time.Duration(settled - sent); waited >= updateAnswerBound {
+		t.Fatalf("the start waited %s on its update, want under %s: an update no member answers is read back after the read limit, %s, and not waited out for the JetStream wait, %s",
+			waited.Round(time.Millisecond), updateAnswerBound, firstReadLimit, RequestTimeout)
+	}
+	testwait.Eventually(t, "the age of "+stream+" read from its leader", func() bool {
+		read, err := js.StreamInfo(stream, nats.MaxWait(firstReadLimit))
+		return err == nil && read.Config.MaxAge == time.Hour
+	})
+}
+
 // missingOnceJetStream answers the first KeyValue lookup "bucket not found", as a start's lookup
 // is answered when it lands just before another start's create: the start then sends its own
-// create and draws "stream name already in use".
+// create and draws "stream name already in use". looked is atomic: a start sends each lookup on a
+// goroutine of its own (Bounded), and one it abandoned at its limit runs on beside the next.
 type missingOnceJetStream struct {
 	nats.JetStreamContext
-	looked bool
+	looked atomic.Bool
 }
 
 func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
-	if !js.looked {
-		js.looked = true
+	if js.looked.CompareAndSwap(false, true) {
 		return nil, nats.ErrBucketNotFound
 	}
 	return js.JetStreamContext.KeyValue(bucket)
@@ -172,18 +297,17 @@ func (js *missingOnceJetStream) KeyValue(bucket string) (nats.KeyValue, error) {
 // A start at one copy whose create meets a bucket another start, configured with three, created
 // a moment before waits for that stream's leader: the other start's count is not this one's, and
 // its create may have been answered before its stream's first election ended. The other start's
-// create is abandoned the moment a listener on its subject sees it go out, so it lands with its
-// answer lost; the cut is made on the create itself, so the account read nats.go makes before it
-// is answered first however slow the machine is.
-//
-// A create that has gone out has not landed. The meta leader hands each JetStream API request to
-// one of a pool of GOMAXPROCS workers (nats-server v2.15.1 server/jetstream_api.go:1029 and
-// :1111), so this start's create, sent after the other's, can take the meta leader's lock first
-// (jetstream_cluster.go:11045) and make the bucket at one copy; the other's is then answered
-// "stream name already in use with a different configuration". Run 44543481925 failed this way
-// (job 135627934452). So the row waits until the meta leader lists the other start's stream, which
-// it reads from the same assignments the create checks (jetstream_api.go:1828 and
-// jetstream_cluster.go:11053), before this start looks for the bucket.
+// create is abandoned the moment a listener on its subject sees it go out, so its answer is lost;
+// the cut is made on the create itself, so the account read nats.go makes before it is answered
+// first however slow the machine is. This start begins only once the metadata leader holds that
+// create's stream (awaitAssigned), which its own create then meets. The create going out is not
+// enough, because nats-server serves JetStream API requests on a pool of workers
+// (processJSAPIRoutedRequests, v2.15.1 server/jetstream_api.go), so a create sent after it can be
+// applied before it, and this start then made the bucket itself, at one copy, and the row held
+// nothing (1 run in 100 at a one-minute load of 414). The wait is for the assignment and not for a
+// read of the stream, because the stream answers a read only once a member has made it, by which
+// time its first election is often over and this start would find a leader whether it waited for
+// one or not.
 func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALeader(t *testing.T) {
 	cluster := testnats.StartCluster(t, 3)
 	conn, js := memberJetStream(t, cluster, 0)
@@ -201,10 +325,11 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("flush the listener: %v", err)
 	}
 	createCtx, abandon := context.WithCancel(t.Context())
-	abandoned := make(chan error, 1)
+	abandoned := make(chan struct{})
 	go func() {
-		_, err := other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
-		abandoned <- err
+		defer close(abandoned)
+		// The answer is discarded: this create is abandoned on purpose, so its wait fails nothing.
+		_, _ = other.CreateKeyValue(createCtx, jetstream.KeyValueConfig{Bucket: bucket, Storage: jetstream.FileStorage, Replicas: 3})
 	}()
 	_, err = creates.NextMsg(time.Minute)
 	abandon()
@@ -212,13 +337,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("the other start's create never went out, so this row holds nothing: %v", err)
 	}
 	<-abandoned
-	testwait.Eventually(t, "the meta leader to list the other start's stream", func() bool {
-		listed := false
-		for name := range js.StreamNames() {
-			listed = listed || name == "KV_"+bucket
-		}
-		return listed
-	})
+	awaitAssigned(t, js, "KV_"+bucket)
 	kv, err := EnsureKeyValue(t.Context(), conn, &missingOnceJetStream{JetStreamContext: js}, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 1})
 	if err != nil {
 		t.Fatalf("a start at one copy whose create met another start's: %v", err)
@@ -228,7 +347,7 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 		t.Fatalf("read the bucket's stream: %v", err)
 	}
 	if info.Config.Replicas != 3 {
-		t.Fatalf("the bucket's stream has %d copies, want the other start's 3: this start's create made the bucket, so this row holds nothing", info.Config.Replicas)
+		t.Fatalf("the bucket's stream has %d copies, want the other start's 3, whose create the metadata leader held before this start began", info.Config.Replicas)
 	}
 	if info.Cluster == nil || info.Cluster.Leader == "" {
 		t.Fatal("the start at one copy answered while the other start's stream had no leader")
@@ -236,6 +355,23 @@ func TestAStartAtOneCopyWhoseCreateMeetsAnotherStartsCreateAnswersOnceItHasALead
 	if _, err := kv.Put("key", []byte("value")); err != nil {
 		t.Fatalf("the first put after the start: %v", err)
 	}
+}
+
+// awaitAssigned waits until the JetStream metadata leader lists stream: the fact that a create of
+// it has been applied, which a create of the same stream sent after it meets ("stream name already
+// in use"), where the create's request going out is not. Only the metadata leader answers the list,
+// from the assignments it has applied (jsStreamNamesRequest, v2.15.1 server/jetstream_api.go). Each
+// list is waited for up to firstReadLimit and then asked again, as a start reads (limitedRead), so a
+// list a member leaves unanswered costs the row that and not the context's whole wait.
+func awaitAssigned(t *testing.T, js nats.JetStreamContext, stream string) {
+	t.Helper()
+	testwait.Eventually(t, "the metadata leader to hold "+stream, func() bool {
+		listed := false
+		for name := range js.StreamNames(nats.MaxWait(firstReadLimit)) {
+			listed = listed || name == stream
+		}
+		return listed
+	})
 }
 
 // A start that finds the notification stream another program raised a moment ago waits for its
@@ -250,9 +386,7 @@ func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
 	}
 	raised := info.Config
 	raised.Replicas = 3
-	if _, err := js.UpdateStream(&raised); err != nil {
-		t.Fatalf("another program's raise: %v", err)
-	}
+	testnats.UpdateStream(t, js, raised)
 	client := startOnCluster(t, cluster, WithReplicas(3))
 	if !hasLeader(t, js, Stream) {
 		t.Fatal("the start answered while the raised stream had no leader")
@@ -269,14 +403,17 @@ func TestAStartThatFindsAJustRaisedStreamAnswersOnceItHasALeader(t *testing.T) {
 // context of a millisecond, so the server takes the create and the answer, which the server gives
 // only at the stream's first leader election, finds nobody waiting. The start sends the create
 // again, and the server answers that equal create at once, while the stream has no leader: the
-// order a slow election makes, forced without holding the election.
+// order a slow election makes, forced without holding the election. sent is atomic: the create
+// sent again waits under a doubled limit, so a copy of it goes out beside it while it waits past
+// the first limit (limitedRead), and a copy still in flight when the start returns runs on beside
+// the test.
 type earlyAnswerJetStream struct {
 	nats.JetStreamContext
-	sent int
+	sent atomic.Int32
 }
 
 func (js *earlyAnswerJetStream) AddStream(cfg *nats.StreamConfig, opts ...nats.JSOpt) (*nats.StreamInfo, error) {
-	if js.sent++; js.sent == 1 {
+	if js.sent.Add(1) == 1 {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 		defer cancel()
 		return js.JetStreamContext.AddStream(cfg, append(slices.Clone(opts), nats.Context(ctx))...)
@@ -293,8 +430,8 @@ func TestAStartWhoseStreamCreateIsAnsweredEarlyAnswersOnceItHasALeader(t *testin
 	if _, err := ensureStreamWithConfig(t.Context(), early, &cfg, capsAnUnsetStream, atStart); err != nil {
 		t.Fatalf("a start whose create's first answer was lost: %v", err)
 	}
-	if early.sent < 2 {
-		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", early.sent)
+	if sent := early.sent.Load(); sent < 2 {
+		t.Fatalf("creates sent = %d, want the first one's answer lost and the create sent again", sent)
 	}
 	if !hasLeader(t, cluster.JetStream(t), Stream) {
 		t.Fatal("the start answered while the stream it created had no leader")

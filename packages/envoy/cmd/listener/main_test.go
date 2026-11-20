@@ -517,28 +517,81 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 	}
 }
 
+// keeperPassInterval is the keeper's period in TestPublishHandlerReturnsWithinDeadline, short so
+// the row sees a whole pass after its narrowing within a fraction of a second (awaitKeeperPass).
+const keeperPassInterval = 50 * time.Millisecond
+
+// keeperPassWait is a hang guard on each keeper read awaitKeeperPass waits for, not a budget: the
+// keeper reads the stream every keeperPassInterval.
+const keeperPassWait = 30 * time.Second
+
+// streamReads is a watch, in the test's own account, of the reads of the notification stream
+// ($JS.API.STREAM.INFO.<stream>), each of which reaches it as it reaches the server.
+type streamReads struct {
+	conn *natsgo.Conn
+	sub  *natsgo.Subscription
+}
+
+func watchStreamReads(t *testing.T) *streamReads {
+	t.Helper()
+	conn := testnats.Connect(t, testnats.URL(t))
+	t.Cleanup(conn.Close)
+	sub, err := conn.SubscribeSync("$JS.API.STREAM.INFO." + bus.Stream)
+	if err != nil {
+		t.Fatalf("watch the reads of %s: %v", bus.Stream, err)
+	}
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("watch the reads of %s: %v", bus.Stream, err)
+	}
+	return &streamReads{conn: conn, sub: sub}
+}
+
+// awaitKeeperPass returns once the client's keeper has made a whole pass that began after the
+// call. It drops every read that reached the watch before the flush, then waits for two more: a
+// keeper makes its passes one after the other, each beginning with a read of the stream
+// (keepStream in internal/bus), and the row makes no read of the stream meanwhile, so the second
+// read begins the next pass, after the first one, its write included, has ended.
+func (r *streamReads) awaitKeeperPass(t *testing.T) {
+	t.Helper()
+	if err := r.conn.Flush(); err != nil {
+		t.Fatalf("flush the watch of %s's reads: %v", bus.Stream, err)
+	}
+	for {
+		if _, err := r.sub.NextMsg(10 * time.Millisecond); err != nil {
+			break
+		}
+	}
+	for pass := 1; pass <= 2; pass++ {
+		if _, err := r.sub.NextMsg(keeperPassWait); err != nil {
+			t.Fatalf("the keeper made no read %d of %s within %s of the narrowing: %v", pass, bus.Stream, keeperPassWait, err)
+		}
+	}
+}
+
 // A topic the binary's stream captures, whose binding the deployed stream has lost, still bounds its
 // JetStream publish by the acknowledgement deadline: the publish waits for an acknowledgement that
-// the core subscriber holding the subject never sends.
+// the core subscriber holding the subject never sends. The client's keeper makes a whole pass
+// between the narrowing and the publish (awaitKeeperPass), so a narrowing a keeper puts back is
+// put back before the publish, and the stream then holds the publish, which fails the row by name.
 func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 	const topic = "notifications.github.acme.unbound"
 	clock := &listenerAcknowledgementClock{}
-	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock))
+	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock), bus.WithKeepInterval(keeperPassInterval))
 	info, err := client.JS().StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("stream info: %v", err)
 	}
 	originalConfig := info.Config
 	unboundConfig := originalConfig
-	unboundConfig.Subjects = []string{"notifications.bound.>"}
-	if _, err := client.JS().UpdateStream(&unboundConfig); err != nil {
-		t.Fatalf("remove publish subject binding: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := client.JS().UpdateStream(&originalConfig); err != nil {
-			t.Errorf("restore stream subject bindings: %v", err)
-		}
-	})
+	// The stream stops capturing the topic's family and keeps a subject under it in that one's
+	// place, so no keeper of the client puts it back before the publish.
+	unboundConfig.Subjects = append(slices.DeleteFunc(slices.Clone(originalConfig.Subjects), func(subject string) bool {
+		return subject == "notifications.github.>"
+	}), testnats.KeptByEveryKeeper("notifications.github."))
+	keeperReads := watchStreamReads(t)
+	testnats.UpdateStream(t, client.JS(), unboundConfig)
+	t.Cleanup(func() { testnats.UpdateStream(t, client.JS(), originalConfig) })
+	keeperReads.awaitKeeperPass(t)
 
 	published := make(chan struct{}, 1)
 	noAck, err := client.Conn.Subscribe(topic, func(*natsgo.Msg) {
@@ -565,6 +618,9 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 
 	select {
 	case <-published:
+		if copies := storedForwards(t, client, topic); copies != 0 {
+			t.Fatalf("the stream holds %d copies of %s while its acknowledgement is unbound: a keeper restored the subject this row narrowed", copies, topic)
+		}
 		if !clock.Advance(5 * time.Second) {
 			t.Fatal("publish acknowledgement deadline exceeded 5s")
 		}

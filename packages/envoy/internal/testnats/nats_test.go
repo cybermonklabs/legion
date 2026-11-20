@@ -153,7 +153,10 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	})
 }
 
-// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
+// fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does, and t's own
+// deadline, so UpdateStream bounds its reads through a recorder as it bounds them through t
+// (updateDeadline) and a row whose update never settles fails by name rather than at go test's own
+// timeout, which names no row.
 type fatalRecorder struct {
 	testing.TB
 	message string
@@ -163,6 +166,37 @@ func (f *fatalRecorder) Fatal(args ...any) { f.message = fmt.Sprint(args...); ru
 func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	f.message = fmt.Sprintf(format, args...)
 	runtime.Goexit()
+}
+
+// Deadline is the wrapped test's deadline (testing.T.Deadline); a TB that reports none gives none.
+func (f *fatalRecorder) Deadline() (time.Time, bool) {
+	if test, ok := f.TB.(interface{ Deadline() (time.Time, bool) }); ok {
+		return test.Deadline()
+	}
+	return time.Time{}, false
+}
+
+// deadlineTB is a testing.TB reporting at as its deadline, as a testing.T run under a timeout does.
+type deadlineTB struct {
+	testing.TB
+	at time.Time
+}
+
+func (d deadlineTB) Deadline() (time.Time, bool) { return d.at, true }
+
+// A fatalRecorder bounds UpdateStream's reads by the deadline of the test it wraps (updateDeadline),
+// as that test itself does, and a recorder of a TB that reports none gives none. A recorder that
+// reported no deadline left every read of an update through it unbounded, so a row whose update
+// never settled ran to go test's own timeout, which names no row; the rows that use a recorder
+// all settle, so none of them told the two apart.
+func TestAFatalRecorderKeepsTheDeadlineOfTheTestItWraps(t *testing.T) {
+	at := time.Now().Add(time.Hour)
+	if got, want := updateDeadline(&fatalRecorder{TB: deadlineTB{TB: t, at: at}}), at.Add(-updateMargin); !got.Equal(want) {
+		t.Fatalf("UpdateStream's bound through a recorder of a test whose deadline is %s = %s, want %s: that deadline less updateMargin", at.Format(time.RFC3339Nano), got.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
+	}
+	if got := updateDeadline(&fatalRecorder{TB: struct{ testing.TB }{t}}); !got.IsZero() {
+		t.Fatalf("UpdateStream's bound through a recorder of a TB that reports no deadline = %s, want none", got.Format(time.RFC3339Nano))
+	}
 }
 
 // A test gets one account however often it asks, so every connection it makes reaches the streams
@@ -411,7 +445,7 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Fatalf("open the other program's socket: %v", err)
 	}
 	t.Cleanup(func() { _ = syscall.Close(fd) })
-	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte{127, 0, 0, 1}})
+	err = syscall.Bind(fd, &syscall.SockaddrInet4{Port: address.Port, Addr: [4]byte(address.IP.To4())})
 	if err == nil {
 		// The port was free: hold it listening, as a program that took it would, so the Open below
 		// meets it.

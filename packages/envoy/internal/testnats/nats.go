@@ -9,7 +9,9 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), a reload with no
 // client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// test runs. Every listener is on this binary's own loopback address (testport.Loopback), and a
+// callout server's relay on one of that server's own (calloutHost), so a client another test
+// binary left reconnecting reaches none of them once their ports are let go.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -36,6 +38,8 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
@@ -539,18 +543,18 @@ func (s *Server) running() bool { return s.natsServer() != nil }
 // nats-server warns on an empty configuration file ("config has no values or is empty"), and the
 // host it names here is the one this rig imposes on every server anyway. The file is never empty,
 // so a server started without a configuration can still be reloaded with one.
-const hostOnlyConfig = "host: 127.0.0.1\n"
+var hostOnlyConfig = fmt.Sprintf("host: %s\n", testport.Loopback)
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
 // its command line after it (so -js for JetStream, -DV for the protocol trace), behind a relay
 // holding the port of the URL it returns, and returns it once it accepts connections. When the
 // test ends the server is shut down, the relay closed and the server's directory removed; until
 // then AwaitConsumerStored finds the server by the relay address its URL names. The relay and the
-// server's own client port listen on 127.0.0.1; startOn is start with both on another loopback
-// address.
+// server's own client port listen on this binary's own loopback address (testport.Loopback);
+// startOn is start with both on another loopback address.
 func start(t testing.TB, config string, serverArgs []string) *Server {
 	t.Helper()
-	return startOn(t, "127.0.0.1", config, serverArgs)
+	return startOn(t, testport.Loopback, config, serverArgs)
 }
 
 // startOn is start with the relay and the server's own client port listening on host. It is the
@@ -646,8 +650,9 @@ const (
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
 // command line, then imposes what this rig owns: a client port the server picks on host, a
-// monitoring port it picks on 127.0.0.1, the test's own store, no signal handlers, path as the
-// configuration file, and the lame duck's timing when the configuration sets none (rigLameDuck).
+// monitoring port it picks on this binary's own loopback address (testport.Loopback), the test's
+// own store, no signal handlers, path as the configuration file, and the lame duck's timing when
+// the configuration sets none (rigLameDuck).
 // serverArgs replace nats-server's defaults rather than add to them, as the arguments after the
 // image's own command do.
 func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
@@ -666,7 +671,7 @@ func serverOptions(path string, serverArgs []string, store, host string) (*natss
 	}
 	opts.Host = host
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = testport.Loopback
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true
@@ -943,54 +948,4 @@ func waitForJetStream(t testing.TB, check func() error) {
 		time.Sleep(retryInterval)
 	}
 	t.Fatalf("JetStream was not ready within %s: %v", connectTimeout, err)
-}
-
-// nats-server answers a stream create it could not make a file store for with streamStoreFailed,
-// under the stream-create error code; RecreateKeyValue retries that answer for up to
-// recreateTimeout.
-const (
-	streamStoreFailed     = "error creating store for stream"
-	streamCreateErrorCode = natsgo.ErrorCode(10049)
-	recreateTimeout       = 10 * time.Second
-)
-
-// RecreateKeyValue creates the KV bucket config names in place of one the test has just deleted,
-// and returns it.
-//
-// nats-server answers a stream delete before it is done with the account's directories: a
-// goroutine of its own then removes the account's streams directory, which it can only do once
-// that directory is empty, so only when the deleted stream was the account's last (stream.go,
-// stop, v2.10 through v2.15). A create that arrives before that goroutine has run can lose the
-// directory between making it and making its stream's own inside it: the server logs "could not
-// create storage directory - mkdir .../streams/<stream>: no such file or directory" and answers
-// the create "error creating store for stream". No API says when the goroutine has run, so the
-// create is retried on exactly that answer, every retryInterval; any other error fails the test
-// at once.
-func RecreateKeyValue(t testing.TB, js natsgo.JetStreamContext, config *natsgo.KeyValueConfig) natsgo.KeyValue {
-	t.Helper()
-	var kv natsgo.KeyValue
-	err := retryStreamStoreFailure(func() error {
-		var err error
-		kv, err = js.CreateKeyValue(config)
-		return err
-	})
-	if err != nil {
-		t.Fatalf("recreate KV bucket %s: %v", config.Bucket, err)
-	}
-	return kv
-}
-
-// retryStreamStoreFailure runs create again while it fails with the server's stream store
-// failure, for up to recreateTimeout, and returns its last error.
-func retryStreamStoreFailure(create func() error) error {
-	deadline := time.Now().Add(recreateTimeout)
-	for {
-		err := create()
-		var apiErr *natsgo.APIError
-		storeFailed := errors.As(err, &apiErr) && apiErr.ErrorCode == streamCreateErrorCode && apiErr.Description == streamStoreFailed
-		if !storeFailed || time.Now().After(deadline) {
-			return err
-		}
-		time.Sleep(retryInterval)
-	}
 }

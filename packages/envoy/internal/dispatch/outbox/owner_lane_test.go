@@ -233,6 +233,11 @@ func TestAnEventCommittedWhileItsOwnerIsInFlightIsReadWhenThatOwnerIsBack(t *tes
 				t.Fatalf("decode %s: %v", issueTopic, err)
 			}
 			if item.SourceEventID == fmt.Sprint(second.ID) {
+				// Read this premise after the timing-sensitive commit: a stream read can wait
+				// longer than the first forward's acknowledgement deadline.
+				if copies := storedCopies(t, rig.client, contracts.LegacyAgentSubject(stalledHolder)); copies != 0 {
+					t.Fatalf("the stream holds %d copies of the stalled holder's subject when the later event arrives: a keeper restored the subject this row narrowed", copies)
+				}
 				return
 			}
 		case <-deadline:

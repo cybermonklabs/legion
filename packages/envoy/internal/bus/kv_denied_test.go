@@ -329,6 +329,69 @@ func TestAStreamEnsureTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
 	}
 }
 
+// A client that owns the notification stream and meets a stream an Envoy release from before
+// 2026-09-25 left, whose subjects capture the role lanes, lists the stream's consumers and purges
+// the lanes as it moves them off (migrateRoleLanesOffStream). The listener's own grant on the
+// stream allows neither (infra/core/permissions.go). On a grant that refuses the list, the start
+// fails at once with the server's refusal of it, rather than sending the list again until the
+// start's hang guard passed, 36 s, and ending with an error that names a silence ("CONSUMER.NAMES:
+// 6 sends drew no answer"); nats.go's list reports no error of its own, so only the refusal record
+// can answer it (consumerNames). On a grant that lets it list them and refuses the purge, the
+// start fails at once naming the purge. The control grants every JetStream API subject, and that
+// start moves the lanes off and goes on.
+func TestARoleLaneMigrateTheGrantRefusesEndsAtOnceNamingTheRefusal(t *testing.T) {
+	streamGrant := []string{jsAPI("INFO"), jsAPI("STREAM.INFO", Stream), jsAPI("STREAM.CREATE", Stream), jsAPI("STREAM.UPDATE", Stream), "notifications.>"}
+	for _, row := range []struct {
+		name    string
+		allow   []string
+		refused string
+	}{
+		{"the consumer list", streamGrant, jsAPI("CONSUMER.NAMES", Stream)},
+		{"the purge", append([]string{jsAPI("CONSUMER.NAMES", Stream)}, streamGrant...), jsAPI("STREAM.PURGE", Stream)},
+		{"control: every JetStream API subject", []string{"$JS.API.>", "notifications.>"}, ""},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			seed, public := testnats.User(t)
+			grant := testnats.StartNkeyGranted(t, public, append([]string{"_INBOX.>"}, row.allow...)...)
+			t.Setenv("NATS_NKEY_SEED", seed)
+			setup, err := Connect([]string{grant.URL})
+			if err != nil {
+				t.Fatalf("connect the client that leaves the legacy stream: %v", err)
+			}
+			js, err := setup.Conn.JetStream(nats.MaxWait(RequestTimeout))
+			if err != nil {
+				t.Fatalf("open JetStream: %v", err)
+			}
+			legacyRoleLaneStream(t, js)
+			setup.Close()
+
+			started := time.Now()
+			client, err := ConnectOwningStream([]string{grant.URL})
+			took := time.Since(started)
+			if row.refused == "" {
+				if err != nil {
+					t.Fatalf("a start on a grant of every JetStream API subject = %v after %s, want it to move the role lanes off and go on", err, took.Round(time.Millisecond))
+				}
+				client.Close()
+				return
+			}
+			if err == nil {
+				client.Close()
+				t.Fatalf("a client whose grant refuses %s started", row.refused)
+			}
+			if !errors.Is(err, ErrPublishDenied) {
+				t.Fatalf("the refused migrate = %v (after %s), want ErrPublishDenied", err, took.Round(time.Millisecond))
+			}
+			if want := `Permissions Violation for Publish to "` + row.refused + `"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("the refused migrate = %v, want it to name %q", err, want)
+			}
+			if took > refusalAnswerBound {
+				t.Fatalf("the refused migrate ended after %s, want within %s: the refusal answers the request as it arrives, not at the start's hang guard", took.Round(time.Millisecond), refusalAnswerBound)
+			}
+		})
+	}
+}
+
 // A start whose lookup of a bucket draws no answer is not ended by the server's refusal of a
 // subject that lookup never published to: a refusal of another subject is not this send's
 // answer, so the lookup is sent again, and the start ends at its hang guard. refusedBy reads

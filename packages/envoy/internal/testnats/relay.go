@@ -28,6 +28,7 @@ type relay struct {
 	target     func() (string, error)
 	clientPort bool
 	done       chan struct{}
+	served     chan struct{} // closed once serve has returned
 	closing    sync.Once
 
 	mu sync.Mutex
@@ -69,22 +70,49 @@ func (j *joined) port() int { return j.upstream.LocalAddr().(*net.TCPAddr).Port 
 // newRelay starts a relay that serves listener and dials target for each connection it accepts;
 // clientPort says it is the relay of a server's client port, which a hold can stop.
 func newRelay(listener net.Listener, target func() (string, error), clientPort bool) *relay {
-	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), joins: map[*joined]struct{}{}}
+	r := &relay{listener: listener, target: target, clientPort: clientPort, done: make(chan struct{}), served: make(chan struct{}), joins: map[*joined]struct{}{}}
 	r.moved = sync.NewCond(&r.mu)
 	go r.serve()
 	return r
 }
 
-// serve joins each connection the relay accepts to the server, until the relay closes.
+// serve joins each connection the relay accepts to the server, until the relay closes. An accept
+// that fails while the listener is open (the process out of file descriptors, a connection the
+// kernel reset before it was taken) is tried again after a pause that doubles from
+// acceptRetryFirst up to acceptRetryMost, as net/http's server does. A serve that ended on the
+// first such error held the relay's port with nothing accepting on it, so every dial of it waited
+// and failed: the route relays of a cluster's two running members, stopped that way, left no route
+// between them, and the cluster never elected a meta leader, which AwaitReady reported after 75 s
+// as "0 running members lead the meta group" (TestARelayAcceptsAgainAfterAnAcceptFails). The
+// relay's own Close ends serve at once: the closed listener's error, or done during a pause.
 func (r *relay) serve() {
+	defer close(r.served)
+	var pause time.Duration
 	for {
 		client, err := r.listener.Accept()
 		if err != nil {
-			return
+			if errors.Is(err, net.ErrClosed) {
+				return
+			}
+			pause = min(max(2*pause, acceptRetryFirst), acceptRetryMost)
+			select {
+			case <-r.done:
+				return
+			case <-time.After(pause):
+			}
+			continue
 		}
+		pause = 0
 		go r.join(client)
 	}
 }
+
+// acceptRetryFirst and acceptRetryMost are the first and the longest pause before serve accepts
+// again after a failed accept.
+const (
+	acceptRetryFirst = 5 * time.Millisecond
+	acceptRetryMost  = time.Second
+)
 
 // join copies client and the server's connection into each other until either side ends, then
 // closes both. One direction runs on this goroutine and the other on one of its own, and whichever

@@ -408,16 +408,12 @@ func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
 	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
 		return subject == contracts.AgentTopicPrefix+">"
 	})
+	narrowed.Subjects = append(narrowed.Subjects, testnats.KeptByEveryKeeper(contracts.AgentTopicPrefix))
 	for _, holder := range holders {
 		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}
-	update := func(config *natsgo.StreamConfig, what string) {
-		if _, err := js.UpdateStream(config); err != nil {
-			t.Fatalf("%s the stream's agent subjects: %v", what, err)
-		}
-	}
-	update(&narrowed, "narrow")
-	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	testnats.UpdateStream(t, js, narrowed)
+	restore := sync.OnceFunc(func() { testnats.UpdateStream(t, js, capturing) })
 	t.Cleanup(restore)
 	return restore
 }

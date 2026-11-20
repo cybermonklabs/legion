@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // A browser's keystrokes reach the store through the room's persistence, one call per update
@@ -1179,7 +1180,7 @@ type blockingProxy struct {
 // the proxy and the backends behind them end.
 func startBlockingProxy(t *testing.T, server string) *blockingProxy {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.Listen()
 	if err != nil {
 		t.Fatalf("listen for the proxy: %v", err)
 	}
