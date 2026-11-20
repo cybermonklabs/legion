@@ -31,8 +31,8 @@ type record struct {
 	Refusals int `json:"refusals"`
 	// LastAttemptAt is when the last request was made, accepted or refused.
 	LastAttemptAt time.Time `json:"last_attempt_at,omitzero"`
-	// NextAttemptAt is when the next request is due: the last request plus the backoff. A record
-	// without it is due.
+	// NextAttemptAt is when the next request is due: the last request plus nine tenths of the
+	// backoff (decide says why). A record without it is due.
 	NextAttemptAt time.Time `json:"next_attempt_at,omitzero"`
 	// FirstDeliveredAt is the oldest failed attempt the sweep has seen for the delivery, kept as
 	// the minimum on every write; the delivery expires 72 hours after it.
@@ -141,13 +141,13 @@ func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]ope
 		}
 		var current record
 		if err := json.Unmarshal(entry.Value, &current); err != nil {
-			return fmt.Errorf("decode the redelivery record of %s: %w", guid, err)
+			return fmt.Errorf("decode the redelivery record of %s: %w", githubapp.ShownBody(guid), err)
 		}
 		if !current.open() {
 			return nil
 		}
 		if current.Delivery.GUID != guid {
-			return fmt.Errorf("the redelivery record of %s names delivery %q", guid, current.Delivery.GUID)
+			return fmt.Errorf("the redelivery record of %s names delivery %q", githubapp.ShownBody(guid), githubapp.ShownBody(current.Delivery.GUID))
 		}
 		open = append(open, openRecord{guid: guid, record: current, revision: entry.Revision})
 		return nil
@@ -159,7 +159,7 @@ func (s *Sweeper) scanOpenRecords(listed map[string][]githubapp.Delivery) ([]ope
 }
 
 // readState reads key's JSON value and its revision; an absent key is the zero value at revision
-// zero. what names the value in an error.
+// zero. what names the value in an error, and holds a GUID only as githubapp.ShownBody shows it.
 func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
 	var value T
 	entry, err := kv.Get(key)
@@ -167,7 +167,7 @@ func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
 		return value, 0, nil
 	}
 	if err != nil {
-		return value, 0, fmt.Errorf("read the redelivery %s: %w", what, err)
+		return value, 0, fmt.Errorf("read the redelivery %s: %w", what, bucketErr(err))
 	}
 	if err := json.Unmarshal(entry.Value(), &value); err != nil {
 		return value, 0, fmt.Errorf("decode the redelivery %s: %w", what, err)
@@ -176,7 +176,9 @@ func readState[T any](kv bus.KeyValue, key, what string) (T, uint64, error) {
 }
 
 // writeState writes value's JSON at key only over revision (absent when zero), so a lost race is
-// a conflict (bus.IsCASConflict), and returns the new revision.
+// a conflict (bus.IsCASConflict), and returns the new revision. The error is the bucket's own, so
+// that its caller can ask bus.IsCASConflict of it; the caller shows it through bucketErr once it
+// has.
 func writeState(kv bus.KeyValue, key string, value any, revision uint64) (uint64, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -213,12 +215,12 @@ func (s *Sweeper) readCursor() (cursorRecord, uint64, error) {
 // another sweeper wrote a cursor at the same moment; either value serves.
 func (s *Sweeper) writeCursor(at time.Time, revision uint64) {
 	if _, err := writeState(s.state, cursorKey, cursorRecord{At: at, Indexed: true}, revision); err != nil && !bus.IsCASConflict(err) {
-		s.Logger.Warn("webhook redelivery cursor not written", "error", err)
+		s.Logger.Warn("webhook redelivery cursor not written", "error", bucketErr(err))
 	}
 }
 
 func (s *Sweeper) readRecord(guid string) (record, uint64, error) {
-	return readState[record](s.state, recordPrefix+guid, "record of "+guid)
+	return readState[record](s.state, recordPrefix+guid, "record of "+githubapp.ShownBody(guid))
 }
 
 // putRecord writes next only if the record is still at revision (absent when zero), so two
@@ -227,8 +229,9 @@ func (s *Sweeper) readRecord(guid string) (record, uint64, error) {
 //
 // A write that loses its compare-and-set is written false and no error: another sweeper decided
 // the delivery first, and what that sweeper wrote carries the delivery on. A write the bucket
-// refused is that error, and carries nothing on at all: the record still holds what it held, so
-// its caller is what keeps the delivery from being lost (writeRecord, undoClaim).
+// refused is that error, shown through bucketErr once it is known not to be a lost race, and
+// carries nothing on at all: the record still holds what it held, so its caller is what keeps the
+// delivery from being lost (writeRecord, undoClaim).
 func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, bool, error) {
 	written, err := writeState(s.state, recordPrefix+guid, next, revision)
 	switch {
@@ -237,6 +240,31 @@ func (s *Sweeper) putRecord(guid string, next record, revision uint64) (uint64, 
 	case bus.IsCASConflict(err):
 		return 0, false, nil
 	default:
-		return 0, false, err
+		return 0, false, bucketErr(err)
 	}
+}
+
+// bucketError is an error the sweep's bucket answered, as the sweep's lines and errors show it: its
+// text cut as githubapp.ShownBody cuts GitHub's. A refusal of bus.KeyValue quotes the key it
+// refused whole (bus/kv.go's check and invalidKey), and every key of a delivery holds the
+// delivery's GUID, which is GitHub's text and may be as long as a key may be. Unwrap is the error
+// itself, so errors.Is and errors.As reach every class it carries (nats.ErrKeyNotFound,
+// bus.ErrRefused and the rest). bus.IsCASConflict reads the text rather than a class, so it is
+// asked of the bucket's error before that error is wrapped here, and never of this.
+type bucketError struct{ err error }
+
+func (e *bucketError) Error() string { return githubapp.ShownBody(e.err.Error()) }
+
+func (e *bucketError) Unwrap() error { return e.err }
+
+// bucketErr is err, an error the sweep's bucket answered, as the sweep shows it (bucketError), and
+// nil for nil. Every error the package takes from a call on its bucket passes through here once
+// the caller has classified it. A scan of the bucket (kvwatch) is not such a call: its errors name
+// the pattern this package scans by, which holds no GUID, and carry whole the error the scan's own
+// visit answered, which this package wrote and bounded itself (scanOpenRecords).
+func bucketErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &bucketError{err: err}
 }

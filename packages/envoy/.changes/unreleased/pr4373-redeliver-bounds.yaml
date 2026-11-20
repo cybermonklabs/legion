@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+    The webhook redelivery sweep shows each delivery's GUID, event and action, and each bucket key or bucket error that holds a GUID, in its log lines and errors as GitHub's text is shown elsewhere: whole up to 512 characters, and past that its first 512 characters and its size.
+    A listed delivery whose GUID the bucket cannot key (outside the key alphabet, or so long that its index entry's key passes the write bound) is left out of the sweep with one WARN line, `webhook redelivery left out a delivery whose GUID the bucket cannot key`; before, such a GUID failed every sweep or left every sweep incomplete.
+time: 2026-11-18T03:49:52.405000027Z
+custom:
+    Issue: pr4373

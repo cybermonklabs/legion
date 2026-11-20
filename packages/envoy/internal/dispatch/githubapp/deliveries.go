@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
@@ -453,6 +454,32 @@ func (e *StatusError) Error() string {
 // body that is not JSON or names none (responseMessage).
 func (e *StatusError) Message() string {
 	return responseMessage([]byte(e.Body))
+}
+
+// shownBodyRunes is how many runes of a body GitHub answered an error's text shows (ShownBody):
+// the start of the body, where GitHub writes the `message` of a refusal, in a line of bounded
+// length.
+const shownBodyRunes = 512
+
+// ShownBody is body, text GitHub gave, as a line or an error shows it: whole where it is at most
+// shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
+// the length of the whole body. A line that logs such text writes it whole, so the webhook
+// redelivery sweep shows each GUID, event, action and bucket refusal it logs or returns this way
+// (redeliver). It reads at most shownBodyRunes × 4 bytes of body, the most that many runes take,
+// and never splits a rune; a byte that is no UTF-8 counts as one rune.
+func ShownBody[Body ~string | ~[]byte](body Body) string {
+	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
+	runes := 0
+	for at := range head {
+		if runes == shownBodyRunes {
+			return fmt.Sprintf("%s… (%d bytes)", head[:at], len(body))
+		}
+		runes++
+	}
+	if len(head) < len(body) {
+		return fmt.Sprintf("%s… (%d bytes)", head, len(body))
+	}
+	return head
 }
 
 // StatusText is the text of an answer GitHub gave with status and body that its reader takes as

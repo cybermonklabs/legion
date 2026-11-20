@@ -16,19 +16,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// syncCount counts the flights running and waits for none to be left. It has
-// the shape of backgroundWork in api/server.go, and for its reason: a
-// sync.WaitGroup is not it, because a flight may start while a wait is
-// already waiting, and Add after Wait began is what a WaitGroup forbids.
-// begin refuses once Close has begun, so a flight whose goroutine starts
-// after Close took its decision does nothing rather than write into a
-// closing pool.
+// syncCount counts the flights and the push workers (push.go) running and
+// waits for none to be left. It has the shape of backgroundWork in
+// api/server.go, and for its reason: a sync.WaitGroup is not it, because a
+// flight may start while a wait is already waiting, and Add after Wait began
+// is what a WaitGroup forbids. begin refuses once Close has begun, so a flight
+// whose goroutine starts after Close took its decision does nothing rather
+// than write into a closing pool, and a push recorded then starts no worker.
 type syncCount struct {
 	mu      sync.Mutex
 	closing bool
 	running int
 	// idle is closed when running last fell to zero, and replaced when a
-	// flight starts again.
+	// flight or a push worker starts again.
 	idle chan struct{}
 }
 
@@ -54,11 +54,18 @@ func (c *syncCount) done() {
 	}
 }
 
-// stop refuses every later flight and waits for the running ones to end.
+// stop refuses every later flight and push worker and waits for the running
+// ones to end.
 func (c *syncCount) stop() {
 	c.mu.Lock()
 	c.closing = true
 	c.mu.Unlock()
+	c.wait()
+}
+
+// wait returns once no flight and no push worker runs. Until stop has begun,
+// one may start again as soon as it returns.
+func (c *syncCount) wait() {
 	for {
 		c.mu.Lock()
 		running, idle := c.running, c.idle
