@@ -616,7 +616,7 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 				Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-legion-208",
 				Role: podRoles[0], PodUID: "pod-1", PrivateDir: t.TempDir(), Stderr: stderr, StopGrace: 2 * time.Second,
 			})
-			listener.launcherReturned(err)
+			listener.codeReturned(err)
 			result <- err
 		}()
 		t.Cleanup(func() {

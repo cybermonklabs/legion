@@ -400,13 +400,17 @@ func TestAClaudeSaveReachesTheTableThroughTheGenerationsProxy(t *testing.T) {
 const launcherProcessEnv = "LEGION_LAUNCHER_TEST_PROCESS"
 
 // TestLauncherProcess runs a launcher in a process of its own, so a test can kill it with
-// SIGKILL as a node does a pod's.
+// SIGKILL as a node does a pod's. Its stdin is a pipe only the test binary that started it holds
+// (processRig), so the end of that pipe, whether the binary returned, panicked at its deadline or
+// was killed, ends the launcher too: no launcher outlives its test to redial the next listener on
+// its port with a hello the daemon end takes.
 func TestLauncherProcess(t *testing.T) {
 	if os.Getenv(launcherProcessEnv) != "1" {
 		return
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM)
 	defer cancel()
+	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	err := Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
 		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
@@ -436,13 +440,17 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	t.Cleanup(func() { _ = output.Close() })
 	command.Stdout, command.Stderr = output, output
+	// The pipe stays open as long as this binary holds it, and Wait closes it (TestLauncherProcess).
+	if _, err := command.StdinPipe(); err != nil {
+		t.Fatal(err)
+	}
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
 	go func() {
 		err := command.Wait()
-		listener.launcherReturned(err)
+		listener.codeReturned(err)
 		close(exited)
 	}()
 	kill = func() {

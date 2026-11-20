@@ -65,10 +65,28 @@ func TestARolesRedialIsTakenPastTheConnectionsAheadOfIt(t *testing.T) {
 	again.acknowledge()
 	pod.conns[podRoles[0]] = again
 
-	if err := another.SetReadDeadline(time.Now().Add(testwait.Bounded(t, time.Minute, time.Second))); err != nil {
-		t.Fatal(err)
+	// The read runs on a goroutine of its own, and the stray's cleanup closes the connection, so a
+	// read that never ends is blocked only until then. The wait is testwait.Eventually, which the
+	// rig before the daemon end had too, so this file still builds against that rig.
+	type read struct {
+		line []byte
+		err  error
 	}
-	if line, err := bufio.NewReader(another).ReadBytes('\n'); err != io.EOF || len(line) != 0 {
-		t.Fatalf("the hello under another launcher's token was answered %q (%v), want its connection closed with no acknowledgement", line, err)
+	reads := make(chan read, 1)
+	go func() {
+		line, err := bufio.NewReader(another).ReadBytes('\n')
+		reads <- read{line, err}
+	}()
+	var got read
+	testwait.Eventually(t, "the close of the connection that opened with a hello under another launcher's token", func() bool {
+		select {
+		case got = <-reads:
+			return true
+		default:
+			return false
+		}
+	})
+	if got.err != io.EOF || len(got.line) != 0 {
+		t.Fatalf("the hello under another launcher's token was answered %q (%v), want its connection closed with no acknowledgement", got.line, got.err)
 	}
 }

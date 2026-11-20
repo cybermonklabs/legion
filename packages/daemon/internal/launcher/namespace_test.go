@@ -116,7 +116,7 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	g.cancel = func() { _ = stdin.Close() }
 	go func() {
 		err := command.Wait()
-		listener.launcherReturned(err)
+		listener.codeReturned(err)
 		g.result <- err
 	}()
 	t.Cleanup(func() {

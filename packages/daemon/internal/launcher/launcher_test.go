@@ -121,7 +121,7 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
 	go func() {
 		err := Run(ctx, cfg)
-		listener.launcherReturned(err)
+		listener.codeReturned(err)
 		g.result <- err
 	}()
 	t.Cleanup(func() {
@@ -676,7 +676,7 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
 		err := Run(ctx, cfg)
-		listener.launcherReturned(err)
+		listener.codeReturned(err)
 		f.result <- err
 	}()
 	t.Cleanup(func() {

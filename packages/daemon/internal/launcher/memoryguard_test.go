@@ -1247,7 +1247,7 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
-		listener.launcherReturned(tester.serveUntil(ctx, listener.Addr().String()))
+		listener.codeReturned(tester.serveUntil(ctx, listener.Addr().String()))
 	}()
 	t.Cleanup(func() {
 		cancel()
