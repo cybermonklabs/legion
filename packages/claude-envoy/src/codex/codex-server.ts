@@ -27,7 +27,7 @@ import {
   type ChannelSession,
   type ChannelToolRuntime,
   channelToolDefinitions,
-  dialChannelNats,
+  dialChannelInbound,
   executeEnvoyTool,
   MCP_SERVER_INFO,
   mcpResult,
@@ -531,11 +531,14 @@ export async function runCodexEnvoyServer(): Promise<void> {
     if ("off" in inbound) {
       session = inboundOffChannelSession({ identity: id, stateDirectory, why: inbound.off })
     } else {
-      // Dialled as the Claude Code session's connection is (`dialChannelNats`): with a seed, no
-      // credential, or the session's broker token, which is then kept renewed and, at a `/new`,
-      // moved to the new session's (`followSession`) before that session's subjects are taken.
-      const dialled = await dialChannelNats(
+      // Dialled as the Claude Code session's connection is (`dialChannelInbound`): NATS with a
+      // seed, no credential, or the session's broker token, which is then kept renewed and, at a
+      // `/new`, moved to the new session's (`followSession`) before that session's subjects are
+      // taken; or the listener's relay socket, opened again for the new session at a `/new`.
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        () => id.id,
         `codex-envoy-channel-${id.id}`,
         warn,
         connect,
@@ -598,6 +601,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       })
       stream = startCodexAgentStream({
         connection,
+        liveView: dialled.liveView,
         sessionId: id.id,
         warn,
         ...(admission === undefined

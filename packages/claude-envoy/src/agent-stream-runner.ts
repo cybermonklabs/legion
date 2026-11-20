@@ -65,6 +65,13 @@ export interface AgentStreamOptions {
    * subjects, and the new control subject is taken at once.
    */
   readonly admitted?: (session: string) => Promise<void>
+  /**
+   * Whether a viewer can take this session: false where the session's inbound is the listener's
+   * relay socket (`ENVOY_INBOUND=listener`), which carries no agent stream
+   * (`@legion/envoy-client/listener-relay`), so the control subject is never taken, no viewer arms
+   * the publisher, and no frame goes out. The mod's events still reach `observe`. True by default.
+   */
+  readonly liveView?: boolean
   /** Whether this session is a Legion pane, whose first command the daemon's bridge writes
    *  rather than a person (`./agent-stream-claude`, `PANE_SEEDED_COMMAND`). */
   readonly isPane?: boolean
@@ -280,7 +287,7 @@ export function startAgentStream(options: AgentStreamOptions): AgentStreamRunner
   }
 
   function subscribe(): void {
-    if (stopped) return
+    if (stopped || options.liveView === false) return
     subscription?.unsubscribe()
     const taken = connection.subscribe(agentStreamControlSubject(session))
     subscription = taken
