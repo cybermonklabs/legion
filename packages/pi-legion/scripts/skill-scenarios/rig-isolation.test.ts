@@ -8,10 +8,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
-import { pythonInterpreter, skipWithout } from "@legion/test-fixtures/host-tools";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
@@ -28,9 +30,10 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // must stop its server when it ends.
 setDefaultTimeout(120_000);
 
-// Every row here runs the rig through python3, which puts it in a process group of its own
-// (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
-const withoutPython = skipWithout("python3");
+// Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
+// in a process group of its own (`runRig` below says why it must). Read once, so one warning names
+// perl for the whole file.
+const withoutPerl = skipWithout("perl");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
@@ -65,6 +68,7 @@ stagings.push(() => {
   copyFileSync(path.join(root, ".bun-version"), path.join(co, ".bun-version"));
   for (const lib of [
     "rig.sh",
+    "process-tree.sh",
     "loopback-dsn.sh",
     "loopback-dsn.py",
     "port-file.sh",
@@ -185,9 +189,10 @@ put(
 // the server and the seeds) does not depend on how the caller installed one. On a devbox bun is a
 // mise shim, which finds its version in mise's global config under the developer's home, not under
 // the HOME below: there the shim exits 1 ("No version is set for shim: bun"), and load_label reads
-// that as settings without the handler limit. The link is here, not a directory added to PATH,
-// because python3 is a mise shim there too, and mise drops its install directories from the PATH
-// of what a shim runs, which is the rig.
+// that as settings without the handler limit. The link is here, not a directory added to PATH: the
+// rig was started through python3, a mise shim there too, and mise drops its install directories
+// from the PATH of what a shim runs. ownGroup's perl starts it now, and the link stays the one place
+// the rig's bun is chosen.
 stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
 // A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
 // puts ahead of the link above. It answers `--version` with the pinned release, so the rig's check
@@ -220,6 +225,23 @@ put(
   [
     "#!/usr/bin/env bash",
     'printf \'%s\\n\' "$*" >>"$STUB_DIR/counting-bun.log"',
+    `exec ${JSON.stringify(process.execPath)} "$@"`,
+    "",
+  ].join("\n"),
+  0o755
+);
+
+// This Bun refuses to run unless the rig receives the caller's resolved mise config directory.
+// Its `-e` call still runs this test's Bun, so the rig resolves and runs a real binary.
+const configBun = path.join(scratch, "config-bun");
+put(
+  path.join(configBun, "bun"),
+  [
+    "#!/usr/bin/env bash",
+    'if [ "$MISE_CONFIG_DIR" != "$EXPECTED_MISE_CONFIG_DIR" ]; then',
+    '  echo "wanted MISE_CONFIG_DIR=$EXPECTED_MISE_CONFIG_DIR, got $MISE_CONFIG_DIR" >&2',
+    "  exit 97",
+    "fi",
     `exec ${JSON.stringify(process.execPath)} "$@"`,
     "",
   ].join("\n"),
@@ -260,81 +282,63 @@ const tag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(work).diges
  *  and ignore records, so whatever mise writes as the rig runs stays under `scratch`. */
 const miseState = path.join(scratch, "mise-state");
 stagings.push(() => seedMiseState(miseState));
-/** The caller's PATH behind the stand-ins, a HOME of the test's own, and the caller's mise
- * configuration: its data and config directories, the global config, system config and trusted
- * paths it names, and `miseState`, as mise resolves them (`callerMiseEnvironment`). bun and jq can
- * be mise shims on a devbox, which find no version under a fresh HOME without them: where the
- * caller's PATH reaches bun only through mise's shim, rig.sh's settings check fails with "No
- * version is set for shim: bun". They are passed whatever the caller sets, since a caller that
- * sets no XDG_CONFIG_HOME still has a config in its own ~/.config/mise. XDG_CONFIG_HOME itself is
- * not passed, so no other tool's configuration of the caller's reaches the rig, whether the caller
- * sets it or not. MISE_NO_ENV=1 keeps the caller's config's [env] out as well: a shim runs its
- * tool with that env over the one it was given (src/cli/exec.rs:374-441 in mise 2026.10.11), so a
- * caller's `DATABASE_URL` would reach both Dispatch stand-ins in place of each run's own, and with
- * it mise picks the tool version and loads no config env (src/config/mod.rs:1554-1557). */
-const env = {
-  PATH: `${bin}:${process.env.PATH ?? ""}`,
-  HOME: path.join(scratch, "home"),
-  USER: process.env.USER ?? "rig",
-  TMPDIR: scratch,
-  ...callerMiseEnvironment(miseState),
-  MISE_NO_ENV: "1",
-  STUB_DIR: stub,
-  SKILL_SCENARIOS_WORK: work,
-  SKILL_SCENARIOS_ASKGATE_CASE: "facts",
-};
-
-/** The parent between the test and the rig: it puts the rig in a process group of its own
- * (posix_spawnp with POSIX_SPAWN_SETPGROUP, which is setpgid in the child between fork and exec),
- * waits for it, and reports its status as a shell does. `-I` keeps a caller's PYTHON* variables
- * out of it; the rig's name is resolved on PATH, as posix_spawnp does, so it is the `bash` the
- * rest of the run uses. */
-const setpgid = [
-  "import os, sys",
-  "pid = os.posix_spawnp(sys.argv[1], sys.argv[1:], os.environ, setpgroup=0)",
-  "status = os.waitpid(pid, 0)[1]",
-  "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
-].join("\n");
-
-/** The interpreter `python3` names in the caller's own environment (`pythonInterpreter`), which
- *  the hook below reads before any row runs the rig, and which runs that parent by its own path.
- *  Looked up on the rig's PATH under this file's HOME, python3 was mise's shim on a devbox, which
- *  ran the system python3 with every mise install directory taken off PATH, and the rig's `bun`
- *  was then mise's bun shim with no version under that HOME ("No version is set for shim: bun"). */
-let python = "";
+/**
+ * The child environment for one caller. The test HOME stays private, while mise receives every
+ * resolved caller path it needs to run a shim. `callerMiseEnvironment` must stay here rather than
+ * at one caller: the two rows below make a child Bun reject any other config directory.
+ */
+function rigEnvironment(
+  caller: Record<string, string | undefined> = process.env,
+  callerHome = homedir(),
+  state = miseState
+) {
+  return {
+    PATH: `${bin}:${caller.PATH ?? ""}`,
+    HOME: path.join(scratch, "home"),
+    USER: caller.USER ?? "rig",
+    TMPDIR: scratch,
+    ...callerMiseEnvironment(state, caller, callerHome),
+    MISE_NO_ENV: "1",
+    STUB_DIR: stub,
+    SKILL_SCENARIOS_WORK: work,
+    SKILL_SCENARIOS_ASKGATE_CASE: "facts",
+  };
+}
+const env = rigEnvironment();
 
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
- * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
- * group that is orphaned — one no member's parent watches from another group of the same session —
- * has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a stopped
- * member in it. Where a Legion worker runs this suite each shell command is a session leader, so
- * bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of
- * that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's own
- * group, so the rig needs a parent that moves it out of it.
+ * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/process-tree.sh), and a
+ * process group that is orphaned — one no member's parent watches from another group of the same
+ * session — gets SIGHUP and SIGCONT from the kernel with a stopped member in it: Linux sends them
+ * the moment the group is orphaned, and the gVisor of a Legion pod whenever another member exits.
+ * Where a Legion worker runs this suite each shell command is a session leader, so bun's own group
+ * is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of that SIGHUP
+ * (status 129) before printing any totals. Bun.spawn leaves its child in bun's own group, so the rig
+ * needs to move out of it.
  *
  * A session of its own is the wrong tool: a setsid child leads its session, so the one parent
  * outside its group is in another session, which the orphan test does not count, and the group is
  * orphaned from the start — the rig hangs itself up with the first stop of its own teardown. What
- * it needs is a group of its own inside bun's session, under a parent that stays in bun's group:
- * that parent is the connection outside the group which keeps it from being orphaned in turn.
+ * it needs is a group of its own inside bun's session, whose parent, bun, is in another group of
+ * that session: that parent is the connection outside the group which keeps it from being orphaned.
  *
  * A POSIX shell reaches setpgid only through job control, and a job-control shell writes its job
  * table's notices on its stderr, which is the rig's: on bash 5.2.21, the ubuntu-24.04 runner's of
  * ci.yaml's pi-legion job, `set -m; "$@" & wait "$!"` leaves `[1]+  Done` and the job's command
  * there (bash 5.2.37 prints none, so that wrapper passed on a devbox and failed on the runner). So
- * no shell stands between the test and the rig: python3's posix_spawnp sets the group and nothing
- * else, has no job table to report from on any bash, and redirects none of the rig's stderr away,
- * so a complaint of the wrapper's own still reaches this test. python3 is on PATH on that runner
- * (ci.yaml's lint job runs .github/scripts/check-action-pins.sh, which runs python3, on the same
- * ubuntu-24.04 image, with no setup-python step) and in a Legion worker pod
- * (packages/daemon/docker/worker.Dockerfile installs python3 in its runtime-base stage and checks
- * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
- * job control off, as it always has. python3 is run by its interpreter's path
- * (`pythonInterpreter`), so nothing stands between the test and that parent either. */
-async function runRig(args: string[], vars: Record<string, string> = {}) {
-  const child = Bun.spawn([python, "-I", "-c", setpgid, "bash", rig, ...args], {
-    env: { ...env, ...vars },
+ * no shell stands between the test and the rig: ownGroup's perl calls setpgrp and execs the rig's
+ * bash, so the pid Bun.spawn returns is the rig's own, with no job table, nothing of its stderr
+ * redirected, and the signal dispositions and environment a plain start would give it. A python3 in
+ * its place ignored SIGPIPE and SIGXFSZ and coerced LC_CTYPE, and its posix_spawnp handed all three
+ * to the rig. The rig's own shell runs with job control off, as it always has. */
+async function runRig(
+  args: string[],
+  vars: Record<string, string> = {},
+  environment: Record<string, string> = env
+) {
+  const child = Bun.spawn(ownGroup(["bash", rig, ...args]), {
+    env: { ...environment, ...vars },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -356,10 +360,9 @@ const lines = (file: string) =>
     : [];
 
 beforeAll(async () => {
-  // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
-  // of them, and this hook would throw on a host that does not have it.
-  if (withoutPython) return;
-  python = pythonInterpreter();
+  // Nothing is staged and no rig is started where the rows do not run: perl starts every one of
+  // them (ownGroup), and it would throw on a host that does not have it.
+  if (withoutPerl) return;
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
@@ -376,11 +379,11 @@ beforeAll(async () => {
   });
 });
 
-test.skipIf(withoutPython)("both runs finish", () => {
+test.skipIf(withoutPerl)("both runs finish", () => {
   for (const { code, stderr } of runs) expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
 });
 
-test.skipIf(withoutPython)("each run makes a database of its own in the batch's Postgres", () => {
+test.skipIf(withoutPerl)("each run makes a database of its own in the batch's Postgres", () => {
   const made = lines(path.join(stub, "docker.log")).filter((line) =>
     line.includes("CREATE DATABASE")
   );
@@ -391,7 +394,7 @@ test.skipIf(withoutPython)("each run makes a database of its own in the batch's 
   ]);
 });
 
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "each run starts a Dispatch server of its own, on its own database and port",
   () => {
     expect(servers.map((server) => server.database).sort()).toEqual([
@@ -402,7 +405,7 @@ test.skipIf(withoutPython)(
   }
 );
 
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "each run's agent, seeds and capture reach the run's own Dispatch and no other",
   () => {
     const seeds = lines(path.join(stub, "seeds.log")).map((line) => JSON.parse(line));
@@ -435,7 +438,7 @@ test.skipIf(withoutPython)(
 
 // The run's exit handler kills its server's whole tree before the run exits, so a server's pid is
 // gone or a zombie by the time its run has ended.
-test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", () => {
+test.skipIf(withoutPerl)("each run stops its Dispatch server when it ends", () => {
   expect(servers.length).toBe(2);
   const running = servers.filter(
     ({ pid }) =>
@@ -447,7 +450,7 @@ test.skipIf(withoutPython)("each run stops its Dispatch server when it ends", ()
 
 // AskGate's review would time out under Oh My Pi's default handler limit, so a run whose profile
 // leaves the limit there scores the timeout rather than the rule: the rig refuses it, starting nothing.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "stale", "1", "3", start]);
@@ -460,7 +463,7 @@ test.skipIf(withoutPython)(
 
 // A check that cannot answer is refused as that, with the reader's own error: settings that are
 // not YAML are not read as settings that leave the limit at its default.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run on a profile whose settings cannot be read is refused with the reader's own error",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "broken", "1", "5", start]);
@@ -489,7 +492,7 @@ put(
   ].join("\n"),
   0o755
 );
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run on a bun other than the pinned release is refused, naming both releases and the bun",
   async () => {
     const pinned = readFileSync(path.join(root, ".bun-version"), "utf8").trim();
@@ -508,7 +511,7 @@ test.skipIf(withoutPython)(
 // any label's settings are read, and refuses it there with its own words, for a profile that sets
 // the limit and for one that does not. The second is the control of the "leave the handler limit at
 // its default" row above, whose refusal names the key only where bun read the settings.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run whose first bun cannot run is refused with that bun's own error, naming neither the key nor a release",
   async () => {
     for (const [name, index] of [
@@ -531,7 +534,7 @@ test.skipIf(withoutPython)(
 
 // A shim that fails even `bun --version`, as mise's does under a HOME whose config names no
 // version: the rig's check of the release reports the shim's own words, not a Bun of no version.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run whose first bun fails `bun --version` is refused with that bun's own error",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "on", "10", "4", start], {
@@ -549,7 +552,7 @@ test.skipIf(withoutPython)(
 // The rig asks the first bun on PATH twice, for its release and for the binary it runs, and every
 // command after that starts that binary by its path: a run with a recording bun first on PATH
 // finishes, and that bun saw those two calls and no other.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run asks the first bun on PATH only for its release and its binary, then runs that binary",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "on", "11", "4", start], {
@@ -563,10 +566,40 @@ test.skipIf(withoutPython)(
   }
 );
 
+for (const [mode, callerXdgConfig, run] of [
+  ["unset", undefined, "12"],
+  ["set", path.join(scratch, "caller-xdg-config"), "13"],
+] as const) {
+  test.skipIf(withoutPerl)(
+    `a caller whose XDG_CONFIG_HOME is ${mode} passes mise's resolved config directory to Bun`,
+    async () => {
+      const callerHome = path.join(scratch, `caller-home-${mode}`);
+      const state = path.join(scratch, `caller-mise-state-${mode}`);
+      const caller = {
+        PATH: process.env.PATH,
+        ...(callerXdgConfig === undefined ? {} : { XDG_CONFIG_HOME: callerXdgConfig }),
+      };
+      mkdirSync(callerHome, { recursive: true });
+      seedMiseState(state, caller, callerHome);
+      const expected = path.join(callerXdgConfig ?? path.join(callerHome, ".config"), "mise");
+      const environment = rigEnvironment(caller, callerHome, state);
+      const { code, stderr } = await runRig(
+        ["run", "askgate", "on", run, "4", start],
+        {
+          PATH: `${configBun}:${environment.PATH}`,
+          EXPECTED_MISE_CONFIG_DIR: expected,
+        },
+        environment
+      );
+      expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
+    }
+  );
+}
+
 // The link case's ask states the reindex time from a file, for AskGate's content 9 (an unsourced
 // claim about what we run today): the run's working directory must hold that file, with the line
 // the prompt quotes.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a link run's working directory holds the crontab its prompt cites, with the line it quotes",
   async () => {
     const { code, stderr } = await runRig(["run", "askgate", "on", "1", "4", start], {

@@ -14,6 +14,9 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { callerMiseEnvironment, seedMiseState } from "@legion/test-fixtures/mise-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { gitBinary } from "@legion/test-fixtures/version-control-tools";
+import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
+import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -442,8 +445,9 @@ describe("checkout_commit", () => {
   });
 });
 
-// cmd_live_read reads every path skill_reads prints. asd-ste100 holds examples/ beside
-// references/, and a read of SKILL.md and references/ alone left examples/ unread.
+// cmd_live_read reads every path skill_reads prints. A skill can hold examples/ beside
+// references/ (asd-ste100 holds examples/), and a read of SKILL.md and references/ alone left
+// examples/ unread.
 describe("skill_reads", () => {
   function checkout() {
     const co = freshDir("skills-checkout");
@@ -556,6 +560,90 @@ describe("next_run", () => {
   // Catches: a first batch that fails because $work/runs does not exist yet.
   test("1 when the label has no run of the scenario", () => {
     expect(next(freshDir("numbering-empty"), "spec-rewrite", "s1").stdout).toBe("1\n");
+  });
+});
+
+// run_env_pids names each process whose environment carries a run under DIR, with its start time,
+// for the exit handlers' stop_env_processes. It walks every process's environment, so a machine
+// whose /proc/<pid>/environ entries together pass ARG_MAX must not hand them to grep as its
+// arguments: past about 80,000 processes grep could not start, and the run had nothing to stop.
+// perl: each row's processes and harness start through ownGroup (scripts/e2e/lib/own-group.ts).
+const withoutPerl = skipWithout("perl");
+describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
+  const force = path.join(root, "scripts/e2e/lib/arg-max-force.sh");
+  const processTree = path.join(root, "scripts/e2e/lib/process-tree.sh");
+  const start = (pid: number) =>
+    readFileSync(`/proc/${pid}/stat`, "utf8")
+      .replace(/^.*\) /, "")
+      .split(" ")[19];
+  // Each row's run process and its harness shell run in process groups of their own (ownGroup,
+  // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
+  // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
+  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
+  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
+  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
+  const runProcess = (dir: string) =>
+    Bun.spawn(ownGroup(["sleep", "60"]), {
+      env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+  const groupBash = (script: string, args: string[], procRoot: string) => {
+    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
+      env: { ...childEnv, proc_root: procRoot },
+    });
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  };
+
+  // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
+  // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing. The force cannot hold under
+  // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds).
+  test.skipIf(!argMaxForceHolds())(
+    "names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start",
+    () => {
+      const dir = freshDir("env-pids");
+      const scratch = freshDir("env-pids-scratch");
+      const run = runProcess(dir);
+      try {
+        const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
+        const forced = groupBash(
+          `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
+          [scratch, dir],
+          procRootOf(scratch, [run.pid])
+        );
+        expect(forced).toEqual({ code: 0, stdout: `${run.pid} ${start(run.pid)}\n`, stderr: "" });
+      } finally {
+        run.kill("SIGKILL");
+      }
+    }
+  );
+
+  // Catches: a stop_env_processes that does not end what its walk names. The loop that ends each
+  // process, held to its start and its mark, is kill_held (scripts/e2e/lib/process-tree.sh), the
+  // run's sweep's own; its rows, a pid that passed to another process and a parent that exits after
+  // the freeze, are run-processes.test.ts's, and are not written a second time here.
+  test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
+    const dir = freshDir("env-stop");
+    const run = runProcess(dir);
+    await untilRunning(run.pid, "sleep");
+    try {
+      const rig = path.join(root, "scripts/e2e/lib/rig.sh");
+      const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
+      const own = groupBash(
+        `${prelude}\n${fn("run_env_pids")}\nstop_env_processes "$1"; echo "status $?"`,
+        [dir],
+        procRootOf(dir, [run.pid])
+      );
+      expect(own).toEqual({ code: 0, stdout: "status 0\n", stderr: "" });
+      expect(await run.exited).not.toBe(0);
+      expect(run.signalCode).toBe("SIGKILL");
+    } finally {
+      run.kill("SIGKILL");
+    }
   });
 });
 

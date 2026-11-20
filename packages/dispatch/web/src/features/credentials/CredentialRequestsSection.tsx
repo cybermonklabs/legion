@@ -17,6 +17,7 @@ import {
 } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { brokerPage } from "./brokerPage";
 import { CredentialSessionLines } from "./CredentialSessionLines";
@@ -96,15 +97,18 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const submitGuard = useSubmitGuard();
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
-  // The row shows a refused dismissal itself, under its own line.
-  const dismiss = useKeyedWrite<void>({
+  // The row shows a refused dismissal itself, under its own line. The press carries the request
+  // it dismisses and the name it shows by, so a Retry and the words it ends with are of that
+  // request whatever this row is drawn for by then.
+  const dismiss = useKeyedWrite({
     inline: true,
-    label: () => label,
+    label: (press: { readonly label: string; readonly recordId: string }) => press.label,
     onSettled: () => {
       submitGuard.release();
       void queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey });
     },
-    write: (_variables, bounds) => api.dismissCredentialRequest(row.record_id, bounds),
+    method: "POST",
+    write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
 
   return (
@@ -116,7 +120,9 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
           aria-label={label}
           className={secondaryButtonCompact}
           disabled={dismiss.isPending}
-          onClick={() => submitGuard.guard(() => dismiss.mutate())}
+          onClick={() =>
+            submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
+          }
           type="button"
         >
           Dismiss
@@ -131,9 +137,15 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
           </>
         )}
       </p>
+      {/* A dismissal the reader stopped may have been made, and Dismiss is a press of its own,
+          under a key of its own: it never makes the stopped dismissal again. */}
       {dismiss.isError ? (
         <p className={`mt-0.5 text-xs ${dangerText}`}>
-          {apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
+          {dismiss.error instanceof SendStoppedError
+            ? stoppedWriteNote("the dismissal of this request", "made", {
+                anew: "Pressing Dismiss again sends a new dismissal.",
+              })
+            : apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
         </p>
       ) : null}
     </>

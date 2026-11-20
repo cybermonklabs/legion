@@ -204,9 +204,10 @@ func TestReplayNamedVersionUploadOrEdit(t *testing.T) {
 	o := rpOptions()
 	o.uploads = 1
 	a := onlyWrite(t, rpPlan(t, o, []string{line}, nil))
-	wantRoutes(t, a, []string{"POST /api/v1/issues/{key}/artifacts [upload]"})
-	if b := lastBody(a); b["content"] != want || b["name"] != "spec" || b["summary"] != "s" {
-		t.Fatalf("upload body: content matches %v, name %v", b["content"] == want, b["name"])
+	wantRoutes(t, a, []string{"GET /api/v1/artifacts/{id}/text [upload]"}, []string{"POST /api/v1/issues/{key}/artifacts [upload]"})
+	if b := lastBody(a); b["content"] != want || b["name"] != "spec" || b["summary"] != "s" ||
+		b["precondition"].(map[string]any)["document"] != (replayDocToken{}) {
+		t.Fatalf("upload body: content matches %v, name %v, base %v", b["content"] == want, b["name"], b["precondition"])
 	}
 
 	o.uploads = 0

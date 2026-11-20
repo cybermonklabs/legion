@@ -2,7 +2,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { UserIssueState, UserState } from "../../api/types";
-import { type Shape, shape } from "../writes/write-storage";
+import { type Shape, shape } from "../writes/tab-storage";
 import { defineWriteKind, isLive, ofKind, type Writes, writesOf } from "../writes/write-store";
 import { pinnedItemMarker, stateForIssue } from "./pins";
 
@@ -138,6 +138,7 @@ export function writePin(
       label: `${applied.op === "pin" ? "Pin" : "Unpin"} on ${issueKey}`,
       presentation: "indicator",
       target: `pin:${issueKey}`,
+      method: "PUT",
       write: pinAttempt(detail),
     })
     .catch(() => {});

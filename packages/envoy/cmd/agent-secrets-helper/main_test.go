@@ -153,8 +153,8 @@ func TestServeRefusesAMachineFileThatDoesNotParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config{URL: brokeraddr.New("https://s"), Socket: dir + "/h.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
-	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
-		t.Fatalf("serve on an unreadable machine file: %v; want an error naming %s", err, machineFile)
+	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
+		t.Fatalf("serve on an unreadable machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}
 	if _, err := os.Stat(cfg.Socket); err == nil {
 		t.Fatal("serve listened despite the unreadable machine file")
@@ -534,7 +534,8 @@ func TestASecondServeNeverSpendsTheRefreshToken(t *testing.T) {
 
 // TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken: while one helper holds the
 // machine file's claim, a serve on another socket but the same machine file exits with an error
-// naming the file and never reaches the broker, so it never spends the login's refresh token.
+// naming the file by its setting and never reaches the broker, so it never spends the login's
+// refresh token.
 func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T) {
 	dir := t.TempDir()
 	var calls atomic.Int64
@@ -558,8 +559,8 @@ func TestASecondServeOnTheSameMachineFileNeverSpendsItsRefreshToken(t *testing.T
 	}
 	defer first.Close()
 	cfg := config{URL: brokeraddr.New(srv.URL), Socket: dir + "/other.sock", OperatorFile: dir + "/none", MachineFile: machineFile, StatePath: dir + "/s.json"}
-	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), machineFile) {
-		t.Fatalf("a serve on a claimed machine file: %v; want an error naming %s", err, machineFile)
+	if err := serve(cfg); err == nil || !strings.Contains(err.Error(), "AGENT_SECRETS_MACHINE_FILE") || strings.Contains(err.Error(), machineFile) {
+		t.Fatalf("a serve on a claimed machine file: %v; want an error naming AGENT_SECRETS_MACHINE_FILE, not %s", err, machineFile)
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("the second serve made %d broker calls; want none", n)
@@ -635,7 +636,8 @@ func TestAnIdentityHelperKeepsItsKeyAcrossARestart(t *testing.T) {
 
 // TestAnIdentityHelperRefusesAKeyOthersCanRead: the key this machine's launcher credential is
 // bound to is the whole of its authority over its sessions, so a file others may read stops the
-// start naming the file and the fix, as the machine login's own file does.
+// start naming the file (where it lives under HOME, never its path) and the fix, as the machine
+// login's own file does.
 func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 	home := t.TempDir()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -647,7 +649,7 @@ func TestAnIdentityHelperRefusesAKeyOthersCanRead(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := identityClient(cfg, log)
-	if err == nil || !strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
-		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s and the fix", err, cfg.IdentityKeyFile)
+	if err == nil || !strings.Contains(err.Error(), helper.IdentityKeyNamed) || strings.Contains(err.Error(), cfg.IdentityKeyFile) || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("a world-readable identity key: %v; want a refusal naming %s, not %s, and the fix", err, helper.IdentityKeyNamed, cfg.IdentityKeyFile)
 	}
 }

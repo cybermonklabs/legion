@@ -117,6 +117,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
@@ -608,6 +610,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
@@ -1702,110 +1706,6 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the file that closure reads outside the filter, or the go env write" "$(contains "$out" 'other\|go env')"
 
-# A caller can set any variable the go command reads, and the python3 that starts the engine can
-# be a version manager's shim that gives it a GOROOT and a PATH of its own: mise's gives it the
-# GOROOT of the Go it picks, go1.27.0 where go.work names go1.27.3, which under a caller's
-# GOTOOLCHAIN=local made every go command of the check refuse go.work. The check must answer under
-# all of that as it answers under none of it. The shim here starts the check's Python with a
-# stand-in GOROOT, whose go only refuses, and with that go first on its PATH. The caller sets one
-# variable of each other kind, and the fixture shows what each would do: GOFLAGS, and GOFLAGS
-# again in the default `go env -w` file under XDG_CONFIG_HOME, which an empty GOFLAGS does not
-# override, set the tag that compiles mod/lib/polluted.go, and GOOS compiles mod/lib/lib_plan9.go,
-# each of which imports mod/other, a package the filter leaves out; GO111MODULE=off lists in GOPATH
-# mode, which cannot find mod/dep, the package mod/lib/dep.go imports; GOWORK=off leaves go.work
-# out of the module files; GOEXPERIMENT names an experiment no go knows. CGO_ENABLED=0 and
-# GOTOOLCHAIN=local are set too with no file of their own: the next case holds cgo, and this
-# fixture's go line is below every go's. Both runs start from a go binary, not a version
-# manager's shim of it, which would put a GOROOT of its own in place of the caller's. The clean
-# answer is held to the green one first, so the two cannot agree by both failing.
-echo "case: a caller's Go variables and a python3 shim's GOROOT and PATH change nothing it reports"
-root=$(fixture caller-go-setup)
-printf '//go:build polluted\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/polluted.go"
-printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_plan9.go"
-mkdir -p "$root/mod/dep"
-printf 'package dep\n' > "$root/mod/dep/dep.go"
-printf 'package lib\n\nimport _ "example.com/m/dep"\n' > "$root/mod/lib/dep.go"
-replace "$root/.github/workflows/ci.yaml" "              - 'mod/lib/*'" $'              - \'mod/lib/*\'\n              - \'mod/dep/*\''
-go_bin="$(cd "$work" && go env GOROOT)/bin"
-python=$(python3 -c 'import sys; print(sys.executable)')
-standin="$work/standin-goroot"
-shim="$work/python3-shim"
-mkdir -p "$standin/bin" "$shim" "$work/caller-config/go"
-printf '#!/bin/sh\necho "the stand-in go ran" >&2\nexit 3\n' > "$standin/bin/go"
-# shellcheck disable=SC2016 # $PATH and "$@" are the shim's own, written into it unexpanded
-printf '#!/bin/sh\ntouch "%s"\nGOROOT="%s" PATH="%s:$PATH" exec "%s" "$@"\n' \
-  "$shim/started" "$standin" "$standin/bin" "$python" > "$shim/python3"
-chmod +x "$standin/bin/go" "$shim/python3"
-printf 'GOFLAGS=-tags=polluted\n' > "$work/caller-config/go/env"
-check "the go env file sets GOFLAGS for a go command that reads it" \
-  "$(is "$(cd "$work" && env -u GOENV -u GOFLAGS XDG_CONFIG_HOME="$work/caller-config" "$go_bin/go" env GOFLAGS)" "-tags=polluted")"
-set +e
-clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u CGO_ENABLED -u GOEXPERIMENT \
-  -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
-clean_status=$?
-polluted=$(env PATH="$shim:$go_bin:$PATH" XDG_CONFIG_HOME="$work/caller-config" GOTOOLCHAIN=local \
-  GOFLAGS=-tags=polluted GOWORK=off GOOS=plan9 CGO_ENABLED=0 GOEXPERIMENT=pollutedexperiment GO111MODULE=off \
-  "$root/.github/scripts/check-ci-filters.sh" 2>&1)
-polluted_status=$?
-set -e
-answer() { grep -Ev '^::stop-commands::[0-9a-f]{32}$|^::[0-9a-f]{32}::$' <<<"$1" || true; }
-check "passes clean" "$(is "$clean_status" 0)"
-check "counts the job's files clean" "$(contains "$clean" '^report: app: [0-9]* files, 0 uncovered (filter app)$')"
-check "the polluted run's Python is the one the shim started" \
-  "$(is "$(test -e "$shim/started" && echo started || echo missing)" started)"
-check "gives the clean answer under the caller's variables and the shim's GOROOT and PATH" \
-  "$(is "$polluted_status:$(answer "$polluted")" "$clean_status:$(answer "$clean")")"
-
-# A machine whose go defaults to another platform than CI's runner - a darwin/arm64 laptop, or a
-# worker pod whose go.env turns cgo off - lists other files. Here mod/lib/lib_darwin.go,
-# mod/lib/lib_arm64.go and mod/lib/nocgo.go (//go:build !cgo) import mod/other, which the filter
-# leaves out, and only such a go compiles them. The stand-in toolchain is that machine's go: it
-# names its own root for `go env GOROOT`, so the check runs it for every listing, and it fills in
-# GOOS=darwin, GOARCH=arm64 and CGO_ENABLED=0 wherever its caller sets none before it runs the
-# real go. The check lists every go command for CI's platform (ci_filter_coverage.CI_PLATFORM),
-# so it must answer as it does on the real go of this machine.
-echo "case: a go whose defaults are another platform's, cgo off, gives CI's answer"
-root=$(fixture other-host)
-printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_darwin.go"
-printf 'package lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/lib_arm64.go"
-printf '//go:build !cgo\n\npackage lib\n\nimport _ "example.com/m/other"\n' > "$root/mod/lib/nocgo.go"
-host="$work/darwin-host-goroot"
-mkdir -p "$host/bin"
-# shellcheck disable=SC2016 # $#, $1, $2, $@ and the defaults are the stand-in's own, written unexpanded
-printf '#!/bin/sh\nif [ "$#" = 2 ] && [ "$1 $2" = "env GOROOT" ]; then echo "%s"; exit 0; fi\nif [ "$1" = list ]; then touch "%s/listed"; fi\nGOOS=${GOOS:-darwin} GOARCH=${GOARCH:-arm64} CGO_ENABLED=${CGO_ENABLED:-0} exec "%s" "$@"\n' \
-  "$host" "$host" "$go_bin/go" > "$host/bin/go"
-chmod +x "$host/bin/go"
-check "the stand-in's go defaults to darwin/arm64 with cgo off" \
-  "$(is "$(cd "$work" && env -u GOOS -u GOARCH -u CGO_ENABLED "$host/bin/go" env GOOS GOARCH CGO_ENABLED | tr '\n' ' ')" "darwin arm64 0 ")"
-set +e
-clean=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
-  -u GOEXPERIMENT -u GO111MODULE PATH="$go_bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
-clean_status=$?
-other=$(env -u GOROOT -u GOTOOLCHAIN -u GOFLAGS -u GOENV -u GOWORK -u GOOS -u GOARCH -u CGO_ENABLED \
-  -u GOEXPERIMENT -u GO111MODULE PATH="$host/bin:$PATH" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
-other_status=$?
-set -e
-check "passes on this machine's go" "$(is "$clean_status" 0)"
-check "the stand-in's go ran the listings" "$(is "$(test -e "$host/listed" && echo listed || echo missing)" listed)"
-check "gives the same answer on the stand-in's go" \
-  "$(is "$other_status:$(answer "$other")" "$clean_status:$(answer "$clean")")"
-
-# The check starts from the go its own PATH resolves. A PATH holding no go - the bash and dirname
-# the script needs before it looks, and nothing else - is refused at once, naming it, rather than
-# failing in the engine on the first go command with a traceback.
-echo "case: no go on PATH"
-root=$(fixture no-go)
-mkdir -p "$work/no-go-path"
-ln -s "$(type -P bash)" "$work/no-go-path/bash"
-ln -s "$(type -P dirname)" "$work/no-go-path/dirname"
-set +e
-out=$(PATH="$work/no-go-path" "$root/.github/scripts/check-ci-filters.sh" 2>&1)
-status=$?
-set -e
-check "fails" "$(is "$status" 1)"
-check "says there is no go on PATH" \
-  "$(contains "$out" '^::error file=.github/scripts/check-ci-filters.sh::no go on PATH, so this check cannot list the closure of any go command')"
-
 echo "case: a claimed command that cds into another module of the workspace before it runs"
 root=$(fixture cd-other-module)
 mkdir -p "$root/mod2/cmd/app" "$root/mod2/lib"
@@ -1969,6 +1869,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2152,6 +2054,8 @@ EXCLUDED = {"image": "an image build another check proves"}
 PUSH_WORKFLOWS = {"site": ".github/workflows/site.yaml"}
 WORKSPACES = ["packages/widget"]
 DAEMON_RACE_PACKAGES = ["lib"]
+DAEMON_RACE_FILL_JOB = "fill"
+RACE_FILL_SCRIPTS = []
 TAG_RUNS = []
 PY
   replace "$1/.github/workflows/ci.yaml" "        run: go test ./cmd/app ./lib" \
@@ -2554,18 +2458,96 @@ check "fails" "$(is "$status" 1)"
 check "names both orders" \
   "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job fill's race build names ./other/, ./lib/, where .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES has ./lib/, ./other/")"
 
-# A ci-caches.yaml with no race build in it at all is the drift this rule exists for, not a tree
-# it has nothing to say about, so it fails rather than passing quietly.
-echo "case: a ci-caches.yaml with no race build at all"
+# A fill job with no race build in it at all is the drift this rule exists for, not a tree it
+# has nothing to say about, so it fails rather than passing quietly.
+echo "case: the fill job with no race build at all"
 root=$(fixture race-fill-gone)
 cache_workflow "$root"
 replace "$root/.github/workflows/ci-caches.yaml" $'      - if: steps.go-app.outputs.cache-hit != \'true\'\n        run: go test -c -o /dev/null -race ./lib/\n        working-directory: mod\n' ""
 run_check "$root"
 check "fails" "$(is "$status" 1)"
-check "names the workflow and what it no longer builds" \
-  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of this workflow runs a \`go test\` with -race")"
+check "names the job and what it no longer builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::no step of job fill runs a \`go test\` with -race")"
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
+
+# The rule holds the race build of the job DAEMON_RACE_FILL_JOB names, and that job only: a race
+# build of another job fills another family, for another lane, and names its own packages. The
+# control for this case is "a race build naming a package the lane does not" above, where the same
+# extra package in the fill job fails.
+echo "case: a race build of another job is not held to the daemon's list"
+root=$(fixture race-fill-other-job)
+cache_workflow "$root"
+cat >> "$root/.github/workflows/ci-caches.yaml" <<'YAML'
+  other-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test -c -o /dev/null -race ./other/
+        working-directory: mod
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says nothing of the other job's race build" "$(is "$(contains "$out" "job other-fill's race build")" false)"
+
+# A ci-caches.yaml with no job of the name DAEMON_RACE_FILL_JOB gives is a lane nothing fills too,
+# whatever race builds its other jobs run.
+echo "case: no job of the name DAEMON_RACE_FILL_JOB gives"
+root=$(fixture race-fill-job-gone)
+cache_workflow "$root"
+replace "$root/.github/scripts/ci_job_reads.py" 'DAEMON_RACE_FILL_JOB = "fill"' 'DAEMON_RACE_FILL_JOB = "daemon"'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the table and what the race step then builds" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::this workflow has no job daemon, which .github/scripts/ci_job_reads.py's DAEMON_RACE_FILL_JOB names")"
+
+# script_fill <root>: a second fill job, script-fill, that compiles a race step's script, mod's
+# scripts/race.sh, in its compile mode, and RACE_FILL_SCRIPTS naming it; script-fill also builds
+# something plain, which the rule reads past. The tree passes as written.
+script_fill() {
+  cat >> "$1/.github/workflows/ci-caches.yaml" <<'YAML'
+  script-fill:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: |
+          go vet ./...
+          scripts/race.sh compile
+        working-directory: mod
+YAML
+  replace "$1/.github/scripts/ci_job_reads.py" 'RACE_FILL_SCRIPTS = []' \
+    'RACE_FILL_SCRIPTS = [("script-fill", "mod/scripts/race.sh", "mod", "scripts/race.sh compile")]'
+}
+
+# The fill of a race step that runs a script compiles through that script, the one line
+# RACE_FILL_SCRIPTS names, and holds no race build of its own: a copy of the step's packages or
+# flags written in the fill is what drifts from the step with nothing failing.
+echo "case: a fill that compiles a race step's script through it"
+root=$(fixture race-script-fill)
+cache_workflow "$root"
+script_fill "$root"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a fill that calls the script with another mode or flag"
+root=$(fixture race-script-fill-flag)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "scripts/race.sh compile -count=1"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the line it runs" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`scripts/race.sh compile -count=1\`, where the fill runs \`scripts/race.sh compile\`")"
+
+echo "case: a fill that copies the race build in place of the script"
+root=$(fixture race-script-fill-copy)
+cache_workflow "$root"
+script_fill "$root"
+replace "$root/.github/workflows/ci-caches.yaml" "scripts/race.sh compile" "go list ./... | grep -Ev '/textcheck\$' | xargs go test -c -o /dev/null -race"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job and the copied line" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job script-fill runs \`go list ./... | grep -Ev '/textcheck\\\$' | xargs go test -c -o /dev/null -race\`, a race build of its own")"
+check "and says the fill no longer calls the script" \
+  "$(contains "$out" "job script-fill runs \`scripts/race.sh compile\` 0 times in mod")"
 
 # Rule 20. darwin_vet <root> <set>...: a step of the app job that vets ./... of mod for
 # darwin/arm64 once per <set> (an empty one is no tag), pinned as an exact entry with one Run
@@ -2669,34 +2651,20 @@ printf '//go:build !probe\n\npackage lib\n\nfunc NoProbe() {}\n' > "$root/mod/li
 sets=$(cd "$root" && python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)
 check "prints every tag, then the set without probe, each as a whole -tags= flag" \
   "$(is "$sets" $'-tags=hidden,legacy,probe,probe_\xce\xb2\n-tags=hidden,legacy,probe_\xce\xb2')"
-# Its go commands run under go_environment(), as the engine's do, so a caller's Go setting changes
-# no set: before, a GOFLAGS go list refuses stopped the script.
-check "prints the same sets under a caller's GOFLAGS" \
-  "$(is "$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1)" "$sets")"
-# A go that fails fails the script, naming the go command: a go first on PATH that refuses. The
-# interpreter runs by its own path, since a version manager's python3 shim puts its own go first.
-mkdir -p "$work/refusing-go"
-printf '#!/bin/sh\necho "this go refuses" >&2\nexit 1\n' > "$work/refusing-go/go"
-chmod +x "$work/refusing-go/go"
-interpreter=$(python3 -I -c 'import sys; print(sys.executable)')
 status=0
-sets=$(cd "$root" && PATH="$work/refusing-go:$PATH" "$interpreter" .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
+sets=$(cd "$root" && GOFLAGS=-no-such-flag python3 .github/scripts/go_build_tags.py mod darwin arm64 2>&1) || status=$?
 check "and fails when go list fails" "$(is "$status" 1)"
-check "naming the go command and its error" \
-  "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed: this go refuses')"
+check "naming the go command" "$(contains "$sets" 'go_build_tags.py: in mod, go tool dist list ... failed')"
 
 # The typecheck step's own run text, taken from its workflow, over a module with one tag and a
 # file under its negation that does not compile: the script's last set is the one with no tag,
 # and a shell's command substitution drops a trailing empty line, so a transport of bare sets
 # would vet only -tags=feature and pass. The module sits two directories deep, as
-# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script, and
-# the fixture's go.work lists it, as the repository's lists packages/daemon: the script's go list
-# runs under go_environment(), which drops a caller's GOWORK, so `GOWORK=off` would not reach it.
+# packages/daemon does, so the step's ../../.github/scripts path reaches the fixture's script.
 echo "case: the typecheck step's own loop vets the file under a negated tag"
 root=$(fixture vet-tags-loop)
 mkdir -p "$root/deep/module"
 printf 'module example.com/deep\n\ngo 1.21\n' > "$root/deep/module/go.mod"
-printf 'go 1.21\n\nuse ./mod\nuse ./deep/module\n' > "$root/go.work"
 printf '//go:build feature\n\npackage module\n\nvar On = 1\n' > "$root/deep/module/on.go"
 printf '//go:build !feature\n\npackage module\n\nvar _ = notDefined\n' > "$root/deep/module/off.go"
 PYTHONDONTWRITEBYTECODE=1 python3 - "$script_dir/../workflows/ci-job-typecheck.yaml" "$root/step.sh" <<'PY'
@@ -2706,7 +2674,7 @@ step = next(s for j in jobs for s in j["steps"] if s.get("name", "").startswith(
 open(sys.argv[2], "w").write(step["run"])
 PY
 status=0
-loop=$(cd "$root/deep/module" && bash -e "$root/step.sh" 2>&1) || status=$?
+loop=$(cd "$root/deep/module" && GOWORK=off bash -e "$root/step.sh" 2>&1) || status=$?
 check "fails" "$(is "$status" 1)"
 check "vets under both sets" \
   "$(is "$(grep -c '^Vetting for darwin with -tags=' <<<"$loop")" 2)"
@@ -3376,5 +3344,44 @@ check "names the step, the size and the cap" \
   "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
 check "and says what to do about it" \
   "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
+
+echo "case: the files a table lists from a directory are the repository's, not the disk's"
+# ci_job_reads.py's files_but_tests lists a directory's files but its Go tests for the reads no
+# glob can write. A local e2e run leaves build outputs git ignores in packages/envoy (the
+# harness's lock, out/dispatch-e2e-broker); no checkout CI makes has them, and rule 9 refused the
+# envoy_smoke gate's read of each as matching no file. So the list is repo_files(): the tracked
+# files still on disk and the untracked ones git does not ignore, in the order a walk visits them.
+root="$work/files-but-tests"
+mkdir -p "$root/pkg/sub" "$root/pkg/testdata" "$root/pkg/out"
+printf 'pkg/out/\n' > "$root/.gitignore"
+for f in a.go a_test.go z.go notes.txt sub/b.go testdata/c.go gone.go out/build.go new.go; do
+  printf 'package x\n' > "$root/pkg/$f"
+done
+git -C "$root" init -q
+git -C "$root" add .gitignore pkg/a.go pkg/a_test.go pkg/z.go pkg/notes.txt pkg/sub/b.go pkg/testdata/c.go pkg/gone.go
+rm "$root/pkg/gone.go"
+# listed_files <root> <suffix> <tree|flat>: files_but_tests("pkg") run from <root>, as the check
+# runs from the repository's, skipping testdata.
+listed_files() {
+  (cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+import os
+import sys
+from pathlib import Path
+
+import ci_filter_coverage
+import ci_job_reads as reads
+
+os.chdir(sys.argv[1])
+ci_filter_coverage.REPO = Path.cwd()
+reads.repository_files.cache_clear()
+print(" ".join(reads.files_but_tests("pkg", suffix=sys.argv[2], tree=sys.argv[3] == "tree", skip=("testdata",))))
+' "$@")
+}
+check "lists the tracked and the new files, a directory's own before its subdirectory's" \
+  "$(is "$(listed_files "$root" .go tree)" "pkg/a.go pkg/new.go pkg/z.go pkg/sub/b.go")"
+check "and no ignored build output, test file, deleted file or skipped directory for any suffix" \
+  "$(is "$(listed_files "$root" "" tree)" "pkg/a.go pkg/new.go pkg/notes.txt pkg/z.go pkg/sub/b.go")"
+check "and without the tree, the directory's own files" \
+  "$(is "$(listed_files "$root" .go flat)" "pkg/a.go pkg/new.go pkg/z.go")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

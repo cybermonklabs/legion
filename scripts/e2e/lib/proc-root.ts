@@ -10,11 +10,11 @@ import {
 import { join } from "node:path";
 
 // A proc root of a test's own processes, for code under test that reads `${proc_root:-/proc}`
-// (stop_agent_daemons in parked-decision-devbox.sh, role_kill_sh in role-namespaces.sh,
-// refuse_leftovers in leftovers.sh): a directory holding a link to the real /proc/<pid> of each
-// process the test names, so that code reads those processes' own files and signals their real
-// pids, and its work is the test's processes rather than the host's. stage4b-role-kill.test.ts's
-// own_proc is the same in bash, for a root a harness shell makes for itself.
+// (procs_naming and so the run's sweep, listening_holders, refuse_leftovers, and
+// parked-decision-devbox.sh's stop_agent_daemons): a directory holding a link to the real
+// /proc/<pid> of each process the test names, so that code reads those processes' own files and
+// signals their real pids, and its work is the test's processes rather than the host's. A harness
+// shell makes the same root for itself with one `ln -s` an entry.
 
 /** The pids the kernel lists as children of `pid`'s threads (/proc/<pid>/task/<tid>/children), and
  *  their children in turn, to the bottom, when `recursive`. A process or a thread that ended since

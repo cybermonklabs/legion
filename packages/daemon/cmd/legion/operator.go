@@ -19,9 +19,9 @@ import (
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
-// claims` subcommand, and `legion issue status <issue> <status>` from an operator shell: the flags
-// every one of them takes — where the daemon is and the file holding the bearer — and the streams
-// it reports on.
+// claims` subcommand, each `legion project` subcommand, and `legion issue status <issue> <status>`
+// from an operator shell: the flags every one of them takes — where the daemon is and the file
+// holding the bearer — and the streams it reports on.
 //
 // The bearer is only ever a file's contents: no flag takes it as a value, so it is in no argv, and
 // once read it goes into the request's Authorization header and nowhere else — no line these
