@@ -1,6 +1,7 @@
 // Package tlsalert is the daemon's one reading of a TLS alert, the far side's or the client's own,
 // at any point of the connection: an answer that ends the connection and that no wait fixes, as
 // against a network that is not there yet, which the next attempt can find.
+// Its twin is packages/envoy/internal/tlsalert: a change to the reading here is a change there.
 package tlsalert
 
 import (
