@@ -81,9 +81,8 @@ func seedOneRule(t *testing.T) *store.Pool {
 //     (PC's unresolved chain gives him none of its own, so acme/c alone);
 //   - olga, an open viewer who sees every project but that one, made private, is hidden exactly
 //     the project's repositories that no project she sees also owns, by the rule and by Delivery
-//     alike (so acme/shared stays shown to her while PA or PB is private); PC's unresolved chain is
-//     a repository the rule cannot rule out, so while PC is private every repository no project
-//     she sees owns is hidden from her.
+//     alike (so acme/shared stays shown to her while PA or PB is private); PC's unresolved chain
+//     resolves to no repository (plan v89), so while PC is private only acme/c is hidden from her.
 //
 // Controls, each a one-line drift in one copy: Delivery's pull requests that name no issue shown to
 // every open viewer (pullRequestShownSQL without refs.RepositoryClause), and olga is hidden nothing
@@ -122,7 +121,7 @@ func TestOneRuleGivesEveryReaderTheSameRepositoriesOfAProject(t *testing.T) {
 		}
 		want := []string{}
 		for _, repository := range oneRuleRepositories {
-			if !seen[repository] && (project == "PC" || slices.Contains(oneRuleOwners[project], repository)) {
+			if !seen[repository] && slices.Contains(oneRuleOwners[project], repository) {
 				want = append(want, repository)
 			}
 		}

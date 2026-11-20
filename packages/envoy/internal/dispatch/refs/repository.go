@@ -20,11 +20,10 @@ import (
 // two of them can come to different owners.
 //
 // An issue whose chain the walk cannot finish (IssueRepoTooDeep: deeper than IssueDepthCap links,
-// or a loop) answers a row whose repo is null: its unread ancestors may name any repository, so it
-// is its project's unknown. Each reader gives that row its one meaning: ProjectRepositories refuses
-// the project (*UnresolvedChainError); RepositoryClause reads a hidden private project's unknown as
-// a repository it cannot rule out (repositoryHeld); and a project the viewer sees gives the viewer
-// no repository through it, since null equals no name.
+// or a loop) answers a row whose repo is null: it resolves to no repository, so it owns none and
+// hides none, and RepositoryClause, comparing null with a name, never matches it. Only
+// ProjectRepositories refuses its project (*UnresolvedChainError), so a list of a project's
+// repositories never leaves out one its unread ancestors may name.
 //
 // repo is the resolved name lower-cased, as GitHub spells an owner and a name as their owners do,
 // so a caller compares it with lower() of the name it holds. A project that owns a repository
@@ -112,8 +111,7 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 //   - an issue of a project the viewer sees resolves to it (ProjectRepositoriesSQL), whatever other
 //     project, private ones included, owns it too: where issues of a private project and of a
 //     public project work in one repository, the public project's people read it whole;
-//   - the viewer is open, and no private project the viewer does not see owns it, nor holds an
-//     issue whose chain the walk could not finish (repositoryHeld).
+//   - the viewer is open, and no private project the viewer does not see owns it.
 //
 // So a viewer who is not open, a restricted member or a credential that lists projects, reads
 // only a repository an issue of a project it sees resolves to. A repository is held by its name
@@ -180,11 +178,9 @@ func repositorySeen(repoExpr, viewerParam string) string {
 }
 
 // repositoryHeld is whether a private project the viewer does not see owns the repository repoExpr
-// names, or may: an issue of it resolves to the name, or has a chain the walk could not finish,
-// whose unread ancestors may name any repository (ProjectRepositoriesSQL's null repo). It ends in
-// `offset 0`, as repositorySeen does.
+// names: an issue of it resolves to the name. It ends in `offset 0`, as repositorySeen does.
 func repositoryHeld(repoExpr, viewerParam string) string {
 	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
-		where owned.repo is null or owned.repo = lower((` + repoExpr + `)::text)
+		where owned.repo = lower((` + repoExpr + `)::text)
 		offset 0)`
 }

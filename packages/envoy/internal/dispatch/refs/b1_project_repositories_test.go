@@ -122,40 +122,86 @@ func TestAPublicProjectsPeopleReadARepositoryAPrivateProjectWorksInToo(t *testin
 	}
 }
 
-// TestAnUnresolvedChainHasOneMeaning: an issue whose chain the walk cannot finish is its project's
-// unknown, read one way by every reader of ProjectRepositoriesSQL. ProjectRepositories refuses the
-// project (TestProjectRepositoriesAnswersTheRepositoriesItsIssuesResolveTo); to a viewer that
-// does not see the project, while it is private, it is a repository the rule cannot rule out, so
-// alice, open and seeing PUB, reads only the repositories a PUB issue resolves to (acme/pub,
-// acme/both), and acme/none, which she read before the loop, is hidden; to a viewer that sees the
-// project it gives no repository, so bob, who sees PRIV, reads what he read before the loop and
-// nothing more.
+// seedTooDeepChain writes project's issues number to number+IssueDepthCap+1, naming no repository,
+// each the parent of the next: the last sits IssueDepthCap+1 links below its root, a chain the
+// walk cannot finish, which only a direct database write builds (the API refuses it,
+// api/issue_parent.go's refuseParentTooDeep). It answers that last issue's key.
+func seedTooDeepChain(t *testing.T, database *store.Store, project string, number int) string {
+	t.Helper()
+	last := number + IssueDepthCap + 1
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status)
+		select $1 || '-' || n, $1, n, 'Deep ' || n, '{"kind":"user","id":"alice"}', lpad(n::text, 8, '0'),
+			case when n = $2 then null else $1 || '-' || (n - 1) end, null, 'triage'
+		from generate_series($2::int, $3::int) n
+		order by n
+	`, project, number, last); err != nil {
+		t.Fatalf("seed a %d-link chain in %s: %v", IssueDepthCap+1, project, err)
+	}
+	return fmt.Sprintf("%s-%d", project, last)
+}
+
+// TestAnUnresolvedChainResolvesToNoRepository (plan v89): an issue whose chain the walk cannot
+// finish resolves to no repository at the gate, never to every repository, so it hides nothing.
+// PRIV, private, takes a looped chain (PRIV-9 and PRIV-10, each the other's parent) or a chain
+// one link deeper than IssueDepthCap (PRIV-100 to PRIV-133). With either, every viewer reads each
+// repository as before it: alice, open and seeing PUB, still reads acme/pub and acme/none; bob,
+// who sees PRIV, gains nothing; and olive, open and seeing no project, still reads acme/pub and
+// acme/none. For olive, RepositoryClause is exactly `not repositoryHeld`, the clause an outsider's
+// issue write is refused by (RoundRepoWrite's RepositoryHeldClause), so that write naming acme/pub
+// is not refused. ProjectRepositories alone refuses PRIV, naming the unresolved issue.
 //
-// Controls, each failing the test naming acme/none: resolve a chain the walk cannot finish to its
-// project's default, as the terms did before (ProjectRepositoriesSQL's repo without the
-// IssueRepoTooDeep case); give a hidden project's unresolved row no weight (drop `owned.repo is
-// null` from RepositoryClause's hidden arm).
-func TestAnUnresolvedChainHasOneMeaning(t *testing.T) {
-	database := seedRepositoryIssues(t)
-	alice := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}
-	bob := model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}
-	before := map[string]bool{}
-	for _, repository := range clauseRepositories {
-		before[repository] = repositoryPasses(t, database, bob, repository)
+// Control: put `owned.repo is null or` back in repositoryHeld (c680dad75d's text), and alice and
+// olive lose acme/none, olive loses acme/pub and every other repository; the test fails naming
+// each.
+func TestAnUnresolvedChainResolvesToNoRepository(t *testing.T) {
+	viewers := []struct {
+		name string
+		who  model.Actor
+	}{
+		{"alice", model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}},
+		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}},
+		{"olive", model.Actor{Viewer: &model.Viewer{Person: "olive", Open: true, AnyPrivate: true}}},
 	}
-	if !repositoryPasses(t, database, alice, "acme/none") {
-		t.Fatalf("alice reads acme/none, which no issue names, as hidden before the loop: the row proves nothing")
-	}
-	seedLoopedChain(t, database, "PRIV", 9)
-	for _, repository := range slices.Concat(clauseRepositories, []string{"acme/unknown"}) {
-		want := repository == "acme/pub" || repository == "acme/both"
-		if got := repositoryPasses(t, database, alice, repository); got != want {
-			t.Errorf("alice reads %s while PRIV holds a looped chain = %t, want %t", repository, got, want)
-		}
-	}
-	for _, repository := range clauseRepositories {
-		if got := repositoryPasses(t, database, bob, repository); got != before[repository] {
-			t.Errorf("bob reads %s while PRIV holds a looped chain = %t, want %t as before it: the loop gives him no repository", repository, got, before[repository])
-		}
+	asked := slices.Concat(clauseRepositories, []string{"acme/unknown"})
+	for _, chain := range []struct {
+		name string
+		seed func(*testing.T, *store.Store) string
+	}{
+		{"looped", func(t *testing.T, database *store.Store) string {
+			seedLoopedChain(t, database, "PRIV", 9)
+			return "PRIV-9"
+		}},
+		{"deeper than the cap", func(t *testing.T, database *store.Store) string { return seedTooDeepChain(t, database, "PRIV", 100) }},
+	} {
+		t.Run(chain.name, func(t *testing.T) {
+			database := seedRepositoryIssues(t)
+			before := map[string]map[string]bool{}
+			for _, viewer := range viewers {
+				before[viewer.name] = map[string]bool{}
+				for _, repository := range asked {
+					before[viewer.name][repository] = repositoryPasses(t, database, viewer.who, repository)
+				}
+			}
+			for _, viewer := range []string{"alice", "olive"} {
+				if !before[viewer]["acme/pub"] || !before[viewer]["acme/none"] {
+					t.Fatalf("%s reads acme/pub %t and acme/none %t before the chain, want both: the row proves nothing",
+						viewer, before[viewer]["acme/pub"], before[viewer]["acme/none"])
+				}
+			}
+			unresolved := chain.seed(t, database)
+			for _, viewer := range viewers {
+				for _, repository := range asked {
+					if got := repositoryPasses(t, database, viewer.who, repository); got != before[viewer.name][repository] {
+						t.Errorf("%s reads %s while PRIV holds a %s chain = %t, want %t as before it", viewer.name, repository, chain.name, got, before[viewer.name][repository])
+					}
+				}
+			}
+			_, err := ProjectRepositories(context.Background(), database.Pool, "PRIV")
+			var refused *UnresolvedChainError
+			if !errors.As(err, &refused) || refused.Issue != unresolved {
+				t.Errorf("ProjectRepositories(PRIV) with a %s chain = %v, want an *UnresolvedChainError naming %s", chain.name, err, unresolved)
+			}
+		})
 	}
 }
