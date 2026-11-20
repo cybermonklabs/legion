@@ -68,7 +68,7 @@ func TestAConflictKeepsPhaseAndTakesNoSlot(t *testing.T) {
 
 	var active []string
 	inTx(t, pool, func(tx pgx.Tx) {
-		state, err := projection.Project(ctx, tx, record.NewStore(), testProject, nil, nil, nil, nil, nil, fixedNow)
+		state, err := projection.Project(ctx, projection.Inputs{Tx: tx, Store: record.NewStore(), Project: testProject, Now: fixedNow})
 		if err != nil {
 			t.Fatalf("project the state: %v", err)
 		}

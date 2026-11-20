@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -315,8 +315,8 @@ func TestEveryAdmittedRequestCountsItsCredential(t *testing.T) {
 	const shared = "expected-token"
 	cluster := newClusterIssuer(t)
 	google := newGoogleStandIn(t, listenerGoogleAccount)
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	broker.Says("access-token-counted", sessionAnswer("ses_counted", "ada@example.com", caller.JKT()))
 
 	met := metrics.New()

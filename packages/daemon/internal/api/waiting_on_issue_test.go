@@ -6,7 +6,13 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// waitingOnIssueKind is the word record.LineWaitingOnIssue writes on the wire, named once for the
+// tests of this package that stand a member of that kind (waitingOnIssueMember, and the cases of
+// shaped_answers_test.go's value strips).
+var waitingOnIssueKind = record.LineWaitingOnIssue.String()
 
 // waitingOnIssueMember is an issue standing in the waiting line as a started issue that gave its
 // admission slot back to wait on another issue: the returned part, `waiting_on_issue`, holding no
