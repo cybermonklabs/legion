@@ -14,11 +14,14 @@ import (
 )
 
 // CheckLookBound bounds every look of a production check: a check_look row due this long after
-// the look's wake ends a look nobody reported (checkLookEnded). A first look publishes to the
-// deploy role and reports pending in minutes; a woken look that drives the change in production
-// is one agent turn, and the longest production checks measured ran within an hour. Without a
-// bound a silent checking agent keeps its pod for the whole of the check's bound, the cost the check
-// after the close exists to remove.
+// the look's wake ends a look nobody reported (checkLookEnded). A look that began before the end
+// of the project's latest pause counts it instead from the later of that end and its role's last
+// ready, and counts nothing while that role's launch is still coming up: its row, due earlier,
+// waits until then (internal/daemon's lookBoundAfterPause). A first look publishes to the deploy
+// role and reports pending in minutes; a woken look that drives the change in production is one
+// agent turn, and the longest production checks measured ran within an hour. Without a bound a
+// silent checking agent keeps its pod for the whole of the check's bound, the cost the check after
+// the close exists to remove.
 const CheckLookBound = 2 * time.Hour
 
 // CheckWakeFloor is the soonest a look may follow the report that named it: a wake named less

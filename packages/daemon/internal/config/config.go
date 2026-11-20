@@ -36,6 +36,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
@@ -170,8 +171,10 @@ type Config struct {
 	ProductionCheckBound time.Duration
 	// PodUpdateGrace is how long a pod's update round waits for its roles after it opens
 	// (`pod_update_grace_minutes`, thirty minutes by default): an answer from every role ends the
-	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
-	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
+	// round before it once no turn runs and no claim's activity report holds it (internal/daemon's
+	// roundEnd.holding), and no answer, turn or background work holds the round past it. It is a
+	// decimal number of minutes, as `worker_silence_minutes` is, so a live proof can drive the
+	// bound inside one run.
 	PodUpdateGrace time.Duration
 	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
 	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
@@ -250,6 +253,12 @@ type Config struct {
 	// records keep the name each was written under. The zero value, which answers as
 	// strings.EqualFold does, while the file configures none.
 	RepositoryRenames ghrepo.Renames
+	// LeakCheck is `leak_check`, or leakguard.RepositoryVar and leakguard.ManifestVar in the
+	// daemon's environment, which the file's members override one by one: the repository the
+	// deployment's shared public leak check is read from and the check's manifest digest
+	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
+	// own (resolveLeakCheck).
+	LeakCheck leakguard.Setting
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -419,6 +428,7 @@ type fileConfig struct {
 	RoleConfigFiles          map[claim.Role][]string
 	WorkerStallBackstops     map[claim.Role]time.Duration
 	RepositoryRenames        []ghrepo.Rename
+	LeakCheck                *fileLeakCheck
 	// Hooks is `hooks`, a pointer so the settle tells a file that names no key, which runs
 	// DefaultHooks(), from one that writes the empty list, which runs no hook.
 	Hooks *[]Hook
@@ -1104,6 +1114,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		return Config{}, err
 	}
 	if err := checkRepositoryRenames(file, &cfg); err != nil {
+		return Config{}, err
+	}
+	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {

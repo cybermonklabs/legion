@@ -1,10 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   Agent,
   Comment,
@@ -15,7 +16,7 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { plannerAgentRow } from "../threads/replies-fixture";
+import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { ThreadRowCard } from "./ThreadRowCard";
 
 /** Every API mock a test installed, restored after it. */
@@ -110,7 +111,7 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
   };
 }
 
-function renderCard(thread: MyReplyRow): void {
+function renderCard(thread: MyReplyRow): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   const tree: ReactNode = (
@@ -121,6 +122,7 @@ function renderCard(thread: MyReplyRow): void {
     </MemoryRouter>
   );
   render(tree);
+  return client;
 }
 
 test("an Agent row's card draws the message, the session's reply and the composer", async () => {
@@ -282,4 +284,163 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
   expect(turns[0]?.hasAttribute("data-inbox-thread-unread")).toBe(false);
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
+});
+
+// A thread box in the Inbox stands for its thread: its reply is the box's own address, which
+// nothing ends, so it draws no Cancel reply. Pressed, that control would do nothing and leave the
+// draft in the field (MentionComposer's `standing`).
+test("an Inbox thread box, comment or Agent, draws no Cancel reply", async () => {
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  spy("listComments", [comment("comment-1", "The retry budget is too small.")]);
+  renderCard(commentRow());
+  const thread = await screen.findByTestId("inbox-thread-comment");
+  await waitFor(() =>
+    expect(within(thread).queryAllByRole("form", { name: "Comment composer" }).length).toBe(1)
+  );
+  expect(within(thread).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+  cleanup();
+
+  spy("listAgents", [session]);
+  spy("listAgentMessages", [
+    {
+      message: message("message-1", "Have a look at the build"),
+      replies: [],
+    } satisfies MessageRead,
+  ]);
+  renderCard(plannerAgentRow());
+  const agent = await screen.findByTestId("inbox-thread-agent");
+  await waitFor(() => expect(agent.querySelector("[data-inbox-agent-composer]")).not.toBeNull());
+  expect(within(agent).queryAllByRole("button", { name: "Cancel reply" }).length).toBe(0);
+});
+
+/** A card for each of `threads`, as the Inbox lists them below 1280 px; the setter draws the list
+ *  again with the threads it is handed, over the same client. */
+function renderCards(threads: readonly MyReplyRow[]): (threads: readonly MyReplyRow[]) => void {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const tree = (rows: readonly MyReplyRow[]): ReactNode => (
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        {rows.map((row) => (
+          <ThreadRowCard key={row.thread_id} thread={row} />
+        ))}
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(threads));
+  return (next) => view.rerender(tree(next));
+}
+
+/** The card drawing thread `id`. */
+function cardOf(id: string): HTMLElement {
+  const found = document
+    .querySelector(`[data-inbox-thread="${id}"]`)
+    ?.closest<HTMLElement>("[data-inbox-thread-card]");
+  if (found === null || found === undefined) throw new Error(`no card for ${id}`);
+  return found;
+}
+
+// Two cards can be two threads of one session, each with a reply box of its own. A reply Dispatch
+// refused in one is that thread's: a card for the other thread mounts with none of it - no draft,
+// no refusal, no pending turn, no Retry that would send it as a reply there - and the refused
+// card's Retry replies under its own thread's newest message.
+test("an Agent card shows nothing of a reply refused in another card of its session", async () => {
+  spy("listAgents", [session]);
+  spy(
+    "listAgentMessages",
+    ["1", "2"].map(
+      (n) =>
+        ({
+          message: message(`message-${n}`, `Question ${n}`),
+          replies: [
+            message(`reply-${n}`, `Answer ${n}`, {
+              author: { id: "planner", kind: "session" },
+              created_at: "2026-10-12T01:00:00Z",
+              in_reply_to: `message-${n}`,
+            }),
+          ],
+        }) satisfies MessageRead
+    )
+  );
+  const createAgentMessage = spyOn(api, "createAgentMessage")
+    .mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    )
+    .mockResolvedValue({} as never);
+  restores.push(createAgentMessage);
+  const first = plannerAgentRow();
+  const second = agentRow("message-2", {
+    ...first,
+    reply: { ...first.reply, id: "reply-2" },
+    thread_id: "message-2",
+    unread_reply_ids: ["reply-2"],
+  });
+  const show = renderCards([first]);
+  const user = userEvent.setup();
+
+  await waitFor(() => expect(cardOf("message-1").querySelector("textarea")).not.toBeNull());
+  const refusedCard = within(cardOf("message-1"));
+  await user.click(refusedCard.getByRole("textbox", { name: "Comment" }));
+  await user.paste("Reply meant for the first");
+  await user.click(refusedCard.getByRole("button", { name: "Send" }));
+  await refusedCard.findByText("Couldn't send — Dispatch refused the message");
+
+  show([first, second]);
+  const other = within(cardOf("message-2"));
+  expect(other.getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" }).value).toBe("");
+  expect(other.queryByRole("alert")).toBeNull();
+  expect(other.queryByTestId("agent-send-held")).toBeNull();
+
+  await user.click(refusedCard.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(2));
+  expect(
+    createAgentMessage.mock.calls.map(([sessionId, input]) => [sessionId, input.in_reply_to])
+  ).toEqual([
+    ["planner", "reply-1"],
+    ["planner", "reply-1"],
+  ]);
+});
+
+// An Agent card's box replies under its thread's newest message, which no press of the reader's
+// moves. A message that comes while the box holds a refused reply moves the box onto it, so the
+// refusal has no Retry there, and the box says what it can do: Discard, to write a reply to the
+// newer message - never "reply to that message again", which it offers no way to do.
+test("an Agent card whose thread moves on under a refused reply says what its box can do", async () => {
+  spy("listAgents", [session]);
+  const answer = (id: string, body: string, at: string) =>
+    message(id, body, {
+      author: { id: "planner", kind: "session" },
+      created_at: at,
+      in_reply_to: "message-1",
+    });
+  const thread = (replies: Message[]): MessageRead[] => [
+    { message: message("message-1", "Have a look at the build"), replies },
+  ];
+  const first = answer("reply-1", "Looked at it.", "2026-10-12T01:00:00Z");
+  const list = spyOn(api, "listAgentMessages").mockResolvedValue(thread([first]));
+  restores.push(list);
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockRejectedValue(
+    new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+  );
+  restores.push(createAgentMessage);
+  const client = renderCard(plannerAgentRow());
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByRole("textbox", { name: "Comment" }));
+  await user.paste("Reply to the first answer");
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  await screen.findByText("Couldn't send — Dispatch refused the message");
+
+  list.mockResolvedValue(
+    thread([first, answer("reply-2", "And one more thing.", "2026-10-12T02:00:00Z")])
+  );
+  await act(() => client.invalidateQueries());
+  expect(
+    await screen.findByText(
+      "This message was written as a reply to an earlier message, and this box now replies to a newer one. Discard it to write a reply here."
+    )
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
+  expect(createAgentMessage).toHaveBeenCalledTimes(1);
 });

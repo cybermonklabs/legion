@@ -470,8 +470,8 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 	advance(beat)
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
 	racing.beforeFirstUpdate = func() {
-		// A hard claim writes unconditionally, so it lands under the renewal's read and
-		// the renewal's own update meets the bucket's refusal, not one this hook invented.
+		// A hard claim retries a conflict until it lands, so it lands under the renewal's read
+		// and the renewal's own update meets the bucket's refusal, not one this hook invented.
 		winning := RoleClaimRequest{SessionID: winner, MachineID: "example-host", ClientInstanceID: roleClaimSecondInstance, Role: role}
 		if _, err := reg.SetRoleWithPrevious(context.Background(), winning); err != nil {
 			t.Errorf("the claim that wins the race: %v", err)

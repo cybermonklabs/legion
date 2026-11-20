@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"fmt"
@@ -15,7 +16,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/fold"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -98,11 +99,14 @@ type googleIdentities struct {
 	accounts []string
 }
 
-// admits reports whether raw is a Google identity token of a listed account, and logs the one
-// line that says why when it is not: the class, the account when the token names one, and the
-// path, never the token. The classes are oidc.Reason's for a token that does not verify, no_email
-// for one minted without format=full (it names no account), email_not_verified, and not_listed.
-func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) bool {
+// admits judges raw as a Google identity token of a listed account, and answers that account, in
+// lower case, the principal the request is admitted as (withVerifiedPrincipal), with a nil error.
+// It logs the one line that says why when it is not: the class, the account when the token names
+// one, and the path, never the token. The classes are oidc.Reason's for a token that does not
+// verify, no_email for one minted without format=full (it names no account), email_not_verified,
+// and not_listed. Its error is the verifier's own, which matches oidc.ErrIssuerUnavailable when no
+// verdict was reached (refuseIdentityToken).
+func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.Logger) (string, error) {
 	claims, err := g.verifier.VerifyGoogleIdentity(r.Context(), raw)
 	account := fold.ASCII(claims.Email)
 	var reason string
@@ -116,36 +120,86 @@ func (g *googleIdentities) admits(r *http.Request, raw string, logger *logging.L
 	case !slices.Contains(g.accounts, account):
 		reason = "not_listed"
 	default:
-		return true
+		return account, nil
 	}
 	attrs := []slog.Attr{slog.String("reason", reason), slog.String("path", r.URL.Path)}
 	if account != "" {
 		attrs = append(attrs, slog.String("account", account))
 	}
 	logger.Warn("listener: Google identity token rejected", attrs...)
-	return false
+	return "", identityRefusal(err, reason)
 }
 
-// admitsServiceAccount reports whether raw is a projected service-account token the verifier
-// verifies, of a subject accounts lists when it lists any, and logs the one line that says why
-// when it is not: oidc.Reason's class, or not_listed naming the subject, and the path, never the
-// token.
-func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) bool {
+// admitsServiceAccount judges raw as a projected service-account token the verifier verifies, of a
+// subject accounts lists when it lists any, and answers that subject,
+// system:serviceaccount:<namespace>:<name>, the principal the request is admitted as
+// (withVerifiedPrincipal), with a nil error. It logs the one line that says why when it is not:
+// oidc.Reason's class, or not_listed naming the subject, and the path, never the token. Its error
+// is the verifier's own, which matches oidc.ErrIssuerUnavailable when no verdict was reached
+// (refuseIdentityToken).
+func (a listenerAPIAuth) admitsServiceAccount(r *http.Request, raw string) (string, error) {
 	claims, err := a.verifier.Verify(r.Context(), raw)
 	if err != nil {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", oidc.Reason(err)),
 			slog.String("path", r.URL.Path))
-		return false
+		return "", err
 	}
 	if len(a.accounts) > 0 && !slices.Contains(a.accounts, claims.Subject) {
 		a.logger.Warn("listener: service-account token rejected",
 			slog.String("reason", "not_listed"),
 			slog.String("path", r.URL.Path),
 			slog.String("account", claims.Subject))
-		return false
+		return "", identityRefusal(nil, "not_listed")
 	}
-	return true
+	return claims.Subject, nil
+}
+
+// identityRefusal is the error an identity token that was judged and not admitted reads as: the
+// verifier's own error when it gave one, else one naming the refusal's class.
+func identityRefusal(err error, reason string) error {
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("identity token refused: %s", reason)
+}
+
+// refuseIdentityToken answers an identity token this listener did not admit. A token the verifier
+// reached no verdict on, because the issuer's discovery or key set could not be read
+// (oidc.ErrIssuerUnavailable), is the 503 with Retry-After: 1 a broker token the broker could not
+// check gets (refuseBrokerToken): the listener could not run the check, which is its own failure
+// rather than the token's. A 401 would tell Dispatch's client its account token was refused, and
+// that client makes a refused call again on the shared token with no role mark (cmd/dispatch's
+// listener client), so an issuer outage would send Dispatch's role-route messages unmarked, where
+// no takeover copies them for the role's next holder. Every other outcome is the 401 every other
+// refused credential gets here.
+func refuseIdentityToken(w http.ResponseWriter, err error) {
+	if errors.Is(err, oidc.ErrIssuerUnavailable) {
+		w.Header().Set("Retry-After", "1")
+		writeJSONError(w, http.StatusServiceUnavailable, "this identity token could not be checked; try again in a minute")
+		return
+	}
+	writeJSONError(w, http.StatusUnauthorized, "unauthorized")
+}
+
+// verifiedPrincipalKey is the context key the principal an identity token proved is carried
+// under. It is an unexported zero-size type, so nothing outside this package can read or write
+// the value, and no other package's key can collide with it.
+type verifiedPrincipalKey struct{}
+
+// withVerifiedPrincipal carries the principal an identity token proved to every handler behind
+// apiAuth: the subject of a projected service-account token, or the account a Google identity
+// token names. No other credential proves one: the shared token is any holder's, a broker token
+// names a session (brokerCaller), and a request with no credential names nobody.
+func withVerifiedPrincipal(ctx context.Context, principal string) context.Context {
+	return context.WithValue(ctx, verifiedPrincipalKey{}, principal)
+}
+
+// verifiedPrincipal is the principal r's identity token proved (withVerifiedPrincipal), empty for
+// a request admitted on any other credential, or on none.
+func verifiedPrincipal(r *http.Request) string {
+	principal, _ := r.Context().Value(verifiedPrincipalKey{}).(string)
+	return principal
 }
 
 // admissionWarnings logs an admission on the shared token or on no credential at all once a
@@ -220,7 +274,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // Every request it admits is counted in envoy_listener_requests_total under the credential that
 // admitted it and the route it reached (route), and an admission on the shared token or on none
 // at all also logs a warning once a minute (admissionWarnings): those two are what the removal of
-// the shared token and of the open /v1 is gated on.
+// the shared token and of the open /v1 is gated on. A request admitted on an identity token
+// carries the principal that token proved to the handler (withVerifiedPrincipal, verifiedPrincipal),
+// which is how the send route tells Dispatch's own sends from every other caller's.
 //
 // The broker-token branch is taken only on a listener that takes this credential (brokers is
 // nil on one that does not), and there the scheme alone decides it, before every bearer one:
@@ -290,7 +346,7 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 				return
 			}
 		}
-		if _, presented := brokertoken.Presented(r); auth.brokers != nil && presented {
+		if _, presented := ciphertoken.Presented(r); auth.brokers != nil && presented {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
@@ -316,15 +372,21 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 		if raw, ok := strings.CutPrefix(authorization, bearerPrefix); ok && oidc.LooksLikeJWT(raw) {
 			switch {
 			case auth.google != nil && (auth.verifier == nil || auth.google.verifier.Issues(raw)):
-				if auth.google.admits(r, raw, auth.logger) {
-					admit(w, r, credentialGoogle)
+				account, err := auth.google.admits(r, raw, auth.logger)
+				if err == nil {
+					admit(w, r.WithContext(withVerifiedPrincipal(r.Context(), account)), credentialGoogle)
 					return
 				}
+				refuseIdentityToken(w, err)
+				return
 			case auth.verifier != nil:
-				if auth.admitsServiceAccount(r, raw) {
-					admit(w, r, credentialOIDC)
+				subject, err := auth.admitsServiceAccount(r, raw)
+				if err == nil {
+					admit(w, r.WithContext(withVerifiedPrincipal(r.Context(), subject)), credentialOIDC)
 					return
 				}
+				refuseIdentityToken(w, err)
+				return
 			}
 		}
 
@@ -355,10 +417,10 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	case errors.Is(err, errBrokerTokensStarting):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "service starting")
-	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
+	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		w.Header().Set("Retry-After", "1")
 		writeJSONError(w, http.StatusServiceUnavailable, "the secrets broker cannot be reached; try again in a minute")
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(brokers.retryAfter()))
 		writeJSONError(w, http.StatusTooManyRequests, "too many access tokens checked from this address")
 	case reason == brokerTokenCheckFailed:
@@ -380,21 +442,21 @@ func brokerTokenReason(err error) string {
 	switch {
 	case errors.Is(err, errBrokerTokensStarting):
 		return "starting"
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		return "not_active"
-	case errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return "key_mismatch"
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented):
 		return "proof_invalid"
-	case errors.Is(err, brokertoken.ErrNotASession):
+	case errors.Is(err, ciphertoken.ErrNotASession):
 		return "not_a_session"
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		return "rate_limited"
-	case errors.Is(err, brokertoken.ErrBrokerUnreachable):
+	case errors.Is(err, ciphertoken.ErrBrokerUnreachable):
 		return "unavailable"
 	}
 	// The residue is this listener's own failure to run the check — its spent-proof store did
-	// not answer — which brokertoken reports as neither the broker's nor the caller's.
+	// not answer — which ciphertoken reports as neither the broker's nor the caller's.
 	return brokerTokenCheckFailed
 }
 
@@ -485,6 +547,58 @@ func resolveListenerGoogleConfig(getenv func(string) string) (audience string, a
 		}
 	}
 	return audience, accounts, nil
+}
+
+// dispatchPrincipalShape is the refusal of an ENVOY_DISPATCH_PRINCIPAL of neither shape
+// (resolveListenerDispatchPrincipal).
+const dispatchPrincipalShape = "ENVOY_DISPATCH_PRINCIPAL must be one system:serviceaccount:<namespace>:<name> subject or one Google service account address, got %q"
+
+// resolveListenerDispatchPrincipal reads ENVOY_DISPATCH_PRINCIPAL, Dispatch's own principal: the
+// one verified caller whose POST /v1/messages/send may carry a role mark (sendHandler). It is a
+// projected service-account subject, system:serviceaccount:<namespace>:<name>, or a Google
+// service account's address, compared in lower case as Google's email claim is, and it is the
+// principal an identity token of that account proves (withVerifiedPrincipal). Unset names nobody,
+// and then every send carrying a role is refused. A value of neither shape refuses the start
+// naming it, and so does one no credential this listener takes could prove: a subject beside no
+// ENVOY_OIDC_ISSUER pair, or one a set ENVOY_OIDC_ACCOUNTS leaves out, and an address beside no
+// Google pair, or one ENVOY_OIDC_GOOGLE_ACCOUNTS does not list. Each of those would refuse every
+// role send Dispatch makes, so it is refused at the start rather than one send at a time.
+func resolveListenerDispatchPrincipal(getenv func(string) string, issuer string, accounts, googleAccounts []string) (string, error) {
+	value := strings.TrimSpace(getenv("ENVOY_DISPATCH_PRINCIPAL"))
+	if value == "" {
+		return "", nil
+	}
+	if rest, prefixed := strings.CutPrefix(value, serviceAccountSubjectPrefix); prefixed {
+		namespace, name, found := strings.Cut(rest, ":")
+		switch {
+		case !found || namespace == "" || name == "" || strings.Contains(name, ":") || strings.ContainsFunc(value, unicode.IsSpace):
+			return "", fmt.Errorf(dispatchPrincipalShape, value)
+		case issuer == "":
+			return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is a service-account subject, which only a projected token proves, and needs ENVOY_OIDC_ISSUER and ENVOY_OIDC_AUDIENCE", value)
+		case len(accounts) > 0 && !slices.Contains(accounts, value):
+			return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is not one of the subjects ENVOY_OIDC_ACCOUNTS admits, so no token of it could be admitted", value)
+		}
+		return value, nil
+	}
+	address := fold.ASCII(value)
+	switch {
+	case !oidc.EmailShape.MatchString(address):
+		return "", fmt.Errorf(dispatchPrincipalShape, value)
+	case len(googleAccounts) == 0:
+		return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is an address, which only a Google identity token proves, and needs ENVOY_OIDC_GOOGLE_AUDIENCE and ENVOY_OIDC_GOOGLE_ACCOUNTS", value)
+	case !slices.Contains(googleAccounts, address):
+		return "", fmt.Errorf("ENVOY_DISPATCH_PRINCIPAL %q is not one of the accounts ENVOY_OIDC_GOOGLE_ACCOUNTS admits, so no token of it could be admitted", value)
+	}
+	return address, nil
+}
+
+// describeListenerDispatchPrincipal names, for the boot log, whose sends may carry a role mark:
+// the principal ENVOY_DISPATCH_PRINCIPAL names, or nobody's.
+func describeListenerDispatchPrincipal(principal string) string {
+	if principal == "" {
+		return "refused from every caller (ENVOY_DISPATCH_PRINCIPAL is unset)"
+	}
+	return "accepted from " + principal + " alone"
 }
 
 // splitAccountList is the one rule both account lists are read by: commas and white space alike

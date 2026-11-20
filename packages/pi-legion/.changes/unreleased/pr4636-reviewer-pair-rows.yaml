@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  A reviewer records its two graders as two rows of the pull request's `Thermo` line, each with its verdict at the reviewed head and how many of its findings stand,
+  answers a `CHANGES` from either half in the review, and approves only when both halves ran at the reviewed head, or both rows read `not run` because the diff touches no runtime code.
+custom:
+  Issue: pr4636
+time: 2026-11-20T15:10:27.000000000Z

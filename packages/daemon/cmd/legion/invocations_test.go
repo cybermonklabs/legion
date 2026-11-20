@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // recordInvocations names the `legion` of the release before this table's change: with it, the
@@ -33,7 +35,9 @@ var recordInvocations = flag.String("record-invocations", "", "a legion binary o
 // status and stdout sha256 the release before gave it (`-` for a caller that reads the new
 // output); the argv the caller runs now; and where that argv moved — `this-pr` in the change that
 // moved the command, `pin-pr:<pin>` in the deployment repository's pin of the release that holds
-// it, or `unchanged`.
+// it, or `unchanged`. A row whose exit this repository changed on purpose carries the new exit:
+// the two `workspace-init fetch` rows carry 3, the exit for a cause outside the issue's volume
+// (workspace.InitExitOutsideVolume).
 const invocationsTable = "testdata/invocations.tsv"
 
 // absentRoot is where every absolute path a row names is moved to, a directory no machine has:
@@ -118,7 +122,8 @@ type invocation struct {
 // run differs. Each run reads and writes nothing of the machine: its paths are under absentRoot,
 // its HOME and working directory are the test's own, and nothing it calls answers. A row whose
 // caller this change moved to a new output carries `-` for the digest: its exit is compared, and
-// the caller's own test reads the output.
+// the caller's own test reads the output. A row whose exit was changed on purpose carries the new
+// exit in old_exit (invocationsTable), and the run is compared with that.
 func TestInvocationTable(t *testing.T) {
 	rows := readInvocations(t)
 	if len(rows) == 0 {
@@ -267,9 +272,13 @@ func splitWords(line string) ([]string, error) {
 }
 
 // runInvocation runs legion with args in a directory and a HOME of the test's own, with PATH and
-// nothing else of the test process's environment, standard input empty, and answers its exit
-// status, the sha256 of its standard output and its standard error. A run still going after twenty
-// seconds is an error: a call that waits on something is no call the table can compare.
+// nothing else of the test process's environment but the deployment checker a role of a
+// configured deployment is told (leakguard.CheckerVar), standard input empty, and answers its
+// exit status, the sha256 of its standard output and its standard error. The checker keeps the
+// image hook's row comparable with the release before: under it the guard refuses a push for
+// want of a check, as every release did, where with no checker it would run its rules alone. A
+// run still going after twenty seconds is an error: a call that waits on something is no call the
+// table can compare.
 func runInvocation(t *testing.T, legion string, args []string) (code int, digest, stderr string, err error) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -277,7 +286,8 @@ func runInvocation(t *testing.T, legion string, args []string) (code int, digest
 	cmd := exec.CommandContext(ctx, legion, args...)
 	home := t.TempDir()
 	cmd.Dir = t.TempDir()
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_STATE_HOME=" + home + "/state", "XDG_CONFIG_HOME=" + home + "/config"}
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "XDG_STATE_HOME=" + home + "/state", "XDG_CONFIG_HOME=" + home + "/config",
+		leakguard.CheckerVar + "=" + strings.Repeat("5e", 32)}
 	var stdout, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &errb
 	err = cmd.Run()

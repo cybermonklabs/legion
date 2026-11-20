@@ -23,7 +23,10 @@ import { type AcceptedUserTurn, handledAttemptKey } from "./dispatch-user-turn";
  *     naming that attempt is accepted: a replay, or one forged inside the accept's minute for a
  *     message that arrived as a card. The record is not skipped when the accept answers 404:
  *     that route answers 404 for a transient database error too, and forgetting the attempt
- *     would let a later forged frame spend it.
+ *     would let a later forged frame spend it. The record has one limit: it keys on the attempt
+ *     a frame names, so a client on the bus that reads the `message.created` event and names its
+ *     attempt before Dispatch's own frame does spends that attempt, and the person's message then
+ *     stays a card.
  *   - the accept itself, which is what makes a turn: Dispatch recording that this session
  *     accepted that very attempt.
  *   - the stored body Dispatch answers with (`turnFromAccept`), never the frame's own text.

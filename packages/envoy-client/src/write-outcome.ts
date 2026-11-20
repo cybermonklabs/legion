@@ -20,7 +20,7 @@
 // repeat under a key is answered from what the key holds (the stored answer, `409 KEY_IN_FLIGHT`,
 // `422 KEY_REUSED`) and never run twice; a 401, 408, 429 or 5xx is never stored; Dispatch's auth and
 // its old builds' "no route" answer before the keyed layer runs. And on what the secrets broker's
-// trade does (`packages/broker-client/src/token-client.ts`): a fail-fast caller is told the trade's
+// trade does (`packages/cipher-client/src/token-client.ts`): a fail-fast caller is told the trade's
 // last failure at once while the trade goes on in the background (`TradeRetryingError`); a trade
 // not yet answered and a registration still pending are told only once the caller's signal ends.
 

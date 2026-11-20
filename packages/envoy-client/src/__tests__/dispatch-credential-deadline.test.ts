@@ -19,7 +19,7 @@ import {
   RegistrationPendingError,
   TradeRetryingError,
   TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/token-errors";
 import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { brokerCredential } from "../broker-credential";

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 const requestTimeout = 10 * time.Second
@@ -64,6 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
+			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
 			BlockedBy:    issue.BlockedBy,
@@ -305,7 +308,9 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. A name the issue already holds is that document's next version.
+// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
+// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
+// document under (messageArtifact).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -541,22 +546,35 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	return nil
 }
 
-// transportFailure wraps err as a TransientError unless it is a misconfiguration no wait fixes,
-// never an outage: a certificate Go's client refuses to trust (a wrong or missing CA, a hostname
-// mismatch, an expired or otherwise invalid certificate — crypto/tls wraps every one of these as
-// *tls.CertificateVerificationError, never a bare x509 error, since httpClient sets no
-// VerifyPeerCertificate or VerifyConnection of its own), or an https:// dispatch_url pointed at a
-// plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's scheme check (internal/config)
-// catches a typo in the scheme itself before boot, but not a correct https:// whose port serves
-// plain HTTP. Left wrapped, either would satisfy Unreachable exactly like a dial refused or reset
-// would, and a boot gate would retry a certificate or scheme problem forever instead of refusing
-// loud.
-func transportFailure(err error) error {
+// TransportRefusal reports whether err, anywhere in its chain, is a failure of Dispatch's transport
+// that no wait fixes, never an outage: a certificate Go's client refuses to trust (a wrong or
+// missing CA, a hostname mismatch, an expired or otherwise invalid certificate — crypto/tls wraps
+// every one of these as *tls.CertificateVerificationError, never a bare x509 error, since
+// httpClient sets no VerifyPeerCertificate or VerifyConnection of its own), a TLS alert, on the
+// handshake or on a later record (tlsalert.In: a front door that demands a client certificate, say,
+// or speaks no TLS version the client does; crypto/tls returns it as a *net.OpError), an https://
+// dispatch_url pointed at a plain-HTTP port (http.ErrSchemeMismatch), or a TLS record the client
+// cannot take (tls.RecordHeaderError, on the handshake or on a later record), most often from a
+// port that answers in neither TLS nor HTTP/1.x, such as an SSH server or a server that answers
+// the client hello as an HTTP/0.9 request (net/http turns the record error into
+// http.ErrSchemeMismatch only when the answer starts with "HTTP/", net/http/client.go).
+// dispatchBase's scheme check (internal/config) catches a typo in the scheme itself before boot,
+// but not a correct https:// whose port does not serve TLS. transportFailure keeps each of these
+// out of TransientError, Unreachable reads it first so it wins over an outage it is joined with,
+// and the boot's catch-up of the roots that run or wait on a person (internal/daemon's
+// catchUpWithRetries) stops the start on one rather than skip the root.
+func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
-		return err
-	}
-	if errors.Is(err, http.ErrSchemeMismatch) {
+	var record tls.RecordHeaderError
+	return errors.As(err, &certErr) || errors.As(err, &record) || tlsalert.In(err) ||
+		errors.Is(err, http.ErrSchemeMismatch)
+}
+
+// transportFailure wraps err as a TransientError unless it is a refusal of the transport no wait
+// fixes (TransportRefusal): TransientError says Dispatch gave no answer a later attempt may get,
+// which no refusal of the transport is.
+func transportFailure(err error) error {
+	if TransportRefusal(err) {
 		return err
 	}
 	return &TransientError{Err: err}

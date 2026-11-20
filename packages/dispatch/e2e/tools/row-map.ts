@@ -153,7 +153,7 @@ if (strayNotes.length > 0) {
 // they own their file here, and only the run knows otherwise (`deadRecordingGuard`,
 // `e2e/stub/stub-test.ts`). A describe-level modifier whose condition is a function of a
 // worker fixture is seen by neither: the listing marks its rows `passed`, and Playwright runs
-// it before any test-scoped fixture. `packages/dispatch/AGENTS.md`, "The stubbed layer", says
+// it before any test-scoped fixture. `packages/dispatch/README.md`, "The stubbed layer", says
 // so, and every stubbed row skips inside its own body.
 const owned = new Set(
   moved.filter((row) => row.expectedStatus !== "skipped").map((row) => recordingFor(row, ".har"))

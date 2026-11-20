@@ -114,6 +114,12 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
+      # target, which is what lets an agent write to the owner of a subject and leave the retry
+      # to Dispatch.
+      - name: Comment mention of the real CLI against a real Dispatch
+        run: bun test src/__tests__/comment-mention.live.test.ts
+        working-directory: packages/envoy-client
       # A keyed write a real Dispatch refused because it could not resolve the caller.
       # The client of this tree sends it again under its own key against a server of this tree,
       # started with an OIDC issuer nothing serves, and the issue holds the comment once.

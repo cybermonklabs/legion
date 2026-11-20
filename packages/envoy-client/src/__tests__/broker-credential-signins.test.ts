@@ -14,7 +14,7 @@ import {
   PERSON_TRADE_VAR,
   type SignInRecord,
   signInSessionName,
-} from "@legion/broker-client/signins";
+} from "@legion/cipher-client/signins";
 import {
   type IssuerAnswer,
   signedIn,
@@ -22,11 +22,11 @@ import {
   stubIssuer,
   thumbprintOf,
   writeSignIn,
-} from "@legion/broker-client/test/sign-ins";
+} from "@legion/cipher-client/test/sign-ins";
 import {
   SUBJECT_TOKEN_TYPE_KUBERNETES,
   SUBJECT_TOKEN_TYPE_PERSON,
-} from "@legion/broker-client/wire";
+} from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { forgetBrokerClients } from "../broker-credential";
 import { type DispatchEnvironment, dispatchSettings } from "../dispatch-config";

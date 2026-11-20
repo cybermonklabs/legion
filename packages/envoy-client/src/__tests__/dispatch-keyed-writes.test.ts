@@ -6,7 +6,7 @@ import {
   SignInEndedError,
   TradeRetryingError,
   TradeUnansweredError,
-} from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/token-errors";
 import {
   type CommentWriteResponse,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
