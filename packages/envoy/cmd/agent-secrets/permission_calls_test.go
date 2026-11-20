@@ -76,8 +76,8 @@ func refusedWords(t *testing.T, row callPermission, planted string) string {
 		if row.call == "AssumeRoleWithWebIdentity" {
 			message = "Not authorized to perform " + row.permission + "; echo: " + planted
 		}
-		return awsSDKWords(&smithy.OperationError{ServiceID: sts.ServiceID, OperationName: row.call,
-			Err: &smithy.GenericAPIError{Code: "AccessDenied", Message: message}})
+		return awsSignInFailure("read your AWS sign-in", &smithy.OperationError{ServiceID: sts.ServiceID, OperationName: row.call,
+			Err: &smithy.GenericAPIError{Code: "AccessDenied", Message: message}}).Error()
 	}
 	refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
 		return status.Error(codes.PermissionDenied, "Permission '"+row.permission+"' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)

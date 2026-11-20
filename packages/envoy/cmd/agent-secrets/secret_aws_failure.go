@@ -92,9 +92,10 @@ func heldAWSProfiles() []string {
 
 // awsSignInFailure is err, the AWS SDK's failure to load or to read the sign-in this command's
 // environment gives it, as what failed and the SDK's failure in words of this client's own
-// (awsSDKWords). It unwraps to err, so errors.As still finds the SDK's own error.
+// (awsWords), a failure no branch names said as one it could not sign in from this environment
+// with. It unwraps to err, so errors.As still finds the SDK's own error.
 func awsSignInFailure(what string, err error) error {
-	return fmt.Errorf("%s: %w", what, redact.Masked(err, awsSDKWords(err)))
+	return fmt.Errorf("%s: %w", what, redact.Masked(err, awsWords(err, "the AWS SDK could not sign in from this environment")))
 }
 
 // awsStore is a Secrets Manager client whose every failure prints as awsStoreFailure: the store
@@ -269,12 +270,6 @@ var awsCodes = func() map[string]bool {
 	return codes
 }()
 
-// awsSDKWords is err, the AWS SDK's failure to sign in, as a message prints it (awsWords), the
-// failure no branch names said as one it could not sign in from this environment with.
-func awsSDKWords(err error) string {
-	return awsWords(err, "the AWS SDK could not sign in from this environment")
-}
-
 // awsWords is err, a failure of the AWS SDK's, a sign-in's or a store call's, as a message prints
 // it, with failed, the caller's words for a failure no branch names. The SDK's own error text
 // quotes what it was configured with: the path of a shared config or credentials file twice
@@ -287,8 +282,8 @@ func awsSDKWords(err error) string {
 //   - an IAM Identity Center sign-in the SDK could not use (awsSSOWords): a session that has
 //     expired or is invalid, or IAM Identity Center's refusal by its code where it is one this
 //     client names;
-//   - a web identity sign-in with no role as the setting it lacks (the SDK's own "role ARN is not
-//     set", sdkSaid);
+//   - a web identity sign-in with no role as the setting it lacks (the SDK's own words,
+//     awsRoleARNNotSet, sdkSaid);
 //   - an AWS API error by its code alone, where it is one this client names, and the permission
 //     it says is missing (awsAPIWords);
 //   - a call its context ended by that end alone, beside the AWS address settings that are set
@@ -306,7 +301,7 @@ func awsWords(err error, failed string) string {
 	if words, ok := awsSSOWords(err); ok {
 		return words
 	}
-	if sdkSaid(err, "role ARN is not set") {
+	if sdkSaid(err, awsRoleARNNotSet) {
 		return "the web identity sign-in names no role to assume: set AWS_ROLE_ARN, or role_arn in the profile, beside its token file"
 	}
 	if words, ok := awsAPIWords(err); ok {
@@ -338,6 +333,10 @@ func awsWords(err error, failed string) string {
 	}
 	return failed + " (its message is not printed: it can quote an AWS setting's value); check " + check + " and ~/.aws/config"
 }
+
+// awsRoleARNNotSet is the AWS SDK's own words for a web identity sign-in that names no role to
+// assume (config's resolveWebIdentityProvider).
+const awsRoleARNNotSet = "role ARN is not set"
 
 // ssoCannotRefresh is the AWS SDK's own words for an sso_session profile's cached token it cannot
 // refresh (ssocreds' token provider).
