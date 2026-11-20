@@ -405,6 +405,8 @@ func TestAUUIDTheAddressHoldsIsNotPrinted(t *testing.T) {
 			[]string{"request " + brokeraddr.WordsNotPrinted, "Check it with agent-secrets status and the request's id, which is not printed"}},
 		{"the request form, a 32-hex password echoed as a UUID", hexPassword, dashed, request, exitPending, false,
 			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
+		{"the request form, a 32-hex id the address does not hold, which is no shape the broker makes", uuidPassword, func(string) string { return hexPassword }, request, exitPending, false,
+			[]string{"request_id: " + brokeraddr.WordsNotPrinted}},
 		{"control: the exec form, a UUID the address does not hold", uuidPassword, nil, exec, exitPending, false,
 			[]string{"request " + other + " to ", "Check it with: agent-secrets status " + other}},
 		{"control: the request form beside a clean address", "", nil, request, exitPending, true,
