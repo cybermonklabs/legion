@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Readers of the event horizon that all waited out an observation already in flight when they
+  asked now share one next observation, however late each wakes: a reader that wakes after that
+  next observation has ended takes its answer. Before, such a reader ran an observation of its
+  own, so each late reader cost the horizon one more round trip and one more transaction id.
+time: 2026-11-20T19:21:06Z
+custom:
+    Issue: horizon-next-observation

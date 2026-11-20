@@ -229,6 +229,10 @@ type Horizon struct {
 	// its order, and Safe and Await each wait for one numbered above the count when called.
 	started  uint64
 	inFlight *horizonFlight
+	// ended is the newest observation to have ended, nil before the first: observations run one
+	// at a time, so it is also the highest numbered. A caller that waited one out takes it when
+	// it is numbered above that one (observe).
+	ended *horizonFlight
 	// safe is H. safeThrough is the number of the newest observation H covers: proven safe, or
 	// with an A at or below H when recorded or later. Both are this generation's.
 	safe        int64
@@ -281,14 +285,16 @@ type horizonObservation struct {
 }
 
 // horizonFlight is the one observation in flight, which concurrent callers share. Its fields
-// are written by the caller running it before done closes and read by the others after.
+// are written by the caller running it, under h.mu, before done closes, and read by the others
+// after done closes or, through h.ended, under h.mu.
 type horizonFlight struct {
 	number     uint64
 	generation uint64
 	done       chan struct{}
 	err        error
 	// abandoned is an observation that failed because its runner's context ended; a waiter
-	// whose own context is still live runs another rather than return a cancellation not its own.
+	// whose own context is still live takes the next rather than return a cancellation not its
+	// own.
 	abandoned bool
 }
 
@@ -643,10 +649,25 @@ func (h *Horizon) Reset() {
 
 // observe returns once an observation numbered above after has ended, recorded or failed: it
 // joins the one in flight, or runs one itself when none is. An observation numbered at or below
-// after started before the caller needed it, so the caller waits it out and takes the next.
+// after started before the caller needed it, so the caller waits it out and takes the next; so
+// does one abandoned by its runner's context while the caller's is live. The next is the one in
+// flight when the caller is back at h.mu or, when that one has already ended, that one as it
+// ended: it started after the one waited out had ended, so after the call. Callers that wait out
+// the same observation therefore share the next however the scheduler wakes them, where each
+// that found it ended would otherwise run one more.
 func (h *Horizon) observe(ctx context.Context, after uint64) error {
+	takes := func(flight *horizonFlight) bool {
+		return flight.number > after && !(flight.abandoned && ctx.Err() == nil)
+	}
+	// waitedOut is the number of the last observation this call waited out, 0 before it has
+	// waited one out; that one has ended, so h.ended is set once it is above 0.
+	var waitedOut uint64
 	for {
 		h.mu.Lock()
+		if ended := h.ended; waitedOut > 0 && ended.number > waitedOut && takes(ended) {
+			h.mu.Unlock()
+			return ended.err
+		}
 		flight := h.inFlight
 		run := flight == nil
 		if run {
@@ -667,7 +688,8 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 				return ctx.Err()
 			}
 		}
-		if flight.number <= after || (flight.abandoned && ctx.Err() == nil) {
+		if !takes(flight) {
+			waitedOut = flight.number
 			continue
 		}
 		return flight.err
@@ -688,7 +710,7 @@ func (h *Horizon) observe(ctx context.Context, after uint64) error {
 func (h *Horizon) run(ctx context.Context, flight *horizonFlight) {
 	observation, xmin, err := h.take(ctx)
 	h.mu.Lock()
-	h.inFlight = nil
+	h.inFlight, h.ended = nil, flight
 	flight.err = err
 	flight.abandoned = err != nil && ctx.Err() != nil
 	var stalled *horizonObservation
