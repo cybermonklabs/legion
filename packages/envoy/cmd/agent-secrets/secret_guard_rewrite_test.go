@@ -77,9 +77,9 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 // "untag" (a removal retag's removal) or "tag" (a tag write: a set retag's write, or a removal
 // retag's second write, the requesters rewrite). failReadBack names the kind of write after which
 // every DescribeSecret fails with readBackErr (a plain error when nil), as a read-back the network
-// lost, or IAM refused, does. loseAnswer names the kind of write that applies and then answers
-// lostAnswer, as a call the store carried out and whose answer was lost. A refused write is
-// countingTagWrites' (refuseUntag) or refusingTags'.
+// lost, or IAM refused, does. loseAnswer names the call that applies and then answers lostAnswer,
+// as a call the store carried out and whose answer was lost: "tag", "untag", "put" (a value),
+// "delete" or "restore". A refused write is countingTagWrites' (refuseUntag) or refusingTags'.
 type raceOnTag struct {
 	secretsAPI
 	racing, failReadBack, loseAnswer string
@@ -135,6 +135,30 @@ func (r *raceOnTag) DescribeSecret(ctx context.Context, in *secretsmanager.Descr
 		return nil, errors.New("DescribeSecret lost for this test")
 	}
 	return r.secretsAPI.DescribeSecret(ctx, in, o...)
+}
+
+func (r *raceOnTag) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
+	out, err := r.secretsAPI.PutSecretValue(ctx, in, o...)
+	if err == nil && r.loseAnswer == "put" {
+		return nil, lostAnswer
+	}
+	return out, err
+}
+
+func (r *raceOnTag) DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+	out, err := r.secretsAPI.DeleteSecret(ctx, in, o...)
+	if err == nil && r.loseAnswer == "delete" {
+		return nil, lostAnswer
+	}
+	return out, err
+}
+
+func (r *raceOnTag) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
+	out, err := r.secretsAPI.RestoreSecret(ctx, in, o...)
+	if err == nil && r.loseAnswer == "restore" {
+		return nil, lostAnswer
+	}
+	return out, err
 }
 
 // TestAGuardRewriteAfterAnAWSRaceSaysWhatLanded: on AWS a tag write is made first and checked
@@ -278,8 +302,8 @@ func (r sdkTags) UntagResource(ctx context.Context, in *secretsmanager.UntagReso
 // The last step repeats.
 type sdkScript map[string][]string
 
-// sdkServer is a Secrets Manager endpoint that applies tag calls to a Local as its script says,
-// counting each operation's attempts.
+// sdkServer is a Secrets Manager endpoint that applies tag calls and store writes to a Local as
+// its script says, counting each operation's attempts.
 type sdkServer struct {
 	mu       sync.Mutex
 	attempts map[string]int
@@ -315,6 +339,23 @@ func startSDKServer(t *testing.T, local *secrets.Local, script sdkScript) (*secr
 				var in secretsmanager.UntagResourceInput
 				if err = json.Unmarshal(body, &in); err == nil {
 					_, err = local.UntagResource(r.Context(), &in)
+				}
+			case "PutSecretValue":
+				var in secretsmanager.PutSecretValueInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					// The SDK fills a ClientRequestToken, which the Local refuses.
+					in.ClientRequestToken = nil
+					_, err = local.PutSecretValue(r.Context(), &in)
+				}
+			case "DeleteSecret":
+				var in secretsmanager.DeleteSecretInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					_, err = local.DeleteSecret(r.Context(), &in)
+				}
+			case "RestoreSecret":
+				var in secretsmanager.RestoreSecretInput
+				if err = json.Unmarshal(body, &in); err == nil {
+					_, err = local.RestoreSecret(r.Context(), &in)
 				}
 			default:
 				t.Errorf("unexpected operation %q", op)

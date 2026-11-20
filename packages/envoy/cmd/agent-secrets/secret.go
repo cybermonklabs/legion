@@ -675,7 +675,8 @@ type secretBackend interface {
 	// (awsBackend.raceCheck), and an error from that read-back comes with the write in the store
 	// and nothing put back (tagsLanded, writeLanded). On either store, a call whose error is no
 	// definite refusal (a service fault, an outage, a lost connection) leaves open whether the
-	// write landed (tagsUnknown, writeUnknown).
+	// write landed (outcomeUnknown, writeUnknown), and so does every other write here: set,
+	// delete and restore.
 	setTags(ctx context.Context, slug string, held heldTags, tags map[string]string) error
 	removeTags(ctx context.Context, slug string, held heldTags, keys []string) error
 	// delete schedules the secret's deletion and answers the moment it happens (AWS:
@@ -901,6 +902,60 @@ func (s *secretSession) ownerTag(owner string) (string, error) {
 // plain call, never a method's.
 func secretFailIn(stderr io.Writer, form string, s *secretSession, err error) int {
 	return secretFail(stderr, form, fmt.Errorf("%w; looked in %s", s.refusedAs(err), s.storeName()))
+}
+
+// outcomeUnknown is a store write's error that leaves open whether the write landed: the store
+// answered with no definite refusal, a service fault, an outage or a lost connection, which may
+// follow a call it carried out. An AWS call is a definite refusal only when every attempt it made
+// ended in a code awsDefiniteRefusals lists (awsAttempts.definiteRefusal, awsOutcome); a GCP call,
+// which the client makes once, only for a code gcpDefiniteRefusal names (gcpOutcome). Its text is
+// the store's error with that said after it. It marks the error so a form says the outcome is
+// unknown (writeUnknown) and asks the broker to reread, rather than describe the store as it was
+// before the write. It has no Unwrap: the store's error is in its text alone, so no reader of a
+// refusal (isAccessDenied, refusedAs's sign-in advice, retag's shared-secret line) takes an open
+// outcome for one. An access denial on an SDK retry after an attempt that may have applied
+// refuses nothing that is known to be undone.
+type outcomeUnknown struct{ err error }
+
+func (e outcomeUnknown) Error() string {
+	return e.err.Error() + "; the store's answer leaves open whether this write landed"
+}
+
+// writeUnknown reports whether err, a store write's error, leaves open whether the write landed
+// (outcomeUnknown).
+func writeUnknown(err error) bool {
+	var unknown outcomeUnknown
+	return errors.As(err, &unknown)
+}
+
+// failWrite is how set, delete and restore end on a store write that failed: an open outcome
+// (writeUnknown) by failOpen, every other error, a definite refusal, by secretFailIn, as before.
+// The three forms call it, so a form that writes cannot leave out the reread an open outcome
+// needs. valueWrite is the set's.
+func failWrite(s *secretSession, stdout, stderr io.Writer, form, name string, err error, valueWrite bool) int {
+	if writeUnknown(err) {
+		return failOpen(s, stdout, stderr, form, name, err, valueWrite)
+	}
+	return secretFailIn(stderr, form, s, err)
+}
+
+// failOpen is how set, delete and restore end on a write whose answer leaves open whether it
+// landed (writeUnknown): the store's error, which says so, what to do next, and the broker's answer
+// to a reread, since the secret may have changed (rereadOpen). After a delete or a restore, next is
+// the `secret show` that reads whether the secret is deleted now. After a set (valueWrite), `secret
+// show` cannot tell: it reads the secret's versions and when it last changed, never a value, so
+// next is to run the set again, which stores the value either way. It exits 1, and claims nothing
+// about what the store holds. It prints err as it is: an open outcome is no refusal, so no sign-in
+// advice follows it (outcomeUnknown).
+func failOpen(s *secretSession, stdout, stderr io.Writer, form, name string, err error, valueWrite bool) int {
+	show := secretShowCommand(s, name)
+	next := fmt.Sprintf("Read whether it is deleted now with `%s`", show)
+	if valueWrite {
+		next = fmt.Sprintf("Run this set again to be sure the value is stored: `%s` does not read values", show)
+	}
+	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s. %s\n", form, err, s.storeName(), next)
+	rereadOpen(s, stdout, stderr, form, name)
+	return 1
 }
 
 // openSession reads the broker's settings from AGENT_SECRETS_URL, opens the backend its `store`
@@ -1554,7 +1609,7 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 		return secretFailIn(stderr, form, s, err)
 	}
 	if err := s.backend.set(s.ctx, slug, value); err != nil {
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, true)
 	}
 	fmt.Fprintf(stdout, "set a new value of %s in %s\n", name, s.storeName())
 	noteEdgeSpaces(stderr, form, name, value)
@@ -1586,7 +1641,7 @@ func cmdSecretDelete(args []string, stdout, stderr io.Writer) int {
 	defer s.Close()
 	deletion, err := s.backend.delete(s.ctx, slug)
 	if err != nil {
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, false)
 	}
 	fmt.Fprintf(stdout, "deleted %s in %s\n", name, s.storeName())
 	return rereadAfter(s, stdout, stderr, form, name, false, deletion)
@@ -1609,7 +1664,7 @@ func cmdSecretRestore(args []string, stdout, stderr io.Writer) int {
 	}
 	defer s.Close()
 	if err := s.backend.restore(s.ctx, slug); err != nil {
-		return secretFailIn(stderr, form, s, err)
+		return failWrite(s, stdout, stderr, form, name, err, false)
 	}
 	fmt.Fprintf(stdout, "restored %s in %s\n", name, s.storeName())
 	return rereadAfter(s, stdout, stderr, form, name, true, nil)

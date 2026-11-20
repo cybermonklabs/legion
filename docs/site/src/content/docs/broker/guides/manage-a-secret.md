@@ -878,5 +878,20 @@ curl -s -X POST -H "Proof: $(agent-secrets sign --method POST --url "$AGENT_SECR
   "$AGENT_SECRETS_URL/v1/secrets/DEMO_DEPLOY_TOKEN/reread"
 ```
 
+After a write whose outcome is open, where the broker could not be asked, the CLI prints the first
+of these in a form of its own:
+`u=${AGENT_SECRETS_URL:?…} && curl -sSf -o /dev/null -X POST "${u%"${u##*[!/]}"}/v1/secrets/NAME/reread"`.
+It strips the slashes an address typed by hand may end in, so the path is the broker's own whatever
+curl does with a doubled slash. It prints nothing of the broker's `202`, whose `reason` says the
+write stands, and it exits non-zero on a refusal.
+
+A write can also end with an error that is no refusal: a service fault, an outage, a lost
+connection, or an AWS call one of whose attempts ended another way before the SDK retried it.
+Such an error may follow a write the store carried out, so the form says
+`the store's answer leaves open whether this write landed`, exits 1, and prints the broker's
+answer to the reread without judging it, since the store may hold the write or not. It says what
+to do next: after a `set`, run it again, since `secret show` reads no value; after a `delete`,
+`restore` or `retag`, read the secret with the `secret show` it names.
+
 [Troubleshooting](/legion/broker/guides/troubleshooting/#managing-a-secret) lists the messages the
 `secret` forms print and what to do about each.

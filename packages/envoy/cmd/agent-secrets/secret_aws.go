@@ -460,10 +460,11 @@ func (n *awsNewSecret) unsettled() string {
 }
 
 func (b *awsBackend) set(ctx context.Context, slug, value string) error {
+	var attempts awsAttempts
 	_, err := b.sm.PutSecretValue(ctx, &secretsmanager.PutSecretValueInput{
 		SecretId: aws.String(b.id(slug)), SecretString: aws.String(value),
-	})
-	return err
+	}, attempts.record)
+	return awsOutcome(err, &attempts)
 }
 
 func (b *awsBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
@@ -518,17 +519,17 @@ func (b *awsBackend) removeTags(ctx context.Context, slug string, held heldTags,
 	return b.raceCheck(ctx, slug, held)
 }
 
-// tag and untag answer an error that is no definite refusal (awsAttempts.definiteRefusal: every
-// attempt ending in a code awsDefiniteRefusals lists) as tagsUnknown: a service fault, an attempt
-// that ended any other way before a retry, or a lost connection may follow a call the store
-// carried out.
+// tag and untag, like every write here, answer an error that is no definite refusal
+// (awsAttempts.definiteRefusal: every attempt ending in a code awsDefiniteRefusals lists) as
+// outcomeUnknown (awsOutcome): a service fault, an attempt that ended any other way before a
+// retry, or a lost connection may follow a call the store carried out.
 func (b *awsBackend) tag(ctx context.Context, slug string, tags map[string]string) error {
 	var attempts awsAttempts
 	_, err := b.sm.TagResource(ctx, &secretsmanager.TagResourceInput{
 		SecretId: aws.String(b.id(slug)),
 		Tags:     secrets.TagList(tags),
 	}, attempts.record)
-	return tagOutcome(err, &attempts)
+	return awsOutcome(err, &attempts)
 }
 
 func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) error {
@@ -537,16 +538,19 @@ func (b *awsBackend) untag(ctx context.Context, slug string, keys []string) erro
 		SecretId: aws.String(b.id(slug)),
 		TagKeys:  keys,
 	}, attempts.record)
-	return tagOutcome(err, &attempts)
+	return awsOutcome(err, &attempts)
 }
 
-// tagOutcome is a tag call's error as tag and untag answer it: nil, a definite refusal as it
-// is, and any other error as tagsUnknown.
-func tagOutcome(err error, attempts *awsAttempts) error {
+// awsOutcome is a write call's error as the backend answers it: nil, a definite refusal
+// (awsAttempts.definiteRefusal: one attempt, ending in a code awsDefiniteRefusals lists) as it
+// is, and any other as outcomeUnknown, since a service fault, a throttle after a retry or a lost
+// connection may follow a call the store carried out. Every write the CLI makes outside create,
+// which says its own outcome, goes through it: set, tag, untag, delete and restore.
+func awsOutcome(err error, attempts *awsAttempts) error {
 	if err == nil || attempts.definiteRefusal(err) {
 		return err
 	}
-	return tagsUnknown{err}
+	return outcomeUnknown{err}
 }
 
 // raceCheck is how a tag write on AWS, whose tag calls take no condition, answers for the
@@ -576,18 +580,20 @@ func (b *awsBackend) raceCheck(ctx context.Context, slug string, held heldTags) 
 }
 
 func (b *awsBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
+	var attempts awsAttempts
 	out, err := b.sm.DeleteSecret(ctx, &secretsmanager.DeleteSecretInput{
 		SecretId: aws.String(b.id(slug)), RecoveryWindowInDays: aws.Int64(recoveryWindowDays),
-	})
+	}, attempts.record)
 	if err != nil {
-		return nil, err
+		return nil, awsOutcome(err, &attempts)
 	}
 	return out.DeletionDate, nil
 }
 
 func (b *awsBackend) restore(ctx context.Context, slug string) error {
-	_, err := b.sm.RestoreSecret(ctx, &secretsmanager.RestoreSecretInput{SecretId: aws.String(b.id(slug))})
-	return err
+	var attempts awsAttempts
+	_, err := b.sm.RestoreSecret(ctx, &secretsmanager.RestoreSecretInput{SecretId: aws.String(b.id(slug))}, attempts.record)
+	return awsOutcome(err, &attempts)
 }
 
 func (b *awsBackend) isAccessDenied(err error) bool { return isAccessDenied(err) }

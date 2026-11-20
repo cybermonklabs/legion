@@ -904,8 +904,22 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 	return view, nil
 }
 
+// set adds a version. Create, which says its own outcome, calls addVersion itself; set answers
+// an error that is no definite refusal as outcomeUnknown (gcpOutcome).
 func (b *gcpBackend) set(ctx context.Context, slug, value string) error {
-	return b.addVersion(ctx, b.id(slug), value)
+	return gcpOutcome(b.addVersion(ctx, b.id(slug), value))
+}
+
+// gcpOutcome is a write call's error as the backend answers it: nil, a definite refusal
+// (gcpDefiniteRefusal) as it is, and any other as outcomeUnknown, since UNAVAILABLE,
+// DEADLINE_EXCEEDED, INTERNAL or a lost connection may follow a call the store carried out. The
+// client makes one attempt of each write (their default call options retry nothing), so the code
+// it answers is the one attempt's.
+func gcpOutcome(err error) error {
+	if err == nil || gcpDefiniteRefusal(err) {
+		return err
+	}
+	return outcomeUnknown{err}
 }
 
 func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error {
@@ -973,10 +987,8 @@ func (b *gcpBackend) removeTags(ctx context.Context, slug string, held heldTags,
 }
 
 // updateAnnotations sends held's annotations, as change leaves a copy of them, with held's etag.
-// The client makes one attempt (UpdateSecret's default call options retry nothing), so
-// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other code that is no
-// gcpDefiniteRefusal (UNAVAILABLE, DEADLINE_EXCEEDED, INTERNAL, a lost connection) may follow an
-// update the store applied: it is answered as tagsUnknown.
+// FAILED_PRECONDITION is the etag refusing it (errTagsChanged), and any other error is answered
+// as every write's is (gcpOutcome).
 func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held heldTags, change func(map[string]string)) error {
 	annotations := maps.Clone(held.tags)
 	if annotations == nil {
@@ -991,13 +1003,10 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
-	switch {
-	case status.Code(err) == codes.FailedPrecondition:
+	if status.Code(err) == codes.FailedPrecondition {
 		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
-	case err != nil && !gcpDefiniteRefusal(err):
-		return tagsUnknown{err}
 	}
-	return err
+	return gcpOutcome(err)
 }
 
 func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error) {
@@ -1010,7 +1019,7 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	if err != nil {
-		return nil, err
+		return nil, gcpOutcome(err)
 	}
 	return &expire, nil
 }
@@ -1022,7 +1031,7 @@ func (b *gcpBackend) restore(ctx context.Context, slug string) error {
 		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
-	return err
+	return gcpOutcome(err)
 }
 
 func (b *gcpBackend) isAccessDenied(err error) bool {

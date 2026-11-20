@@ -48,29 +48,6 @@ func writeLanded(err error) bool {
 	return errors.As(err, &landed)
 }
 
-// tagsUnknown is a tag write's error that leaves open whether the write landed: the store answered
-// with no definite refusal, a service fault, an outage or a lost connection, which may follow a
-// call it carried out (an AWS call is a definite refusal only when every attempt it made ended in
-// a code awsDefiniteRefusals lists, awsAttempts.definiteRefusal; a GCP update only for a code
-// gcpDefiniteRefusal names). Its text is the store's error with that said after it. It marks the
-// error so a message says the outcome is unknown (writeUnknown) rather than describe the tags as
-// they were before the write. It has no Unwrap: the store's error is in its text alone, so no reader
-// of a refusal (isAccessDenied, refusedAs's sign-in advice, the shared-secret line) takes an open
-// outcome for one. An access denial on an SDK retry after an attempt that may have applied refuses
-// nothing that is known to be undone.
-type tagsUnknown struct{ err error }
-
-func (e tagsUnknown) Error() string {
-	return e.err.Error() + "; the store's answer leaves open whether this write landed"
-}
-
-// writeUnknown reports whether err, a tag write's error, leaves open whether the write landed
-// (tagsUnknown).
-func writeUnknown(err error) bool {
-	var unknown tagsUnknown
-	return errors.As(err, &unknown)
-}
-
 // tagPairs is tags as sorted `key=value` pairs separated by single spaces, for a message that
 // names one read of a secret's tags beside another. A tag is metadata, never a value.
 func tagPairs(tags map[string]string) string {
@@ -108,7 +85,7 @@ func tagPairs(tags map[string]string) string {
 // write another writer raced answers errTagsChanged, which the retag prints, exiting 1. A write
 // that landed with an error (AWS: a race beside that writer's, or a read-back that failed;
 // tagsLanded), and one whose answer leaves open whether it landed (a service fault, an outage, a
-// lost connection; tagsUnknown), also ask the broker to reread, and the retag says what it knows
+// lost connection; outcomeUnknown), also ask the broker to reread, and the retag says what it knows
 // of the write and never what the tags held before it.
 //
 // A retag that leaves the secret a type is refused, before anything is written, by a broker whose
@@ -496,7 +473,7 @@ func reportRewriteFailure(s *secretSession, stderr io.Writer, form, name, rewrit
 // has no per-secret condition on secretmanager.secrets.update, so a deployment instead grants that
 // permission at all only to administrators for the secrets it protects this way. A write that
 // landed was not refused, whatever its read-back answered, and isAccessDenied does not read a
-// write whose outcome is open (tagsUnknown) as one.
+// write whose outcome is open (outcomeUnknown) as one.
 func reportSetFailure(s *secretSession, stderr io.Writer, form, name, unchecked, owner string, held heldTags, err error) {
 	fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, s.refusedAs(err), s.storeName())
 	if unchecked != "" && writeLanded(err) {
