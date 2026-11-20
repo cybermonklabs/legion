@@ -2548,9 +2548,10 @@ func (m *Machine) dropStale(event, fence, got, held string) {
 }
 
 // launch starts a process for the claim at a new generation with a new boot token: the same
-// agent resumed from its session file when the claim has one — after the process the claim last
-// ran is gone — and a fresh spawn when it has none. A process the claim still records is let go
-// first, so it is the one waited out. The boot token's hash is persisted before the process
+// agent resumed from its session file when the claim has one, or from its session id when the
+// claim records a session and no file (start, resumeByID) — after the process the claim last ran
+// is gone — and a fresh spawn when it records no session. A process the claim still records is let
+// go first, so it is the one waited out. The boot token's hash is persisted before the process
 // starts, so the shim's first hello resolves. A launch the runtime or the spec refuses is a launch
 // failure and is tried again after the backoff (backOff), waiting out the same process, until the
 // budget runs out; only a start that succeeds forgets it. A system prompt past the start frame
