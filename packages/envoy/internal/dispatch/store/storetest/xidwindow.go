@@ -52,18 +52,20 @@ import (
 // transaction ends, and that thread is kept out of NUMA balancing meanwhile
 // (XidTracer.lockTransaction), so it sends every statement of the window and runs nothing else.
 // The operation runs with the collector held off, after a collection that leaves the window
-// memory the heap has already used, and with every page the process has mapped kept out of NUMA
-// balancing (runWithoutCollector), so none of the runtime's pauses lands in a window, no
-// allocation in it is the first touch of a page, and no page is moved under it. And the rig does
-// its own work on a statement inside that statement, between its Start and its End, and none in
-// the gaps around it (XidTracer.begin, XidTracer.end). Each gap is read off that thread's own
-// scheduler clocks (readXidThreadClock), read at the very moments the gap's two ends are stamped,
-// and off an execution trace of the operation (xidwindow_trace.go): the time the kernel kept the
-// thread runnable on a run queue, and the time the Go runtime kept its goroutine runnable - after
-// a preemption, a stop of the world, a system call that lost its P - are the machine's, and the
-// rest - the time the thread ran, and the time the goroutine waited on something it asked for or
-// sat in a blocking system call - is the code's. A sleep, a lock, a channel or a document call in
-// the window is in that rest, and a machine that is merely busy is not.
+// memory the heap has already used, and each marked BEGIN keeps every page the process has mapped
+// out of NUMA balancing and makes the execution tracer's pages present (XidTracer.lockTransaction,
+// xidHoldMemory), so none of the runtime's pauses lands in a window, no allocation of the code's
+// and no event of the tracer's in it is the first touch of a page, and no page is moved under it.
+// And the rig does its own work on a statement inside that statement, between its Start and its
+// End, and none in the gaps around it (XidTracer.begin, XidTracer.end). Each gap is read off that
+// thread's own scheduler clocks (readXidThreadClock), read at the very moments the gap's two ends
+// are stamped, and off an execution trace of the operation (xidwindow_trace.go): the time the
+// kernel kept the thread runnable on a run queue, and the time the Go runtime kept its goroutine
+// runnable - after a preemption, a stop of the world, a system call that lost its P - are the
+// machine's, and the rest - the time the thread ran, and the time the goroutine waited on
+// something it asked for or sat in a blocking system call - is the code's. A sleep, a lock, a
+// channel or a document call in the window is in that rest, and a machine that is merely busy is
+// not.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
 // the context its operation runs under (MarkXid) and the tracer marks every statement whose
@@ -298,14 +300,17 @@ func (x *XidTracer) end(ctx context.Context, tag pgconn.CommandTag) {
 
 // lockTransaction locks the calling goroutine, which is sending the BEGIN of a marked
 // transaction on backend pid, to its OS thread until that transaction's COMMIT or ROLLBACK
-// (unlockTransaction), holds that thread out of NUMA balancing meanwhile (xidHoldThread), and
-// opens the thread's clock for the transaction's readings (xidWatchThreadClock). A thread locked
-// to a goroutine runs that goroutine and no other, so every gap between two statements the
-// goroutine sends from it is read off clocks of its own: the time the thread ran, and waited for a
-// CPU, is the goroutine's. It is the BEGIN that locks, not the measured operation, because an
-// operation sends a transaction from any goroutine it starts - a broadcast delivers to each
-// session on a goroutine of its own. A thread the rig could not hold is not recorded as held, so
-// its gaps are read off no thread's clocks and are a rig problem (analyzeXidWindows).
+// (unlockTransaction), holds that thread out of NUMA balancing meanwhile (xidHoldThread), opens
+// the thread's clock for the transaction's readings (xidWatchThreadClock), and holds the
+// process's memory still for the window (xidHoldMemory): out of NUMA balancing, with the
+// execution tracer's pages present. All of it runs inside the BEGIN, which no window holds. A
+// thread locked to a goroutine runs that goroutine and no other, so every gap between two
+// statements the goroutine sends from it is read off clocks of its own: the time the thread ran,
+// and waited for a CPU, is the goroutine's. It is the BEGIN that locks, not the measured
+// operation, because an operation sends a transaction from any goroutine it starts - a broadcast
+// delivers to each session on a goroutine of its own. A thread the rig could not hold is not
+// recorded as held, so its gaps are read off no thread's clocks and are a rig problem
+// (analyzeXidWindows).
 func (x *XidTracer) lockTransaction(pid uint32) {
 	runtime.LockOSThread()
 	held := xidHeldThread{thread: xidThread()}
@@ -319,6 +324,7 @@ func (x *XidTracer) lockTransaction(pid uint32) {
 			release()
 		}
 	}
+	xidHoldMemory()
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.locked == nil {

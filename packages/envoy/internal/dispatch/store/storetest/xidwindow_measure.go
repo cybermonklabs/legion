@@ -178,14 +178,13 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 // one collection runs first, with the collector and the scavenger already off (both goals at
 // their maximum, so nothing it frees is handed back to the system): the window allocates out of
 // what that collection freed, memory the heap has used before, as it does with the collector on.
-// Then every page the process has mapped is held out of NUMA balancing (xidHoldMemory), mappings
-// the collection or the last window made included.
+// Each marked BEGIN then holds the process's memory still (XidTracer.lockTransaction,
+// xidHoldMemory), mappings the collection or an earlier window made included.
 func runWithoutCollector(operation func()) {
 	limit := debug.SetMemoryLimit(math.MaxInt64)
 	defer debug.SetMemoryLimit(limit)
 	percent := debug.SetGCPercent(-1)
 	defer debug.SetGCPercent(percent)
 	runtime.GC()
-	xidHoldMemory()
 	operation()
 }

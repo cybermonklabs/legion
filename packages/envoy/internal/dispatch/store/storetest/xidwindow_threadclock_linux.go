@@ -244,27 +244,44 @@ func xidHoldThread() (release func(), held bool) {
 	}, true
 }
 
-// xidHoldMemory keeps NUMA balancing off every page the process has mapped private and writable -
-// its heap, its stacks, its data - by setting each such mapping's memory policy to MPOL_LOCAL
-// (mbind, which moves no page). A mapping with a policy of its own but no migrate-on-fault is one
-// NUMA balancing's scan passes over, and one no thread's fault moves a page of. xidHoldThread keeps
-// the measured thread from moving pages; this keeps every other thread from moving one under it:
-// a page another thread moves is unmapped while it is copied, and a thread that touches it
-// meanwhile sleeps until the move ends (migration_entry_wait), a sleep whose length is the
-// machine's - traced at a load of about 250 on a 288-CPU machine, 2026-11-20, inside a forced gap.
-// Measure holds the memory before each window (runWithoutCollector), since a mapping the process
-// made since the last window has no policy yet.
+// xidHoldMemory holds the process's memory still for a window, in two ways.
+//
+// On a machine NUMA balancing runs on, it keeps NUMA balancing off every page the process has
+// mapped private and writable - its heap, its stacks, its data - by setting each such mapping's
+// memory policy to MPOL_LOCAL (mbind, which moves no page). A mapping with a policy of its own but
+// no migrate-on-fault is one NUMA balancing's scan passes over, and one no thread's fault moves a
+// page of. xidHoldThread keeps the measured thread from moving pages; this keeps every other
+// thread from moving one under it: a page another thread moves is unmapped while it is copied,
+// and a thread that touches it meanwhile sleeps until the move ends (migration_entry_wait), a
+// sleep whose length is the machine's - traced at a load of about 250 on a 288-CPU machine,
+// 2026-11-20, inside a forced gap.
+//
+// On every machine, it makes every page of the execution tracer's memory present
+// (MADV_POPULATE_WRITE, which faults each page in writable and writes nothing to it): the
+// mappings the runtime names "Go: trace buffer" and "Go: trace arena alloc" (its
+// decoratemappings, on by default since Go 1.25), which hold the trace's buffers and its tables.
+// The tracer writes events from the measured thread inside every gap, and the first write to a
+// page is a page fault, which takes the page table's lock; another thread of the process may hold
+// it, and on a loaded machine one fault waited 11.3 ms for it on the thread's CPU (xidTrace.warm).
+// Only those mappings are made present: all the process's private writable mappings came to
+// 460 MiB for a test process of 66 MiB, its threads' 8 MiB stacks and the heap's reservation, and
+// the tracer's to under 1 MiB.
+//
+// lockTransaction holds the memory at each marked BEGIN, inside that statement, since a mapping
+// the process made since the last window - a trace buffer among them - has no policy of its own
+// and pages not yet present.
 //
 // It answers false when NUMA balancing is on and the kernel refuses mbind. A mapping that goes
-// away between the read of /proc/self/maps and its mbind is one there is nothing left to hold.
+// away between the read of /proc/self/maps and its mbind or madvise is one there is nothing left
+// to hold. A kernel without MADV_POPULATE_WRITE (before Linux 5.14) leaves the tracer's pages to
+// fault in as the tracer writes them, which can fail a gap the code did not make, never pass one.
 func xidHoldMemory() bool {
-	if !xidNUMABalancing() {
-		return true
-	}
+	balancing := xidNUMABalancing()
 	maps, err := os.ReadFile("/proc/self/maps")
 	if err != nil {
-		return false
+		return !balancing
 	}
+	held := true
 	for line := range bytes.Lines(maps) {
 		fields := bytes.Fields(line)
 		if len(fields) < 2 || len(fields[1]) < 4 || fields[1][1] != 'w' || fields[1][3] != 'p' {
@@ -274,12 +291,24 @@ func xidHoldMemory() bool {
 		if !ok {
 			continue
 		}
-		_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
-		if errno == unix.EPERM || errno == unix.ENOSYS {
-			return false
+		if xidTracerMapping(line) {
+			unix.Syscall(unix.SYS_MADVISE, start, end-start, unix.MADV_POPULATE_WRITE)
+		}
+		if balancing {
+			_, _, errno := unix.Syscall6(unix.SYS_MBIND, start, end-start, xidMempolicyLocal, 0, 0, 0)
+			if errno == unix.EPERM || errno == unix.ENOSYS {
+				held = false
+			}
 		}
 	}
-	return true
+	return held
+}
+
+// xidTracerMapping reports whether a /proc/self/maps line is the execution tracer's memory, by the
+// name the runtime gives it: its buffers, and the blocks its string and stack tables are made of.
+func xidTracerMapping(line []byte) bool {
+	return bytes.HasSuffix(bytes.TrimRight(line, "\n"), []byte("[anon: Go: trace buffer]")) ||
+		bytes.HasSuffix(bytes.TrimRight(line, "\n"), []byte("[anon: Go: trace arena alloc]"))
 }
 
 // xidMappingRange reads a /proc/self/maps address range, "start-end" in hex, as the addresses

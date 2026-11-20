@@ -4,13 +4,17 @@ package storetest
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"runtime/trace"
 	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	exptrace "golang.org/x/exp/trace"
@@ -38,16 +42,52 @@ import (
 // xidTrace is an execution trace Measure is taking, and the moment it started on both the
 // process's clock and the system's monotonic clock, which the trace's own clock is tied to.
 type xidTrace struct {
-	buf      bytes.Buffer
+	sink     xidTraceSink
 	baseTime time.Time
 	baseMono int64
 }
 
+// xidTraceSink is the trace's writer. It keeps the bytes the runtime's trace reader hands it, and
+// closes a channel once it holds as many as a waiter asked for (arrived). The reader writes from a
+// goroutine of its own while the trace runs; the trace is read back only after trace.Stop, which
+// returns once every write has completed.
+type xidTraceSink struct {
+	mu      sync.Mutex
+	data    bytes.Buffer
+	want    int
+	reached chan struct{}
+}
+
+func (s *xidTraceSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data.Write(p)
+	if s.reached != nil && s.data.Len() >= s.want {
+		close(s.reached)
+		s.reached = nil
+	}
+	return len(p), nil
+}
+
+// arrived answers a channel closed once the sink holds at least n bytes.
+func (s *xidTraceSink) arrived(n int) <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reached := make(chan struct{})
+	if s.data.Len() >= n {
+		close(reached)
+		return reached
+	}
+	s.want, s.reached = n, reached
+	return reached
+}
+
 // startXidTrace starts the execution tracer. It stops the world to start, so Measure starts it
-// before the operation and none of that pause is inside a window.
+// before the operation and none of that pause is inside a window. Then it fills the runtime's pool
+// of trace buffers (warm).
 func startXidTrace() (*xidTrace, error) {
 	x := &xidTrace{}
-	if err := trace.Start(&x.buf); err != nil {
+	if err := trace.Start(&x.sink); err != nil {
 		return nil, err
 	}
 	var mono unix.Timespec
@@ -57,7 +97,62 @@ func startXidTrace() (*xidTrace, error) {
 		return nil, err
 	}
 	x.baseMono = mono.Nano()
+	x.warm()
 	return x, nil
+}
+
+// xidTraceBatch is the size of one of the runtime's trace buffers, the largest batch the trace
+// format allows (internal/trace/tracev2.MaxBatchSize, 64 KiB).
+const xidTraceBatch = 64 << 10
+
+// xidTracePool is how many used trace buffers warm leaves in the runtime's pool beyond one for
+// each of the process's threads. Each thread that writes an event takes a buffer of its own from
+// the pool, and a window's thread writes a few kilobytes of events in a window, so a window that
+// fills its thread's buffer finds one to take even after every other thread has taken its own.
+const xidTracePool = 8
+
+// xidTraceWarmMessage is a trace log message of the most bytes the runtime writes of one
+// (tracev2.MaxEventTrailerDataSize, 1 KiB), so warm fills a buffer in 64 logs.
+var xidTraceWarmMessage = strings.Repeat("x", 1<<10)
+
+// warm leaves at least one used trace buffer for each of the process's threads, and
+// xidTracePool more, written whole, read, and back in the runtime's pool before the operation
+// runs. When a thread fills its trace buffer, or writes its first event, the runtime takes a used
+// buffer from that pool, and maps a new one only when the pool is empty (runtime/tracebuf.go,
+// traceWriter.refill). A trace starts with an empty pool, since stopping the last one freed every
+// buffer. Without warm, a window whose thread fills its buffer has the runtime map a new one
+// inside a gap. The first write to each page of it is then a page fault inside that gap, and the
+// fault takes the page table's lock, which another thread of the process may hold. On a loaded
+// machine a fault waited 11.3 ms for it, on the thread's CPU, behind 0.25 ms of the code's work
+// (traced at a load of about 260 on a 288-CPU machine, 2026-11-20), and the gap read 12.6 ms made.
+// With a pool of 8 and no buffer for each thread, a thread writing three buffers of events found
+// the pool empty in 28 of 200 runs with the collector running, and 1 of 300 with it held off
+// (TestTheTracersEventsInAWindowTouchNoFreshPage); with a buffer for each thread, in 0 of 300.
+//
+// It logs messages that go whole into the trace's string buffers, enough to fill three more of
+// them than the pool is to hold, and waits until the trace's reader has handed the sink more bytes
+// than the pool and one buffer more hold. That many bytes come from at least two buffers more than
+// the pool, and the runtime puts each buffer back in the pool once the reader reads the next
+// (ReadTrace). The wait ends on those bytes arriving: the runtime flushes a buffer once it is full,
+// and every buffer at the trace's next generation, a second after it starts.
+func (x *xidTrace) warm() {
+	pool := xidTracePool + xidThreadCount()
+	reached := x.sink.arrived((pool + 2) * xidTraceBatch)
+	ctx := context.Background()
+	for range (pool + 4) * (xidTraceBatch / len(xidTraceWarmMessage)) {
+		trace.Log(ctx, "xid rig", xidTraceWarmMessage)
+	}
+	<-reached
+}
+
+// xidThreadCount is how many threads the process has (/proc/self/task), or none when it cannot
+// be read.
+func xidThreadCount() int {
+	threads, err := os.ReadDir("/proc/self/task")
+	if err != nil {
+		return 0
+	}
+	return len(threads)
 }
 
 // xidGoStateChange is a goroutine's state from a moment of the trace on.
@@ -87,6 +182,9 @@ type xidTraceReading struct {
 	baseTime time.Time
 	baseMono int64
 	snapshot exptrace.ClockSnapshot
+	// syncs are the moments each of the trace's generations began. At each the runtime flushes
+	// every thread's buffer and starts its string and stack tables anew.
+	syncs []exptrace.Time
 }
 
 // stop stops the tracer. It stops the world to stop, so Measure stops it once the operation has
@@ -99,12 +197,12 @@ func (x *xidTrace) stop() {
 // toolchain that wrote it: golang.org/x/exp/trace reads the trace formats it was built to read,
 // and a toolchain whose runtime writes a newer one needs x/exp moved on with it.
 func (x *xidTrace) read() (*xidTraceReading, error) {
-	header := bytes.Clone(x.buf.Bytes()[:min(x.buf.Len(), 16)])
+	header := bytes.Clone(x.sink.data.Bytes()[:min(x.sink.data.Len(), 16)])
 	cannot := func(err error) error {
 		return fmt.Errorf("read the execution trace, whose header is %q, written by %s, with golang.org/x/exp %s: %w; a toolchain whose trace format x/exp/trace does not read needs golang.org/x/exp moved to a version that reads it",
 			bytes.TrimRight(header, "\x00"), runtime.Version(), xidExpVersion(), err)
 	}
-	reader, err := exptrace.NewReader(&x.buf)
+	reader, err := exptrace.NewReader(&x.sink.data)
 	if err != nil {
 		return nil, cannot(err)
 	}
@@ -127,6 +225,7 @@ func (x *xidTrace) read() (*xidTraceReading, error) {
 		}
 		switch event.Kind() {
 		case exptrace.EventSync:
+			reading.syncs = append(reading.syncs, event.Time())
 			if snapshot := event.Sync().ClockSnapshot; snapshot != nil && !snapped {
 				reading.snapshot = *snapshot
 				snapped = true
