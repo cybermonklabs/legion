@@ -43,8 +43,7 @@ var ErrRequestInvalid = errors.New("request object invalid")
 // wrap both, so its text stays "request object invalid: aud does not match".
 // requests.Machine.Create reads it to end a pending request its session made on another broker
 // that shares this database, which no person and no judge on this broker can decide; a bad
-// signature or a time outside the skew is no such
-// request, and is never this error.
+// signature or a time outside the skew is no such request, and is never this error.
 var ErrAudienceMismatch = errors.New("aud does not match")
 
 var (

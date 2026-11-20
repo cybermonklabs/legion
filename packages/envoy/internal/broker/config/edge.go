@@ -28,7 +28,7 @@ const workspaceDomainsSetting = "BROKER_SIGNIN_WORKSPACE_DOMAINS"
 // BROKER_PUBLIC_URL's; a page that is an absolute http(s) URL; and the two settings the edge's
 // routes stand on, the device grant's page and the sign-in domain. With none of the three set it
 // holds nothing, and the broker has no edge.
-func loadEdge(cfg Config) error {
+func loadEdge(cfg *Config) error {
 	values := []string{cfg.EdgeListenAddr, cfg.EdgeURL, cfg.EdgeMachineLoginURL}
 	var missing []string
 	for i, setting := range EdgeSettings {
@@ -141,7 +141,7 @@ func parseWorkspaceDomains(raw string) ([]string, error) {
 // domain with them: BROKER_SIGNIN_DOMAIN, lowered and as IDNA lookup writes it, then each
 // BROKER_SIGNIN_WORKSPACE_DOMAINS entry, which Load already holds in that form. A broker with
 // BROKER_SIGNIN=off names no Workspace and answers none; Load refuses an edge there.
-func (c Config) WorkspaceDomains() []string {
+func (c *Config) WorkspaceDomains() []string {
 	if c.SignIn.Domain == "" {
 		return nil
 	}

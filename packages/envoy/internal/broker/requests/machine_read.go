@@ -1031,11 +1031,11 @@ func sameLifetime(a, b *int) bool {
 // address: its request object does not verify for this broker, by the check PendingForApprover
 // lists a record by (requestedIdentifiers), because its aud names neither Machine.Audience's
 // origin nor, for a machine login, Machine.EdgeAudience's (record.VerifyStoredRequestObject,
-// record.ErrAudienceMismatch). Such a request can be decided by no person
-// and no judge here: no approver's list shows it and the judge was never handed it. A request
-// with no record, a body that does not parse and every other refusal (a signature, a time) answer
-// false, so Create keeps such a request and applies the one-pending-request rule to it: the
-// broker's move is the one reason it ends one.
+// record.ErrAudienceMismatch). Such a request can be decided by no person and no judge here: no
+// approver's list shows it and the judge was never handed it. A request with no record, a body
+// that does not parse and every other refusal (a signature, a time) answer false, so Create keeps
+// such a request and applies the one-pending-request rule to it: the broker's move is the one
+// reason it ends one.
 func (m *Machine) signedForAnotherBroker(p pendingRequestRow) bool {
 	if p.RecordBody == nil || p.RecordCreatedAt == nil {
 		return false

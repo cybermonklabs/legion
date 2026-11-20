@@ -1,10 +1,10 @@
-// Package answer records each answer a handler of the broker's API port writes. Middleware wraps
-// the mux that port serves (cmd/broker puts only the request deadline, which writes no answer,
-// outside it), so it sees the answer of every route, of the OAuth provider's library, of the
-// approval page and of the mux's own 404 and 405, whichever of them wrote it. It never sees the
-// answers net/http writes itself before any handler runs - a 400 for a malformed request, a 431
-// for headers over its limit, a 417 for an Expect it does not know - so those carry no answer id,
-// are counted nowhere and write no line. For each answer it sees it:
+// Package answer records each answer a handler of the broker's API port or of its edge writes.
+// Middleware wraps the mux each of them serves (cmd/broker puts only the request deadline, which
+// writes no answer, outside it), so it sees the answer of every route, of the OAuth provider's
+// library, of the approval page and of the mux's own 404 and 405, whichever of them wrote it. It
+// never sees the answers net/http writes itself before any handler runs - a 400 for a malformed
+// request, a 431 for headers over its limit, a 417 for an Expect it does not know - so those carry
+// no answer id, are counted nowhere and write no line. For each answer it sees it:
 //
 //   - mints an answer id, which the answer carries in its X-Broker-Answer-Id header and, in a
 //     JSON refusal body, as answer_id, so a refused caller has a thing to quote;
@@ -602,9 +602,10 @@ func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 // Count counts one answer the broker wrote on answers (nil counts nothing): an answer of status
 // naming answerCode, which is HTTP_<status> when it names none codePattern accepts, for a caller
 // of class. Its outcome is read from the two (outcomeOf). It is the one rule of
-// broker_answers_total's labels: Middleware counts by it each answer a handler of the API port
-// writes but one whose caller had gone (NoteCallerEnded), and the airlock's proxy port each answer
-// it writes itself. An answer net/http writes before any handler runs is counted by neither.
+// broker_answers_total's labels: Middleware counts by it each answer a handler of the API port or
+// of the edge writes but one whose caller had gone (NoteCallerEnded), and the airlock's proxy port
+// each answer it writes itself. An answer net/http writes before any handler runs is counted by
+// neither.
 func Count(answers *metrics.Counter, status int, answerCode, class string) {
 	if !codePattern.MatchString(answerCode) {
 		answerCode = httpCode(status)
@@ -721,8 +722,8 @@ func NewID() string {
 }
 
 // CorrelationID is the caller's X-Correlation-Id as a refusal's line keeps it: its printable
-// ASCII, at most FieldBytes of it. Middleware reads it for the API port, and the airlock's proxy
-// port for its own refusals.
+// ASCII, at most FieldBytes of it. Middleware reads it for the API port and the edge, and the
+// airlock's proxy port for its own refusals.
 func CorrelationID(r *http.Request) string {
 	sent := r.Header.Get(correlationHeader)
 	kept := make([]byte, 0, min(len(sent), FieldBytes))
@@ -748,7 +749,7 @@ func Clip(text string) string {
 
 // ClipFields cuts each text value of fields, a line's attributes as slog takes them, by Clip, in
 // place, and answers fields. It is where the caller's text enters a line the broker writes about
-// a request: the refusal line of either port (RefusalLine.Fields), the airlock's call line, its
+// a request: the refusal line of every port (RefusalLine.Fields), the airlock's call line, its
 // joined connection's line, its upstream failure line and the line net/http writes through its
 // ErrorLog, and the API port's and the approval page's lines that name a form field, an approver
 // or a provider's error pass their whole list through it. So each text field - the method, the

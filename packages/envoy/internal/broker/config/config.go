@@ -2110,7 +2110,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	// The edge's settings, held here beside BROKER_MACHINE_LOGIN_URL, whose device grant the edge
 	// serves (loadEdge), and the Workspace's other domains, which only the edge reads.
-	if err := loadEdge(cfg); err != nil {
+	if err := loadEdge(&cfg); err != nil {
 		return Config{}, err
 	}
 	if cfg.SignInWorkspaceDomains, err = parseWorkspaceDomains(getenv(workspaceDomainsSetting)); err != nil {

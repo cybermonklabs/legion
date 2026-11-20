@@ -102,16 +102,17 @@ func RegisterEdge(mux *http.ServeMux, deps Deps, edge Edge) {
 		verificationURI: edge.VerificationURL,
 	}
 	for _, route := range routes() {
-		gate, mounted := edgeRoutes[route.Method+" "+route.Pattern]
+		pattern := route.Method + " " + route.Pattern
+		gate, mounted := edgeRoutes[pattern]
 		if !mounted {
 			continue
 		}
 		next := s.handle(route)
 		if gate == nil {
-			mux.HandleFunc(route.Method+" "+route.Pattern, next)
+			mux.HandleFunc(pattern, next)
 			continue
 		}
-		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
+		mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 			if gate(edge, w, r) {
 				next(w, r)
 			}

@@ -33,9 +33,14 @@ import (
 
 // The steps the edge's boot and stop rows record, beside ordering_test.go's.
 const (
-	theEdgeBind              = "the edge's bind"
-	theEdgeShutdownBegan     = "the edge's shutdown began"
-	theEdgeShutdownReturned  = "the edge's shutdown returned"
+	theEdgeBind             = "the edge's bind"
+	theEdgeShutdownBegan    = "the edge's shutdown began"
+	theEdgeShutdownReturned = "the edge's shutdown returned"
+)
+
+// The edge's two URLs the binary's rows start the broker with, and the X-Forwarded-For its load
+// balancer writes for a client.
+const (
 	testEdgeURL              = "https://secrets.edge.example"
 	testEdgeMachineLoginURL  = "https://dispatch.edge.example/credentials/machine"
 	testEdgeClientForwarding = "203.0.113.70, 35.191.0.1"
@@ -286,7 +291,7 @@ func postDeviceAuthorization(t *testing.T, base, audience, person string, header
 	return response.StatusCode, body
 }
 
-// statusOf is the status base answers method path with, no body.
+// statusOf is the status target answers a request of method with no body.
 func statusOf(t *testing.T, method, target string) int {
 	t.Helper()
 	req, err := http.NewRequest(method, target, nil)
@@ -344,9 +349,9 @@ func sortedInts(ints []int) []int {
 // the load balancer's X-Forwarded-For; refuses there a person of the Workspace, BROKER_SIGNIN_DOMAIN
 // or a BROKER_SIGNIN_WORKSPACE_DOMAINS domain, and a request whose header names no client; answers
 // 404 for routes of the broker's own address and 405 for any method but POST on its two login
-// paths; and drains with the API: once the broker is asked to
-// stop, the edge's GET /healthz answers 503 SHUTTING_DOWN beside the API's, so the load balancer
-// stops choosing the pod while the edge still answers.
+// paths; and drains with the API: once the broker is asked to stop, the edge's GET /healthz
+// answers 503 SHUTTING_DOWN beside the API's, so the load balancer stops choosing the pod while
+// the edge still answers.
 func TestTheEdgeServesTheDeviceLoginFromTheBinary(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("reads the broker's sockets from /proc, which only Linux has")

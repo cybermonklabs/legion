@@ -421,7 +421,7 @@ func main() {
 		// The edge, bound by the same boot and only for a deployment that names one
 		// (BROKER_EDGE_LISTEN_ADDR): with none, the broker binds nothing for it.
 		ListenEdge: edgeListen(cfg),
-		// The metrics port, bound by the same boot after the other two, on every deployment.
+		// The metrics port, bound by the same boot after the others, on every deployment.
 		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
 		Catchup:       func(serving context.Context, current *policy.Current) error { return current.Refresh(serving) },
