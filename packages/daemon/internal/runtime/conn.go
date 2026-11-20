@@ -74,7 +74,7 @@ const WorkspaceBundleTimeout = 5 * time.Minute
 
 // WorkspaceWorkTimeout is how long the agent's side is given to read whether its workspace holds
 // work origin does not hold (WorkspaceWorkReader): two jj reads, one of which snapshots the
-// working copy, with nothing packed or written. It is the runtimes' budget for the request, not a
+// working copy; nothing is packed or pushed. It is the runtimes' budget for the request, not a
 // setting, for the reason WorkspaceBundleTimeout is one. It is half of the daemon's one-minute
 // sweep, which bounds the sweep's runtime calls, so a jj that runs out of time is answered by the
 // shim's own timeout inside that bound rather than by the caller's deadline.
