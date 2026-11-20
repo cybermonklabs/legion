@@ -140,7 +140,13 @@ export type EnvoyEnvironment = EnvoyConfigEnvironment & {
   readonly ENVOY_HEARTBEAT_MS?: string | undefined;
   readonly ENVOY_PASS_DEADLINE_MS?: string | undefined;
   readonly ENVOY_TMUX_PLACE_CACHE_MS?: string | undefined;
+  readonly ENVOY_INBOUND?: string | undefined;
 };
+
+/** The variable that says how a session takes its inbound messages: `nats` (what unset is) or
+ *  `listener`, the listener's relay socket. `envoy.inbound` names it in the file, and the variable
+ *  overrides that field. */
+export const ENVOY_INBOUND_VAR = "ENVOY_INBOUND";
 
 /** A NATS user's nkey seed, and where it came from, which an error about it names. */
 export interface NatsSeed {
@@ -177,17 +183,21 @@ const NO_NATS_CONNECTION = "this session opens no NATS connection";
 
 /** How a session takes inbound messages: over `natsUrls` (never empty) with `natsCredential`, the
  * nkey user a seed names, the session's broker token, or none for a server that asks for no
- * credential; or not at all, `off` saying why, and `noSessionNamed` set where the reason is a
- * broker token for a process that names no session (`NoSessionNamedError`), which a caller with a
- * remedy of its own branches on. `natsServersSetting` names the setting the servers came from
- * (`ENVOY_NATS_URL`, or `envoy.natsUrls in <file>`), which a log names them by
- * (`natsServersForLog`), never by their text. */
+ * credential; through the listener's relay socket (`relaySetting`, the setting that chose it:
+ * `ENVOY_INBOUND`, or `envoy.inbound in <file>`), presenting `relayCredential`, the session's
+ * broker credential, the only one the socket admits (`src/listener-relay.ts`); or not at all,
+ * `off` saying why, and `noSessionNamed` set where the reason is a broker token for a process that
+ * names no session (`NoSessionNamedError`), which a caller with a remedy of its own branches on.
+ * `natsServersSetting` names the setting the servers came from (`ENVOY_NATS_URL`, or
+ * `envoy.natsUrls in <file>`), which a log names them by (`natsServersForLog`), never by their
+ * text. */
 export type EnvoyInbound =
   | {
       readonly natsUrls: readonly string[];
       readonly natsServersSetting: string;
       readonly natsCredential: NatsCredential;
     }
+  | { readonly relaySetting: string; readonly relayCredential: RequestCredential }
   | { readonly off: string; readonly noSessionNamed?: true };
 
 /** An Envoy a session uses: every value resolved, credentials included. */
@@ -202,9 +212,11 @@ export interface EnabledEnvoySettings {
    * One field, so no caller can present half of it.
    */
   readonly credential: RequestCredential | undefined;
-  /** Inbound messages, which arrive over NATS. Off with `NO_NATS_SERVER` when nothing names a
-   * NATS server, with the refusal when the seed for the named ones could not be read or used (the
-   * listener and its bearer stand), and with `NO_NATS_CONNECTION` for a caller that opens none. */
+  /** Inbound messages, which arrive over NATS, or through the listener's relay socket where
+   * `ENVOY_INBOUND` or `envoy.inbound` says `listener`. Off with `NO_NATS_SERVER` when nothing
+   * names a NATS server, with the refusal when the seed for the named ones could not be read or
+   * used (the listener and its bearer stand), with the refusal of a relay socket the settings
+   * cannot open, and with `NO_NATS_CONNECTION` for a caller that opens none. */
   readonly inbound: EnvoyInbound;
   readonly heartbeatMs: number;
   /** How long one tmux place reading is reused: see `DEFAULT_TMUX_PLACE_CACHE_MS`. */
@@ -334,6 +346,42 @@ function natsCredential(
 }
 
 /**
+ * The relay socket's inbound, which `source` chose (`ENVOY_INBOUND`, or `envoy.inbound in
+ * <file>`), or why it is off. Refused beside a NATS server named for the session (`natsSetting`,
+ * the setting that named it), naming both rather than one of the two silently winning; for a
+ * listener credential that is not the session's broker token, which is the only one the socket
+ * admits; and for a caller that names no session, whose token would be the machine's or the
+ * signed-in person's, not the session the socket is for.
+ */
+function listenerInbound(
+  source: string,
+  natsSetting: string | undefined,
+  credential: RequestCredential | { readonly noBrokerRoute: string },
+  session: BrokerSessionName | undefined
+): EnvoyInbound {
+  if (natsSetting !== undefined) {
+    return {
+      off: `${source} is listener, and ${natsSetting} names NATS servers: set one of the two`,
+    };
+  }
+  if ("noBrokerRoute" in credential) {
+    return { off: `${source} is listener, but ${credential.noBrokerRoute}` };
+  }
+  if (credential.scheme !== "DPoP") {
+    return {
+      off: `${source} is listener, but the listener's credential is a bearer (ENVOY_TOKEN, ENVOY_TOKEN_FILE or envoy.token), and the relay socket admits only the session's broker token`,
+    };
+  }
+  if (session === undefined) {
+    return {
+      off: `${source} is listener, but this process names no session for its relay socket's token`,
+      noSessionNamed: true,
+    };
+  }
+  return { relaySetting: source, relayCredential: credential };
+}
+
+/**
  * The Envoy a session uses, from `config` (`readEnvoyConfig`) and the environment.
  *
  * Envoy is configured only by the chosen file and the variables: a checkout's file has no say in
@@ -409,6 +457,8 @@ export function envoySettings(
   const listener = section.url ?? DEFAULT_ENVOY_URL;
   const url = namedUrl ?? listener;
   let credential: RequestCredential | undefined;
+  // Why this machine has no broker credential, where it has none and no bearer either.
+  let noBrokerRoute = "";
   try {
     const source = bearerSource(env, "ENVOY", () =>
       section.token === undefined
@@ -426,9 +476,9 @@ export function envoySettings(
       // what the listener checks at the broker's introspection route. A listener that asks for no
       // credential is unaffected — it reads the request's identity, or none, the same way, and a
       // trade that fails leaves its calls standing (`createEnvoyClient`, transport.ts).
-      credential = brokerRouteConfigured(env).traded
-        ? brokerCredential(env, options.session)
-        : undefined;
+      const route = brokerRouteConfigured(env);
+      credential = route.traded ? brokerCredential(env, options.session) : undefined;
+      if (!route.traded) noBrokerRoute = route.gap;
     } else {
       credential = bearerCredential(
         source.kind === "variable" ? source.token : fileBearer(source, url, "ENVOY", env)
@@ -438,9 +488,34 @@ export function envoySettings(
     return offWithError(messageFor(error));
   }
   const natsUrls = namedNatsUrls.length > 0 ? namedNatsUrls : (section.natsUrls ?? []);
+  // How the session takes inbound messages: `ENVOY_INBOUND`, else the file's `envoy.inbound`, an
+  // empty variable counting as unset. Unset, and `nats`, are NATS, resolved as they always were.
+  const namedInbound = nonEmpty(env.ENVOY_INBOUND);
+  const choice =
+    namedInbound !== undefined
+      ? { value: namedInbound, source: ENVOY_INBOUND_VAR }
+      : section.inbound === undefined
+        ? undefined
+        : { value: section.inbound, source: `envoy.inbound in ${config.path}` };
   let inbound: EnvoyInbound;
   if (options.nats === false) inbound = { off: NO_NATS_CONNECTION };
-  else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
+  else if (choice !== undefined && choice.value !== "nats" && choice.value !== "listener") {
+    // Never echoed: a credential pasted into the wrong setting would be.
+    inbound = { off: `${choice.source} is neither nats nor listener` };
+  } else if (choice?.value === "listener") {
+    const natsSetting =
+      namedNatsUrls.length > 0
+        ? "ENVOY_NATS_URL"
+        : (section.natsUrls ?? []).length > 0
+          ? `envoy.natsUrls in ${config.path}`
+          : undefined;
+    inbound = listenerInbound(
+      choice.source,
+      natsSetting,
+      credential ?? { noBrokerRoute },
+      options.session
+    );
+  } else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
   else {
     try {
       inbound = {

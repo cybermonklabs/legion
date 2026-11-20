@@ -79,7 +79,9 @@ function resolved(
     session: "ses_a",
   });
   if (!settings.enabled) throw new Error(`Envoy is off: ${settings.error ?? settings.notice}`);
-  return "off" in settings.inbound ? settings.inbound : settings.inbound.natsCredential;
+  if ("off" in settings.inbound) return settings.inbound;
+  if (!("natsCredential" in settings.inbound)) throw new Error("inbound is the relay socket");
+  return settings.inbound.natsCredential;
 }
 
 describe("which credential a session connects to NATS with", () => {

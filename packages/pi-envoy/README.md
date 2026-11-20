@@ -425,10 +425,17 @@ missing file contributes nothing, so each section is then on only when its varia
 `token` or `natsSeed` starting with `!` is a command whose trimmed output is the value (10 s, its
 exit status deciding; never run from a checkout's file). `DISPATCH_URL`, `DISPATCH_TOKEN_FILE`,
 `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`,
-`NATS_NKEY_SEED_FILE` and `NATS_NKEY_SEED` each override their own field; a file's token goes with
+`NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED`, `NATS_AUTH` and `ENVOY_INBOUND` each override their own
+field; a file's token goes with
 `DISPATCH_URL` or `ENVOY_URL` only when it names the file's own server, and a file's seed with
 `ENVOY_NATS_URL` only when it names the file's NATS servers, so another server needs its own token
-or seed variable. `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
+or seed variable. `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in the `envoy` section)
+takes inbound messages through the listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`,
+over HTTPS alone, with the session's own broker token, rather than over NATS: for an agent on a
+machine with no NATS connection to the deployment. It is refused beside `ENVOY_NATS_URL` or
+`envoy.natsUrls`, naming both, with a bearer for the listener, and with no broker route; the
+socket carries no live view, so the session opens none and the start notice says so (the
+`@legion/envoy-client` README, "The listener's relay socket"). `DISPATCH_TOKEN_FILE` (a path whose trimmed contents are the token — how the
 Legion daemon delivers it to a pane) never falls back when unreadable. Omitting
 `dispatch.serverUrl` while `dispatch.enabled` is true targets `http://localhost:8766`, the Go
 server's listen address. With Envoy off the session has no Envoy tools and takes no inbound

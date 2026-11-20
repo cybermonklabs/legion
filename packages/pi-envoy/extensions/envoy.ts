@@ -100,6 +100,11 @@ import {
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings";
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors";
+import {
+  connectListenerRelay,
+  type InboundSubscription,
+  ListenerRelay,
+} from "@legion/envoy-client/listener-relay";
 import { machineID } from "@legion/envoy-client/machine";
 import {
   connectNats,
@@ -195,7 +200,7 @@ import * as host from "@oh-my-pi/pi-coding-agent";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger as hostLogger, procmgr, VERSION } from "@oh-my-pi/pi-utils";
 import { encode } from "@toon-format/toon";
-import { connect, Events, type NatsConnection, StringCodec, type Subscription } from "nats";
+import { connect, Events, type NatsConnection, StringCodec } from "nats";
 import { name as packageName, version as packageVersion } from "../package.json" with {
   type: "json",
 };
@@ -314,6 +319,10 @@ function liveSessionSettings(live: LiveAgentSession | undefined): AgentStreamSet
 }
 
 const codec = StringCodec();
+
+/** The session's inbound connection: NATS, or the listener's relay socket where the session's
+ *  settings say `ENVOY_INBOUND=listener` (`@legion/envoy-client/listener-relay`). */
+type SessionInbound = NatsConnection | ListenerRelay;
 
 /**
  * The dial `dialNats` opens this session's NATS connection with: nats.js's own `connect` with the
@@ -862,7 +871,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // a queue cannot answer a throw with a deadline.
   const passDeadlineMs = (): number => active?.settings.passDeadlineMs ?? MIN_PASS_DEADLINE_MS;
   const delivered = createDeliveryDedupe();
-  let connection: NatsConnection | undefined;
+  let connection: SessionInbound | undefined;
   // Stops the keeper of `connection`'s broker token (`keepNatsCredential`): one per connection,
   // replaced with the connection and stopped at shutdown.
   let stopNatsKeeper = (): void => {};
@@ -1192,10 +1201,11 @@ export default function envoyExtension(hostApi: PiApi): void {
   pi.on("resources_discover", async () => ({ skillPaths: [SKILLS_DIRECTORY] }));
   registerEnvoyMessageRenderer(pi);
 
-  // Refuses, saying why inbound messages are off (`inbound.off`: no NATS server, or the seed's
-  // refusal). A subscription and a Legion claim both ask it first: nats.js dials 127.0.0.1:4222
-  // when handed no server, which would attach this session to whatever NATS runs there, and a
-  // role's every task and notice reaches its holder only over NATS.
+  // Refuses, saying why inbound messages are off (`inbound.off`: no NATS server, the seed's
+  // refusal, or a relay socket the settings cannot open). A subscription and a Legion claim both
+  // ask it first: nats.js dials 127.0.0.1:4222 when handed no server, which would attach this
+  // session to whatever NATS runs there, and a role's every task and notice reaches its holder
+  // only over its inbound connection.
   const requireInbound = () => {
     const { inbound } = requireEnvoy().settings;
     if ("off" in inbound) {
@@ -1204,16 +1214,39 @@ export default function envoyExtension(hostApi: PiApi): void {
     return inbound;
   };
 
-  // Opens a NATS connection for this session and stores nothing: `ensureConnection` keeps the one
+  // Opens this session's inbound connection and stores nothing: `ensureConnection` keeps the one
   // this session uses, and a queued task dials through its handle, which closes a connection the
   // task was refused while the dial was in flight rather than leave it dangling.
   //
-  // A dial that fails is dialed again (`connectNats`): the hub closes a dial whose CONNECT the
+  // Under `ENVOY_INBOUND=listener` it is the listener's relay socket for the session this process
+  // runs now, presenting that session's broker token (`connectListenerRelay`), answered once a
+  // socket is open within the same bound a NATS start's trade waits, and within what a queued
+  // task (`limit`) has left before it must confirm a subscription and register; the socket opens
+  // again on its own after a close, and a token the broker refuses is this session's inbound
+  // outage, told once (`inboundOutage`).
+  //
+  // A NATS dial that fails is dialed again (`connectNats`): the hub closes a dial whose CONNECT the
   // host's busy start delayed past its 2 s authentication timeout, and answers the next one. A
   // queued task's dial (`limit`) redials only while the task can still confirm a subscription and
   // register after it (`PASS_AFTER_DIAL_MS`), and stops once the task stops acting.
-  const dialNats = async (limit?: DialLimit): Promise<NatsConnection> => {
-    const { natsUrls, natsCredential } = requireInbound();
+  const dialInbound = async (limit?: DialLimit): Promise<SessionInbound> => {
+    const inbound = requireInbound();
+    if ("relaySetting" in inbound) {
+      const boundMs = startTradeBoundMs(passDeadlineMs());
+      const leftMs =
+        limit === undefined ? boundMs : limit.deadlineAt - performance.now() - PASS_AFTER_DIAL_MS;
+      return connectListenerRelay(
+        {
+          url: requireEnvoy().settings.url,
+          session: () => sessionID,
+          credential: inbound.relayCredential,
+          outage: inboundOutage,
+          log: (line) => logger.warn(`envoy: ${line}`),
+        },
+        AbortSignal.timeout(Math.max(0, Math.min(boundMs, leftMs)))
+      );
+    }
+    const { natsUrls, natsCredential } = inbound;
     // A broker token is signed into the CONNECT itself, so a live one is taken before the dial.
     // The start has nothing to do until it holds one, so it waits for ready within its bound
     // (`TRADE_DEADLINE_MS`, or the pass deadline less the 10 s the rest of the pass needs where
@@ -1255,17 +1288,17 @@ export default function envoyExtension(hostApi: PiApi): void {
   // The session's broker token, where its NATS connection presents one (`NATS_AUTH=broker`).
   const brokerNatsCredentialOf = (): BrokerNatsCredential | undefined => {
     const inbound = active?.settings.inbound;
-    if (inbound === undefined || "off" in inbound) return undefined;
+    if (inbound === undefined || !("natsCredential" in inbound)) return undefined;
     return inbound.natsCredential.kind === "broker" ? inbound.natsCredential.broker : undefined;
   };
 
-  // The session's one NATS connection, dialled if it has none. A queued task reaches it through
+  // The session's one inbound connection, dialled if it has none. A queued task reaches it through
   // its handle's `connect`, which hands in the task's own fenced dial and checks the task again
   // once this whole call has answered: the wait below, after a dial another caller's connection
   // beat, is inside the step rather than after it.
   const ensureConnection = async (
-    dial: () => Promise<NatsConnection> = dialNats
-  ): Promise<NatsConnection> => {
+    dial: () => Promise<SessionInbound> = dialInbound
+  ): Promise<SessionInbound> => {
     if (connection?.isClosed() === false) return connection;
     const dialled = await dial();
     // Another pass can establish the connection, and the session's shutdown drop it, while this
@@ -1276,13 +1309,13 @@ export default function envoyExtension(hostApi: PiApi): void {
       await dialled.close().catch(() => {});
       if (!shuttingDown && connection?.isClosed() === false) return connection;
       throw new LoggableError(
-        "the session shut down while its NATS dial was in flight; the connection it opened was closed"
+        `the session shut down while its ${dialled instanceof ListenerRelay ? "relay socket" : "NATS dial"} was in flight; the connection it opened was closed`
       );
     }
     connection = dialled;
     void watchReconnects(dialled);
     const broker = brokerNatsCredentialOf();
-    if (broker !== undefined) {
+    if (broker !== undefined && !(dialled instanceof ListenerRelay)) {
       stopNatsKeeper();
       // Told as every other inbound outage is, in the log and as a notice: a token that cannot be
       // renewed, or that the server refuses, is a session that stops receiving. The keeper says
@@ -1295,12 +1328,13 @@ export default function envoyExtension(hostApi: PiApi): void {
     return connection;
   };
 
-  // nats.js resubscribes every subscription once it reconnects, but nothing published while it
-  // was away is kept for it: each reconnect begins a new epoch and registers it at once, so the
-  // listener restarts the session's relay at its ack floor and redelivers what the session never
-  // acknowledged (`renewRelayEpoch`). The reader ends with the connection, and stops acting once
-  // another connection replaced it.
-  const watchReconnects = async (watched: NatsConnection): Promise<void> => {
+  // nats.js resubscribes every subscription once it reconnects, and the relay socket takes every
+  // one again on each socket it opens, but nothing published while it was away is kept for it:
+  // each reconnect begins a new epoch and registers it at once, so the listener restarts the
+  // session's relay at its ack floor and redelivers what the session never acknowledged
+  // (`renewRelayEpoch`). The reader ends with the connection, and stops acting once another
+  // connection replaced it.
+  const watchReconnects = async (watched: SessionInbound): Promise<void> => {
     try {
       for await (const status of watched.status()) {
         if (connection !== watched) return;
@@ -1311,9 +1345,10 @@ export default function envoyExtension(hostApi: PiApi): void {
         renewRelayEpoch();
       }
     } catch (error) {
-      logger.warn("envoy: the NATS connection's status reader failed", {
-        error: natsFailureReason(error),
-      });
+      logger.warn(
+        `envoy: the ${watched instanceof ListenerRelay ? "relay socket" : "NATS connection"}'s status reader failed`,
+        { error: natsFailureReason(error) }
+      );
     }
   };
 
@@ -2335,7 +2370,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // pays no bound at all: the reconcile pass opens this session's relay subject and its
   // agent-stream control subject one after another before it registers, so a bound paid per open
   // would hold the session's registration for ten seconds times the subjects it opened.
-  const unanswered = new Set<NatsConnection>();
+  const unanswered = new Set<SessionInbound>();
 
   // `promise`, or a rejection naming `what`, once `ms` pass. Its text is this plugin's own, so a
   // NATS failure notice prints it whole (`LoggableError`).
@@ -2386,7 +2421,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   //
   // It throws only on a connection closed for good, or a session shutting down: either way this
   // connection carries nothing more, and the subjects it opened are the caller's to close.
-  const confirmSubscribed = async (connection: NatsConnection, what: string): Promise<void> => {
+  const confirmSubscribed = async (connection: SessionInbound, what: string): Promise<void> => {
     // This connection has not answered its last round trip, and the background confirmation is
     // already asking: waiting again would pay the bound once per open, where a pass pays it once.
     if (unanswered.has(connection)) return;
@@ -2408,7 +2443,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // the open that failed, and every open after it, go on without paying the bound again. Once it
   // clears the entry the next open pays one bound of its own, which is how a connection that
   // started answering again is noticed.
-  const confirmInBackground = async (connection: NatsConnection, what: string): Promise<void> => {
+  const confirmInBackground = async (connection: SessionInbound, what: string): Promise<void> => {
     const until = Date.now() + BACKGROUND_CONFIRM_CAP_MS;
     try {
       while (!shuttingDown && !connection.isClosed() && Date.now() < until) {
@@ -2562,7 +2597,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   interface Relay {
     readonly sessionID: string;
     readonly delivery: ConsumerDelivery;
-    subscription: Subscription | undefined;
+    subscription: InboundSubscription | undefined;
     /** Why the last open of the relay subject failed, or why its subscription ended, in words a
      *  notice may hold (`natsFailureReason`): a registration sent while the subject is missing
      *  names it, whoever sends it. */
@@ -2636,10 +2671,10 @@ export default function envoyExtension(hostApi: PiApi): void {
   // acquisition refuses and this call throws out of the task.
   const subscribeRelay = async (
     owner: Relay,
-    connect: () => Promise<NatsConnection> = ensureConnection
+    connect: () => Promise<SessionInbound> = ensureConnection
   ): Promise<void> => {
     if (owner.subscription !== undefined) return;
-    let connected: NatsConnection;
+    let connected: SessionInbound;
     try {
       connected = await connect();
     } catch (error) {
@@ -2680,7 +2715,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   const openRelay = async (
     context: SessionContext,
     id: string,
-    connect: () => Promise<NatsConnection>
+    connect: () => Promise<SessionInbound>
   ): Promise<void> => {
     if (ledger === undefined) return;
     if (relay?.sessionID !== id) {
@@ -2708,8 +2743,8 @@ export default function envoyExtension(hostApi: PiApi): void {
   // registered, so the listener restarts the relay at its ack floor.
   const pumpRelay = async (
     owner: Relay,
-    subscription: Subscription,
-    connected: NatsConnection
+    subscription: InboundSubscription,
+    connected: SessionInbound
   ): Promise<void> => {
     let failure: unknown;
     try {
@@ -2808,7 +2843,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     return ring;
   };
   // The control subscription this session currently holds, and the id it was opened for.
-  let agentStreamControl: Subscription | undefined;
+  let agentStreamControl: InboundSubscription | undefined;
   let agentStreamControlSession = "";
   let agentStreamCommandsRefreshedOnWatchAt = -Infinity;
   // When this session last put its context usage on the wire, which bounds how often it sends
@@ -2961,7 +2996,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   };
 
   const pumpAgentStreamControl = async (
-    subscription: Subscription,
+    subscription: InboundSubscription,
     session: string
   ): Promise<void> => {
     try {
@@ -3038,8 +3073,13 @@ export default function envoyExtension(hostApi: PiApi): void {
 
   const watchAgentStream = async (
     session: string,
-    connect: () => Promise<NatsConnection> = ensureConnection
+    connect: () => Promise<SessionInbound> = ensureConnection
   ): Promise<void> => {
+    // The listener's relay socket carries no agent stream: it refuses the control subject
+    // (`subject_not_granted`), and the frames would reach no viewer. A session whose inbound is
+    // the socket opens no live view, which its start notice says (`sessionSettings`).
+    const settingsInbound = active?.settings.inbound;
+    if (settingsInbound !== undefined && "relaySetting" in settingsInbound) return;
     if (agentStreamControlSession === session && agentStreamControl !== undefined) return;
     agentStreamControl?.unsubscribe();
     agentStreamControl = undefined;
@@ -3274,7 +3314,7 @@ export default function envoyExtension(hostApi: PiApi): void {
       }
       if (activeSessionContext !== undefined) ensureHeartbeat(activeSessionContext);
     },
-    dial: dialNats,
+    dial: dialInbound,
     connect: ensureConnection,
     subscribeTopic: async (topic) => follow(topic),
     closeSubjects: (held, subjects) => {
@@ -3687,7 +3727,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     heartbeatRegistered = true;
   };
 
-  const recoverRegisteredInterests = async (handle: TaskHandle): Promise<void> => {
+  const recoverRegisteredInterests = async (handle: TaskHandle<SessionInbound>): Promise<void> => {
     // Registered interests are what the session's own consumer is filtered on, so a resumed
     // process must rebuild them or stay deaf to
     // topics it registered before it died (e.g. dispatch thread replies).
@@ -3782,7 +3822,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // instance id. A predecessor still live under another client instance keeps the role, and the
   // claim is refused naming it.
   const desiredRole = async (
-    handle: TaskHandle,
+    handle: TaskHandle<SessionInbound>,
     id: string,
     branch: readonly unknown[],
     readRows: boolean
@@ -3905,7 +3945,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   const reconcileNow = async (
     context: SessionContext,
     cause: PassCause,
-    handle: TaskHandle
+    handle: TaskHandle<SessionInbound>
   ): Promise<boolean> => {
     const host = context.sessionManager.getSessionId();
     // Every write, listener call, dial and subscribe below is a step of this pass's handle, which
@@ -3976,11 +4016,15 @@ export default function envoyExtension(hostApi: PiApi): void {
           const connected = await handle.connect();
           // The auth service grants a session's token that session's subjects alone, so a session
           // the connection was not admitted as - one the host switched to - subscribes nothing
-          // until the connection is back, admitted with its token (`followNatsCredential`).
-          // Bounded by the pass, as the start's trade is (`followBoundMs`): a follow that outlasted
-          // a short pass deadline would run on beside the pass after it.
+          // until the connection is back, admitted with its token (`followNatsCredential`). The
+          // relay socket is opened for one session too, with that session's token, so it opens
+          // again for the one the host switched to (`ListenerRelay.follow`). Bounded by the pass,
+          // as the start's trade is (`followBoundMs`): a follow that outlasted a short pass
+          // deadline would run on beside the pass after it.
           const broker = brokerNatsCredentialOf();
-          if (broker !== undefined) {
+          if (connected instanceof ListenerRelay) {
+            await connected.follow(followBoundMs(passDeadlineMs()));
+          } else if (broker !== undefined) {
             await followNatsCredential(connected, broker, followBoundMs(passDeadlineMs()));
           }
           await handle.subscribe(legacyAgentSubject(host));
@@ -4086,7 +4130,7 @@ export default function envoyExtension(hostApi: PiApi): void {
     host: string,
     cause: PassCause,
     registered: boolean,
-    handle: TaskHandle
+    handle: TaskHandle<SessionInbound>
   ): Promise<boolean> => {
     // Every write and listener call below is a step of this move's handle, which refuses it once
     // the move was abandoned at its deadline or the host moved: the move then decides nothing,
