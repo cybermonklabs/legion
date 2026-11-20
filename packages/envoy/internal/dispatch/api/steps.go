@@ -35,10 +35,7 @@ import (
 // name the daemon's session and write, as the role-holders publish can. Like the design gates'
 // publish the writes append no issue event and notify nobody, since an event would feed the
 // daemon's intake with facts it caused; and they read the issue with no open check, because the
-// merge that closes an issue ends a step of it. The writer is judged from the key alone, before
-// any read, so it answers an issue the caller does not see as it answers a key no issue holds; the
-// issue is then read as the request's caller sees it (access.ProjectClause), and one it does not
-// see is a key no issue holds (ISSUE_NOT_FOUND), as is every read of the list route's.
+// merge that closes an issue ends a step of it.
 
 // The refusals of a step write, beside the package's own decode error and 404 ISSUE_NOT_FOUND,
 // each the code contracts gives it, which the Legion daemon reads to end a row on.

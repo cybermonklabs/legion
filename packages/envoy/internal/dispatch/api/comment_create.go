@@ -697,14 +697,13 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
-	// What the writer sees, resolved before any transaction holds a connection: the thread target
-	// below lists the owner's open asks as the writer may read them (askIDInputForOwner).
-	reader, ok := s.readerOf(w, r)
+	// What the writer sees, resolved before any transaction holds a connection: the owner checks
+	// read the owner as it may, and the thread target below lists the owner's open asks as it may
+	// read them (askIDInputForOwner).
+	writer, ok := s.readerAs(w, r, actor)
 	if !ok {
 		return
 	}
-	writer := actor
-	writer.Viewer = reader.Viewer
 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
@@ -719,7 +718,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		write = refusedWhenClosed
 	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseOwnerBeforeResolving(r.Context(), reader, owner, write); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), writer, owner, write); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -729,7 +728,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, reader, owner, resolved, write)
+			return s.beginCommentWrite(ctx, writer, owner, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),
