@@ -672,12 +672,14 @@ func TestABroadcastShowsOnlyToItsAuthorOrAViewerOfEveryRecipient(t *testing.T) {
 }
 
 // TestWhoamiAnswersAPersonalTokensProjects (KF4): GET /api/v1/whoami answers projects, sorted,
-// whenever the credential lists projects, a person's own dsp_ token included, in the agent shape;
-// and project, deprecated, as the one key of a one-key list and null for any other list. The person
-// shape is a browser's cookie's, which lists nothing, so it carries no list. The control is byte for
-// byte: a credential that lists nothing answers exactly what it answered before the list existed,
-// and a broker token scoped to one project, whose credential lists that project
-// (brokerTokenActor), answers it in both fields.
+// whenever the credential's reads are held to a list, a person's own dsp_ token included, in the
+// agent shape; and project, deprecated, as the one key of a one-key list its writes are held to and
+// null for any other list. The person shape is a browser's cookie's, which lists nothing, so it
+// carries no list. The control is byte for byte: a credential that lists nothing answers exactly
+// what it answered before the list existed. A broker token scoped to one project, whose credential
+// lists that project (brokerTokenActor), answers it in both fields while a project is private, and
+// while none is answers it as project alone, as it did before lists existed (R9); a broker token
+// acting as its person answers its list only while a project is private.
 func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	carol := seedCarol
 	project := seedPublic
@@ -686,20 +688,36 @@ func TestWhoamiAnswersAPersonalTokensProjects(t *testing.T) {
 	token := func(projects ...string) model.Actor {
 		return model.Actor{Kind: "session", Owner: &carol, Credential: &model.Credential{Projects: projects}}
 	}
+	broker := func(hold model.ListHold) model.Actor {
+		return model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}, ListHoldsWhileNoPrivate: hold}}
+	}
+	// What Resolve answers a broker token while a project is private (held to its list) and while
+	// none is (open, no Lists).
+	held := &model.Viewer{Sees: []string{project}, AnyPrivate: true, Lists: []string{project}}
+	open := &model.Viewer{Open: true, Sees: []string{project, seedPrivate}}
 	for _, test := range []struct {
 		name string
 		body any
 		want string
 	}{
-		{"a token that lists two projects", newWhoamiAgent(token(both...), "", []string{}),
+		{"a token that lists two projects", newWhoamiAgent(token(both...), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","projects":["PRIV","PUB"],"project":null,"scopes":[],"service":null,"session":null}`},
-		{"a token that lists one project", newWhoamiAgent(token(seedPrivate), "", []string{}),
+		{"a token that lists one project", newWhoamiAgent(token(seedPrivate), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","projects":["PRIV"],"project":"PRIV","scopes":[],"service":null,"session":null}`},
-		{"a token that lists none", newWhoamiAgent(token(), "", []string{}),
+		{"a token that lists none", newWhoamiAgent(token(), "", []string{}, nil),
 			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":[],"service":null,"session":null}`},
-		{"a broker token scoped to one project",
-			newWhoamiAgent(model.Actor{Kind: "session", ID: "ses_x", Credential: &model.Credential{Session: "ses_x", Projects: []string{project}}}, "", []string{}),
+		{"a broker token scoped to one project, while a project is private",
+			newWhoamiAgent(broker(model.ListHoldsWrites), "", []string{}, held),
 			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token scoped to one project, while none is",
+			newWhoamiAgent(broker(model.ListHoldsWrites), "", []string{}, open),
+			`{"kind":"agent","owner":null,"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token acting as its person, while a project is private",
+			newWhoamiAgent(broker(model.ListHoldsNothing), "", []string{}, held),
+			`{"kind":"agent","owner":null,"projects":["PUB"],"project":"PUB","scopes":[],"service":null,"session":"ses_x"}`},
+		{"a broker token acting as its person, while none is",
+			newWhoamiAgent(broker(model.ListHoldsNothing), "", []string{}, open),
+			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":null,"session":"ses_x"}`},
 		{"a person shape, whatever its credential lists",
 			newWhoamiUser(model.Actor{Kind: "user", ID: carol, Credential: &model.Credential{Projects: both}}, "", []string{}),
 			`{"kind":"user","login":"carol@example.com","scopes":[]}`},

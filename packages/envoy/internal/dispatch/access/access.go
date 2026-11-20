@@ -67,21 +67,27 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 }
 
 // VisibleProjectsSQL answers one caller's viewer in one row: every project it sees as a sorted
-// jsonb array, whether it is a restricted member, and whether any project is private. Its
-// parameters are $1 the person (null for a credential that names none), $2 whether the
-// credential is a broker token, whose person reads as a full member when no people row holds
-// them (the broker signs in only people of its sign-in domain), $3 whether it is an agent
-// credential rather than a browser, and $4 its list of projects (null or empty for none).
+// jsonb array, whether it is a restricted member, whether any project is private, and whether its
+// list holds what it sees. Its parameters are $1 the person (null for a credential that names
+// none), $2 whether the credential is a broker token, whose person reads as a full member when no
+// people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
+// an agent credential rather than a browser, $4 its list of projects (null or empty for none), and
+// $5 whether that list holds it only while some project is private (model.ListHold): with $5 and
+// no private project, the caller sees what a credential listing none sees.
 func VisibleProjectsSQL() string {
 	return fragment("VisibleProjectsSQL", `
-		with viewer as (
+		with deployment as (
+			select exists (select 1 from projects where visibility = 'private') as private
+		), viewer as (
 			select $1::text as person,
 				case when $1::text is null then null
 					else coalesce(
 						(select member_kind from people where email = $1::text),
 						case when $2::boolean then 'full' end)
 				end as member_kind,
-				coalesce(cardinality($4::text[]), 0) > 0 as listed
+				coalesce(cardinality($4::text[]), 0) > 0 and (not $5::boolean or deployment.private) as listed,
+				deployment.private
+			from deployment
 		)
 		select
 			coalesce(jsonb_agg(p.key order by p.key collate "C") filter (where
@@ -92,10 +98,11 @@ func VisibleProjectsSQL() string {
 							or case when viewer.listed then p.key = any($4::text[]) else p.visibility = 'public' end)
 				end), '[]'::jsonb),
 			coalesce(viewer.member_kind = 'restricted', false),
-			exists (select 1 from projects where visibility = 'private')
+			viewer.private,
+			viewer.listed
 		from viewer
 		left join projects p on true
-		group by viewer.person, viewer.member_kind, viewer.listed`)
+		group by viewer.person, viewer.member_kind, viewer.listed, viewer.private`)
 }
 
 // The clauses below test one row against the viewer a statement binds as jsonb at viewerParam,
@@ -279,6 +286,14 @@ func PartyClause(partiesExpr, viewerParam string) string {
 // is the credential's Projects. A caller is a browser only when it is a person acting with no
 // agent: a person-scope token acting for its person (actingPerson) is a user that carries an act,
 // and it sees what its own list lets it see, never everything its person sees.
+//
+// A list holds what its credential reads unless the credential's ListHoldsWhileNoPrivate says it
+// holds no read while the deployment holds no private project (a broker token's list, which
+// existed before projects could be private and limited no read then): such a credential reads as
+// one that lists none until a project is private, open and with no Lists, exactly as it read
+// before (R9), and once one is it is held to its list (R3). What its writes are held to while it
+// reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one project
+// made before projects could be private within that project.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor
@@ -297,16 +312,18 @@ func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, e
 	listed := actor.Credential.Projects
 	broker := actor.Credential.Session != ""
 	agent := actor.Kind != "user" || actor.Act != nil
+	onlyWhilePrivate := actor.Credential.ListHoldsWhileNoPrivate != model.ListHoldsAll
 	viewer := model.Viewer{Person: login}
-	if len(listed) > 0 {
-		viewer.Lists = listed
-	}
 	if actor.Kind == "session" {
 		viewer.Session = actor.ID
 	}
-	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, agent, listed).
-		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate); err != nil {
+	var held bool
+	if err := q.QueryRow(ctx, VisibleProjectsSQL(), person, broker, agent, listed, onlyWhilePrivate).
+		Scan(&viewer.Sees, &viewer.Restricted, &viewer.AnyPrivate, &held); err != nil {
 		return model.Viewer{}, fmt.Errorf("resolve what the caller sees: %w", err)
+	}
+	if held {
+		viewer.Lists = listed
 	}
 	viewer.Open = !viewer.Restricted && len(viewer.Lists) == 0
 	return viewer, nil

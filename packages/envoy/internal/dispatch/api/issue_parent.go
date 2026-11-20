@@ -447,6 +447,11 @@ func assertParentLeavesNoDependencyCycle(ctx context.Context, tx pgx.Tx, child, 
 // projects sees no project outside its list, so this is also what holds such a caller's targets
 // to its list.
 //
+// A broker token scoped to one project, which reads open while no project is private, writes a
+// target only of that project then, as before projects could be private: a target of another is
+// refused 403 PROJECT_SCOPE in the words it was refused then (refuseBlockedByOutsideCallerProject).
+// Nothing is private then, so the refusal names no project its caller may not see.
+//
 // The list who writes is the list who reads (the rule of references, references_seen.go): a link
 // to an issue who does not see is no part of it, so the write replaces the links who sees and keeps
 // every other, as a link stored across projects stays stored.
@@ -455,14 +460,19 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 		return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "%s cannot be blocked by itself", issue)
 	}
 	viewer := refs.VisibilityArg(who)
+	covers, scoped := brokerProjectWhileNoPrivate(ctx, who.Viewer)
 	for _, target := range targets {
-		err := tx.QueryRow(ctx, `select true from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
-			target, viewer).Scan(new(bool))
+		var project string
+		err := tx.QueryRow(ctx, `select project_key from issues where key = $1 and `+access.ProjectClause("project_key", "$2"),
+			target, viewer).Scan(&project)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errorf(http.StatusBadRequest, "BLOCKED_BY_INPUT", "blocked_by issue %s not found", target)
 		}
 		if err != nil {
 			return err
+		}
+		if scoped && project != covers {
+			return refuseBlockedByOutsideCallerProject(covers, target, project)
 		}
 	}
 	from := make([]waitNode, len(targets))
@@ -484,6 +494,15 @@ func writeBlockedBy(ctx context.Context, tx pgx.Tx, issue string, who model.Acto
 		select $1, 'blocked_by', target_key from unnest($2::text[]) as target_key
 	`, issue, targets)
 	return err
+}
+
+// refuseBlockedByOutsideCallerProject is what a broker token scoped to project caller is answered,
+// while no project is private, for a blocked_by target of another project, in the words it was
+// answered before projects could be private.
+func refuseBlockedByOutsideCallerProject(caller, target, targetProject string) error {
+	return errorf(http.StatusForbidden, codeProjectScope,
+		"this request's credential may write project %s; blocked_by issue %s belongs to project %s",
+		caller, target, targetProject)
 }
 
 // assertNoWaitPath refuses a wait whose head reaches its tail, stopping at parentDepthCap.
