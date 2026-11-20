@@ -13,10 +13,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -311,8 +313,10 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 
 // TestARedirectedDiscoveryPrintsWhereItEnded: the status a failed discovery prints is the last
 // request's, so a 302 whose target refuses the connection prints as the refused connection it
-// ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
-// 404 prints that status, and its error still unwraps to go-oidc's own: the control.
+// ended in, and unwraps to it, not as the 302 that sent it there. The error names the issuer's
+// address, so the row whose issuer listens on a port that holds the digits 302 shows that the
+// check reads the status and not those digits. A discovery the issuer answered 404 prints that
+// status, and its error still unwraps to go-oidc's own: the control.
 func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -320,16 +324,27 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	}
 	closed := listener.Addr().String()
 	listener.Close()
-	redirected := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "http://"+closed+"/.well-known/openid-configuration", http.StatusFound)
-	})
-	_, err = exampleFlow(redirected).Start(context.Background())
-	if err == nil {
-		t.Fatal("Start read a discovery document from a port that is closed")
-	}
-	namesAll(t, "the redirected discovery", err.Error(), "connection refused")
-	if strings.Contains(err.Error(), "302") || !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
+	for name, listen := range map[string]func(t *testing.T) net.Listener{
+		"an issuer on a port of its own":         func(t *testing.T) net.Listener { return listenOn(t, "127.0.0.1:0") },
+		"an issuer on a port that holds the 302": listenOnA302Port,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "http://"+closed+"/.well-known/openid-configuration", http.StatusFound)
+			}))
+			server.Listener.Close()
+			server.Listener = listen(t)
+			server.Start()
+			t.Cleanup(server.Close)
+			_, err := exampleFlow(server.URL).Start(context.Background())
+			if err == nil {
+				t.Fatal("Start read a discovery document from a port that is closed")
+			}
+			namesAll(t, "the redirected discovery", err.Error(), "connection refused")
+			if strings.Contains(err.Error(), "HTTP 302") || !errors.Is(err, syscall.ECONNREFUSED) {
+				t.Errorf("the redirected discovery = %q (errors.Is ECONNREFUSED: %t), want the refused connection it ended in", err, errors.Is(err, syscall.ECONNREFUSED))
+			}
+		})
 	}
 
 	missing := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +364,29 @@ func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
 	if !reached {
 		t.Errorf("the 404 discovery %q does not unwrap to go-oidc's error, which quotes the body", err)
 	}
+}
+
+// listenOn listens on address, or fails t.
+func listenOn(t *testing.T, address string) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return listener
+}
+
+// listenOnA302Port listens on the first free loopback port from 30200 to 30299, each of which holds
+// the digits 302, or fails t when none is free.
+func listenOnA302Port(t *testing.T) net.Listener {
+	t.Helper()
+	for port := 30200; port <= 30299; port++ {
+		if listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port)); err == nil {
+			return listener
+		}
+	}
+	t.Fatal("no loopback port from 30200 to 30299 is free")
+	return nil
 }
 
 // TestADiscoveryWhoseBodyFailsPrintsTheReadFailure: a discovery answer whose status is 200 but

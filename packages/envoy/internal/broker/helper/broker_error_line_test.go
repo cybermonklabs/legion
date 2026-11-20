@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // TestABrokerRefusalPrintsOnOneLine: a refusal's code and words, from a broker at a clean address,
@@ -80,12 +81,12 @@ func TestABrokerRefusalPrintsOnOneLine(t *testing.T) {
 		const code = "SESSION_HELD\nagent-secrets: FORGED"
 		be := refusal(t, answer(code, "the session belongs to another pod"))
 		want := "broker 403 " + strconv.Quote(code) + ": the session belongs to another pod"
-		if be.Error() != want || be.Code != code {
-			t.Errorf("Error = %q and Code = %q, want %q and the code as it came", be.Error(), be.Code, want)
+		if be.Error() != want || !be.HasCode(code) {
+			t.Errorf("Error = %q, want %q and the code as it came", be.Error(), want)
 		}
 	})
 	t.Run("a refusal built from the broker's OAuth answer", func(t *testing.T) {
-		be := &BrokerError{Status: http.StatusBadRequest, Code: "LOGIN_PENDING", Message: "pending\nagent-secrets: FORGED"}
+		be := newBrokerError(http.StatusBadRequest, redact.NewRemoteText("LOGIN_PENDING"), redact.NewRemoteText("pending\nagent-secrets: FORGED"), false)
 		if want := "broker 400 LOGIN_PENDING: " + strconv.Quote("pending\nagent-secrets: FORGED"); be.Error() != want {
 			t.Errorf("Error = %q, want %q", be.Error(), want)
 		}

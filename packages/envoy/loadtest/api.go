@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // api is a Dispatch HTTP client: agent requests use the stack's shared bearer and name a session
@@ -58,10 +59,12 @@ type callResult struct {
 
 func (r callResult) ok() bool { return r.err == nil && r.status/100 == 2 }
 
-// errorCode is the code a non-2xx answer's body names; "" for a 2xx answer or a transport error.
-func (r callResult) errorCode() string {
+// errorCode is the code a non-2xx answer's body names; empty for a 2xx answer or a transport
+// error. It is Dispatch's word, held as redact.RemoteText: a caller compares it through the box and
+// prints it as it prints itself.
+func (r callResult) errorCode() redact.RemoteText {
 	if r.err != nil || r.status/100 == 2 {
-		return ""
+		return redact.RemoteText{}
 	}
 	return errorCode(r.body)
 }
@@ -168,7 +171,7 @@ func (a *api) callRetryKeyed(ctx context.Context, method, path string, w who, bo
 	for attempt := 0; ; attempt++ {
 		res := a.callKeyed(ctx, method, path, w, body, key)
 		transient := res.transient() ||
-			(key != "" && res.status == http.StatusConflict && errorCode(res.body) == contracts.IdempotencyKeyInFlight)
+			(key != "" && res.status == http.StatusConflict && errorCode(res.body).Equal(contracts.IdempotencyKeyInFlight))
 		if res.ok() || !transient || attempt >= 6 || ctx.Err() != nil {
 			return res
 		}
@@ -176,11 +179,11 @@ func (a *api) callRetryKeyed(ctx context.Context, method, path string, w who, bo
 	}
 }
 
-// errorCode is the code a Dispatch error body names (writeError writes {"error": ..., "code": ...});
-// "" when the body names none or is not JSON at all.
-func errorCode(body []byte) string {
+// errorCode is the code a Dispatch error body names (writeError writes {"error": ..., "code": ...}),
+// held as redact.RemoteText; empty when the body names none or is not JSON at all.
+func errorCode(body []byte) redact.RemoteText {
 	var refusal struct {
-		Code string `json:"code"`
+		Code redact.RemoteText `json:"code"`
 	}
 	_ = json.Unmarshal(body, &refusal)
 	return refusal.Code

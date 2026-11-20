@@ -1,0 +1,30 @@
+kind: Fixed
+body: |-
+  A remote's words no longer print a credential a URL in them carries. The broker's code and
+  description printed whole beside a clean address, so a refusal that quoted
+  `https://user:password@host/path?access_token=…` printed the user, the password and the token in
+  the helper's ERROR line, the token client's renewal lines and every message made from the
+  refusal. A fail-closed rule (`redact.Remote`, `redact.Field`) now reads each remote field: it
+  prints the field with each URL's user information and each query and fragment value removed
+  only when it can read every URL in it, and `redact.WordsNotReadable` otherwise, the status and
+  the other field still printing. Whitespace that splits a URL or a credential does not hide it:
+  the rule reads the field again with its whitespace removed and fails closed, so every `?`, `#`,
+  `@` and key's `=` after a URL start must lie inside a URL the first reading read as clean,
+  whatever sits between; a key's split `user:secret@` is not readable whatever leads it
+  (`proxy=[user: secret@host]`), nor is a split `https://user: password/x`. A free-text error
+  that names a URL and then any `key=value`, `?` or `#` therefore prints as not readable, as
+  git's `Could not resolve host` would after such a word. Two forms still print by design, since
+  no syntax marks them: a bare `label: secret@host`, with no key before it, which reads as a
+  label and an address such as `sign-in: ada@example.com`; and the same in a JSON member.
+  The helper splits an `invalid_request` description at its first `": "` only where the rule reads
+  the whole description as clean. The broker's words in `redact.Error`, `redact.Cause` and
+  `brokeraddr.Address.Words`, and the words in the helper's `BrokerError`, `agent-secrets`' and
+  `agent-secrets-devrelay`'s refusals, `githubapp.StatusError`, `auth.CallbackError`, the Envoy
+  listener client's errors, a refused revocation's code and the load test's seed code print
+  through it; those error types hold the words behind pointers, so no fmt verb, `slog` field or
+  value that holds them prints them. Dispatch's Envoy listener client no longer prints the
+  configured listener URL in a transport failure. `scripts/check-redact-remote-text.sh` runs
+  every print site's test.
+time: 2026-11-18T05:15:23Z
+custom:
+    Issue: pr4368

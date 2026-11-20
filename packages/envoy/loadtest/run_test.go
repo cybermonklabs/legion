@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // arrivals runs openLoop over times in the past, so it never sleeps, and records each arrival:
@@ -368,10 +369,10 @@ func TestMetaRecordsTheDispatchBuildOfEveryStep(t *testing.T) {
 func TestSummarizeRequestsCodesAndTolerated(t *testing.T) {
 	read, edit := "GET /api/v1/projects/{project}/architecture-sources [issue-create]", "POST /api/v1/artifacts/{id}/edits [edit]"
 	s := summarizeRequests([]reqRec{
-		{route: read, status: 404, code: "NOT_FOUND", tolerated: true},
+		{route: read, status: 404, code: redact.NewRemoteText("NOT_FOUND"), tolerated: true},
 		{route: edit, status: 200},
-		{route: edit, status: 400, code: "TARGET_SPANS_BLOCKS"},
-		{route: edit, status: 404, code: "TARGET_NOT_FOUND"},
+		{route: edit, status: 400, code: redact.NewRemoteText("TARGET_SPANS_BLOCKS")},
+		{route: edit, status: 404, code: redact.NewRemoteText("TARGET_NOT_FOUND")},
 		{route: edit, status: 502},
 		{route: edit, transport: true},
 	}, 0, 0, 1)
@@ -383,7 +384,7 @@ func TestSummarizeRequestsCodesAndTolerated(t *testing.T) {
 	if e.Failures != 4 || e.Tolerated != 0 || !maps.Equal(e.Codes, want) || s.OK2xx != 1 {
 		t.Fatalf("edit: %+v, ok_2xx %d", e, s.OK2xx)
 	}
-	if code := (callResult{status: 400, body: []byte(`{"error":"x","code":"INVALID_OP"}`)}).errorCode(); code != "INVALID_OP" {
+	if code := (callResult{status: 400, body: []byte(`{"error":"x","code":"INVALID_OP"}`)}).errorCode(); !code.Equal("INVALID_OP") {
 		t.Fatalf("errorCode %q", code)
 	}
 }

@@ -785,7 +785,7 @@ func proofFailed(err error) bool {
 		return false
 	}
 	return refused.Status == http.StatusUnauthorized ||
-		refused.Status == http.StatusServiceUnavailable && refused.Code == "DATABASE_UNAVAILABLE"
+		refused.Status == http.StatusServiceUnavailable && refused.hasCode("DATABASE_UNAVAILABLE")
 }
 
 // whoDecides is secret show's decides and guidance lines: who decides a request for the key, and

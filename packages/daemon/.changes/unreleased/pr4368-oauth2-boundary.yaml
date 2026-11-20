@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The launcher's line for a failed token exchange no longer prints a credential the security
+  token service's answer quotes. The exchange's error quoted the service's answer body as it
+  came, and the line logged it whole; the launcher now calls golang.org/x/oauth2 through
+  `oauth2call.Call`, whose error prints only the rule for remote text's reading of those words,
+  with each URL's user information and each query value removed. The token sources the launcher
+  and the session proxy hand to x/oauth2 and to the Cloud SQL connector go through
+  `oauth2call.TokenSource`, so a refusal those libraries print holds the same reading. The
+  launcher's exchange and the session proxy's IAM impersonation send through
+  `oauth2call.RefusalClient`, so a refusal that echoes the subject token or the pod's bearer prints
+  neither.
+time: 2026-11-18T10:48:14Z
+custom:
+    Issue: pr4368

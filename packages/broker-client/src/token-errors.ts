@@ -7,6 +7,7 @@
 // broker and NATS credentials, and every test read them without owning the retry loop.
 
 import { scrub } from "@legion/contracts/held-secrets";
+import { RemoteText } from "@legion/contracts/remote-text";
 import {
   isKnownBrokerRefusal,
   KNOWN_OAUTH_ERROR_CODES,
@@ -59,33 +60,42 @@ export class BrokerRefusedError extends Error {
   readonly podSessionUnregistered: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
+   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name.
+   *  `code` and `description` are the broker's words, held as a {@link RemoteText} where they come
+   *  so (a `LibraryError`'s): each is compared as it came, and read as text only through the box,
+   *  as the rule reads it, which leaves every known refusal as it is. */
   constructor(
     readonly status: number,
-    code: string,
-    description: string,
+    code: RemoteText | string,
+    description: RemoteText | string,
     refused: string,
     context: RefusalContext = {}
   ) {
-    const shownCode = shownOAuthCode(code);
-    const said =
-      description === ""
-        ? ""
-        : isKnownBrokerRefusal(description, context)
-          ? // Scrubbed here, not only where a caller prints it: a host prints the error itself
-            // (a `console.warn(text, error)`, an uncaught error), and the policy's own refusal
-            // can carry the subject token it was sent.
-            scrub(description)
-          : REFUSAL_TEXT_WITHHELD;
+    const words = description instanceof RemoteText ? description : new RemoteText(description);
+    const answered = code instanceof RemoteText ? code : new RemoteText(code);
+    const known =
+      [...KNOWN_OAUTH_ERROR_CODES].find((candidate) => answered.equals(candidate)) ?? "";
+    const shownCode = answered.isEmpty
+      ? ""
+      : known !== ""
+        ? known
+        : shownOAuthCode(String(answered));
+    const said = words.isEmpty
+      ? ""
+      : // Scrubbed here, not only where a caller prints it: a host prints the error itself
+        // (a `console.warn(text, error)`, an uncaught error), and the policy's own refusal
+        // can carry the subject token it was sent.
+        (words.knownReading((reading) => isKnownBrokerRefusal(reading, context), scrub) ??
+        REFUSAL_TEXT_WITHHELD);
     super(
       `the secrets broker refused ${refused}: HTTP ${status}${shownCode === "" ? "" : ` ${shownCode}`}${said === "" ? "" : `: ${said}`}`
     );
     this.name = "BrokerRefusedError";
-    this.code = KNOWN_OAUTH_ERROR_CODES.has(code) ? code : "";
+    this.code = known;
     this.shownCode = shownCode;
     this.said = said;
     this.podSessionUnregistered =
-      code === INVALID_GRANT && description.startsWith(`${POD_SESSION_NOT_REGISTERED}:`);
+      answered.equals(INVALID_GRANT) && words.startsWith(`${POD_SESSION_NOT_REGISTERED}:`);
   }
 
   /**

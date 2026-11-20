@@ -220,6 +220,9 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	const base = "http://broker.example"
 	reset := unreachable(brokeraddr.New(base), http.MethodGet, base+"/v1/requests/"+flakyRequestID, &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)})
+	refusal := func(status int, code, words string) *apiError {
+		return newAPIError(status, redact.NewRemoteText(code), redact.NewRemoteText(words), redact.RemoteText{}, false)
+	}
 	for _, row := range []struct {
 		err  error
 		want bool
@@ -232,13 +235,13 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 		// failure, not a poll that did not reach the broker: it ends the wait, as before.
 		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
 		{&unreachableError{"the broker's address is not a valid URL", brokeraddr.New(base), http.MethodGet, base, errNothingSent}, false},
-		{&apiError{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}, true},
-		{&apiError{Status: http.StatusBadGateway, Message: "<html>502 Bad Gateway</html>"}, true},
-		{&apiError{Status: http.StatusServiceUnavailable, Code: "SHUTTING_DOWN", Message: "shutting down"}, true},
-		{&apiError{Status: http.StatusGatewayTimeout, Message: "upstream timed out"}, true},
-		{&apiError{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no such request"}, false},
-		{&apiError{Status: http.StatusUnauthorized, Code: "PROOF_INVALID", Message: "proof invalid"}, false},
-		{&apiError{Status: http.StatusInternalServerError, Message: "internal"}, false},
+		{refusal(http.StatusTooManyRequests, "RATE_LIMITED", "slow down"), true},
+		{refusal(http.StatusBadGateway, "", "<html>502 Bad Gateway</html>"), true},
+		{refusal(http.StatusServiceUnavailable, "SHUTTING_DOWN", "shutting down"), true},
+		{refusal(http.StatusGatewayTimeout, "", "upstream timed out"), true},
+		{refusal(http.StatusNotFound, "NOT_FOUND", "no such request"), false},
+		{refusal(http.StatusUnauthorized, "PROOF_INVALID", "proof invalid"), false},
+		{refusal(http.StatusInternalServerError, "", "internal"), false},
 		{&refusedBeforeCall{"a request id must name one path segment"}, false},
 		{errors.New("decode request status: unexpected end of JSON input"), false},
 	} {

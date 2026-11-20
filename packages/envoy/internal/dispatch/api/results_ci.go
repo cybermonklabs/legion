@@ -201,13 +201,15 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 // the read's error. Where GitHub refused the read (githubapp.StatusError) or rate-limited it
 // (githubapp.RateLimitError), the error's text ends with GitHub's whole body, up to the 16 MiB a
 // page of check runs may take: the body is replaced by the `message` GitHub writes in the JSON it
-// refuses a request with, and left out where it holds none, so the status stays. Any other error
-// keeps its text. The sentence is then cut to ciUnreadDetailRunes.
+// refuses a request with, and left out where it holds none, so the status stays. A refusal's
+// message is GitHub's words, a redact.RemoteText that prints itself as the rule for remote text
+// reads it.
+// Any other error keeps its text. The sentence is then cut to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
 	reason := err.Error()
 	var refused *githubapp.StatusError
 	if errors.As(err, &refused) {
-		reason = withGitHubMessage(reason, refused.Body, refused.Message())
+		reason = withGitHubMessage(reason, refused.PrintedBody(), refused.Message().String())
 	} else if limited, ok := githubapp.AsRateLimit(err); ok {
 		reason = withGitHubMessage(reason, limited.Body, limited.Message())
 	}

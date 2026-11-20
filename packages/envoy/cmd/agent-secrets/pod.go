@@ -307,22 +307,13 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 }
 
 // podRefusal is the one stderr line a refused login or enrolment prints: what was refused, which
-// pod the token names, the HTTP status, the broker's code and message - the status and Message
-// alone where the answer's text is withheld (apiError.withheld) - and the broker it asked. It
-// never prints the token.
+// pod the token names, the HTTP status, the broker's code and words as the rule for remote text
+// reads them - the status and brokeraddr.WordsNotPrinted alone where the answer's text is
+// withheld (apiError.answered) - and the broker it asked. It never prints the token.
 func podRefusal(prefix, what string, identity podIdentity, base brokeraddr.Address, err error) string {
 	var refused *apiError
 	if errors.As(err, &refused) {
-		answered := fmt.Sprintf("HTTP %d: %s", refused.Status, refused.Message)
-		if !refused.withheld {
-			// The code is the broker's, so it prints on one line as Message does.
-			code := redact.OneLine(refused.Code)
-			if code == "" {
-				code = "UNKNOWN"
-			}
-			answered = fmt.Sprintf("HTTP %d %s: %s", refused.Status, code, refused.Message)
-		}
-		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, answered, brokerSource(base))
+		return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s; asked %s", prefix, identity, what, refused.answered(), brokerSource(base))
 	}
 	return fmt.Sprintf("%s --pod: this pod (%s) could not %s: %s", prefix, identity, what, refusalText(brokerSource(base), err))
 }

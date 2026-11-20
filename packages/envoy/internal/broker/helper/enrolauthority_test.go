@@ -341,7 +341,7 @@ func TestAPersonsCredentialRefusedTwiceIsTheEnrolmentsAnswer(t *testing.T) {
 	// The second call is refused too: the stub keeps answering the same authority.
 	_, _, err := b.EnrollSessionKey(context.Background(), "example-host:1234:77", "thumbprint", nil)
 	var be *BrokerError
-	if !errors.As(err, &be) || be.Code != "LAUNCHER_INVALID" {
+	if !errors.As(err, &be) || !be.HasCode("LAUNCHER_INVALID") {
 		t.Fatalf("two refusals answered %v, want the broker's own refusal", err)
 	}
 	enrols, _ := f.calls()

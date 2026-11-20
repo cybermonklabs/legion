@@ -18,14 +18,18 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/impersonate"
 	"google.golang.org/api/option"
 
+	"github.com/sjawhar/envoy/oauth2call"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -349,25 +353,32 @@ func (p *Proxy) logf(format string, args ...any) {
 }
 
 // connectorDialer adapts the Cloud SQL connector, whose Dial takes variadic dial options, to
-// Dialer.
+// Dialer. Each Dial has its own scope: the connector hands back Admin API errors as text only, so
+// the boundary reads them with the records of the exact requests that Dial sent.
 type connectorDialer struct {
 	dialer *cloudsqlconn.Dialer
 }
 
 func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, error) {
-	return c.dialer.Dial(ctx, instance)
+	s := oauth2call.Scope[net.Conn](ctx)
+	return oauth2call.Call(s.Read(c.dialer.Dial(s.Context(), instance)))
 }
 
-func (c connectorDialer) Close() error { return c.dialer.Close() }
+func (c connectorDialer) Close() error {
+	s := oauth2call.Scope[struct{}](context.Background())
+	_, err := oauth2call.Call(struct{}{}, s.Err(c.dialer.Close()))
+	return err
+}
 
 // newConnectorDialer builds the dialer a pod uses, with connectorOptions. It signs in as account,
 // which the pod's own credentials impersonate, or as the pod itself when account is "".
 func newConnectorDialer(ctx context.Context, account string) (Dialer, error) {
-	opts, err := connectorOptions(ctx, account)
+	opts, err := connectorOptions(ctx, account, nil)
 	if err != nil {
 		return nil, err
 	}
-	dialer, err := cloudsqlconn.NewDialer(ctx, opts...)
+	s := oauth2call.Scope[*cloudsqlconn.Dialer](ctx)
+	dialer, err := oauth2call.Call(s.Read(cloudsqlconn.NewDialer(s.Context(), opts...)))
 	if err != nil {
 		return nil, err
 	}
@@ -388,39 +399,89 @@ const (
 // IAM database authentication, which puts a login token in the ephemeral-certificate exchange. It
 // dials the instance's private IP, which is the only address a pod's network reaches.
 //
-// With account "", the connector signs in as the pod itself, with the pod's own credentials. With
-// an account, the pod's credentials impersonate that account through the IAM Service Account
-// Credentials API. One impersonated source signs the Admin API calls, and the other gives the
-// login token, so the proxy signs in as the account.
+// With account "", the connector signs in as the pod itself, with two scoped instances of the
+// pod's credentials. With an account, the pod's credentials impersonate that account through the
+// IAM Service Account Credentials API. One source signs the Admin API calls, and the other gives
+// the login token, so the proxy signs in as the account. The Admin API client is always a
+// RefusalClient, and lazy refresh makes its requests run under the Dial context that reads their
+// error, instead of a background context with no record.
 //
-// ctx is the proxy's serving context, which only Close ends. The library builds each source's
-// client and finds the pod's credentials with it, so a credential that fetches its own token with
-// that context keeps doing so for as long as the proxy serves; never Start's own context, which
-// ends once the proof dial is over. Each source refreshes its one-hour token by itself when the
-// connector next asks for one. iam goes to the IAM Credentials API's client: production passes
-// none, and a test passes a fake endpoint.
-func connectorOptions(ctx context.Context, account string, iam ...option.ClientOption) ([]cloudsqlconn.Option, error) {
-	opts := make([]cloudsqlconn.Option, 0, 3)
-	opts = append(opts,
+// ctx is the proxy's serving context, which only Close ends. The library builds each source from
+// the IAM Credentials client given it, so a credential that fetches its own token with that
+// context keeps doing so for as long as the proxy serves; never Start's own context, which ends
+// once the proof dial is over. Each source refreshes its one-hour token by itself when the
+// connector next asks for one. iamBase is the transport the IAM Credentials client's requests go
+// out on: production passes nil (http.DefaultTransport), and a test a fake endpoint.
+func connectorOptions(ctx context.Context, account string, iamBase http.RoundTripper) ([]cloudsqlconn.Option, error) {
+	opts := []cloudsqlconn.Option{
 		cloudsqlconn.WithIAMAuthN(),
 		cloudsqlconn.WithDefaultDialOptions(cloudsqlconn.WithPrivateIP()),
-	)
+		cloudsqlconn.WithLazyRefresh(),
+	}
+	var api, login oauth2.TokenSource
+	var err error
 	if account == "" {
-		return opts, nil
+		api, err = podTokenSource(ctx, sqlAdminScope, cloudPlatformScope)
+		if err != nil {
+			return nil, err
+		}
+		login, err = podTokenSource(ctx, sqlLoginScope)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		iam, err := impersonationClient(ctx, iamBase)
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s: read the pod's own credentials: %w", account, err)
+		}
+		adminScope := oauth2call.Scope[oauth2.TokenSource](ctx)
+		api, err = oauth2call.Call(adminScope.Read(impersonate.CredentialsTokenSource(adminScope.Context(), impersonate.CredentialsConfig{
+			TargetPrincipal: account,
+			Scopes:          []string{sqlAdminScope, cloudPlatformScope},
+		}, option.WithHTTPClient(adminScope.Client(iam)))))
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
+		}
+		loginScope := oauth2call.Scope[oauth2.TokenSource](ctx)
+		login, err = oauth2call.Call(loginScope.Read(impersonate.CredentialsTokenSource(loginScope.Context(), impersonate.CredentialsConfig{
+			TargetPrincipal: account,
+			Scopes:          []string{sqlLoginScope},
+		}, option.WithHTTPClient(loginScope.Client(iam)))))
+		if err != nil {
+			return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
+		}
 	}
-	api, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
-		TargetPrincipal: account,
-		Scopes:          []string{sqlAdminScope, cloudPlatformScope},
-	}, iam...)
+	admin := oauth2.NewClient(context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(nil)), oauth2call.TokenSource(api))
+	return append(opts,
+		cloudsqlconn.WithHTTPClient(oauth2call.RefusalClient(admin)),
+		cloudsqlconn.WithIAMAuthNTokenSources(oauth2call.TokenSource(api), oauth2call.TokenSource(login)),
+	), nil
+}
+
+// podTokenSource is Application Default Credentials for scopes. FindDefaultCredentials is a
+// text-only library call, so it runs under a scope; the returned source is bound to that scope and
+// each Token reads the refusal it caused with the record of that Token's requests.
+func podTokenSource(ctx context.Context, scopes ...string) (oauth2.TokenSource, error) {
+	s := oauth2call.Scope[*google.Credentials](ctx)
+	credentials, err := oauth2call.Call(s.Read(google.FindDefaultCredentials(s.Context(), scopes...)))
 	if err != nil {
-		return nil, fmt.Errorf("impersonate %s for the Admin API: %w", account, err)
+		return nil, err
 	}
-	login, err := impersonate.CredentialsTokenSource(ctx, impersonate.CredentialsConfig{
-		TargetPrincipal: account,
-		Scopes:          []string{sqlLoginScope},
-	}, iam...)
+	return credentials.TokenSource, nil
+}
+
+// impersonationClient is the IAM Credentials client the impersonation calls generateAccessToken
+// with, signed with the pod's own credentials (Application Default Credentials, cloud-platform).
+// Its requests go out through a RefusalClient beneath the credential's transport, so each refused
+// request's bearer is recorded in the source's scope and the boundary reads impersonate's text
+// with it redacted.
+func impersonationClient(ctx context.Context, base http.RoundTripper) (*http.Client, error) {
+	source, err := podTokenSource(ctx, cloudPlatformScope)
 	if err != nil {
-		return nil, fmt.Errorf("impersonate %s for the database login: %w", account, err)
+		return nil, err
 	}
-	return append(opts, cloudsqlconn.WithIAMAuthNTokenSources(api, login)), nil
+	return oauth2call.RefusalClient(oauth2.NewClient(
+		context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Transport: base})),
+		oauth2call.TokenSource(source),
+	)), nil
 }

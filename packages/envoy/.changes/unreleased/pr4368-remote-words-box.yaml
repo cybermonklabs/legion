@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A remote field held in one of this module's error types or wire structs no longer prints its
+  words by any printer, at any depth. Each such field is a `redact.RemoteText`, whose text sits
+  behind a pointer and whose every printed form (each fmt verb, `json.Marshal`, a `slog` field)
+  is the rule's reading of it, and the code that tells answers apart compares and parses through
+  the box's own methods, which answer no text. A module outside this one, the daemon's, calls
+  golang.org/x/oauth2 through `oauth2call.Call` and hands a token source on through
+  `oauth2call.TokenSource`, the same boundary as `redact.OAuth2` under a public name.
+  `scripts/check-redact-remote-text.sh` now prints the box and each type that holds one by every
+  printer at every placement beside a plain-string twin, and its gate lists every use of the box's
+  storage, every holder, every reflection site, every whole use of an x/oauth2 or openid-client
+  error, every call of those libraries outside the boundary (one through an interface, a type
+  parameter or a library HTTP client among them) and every field the boundary sets, failing on
+  each one it cannot classify.
+time: 2026-11-18T10:48:14Z
+custom:
+    Issue: pr4368

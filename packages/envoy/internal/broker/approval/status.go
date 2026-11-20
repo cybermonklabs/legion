@@ -9,6 +9,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // What GET /signin/status answers about this page is written from here: a sign-in that
@@ -59,10 +60,17 @@ func signInFailureCode(err error) string {
 	case errors.As(err, &retrieve):
 		// The token endpoint's own error code, kept only when it is one of the four named here:
 		// an issuer's word is not this page's vocabulary just because it arrived in the error
-		// field.
-		switch retrieve.ErrorCode {
-		case codeInvalidClient, codeUnauthorizedClient, codeRedirectURIMismatch, codeInvalidGrant:
-			return retrieve.ErrorCode
+		// field. The code is read as the closed set redact.RefusalCode answers, so what is
+		// written is always one of this page's own words.
+		switch redact.RefusalCode(err) {
+		case redact.InvalidClient:
+			return codeInvalidClient
+		case redact.UnauthorizedClient:
+			return codeUnauthorizedClient
+		case redact.RedirectURIMismatch:
+			return codeRedirectURIMismatch
+		case redact.InvalidGrant:
+			return codeInvalidGrant
 		}
 	case errors.Is(err, oidc.ErrIssuer):
 		return codeBadIssuer

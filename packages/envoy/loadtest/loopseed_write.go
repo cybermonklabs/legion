@@ -499,14 +499,15 @@ func (w *loopWriter) send(ctx context.Context, s loopSend) (string, bool, error)
 	return local, true, nil
 }
 
-// loopAnswerCode names an answer the seed could not use: the error code Dispatch's body names, the
-// class of a transport error that outlived every retry, or the status alone.
+// loopAnswerCode names an answer the seed could not use: the error code Dispatch's body names, as
+// it prints itself (redact.RemoteText), the class of a transport error that outlived every retry,
+// or the status alone.
 func loopAnswerCode(res callResult) string {
 	if res.err != nil {
 		return errClass(res.err)
 	}
-	if code := res.errorCode(); code != "" {
-		return code
+	if code := res.errorCode(); !code.IsEmpty() {
+		return code.String()
 	}
 	return "NO_CODE"
 }

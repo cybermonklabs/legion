@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -498,6 +499,56 @@ func TestARoleRefusedForAnUnresponsiveHolderResolvesToThatHolder(t *testing.T) {
 	if _, err := client.Role(context.Background(), "legion-reviewer"); err == nil ||
 		err.Error() != "role legion-reviewer holder s9 lapsed; claim retained (last seen 1)" {
 		t.Fatalf("role error for a gone holder = %v, want the listener's own refusal", err)
+	}
+}
+
+// TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt: the holder a lapsed role refusal names is
+// sent back to the listener's session route only where the rule prints it as it came - a session
+// id, one outside the key alphabet among them - and holder_state is read as the closed set the
+// refusal is told apart by. A holder that quotes a credential's URL is read nowhere: the role is
+// the listener's refusal, which prints none of its secrets, and the session route is never asked.
+// A holder_state that is no string is a body this client cannot read.
+func TestARoleRefusalsHolderIsSentBackOnlyAsTheRulePrintsIt(t *testing.T) {
+	var asked []string
+	refusal := func(holder, state string) string {
+		body, _ := json.Marshal(map[string]any{"error": "holder lapsed", "reason": "holder_lapsed", "holder": holder, "holder_state": state, "claim_released": false})
+		return string(body)
+	}
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/roles/plain":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(refusal("ses:bad", "unresponsive")))
+		case "/v1/roles/credential":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(refusal(redacttest.Words, "unresponsive")))
+		case "/v1/roles/state-not-a-string":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"holder lapsed","holder":"s1","holder_state":7}`))
+		default:
+			asked = append(asked, r.URL.EscapedPath())
+			_, _ = w.Write([]byte(`{"session_id":"ses:bad","title":"planner","state":"unresponsive","last_seen":42}`))
+		}
+	}))
+	defer listener.Close()
+	client := New(listener.URL)
+
+	if holder, err := client.Role(context.Background(), "plain"); err != nil || holder.SessionID != "ses:bad" {
+		t.Fatalf("a holder the rule prints as it came: %+v, %v; want it read", holder, err)
+	}
+	if !reflect.DeepEqual(asked, []string{"/v1/registry/ses:bad"}) {
+		t.Fatalf("the session route was asked %v, want the holder once", asked)
+	}
+	asked = nil
+	_, err := client.Role(context.Background(), "credential")
+	// What this client sent back to the listener: no route may carry a secret the holder quotes.
+	redacttest.RequireNone(t, "envoy.role-sent-back", strings.Join(asked, "\n"))
+	if err == nil || len(asked) != 0 {
+		t.Fatalf("a holder that quotes a credential's URL: %v, session route asked %v; want the refusal and no read", err, asked)
+	}
+	redacttest.RequireNone(t, "the refusal", err.Error())
+	if _, err := client.Role(context.Background(), "state-not-a-string"); err == nil || len(asked) != 0 {
+		t.Fatalf("a holder_state that is no string: %v, asked %v; want the refusal", err, asked)
 	}
 }
 

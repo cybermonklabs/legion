@@ -159,11 +159,17 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 
 	t.Run("a clean address", func(t *testing.T) {
 		stderr, err := status(t, srv.URL)
+		// The words print as the rule for remote text reads them: the URL in them with no user
+		// information, and every other word as the broker wrote it.
+		shown := "the request object names " + srv.URL + ", which is not this broker"
 		for what, text := range map[string]string{"stderr": stderr, "the error": err.Error()} {
-			for _, want := range []string{words, "REQUEST_INVALID", answerID} {
+			for _, want := range []string{shown, "REQUEST_INVALID", answerID} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s does not carry the broker's %q: %s", what, want, text)
 				}
+			}
+			if strings.Contains(text, "demouser7q") {
+				t.Errorf("%s holds the user information the words' URL carries: %s", what, text)
 			}
 		}
 	})

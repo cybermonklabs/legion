@@ -242,7 +242,8 @@ func TestABrokerItCannotReachNamesNoCredentialTheURLCarries(t *testing.T) {
 // TestABrokerRefusalPrintsNoCredentialItsWordsRepeat: the broker, or whoever answers at its
 // address, refuses the lookup in its error envelope with words that repeat the credential
 // --broker carries. Beside that address devrelay's refusal names the status and none of what the
-// answerer wrote, its words or its code; beside a clean address it prints the words and the code.
+// answerer wrote, its words or its code; beside a clean address it prints the words and the code
+// as the rule for remote text reads them, so the URL in the words prints with no user information.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 	token := tokenFile(t, "caller-token")
 	var words string
@@ -273,9 +274,14 @@ func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		t.Errorf("the refusal beside a credentialed address is %q, want the status", out)
 	}
 	out = approve(srv.URL)
-	for _, want := range []string{words, "CALLER_NOT_LISTED", "HTTP 403"} {
+	for _, want := range []string{"the caller at " + srv.URL + " is not listed", "CALLER_NOT_LISTED", "HTTP 403"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the refusal beside a clean address is %q, want it to carry %q", out, want)
+		}
+	}
+	for _, withheld := range []string{"tokuser9f3", "hunter2pw"} {
+		if strings.Contains(out, withheld) {
+			t.Errorf("the refusal beside a clean address names %q, the credential the words' URL carries: %q", withheld, out)
 		}
 	}
 }

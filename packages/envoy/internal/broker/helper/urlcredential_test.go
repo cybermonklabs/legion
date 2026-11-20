@@ -6,6 +6,7 @@ package helper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -123,13 +124,13 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 				t.Errorf("the refusal holds %q: %s", marker, err)
 			}
 			var be *BrokerError
-			if errors.As(err, &be) && (strings.Contains(be.Code, marker) || strings.Contains(be.Message, marker)) {
-				t.Errorf("the refusal's BrokerError holds %q: %+v", marker, be)
+			if errors.As(err, &be) && strings.Contains(fmt.Sprintf("%v %+v %#v %s", be, be, be, be.LogValue()), marker) {
+				t.Errorf("the refusal's BrokerError prints %q: %+v", marker, be)
 			}
 		}
 		// Still the broker's refusal, of its status alone: not an unknown outcome, and no word of it.
 		var be *BrokerError
-		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || be.Code != "" || err.Error() != "broker 400: "+brokeraddr.WordsNotPrinted {
+		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.code.IsEmpty() || err.Error() != "broker 400: "+brokeraddr.WordsNotPrinted {
 			t.Errorf("the refusal is %q, want the broker's 400 as a refusal of its status alone", err)
 		}
 		if outcomeUnknown(err) {
@@ -143,9 +144,16 @@ func TestALoginRefusalPrintsNoCredentialItsDescriptionRepeats(t *testing.T) {
 		if !errors.As(err, &be) {
 			t.Fatalf("Login: %v, want the broker's refusal as a BrokerError", err)
 		}
-		_, words, _ := strings.Cut(description, ": ")
-		if be.Status != http.StatusBadRequest || be.Code != "REQUEST_INVALID" || be.Message != words {
-			t.Errorf("the refusal is %+v, want 400 REQUEST_INVALID and the broker's description whole, %q", be, words)
+		// The description's URL carries the credential, so it prints with no user information:
+		// ordinary words print beside a clean address, and a URL in them only as the rule reads it.
+		want := "broker 400 REQUEST_INVALID: the request object names " + srv.URL + ", which is not this broker"
+		if be.Status != http.StatusBadRequest || !be.HasCode("REQUEST_INVALID") || err.Error() != want {
+			t.Errorf("the refusal is %q, want %q", err, want)
+		}
+		for _, marker := range []string{"demouser7q", "demopass9z-not-a-secret"} {
+			if strings.Contains(err.Error(), marker) {
+				t.Errorf("the refusal holds %q: %s", marker, err)
+			}
 		}
 	})
 }
@@ -247,7 +255,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 			}
 		}
 		var be *BrokerError
-		if !errors.As(got.err, &be) || be.Status != http.StatusBadRequest || be.Code != "INVALID_SLOT" {
+		if !errors.As(got.err, &be) || be.Status != http.StatusBadRequest || !be.HasCode("INVALID_SLOT") {
 			t.Errorf("the refusal is %v, want the broker's 400 INVALID_SLOT as a BrokerError", got.err)
 		}
 	})
@@ -257,7 +265,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		revokeErr := b.Revoke(context.Background(), "enrollment-1")
 		for call, err := range map[string]error{"the renew": renewErr, "the revoke": revokeErr} {
 			var be *BrokerError
-			if !errors.As(err, &be) || be.Status != http.StatusBadRequest || be.Code != "INVALID_SLOT" {
+			if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.HasCode("INVALID_SLOT") {
 				t.Fatalf("%s answered %v, want the broker's 400 INVALID_SLOT as a BrokerError", call, err)
 			}
 			for _, part := range withheld {
@@ -270,10 +278,18 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 
 	t.Run("a clean address", func(t *testing.T) {
 		got := enroll(t, srv.URL)
+		// The words print as the rule for remote text reads them: the URL in them with no user
+		// information, and every other word as the broker wrote it.
+		shown := "the slot names " + srv.URL + ", which is not this broker"
 		for what, text := range map[string]string{"the enrolment's error": got.err.Error(), "the helper's log": got.log, "the session's last error": got.lastError} {
-			for _, want := range []string{"broker 400", "INVALID_SLOT", words} {
+			for _, want := range []string{"broker 400", "INVALID_SLOT", shown} {
 				if !strings.Contains(text, want) {
 					t.Errorf("%s does not carry %q: %s", what, want, text)
+				}
+			}
+			for _, marker := range markers {
+				if strings.Contains(text, marker) {
+					t.Errorf("%s holds %q, the credential the words' URL carries: %s", what, marker, text)
 				}
 			}
 		}
@@ -283,7 +299,7 @@ func TestAnEnrollRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
 		words = brokeraddr.WordsNotPrinted
 		_, err := renew(t, srv.URL)
 		var be *BrokerError
-		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || be.Code != "INVALID_SLOT" {
+		if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !be.HasCode("INVALID_SLOT") {
 			t.Fatalf("the renew answered %v, want the broker's 400 INVALID_SLOT as a BrokerError", err)
 		}
 		if !strings.Contains(err.Error(), "broker 400 INVALID_SLOT") {
@@ -319,8 +335,9 @@ func TestAnOlderBrokersNotLiveVerdictHoldsBesideACredentialedAddress(t *testing.
 			t.Cleanup(b.Close)
 			for id, wantEnded := range map[string]bool{"ended": true, "skewed": false} {
 				_, err := b.renewIdentity(context.Background(), identity{EnrollmentID: id, Key: key})
-				if code, ended := enrollmentNotLive(err); code != "PROOF_INVALID" || ended != wantEnded {
-					t.Errorf("the renew of %s answered %v, read as %s ended %v; want PROOF_INVALID ended %v", id, err, code, ended, wantEnded)
+				var be *BrokerError
+				if code, ended := enrollmentNotLive(err); !errors.As(err, &be) || !be.HasCode("PROOF_INVALID") || ended != wantEnded || ended && code != "PROOF_INVALID" {
+					t.Errorf("the renew of %s answered %v, read as %q ended %v; want PROOF_INVALID ended %v", id, err, code, ended, wantEnded)
 				}
 			}
 		})

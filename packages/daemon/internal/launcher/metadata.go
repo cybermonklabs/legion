@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
+
+	"github.com/sjawhar/envoy/oauth2call"
 )
 
 // The pod-local metadata endpoint, which an issue pod's launcher serves when the pod runs in a GKE
@@ -233,7 +235,9 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 	accounts := []string{"default/", cfg.WorkloadPool + "/"}
 	slices.Sort(accounts)
 	return &metadataServer{
-		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
+		// The exchange's client records what each refused request carried, the subject token among
+		// it, so the boundary reads the library's error of the refusal with it redacted.
+		ctx:       context.WithValue(ctx, oauth2.HTTPClient, oauth2call.RefusalClient(&http.Client{Timeout: exchangeTimeout})),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
 		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
@@ -356,7 +360,7 @@ func (s *metadataServer) token(w http.ResponseWriter, r *http.Request) {
 	source, err := s.tokenSource(scopes)
 	var token *oauth2.Token
 	if err == nil {
-		token, err = source.Token()
+		token, err = oauth2call.Call(source.Token())
 	}
 	if err != nil {
 		s.exchangeFailed(scopes, err)
@@ -397,6 +401,8 @@ func requestedScopes(lists []string) []string {
 // tokenSource is the token source of one scope set: the exchange GKE's server makes, of the token
 // file's contents for an access token of the pool, kept until tokenEarlyRefresh before its expiry.
 // It is made once per scope set; once maxTokenSources are kept, one of them makes way for a new one.
+// The external_account exchange hands errors back as text only, so its construction and each
+// Token run under the same record scope.
 func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error) {
 	key := strings.Join(scopes, " ")
 	s.mu.Lock()
@@ -404,17 +410,18 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	if source, ok := s.sources[key]; ok {
 		return source, nil
 	}
-	source, err := externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
+	call := oauth2call.Scope[oauth2.TokenSource](s.ctx)
+	source, err := oauth2call.Call(call.Read(externalaccount.NewTokenSource(call.Context(), externalaccount.Config{
 		Audience:         s.audience,
 		SubjectTokenType: subjectTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},
-	})
+	})))
 	if err != nil {
 		return nil, err
 	}
-	source = oauth2.ReuseTokenSourceWithExpiry(nil, source, tokenEarlyRefresh)
+	source = oauth2.ReuseTokenSourceWithExpiry(nil, oauth2call.TokenSource(source), tokenEarlyRefresh)
 	if len(s.sources) >= maxTokenSources {
 		for evicted := range s.sources {
 			delete(s.sources, evicted)

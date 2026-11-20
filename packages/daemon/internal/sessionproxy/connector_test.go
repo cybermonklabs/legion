@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
-	"google.golang.org/api/option"
 	sqladmin "google.golang.org/api/sqladmin/v1beta4"
 )
 
@@ -59,10 +58,10 @@ const (
 // no account, both are the pod's own credentials. The real connector and the real
 // impersonation library run against fakes of the pod's credentials, of the IAM Service Account
 // Credentials API and of the Cloud SQL Admin API, so the test sees which token reaches which Admin
-// API call. The impersonation library takes the test's own IAM Credentials client
-// (option.WithHTTPClient) and uses it as it is, so the credential that the generateAccessToken call
-// itself carries is not under test: the fake pod credentials sign only the calls of the row with no
-// account. The instance has no private address, so each dial ends with the connector's refusal,
+// API call. The impersonation's IAM Credentials client is connectorOptions' own, signed with the
+// fake pod credentials as Application Default Credentials sign it, over the test's transport to
+// the IAM Credentials fake (connectorOptions' iamBase). The instance has no private address, so
+// each dial ends with the connector's refusal,
 // which shows that the private-IP option still applies. Every request stays on loopback or in an
 // in-process transport. The test sets an environment variable, so it is not parallel.
 func TestTheConnectorSignsInAsTheServiceAccountItImpersonates(t *testing.T) {
@@ -141,7 +140,7 @@ func TestTheImpersonatedTokensAreMintedAgainOnceTheyExpire(t *testing.T) {
 	// and IAM's expireTime has whole seconds, so each token lasts between one and two seconds.
 	iam := &iamCredentialsFake{t: t, lifetime: 12 * time.Second}
 	admin := newAdminAPIFake(t)
-	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
+	opts, err := connectorOptions(context.Background(), account, handlerTransport{iam})
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}
@@ -482,7 +481,7 @@ func (f *adminAPIFake) requests() []adminCall {
 // within 10 s, closes the connector and returns the dial's error.
 func dialThroughConnector(t *testing.T, account string, iam http.Handler, admin string) error {
 	t.Helper()
-	opts, err := connectorOptions(context.Background(), account, option.WithHTTPClient(&http.Client{Transport: handlerTransport{iam}}))
+	opts, err := connectorOptions(context.Background(), account, handlerTransport{iam})
 	if err != nil {
 		t.Fatalf("connectorOptions: %v", err)
 	}

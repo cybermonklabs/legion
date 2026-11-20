@@ -1,0 +1,41 @@
+kind: Changed
+body: |-
+  Every call into golang.org/x/oauth2, its google package and github.com/coreos/go-oidc goes
+  through `redact.OAuth2`, which turns an OAuth error answer into a `redact.OAuthAnswer` and every
+  other error those libraries answer into a `redact.LibraryError`, each printing only the rule's
+  reading of the other party's words while `errors.Is` and `errors.As` find what they found
+  before, so an issuer's or the broker's words no longer print raw where an error is wrapped with
+  `%w`: `oidc.CheckClient`'s error for an answer that is neither ready nor rejected, an OIDC
+  discovery error's, which quoted the issuer's body, and the external-account exchange's, which
+  quoted the security token service's.
+  A token source handed to another library crosses the same boundary (`redact.TokenSource`).
+  Every word of a refusal, its code, description, error_uri, body and reason phrase, is read with
+  every credential its own request carried redacted first: every value of a header, of the URL's
+  user information and query, and of a form or JSON body, under any name a wire contract does not
+  declare public (`packages/contracts/src/public-request-names.ts`, which Go reads as generated
+  code). So an answer in a server's place that echoes the request, a Cookie, an instance metadata
+  token, a subject token or a proof among it, no longer prints it, in the broker's trade, the
+  helper's broker calls and every client this change hands x/oauth2, go-oidc or Google's
+  impersonation (`redact.Tokens`, `redact.Carried`). A credential shorter than 8 characters is
+  redacted only where it stands as a token of its own. `redact.RefusalClient` hands every answer on
+  as it came, so a library parses what was answered and the code a client acts on is the answer's
+  own; it records each refused request's credentials, and the boundary reads with them only an
+  error that quotes that refusal's body. Every field
+  of an answer the boundary hands on is a closed value or the rule's reading: its status is the
+  status code with its standard reason phrase, so the phrase an answer with no error code wrote,
+  which x/oauth2's text prints, no longer reaches the client check's error, a code exchange's or
+  the 502 body Dispatch's sign-in callback writes from it; of its headers it keeps only the
+  `Retry-After` it parses as; and the `*url.Error` it can come under names its operation and URL
+  as the rule reads them. `agent-secrets`' userinfo refusal and gcloud's standard error print as
+  the rule reads them. The broker's token client reads its answer only through the box, with four
+  changes a caller can see: a `token_type` of `dpop` in any case is `Token.TokenType` `DPoP`
+  rather than the spelling the broker wrote; an `expires_in` that is a JSON string holding no
+  number is refused without quoting the string; a lapsed role refusal whose holder the rule would
+  print changed (a URL carrying a credential, a control character) is the listener's refusal
+  rather than a read of that holder's session; and the load test's reports name each refusal's
+  code as the rule reads it. The broker's generateIdToken mint (`brokertoken.GoogleAccount`) reads
+  the pod's access token through the boundary, and its refusal's body prints as the rule reads it
+  with the mint's own bearer redacted.
+time: 2026-11-18T10:12:18Z
+custom:
+    Issue: pr4368

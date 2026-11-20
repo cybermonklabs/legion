@@ -53,6 +53,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // checkSettingsKMSKeyName refuses, before any GCP call, settings whose secrets_prefix is not a
@@ -79,7 +80,9 @@ func checkSettingsKMSKeyName(settings Settings) error {
 
 // gcpCredentialsFile loads the credentials file at path, of whatever type it names, scoped for
 // Secret Manager: the file GOOGLE_APPLICATION_CREDENTIALS names and the well-known credentials
-// file. A file it cannot read or parse is an error. Tests replace it.
+// file. A file it cannot read or parse is an error. Tests replace it. The credentials' token
+// source is put behind the boundary (redact.TokenSource), since the Secret Manager client and the
+// userinfo client ask it for a token and print a refusal it answers.
 var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credentials, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -91,7 +94,12 @@ var gcpCredentialsFile = func(ctx context.Context, path string) (*google.Credent
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("it is not a JSON credentials file: %w", err)
 	}
-	return google.CredentialsFromJSONWithType(ctx, data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)
+	s := redact.Scope[*google.Credentials](ctx)
+	creds, err := redact.OAuth2(s.Read(google.CredentialsFromJSONWithType(s.Context(), data, google.CredentialsType(file.Type), secretmanager.DefaultAuthScopes()...)))
+	if err != nil {
+		return nil, err
+	}
+	return creds, nil
 }
 
 // metadataGenericPrincipal is how a refusal and the "using" line name the metadata server's
@@ -106,14 +114,15 @@ const metadataGenericPrincipal = "this machine's or this pod's identity"
 // connection within googleidentity.ProbeTimeout, no answer within the token read's bound, or an
 // answer that is not Google's - is the absence newGCPBackend skips; any other error is a Google
 // server that is present but could not mint a token, which stops the command. It never reads the
-// email: that is gcpMetadataPrincipal's separate, best-effort job. Tests replace it.
+// email: that is gcpMetadataPrincipal's separate, best-effort job. Its token source is behind the
+// boundary, as gcpCredentialsFile's is. Tests replace it.
 var gcpMetadataToken = func(ctx context.Context) (*google.Credentials, error) {
-	source := googleidentity.AccessTokenSource()
-	first, err := source.Token()
+	source := redact.TokenSource(googleidentity.AccessTokenSource())
+	first, err := redact.OAuth2(source.Token())
 	if err != nil {
 		return nil, err
 	}
-	return &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, source)}, nil
+	return &google.Credentials{TokenSource: redact.TokenSource(oauth2.ReuseTokenSource(first, source))}, nil
 }
 
 // gcpMetadataPrincipal is the account the metadata server names for this machine
@@ -132,15 +141,23 @@ var gcpMetadataPrincipal = func(ctx context.Context) string {
 // answers only a token that carries an email scope. Only --owner me asks for it
 // (gcpBackend.personEmail). Tests replace it so no form makes a network call for it.
 var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, error) {
-	httpClient := oauth2.NewClient(ctx, creds.TokenSource)
-	resp, err := httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo")
+	s := redact.Scope[*http.Response](ctx)
+	httpClient := oauth2.NewClient(s.Context(), redact.TokenSource(creds.TokenSource))
+	// The client's transport asks creds.TokenSource for a token, and an OAuth error answer it
+	// gets comes back inside this call's *url.Error, so the call crosses the same boundary.
+	resp, err := redact.OAuth2(s.Read(httpClient.Get("https://www.googleapis.com/oauth2/v2/userinfo")))
 	if err != nil {
 		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// Google's words, which can quote the bearer its request carried, are read with the
+		// answer's own record before the remote-text rule reads them.
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		carried := redact.Carried(resp)
+		status := redact.NewRemoteText(resp.Status).WithoutTokens(carried...)
+		said := redact.NewRemoteText(strings.TrimSpace(string(body))).WithoutTokens(carried...)
+		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", status, said)
 	}
 	var userinfo struct {
 		Email string `json:"email"`
@@ -418,7 +435,9 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := runRecorded(cmd); err != nil {
 		if said := strings.TrimSpace(stderr.String()); said != "" {
-			return nil, fmt.Errorf("%w: %s", err, said)
+			// gcloud's standard error quotes Google's own answer to a refresh it failed, a URL
+			// among it, so it prints as the rule for remote text reads it.
+			return nil, fmt.Errorf("%w: %s", err, redact.NewRemoteText(said))
 		}
 		return nil, err
 	}
@@ -556,7 +575,7 @@ func (b *gcpBackend) signIn(ctx context.Context) error {
 
 	if token := os.Getenv("CLOUDSDK_AUTH_ACCESS_TOKEN"); token != "" {
 		b.source, b.sourcePhrase, b.principal = sourceLentToken, "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN", principalUnknown
-		b.creds = &google.Credentials{TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"})}
+		b.creds = &google.Credentials{TokenSource: redact.TokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token, TokenType: "Bearer"}))}
 		return nil
 	}
 	skip(sourceLentToken, "unset")
@@ -675,7 +694,7 @@ func (b *gcpBackend) signInWithGcloud(ctx context.Context, source gcpSource, phr
 		principal = unreadPrincipal(account)
 	}
 	b.source, b.sourcePhrase, b.principal, b.gcloudAccount = source, phrase, principal, account
-	b.creds = &google.Credentials{TokenSource: oauth2.ReuseTokenSource(first, tokens)}
+	b.creds = &google.Credentials{TokenSource: redact.TokenSource(oauth2.ReuseTokenSource(first, redact.TokenSource(tokens)))}
 	return nil
 }
 

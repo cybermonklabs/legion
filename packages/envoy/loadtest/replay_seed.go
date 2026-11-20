@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // replayIDsDDL is the logged-to-local id map a seed writes as it goes and a resumed seed reads,
@@ -166,15 +168,27 @@ type replaySeeder struct {
 }
 
 // seedError stops the seed: a refusal that is not transient, named by step, logged id, status and
-// Dispatch's error code, never the body.
+// Dispatch's error code, never the body. The code is Dispatch's word, held as redact.RemoteText,
+// which prints only the rule's reading of it under every verb.
 type seedError struct {
 	step, logged string
 	status       int
-	code         string
+	code         redact.RemoteText
+}
+
+// newSeedError is the refusal of step for logged, with Dispatch's status and code.
+func newSeedError(step, logged string, status int, code redact.RemoteText) *seedError {
+	return &seedError{step: step, logged: logged, status: status, code: code}
 }
 
 func (e *seedError) Error() string {
 	return fmt.Sprintf("%s %s: status %d code %q", e.step, e.logged, e.status, e.code)
+}
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this error's fields.
+func (e *seedError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
 }
 
 func (s *replaySeeder) run(ctx context.Context, plans []seedIssuePlan) error {
@@ -360,7 +374,7 @@ func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) 
 			accepted = accepted || res.status == st
 		}
 		if !accepted {
-			return nil, &seedError{step: sw.step, logged: sw.logged, status: res.status, code: errorCode(res.body)}
+			return nil, newSeedError(sw.step, sw.logged, res.status, errorCode(res.body))
 		}
 		if res.ok() {
 			s.record(sw.kind, sw.issue, sw.docBytes, sw.docID, time.Duration(res.end-res.start), before, after)
@@ -951,7 +965,7 @@ func (s *replaySeeder) restoreOps(ctx context.Context, d *issueDoc, markdown, pa
 	p := d.plan
 	res := s.api.call(ctx, "GET", "/api/v1/artifacts/"+d.local+"/blocks", who{}, nil)
 	if !res.ok() {
-		return nil, &seedError{step: "blocks-read", logged: d.a.ID, status: res.status, code: errorCode(res.body)}
+		return nil, newSeedError("blocks-read", d.a.ID, res.status, errorCode(res.body))
 	}
 	var blocks []struct {
 		ID   string `json:"id"`

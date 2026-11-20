@@ -307,7 +307,7 @@ func operatorFail(stderr io.Writer, form string, src source, failure brokerclien
 	switch {
 	case errors.As(err, &refused):
 		fmt.Fprintf(stderr, "agent-secrets %s: %v\n", form, refused)
-	case errors.As(err, &broker) && broker.Status == http.StatusUnauthorized && broker.Code == "LAUNCHER_INVALID":
+	case errors.As(err, &broker) && broker.Status == http.StatusUnauthorized && broker.hasCode("LAUNCHER_INVALID"):
 		fmt.Fprintf(stderr, "agent-secrets %s: %v; this machine's launcher credential at %s is expired or revoked; %s\n", form, broker, src, brokerclient.Hint(failure))
 	default:
 		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, refusalText(src, err))

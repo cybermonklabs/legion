@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -116,6 +117,7 @@ type fakeBroker struct {
 	loginLifetime  time.Duration
 	refreshTokens  map[string]string // live refresh token -> the credential it refreshes
 	refreshOutcome string            // what the refresh grant answers: "" (rotate), "invalid_grant", "unavailable", "rate_limited" or "no_refresh_token" (a 200 naming none)
+	refreshWords   string            // the error_description of a refresh refused invalid_grant, none when empty
 	retired        []string          // credential ids POST /v1/operator/machines/{id}/retire was asked for
 	refreshes      int               // refresh grants answered
 	tokens         int               // tokens minted, for unique values
@@ -465,6 +467,10 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 			f.refreshes++
 			switch f.refreshOutcome {
 			case "invalid_grant":
+				if f.refreshWords != "" {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_grant", "error_description": f.refreshWords})
+					return
+				}
 				oauthError(400, "invalid_grant")
 				return
 			case "unavailable":
@@ -740,7 +746,7 @@ func TestALateRejectionOfAnOldCredentialLeavesTheNewLoginAlone(t *testing.T) {
 	waitFor(t, func() bool { return b.cred.Load() != old && b.LoginStatus().State == "issued" })
 	fresh := b.cred.Load()
 
-	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
 	if err := b.clearOnInvalid(context.Background(), old, rejected); err != rejected {
 		t.Fatalf("a rejection of a replaced credential reached its caller as %v; want the broker's refusal as it came", err)
 	}
@@ -782,7 +788,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
@@ -806,7 +812,7 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	if _, err := b.Login(context.Background(), "helper-host"); err != nil {
 		t.Fatal(err)
 	}
-	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
@@ -933,17 +939,18 @@ func TestMissingCredentialNamesTheLoginCommand(t *testing.T) {
 // with no JSON body does not read "broker 502 : ".
 func TestABrokerErrorNamesOnlyTheFieldsItHas(t *testing.T) {
 	for _, tc := range []struct {
-		err  BrokerError
+		err  *BrokerError
 		want string
 	}{
-		{BrokerError{Status: 502}, "broker 502"},
-		{BrokerError{Status: 502, Code: "DATABASE"}, "broker 502 DATABASE"},
-		{BrokerError{Status: 502, Message: "postgres unreachable"}, "broker 502: postgres unreachable"},
-		{BrokerError{Status: 403, Code: "SESSION_HELD", Message: "the session s belongs to another principal"},
+		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText(""), false), "broker 502"},
+		{&BrokerError{Status: 502}, "broker 502"},
+		{newBrokerError(502, redact.NewRemoteText("DATABASE"), redact.NewRemoteText(""), false), "broker 502 DATABASE"},
+		{newBrokerError(502, redact.NewRemoteText(""), redact.NewRemoteText("postgres unreachable"), false), "broker 502: postgres unreachable"},
+		{newBrokerError(403, redact.NewRemoteText("SESSION_HELD"), redact.NewRemoteText("the session s belongs to another principal"), false),
 			"broker 403 SESSION_HELD: the session s belongs to another principal"},
 	} {
 		if got := tc.err.Error(); got != tc.want {
-			t.Errorf("BrokerError%+v: %q; want %q", tc.err, got, tc.want)
+			t.Errorf("BrokerError: %q; want %q", got, tc.want)
 		}
 	}
 }

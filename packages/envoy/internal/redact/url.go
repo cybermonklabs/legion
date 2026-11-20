@@ -10,27 +10,28 @@
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
 // the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
 // failure's class alone, except words an earlier Error, Cause or Named already gave, which print
-// as given (below). The broker's OAuth words are trusted, not checked, so
-// whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
-// broker's own with a nonempty error code and an empty error_uri prints its error code and
-// error_description whole, as the broker wrote them, since they are the reason for a refusal a
-// person acts on. It is never one that Class or Masked holds, another server's, because printable
-// checks nothing under an error this package already put in words; BrokerAnswer, for printers
-// outside it, finds the same answer. No other field of an OAuth answer ever prints: an answer that
-// carries an error_uri, or one with no error code (whose text is the response body x/oauth2 kept),
-// prints as the failure's class alone, "the broker answered HTTP <n>", as every answer does where
-// its text may not print; Error puts the *url.Error's operation and URL, through Call, before it,
-// or the caller's own name for the call (Named). A class is fixed text alone: Cause and Class of
-// such an error print the class, never the line that names its call, and a later Error prints
-// that same line, never the URL anew. What prints is always the checked error's own text: words a
-// caller wrapped around the failure or the *url.Error, with fmt.Errorf's %w or an error type of
-// its own, are no part of what was checked, so they never print. The one error type whose words
-// print over a trusted answer is one that vouches for them (Printable): its text is fixed words,
-// words of its own that neither the answer nor a caller writes, and that answer's fields alone.
-// Nothing under an error this package already put in words is checked again: what Error, Cause,
-// Named, Class, Masked and File return keeps the failure they withheld reachable for errors.As, so
-// a second Error or Cause of it, beside any URL and under any wrapper, prints the words already
-// given, never the answer the first one withheld.
+// as given (below). The broker's OAuth words are read by the rule for remote text (Remote), which
+// fails closed: an OAuth error answer (*oauth2.RetrieveError) of the broker's own with a nonempty
+// error code and an empty error_uri prints its error code and error_description each as the rule
+// reads it - ordinary words as the broker wrote them, a URL with no user information and no query
+// or fragment value, and WordsNotReadable in place of a field the rule cannot read as clean -
+// since they are the reason for a refusal a person acts on. It is never one that Class or Masked
+// holds, another server's, because printable checks nothing under an error this package already
+// put in words; BrokerAnswer, for printers outside it, finds the same answer. No other field of an
+// OAuth answer ever prints: an answer that carries an error_uri, or one with no error code (whose
+// text is the response body x/oauth2 kept), prints as the failure's class alone, "the broker
+// answered HTTP <n>", as every answer does where its text may not print; Error puts the
+// *url.Error's operation and URL, through Call, before it, or the caller's own name for the call
+// (Named). A class is fixed text alone: Cause and Class of such an error print the class, never
+// the line that names its call, and a later Error prints that same line, never the URL anew. What
+// prints is always the checked error's own text: words a caller wrapped around the failure or the
+// *url.Error, with fmt.Errorf's %w or an error type of its own, are no part of what was checked,
+// so they never print. The one error type whose words print over a trusted answer is one that
+// vouches for them (Printable): its text is fixed words, words of its own that neither the answer
+// nor a caller writes, and that answer's fields alone. Nothing under an error this package already
+// put in words is checked again: what Error, Cause, Named, Class, Masked and File return keeps the
+// failure they withheld reachable for errors.As, so a second Error or Cause of it, beside any URL
+// and under any wrapper, prints the words already given, never the answer the first one withheld.
 package redact
 
 import (
@@ -209,8 +210,8 @@ func callClean(base, callURL string) bool {
 // from. Where printable passes it, it prints the text printable checked, which is err's own text
 // when no wrapper added words to it, and then it is err itself, so every message reads as before:
 // raw is clean, and that text holds nothing from a URL it may not print but for the error code and
-// error_description of an OAuth answer with an error code and no error_uri, which print whole as
-// the broker wrote them (trustedAnswer). Words a caller wrapped around the failure or around the
+// error_description of an OAuth answer with an error code and no error_uri, which print as the
+// rule reads them (trustedAnswer, AnswerText). Words a caller wrapped around the failure or around the
 // *url.Error are dropped, since nothing checked them. Otherwise no text of err is printed: the
 // error's text names only the class of the failure (a URL that did not parse, failed name
 // resolution, a refused connection, a timeout, a TLS failure, an HTTP status, or a request that
@@ -311,8 +312,8 @@ func Cause(err error, raw string) error {
 //     none but in the words the broker is trusted with (checked): a transport failure class names
 //     (transport: a dial or other net.OpError, name resolution, a refused connection, a timeout,
 //     TLS), an OAuth error answer with an error code and no error_uri, whose code and description
-//     print whole (trustedAnswer), or text the allow-list passes. A malformed Location header,
-//     say, puts the whole target in its error's text.
+//     print as the rule reads them (trustedAnswer), or text the allow-list passes. A malformed
+//     Location header, say, puts the whole target in its error's text.
 //
 // The text it answers is the checked error's own, never a wrapper's: a caller's
 // fmt.Errorf("grant %s: %w", id, cause) is that failure to errors.Is and errors.As, but its words
@@ -350,30 +351,36 @@ func printable(err error, raw string) (ue *url.Error, text string, ok bool) {
 // caller writes (a refusal's name for the identity it traded), and the fields of the trusted OAuth
 // answer it unwraps to (trustedAnswer), such as a client's sentence around the broker's refusal.
 // printable passes one at its own level of the chain, as it passes that answer, and prints its
-// PrintableText, never its Error. It passes one only where the error it unwraps to is itself a
-// trusted answer, so the fields it is built from are ones printable would print anyway, and only
-// where that text holds no control character: x/oauth2 quotes the answer's fields, and a sentence
-// that does not would let a line break or an escape sequence from the answer forge a line where
-// it prints, so such a text prints as the answer's own. A wrapper around it still prints nothing
-// of its own. The trust is by declaration: redact cannot read a Printable's words, so each one is
-// held to this promise where it is written.
+// PrintableText, never its Error, and only after it has read that text itself: PrintableText
+// supplies candidate text, and printable decides what of it prints. It puts each of the answer's
+// fields that the text holds as the broker wrote it through the rule (Field), so a URL in the
+// broker's words prints only as the rule lets it, and a field the rule cannot read prints as
+// WordsNotReadable while the fixed words, the status and the other field still print (sanitized).
+// It passes one only where the error it unwraps to is itself a trusted answer, so the fields it is
+// built from are ones printable would print anyway, and only where the candidate text holds no
+// control character: x/oauth2 quotes the answer's fields, and a sentence that does not would let a
+// line break or an escape sequence from the answer forge a line where it prints, so such a text
+// prints as the answer's own. A wrapper around it still prints nothing of its own. The trust in its
+// fixed words and its own words is by declaration: redact cannot tell them from the broker's, so
+// each Printable is held to this promise where it is written.
 type Printable interface {
 	error
-	// PrintableText is the error's text built from fixed words, its own words no answer or caller
-	// writes, and its trusted answer's fields alone.
+	// PrintableText is the error's candidate text, built from fixed words, its own words no answer
+	// or caller writes, and its trusted answer's fields alone.
 	PrintableText() string
 }
 
 // checked answers the text of err that may print and whether there is any: err's whole text where
 // the allow-list passes it, and otherwise the text of the first error down err's chain
-// (errors.Unwrap) that is itself a transport failure or the broker's trusted answer, its own
-// text, or a Printable directly over a trusted answer whose PrintableText holds no control
-// character, that text. That error's text is the one printed, not the text of err or of any
-// error between the two, so the words of every wrapper above it drop, whoever wrote them: a
-// caller's fmt.Errorf with %w or an error type of its own, and net/http's own too, so a peer that
-// broke the connection mid-answer prints as `unexpected EOF` and not as `net/http: HTTP/1.x
-// transport connection broken: unexpected EOF`. An error that wraps several (errors.Join) ends
-// the walk, since its text is no single error's.
+// (errors.Unwrap) that is itself a transport failure, its own text; the broker's trusted answer,
+// its text with its code and description each read by the rule (AnswerText); or a Printable
+// directly over a trusted answer whose PrintableText holds no control character, that text
+// sanitized. That error's text is the one printed, not the text of err or of any error between the
+// two, so the words of every wrapper above it drop, whoever wrote them: a caller's fmt.Errorf with
+// %w or an error type of its own, and net/http's own too, so a peer that broke the connection
+// mid-answer prints as `unexpected EOF` and not as `net/http: HTTP/1.x transport connection
+// broken: unexpected EOF`. An error that wraps several (errors.Join) ends the walk, since its text
+// is no single error's.
 //
 // The one way a caller's words still print is through what transport accepts by its type or its
 // method rather than by its value: a *net.OpError or *net.DNSError a caller built, which prints
@@ -385,17 +392,57 @@ func checked(err error) (string, bool) {
 		return text, true
 	}
 	for e := err; e != nil; e = errors.Unwrap(e) {
-		if p, ok := e.(Printable); ok && trustedAnswer(errors.Unwrap(e)) {
-			if text := p.PrintableText(); !hasControl(text) {
-				return text, true
+		if p, ok := e.(Printable); ok {
+			if re, ok := errors.Unwrap(e).(*oauth2.RetrieveError); ok && trustedAnswer(re) {
+				if text := p.PrintableText(); !hasControl(text) {
+					return sanitized(text, re), true
+				}
+				continue
 			}
-			continue
 		}
-		if transport(e) || trustedAnswer(e) {
+		if transport(e) {
 			return e.Error(), true
+		}
+		if re, ok := e.(*oauth2.RetrieveError); ok && trustedAnswer(re) {
+			return AnswerText(re), true
 		}
 	}
 	return "", false
+}
+
+// AnswerText is x/oauth2's own text of re, a trusted answer, with its code and its description
+// each read by the rule (Remote) and printed as WordsNotReadable where the rule cannot read it:
+// what Error and Cause print for such an answer beside a clean address. Where the rule leaves
+// both as they came, it is re's own text, so Error answers err itself.
+func AnswerText(re *oauth2.RetrieveError) string {
+	text := fmt.Sprintf("oauth2: %q", ruled(re.ErrorCode))
+	if re.ErrorDescription != "" {
+		text += fmt.Sprintf(" %q", ruled(re.ErrorDescription))
+	}
+	return text
+}
+
+// ruled is what Remote answers of field, or WordsNotReadable where it cannot read it, unquoted:
+// for a caller that quotes it itself.
+func ruled(field string) string {
+	if shown, ok := Remote(field); ok {
+		return shown
+	}
+	return WordsNotReadable
+}
+
+// sanitized is candidate, a Printable's text, with each field of re, its trusted answer, that it
+// holds as the broker wrote it put through the rule (Field): the description first, so a code it
+// holds is read with it. A Printable that already printed its fields through the rule holds none
+// of them as written, and comes back as it is.
+func sanitized(candidate string, re *oauth2.RetrieveError) string {
+	var fields []string
+	for _, field := range []string{re.ErrorDescription, re.ErrorCode} {
+		if field != "" {
+			fields = append(fields, field, Field(field))
+		}
+	}
+	return strings.NewReplacer(fields...).Replace(candidate)
 }
 
 // OneLine is text another party wrote - a broker's words, the code it answered - as one line of a
@@ -451,11 +498,12 @@ func transport(err error) bool {
 // URL Call prints, and only on a chain that holds no error this package already put in words
 // (classified), so neither an answer an earlier Error or Cause withheld beside a URL that carries
 // a credential nor one that Class or Masked holds, another server's, is ever one: there those two
-// fields print whole, trusted rather than checked, since they are the broker's reason for a
-// refusal and the only part a person can act on. Any other OAuth answer is not one, so it prints
-// as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which
-// may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text
-// is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
+// fields print as the rule for remote text reads them (AnswerText), each field WordsNotReadable
+// where the rule cannot read it as clean, since they are the broker's reason for a refusal and the
+// only part a person can act on. Any other OAuth answer is not one, so it prints as its class
+// alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which may carry a
+// credential or point anywhere, and for an answer with no error code x/oauth2's text is the
+// response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
 func trustedAnswer(err error) bool {
 	re, ok := err.(*oauth2.RetrieveError)
 	return ok && re.ErrorCode != "" && re.ErrorURI == ""

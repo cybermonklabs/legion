@@ -506,36 +506,39 @@ func (r *Rig) Reread(t *testing.T, name string) (int, []byte) {
 	return r.Req(t, http.MethodPost, path, map[string]string{"Proof": signed}, nil)
 }
 
-// uiCall is the UI-route caller a machine-login decision goes out through: Rig.UI or Client.UI,
-// which differ in the broker they reach and the bearer they carry.
-type uiCall func(t *testing.T, method, path string, body any) (int, []byte)
+// reqCall is the request a machine-login decision goes out through: Rig.Req or Client.Req, which
+// differ in the broker they reach.
+type reqCall func(t *testing.T, method, path string, headers map[string]string, body any) (int, []byte)
 
 // decideMachineLogin decides the pending machine login whose confirmation code is code, through
-// ui, as the operator does on Dispatch's machine-login page: it looks the login up by that code,
-// then approves or denies it naming approver as the approver. It returns the launcher credential
-// an approval minted, "" for a denial, and fails t on any other answer. at names the process a
-// failure is about, as request's does.
-func decideMachineLogin(t *testing.T, ui uiCall, approver, code string, approve bool, at string) (credentialID string) {
+// req with bearer, the UI-route bearer of the Rig or the Client it reaches, as the operator does
+// on Dispatch's machine-login page: it looks the login up by that code, then approves or denies it
+// naming approver as the approver. It returns the launcher credential an approval minted, "" for
+// a denial, and fails t on any other answer, naming a body that is not the broker's own with the
+// bearer and the code redacted (answerText). at names the process a failure is about, as
+// request's does.
+func decideMachineLogin(t *testing.T, req reqCall, bearer, approver, code string, approve bool, at string) (credentialID string) {
 	t.Helper()
-	status, body := ui(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": code})
+	ui, carried := map[string]string{"Authorization": "Bearer " + bearer}, []string{bearer, code}
+	status, body := req(t, http.MethodPost, "/v1/machine-logins/lookup", ui, map[string]any{"code": code})
 	if status != http.StatusOK {
-		t.Fatalf("POST /v1/machine-logins/lookup%s = %d: %s", at, status, body)
+		t.Fatalf("POST /v1/machine-logins/lookup%s = %d: %s", at, status, answerText(body, carried...))
 	}
 	var looked struct {
 		RecordID string `json:"record_id"`
 		State    string `json:"state"`
 	}
 	if err := json.Unmarshal(body, &looked); err != nil || looked.State != "pending" || looked.RecordID == "" {
-		t.Fatalf("POST /v1/machine-logins/lookup%s answered %s (%v), want a pending record", at, body, err)
+		t.Fatalf("POST /v1/machine-logins/lookup%s answered %s (%v), want a pending record", at, answerText(body, carried...), err)
 	}
 	action, want := "deny", "denied"
 	if approve {
 		action, want = "approve", "approved"
 	}
-	status, body = ui(t, http.MethodPost, "/v1/credential-requests/"+looked.RecordID+"/"+action,
+	status, body = req(t, http.MethodPost, "/v1/credential-requests/"+looked.RecordID+"/"+action, ui,
 		map[string]any{"approver": approver, "code": code})
 	if status != http.StatusOK {
-		t.Fatalf("%s %s's machine login%s = %d: %s", action, approver, at, status, body)
+		t.Fatalf("%s %s's machine login%s = %d: %s", action, approver, at, status, answerText(body, carried...))
 	}
 	var decided struct {
 		State        string  `json:"state"`
@@ -544,7 +547,7 @@ func decideMachineLogin(t *testing.T, ui uiCall, approver, code string, approve 
 	if err := json.Unmarshal(body, &decided); err != nil || decided.State != want ||
 		approve != (decided.CredentialID != nil && *decided.CredentialID != "") {
 		t.Fatalf("%s %s's machine login%s answered %s (%v), want state %s and a credential id only for an approval",
-			action, approver, at, body, err, want)
+			action, approver, at, answerText(body, carried...), err, want)
 	}
 	if decided.CredentialID == nil {
 		return ""
@@ -564,7 +567,7 @@ func (r *Rig) Decide(t *testing.T, recordID string, approve bool) {
 // this Rig's Operator as the approver.
 func (r *Rig) DecideMachineLogin(t *testing.T, code string, approve bool) (credentialID string) {
 	t.Helper()
-	return decideMachineLogin(t, r.UI, r.Operator, code, approve, "")
+	return decideMachineLogin(t, r.Req, r.UIToken, r.Operator, code, approve, "")
 }
 
 // MintPodToken mints a projected service-account token bound to podUID — the shape

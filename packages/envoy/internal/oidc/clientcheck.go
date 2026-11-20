@@ -7,6 +7,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ClientCheck is what one check of a code flow's client at its issuer found. The three words are
@@ -48,13 +50,13 @@ const (
 func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (ClientCheck, error) {
 	// One bounded client for both requests: the issuer's discovery read and the token request.
 	client := tokenClient()
-	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, client), issuer, clientID, clientSecret)
+	flow, err := discoverCodeFlow(gooidc.ClientContext(ctx, redact.RefusalClient(client)), issuer, clientID, clientSecret)
 	if err != nil {
 		return ClientCheckIssuerUnreachable, err
 	}
 	// GenerateVerifier is PKCE's random high-entropy string, which is all this needs of it: a
 	// code no issuer has ever issued.
-	_, err = flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, client), oauth2.GenerateVerifier())
+	_, err = redact.OAuth2(flow.config.Exchange(context.WithValue(ctx, oauth2.HTTPClient, redact.RefusalClient(client)), oauth2.GenerateVerifier()))
 	var retrieve *oauth2.RetrieveError
 	switch {
 	case err == nil:
@@ -63,11 +65,12 @@ func CheckClient(ctx context.Context, issuer, clientID, clientSecret string) (Cl
 		return ClientCheckReady, nil
 	case !errors.As(err, &retrieve):
 		return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: check the client at %s: %w", issuer, err)
-	case retrieve.ErrorCode == "invalid_grant":
+	case redact.RefusalCode(err) == redact.InvalidGrant:
 		return ClientCheckReady, nil
-	case retrieve.ErrorCode == "invalid_client":
-		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, retrieve.ErrorCode)
+	case redact.RefusalCode(err) == redact.InvalidClient:
+		return ClientCheckRejected, fmt.Errorf("oidc: issuer %s refused the client %s: %s", issuer, clientID, redact.InvalidClient)
 	}
+	// The code is the issuer's word, so it prints as it prints itself (redact.RemoteText).
 	return ClientCheckIssuerUnreachable, fmt.Errorf("oidc: issuer %s answered the client check with the OAuth error %q, which says nothing about the client: %w",
-		issuer, retrieve.ErrorCode, err)
+		issuer, redact.NewRemoteText(retrieve.ErrorCode), err)
 }

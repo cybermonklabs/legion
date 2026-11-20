@@ -78,6 +78,8 @@ type fakeSTS struct {
 	refusing  bool
 	refused   int
 	exchanges []stsExchange
+	// description is the error_description a refusal answers; "" for the long default.
+	description string
 }
 
 // stsExchange is one exchange the fake answered: the scope it was asked for, the subject token it
@@ -115,7 +117,12 @@ func (s *fakeSTS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.refused++
 		w.WriteHeader(http.StatusBadRequest)
 		// A long answer, of characters that take two bytes each, which the failure line cuts.
-		_, _ = io.WriteString(w, `{"error":"invalid_grant","error_description":"`+strings.Repeat("é", 300)+`"}`)
+		description := strings.Repeat("é", 300)
+		if s.description != "" {
+			description = s.description
+		}
+		body, _ := json.Marshal(map[string]string{"error": "invalid_grant", "error_description": description})
+		_, _ = w.Write(body)
 		return
 	}
 	token := "fake-access-token-" + strconv.Itoa(len(s.exchanges)+1)
@@ -136,6 +143,13 @@ func (s *fakeSTS) refuse() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.refusing = true
+}
+
+// refuseWith refuses every exchange with description as the answer's error_description.
+func (s *fakeSTS) refuseWith(description string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refusing, s.description = true, description
 }
 
 // answered is every exchange the fake answered with a token, in order.

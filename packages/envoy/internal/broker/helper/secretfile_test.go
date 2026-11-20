@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // wantNamedNotPrinted fails t unless text names each of named and holds none of secrets.
@@ -415,8 +416,10 @@ func TestARecordedKeyThatDoesNotParseIsFixedText(t *testing.T) {
 // cannot decode is the broker's text, and the decoder repeats it (a time error quotes the value
 // it could not read). Beside an address that carries a credential, the broker, or whoever
 // answers for it, can repeat that credential there, so the error prints the decoder's text as
-// the address lets it (brokeraddr.Address.Words): withheld beside that address, whole beside a
-// clean one, for the enrolment and the renew alike.
+// the address lets it (brokeraddr.Address.Words): withheld beside that address, and as the rule
+// for remote text reads it beside a clean one - whole where it quotes no URL, and
+// redact.WordsNotReadable where it quotes one, which no reading of a quoted URL passes - for the
+// enrolment and the renew alike.
 func TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords(t *testing.T) {
 	var lease string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -452,13 +455,21 @@ func TestABrokerAnswerTheHelperCannotDecodePrintsThroughWords(t *testing.T) {
 		}
 	})
 	t.Run("a clean address", func(t *testing.T) {
+		lease = "the lease of yesterday"
 		for call, err := range calls(t, srv.URL) {
 			if err == nil {
 				t.Fatalf("%s took an answer it cannot decode", call)
 			}
-			if !strings.Contains(err.Error(), "parsing time") || !strings.Contains(err.Error(), "the lease of") {
+			if !strings.Contains(err.Error(), "parsing time") || !strings.Contains(err.Error(), "the lease of yesterday") {
 				t.Errorf("%s's error %q does not carry the decoder's words beside a clean address", call, err)
 			}
+		}
+		lease = "the lease of " + credentialed
+		for call, err := range calls(t, srv.URL) {
+			if err == nil {
+				t.Fatalf("%s took an answer it cannot decode", call)
+			}
+			wantNamedNotPrinted(t, call+"'s error beside a clean address", err.Error(), []string{redact.WordsNotReadable}, "tokuser9f3", "hunter2pw-lease-8Vt2", "the lease of")
 		}
 	})
 }

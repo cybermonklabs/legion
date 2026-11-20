@@ -29,6 +29,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -90,74 +91,124 @@ func newClient(baseURL brokeraddr.Address) *client {
 func (c *client) route(path string) string { return c.baseURL.Raw() + path }
 
 // apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
-// status it came with. AnswerID is the id the broker's own record of the answer names: the body's
-// answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes carries, so
-// a refusal whose body is not the envelope (the broker's 404 for a path it does not serve) still
-// names it. A broker from before the id sends neither, and neither does an answer net/http writes
-// before any of the broker's code runs, such as its 400 for a malformed request, 431 and 417.
+// status it came with. The answer id is the id the broker's own record of the answer names: the
+// body's answer_id, else the X-Broker-Answer-Id header every answer the broker itself writes
+// carries, so a refusal whose body is not the envelope (the broker's 404 for a path it does not
+// serve) still names it. A broker from before the id sends neither, and neither does an answer
+// net/http writes before any of the broker's code runs, such as its 400 for a malformed request,
+// 431 and 417.
 //
-// Code is the answer's code as it came, which the refusals this client tells apart compare, and
-// said its words as they came, which they read (says): nothing prints said, a *string, as
-// brokeraddr.Address's address is, so fmt prints the pointer, never the text, where it prints this
-// struct field by field (%#v). Message and AnswerID are the words and the answer id as a message
-// may print them (brokeraddr.Address.Words): beside an address that is not clean, whoever answers
-// can repeat the credential the address carries in any text it answers, so there Message is
-// brokeraddr.WordsNotPrinted, withheld is set where doStatus builds the refusal, and the refusal
-// prints as its status and Message alone, with neither its code nor its answer id, as the token
-// client prints such an answer (internal/brokerclient). The one line that names a code whatever
-// the address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this
-// client matched it against.
+// code, said and answerID are the answer's code, words and answer id, held as redact.RemoteText,
+// which the refusals this client tells apart compare (hasCode, says) and which prints only the
+// rule's reading of them, under every verb, in JSON and in a log field. Error, Format, LogValue
+// and answered print them only as the address lets them print: beside an address that is not
+// clean, whoever answers can repeat the credential the address carries in any text it answers, so
+// withheld is set where doStatus builds the refusal, and the refusal prints as its status and
+// brokeraddr.WordsNotPrinted alone, with neither its code nor its answer id, as the token client
+// prints such an answer (internal/brokerclient). The one line that names a code whatever the
+// address, renew's exit on a terminal refusal, names one of terminalRenewal's, which this client
+// matched it against (terminalCode).
 type apiError struct {
 	Status   int
-	Code     string
-	Message  string
-	AnswerID string
-	said     *string
+	code     redact.RemoteText
+	said     redact.RemoteText
+	answerID redact.RemoteText
 	// withheld is whether the answer came from an address that is not clean, so that none of
-	// its text prints: the decision doStatus made, read by Error and podRefusal.
+	// its text prints: the decision doStatus made, read by Error and answered.
 	withheld bool
 }
 
-// Error is the broker's message and code, and the answer id to quote when it named one; where
-// the answer's text is withheld, the status and Message alone. The code is the broker's, so it
-// prints on one line as Message does (redact.OneLine): as it came, or Go-quoted where a control
-// character in it would start a line of its own.
+// newAPIError is a refusal with status and the answer's code, words and answer id; withheld is
+// whether it came from an address that is not clean.
+func newAPIError(status int, code, words, answerID redact.RemoteText, withheld bool) *apiError {
+	return &apiError{Status: status, code: code, said: words, answerID: answerID, withheld: withheld}
+}
+
+// words is field as the refusal prints it: brokeraddr.WordsNotPrinted where the answer's text is
+// withheld, and otherwise as the field prints itself (redact.Field).
+func (e *apiError) words(field redact.RemoteText) string {
+	if e.withheld {
+		return brokeraddr.WordsNotPrinted
+	}
+	return field.String()
+}
+
+// Error is the broker's words and code, and the answer id to quote when it named one; where the
+// answer's text is withheld, the status and brokeraddr.WordsNotPrinted alone. Each of the three is
+// the broker's, so each prints as the rule for remote text reads it, on one line.
 func (e *apiError) Error() string {
 	if e.withheld {
-		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	}
 	var text string
-	if e.Code == "" {
-		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+	if e.code.IsEmpty() {
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
 	} else {
-		text = fmt.Sprintf("%s (%s)", e.Message, redact.OneLine(e.Code))
+		text = fmt.Sprintf("%s (%s)", e.words(e.said), e.words(e.code))
 	}
-	if e.AnswerID != "" {
-		text += " (answer " + e.AnswerID + ")"
+	if !e.answerID.IsEmpty() {
+		text += " (answer " + e.words(e.answerID) + ")"
 	}
 	return text
 }
 
+// answered is the refusal as the lines that name its status first print it: the status, the code
+// (UNKNOWN where the broker named none) and the words, or the status and
+// brokeraddr.WordsNotPrinted where the answer's text is withheld.
+func (e *apiError) answered() string {
+	if e.withheld {
+		return fmt.Sprintf("HTTP %d: %s", e.Status, e.words(e.said))
+	}
+	code := "UNKNOWN"
+	if !e.code.IsEmpty() {
+		code = e.words(e.code)
+	}
+	return fmt.Sprintf("HTTP %d %s: %s", e.Status, code, e.words(e.said))
+}
+
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this refusal's fields.
+func (e *apiError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
+}
+
+// LogValue is Error, so a structured log field names the refusal only as a message may.
+func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
+
+// hasCode reports whether the broker answered code, compared as it came. It answers no text.
+func (e *apiError) hasCode(code string) bool { return e.code.Equal(code) }
+
 // says reports whether the broker's error text holds phrase. A refusal this client made itself
 // (a redirect) holds no broker text, and says nothing.
-func (e *apiError) says(phrase string) bool {
-	return e.said != nil && strings.Contains(*e.said, phrase)
-}
+func (e *apiError) says(phrase string) bool { return e.said.Contains(phrase) }
 
 // enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
 // enrollment it no longer holds: the lease lapsed, or it was revoked. Only the renew route
 // answers ENROLLMENT_NOT_LIVE; every other session route says PROOF_INVALID with "not live" in
 // its message, which no recoverable proof failure (iat skew, key, URL) says.
 func (e *apiError) enrollmentEnded() bool {
-	return e.Code == enrollmentEndedCode ||
-		(e.Code == terminalRenewal.LegacyCode && e.says(terminalRenewal.LegacyMessage))
+	return e.hasCode(enrollmentEndedCode) ||
+		(e.hasCode(terminalRenewal.LegacyCode) && e.says(terminalRenewal.LegacyMessage))
+}
+
+// terminalCode is the code of terminalRenewal's this refusal matched - one of its Codes, or the
+// legacy code of an ended enrollment - and "" for any other refusal: a code this client wrote, so
+// a line names it whatever the address.
+func (e *apiError) terminalCode() string {
+	for _, code := range terminalRenewal.Codes {
+		if e.hasCode(code) {
+			return code
+		}
+	}
+	if e.enrollmentEnded() {
+		return terminalRenewal.LegacyCode
+	}
+	return ""
 }
 
 // Permanent reports whether this refusal is one of terminalRenewal's: a code it lists, or the
 // ended enrollment its legacy code spells (enrollmentEnded).
-func (e *apiError) Permanent() bool {
-	return slices.Contains(terminalRenewal.Codes, e.Code) || e.enrollmentEnded()
-}
+func (e *apiError) Permanent() bool { return e.terminalCode() != "" }
 
 // unreachableError is a broker call that did not complete. Its host might not resolve, nothing
 // might answer at the address, or a peer might answer the connection but fail the exchange. It is
@@ -322,38 +373,35 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		// of a redirect it answers a GET with (`<a href="…">Found</a>`), and that target,
 		// with whatever query it carries, is what refusing the redirect keeps out of this
 		// process. The status alone says what happened.
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Message: "a redirect, which this client does not follow"}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, said: redirectRefused}
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code     string `json:"code"`
-			Error    string `json:"error"`
-			AnswerID string `json:"answer_id"`
+			Code     redact.RemoteText `json:"code"`
+			Error    redact.RemoteText `json:"error"`
+			AnswerID redact.RemoteText `json:"answer_id"`
 		}
 		_ = json.Unmarshal(data, &envelope)
-		if envelope.Error == "" {
+		if envelope.Error.IsEmpty() {
 			// A body that was not the envelope is the message as it came, a line ending and
 			// all (the mux's "404 page not found\n"): it is cut at its trailing line endings
-			// before Words, which would otherwise quote it for them, so the id goes after it
-			// on the same line.
-			envelope.Error = strings.TrimRight(string(data), "\r\n")
+			// before it prints, which would otherwise quote it for them, so the id goes after
+			// it on the same line.
+			envelope.Error = redact.NewRemoteText(strings.TrimRight(string(data), "\r\n"))
 		}
-		if envelope.AnswerID == "" {
-			envelope.AnswerID = resp.Header.Get(answerIDHeader)
+		if envelope.AnswerID.IsEmpty() {
+			envelope.AnswerID = redact.NewRemoteText(resp.Header.Get(answerIDHeader))
 		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
-		return resp.StatusCode, nil, &apiError{
-			Status:   resp.StatusCode,
-			Code:     envelope.Code,
-			Message:  c.baseURL.Words(envelope.Error),
-			AnswerID: c.baseURL.Words(envelope.AnswerID),
-			said:     &envelope.Error,
-			withheld: !c.baseURL.Clean(),
-		}
+		return resp.StatusCode, nil, newAPIError(resp.StatusCode, envelope.Code, envelope.Error, envelope.AnswerID, !c.baseURL.Clean())
 	}
 	return resp.StatusCode, data, nil
 }
+
+// redirectRefused is what a refusal of a redirect this client does not follow says: its own
+// words, which the rule for remote text prints as they are.
+var redirectRefused = redact.NewRemoteText("a redirect, which this client does not follow")
 
 // withoutQuery is err with the URL of the *url.Error net/http wraps a failed call in cut at query,
 // the query doStatus's call carried, so the redactor reads the URL this client built from the
@@ -509,7 +557,7 @@ type createRequestBody struct {
 // of them reads as an older broker and none is sent again.
 func brokerTookNoNarrowing(err error) bool {
 	var refusal *apiError
-	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_REQUEST"
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.hasCode("INVALID_REQUEST")
 }
 
 // CreateRequest builds and signs a credential-request object carrying one
@@ -760,7 +808,7 @@ func (c *client) release(ctx context.Context, signer Signer, grantID string, nar
 // not declare, before anything is released.
 func callRefused(err error) bool {
 	var refusal *apiError
-	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.Code == "INVALID_NARROWING" &&
+	return errors.As(err, &refusal) && refusal.Status == http.StatusBadRequest && refusal.hasCode("INVALID_NARROWING") &&
 		(refusal.says(`unknown field "command"`) || refusal.says(`unknown field "reason"`))
 }
 

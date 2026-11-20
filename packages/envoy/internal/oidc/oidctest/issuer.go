@@ -132,12 +132,15 @@ type codeFlow struct {
 }
 
 // tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken or DropToken set it: status with code as the
-// body's OAuth error, or, with drop, closing the connection unanswered.
+// granting it, when FailToken, DropToken or FailTokenWithStatusLine set it:
+// status with code as the body's OAuth error, or, with drop, closing the
+// connection unanswered, or, with statusLine, that status line and a page that
+// is no OAuth error answer.
 type tokenFailure struct {
-	status int
-	code   string
-	drop   bool
+	status     int
+	code       string
+	drop       bool
+	statusLine string
 }
 
 // revocation is the state of the revocation endpoint: every token the client
@@ -396,6 +399,17 @@ func (i *Issuer) DropToken() {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.codeFlow.token = tokenFailure{drop: true}
+}
+
+// FailTokenWithStatusLine makes the token endpoint answer every grant with
+// statusLine, a status code and the reason phrase the issuer writes, and a page
+// that is no OAuth error answer, written on the connection itself, since
+// net/http writes only the standard reason phrase. x/oauth2's error for an
+// answer with no error code prints its status line. FailToken(0, "") undoes it.
+func (i *Issuer) FailTokenWithStatusLine(statusLine string) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.token = tokenFailure{statusLine: statusLine}
 }
 
 // FailRevocation makes the revocation endpoint answer status, with code as the
@@ -762,7 +776,7 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "code flow not enabled", http.StatusNotFound)
 		return
 	}
-	if failure := flow.token; failure.status != 0 || failure.drop {
+	if failure := flow.token; failure.status != 0 || failure.drop || failure.statusLine != "" {
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
 		}
@@ -770,6 +784,15 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		case failure.drop:
 			if hijacker, ok := w.(http.Hijacker); ok {
 				if conn, _, err := hijacker.Hijack(); err == nil {
+					_ = conn.Close()
+				}
+			}
+		case failure.statusLine != "":
+			if hijacker, ok := w.(http.Hijacker); ok {
+				if conn, buf, err := hijacker.Hijack(); err == nil {
+					const page = "<html>gateway</html>"
+					_, _ = fmt.Fprintf(buf, "HTTP/1.1 %s\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s", failure.statusLine, len(page), page)
+					_ = buf.Flush()
 					_ = conn.Close()
 				}
 			}

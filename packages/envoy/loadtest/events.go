@@ -508,7 +508,7 @@ func (w *writer) record(class string, res callResult) {
 	if c.Codes == nil {
 		c.Codes = map[string]int{}
 	}
-	code := strconv.Itoa(res.status) + " " + res.errorCode()
+	code := strconv.Itoa(res.status) + " " + res.errorCode().String()
 	if res.err != nil {
 		code = errClass(res.err)
 	}
@@ -691,7 +691,7 @@ func (w *writer) do(ctx context.Context, p eventPlan) writeRec {
 		}
 	}
 	if !res.ok() {
-		w.lg.Printf("write %s %s: %d %s %v", p.kind, is.Key, res.status, trunc(res.body), res.err)
+		w.lg.Printf("write %s %s: %d %s %v", p.kind, is.Key, res.status, w.a.bodyText(res), res.err)
 	}
 	return rec
 }
@@ -742,7 +742,7 @@ func (w *writer) openPart(ctx context.Context, p eventPlan, id who, tag string, 
 	res := w.a.call(ctx, "POST", "/api/v1/issues/"+w.sf.Issues[p.issue].Key+"/artifacts", id, body)
 	w.record(loopClassRequirementPart, res)
 	if !res.ok() {
-		w.lg.Printf("write %s %s: open a part document: %d %s %v", p.kind, w.sf.Issues[p.issue].Key, res.status, trunc(res.body), res.err)
+		w.lg.Printf("write %s %s: open a part document: %d %s %v", p.kind, w.sf.Issues[p.issue].Key, res.status, w.a.bodyText(res), res.err)
 		return res, false
 	}
 	q.doc, q.rows, q.full = idOf(res.body), rows, false
@@ -777,7 +777,7 @@ func (w *writer) resolveThread(ctx context.Context, p eventPlan, id who) {
 	res := w.a.call(ctx, "POST", "/api/v1/comments/"+p.replyTo+"/resolve", id, body)
 	w.record(loopClassStatusResolve, res)
 	if !res.ok() {
-		w.lg.Printf("write %s resolve %s: %d %s %v", p.kind, w.sf.Issues[p.issue].Key, res.status, trunc(res.body), res.err)
+		w.lg.Printf("write %s resolve %s: %d %s %v", p.kind, w.sf.Issues[p.issue].Key, res.status, w.a.bodyText(res), res.err)
 	}
 }
 
@@ -845,7 +845,7 @@ func (w *writer) readPage(ctx context.Context, pg *loopPage, p eventPlan) {
 	n, ok := loopPageGeneration(markdown)
 	if !ok {
 		w.lg.Printf("write %s %s: read review page %s for its generation: %d %s %v",
-			p.kind, w.sf.Issues[p.issue].Key, page.ArtifactID, res.status, trunc(res.body), res.err)
+			p.kind, w.sf.Issues[p.issue].Key, page.ArtifactID, res.status, w.a.bodyText(res), res.err)
 		return
 	}
 	pg.gen, pg.known = n, true

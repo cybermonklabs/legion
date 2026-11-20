@@ -14,6 +14,8 @@
 // reason IsNoHolderReason accepts.
 package roleholder
 
+import "slices"
+
 // Unclaimed is the refusal of a publish to a role no claim names.
 const Unclaimed = "unclaimed"
 
@@ -22,8 +24,13 @@ const Unclaimed = "unclaimed"
 // The listener's 202 that keeps such a publish names the same word as its kept_reason.
 const HolderLapsed = "holder_lapsed"
 
+// NoHolderReasons is every reason the listener gives when it refuses a role publish because no
+// live session holds the role: the one list IsNoHolderReason reads, and a reader that holds the
+// listener's reason as the listener's words (redact.RemoteText) compares against.
+var NoHolderReasons = []string{Unclaimed, HolderLapsed}
+
 // IsNoHolderReason reports whether reason is one the listener gives when it refuses a role publish
-// because no live session holds the role.
+// because no live session holds the role (NoHolderReasons).
 func IsNoHolderReason(reason string) bool {
-	return reason == Unclaimed || reason == HolderLapsed
+	return slices.Contains(NoHolderReasons, reason)
 }

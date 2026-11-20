@@ -784,11 +784,9 @@ func renewLoop(ctx context.Context, c *client, signer Signer, enrollmentID, podT
 			}
 			var refused *apiError
 			if errors.As(err, &refused) && refused.Permanent() {
-				code := refused.Code
-				if code == "" {
-					code = "UNKNOWN"
-				}
-				fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: HTTP %d %s: %s\n", enrollmentID, brokerSource(c.baseURL), refused.Status, code, refused.Message)
+				// The code is the one of terminalRenewal's the refusal matched, which this client
+				// wrote; the words print as the address lets them (apiError.words).
+				fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: HTTP %d %s: %s\n", enrollmentID, brokerSource(c.baseURL), refused.Status, refused.terminalCode(), refused.words(refused.said))
 				return exitRenewRefused
 			}
 			if tokenErr != nil {

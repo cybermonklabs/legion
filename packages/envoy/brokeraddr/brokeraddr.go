@@ -65,23 +65,36 @@ func (a Address) Empty() bool { return a.raw == nil }
 func (a Address) Clean() bool { return redact.Clean(a.Raw()) }
 
 // WordsNotPrinted is what a message prints in place of the text of an answer from an address that
-// is not clean (Words).
+// is not clean (Words). It is a different case from redact.WordsNotReadable, which Words prints
+// beside a clean address in place of a field the rule for remote text cannot read.
 const WordsNotPrinted = "(not printed: the broker's address is not clean)"
 
 // Words is text that whoever answered a request built from Raw wrote - a refusal's words, its
-// code, the answer id it names, a value it quotes - as a message may print it: beside a clean
-// address the text on one line (redact.OneLine), as it came where it holds no control character
-// and Go-quoted where it holds one, so a line break or an escape sequence in an answer cannot
-// start a line of its own in the message that prints it; and WordsNotPrinted beside any other.
-// Whoever answers at an address that is not clean, the broker or anyone who can answer for it,
-// can repeat the credential the address carries in any text of its answer, so a message made
-// from such an answer prints its status and WordsNotPrinted, and no other part of it. A caller
-// that tells answers apart by their text reads that text as it came, never what Words answers,
-// and prints it nowhere. A decoder's error for an answer the helper or `agent-secrets enroll --pod`
-// cannot read prints through Words as well, since the decoder quotes the answer's text.
+// code, the answer id it names, a value it quotes - as a message may print it. Beside a clean
+// address it is the text as the rule for remote text reads it (redact.Field): ordinary words as
+// they came, a URL with no user information and no query or fragment value, and
+// redact.WordsNotReadable in place of a field the rule cannot read as clean; on one line
+// (redact.OneLine), Go-quoted where it holds a control character, so a line break or an escape
+// sequence in an answer cannot start a line of its own in the message that prints it. Beside any
+// other address it is WordsNotPrinted: whoever answers at an address that is not clean, the
+// broker or anyone who can answer for it, can repeat the credential the address carries in any
+// text of its answer, so a message made from such an answer prints its status and
+// WordsNotPrinted, and no other part of it. A caller that tells answers apart by their text reads
+// that text as it came, never what Words answers, and prints it nowhere. A decoder's error for an
+// answer the helper or `agent-secrets enroll --pod` cannot read prints through Words as well,
+// since the decoder quotes the answer's text.
 func (a Address) Words(text string) string {
 	if a.Clean() {
-		return redact.OneLine(text)
+		return redact.Field(text)
+	}
+	return WordsNotPrinted
+}
+
+// WordsOf is Words of a field held as a redact.RemoteText: the field as it prints itself beside a
+// clean address, and WordsNotPrinted beside any other.
+func (a Address) WordsOf(field redact.RemoteText) string {
+	if a.Clean() {
+		return field.String()
 	}
 	return WordsNotPrinted
 }

@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
@@ -439,21 +441,37 @@ func rateLimitWait(header http.Header) time.Duration {
 
 // StatusError is GitHub answering a request with a status other than 200 that is no rate limit
 // (CheckResponse): the status, and the whole body GitHub answered. Its text is StatusText's, which
-// leaves out the body of an answer at a 2xx status.
+// leaves out the body of an answer at a 2xx status, with the body as it prints itself
+// (redact.RemoteText), since it is GitHub's words: a URL in them prints with no user information
+// and no query or fragment value, and a body the rule cannot read prints as
+// redact.WordsNotReadable, under every verb, in JSON and in a log field.
 type StatusError struct {
 	Status int
-	Body   string
+	body   redact.RemoteText
+	// message is the `message` of the body, read when the error is made (responseMessage).
+	message redact.RemoteText
 }
 
 func (e *StatusError) Error() string {
-	return StatusText(e.Status, e.Body)
+	return StatusText(e.Status, e.body.String())
 }
 
-// Message is the `message` of Body, the JSON GitHub answers a refused request with, and "" for a
-// body that is not JSON or names none (responseMessage).
-func (e *StatusError) Message() string {
-	return responseMessage([]byte(e.Body))
+// Format prints Error under the verb, flags, width and precision it is given, as fmt prints that
+// string, so no verb prints this error's fields.
+func (e *StatusError) Format(f fmt.State, verb rune) {
+	fmt.Fprintf(f, fmt.FormatString(f, verb), e.Error())
 }
+
+// LogValue is Error, so a structured log field names the error only as a message may.
+func (e *StatusError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
+
+// PrintedBody is the body as Error prints it, for a caller that rebuilds a message from Error's
+// text (results_ci.go's withGitHubMessage).
+func (e *StatusError) PrintedBody() string { return e.body.String() }
+
+// Message is the `message` of the body, the JSON GitHub answers a refused request with, and empty
+// for a body that is not JSON or names none (responseMessage). It prints itself as the body does.
+func (e *StatusError) Message() redact.RemoteText { return e.message }
 
 // StatusText is the text of an answer GitHub gave with status and body that its reader takes as
 // a failure: `status <n>: <body>`, or `status <n>` alone for an answer with no body (withBody)
@@ -485,9 +503,9 @@ func withBody[Body string | []byte](head string, body Body) string {
 
 // CheckResponse turns a response's status/header/body into an error only when status is not 200:
 // RateLimit's own *RateLimitError when the response is a GitHub rate limit, else a *StatusError
-// carrying the status and the raw body. Factors the identical "check rate limit, then check
-// status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go, client.go's own
-// ListInstallationRepositoriesByID) all repeated at every call site.
+// carrying the status and the raw body (NewStatusError). Factors the identical "check rate limit,
+// then check status" three lines delivery's GitHub fetchers (github_prs.go, github_runs.go,
+// client.go's own ListInstallationRepositoriesByID) all repeated at every call site.
 func CheckResponse(status int, header http.Header, body []byte) error {
 	if status == http.StatusOK {
 		return nil
@@ -495,7 +513,13 @@ func CheckResponse(status int, header http.Header, body []byte) error {
 	if limited := RateLimit(status, header, body); limited != nil {
 		return limited
 	}
-	return &StatusError{Status: status, Body: string(body)}
+	return NewStatusError(status, body)
+}
+
+// NewStatusError is GitHub's answer with status and body as a *StatusError: the body and its
+// `message` held as GitHub's words (redact.RemoteText), and the one way to make the error.
+func NewStatusError(status int, body []byte) *StatusError {
+	return &StatusError{Status: status, body: redact.NewRemoteText(string(body)), message: redact.NewRemoteText(responseMessage(body))}
 }
 
 // nextLink returns the rel="next" target of an RFC 8288 Link header, refusing one outside the

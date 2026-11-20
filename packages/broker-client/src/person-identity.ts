@@ -7,6 +7,7 @@
 
 import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
+import { callLibrary, LibraryError, refusalFetch } from "@legion/contracts/remote-text";
 import {
   allowInsecureRequests,
   ClientSecretPost,
@@ -14,7 +15,6 @@ import {
   type CustomFetch,
   customFetch,
   discovery,
-  ResponseBodyError,
   refreshTokenGrant,
   type ServerMetadata,
   type TokenEndpointResponse,
@@ -49,18 +49,24 @@ export interface PersonIdentityOptions {
  * got an answer as "something went wrong" and hangs the reason off `cause`, so the direct cause's
  * class is named too, and no deeper one. A class, never a message: the library's and the
  * runtime's messages repeat what they were handed (a resolver's names the host, a parser's the
- * URL, a parser further down the body).
+ * URL, a parser further down the body). Every error here crossed {@link callLibrary}, so its code
+ * is {@link LibraryError}'s, compared as it came and shown only as the rule reads it.
  */
 function issuerSaid(error: unknown): string {
-  if (error instanceof ResponseBodyError) {
-    const shown = shownOAuthCode(error.error);
+  if (error instanceof LibraryError && error.name === "ResponseBodyError") {
+    const shown = error.code.isEmpty ? "" : shownOAuthCode(String(error.code));
     const code = shown === "" ? "" : ` ${shown}`;
-    const withheld = (error.error_description ?? "") === "" ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
+    const withheld = error.description.isEmpty ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
     return `HTTP ${error.status}${code}${withheld}`;
   }
-  let said = errorClass(error);
-  const cause = error instanceof Error ? error.cause : undefined;
-  if (cause instanceof Error) said += `: ${errorClass(cause)}`;
+  let said = error instanceof LibraryError ? error.thrownClass : errorClass(error);
+  const cause =
+    error instanceof LibraryError
+      ? error.causeClass
+      : error instanceof Error && error.cause instanceof Error
+        ? errorClass(error.cause)
+        : "";
+  if (cause !== "") said += `: ${cause}`;
   const status = statusOf(error);
   return status === 0 ? said : `HTTP ${status}: ${said}`;
 }
@@ -114,12 +120,14 @@ export function personIdentity(
   /** The issuer's metadata, as one discovery request reads it. */
   const discover = async (signal: AbortSignal | undefined): Promise<ServerMetadata> => {
     try {
-      const config = await discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
-        [customFetch]: through(signal),
-        timeout: ISSUER_TIMEOUT_SECONDS,
-        ...(insecure ? { execute: [allowInsecureRequests] } : {}),
-      });
-      return config.serverMetadata();
+      const config = await callLibrary(() =>
+        discovery(new URL(flow.issuer), flow.clientId, undefined, undefined, {
+          [customFetch]: refusalFetch(through(signal)),
+          timeout: ISSUER_TIMEOUT_SECONDS,
+          ...(insecure ? { execute: [allowInsecureRequests] } : {}),
+        })
+      );
+      return callLibrary(() => config.serverMetadata());
     } catch (error) {
       // No `cause`: the library's error for an issuer that is not the one asked for holds the
       // issuer as configured, its user info included.
@@ -141,20 +149,27 @@ export function personIdentity(
       }
       let answered: TokenEndpointResponse;
       try {
-        const config = new Configuration(
-          metadata,
-          flow.clientId,
-          undefined,
-          ClientSecretPost(flow.clientSecret)
+        const config = callLibrary(
+          () =>
+            new Configuration(
+              metadata,
+              flow.clientId,
+              undefined,
+              ClientSecretPost(flow.clientSecret)
+            )
         );
-        if (insecure) allowInsecureRequests(config);
+        if (insecure) callLibrary(() => allowInsecureRequests(config));
         config.timeout = ISSUER_TIMEOUT_SECONDS;
-        config[customFetch] = through(signal);
-        answered = await refreshTokenGrant(config, refreshToken);
+        config[customFetch] = refusalFetch(through(signal));
+        answered = await callLibrary(() => refreshTokenGrant(config, refreshToken));
       } catch (error) {
         // No `cause` on either: an answer the library refused hangs off its error, and that answer
         // can hold the person's fresh ID token, which no log of this error may carry.
-        if (error instanceof ResponseBodyError && error.error === INVALID_GRANT) {
+        if (
+          error instanceof LibraryError &&
+          error.name === "ResponseBodyError" &&
+          error.code.equals(INVALID_GRANT)
+        ) {
           throw new SignInEndedError(issuer, person);
         }
         throw new Error(`renew ${person}'s sign-in at ${issuer}: ${issuerSaid(error)}`);

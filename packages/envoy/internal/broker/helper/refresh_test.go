@@ -20,6 +20,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/brokeraddr"
+	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // keptLogin logs a Broker in against f and returns the machine file it kept, for a second Broker
@@ -109,6 +111,46 @@ func TestARefusedRefreshDropsTheLoginAndItsFile(t *testing.T) {
 	line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it")
 	if line["level"] != "ERROR" || line["credential_id"] != held.id || line["code"] != "invalid_grant" {
 		t.Fatalf("the drop line: %v; want an ERROR naming %s and invalid_grant", line, held.id)
+	}
+}
+
+// TestARefusedRefreshTakesTheDropBranchWhateverItsWordsQuote: a refresh the broker refuses
+// invalid_grant takes Broker.refresh's refusal branch - the login dropped for dropRefreshRefused and
+// its machine file deleted - whether its description is absent, quotes a URL carrying a
+// credential, or holds words the rule cannot read. The branch is chosen on redact.RefusalCode,
+// decided from the code as x/oauth2 read it, and its log line names the code as that closed set
+// prints it, never the broker's words.
+func TestARefusedRefreshTakesTheDropBranchWhateverItsWordsQuote(t *testing.T) {
+	for name, words := range map[string]string{"no words": "", "a credential's URL": redacttest.Words, "words the rule cannot read": redacttest.Unreadable} {
+		t.Run(name, func(t *testing.T) {
+			var out syncBuffer
+			f := newFakeBroker(t)
+			b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+				Log: slog.New(slog.NewJSONHandler(&out, nil))}
+			t.Cleanup(b.Close)
+			if _, err := b.Login(context.Background(), "helper-host"); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, func() bool { return b.LoginStatus().State == "issued" })
+			held := b.cred.Load()
+			f.mu.Lock()
+			f.refreshOutcome, f.refreshWords = "invalid_grant", words
+			f.mu.Unlock()
+			if err := b.refresh(context.Background()); err != nil {
+				t.Fatalf("a refused refresh is settled, not retried: %v", err)
+			}
+			if ls := b.LoginStatus(); ls.CredentialHeld || ls.State != "expired" || ls.Dropped != dropRefreshRefused {
+				t.Fatalf("login-status after a refused refresh: %+v; want expired, dropped for %q", ls, dropRefreshRefused)
+			}
+			if _, err := LoadMachineFile(b.MachineFile); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("the machine file after a refused refresh: %v; want it deleted", err)
+			}
+			line := waitForRecord(t, &out, dropRefreshRefused+"; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it")
+			if line["level"] != "ERROR" || line["credential_id"] != held.id || line["code"] != "invalid_grant" {
+				t.Fatalf("the drop line: %v; want an ERROR naming %s and invalid_grant", line, held.id)
+			}
+			redacttest.RequireNone(t, "the helper's log", out.String())
+		})
 	}
 }
 
@@ -375,7 +417,7 @@ func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
 	release := heldRefresh(t, f, b)
 	waiting := make(chan struct{})
 	b.testBeforeDrop = func() { close(waiting) }
-	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
+	rejected := newBrokerError(http.StatusUnauthorized, redact.NewRemoteText("LAUNCHER_INVALID"), redact.NewRemoteText("the launcher credential is not valid"), false)
 	refused := make(chan error, 1)
 	go func() { refused <- b.clearOnInvalid(context.Background(), signed, rejected) }()
 	<-waiting

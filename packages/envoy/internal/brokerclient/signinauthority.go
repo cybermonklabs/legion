@@ -194,10 +194,10 @@ func (a *SignInAuthority) Current(ctx context.Context) (*Authority, error) {
 		// A refusal a retry could cure — the broker's 429, a skewed DPoP proof — is not this
 		// sign-in ending: marking it refused on one of those would enrol every later session
 		// under this machine for the life of the process. The code is the answer's own text,
-		// so it is logged as the address lets it print (brokeraddr.Address.Words): beside an
-		// address that is not clean, whoever answers for it can write the credential the
-		// address carries into the code.
-		a.markRefused(name, record.Person, a.BrokerURL.Words(refusal.Code))
+		// so it is logged as the address lets it print (brokeraddr.Address.WordsOf, which prints
+		// the field as it prints itself): beside an address that is not clean, whoever answers
+		// for it can write the credential the address carries into the code.
+		a.markRefused(name, record.Person, a.BrokerURL.WordsOf(refusal.code))
 		return nil, nil
 	case errors.Is(err, ErrSignInEnded):
 		// The issuer, not the broker, is what refused: a refresh token Google no longer

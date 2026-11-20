@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A broker refusal no longer prints a credential a URL in its words carries. The broker token
+  client this package uses held the broker's code and description in public fields, which
+  `JSON.stringify` and an inspection print, and its message printed them whole. It now holds them
+  in private fields and prints each through `redactRemoteText`, which removes each URL's user
+  information and each query and fragment value and prints words it cannot read as
+  `WORDS_NOT_READABLE`.
+time: 2026-11-18T05:15:23Z
+custom:
+    Issue: pr4368

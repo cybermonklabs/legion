@@ -59,7 +59,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		f.mu.Unlock()
 		_, _, err = b.EnrollIdentity(ctx, sess.identity())
 		var be *BrokerError
-		if !errors.As(err, &be) || be.Status != http.StatusForbidden || be.Code != "MEMBERSHIP_HELD" {
+		if !errors.As(err, &be) || be.Status != http.StatusForbidden || !be.HasCode("MEMBERSHIP_HELD") {
 			t.Fatalf("an enrolment while %s is held answered %v; want the broker's 403 MEMBERSHIP_HELD", heldPerson, err)
 		}
 		if b.cred.Load() != cred {
@@ -90,7 +90,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		if held := b.cred.Load(); held == nil || held.id != before.CredentialID || !held.expiresAt.Equal(after.ExpiresAt) {
 			t.Fatalf("the helper holds %+v after the refresh; want %s until %s", held, before.CredentialID, after.ExpiresAt)
 		}
-		if _, _, err := b.EnrollIdentity(ctx, sess.identity()); !errors.As(err, &be) || be.Code != "MEMBERSHIP_HELD" || !b.HasCredential() {
+		if _, _, err := b.EnrollIdentity(ctx, sess.identity()); !errors.As(err, &be) || !be.HasCode("MEMBERSHIP_HELD") || !b.HasCredential() {
 			t.Fatalf("an enrolment after the refresh, still held, answered %v with a credential held %t; want 403 MEMBERSHIP_HELD and the login kept", err, b.HasCredential())
 		}
 

@@ -16,6 +16,8 @@ import (
 	"unicode"
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Verify failure. A caller logs the class and answers 401;
@@ -202,7 +204,8 @@ func (v *Verifier) VerifyClaims(ctx context.Context, raw string, into ...any) (C
 		return Claims{}, err
 	}
 	for _, target := range into {
-		if err := token.Claims(target); err != nil {
+		s := redact.Scope[struct{}](ctx)
+		if _, err := redact.OAuth2(s.Read(struct{}{}, token.Claims(target))); err != nil {
 			return Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 		}
 	}
@@ -230,12 +233,14 @@ func (v *Verifier) verify(ctx context.Context, raw string) (*gooidc.IDToken, Cla
 	// The slot the key source's own error comes back in: go-oidc flattens it
 	// (keyset.go, keySetError).
 	keyCtx, keySetErr := withKeySetError(ctx)
-	token, err := v.verifier.Verify(keyCtx, compact)
+	s := redact.Scope[*gooidc.IDToken](keyCtx)
+	token, err := redact.OAuth2(s.Read(v.verifier.Verify(s.Context(), compact)))
 	if err != nil {
 		return nil, Claims{}, v.classify(ctx, raw, err, keySetErr.err)
 	}
 	var person cognitoClaims
-	if err := token.Claims(&person); err != nil {
+	claims := redact.Scope[struct{}](ctx)
+	if _, err := redact.OAuth2(claims.Read(struct{}{}, token.Claims(&person))); err != nil {
 		return nil, Claims{}, fmt.Errorf("%w: %v", ErrMalformed, err)
 	}
 	var providers []string

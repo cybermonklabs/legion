@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -198,8 +199,9 @@ func (g *GoogleAccount) fresh() (string, bool) {
 // mint is ServiceAccount's identity token for Audience, from one generateIdToken call that spends
 // this pod's own access token, the read and the call both inside one MintTimeout. Every error
 // opens with the account and the audience, then says what failed, and none holds the access token
-// or an identity token: a refusal's body is quoted, cut to maxMintRefusal bytes, and the body of a
-// 2xx answer, which carries the token, never is.
+// or an identity token: a refusal's body is quoted, cut to maxMintRefusal bytes, as the rule for
+// remote text reads it with the request's credentials redacted (redact.RemoteText), and the body
+// of a 2xx answer, which carries the token, never is.
 func (g *GoogleAccount) mint() (string, error) {
 	token, err := g.generateIDToken()
 	if err != nil {
@@ -244,7 +246,8 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 	if resp.StatusCode/100 != 2 {
 		reason := bytes.TrimSpace(answer)
 		reason = reason[:min(len(reason), maxMintRefusal)]
-		return "", fmt.Errorf("generateIdToken answered HTTP %d: %s", resp.StatusCode, bytes.ToValidUTF8(reason, nil))
+		said := redact.NewRemoteText(string(bytes.ToValidUTF8(reason, nil))).WithoutTokens(redact.Carried(resp)...)
+		return "", fmt.Errorf("generateIdToken answered HTTP %d: %s", resp.StatusCode, said)
 	}
 	var minted struct {
 		Token string `json:"token"`
@@ -261,7 +264,9 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 // internal/googleidentity's own 10-second bound, and a token it reads then is kept by the source
 // for the next mint.
 func (g *GoogleAccount) accessToken(ctx context.Context) (string, error) {
-	g.accessOnce.Do(func() { g.access = oauth2.ReuseTokenSource(nil, googleidentity.AccessTokenSource()) })
+	g.accessOnce.Do(func() {
+		g.access = oauth2.ReuseTokenSource(nil, redact.TokenSource(googleidentity.AccessTokenSource()))
+	})
 	source := g.access
 	type answer struct {
 		token *oauth2.Token
@@ -270,7 +275,7 @@ func (g *GoogleAccount) accessToken(ctx context.Context) (string, error) {
 	// One slot, so a read nothing waits for any more does not block on its send.
 	answered := make(chan answer, 1)
 	go func() {
-		token, err := source.Token()
+		token, err := redact.OAuth2(source.Token())
 		answered <- answer{token, err}
 	}()
 	select {

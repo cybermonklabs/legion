@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // heldDescription is the broker's description of its membership_held refusal, with the person's
@@ -28,7 +29,7 @@ const heldDescription = "ada@example.com's credentials are held by Dispatch; the
 // TestMembershipHeldIsNotPermanent: the broker's `membership_held` is not a refusal the client
 // stops on, and the wire corpus both clients replay says the same of it.
 func TestMembershipHeldIsNotPermanent(t *testing.T) {
-	refused := &RefusedError{Status: 400, Code: "membership_held", Description: heldDescription}
+	refused := newRefusedError("ada@example.com's sign-in on this machine", 400, redact.NewRemoteText("membership_held"), redact.NewRemoteText(heldDescription))
 	if refused.Permanent() {
 		t.Errorf("the client reads membership_held as permanent; want a refusal it trades again on: Dispatch releases the hold at the person's next sign-in, and the credential in hand is served again then")
 	}
@@ -51,7 +52,7 @@ func TestMembershipHeldIsNotPermanent(t *testing.T) {
 			row.Name, row.Answer.Status, row.Expect.Outcome, row.Expect.Permanent)
 	}
 	description, _ := row.Answer.Body["error_description"].(string)
-	if got := newRefusedError("ada@example.com's sign-in on this machine", row.Answer.Status, "membership_held", description).Permanent(); got != row.Expect.Permanent {
+	if got := newRefusedError("ada@example.com's sign-in on this machine", row.Answer.Status, redact.NewRemoteText("membership_held"), redact.NewRemoteText(description)).Permanent(); got != row.Expect.Permanent {
 		t.Errorf("the client reads the corpus row %q as permanent=%t; the row says %t", row.Name, got, row.Expect.Permanent)
 	}
 }
@@ -75,7 +76,7 @@ func TestMembershipHeldKeepsTheSignInAuthority(t *testing.T) {
 	for i := range 2 {
 		authority, err := rig.authority.Current(context.Background())
 		var refused *RefusedError
-		if authority != nil || !errors.As(err, &refused) || refused.Code != "membership_held" {
+		if authority != nil || !errors.As(err, &refused) || !refused.HasCode("membership_held") {
 			t.Fatalf("enrolment %d while %s is held answered %+v, %v; want no authority and the broker's membership_held refusal, so the session neither enrols under this machine nor loses the sign-in", i, person, authority, err)
 		}
 		if want := "the secrets broker refused " + person + "'s sign-in on this machine: HTTP 400 membership_held"; !strings.Contains(err.Error(), want) {

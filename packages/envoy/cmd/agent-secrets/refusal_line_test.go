@@ -66,8 +66,8 @@ func TestABrokerRefusalReadsAsOneLine(t *testing.T) {
 			if strings.ContainsAny(refusal.Error(), "\r\n\x1b") {
 				t.Errorf("the refusal reads %q, which holds a control character", refusal.Error())
 			}
-			if row.raw == "" && (refusal.Code != row.code || !refusal.says(row.words)) {
-				t.Errorf("the refusal holds the code %q and words it says, want the code %q and the words %q as they came", refusal.Code, row.code, row.words)
+			if row.raw == "" && (!refusal.hasCode(row.code) || !refusal.says(row.words)) {
+				t.Errorf("the refusal does not hold the code %q and the words %q as they came", row.code, row.words)
 			}
 		})
 	}

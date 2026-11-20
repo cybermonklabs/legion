@@ -18,12 +18,12 @@ import (
 
 // TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint: oauthBrokerError makes a
 // BrokerError of the broker's OAuth answer, its code and words, exactly where the redactor prints
-// that answer's words whole, so a refusal settles as the known refusal it is. That holds alone, in a
-// call, and under a caller's %w, whose own words the redactor drops but whose answer it still
-// prints. Beside an address that carries a credential, and for an answer with an error_uri, it is
-// still the broker's refusal: a BrokerError of its status alone, with no code and no word of the
-// description, since those are the text the redactor withheld, so a 4xx still settles as a refusal
-// and not as an unknown outcome.
+// that answer's words as the rule for remote text reads them, so a refusal settles as the known
+// refusal it is. That holds alone, in a call, and under a caller's %w, whose own words the
+// redactor drops but whose answer it still prints. Beside an address that carries a credential,
+// and for an answer with an error_uri, it is still the broker's refusal: a BrokerError of its
+// status alone, holding no code and no word of the description, since those are the text the
+// redactor withheld, so a 4xx still settles as a refusal and not as an unknown outcome.
 func TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint(t *testing.T) {
 	const (
 		clean = "http://127.0.0.1:1"
@@ -58,10 +58,10 @@ func TestAnOAuthRefusalSettlesAsTheBrokersRefusalWhereverItsWordsPrint(t *testin
 			var be *BrokerError
 			isBrokerError := errors.As(got, &be)
 			switch {
-			case row.known && (!isBrokerError || be.Status != http.StatusBadRequest || be.Code != "LOGIN_PENDING" || be.Message != "a login is already pending"):
+			case row.known && (!isBrokerError || be.Status != http.StatusBadRequest || !be.HasCode("LOGIN_PENDING") || got.Error() != "broker 400 LOGIN_PENDING: a login is already pending"):
 				t.Errorf("oauthBrokerError = %v (%T); want the broker's 400 LOGIN_PENDING as a BrokerError", got, got)
-			case !row.known && (!isBrokerError || be.Status != http.StatusBadRequest || be.Code != ""):
-				t.Errorf("oauthBrokerError = %v (%T); want the broker's 400 as a BrokerError of its status alone, with no code", got, got)
+			case !row.known && (!isBrokerError || be.Status != http.StatusBadRequest || !be.code.IsEmpty() || !be.said.IsEmpty()):
+				t.Errorf("oauthBrokerError = %v (%T); want the broker's 400 as a BrokerError of its status alone, holding no code and no words", got, got)
 			case !row.known && (strings.Contains(got.Error(), "LOGIN_PENDING") || strings.Contains(got.Error(), "a login is already pending") || !strings.Contains(got.Error(), "broker 400")):
 				t.Errorf("oauthBrokerError = %q; want the broker's status and none of its words", got)
 			}

@@ -57,14 +57,22 @@ type TmuxPlace struct {
 	Zoomed bool   `json:"zoomed"`
 }
 
-// APIError is the body of a /v1 error answer. Code names an answer a caller acts on beyond its
-// status (the list routes' refilling 503, code refilling); every other answer leaves it out.
-// Expected names the request fields the refusal is about.
-type APIError struct {
-	Code     string   `json:"code,omitempty"`
-	Error    string   `json:"error"`
-	Expected []string `json:"expected,omitempty"`
+// APIErrorAs is the body of a /v1 error answer, with each of its words held as Text. Code names an
+// answer a caller acts on beyond its status (the list routes' refilling 503, code refilling);
+// every other answer leaves it out. Expected names the request fields the refusal is about.
+//
+// The listener writes it as APIError, every word a string. A client that must not hold the
+// listener's words as strings reads them as a type of its own (Dispatch's client reads its
+// redact.RemoteText): every string of the body is a Text, so such a reading holds none of it raw,
+// and it reads the body through the one declaration the listener writes it with.
+type APIErrorAs[Text any] struct {
+	Code     Text   `json:"code,omitempty"`
+	Error    Text   `json:"error"`
+	Expected []Text `json:"expected,omitempty"`
 }
+
+// APIError is the body of a /v1 error answer as the listener writes it (APIErrorAs).
+type APIError = APIErrorAs[string]
 
 // MessageBody is the message a send or a publish carries, which the listener builds the envelope
 // it puts on the bus from. A sender that leaves Source out speaks as an agent.
@@ -487,25 +495,32 @@ type RoleHolder struct {
 	Title     string `json:"title"`
 }
 
-// RoleRefusal is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and a
-// role send through POST /v1/messages/publish that kept nothing answers. HolderState says which
-// of the three states the claim's holder is in, so a caller can tell a holder that is merely
-// unresponsive - stalled, still claiming, still being stored for - from one that is gone.
-// ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a
-// holder, whatever its state, so a caller that used to read this answer as "the role is free now"
-// is told plainly that the claim still stands. A listener of an earlier release leaves some of
-// the fields out, which decodes as their zero values.
-type RoleRefusal struct {
-	Error       string       `json:"error"`
-	Reason      RoleState    `json:"reason"`
-	Holder      string       `json:"holder,omitempty"`
-	HolderState SessionState `json:"holder_state,omitempty"`
+// RoleRefusalAs is the 404 of a role with no live holder, which GET /v1/roles/<role> answers and
+// a role send through POST /v1/messages/publish that kept nothing answers, with each of its free
+// words held as Text, its Reason as Outcome and the holder's state as State. Reason is the
+// RoleState the resolution found, unclaimed or holder_lapsed. HolderState says which of the three
+// states the claim's holder is in, so a caller can tell a holder that is merely unresponsive -
+// stalled, still claiming, still being stored for - from one that is gone. ClaimReleased is on
+// every lapsed answer and is always false: a lookup takes nothing from a holder, whatever its
+// state, so a caller that used to read this answer as "the role is free now" is told plainly that
+// the claim still stands. A listener of an earlier release leaves some of the fields out, which
+// decodes as their zero values.
+//
+// The listener writes it as RoleRefusal: every word a string, the reason a RoleState and the
+// holder's state a SessionState. A client that must not hold the listener's words as strings
+// reads each of them, the two states included, as a type of its own, as APIErrorAs says: every
+// string of the body is a Text, an Outcome or a State.
+type RoleRefusalAs[Text, Outcome, State any] struct {
+	Error       Text    `json:"error"`
+	Reason      Outcome `json:"reason"`
+	Holder      Text    `json:"holder,omitempty"`
+	HolderState State   `json:"holder_state,omitempty"`
 	// ClientInstanceID is the process the lapsed holder's claim names
 	// (store.RoleClaim.ClientInstanceID), as the 200 reports it beside the live holder: it is
 	// how a client reading this answer sees that the role is held under its own session id by
 	// another process. Absent for a role no claim stands for, and for a claim that names no
 	// process - one an earlier build wrote, or one whose claimant stated none.
-	ClientInstanceID string `json:"client_instance_id,omitempty"`
+	ClientInstanceID Text `json:"client_instance_id,omitempty"`
 	// HandedBack is the hand-back mark the lapsed holder's claim carries
 	// (store.RoleClaim.HandedBack), as the 200 reports it beside the live holder: the holder
 	// gave this role back through a release that could not free the claim, so no registration
@@ -523,6 +538,9 @@ type RoleRefusal struct {
 	LastSeen      *int64 `json:"last_seen,omitempty"`
 	ClaimReleased *bool  `json:"claim_released,omitempty"`
 }
+
+// RoleRefusal is the 404 of a role with no live holder as the listener writes it (RoleRefusalAs).
+type RoleRefusal = RoleRefusalAs[string, RoleState, SessionState]
 
 // RoleSendFailure is the 504 of a role send through POST /v1/messages/publish whose delivery
 // window ended with no forward the stream stored for its holder. Reason is delivery_failed: no

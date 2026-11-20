@@ -1006,7 +1006,7 @@ func (s *Server) lacksCredential(err error) bool {
 // and the refusal stays on the session as its last error in the meantime.
 func sessionHeld(err error) bool {
 	var be *BrokerError
-	return errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "SESSION_HELD"
+	return errors.As(err, &be) && be.Status == http.StatusForbidden && be.HasCode("SESSION_HELD")
 }
 
 // heldRetryCap is the longest enrollLoop waits between attempts at a session name another
@@ -1500,16 +1500,20 @@ func (s *Server) confirmInherited(ctx context.Context, sess *Session, pass ident
 // and grant that enrollment carries. renewLoop and confirmInherited draw the line in the same
 // place, so a renewal and a confirmation cannot disagree about what ended an enrollment. The
 // fallback reads the broker's words as they came (BrokerError.says), so it holds beside an address
-// whose refusals do not print them.
+// whose refusals do not print them. The code it answers is the one of its own it matched, and ""
+// for any other refusal, so a caller that logs it logs none of the broker's text.
 func enrollmentNotLive(err error) (string, bool) {
 	var be *BrokerError
 	if !errors.As(err, &be) {
 		return "", false
 	}
-	if be.Code == "ENROLLMENT_NOT_LIVE" || (be.Code == "PROOF_INVALID" && be.says("not live")) {
-		return be.Code, true
+	switch {
+	case be.HasCode("ENROLLMENT_NOT_LIVE"):
+		return "ENROLLMENT_NOT_LIVE", true
+	case be.HasCode("PROOF_INVALID") && be.says("not live"):
+		return "PROOF_INVALID", true
 	}
-	return be.Code, false
+	return "", false
 }
 
 // renewLoop renews at a third of the lease until the session ends (false) or the broker says this
@@ -1616,11 +1620,14 @@ func (s *Server) revokeLapsed(ctx context.Context, sess *Session, id string) boo
 func (s *Server) revokeOnce(ctx context.Context, id string) error {
 	err := s.Broker.Revoke(ctx, id)
 	var be *BrokerError
-	if errors.As(err, &be) && be.Status == http.StatusForbidden &&
-		(be.Code == "OPERATOR_MISMATCH" || be.Code == "NOT_ENROLLING_CREDENTIAL") {
-		s.Log.Warn("the enrollment belongs to another launcher credential; leaving it to its lease",
-			"enrollment_id", id, "code", be.Code)
-		return nil
+	if errors.As(err, &be) && be.Status == http.StatusForbidden {
+		for _, code := range []string{"OPERATOR_MISMATCH", "NOT_ENROLLING_CREDENTIAL"} {
+			if be.HasCode(code) {
+				s.Log.Warn("the enrollment belongs to another launcher credential; leaving it to its lease",
+					"enrollment_id", id, "code", code)
+				return nil
+			}
+		}
 	}
 	return err
 }

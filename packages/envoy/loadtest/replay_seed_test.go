@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // TestWriteCanceledByAnotherWrite: when one issue's write fails, errgroup cancels the others'
@@ -28,7 +30,7 @@ func TestWriteCanceledByAnotherWrite(t *testing.T) {
 	s := &replaySeeder{api: newAPI(srv.URL, "t", 1), lg: log.New(io.Discard, "", 0), counts: map[string]int{}, marks: map[string]int{}}
 	g, gctx := errgroup.WithContext(context.Background())
 	g.Go(func() error {
-		return &seedError{step: "history-edit", logged: "d1@7", status: http.StatusRequestEntityTooLarge, code: "REQUEST_TOO_LARGE"}
+		return newSeedError("history-edit", "d1@7", http.StatusRequestEntityTooLarge, redact.NewRemoteText("REQUEST_TOO_LARGE"))
 	})
 	_ = g.Wait()
 	_, err := s.write(gctx, seedWrite{kind: "comment-anchored", issue: "PRJ-1", step: "comment-anchored", logged: "c1",
@@ -98,7 +100,7 @@ func TestIDOfAndErrorCode(t *testing.T) {
 			t.Errorf("idOf(%s) = %q, want %q", body, got, want)
 		}
 	}
-	if errorCode([]byte(`{"code":"ANCHOR_MISSING","error":"synthetic"}`)) != "ANCHOR_MISSING" || errorCode([]byte("not json")) != "" {
+	if !errorCode([]byte(`{"code":"ANCHOR_MISSING","error":"synthetic"}`)).Equal("ANCHOR_MISSING") || !errorCode([]byte("not json")).IsEmpty() {
 		t.Fatal("errorCode")
 	}
 }

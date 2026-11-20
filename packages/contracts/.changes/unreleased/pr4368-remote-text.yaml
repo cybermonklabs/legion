@@ -1,0 +1,23 @@
+kind: Added
+body: |-
+  `@legion/contracts/remote-text` exports `readRemoteText`, `redactRemoteText`, `oneLine` and
+  `WORDS_NOT_READABLE`: the fail-closed rule for a field another party wrote, the TypeScript half
+  of Go's `redact.Remote` and `redact.Field`. A field prints with each URL's user information and
+  each query and fragment value removed only when the rule can read every URL in it, and as
+  `WORDS_NOT_READABLE` otherwise, which includes a URL or a key's `user:secret@` that whitespace
+  splits: the field is read again with its whitespace removed, and every `?`, `#`, `@` and key's
+  `=` after a URL start must lie inside a URL the first reading read as clean. A bare
+  `label: secret@host`, with no key before it, and the same in a JSON member, print. Both halves
+  replay the fixture at
+  `packages/envoy/internal/redact/testdata/remote.json`. `RemoteText` holds such a field in a
+  private field and prints it, in a message, `JSON.stringify` and an inspection, only as
+  `redactRemoteText` reads it, as Go's `redact.RemoteText` does, and answers no text: it compares
+  (`equals`, `equalsIgnoringCase`, `startsWith`, `isEmpty`) and parses a time (`date`). It also
+  exports `tokens`, Go's `redact.Tokens` (both replay `testdata/tokens.json`), and `refusalFetch`,
+  the fetch every openid-client call is handed: it records the credentials each refused request
+  carried, every value under a name `public-request-names.ts` does not declare public, and changes
+  no answer, and a `LibraryError` prints the error's words with them redacted while its code
+  compares as the answer gave it.
+time: 2026-11-18T05:15:23Z
+custom:
+    Issue: pr4368

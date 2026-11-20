@@ -1,0 +1,1277 @@
+{
+  "about": "Remote fields another party wrote, each with the result of the rule (redact.Remote in Go, readRemoteText in packages/contracts/src/remote-text.ts). A readable row prints as its printed; a row that is not readable prints as the not-readable marker. Every row comes in its raw form and in its Go-quoted form (-quoted). No printed holds any of its row's secrets; each secret is in its row's field. Every credential here is made up.",
+  "not_readable": "(not printed: the answer's words hold a URL the rule cannot read as clean)",
+  "rows": [
+    {
+      "id": "probe",
+      "category": "probe",
+      "field": "the issuer at https://not-a-secret-user:not-a-secret-password@issuer.example/path?access_token=not-a-secret-token",
+      "readable": true,
+      "printed": "the issuer at https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "probe-quoted",
+      "category": "probe",
+      "field": "\"the issuer at https://not-a-secret-user:not-a-secret-password@issuer.example/path?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "probe-then-words",
+      "category": "text-after-query",
+      "field": "the issuer at https://not-a-secret-user:not-a-secret-password@issuer.example/path?access_token=not-a-secret-token refused the subject token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "probe-then-words-quoted",
+      "category": "text-after-query",
+      "field": "\"the issuer at https://not-a-secret-user:not-a-secret-password@issuer.example/path?access_token=not-a-secret-token refused the subject token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "value-split",
+      "category": "value-split",
+      "field": "refused https://issuer.example/?access_token=prefix not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "value-split-quoted",
+      "category": "value-split",
+      "field": "\"refused https://issuer.example/?access_token=prefix not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "fragment",
+      "category": "fragment",
+      "field": "sign in again at https://issuer.example/callback#access_token=not-a-secret-token\u0026token_type=bearer",
+      "readable": true,
+      "printed": "sign in again at https://issuer.example/callback#access_token=\u0026token_type=",
+      "secrets": ["not-a-secret-token", "bearer"]
+    },
+    {
+      "id": "fragment-quoted",
+      "category": "fragment",
+      "field": "\"sign in again at https://issuer.example/callback#access_token=not-a-secret-token\u0026token_type=bearer\"",
+      "readable": false,
+      "secrets": ["not-a-secret-token", "bearer"]
+    },
+    {
+      "id": "query-and-fragment",
+      "category": "fragment",
+      "field": "https://issuer.example/p?code=not-a-secret-code\u0026state=s#id_token=not-a-secret-token",
+      "readable": true,
+      "printed": "https://issuer.example/p?code=\u0026state=#id_token=",
+      "secrets": ["not-a-secret-code", "not-a-secret-token"]
+    },
+    {
+      "id": "query-and-fragment-quoted",
+      "category": "fragment",
+      "field": "\"https://issuer.example/p?code=not-a-secret-code\u0026state=s#id_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-code", "not-a-secret-token"]
+    },
+    {
+      "id": "scheme-relative",
+      "category": "scheme-relative",
+      "field": "fetch //not-a-secret-user:not-a-secret-password@cdn.example/x?sig=not-a-secret-sig#access_token=not-a-secret-token",
+      "readable": true,
+      "printed": "fetch //cdn.example/x?sig=#access_token=",
+      "secrets": [
+        "not-a-secret-user",
+        "not-a-secret-password",
+        "not-a-secret-sig",
+        "not-a-secret-token"
+      ]
+    },
+    {
+      "id": "scheme-relative-quoted",
+      "category": "scheme-relative",
+      "field": "\"fetch //not-a-secret-user:not-a-secret-password@cdn.example/x?sig=not-a-secret-sig#access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": [
+        "not-a-secret-user",
+        "not-a-secret-password",
+        "not-a-secret-sig",
+        "not-a-secret-token"
+      ]
+    },
+    {
+      "id": "scheme-relative-path",
+      "category": "scheme-relative",
+      "field": "fetch //not-a-secret-user:not-a-secret-password@cdn.example/x failed",
+      "readable": true,
+      "printed": "fetch //cdn.example/x failed",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "scheme-relative-path-quoted",
+      "category": "scheme-relative",
+      "field": "\"fetch //not-a-secret-user:not-a-secret-password@cdn.example/x failed\"",
+      "readable": true,
+      "printed": "\"fetch //cdn.example/x failed\"",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "backslash-scheme",
+      "category": "backslash",
+      "field": "https:\\\\not-a-secret-user:not-a-secret-password@issuer.example\\path?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-scheme-quoted",
+      "category": "backslash",
+      "field": "\"https:\\\\\\\\not-a-secret-user:not-a-secret-password@issuer.example\\\\path?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-relative",
+      "category": "backslash",
+      "field": "see \\\\not-a-secret-user@cdn.example\\y?k=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-relative-quoted",
+      "category": "backslash",
+      "field": "\"see \\\\\\\\not-a-secret-user@cdn.example\\\\y?k=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-mixed",
+      "category": "backslash",
+      "field": "https:/\\not-a-secret-user:not-a-secret-password@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-mixed-quoted",
+      "category": "backslash",
+      "field": "\"https:/\\\\not-a-secret-user:not-a-secret-password@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-json",
+      "category": "backslash",
+      "field": "https:\\/\\/not-a-secret-user:not-a-secret-password@issuer.example\\/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backslash-json-quoted",
+      "category": "backslash",
+      "field": "\"https:\\\\/\\\\/not-a-secret-user:not-a-secret-password@issuer.example\\\\/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "quote-double",
+      "category": "quote",
+      "field": "https://not-a-secret-user:not-a-secret-pass\"not-a-secret-word@issuer.example/path?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": [
+        "not-a-secret-user",
+        "not-a-secret-pass",
+        "not-a-secret-word",
+        "not-a-secret-token"
+      ]
+    },
+    {
+      "id": "quote-double-quoted",
+      "category": "quote",
+      "field": "\"https://not-a-secret-user:not-a-secret-pass\\\"not-a-secret-word@issuer.example/path?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": [
+        "not-a-secret-user",
+        "not-a-secret-pass",
+        "not-a-secret-word",
+        "not-a-secret-token"
+      ]
+    },
+    {
+      "id": "quote-single",
+      "category": "quote",
+      "field": "https://not-a-secret-user:not-a-secret-password'x@issuer.example/?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "quote-single-quoted",
+      "category": "quote",
+      "field": "\"https://not-a-secret-user:not-a-secret-password'x@issuer.example/?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-after-colon",
+      "category": "space",
+      "field": "https://not-a-secret-user: not-a-secret-password@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-after-colon-quoted",
+      "category": "space",
+      "field": "\"https://not-a-secret-user: not-a-secret-password@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-in-host",
+      "category": "space",
+      "field": "https://not-a-secret-user:not-a-secret-password@issuer.exa mple/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-in-host-quoted",
+      "category": "space",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@issuer.exa mple/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-after-equals",
+      "category": "space",
+      "field": "https://issuer.example/p?access_token= not-a-secret-token refused",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "space-after-equals-quoted",
+      "category": "space",
+      "field": "\"https://issuer.example/p?access_token= not-a-secret-token refused\"",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "space-double-split",
+      "category": "space",
+      "field": "https://not-a-secret-u ser: not-a-secret-password@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-u", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "space-double-split-quoted",
+      "category": "space",
+      "field": "\"https://not-a-secret-u ser: not-a-secret-password@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-u", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "tab",
+      "category": "tab",
+      "field": "https://not-a-secret-user:not-a-secret\tpassword@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "password@issuer", "not-a-secret-token"]
+    },
+    {
+      "id": "tab-quoted",
+      "category": "tab",
+      "field": "\"https://not-a-secret-user:not-a-secret\\tpassword@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "password@issuer", "not-a-secret-token"]
+    },
+    {
+      "id": "line-feed-user-info",
+      "category": "line-feed",
+      "field": "https://not-a-secret-user\nnot-a-secret-password@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "line-feed-user-info-quoted",
+      "category": "line-feed",
+      "field": "\"https://not-a-secret-user\\nnot-a-secret-password@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "angle",
+      "category": "angle",
+      "field": "\u003chttps://not-a-secret-user:not-a-secret-password@issuer.example/a?x=not-a-secret-token\u003e",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "angle-quoted",
+      "category": "angle",
+      "field": "\"\u003chttps://not-a-secret-user:not-a-secret-password@issuer.example/a?x=not-a-secret-token\u003e\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backtick",
+      "category": "backtick",
+      "field": "`https://not-a-secret-user:not-a-secret-password@issuer.example/b?x=not-a-secret-token`",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "backtick-quoted",
+      "category": "backtick",
+      "field": "\"`https://not-a-secret-user:not-a-secret-password@issuer.example/b?x=not-a-secret-token`\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-in-run",
+      "category": "percent",
+      "field": "https://not-a-secret-user:not-a-secret%2Dpassword@issuer.example/p?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-in-run-quoted",
+      "category": "percent",
+      "field": "\"https://not-a-secret-user:not-a-secret%2Dpassword@issuer.example/p?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-whole-url",
+      "category": "percent-encoded-url",
+      "field": "https%3A%2F%2Fnot-a-secret-user%3Anot-a-secret-password%40issuer.example%2Fp%3Faccess_token%3Dnot-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-whole-url-quoted",
+      "category": "percent-encoded-url",
+      "field": "\"https%3A%2F%2Fnot-a-secret-user%3Anot-a-secret-password%40issuer.example%2Fp%3Faccess_token%3Dnot-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-whole-url-lower",
+      "category": "percent-encoded-url",
+      "field": "refused: https%3a%2f%2fnot-a-secret-user%3anot-a-secret-password%40issuer.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "percent-whole-url-lower-quoted",
+      "category": "percent-encoded-url",
+      "field": "\"refused: https%3a%2f%2fnot-a-secret-user%3anot-a-secret-password%40issuer.example\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "percent-whole-url-twice",
+      "category": "percent-encoded-twice",
+      "field": "https%253A%252F%252Fnot-a-secret-user%253Anot-a-secret-password%2540issuer.example%252Fp%253Faccess_token%253Dnot-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-whole-url-twice-quoted",
+      "category": "percent-encoded-twice",
+      "field": "\"https%253A%252F%252Fnot-a-secret-user%253Anot-a-secret-password%2540issuer.example%252Fp%253Faccess_token%253Dnot-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "percent-backslash",
+      "category": "percent-encoded-twice",
+      "field": "https:%5C%5Cnot-a-secret-user:not-a-secret-password@issuer.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "percent-backslash-quoted",
+      "category": "percent-encoded-twice",
+      "field": "\"https:%5C%5Cnot-a-secret-user:not-a-secret-password@issuer.example\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "mixed-notation",
+      "category": "mixed-encoding",
+      "field": "https:\\u002F%2Fnot-a-secret-user\\x3Anot-a-secret-password@issuer.example/?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "mixed-notation-quoted",
+      "category": "mixed-encoding",
+      "field": "\"https:\\\\u002F%2Fnot-a-secret-user\\\\x3Anot-a-secret-password@issuer.example/?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "mixed-case",
+      "category": "mixed-encoding",
+      "field": "https%3a%2F\\U002fnot-a-secret-user%3Anot-a-secret-password%40issuer.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "mixed-case-quoted",
+      "category": "mixed-encoding",
+      "field": "\"https%3a%2F\\\\U002fnot-a-secret-user%3Anot-a-secret-password%40issuer.example\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "unicode-escape-at",
+      "category": "unicode-escape",
+      "field": "https://not-a-secret-user:not-a-secret-password\\u0040issuer.example/?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "unicode-escape-at-quoted",
+      "category": "unicode-escape",
+      "field": "\"https://not-a-secret-user:not-a-secret-password\\\\u0040issuer.example/?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "unicode-escape-whole-url",
+      "category": "unicode-escape",
+      "field": "https:\\u002F\\u002Fnot-a-secret-user:not-a-secret-password\\u0040issuer.example\\u003Faccess_token\\u003Dnot-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "unicode-escape-whole-url-quoted",
+      "category": "unicode-escape",
+      "field": "\"https:\\\\u002F\\\\u002Fnot-a-secret-user:not-a-secret-password\\\\u0040issuer.example\\\\u003Faccess_token\\\\u003Dnot-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "hex-escape-whole-url",
+      "category": "hex-escape",
+      "field": "https:\\x2F\\x2Fnot-a-secret-user:not-a-secret-password\\x40issuer.example\\x3Faccess_token\\x3Dnot-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "hex-escape-whole-url-quoted",
+      "category": "hex-escape",
+      "field": "\"https:\\\\x2F\\\\x2Fnot-a-secret-user:not-a-secret-password\\\\x40issuer.example\\\\x3Faccess_token\\\\x3Dnot-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "equals-in-value",
+      "category": "equals-in-token",
+      "field": "https://issuer.example/p?token=bm90LWEtc2VjcmV0LXRva2Vu==",
+      "readable": false,
+      "secrets": ["bm90LWEtc2VjcmV0LXRva2Vu"]
+    },
+    {
+      "id": "equals-in-value-quoted",
+      "category": "equals-in-token",
+      "field": "\"https://issuer.example/p?token=bm90LWEtc2VjcmV0LXRva2Vu==\"",
+      "readable": false,
+      "secrets": ["bm90LWEtc2VjcmV0LXRva2Vu"]
+    },
+    {
+      "id": "equals-in-bare-token",
+      "category": "equals-in-token",
+      "field": "https://issuer.example/p?bm90LWEtc2VjcmV0LXRvaw==",
+      "readable": false,
+      "secrets": ["bm90LWEtc2VjcmV0LXRvaw"]
+    },
+    {
+      "id": "equals-in-bare-token-quoted",
+      "category": "equals-in-token",
+      "field": "\"https://issuer.example/p?bm90LWEtc2VjcmV0LXRvaw==\"",
+      "readable": false,
+      "secrets": ["bm90LWEtc2VjcmV0LXRvaw"]
+    },
+    {
+      "id": "question-in-value",
+      "category": "question-in-token",
+      "field": "https://issuer.example/p?token=prefix?not-a-secret-canary=suffix",
+      "readable": false,
+      "secrets": ["not-a-secret-canary"]
+    },
+    {
+      "id": "question-in-value-quoted",
+      "category": "question-in-token",
+      "field": "\"https://issuer.example/p?token=prefix?not-a-secret-canary=suffix\"",
+      "readable": false,
+      "secrets": ["not-a-secret-canary"]
+    },
+    {
+      "id": "u2028",
+      "category": "line-separator",
+      "field": "https://not-a-secret-user:not-a-secret-password@issuer.example/p\u2028?access_token=not-a-secret-token HTTP 400 invalid_grant",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "u2028-quoted",
+      "category": "line-separator",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@issuer.example/p\\u2028?access_token=not-a-secret-token HTTP 400 invalid_grant\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "u2029",
+      "category": "line-separator",
+      "field": "https://not-a-secret-user:not-a-secret-password@issuer.example/p\u2029#access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "u2029-quoted",
+      "category": "line-separator",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@issuer.example/p\\u2029#access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "control",
+      "category": "control",
+      "field": "https://not-a-secret-user:not-a-secret-password@issuer.example/p\u001b[31m?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "control-quoted",
+      "category": "control",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@issuer.example/p\\x1b[31m?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "split-query",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/x y ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-user-info-after-scheme",
+      "category": "whitespace-split",
+      "field": "fetch https :// not-a-secret-user: not-a-secret-password@host/x",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-after-equals",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-password@host",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-inside-slashes",
+      "category": "whitespace-split",
+      "field": "see https:/ /idp.example/cb?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-scheme-separator-twice",
+      "category": "whitespace-split",
+      "field": "https: / /idp.example/cb?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon",
+      "category": "whitespace-split",
+      "field": "see https ://idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-colon-gap",
+      "category": "whitespace-split",
+      "field": "fetch https :// idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon-fragment",
+      "category": "whitespace-split",
+      "field": "sign in at https ://idp.example/cb#access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-before-colon-backslashes",
+      "category": "whitespace-split",
+      "field": "fetch https :\\\\idp.example/cb?code=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-bare-query-segment",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x ?not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-bare-fragment-segment",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x #not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-relative-bare-segment",
+      "category": "whitespace-split",
+      "field": "fetch //cdn.example/cb x ?not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-quote-before-query",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x '?session=not-a-secret-token'",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-double-quote-before-query",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb x \"?session=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "split-user-info-password-equals",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-pa=ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-pa=ss"]
+    },
+    {
+      "id": "split-user-info-password-ampersand",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-p&ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-p&ss"]
+    },
+    {
+      "id": "split-user-info-password-comma",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-pa,ss@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-pa,ss"]
+    },
+    {
+      "id": "split-user-info-quoted-key",
+      "category": "whitespace-split",
+      "field": "proxy=\"not-a-secret-user: not-a-secret-password@idp.example\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-single-quoted-key",
+      "category": "whitespace-split",
+      "field": "proxy='not-a-secret-user: not-a-secret-password@idp.example'",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-spaced-key",
+      "category": "whitespace-split",
+      "field": "upstream proxy = \"not-a-secret-user: not-a-secret-password@idp.example\" refused",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-underscore-host",
+      "category": "whitespace-split",
+      "field": "proxy=not-a-secret-user: not-a-secret-password@_idp.internal",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-between-apostrophe",
+      "category": "whitespace-split",
+      "field": "https://status.example/ isn't up; retry https://idp.example/x y ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-non-ascii-letter",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb café x ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-percent",
+      "category": "whitespace-split",
+      "field": "https://idp.example/cb 100% x ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-em-dash",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb — then ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-em-dash-fragment",
+      "category": "whitespace-split",
+      "field": "sign in at https://idp.example/cb — then #access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-no-break-space",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb x y ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-curly-quotes",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb “then” ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-backtick",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb then `?session=not-a-secret-token`",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-angle",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb then <?session=not-a-secret-token>",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-backslash",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb x\\y ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-between-control-byte",
+      "category": "whitespace-split",
+      "field": "see https://idp.example/cb x\u0001 ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-closing-quote-after-url",
+      "category": "whitespace-split",
+      "field": "see 'https://idp.example/cb' then ?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-second-url-split",
+      "category": "whitespace-split",
+      "field": "see https://a.example/ — https:/ /b.example/cb?session=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-second-url-split-fragment",
+      "category": "whitespace-split",
+      "field": "see https://a.example/ — https:/ /b.example/cb#access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "marker-key-lead-bracket",
+      "category": "whitespace-split",
+      "field": "proxy=[not-a-secret-user: not-a-secret-password@proxy.example]",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-key-lead-angle",
+      "category": "whitespace-split",
+      "field": "proxy=<not-a-secret-user: not-a-secret-password@proxy.example>",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-key-lead-brace",
+      "category": "whitespace-split",
+      "field": "proxy={not-a-secret-user: not-a-secret-password@proxy.example}",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-key-lead-backtick",
+      "category": "whitespace-split",
+      "field": "proxy=`not-a-secret-user: not-a-secret-password@proxy.example`",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-key-lead-paren-quote",
+      "category": "whitespace-split",
+      "field": "proxy=(\"not-a-secret-user: not-a-secret-password@proxy.example\")",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "marker-apostrophe-then-key-user-info",
+      "category": "whitespace-split",
+      "field": "https://a.example/ isn't proxy=not-a-secret-user: not-a-secret-password@proxy.example",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "split-user-info-bare",
+      "category": "known-residual",
+      "field": "not-a-secret-user: not-a-secret-password@10.0.0.5:443",
+      "readable": true,
+      "printed": "not-a-secret-user: not-a-secret-password@10.0.0.5:443",
+      "secrets": []
+    },
+    {
+      "id": "split-user-info-json-key",
+      "category": "known-residual",
+      "field": "{\"proxy\":\"not-a-secret-user: not-a-secret-password@idp.example\"}",
+      "readable": true,
+      "printed": "{\"proxy\":\"not-a-secret-user: not-a-secret-password@idp.example\"}",
+      "secrets": []
+    },
+    {
+      "id": "split-user-info-no-at",
+      "category": "whitespace-split",
+      "field": "https://not-a-secret-user: not-a-secret-password/x",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "non-ascii",
+      "category": "non-ascii",
+      "field": "https://not-a-secret-user:not-a-secret-password@issuer.example/café?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "non-ascii-quoted",
+      "category": "non-ascii",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@issuer.example/café?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "at-after-authority",
+      "category": "at-after-authority",
+      "field": "https://issuer.example/@not-a-secret-user/x?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "at-after-authority-quoted",
+      "category": "at-after-authority",
+      "field": "\"https://issuer.example/@not-a-secret-user/x?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-token"]
+    },
+    {
+      "id": "two-at",
+      "category": "two-at",
+      "field": "https://not-a-secret-user:not-a-secret-p@ss@issuer.example/path",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-p", "ss@issuer"]
+    },
+    {
+      "id": "two-at-quoted",
+      "category": "two-at",
+      "field": "\"https://not-a-secret-user:not-a-secret-p@ss@issuer.example/path\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-p", "ss@issuer"]
+    },
+    {
+      "id": "port-not-digits",
+      "category": "port-not-digits",
+      "field": "https://not-a-secret-user:not-a-secret-password/x?access_token=not-a-secret-token",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "port-not-digits-quoted",
+      "category": "port-not-digits",
+      "field": "\"https://not-a-secret-user:not-a-secret-password/x?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "authority-without-slashes",
+      "category": "authority-without-slashes",
+      "field": "dial tcp not-a-secret-user:not-a-secret-password@10.0.0.5:443: connection refused",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "authority-without-slashes-quoted",
+      "category": "authority-without-slashes",
+      "field": "\"dial tcp not-a-secret-user:not-a-secret-password@10.0.0.5:443: connection refused\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "proxy-setting",
+      "category": "authority-without-slashes",
+      "field": "proxy=not-a-secret-user:not-a-secret-password@proxy.example refused",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "proxy-setting-quoted",
+      "category": "authority-without-slashes",
+      "field": "\"proxy=not-a-secret-user:not-a-secret-password@proxy.example refused\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "colon-at-before-relative-start",
+      "category": "colon-at-before-start",
+      "field": "via not-a-secret-user:not-a-secret-password@//proxy.example/x",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "colon-at-before-relative-start-quoted",
+      "category": "colon-at-before-start",
+      "field": "\"via not-a-secret-user:not-a-secret-password@//proxy.example/x\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "colon-at-before-scheme-start",
+      "category": "colon-at-before-start",
+      "field": "via not-a-secret-user:not-a-secret-password@https://proxy.example/x",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "colon-at-before-scheme-start-quoted",
+      "category": "colon-at-before-start",
+      "field": "\"via not-a-secret-user:not-a-secret-password@https://proxy.example/x\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "at-after-url",
+      "category": "at-after-url",
+      "field": "see https://issuer.example/x and ask not-a-secret-user@example.com",
+      "readable": false,
+      "secrets": ["not-a-secret-user"]
+    },
+    {
+      "id": "at-after-url-quoted",
+      "category": "at-after-url",
+      "field": "\"see https://issuer.example/x and ask not-a-secret-user@example.com\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user"]
+    },
+    {
+      "id": "at-in-later-url",
+      "category": "at-after-url",
+      "field": "from https://a.example/x to https://not-a-secret-user:not-a-secret-password@b.example/y",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "at-in-later-url-quoted",
+      "category": "at-after-url",
+      "field": "\"from https://a.example/x to https://not-a-secret-user:not-a-secret-password@b.example/y\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "trailing-punctuation",
+      "category": "trailing-punctuation",
+      "field": "(see https://not-a-secret-user:not-a-secret-password@issuer.example/x).",
+      "readable": true,
+      "printed": "(see https://issuer.example/x).",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "trailing-punctuation-quoted",
+      "category": "trailing-punctuation",
+      "field": "\"(see https://not-a-secret-user:not-a-secret-password@issuer.example/x).\"",
+      "readable": true,
+      "printed": "\"(see https://issuer.example/x).\"",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "trailing-punctuation-in-value",
+      "category": "trailing-punctuation-in-value",
+      "field": "(see https://not-a-secret-user:not-a-secret-password@issuer.example/x?access_token=not-a-secret-token).",
+      "readable": true,
+      "printed": "(see https://issuer.example/x?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "trailing-punctuation-in-value-quoted",
+      "category": "trailing-punctuation-in-value",
+      "field": "\"(see https://not-a-secret-user:not-a-secret-password@issuer.example/x?access_token=not-a-secret-token).\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "json-body",
+      "category": "json-body",
+      "field": "{\"message\":\"https://not-a-secret-user:not-a-secret-password@issuer.example/p?token=not-a-secret-token\"}",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "json-body-quoted",
+      "category": "json-body",
+      "field": "\"{\\\"message\\\":\\\"https://not-a-secret-user:not-a-secret-password@issuer.example/p?token=not-a-secret-token\\\"}\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "two-urls",
+      "category": "two-urls",
+      "field": "from https://not-a-secret-user:not-a-secret-password@a.example/x to https://b.example/y?access_token=not-a-secret-token",
+      "readable": true,
+      "printed": "from https://a.example/x to https://b.example/y?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "two-urls-quoted",
+      "category": "two-urls",
+      "field": "\"from https://not-a-secret-user:not-a-secret-password@a.example/x to https://b.example/y?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "bare-fragment",
+      "category": "bare-segment",
+      "field": "see https://docs.github.com/rest/commits#get-a-commit",
+      "readable": true,
+      "printed": "see https://docs.github.com/rest/commits#",
+      "secrets": []
+    },
+    {
+      "id": "bare-fragment-quoted",
+      "category": "bare-segment",
+      "field": "\"see https://docs.github.com/rest/commits#get-a-commit\"",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "bare-query",
+      "category": "bare-segment",
+      "field": "https://issuer.example/p?not-a-secret-bare\u0026a=1",
+      "readable": true,
+      "printed": "https://issuer.example/p?\u0026a=",
+      "secrets": ["not-a-secret-bare"]
+    },
+    {
+      "id": "bare-query-quoted",
+      "category": "bare-segment",
+      "field": "\"https://issuer.example/p?not-a-secret-bare\u0026a=1\"",
+      "readable": false,
+      "secrets": ["not-a-secret-bare"]
+    },
+    {
+      "id": "ipv6",
+      "category": "ipv6",
+      "field": "https://not-a-secret-user:not-a-secret-password@[::1]:8443/x?access_token=not-a-secret-token",
+      "readable": true,
+      "printed": "https://[::1]:8443/x?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "ipv6-quoted",
+      "category": "ipv6",
+      "field": "\"https://not-a-secret-user:not-a-secret-password@[::1]:8443/x?access_token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "scheme-case",
+      "category": "scheme-case",
+      "field": "HTTPS://not-a-secret-user:not-a-secret-password@Issuer.Example/Path?Access_Token=not-a-secret-token",
+      "readable": true,
+      "printed": "HTTPS://Issuer.Example/Path?Access_Token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "scheme-case-quoted",
+      "category": "scheme-case",
+      "field": "\"HTTPS://not-a-secret-user:not-a-secret-password@Issuer.Example/Path?Access_Token=not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "other-scheme",
+      "category": "other-scheme",
+      "field": "dial postgres://not-a-secret-user:not-a-secret-password@db.example:5432/app?sslmode=require\u0026password=not-a-secret-db-password",
+      "readable": true,
+      "printed": "dial postgres://db.example:5432/app?sslmode=\u0026password=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-db-password"]
+    },
+    {
+      "id": "other-scheme-quoted",
+      "category": "other-scheme",
+      "field": "\"dial postgres://not-a-secret-user:not-a-secret-password@db.example:5432/app?sslmode=require\u0026password=not-a-secret-db-password\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-db-password"]
+    },
+    {
+      "id": "user-only",
+      "category": "user-only",
+      "field": "https://not-a-secret-user-token@issuer.example/path",
+      "readable": true,
+      "printed": "https://issuer.example/path",
+      "secrets": ["not-a-secret-user-token"]
+    },
+    {
+      "id": "user-only-quoted",
+      "category": "user-only",
+      "field": "\"https://not-a-secret-user-token@issuer.example/path\"",
+      "readable": true,
+      "printed": "\"https://issuer.example/path\"",
+      "secrets": ["not-a-secret-user-token"]
+    },
+    {
+      "id": "r4-no-url",
+      "category": "r4-no-url",
+      "field": "HTTP 400 invalid_grant: no entry lists this account",
+      "readable": true,
+      "printed": "HTTP 400 invalid_grant: no entry lists this account",
+      "secrets": []
+    },
+    {
+      "id": "r4-no-url-quoted",
+      "category": "r4-no-url",
+      "field": "\"HTTP 400 invalid_grant: no entry lists this account\"",
+      "readable": true,
+      "printed": "\"HTTP 400 invalid_grant: no entry lists this account\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-clean-url",
+      "category": "r4-clean-url",
+      "field": "see https://issuer.example/path/to-the_doc.html for help",
+      "readable": true,
+      "printed": "see https://issuer.example/path/to-the_doc.html for help",
+      "secrets": []
+    },
+    {
+      "id": "r4-clean-url-quoted",
+      "category": "r4-clean-url",
+      "field": "\"see https://issuer.example/path/to-the_doc.html for help\"",
+      "readable": true,
+      "printed": "\"see https://issuer.example/path/to-the_doc.html for help\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-prose-after-url",
+      "category": "r4-prose-after-url",
+      "field": "the broker at https://broker.example/v1 refused the token; retry in a minute",
+      "readable": true,
+      "printed": "the broker at https://broker.example/v1 refused the token; retry in a minute",
+      "secrets": []
+    },
+    {
+      "id": "r4-prose-after-url-quoted",
+      "category": "r4-prose-after-url",
+      "field": "\"the broker at https://broker.example/v1 refused the token; retry in a minute\"",
+      "readable": true,
+      "printed": "\"the broker at https://broker.example/v1 refused the token; retry in a minute\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-percent",
+      "category": "r4-percent",
+      "field": "100% of the quota is used",
+      "readable": true,
+      "printed": "100% of the quota is used",
+      "secrets": []
+    },
+    {
+      "id": "r4-percent-quoted",
+      "category": "r4-percent",
+      "field": "\"100% of the quota is used\"",
+      "readable": true,
+      "printed": "\"100% of the quota is used\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-email-without-url",
+      "category": "r4-email-without-url",
+      "field": "the session belongs to ada@example.com",
+      "readable": true,
+      "printed": "the session belongs to ada@example.com",
+      "secrets": []
+    },
+    {
+      "id": "r4-email-without-url-quoted",
+      "category": "r4-email-without-url",
+      "field": "\"the session belongs to ada@example.com\"",
+      "readable": true,
+      "printed": "\"the session belongs to ada@example.com\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-not-a-url",
+      "category": "r4-not-a-url",
+      "field": "C:/Windows, ratio 3:// and a/b//c",
+      "readable": true,
+      "printed": "C:/Windows, ratio 3:// and a/b//c",
+      "secrets": []
+    },
+    {
+      "id": "r4-not-a-url-quoted",
+      "category": "r4-not-a-url",
+      "field": "\"C:/Windows, ratio 3:// and a/b//c\"",
+      "readable": true,
+      "printed": "\"C:/Windows, ratio 3:// and a/b//c\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-empty",
+      "category": "r4-empty",
+      "field": "",
+      "readable": true,
+      "printed": "",
+      "secrets": []
+    },
+    {
+      "id": "r4-empty-quoted",
+      "category": "r4-empty",
+      "field": "\"\"",
+      "readable": true,
+      "printed": "\"\"",
+      "secrets": []
+    },
+    {
+      "id": "r4-unreadable-clean",
+      "category": "r4-unreadable-clean",
+      "field": "{\"a\":\"https://issuer.example/x\",\"b\":\"c\"}",
+      "readable": false,
+      "secrets": []
+    },
+    {
+      "id": "r4-unreadable-clean-quoted",
+      "category": "r4-unreadable-clean",
+      "field": "\"{\\\"a\\\":\\\"https://issuer.example/x\\\",\\\"b\\\":\\\"c\\\"}\"",
+      "readable": false,
+      "secrets": []
+    }
+  ]
+}

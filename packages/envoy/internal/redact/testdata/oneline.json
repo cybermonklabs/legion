@@ -1,0 +1,28 @@
+{
+  "about": "Go's redact.OneLine and TypeScript's oneLine (packages/contracts/src/remote-text.ts) of each text: the text as it came where it holds no control character, and otherwise strconv.Quote of it. oneline_test.go and remote-text-oneline.test.ts each read every row.",
+  "rows": [
+    { "id": "plain", "text": "refused: try again", "quoted": "refused: try again" },
+    { "id": "line-separator-alone", "text": "line\u2028here", "quoted": "line\u2028here" },
+    { "id": "del", "text": "refused\u007f", "quoted": "\"refused\\x7f\"" },
+    { "id": "c1-next-line", "text": "refused\u0085", "quoted": "\"refused\\u0085\"" },
+    { "id": "c1-control-sequence", "text": "\u009b2Jcleared", "quoted": "\"\\u009b2Jcleared\"" },
+    {
+      "id": "line-separator",
+      "text": "line\nbreak\u2028here",
+      "quoted": "\"line\\nbreak\\u2028here\""
+    },
+    { "id": "paragraph-separator", "text": "a\tb\u2029c", "quoted": "\"a\\tb\\u2029c\"" },
+    { "id": "vertical-tab", "text": "\u000bx", "quoted": "\"\\vx\"" },
+    { "id": "escape", "text": "\u001b[31mred", "quoted": "\"\\x1b[31mred\"" },
+    { "id": "nul", "text": "\u0000x", "quoted": "\"\\x00x\"" },
+    { "id": "bell-and-backspace", "text": "\u0007\b", "quoted": "\"\\a\\b\"" },
+    {
+      "id": "format-characters",
+      "text": "\r\u00ad\ufeff\u200b",
+      "quoted": "\"\\r\\u00ad\\ufeff\\u200b\""
+    },
+    { "id": "quote-and-backslash", "text": "\n\"\\", "quoted": "\"\\n\\\"\\\\\"" },
+    { "id": "astral", "text": "\n\ud83d\ude00", "quoted": "\"\\n\ud83d\ude00\"" },
+    { "id": "non-ascii", "text": "\ncafé", "quoted": "\"\\ncafé\"" }
+  ]
+}

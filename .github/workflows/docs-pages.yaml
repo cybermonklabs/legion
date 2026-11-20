@@ -141,6 +141,7 @@ on:
       - 'packages/envoy/listenerwire/*'
       - 'packages/envoy/listenfd/*'
       - 'packages/envoy/migrationid/*'
+      - 'packages/envoy/oauth2call/*'
       - 'packages/envoy/roleholder/*'
       - 'packages/envoy/sessiontiming/*'
       - 'packages/envoy/subjectforms/*'

@@ -259,10 +259,10 @@ func TestTheTextOfA2xxAnswerLeavesItsBodyOut(t *testing.T) {
 		{name: "StatusText of a 200 with data", text: githubapp.StatusText(http.StatusOK, data), want: "status 200"},
 		{name: "StatusText of a 201 with data, as bytes", text: githubapp.StatusText(http.StatusCreated, []byte(data)), want: "status 201"},
 		{name: "StatusText of a 204 with a body", text: githubapp.StatusText(http.StatusNoContent, data), want: "status 204"},
-		{name: "StatusError of a 200 with data", text: (&githubapp.StatusError{Status: http.StatusOK, Body: data}).Error(), want: "status 200"},
-		{name: "StatusError of a 202 with data", text: (&githubapp.StatusError{Status: http.StatusAccepted, Body: data}).Error(), want: "status 202"},
+		{name: "StatusError of a 200 with data", text: githubapp.NewStatusError(http.StatusOK, []byte(data)).Error(), want: "status 200"},
+		{name: "StatusError of a 202 with data", text: githubapp.NewStatusError(http.StatusAccepted, []byte(data)).Error(), want: "status 202"},
 		{name: "StatusText of a refusal", text: githubapp.StatusText(http.StatusNotFound, `{"message":"Not Found"}`), want: `status 404: {"message":"Not Found"}`},
-		{name: "StatusError of a failure", text: (&githubapp.StatusError{Status: http.StatusInternalServerError, Body: `{"message":"Server Error"}`}).Error(), want: `status 500: {"message":"Server Error"}`},
+		{name: "StatusError of a failure", text: githubapp.NewStatusError(http.StatusInternalServerError, []byte(`{"message":"Server Error"}`)).Error(), want: `status 500: {"message":"Server Error"}`},
 		{name: "StatusText of a refusal with no body", text: githubapp.StatusText(http.StatusConflict, ""), want: "status 409"},
 	}
 	for _, row := range rows {

@@ -14,6 +14,8 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // googleIAMCredentialsURL is the IAM Service Account Credentials API, which mints an access token
@@ -117,8 +119,9 @@ func (m *GoogleServiceAccount) ownSource(ctx context.Context) (oauth2.TokenSourc
 	// The default credentials are found with a context detached from the request's cancellation
 	// (its values are kept): x/oauth2's refresher holds on to the context its source was built
 	// with, so a source built from one request's context would fail every refresh once that
-	// request ended. Their error is dropped: it names the file or metadata server it tried.
-	source, err := google.DefaultTokenSource(context.WithoutCancel(ctx), googleCloudPlatformScope)
+	// request ended. The text-only library call and the source it returns share a record scope.
+	s := redact.Scope[oauth2.TokenSource](context.WithoutCancel(ctx))
+	source, err := redact.OAuth2(s.Read(google.DefaultTokenSource(s.Context(), googleCloudPlatformScope)))
 	if err != nil {
 		return nil, fmt.Errorf("%w: the broker found no Google credentials of its own", ErrMintUpstream)
 	}
@@ -179,7 +182,7 @@ func (m *GoogleServiceAccount) Mint(ctx context.Context, req MintRequest) (Minte
 		return Minted{}, err
 	}
 	// A token source's error can quote the credential it read, so only its class is reported.
-	own, err := source.Token()
+	own, err := redact.OAuth2(source.Token())
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: the broker's own Google credentials gave no token", ErrMintUpstream)
 	}

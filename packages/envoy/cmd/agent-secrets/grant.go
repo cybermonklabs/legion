@@ -177,7 +177,7 @@ func grantRevokeInSession(form, grantID string, stdout, stderr io.Writer) int {
 	case err == nil:
 		fmt.Fprintf(stdout, "revoked %s at %s\n", grantID, brokerSource(c.baseURL))
 		return 0
-	case errors.As(err, &broker) && broker.Code == "NOT_YOURS":
+	case errors.As(err, &broker) && broker.hasCode("NOT_YOURS"):
 		fmt.Fprintf(stderr, "%s: grant %s was given to another broker identity (enrollment) than the one this process signs as; its holder ends it, or its operator from their own shell (agent-secrets grant revoke %s), or its approver on Dispatch's Live grants page\n", prefix, grantID, grantID)
 		return 1
 	default:
