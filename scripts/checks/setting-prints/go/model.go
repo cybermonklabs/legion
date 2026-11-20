@@ -12,7 +12,7 @@ import (
 )
 
 type label struct {
-	kind    string // "source", "written", "function" or "environment function"
+	kind    string // "source", "written", "function", "environment function", "param", "chain" or "type"
 	keyed   bool   // a source: the environment as a whole, which a constant key names more closely
 	what    string // a source: what it reads, and where
 	how     string // a written line: what writes the value into text
@@ -20,9 +20,14 @@ type label struct {
 	line    int
 	expr    string
 	sources map[int]bool
-	leading map[int]bool // a written line: the settings written at the head of its text
-	ends    map[string]bool
-	fn      any // a function: its *types.Func or *ast.FuncLit
+	leading map[int]bool    // a written line: the settings written at the head of its text
+	ends    map[string]bool // a written line or a chain: where its text is printed
+	fn      any             // a function: its *types.Func or *ast.FuncLit; a parameter or a chain: the function it is of
+	index   int             // a parameter or a chain: its place, -1 for a method's receiver
+	param   *types.Var
+	written bool         // a parameter: as the lines of its function write it into text
+	edges   map[int]bool // a chain: the lines of its function that write its parameter, and the chains of the calls that hand it on
+	typ     *types.Named // a type: the type of the module a value was made as, which a call of an interface method dispatches on
 }
 
 type set map[int]bool
@@ -54,25 +59,34 @@ func union(sets ...set) set {
 	return first
 }
 
+// analysis is one run of the search. It reads the module twice over, grown together to a fixed
+// point, as the TypeScript half does: the symbolic reading reads each function with its parameters
+// as themselves, so a function's answer is a summary (returns) that each call fills in with its own
+// arguments; the concrete reading hands each parameter what every call hands it, and is what the
+// lines that print read. A field and a variable of a package hold what the concrete reading wrote.
 type analysis struct {
-	root    string
-	fset    *token.FileSet
-	info    *types.Info
-	text    map[string][]byte
-	bodies  map[*types.Func]*ast.FuncDecl
-	labels  []*label
-	ids     map[string]int
-	carried map[any]set
-	changed bool
-	memo    map[ast.Expr]set
-	collect bool
-	report  map[string]bool
-	read    map[string]bool // the import paths of the packages read from source
-	module  string          // the module's path
-	urls    map[int]bool    // the sources whose value reaches a URL taker
-	sites   map[*types.Var]map[token.Pos]*site
-	lits    []span // every function literal
-	blocks  []span // every block and case body
+	root       string
+	fset       *token.FileSet
+	info       *types.Info
+	text       map[string][]byte
+	bodies     map[*types.Func]*ast.FuncDecl
+	labels     []*label
+	ids        map[string]int
+	carried    map[any]set // the concrete reading's
+	symCarried map[any]set // the symbolic reading's, of the variables of a function
+	returns    map[any]set // each function's answer, as the symbolic reading reads it
+	symbolic   bool
+	changed    bool
+	memo       map[ast.Expr]set
+	collect    bool
+	report     map[string]bool
+	read       map[string]bool // the import paths of the packages read from source
+	urls       map[int]bool    // the sources whose value reaches a URL taker
+	sites      map[*types.Var]map[token.Pos]*site
+	symSites   map[*types.Var]map[token.Pos]*site
+	lits       []span                 // every function literal of the unit
+	blocks     []span                 // every block and case body of the unit
+	impls      map[[2]any]*types.Func // the method a call of each interface method runs for each type its receiver holds
 }
 
 // site is one assignment of a variable of a function: the block it stands in, and what it put.
@@ -109,6 +123,55 @@ func (a *analysis) fnLabel(kind string, fn any) set {
 	return set{a.intern(fmt.Sprintf("f %p %s", fn, kind), func() *label { return &label{kind: kind, fn: fn} }): true}
 }
 
+// typeLabel is the label a value made as t carries (a composite literal of t, &t{}, new(t)), when t
+// is a type a package of the module declares: a call of an interface method on that value runs t's
+// method (implementations).
+func (a *analysis) typeLabel(t types.Type) set {
+	if p, ok := t.(*types.Pointer); ok {
+		t = p.Elem()
+	}
+	named, ok := t.(*types.Named)
+	if !ok || !a.read[packagePath(named.Obj())] || types.IsInterface(named) {
+		return nil
+	}
+	named = named.Origin()
+	return set{a.intern(fmt.Sprintf("t %p", named), func() *label { return &label{kind: "type", typ: named} }): true}
+}
+
+// paramLabel is the parameter v of fn (index -1 for a method's receiver) as the symbolic reading
+// reads it, or, written, as the lines of fn write it into the answer: a call fills either in with
+// what it hands that parameter.
+func (a *analysis) paramLabel(fn any, index int, v *types.Var, written bool) int {
+	return a.intern(fmt.Sprintf("p %p %d %t", fn, index, written), func() *label {
+		return &label{kind: "param", fn: fn, index: index, param: v, written: written}
+	})
+}
+
+// chainLabel is the text the lines of fn write its parameter index into, as a call's answer
+// holds it once that call handed the parameter a setting: each line of fn that writes the
+// parameter, and each call of fn that hands it on to a function whose lines write it, is an edge,
+// and a print of the chain is a print of each line it reaches (chainEnds).
+func (a *analysis) chainLabel(fn any, index int) int {
+	return a.intern(fmt.Sprintf("c %p %d", fn, index), func() *label {
+		return &label{kind: "chain", fn: fn, index: index, edges: map[int]bool{}, ends: map[string]bool{}}
+	})
+}
+
+// edge adds to the chain from the edge to the line or chain to.
+func (a *analysis) edge(from, to int) {
+	if l := a.labels[from]; !l.edges[to] {
+		l.edges[to] = true
+		a.changed = true
+	}
+}
+
+// unwritten reports whether id is a setting a value holds as read, not yet written into text by a
+// line, or in the symbolic reading such a parameter.
+func (a *analysis) unwritten(id int) bool {
+	l := a.labels[id]
+	return l.kind == "source" || (a.symbolic && l.kind == "param" && !l.written)
+}
+
 func (a *analysis) exprText(n ast.Node) string {
 	start, end := a.fset.Position(n.Pos()), a.fset.Position(n.End())
 	src := a.text[start.Filename]
@@ -120,15 +183,6 @@ func (a *analysis) exprText(n ast.Node) string {
 		text = text[:160]
 	}
 	return text
-}
-
-func (a *analysis) carries(s set) bool {
-	for id := range s {
-		if a.labels[id].kind == "source" {
-			return true
-		}
-	}
-	return false
 }
 
 // settingsIn are the settings a value carries: each it holds as read, and each that a line wrote
@@ -156,42 +210,113 @@ func (a *analysis) settingsIn(s set) []int {
 	return out
 }
 
-// write is the value at n written into text by how. When the value holds a setting as read, the
-// line is labelled, and the text it makes carries that label in place of the setting: a line that
-// writes that text again is not a second line that writes the setting.
-func (a *analysis) write(n ast.Node, how string, value set) set {
-	if !a.carries(value) {
+// write is the value at n written into text by how (at the head of the text when atHead, where a
+// URL's scheme and host stand: the left operand of a string +). When the value holds a setting as
+// read, the line is labelled, and the text it makes carries that label in place of the setting: a
+// line that writes that text again is not a second line that writes the setting. A parameter of
+// the symbolic reading becomes that parameter written, and the line an edge of its chain: a call
+// that hands the parameter a setting answers with the chain (writtenAt), so a print of that answer
+// is a print of this line. The line names every setting any call hands the parameter, as the
+// concrete reading reads it.
+func (a *analysis) write(n ast.Node, how string, value set, atHead bool) set {
+	var read []int
+	for id := range value {
+		if a.unwritten(id) {
+			read = append(read, id)
+		}
+	}
+	if len(read) == 0 {
 		return value
 	}
 	file, line := a.position(n)
 	id := a.intern(fmt.Sprintf("w %s %d %s", file, a.fset.Position(n.Pos()).Offset, how), func() *label {
 		return &label{kind: "written", how: how, file: file, line: line, expr: a.exprText(n), sources: map[int]bool{}, leading: map[int]bool{}, ends: map[string]bool{}}
 	})
-	out := set{id: true}
-	for s := range value {
-		if a.labels[s].kind == "source" {
-			a.labels[id].sources[s] = true
-		} else {
-			out[s] = true
+	labelled := a.labels[id]
+	out := make(set, len(value)+1)
+	for each := range value {
+		out[each] = true
+	}
+	for _, each := range read {
+		delete(out, each)
+		switch l := a.labels[each]; l.kind {
+		case "source":
+			labelled.sources[each] = true
+			if atHead {
+				labelled.leading[each] = true
+			}
+		case "param":
+			out[a.paramLabel(l.fn, l.index, l.param, true)] = true
+			a.edge(a.chainLabel(l.fn, l.index), id)
+		}
+	}
+	out[id] = true
+	return out
+}
+
+// writtenAt is what value, an argument a call hands the written parameter of fn at index, holds
+// once the lines of fn wrote it: where it holds a setting as read, the chain of that parameter in
+// place of the setting; where, in the symbolic reading, it holds a parameter of the caller, that
+// parameter written, its chain handing on to this one; and the value itself otherwise.
+func (a *analysis) writtenAt(fn any, index int, value set) set {
+	var read []int
+	for id := range value {
+		if a.unwritten(id) {
+			read = append(read, id)
+		}
+	}
+	if len(read) == 0 {
+		return value
+	}
+	chain := a.chainLabel(fn, index)
+	out := make(set, len(value)+1)
+	for each := range value {
+		out[each] = true
+	}
+	for _, each := range read {
+		delete(out, each)
+		switch l := a.labels[each]; l.kind {
+		case "source":
+			out[chain] = true
+		case "param":
+			out[a.paramLabel(l.fn, l.index, l.param, true)] = true
+			a.edge(a.chainLabel(l.fn, l.index), chain)
 		}
 	}
 	return out
 }
 
-// writeHead is write for a value written at the head of the text, where a URL's scheme and host
-// stand: the left operand of a string +.
-func (a *analysis) writeHead(n ast.Node, how string, value set) set {
-	out := a.write(n, how, value)
-	for id := range out {
-		if l := a.labels[id]; l.kind == "written" && !value[id] {
-			for s := range value {
-				if a.labels[s].kind == "source" {
-					l.leading[s] = true
+// chainEnds gives each line every place its chains are printed: a print of a chain is a print of
+// each line it reaches through its edges.
+func (a *analysis) chainEnds() {
+	for _, l := range a.labels {
+		if l.kind != "chain" || len(l.ends) == 0 {
+			continue
+		}
+		seen := map[int]bool{}
+		stack := make([]int, 0, len(l.edges))
+		for to := range l.edges {
+			stack = append(stack, to)
+		}
+		for len(stack) > 0 {
+			id := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			target := a.labels[id]
+			if target.kind == "written" {
+				for e := range l.ends {
+					target.ends[e] = true
 				}
+				continue
+			}
+			for to := range target.edges {
+				stack = append(stack, to)
 			}
 		}
 	}
-	return out
 }
 
 // leadingIn are the settings a value holds as read, and those a line wrote at the head of its text.
@@ -210,14 +335,16 @@ func (a *analysis) leadingIn(s set) []int {
 	return out
 }
 
-func (a *analysis) grow(key any, value set) {
+func (a *analysis) grow(key any, value set) { a.growIn(a.carried, key, value) }
+
+func (a *analysis) growIn(m map[any]set, key any, value set) {
 	if len(value) == 0 || key == nil {
 		return
 	}
-	held := a.carried[key]
+	held := m[key]
 	if held == nil {
 		held = set{}
-		a.carried[key] = held
+		m[key] = held
 	}
 	for id := range value {
 		if !held[id] {

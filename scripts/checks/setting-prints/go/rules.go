@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/types"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -64,6 +65,47 @@ func (a *analysis) calleeOf(call *ast.CallExpr) *types.Func {
 }
 
 func sanitizer(fn *types.Func) bool { return strings.HasSuffix(packagePath(fn), "/internal/redact") }
+
+// abstract reports whether fn is a method of an interface a package of the module declares: a call
+// of it runs the method of each type the receiver can hold (implementations).
+func (a *analysis) abstract(fn *types.Func) bool {
+	sig, ok := fn.Type().(*types.Signature)
+	return ok && sig.Recv() != nil && types.IsInterface(sig.Recv().Type()) && a.read[packagePath(fn)]
+}
+
+// implementations are the methods a call of the interface method fn runs when its receiver holds
+// receiver: of each type of the module the value was made as (a type label, typeLabel), its method
+// of fn's name, itself or its pointer's, where this program reads the method's body.
+func (a *analysis) implementations(fn *types.Func, receiver set) []*types.Func {
+	var found []*types.Func
+	for id := range receiver {
+		l := a.labels[id]
+		if l.kind != "type" {
+			continue
+		}
+		key := [2]any{fn, l.typ}
+		m, ok := a.impls[key]
+		if !ok {
+			for _, t := range []types.Type{l.typ, types.NewPointer(l.typ)} {
+				if candidate, ok := origin(objectOf(t, fn)).(*types.Func); ok && a.bodies[candidate] != nil {
+					m = candidate
+					break
+				}
+			}
+			a.impls[key] = m
+		}
+		if m != nil && !slices.Contains(found, m) {
+			found = append(found, m)
+		}
+	}
+	return found
+}
+
+// objectOf is t's method or field of fn's name.
+func objectOf(t types.Type, fn *types.Func) types.Object {
+	obj, _, _ := types.LookupFieldOrMethod(t, true, fn.Pkg(), fn.Name())
+	return obj
+}
 
 func inert(t types.Type) bool {
 	if t == nil {
@@ -132,33 +174,17 @@ func (a *analysis) texty(t types.Type) bool {
 	return false
 }
 
-// keepsText are the packages whose functions answer with the text they are handed, or fail with
-// an error that quotes it: url.Parse's, strconv's and time.ParseDuration's errors hold their input,
-// and pgx's ParseConfig names the connection string. A function of another package this program
-// does not read (NATS, the AWS SDK) is not followed; one of the module is (evaluateCall).
+// keepsText are the packages outside the module whose functions answer with the text they are
+// handed, or fail with an error that quotes it: url.Parse's, strconv's and time.ParseDuration's
+// errors hold their input, and pgx's ParseConfig names the connection string. A function of another
+// package outside the module (NATS, the AWS SDK) is not followed; every package of the module is
+// read from source.
 var keepsText = map[string]bool{
 	"strings": true, "strconv": true, "fmt": true, "errors": true, "bytes": true, "path": true,
 	"path/filepath": true, "net": true, "net/url": true, "net/netip": true, "time": true,
 	"encoding/json": true, "encoding/base64": true, "encoding/hex": true, "slices": true, "maps": true,
 	"unicode/utf8": true, "os": true, "io": true, "bufio": true,
 	"github.com/jackc/pgx/v5": true, "github.com/jackc/pgx/v5/pgconn": true,
-}
-
-// keepsTextFunctions are the functions of the module this program does not read that answer with
-// the text they are handed: pgsetting's two parses answer with the pgx configuration they read
-// from a connection string (its hosts, its user, its database), as pgx's own ParseConfig does.
-var keepsTextFunctions = map[string]bool{
-	"github.com/sjawhar/envoy/pgsetting.ParseConfig":     true,
-	"github.com/sjawhar/envoy/pgsetting.ParsePoolConfig": true,
-}
-
-// namesNoText are the functions of the module this program does not read whose answer holds no
-// text of what they are handed, each read at its source: a refusal that names a setting by its
-// length and what to correct, never its text (urlsetting.Refuse and pgsetting.Refuse, through
-// redact.Refusal).
-var namesNoText = map[string]bool{
-	"github.com/sjawhar/envoy/urlsetting.Refuse": true,
-	"github.com/sjawhar/envoy/pgsetting.Refuse":  true,
 }
 
 // urlTakers are the functions that read the value they are handed as a URL, or hand it to

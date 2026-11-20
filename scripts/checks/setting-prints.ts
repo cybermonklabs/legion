@@ -42,9 +42,9 @@
  * program (a child's command line or environment), whose use of it the search cannot read. A read
  * of the environment by a key the search cannot name is always one.
  *
- * The Go half, `scripts/checks/setting-prints/go/`, does the same over the Go Dispatch server's
- * command and routes packages, where the one function is `redact.URL`; this program runs it and
- * reads its lines.
+ * The Go half, `scripts/checks/setting-prints/go/`, does the same over every package of the envoy
+ * Go module, where the one function is `redact.URL`; this program runs it and reads its lines. A
+ * package of the module it cannot load makes the run say UNKNOWN, naming the package.
  *
  * This file is the command. Its parts are in `scripts/checks/setting-prints/`, one concern each:
  * loading what the search reads (`program.ts`, and `go.ts` for the Go half's records), the planted

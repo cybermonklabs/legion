@@ -1,6 +1,6 @@
 /**
- * The Go half of the search (`scripts/checks/setting-prints/go/`): running it over the Go Dispatch
- * server's command and routes packages, and reading the records it prints.
+ * The Go half of the search (`scripts/checks/setting-prints/go/`): running it over every package
+ * of the envoy Go module, and reading the records it prints.
  */
 import { readdirSync } from "node:fs";
 import path from "node:path";
@@ -60,8 +60,8 @@ function goRecord(line: string): {
 const goDirectory = "scripts/checks/setting-prints/go";
 
 /** The lines the Go half finds, those of settings that reach no URL, and what its planted shapes
- *  gave. It reads the packages of the Go Dispatch server this pull request changes: the command's
- *  and the routes'. */
+ *  gave, with each package of the module it could not load. It reads every package of the module:
+ *  a setting one package reads can be printed by another's line. */
 export function goFindings(): {
   findings: Finding[];
   quiet: Finding[];
@@ -72,17 +72,11 @@ export function goFindings(): {
     .filter((file) => file.endsWith(".go"))
     .sort()
     .map((file) => `${goDirectory}/${file}`);
-  const run = Bun.spawnSync(
-    [
-      "go",
-      "run",
-      ...sources,
-      "packages/envoy",
-      "cmd/dispatch/main.go",
-      "internal/dispatch/routes/devsignin.go",
-    ],
-    { cwd: root, stderr: "pipe", stdout: "pipe" }
-  );
+  const run = Bun.spawnSync(["go", "run", ...sources, "packages/envoy"], {
+    cwd: root,
+    stderr: "pipe",
+    stdout: "pipe",
+  });
   const findings: Finding[] = [];
   const quiet: Finding[] = [];
   let summary = "";

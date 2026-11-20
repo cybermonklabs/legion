@@ -87,7 +87,7 @@ func (a *analysis) evaluate(e ast.Expr) set {
 		return a.evaluateCall(x)
 	case *ast.BinaryExpr:
 		if x.Op == token.ADD {
-			return union(a.writeHead(x.X, "a string +", a.ev(x.X)), a.write(x.Y, "a string +", a.ev(x.Y)))
+			return union(a.write(x.X, "a string +", a.ev(x.X), true), a.write(x.Y, "a string +", a.ev(x.Y), false))
 		}
 		return nil
 	case *ast.UnaryExpr:
@@ -108,7 +108,7 @@ func (a *analysis) evaluate(e ast.Expr) set {
 	case *ast.KeyValueExpr:
 		return a.ev(x.Value)
 	case *ast.CompositeLit:
-		var all []set
+		all := []set{a.typeLabel(a.info.TypeOf(x))}
 		for _, el := range x.Elts {
 			all = append(all, a.ev(el))
 		}
@@ -183,6 +183,9 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 				}
 				return union(all...)
 			}
+			if b.Name() == "new" && len(call.Args) == 1 {
+				return a.typeLabel(a.info.TypeOf(call.Args[0]))
+			}
 			return nil
 		}
 	}
@@ -202,14 +205,14 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 			return a.source(call, "a flag ("+a.exprText(call)+")")
 		}
 		if a.bodies[fn] != nil {
-			return a.named(call, a.carried[fn])
+			return a.named(call, a.answer(fn, call))
 		}
 	} else {
 		var through []set
 		for id := range a.ev(call.Fun) {
 			switch l := a.labels[id]; l.kind {
 			case "function":
-				through = append(through, a.carried[l.fn])
+				through = append(through, a.answer(l.fn, call))
 			case "environment function":
 				through = append(through, a.environment(call, "the environment, through "+a.exprText(call.Fun)))
 			}
@@ -218,30 +221,36 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 			return a.named(call, union(through...))
 		}
 	}
-	// A function this program does not read, of a package whose answers and errors hold the text
-	// they are handed (keepsText), or one such function of the module (keepsTextFunctions), hands
-	// on the text of each argument and receiver that can hold text (texty). So does every other
-	// function of the module this program does not read, but those namesNoText lists: its error,
-	// or the value it builds and a later call's error, can quote what it was handed, as
-	// googleidentity.Token's quoted the audience in the URL it asked, reached through
-	// brokertoken.NewGoogleAccount and its Read. Any function hands on what each function it is
-	// handed answers, and, handed one, reads the setting a constant names.
-	module := fn != nil && strings.HasPrefix(packagePath(fn), a.module+"/") && !a.read[packagePath(fn)] && !namesNoText[packagePath(fn)+"."+fn.Name()]
-	keeps := fn != nil && (keepsText[packagePath(fn)] || keepsTextFunctions[packagePath(fn)+"."+fn.Name()] || module)
+	// A function outside the module, of a package whose answers and errors hold the text they are
+	// handed (keepsText), hands on the text of each argument and receiver that can hold text
+	// (texty). A method of an interface the module declares (abstract) answers what each
+	// implementation the unit holds answers for this call, and hands on the text of each argument,
+	// for an implementation outside the module; never its receiver's, a value whose fields this
+	// program reads apart. Any function hands on what each function it is handed answers, and,
+	// handed one, reads the setting a constant names.
+	keeps := fn != nil && keepsText[packagePath(fn)]
+	abstract := fn != nil && a.abstract(fn)
 	var all []set
 	if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && keeps && a.info.Selections[sel] != nil && a.texty(a.info.TypeOf(sel.X)) {
 		all = append(all, a.ev(sel.X))
 	}
+	if abstract {
+		if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok {
+			for _, impl := range a.implementations(fn, a.ev(sel.X)) {
+				all = append(all, a.named(call, a.answer(impl, call)))
+			}
+		}
+	}
 	handed := false
 	for _, arg := range call.Args {
 		value := a.ev(arg)
-		if keeps && a.texty(a.info.TypeOf(arg)) {
+		if (keeps || abstract) && a.texty(a.info.TypeOf(arg)) {
 			all = append(all, value)
 		}
 		for id := range value {
 			switch l := a.labels[id]; l.kind {
 			case "function":
-				all = append(all, a.carried[l.fn])
+				all = append(all, a.answer(l.fn, nil))
 				handed = true
 			case "environment function":
 				all = append(all, a.environment(arg, "the environment, through "+a.exprText(arg)))
@@ -258,12 +267,79 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 		var written []set
 		for _, arg := range call.Args {
 			if a.texty(a.info.TypeOf(arg)) {
-				written = append(written, a.write(arg, packagePath(fn)+"."+fn.Name(), a.ev(arg)))
+				written = append(written, a.write(arg, packagePath(fn)+"."+fn.Name(), a.ev(arg), false))
 			}
 		}
 		value = union(written...)
 	}
 	return value
+}
+
+// answer is what the call of fn (a *types.Func or an *ast.FuncLit) answers: its summary, each
+// of its parameters filled in by what this call hands it, and each line of it that wrote one in
+// the answer where this call hands that parameter a setting (writtenAt). For a call this program
+// cannot name (nil), and for a parameter of another function the concrete reading meets in a
+// summary (a function literal's use of its enclosing function's parameter), a parameter holds what
+// every call hands it.
+func (a *analysis) answer(fn any, call *ast.CallExpr) set {
+	summary := a.returns[fn]
+	if len(summary) == 0 {
+		return nil
+	}
+	var all []set
+	for id := range summary {
+		l := a.labels[id]
+		if l.kind != "param" {
+			all = append(all, set{id: true})
+			continue
+		}
+		var value set
+		switch {
+		case l.fn == fn && call != nil:
+			value = a.argument(l, call)
+		case l.fn == fn || !a.symbolic:
+			value = a.carried[types.Object(l.param)]
+		default:
+			all = append(all, set{id: true})
+			continue
+		}
+		if l.written {
+			value = a.writtenAt(l.fn, l.index, value)
+		}
+		all = append(all, value)
+	}
+	return union(all...)
+}
+
+// argument is what call hands the parameter l of the function it runs: the receiver of a method
+// call, the argument at its place, or every argument from the place of a variadic parameter on.
+// A method value's receiver was bound where the value was made, so its call reads what that
+// receiver holds.
+func (a *analysis) argument(l *label, call *ast.CallExpr) set {
+	if l.index < 0 {
+		if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && a.info.Selections[sel] != nil && a.info.Selections[sel].Kind() == types.MethodVal {
+			return a.ev(sel.X)
+		}
+		return a.carried[types.Object(l.param)]
+	}
+	var sig *types.Signature
+	switch f := l.fn.(type) {
+	case *types.Func:
+		sig, _ = f.Type().(*types.Signature)
+	case *ast.FuncLit:
+		sig, _ = a.info.TypeOf(f).(*types.Signature)
+	}
+	if sig == nil || l.index >= len(call.Args) {
+		return nil
+	}
+	if sig.Variadic() && l.index == sig.Params().Len()-1 && !call.Ellipsis.IsValid() {
+		var all []set
+		for _, arg := range call.Args[l.index:] {
+			all = append(all, a.ev(arg))
+		}
+		return union(all...)
+	}
+	return a.ev(call.Args[l.index])
 }
 
 // reaching is what the variable v holds where it is read at at: what each assignment of it that
@@ -272,11 +348,15 @@ func (a *analysis) evaluateCall(call *ast.CallExpr) set {
 // hold at (a branch) is one path, so the search reads on past it. A read inside a function literal
 // that v was not declared in can run after any assignment, so it reads them all.
 func (a *analysis) reaching(v *types.Var, at token.Pos) set {
-	sites := a.sites[v]
-	if len(sites) == 0 {
-		return a.carried[types.Object(v)]
+	held, siteMap := a.carried, a.sites
+	if a.symbolic {
+		held, siteMap = a.symCarried, a.symSites
 	}
-	all := []set{a.carried[types.Object(v)]}
+	sites := siteMap[v]
+	if len(sites) == 0 {
+		return held[types.Object(v)]
+	}
+	all := []set{held[types.Object(v)]}
 	if lit := innermost(a.lits, at); lit != (span{}) && !lit.holds(v.Pos()) {
 		for _, s := range sites {
 			all = append(all, s.labels)
@@ -302,22 +382,29 @@ func (a *analysis) reaching(v *types.Var, at token.Pos) set {
 
 // assign puts value into the place target names: a variable (for a variable of a function, at
 // this assignment), a field (and the value that holds it), an element of a map or a slice, or
-// what a pointer points at.
+// what a pointer points at. A field and a variable of a package hold what the concrete reading
+// writes, never a parameter of the symbolic one.
 func (a *analysis) assign(target ast.Expr, value set) {
 	switch t := ast.Unparen(target).(type) {
 	case *ast.Ident:
 		if v, ok := a.object(t).(*types.Var); ok {
 			if !local(v) {
-				a.grow(types.Object(v), value)
+				if !a.symbolic {
+					a.grow(types.Object(v), value)
+				}
 				break
 			}
-			if a.sites[v] == nil {
-				a.sites[v] = map[token.Pos]*site{}
+			siteMap := a.sites
+			if a.symbolic {
+				siteMap = a.symSites
 			}
-			s := a.sites[v][t.Pos()]
+			if siteMap[v] == nil {
+				siteMap[v] = map[token.Pos]*site{}
+			}
+			s := siteMap[v][t.Pos()]
 			if s == nil {
 				s = &site{block: innermost(a.blocks, t.Pos()), labels: set{}}
-				a.sites[v][t.Pos()] = s
+				siteMap[v][t.Pos()] = s
 			}
 			for id := range value {
 				if !s.labels[id] {
@@ -328,9 +415,11 @@ func (a *analysis) assign(target ast.Expr, value set) {
 		}
 	case *ast.SelectorExpr:
 		if sel := a.info.Selections[t]; sel != nil && sel.Kind() == types.FieldVal {
-			a.grow(origin(sel.Obj()), value)
+			if !a.symbolic {
+				a.grow(origin(sel.Obj()), value)
+			}
 			a.assign(t.X, value)
-		} else if v, ok := a.object(t.Sel).(*types.Var); ok {
+		} else if v, ok := a.object(t.Sel).(*types.Var); ok && !a.symbolic {
 			a.grow(types.Object(v), value)
 		}
 	case *ast.IndexExpr:
@@ -345,9 +434,9 @@ func (a *analysis) assign(target ast.Expr, value set) {
 }
 
 // bindCall puts each argument into its parameter of the function the call runs, and the receiver
-// into the method's receiver.
+// into the method's receiver: the concrete reading's parameter holds what every call hands it.
 func (a *analysis) bindCall(call *ast.CallExpr, sig *types.Signature, receiver ast.Expr) {
-	if sig == nil {
+	if sig == nil || a.symbolic {
 		return
 	}
 	if receiver != nil && sig.Recv() != nil {
@@ -369,10 +458,10 @@ func (a *analysis) bindCall(call *ast.CallExpr, sig *types.Signature, receiver a
 // end is a place that prints arg: a line for the setting it holds as read, and an end for each line
 // that wrote one into the text it holds.
 func (a *analysis) end(arg ast.Expr, kind string, site ast.Node) {
-	value := a.write(arg, kind, a.ev(arg))
+	value := a.write(arg, kind, a.ev(arg), false)
 	file, line := a.position(site)
 	for id := range value {
-		if l := a.labels[id]; l.kind == "written" && len(l.sources) > 0 {
+		if l := a.labels[id]; (l.kind == "written" && len(l.sources) > 0) || l.kind == "chain" {
 			l.ends[fmt.Sprintf("%s at %s:%d", kind, file, line)] = true
 		}
 	}
@@ -387,6 +476,11 @@ func (a *analysis) flowCall(call *ast.CallExpr) {
 	if fn != nil && a.bodies[fn] != nil {
 		sig, _ := fn.Type().(*types.Signature)
 		a.bindCall(call, sig, receiver)
+	} else if fn != nil && a.abstract(fn) && receiver != nil {
+		for _, impl := range a.implementations(fn, a.ev(receiver)) {
+			sig, _ := impl.Type().(*types.Signature)
+			a.bindCall(call, sig, receiver)
+		}
 	} else if fn == nil {
 		for id := range a.ev(call.Fun) {
 			if l := a.labels[id]; l.kind == "function" {
@@ -429,19 +523,19 @@ func (a *analysis) flowCall(call *ast.CallExpr) {
 	}
 	// A setting can be a URL when its value reaches a function that reads it as one (the URL it is
 	// handed, or the head of its text, the base a + puts a path after), redact (the code's own
-	// judgement that it is one), a child's command line, or a function of this module that this
-	// program does not read, which may use any text it is handed.
-	takes := fn != nil && (urlTakers[packagePath(fn)+"."+fn.Name()] || sanitizer(fn))
-	unread := fn != nil && strings.HasPrefix(packagePath(fn), a.module+"/") && !a.read[packagePath(fn)]
-	if fn != nil && a.bodies[fn] == nil && (takes || unread) {
-		for _, arg := range call.Args {
-			value := a.ev(arg)
-			ids := a.settingsIn(value)
-			if takes {
-				ids = a.leadingIn(value)
-			}
-			for _, id := range ids {
-				a.urls[id] = true
+	// judgement that it is one), a child's command line, or a method of an interface the module
+	// declares, whose implementation may use any text it is handed: the concrete reading says which.
+	if !a.symbolic && fn != nil && a.bodies[fn] == nil {
+		takes := urlTakers[packagePath(fn)+"."+fn.Name()] || sanitizer(fn)
+		if takes || a.abstract(fn) {
+			for _, arg := range call.Args {
+				ids := a.settingsIn(a.ev(arg))
+				if takes {
+					ids = a.leadingIn(a.ev(arg))
+				}
+				for _, id := range ids {
+					a.urls[id] = true
+				}
 			}
 		}
 	}
@@ -493,7 +587,7 @@ func (a *analysis) flowFile(file *ast.File) {
 				for i := range x.Lhs {
 					value := a.ev(x.Rhs[i])
 					if x.Tok == token.ADD_ASSIGN {
-						value = union(a.ev(x.Lhs[i]), a.write(x.Rhs[i], "a string +=", value))
+						value = union(a.ev(x.Lhs[i]), a.write(x.Rhs[i], "a string +=", value, false))
 					}
 					a.assign(x.Lhs[i], value)
 				}
@@ -527,6 +621,8 @@ func (a *analysis) flowFile(file *ast.File) {
 				a.assign(x.Value, value)
 			}
 		case *ast.ReturnStmt:
+			// The symbolic reading's answer is the function's summary; the concrete reading reads
+			// the results only for the lines that write a parameter into them.
 			key := enclosing()
 			var all []set
 			for _, r := range x.Results {
@@ -539,8 +635,13 @@ func (a *analysis) flowFile(file *ast.File) {
 					}
 				}
 			}
-			a.grow(key, union(all...))
+			if a.symbolic {
+				a.growIn(a.returns, key, union(all...))
+			}
 		case *ast.CompositeLit:
+			if a.symbolic {
+				break
+			}
 			t := a.info.TypeOf(x)
 			if t == nil {
 				break
@@ -564,8 +665,8 @@ func (a *analysis) flowFile(file *ast.File) {
 				}
 			}
 		case *ast.SelectorExpr:
-			// A method value takes its receiver with it.
-			if sel := a.info.Selections[x]; sel != nil && sel.Kind() == types.MethodVal {
+			// A method value takes its receiver with it, as the concrete reading reads it.
+			if sel := a.info.Selections[x]; sel != nil && sel.Kind() == types.MethodVal && !a.symbolic {
 				if parent, ok := stack[len(stack)-2].(*ast.CallExpr); !ok || parent.Fun != x {
 					if fn, ok := origin(sel.Obj()).(*types.Func); ok && a.bodies[fn] != nil {
 						if sig, ok := fn.Type().(*types.Signature); ok && sig.Recv() != nil {
@@ -581,14 +682,52 @@ func (a *analysis) flowFile(file *ast.File) {
 	})
 }
 
-// run reads files to a fixed point, then once more collecting each line that prints, counting the
-// calls of the reported files that print. It answers the rounds and that count.
-func (a *analysis) run(files []*ast.File) (rounds, sinks int) {
+// prepare binds each parameter of each function of files, and each method's receiver, to itself
+// for the symbolic reading.
+func (a *analysis) prepare(files []*ast.File) {
+	bind := func(fn any, sig *types.Signature) {
+		if sig == nil {
+			return
+		}
+		if recv := sig.Recv(); recv != nil {
+			a.growIn(a.symCarried, types.Object(recv), set{a.paramLabel(fn, -1, recv, false): true})
+		}
+		for i := range sig.Params().Len() {
+			p := sig.Params().At(i)
+			a.growIn(a.symCarried, types.Object(p), set{a.paramLabel(fn, i, p, false): true})
+		}
+	}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.FuncDecl:
+				if fn, ok := a.info.Defs[x.Name].(*types.Func); ok && a.bodies[fn] != nil {
+					sig, _ := fn.Type().(*types.Signature)
+					bind(fn, sig)
+				}
+			case *ast.FuncLit:
+				sig, _ := a.info.TypeOf(x).(*types.Signature)
+				bind(x, sig)
+			}
+			return true
+		})
+	}
+}
+
+// run reads one unit's files to a fixed point of both readings, then once more in the concrete
+// reading collecting each line that prints. It answers the rounds.
+func (a *analysis) run(files []*ast.File) int {
+	a.reset(files)
+	a.prepare(files)
+	rounds := 0
 	for {
 		a.changed = false
-		a.memo = map[ast.Expr]set{}
-		for _, f := range files {
-			a.flowFile(f)
+		for _, symbolic := range []bool{true, false} {
+			a.symbolic = symbolic
+			a.memo = map[ast.Expr]set{}
+			for _, f := range files {
+				a.flowFile(f)
+			}
 		}
 		rounds++
 		if !a.changed || rounds >= 100 {
@@ -598,18 +737,27 @@ func (a *analysis) run(files []*ast.File) (rounds, sinks int) {
 	if a.changed {
 		fail(fmt.Errorf("no fixed point in %d rounds", rounds))
 	}
+	a.symbolic = false
 	a.collect = true
 	a.memo = map[ast.Expr]set{}
 	for _, f := range files {
 		a.flowFile(f)
-		ast.Inspect(f, func(n ast.Node) bool {
-			if call, ok := n.(*ast.CallExpr); ok && a.report[a.relFile(call)] {
+	}
+	return rounds
+}
+
+// sinks counts the calls that print in files.
+func (a *analysis) sinks(files []*ast.File) int {
+	n := 0
+	for _, f := range files {
+		ast.Inspect(f, func(node ast.Node) bool {
+			if call, ok := node.(*ast.CallExpr); ok {
 				if kind, _ := a.sinkOf(call); kind != "" {
-					sinks++
+					n++
 				}
 			}
 			return true
 		})
 	}
-	return rounds, sinks
+	return n
 }
