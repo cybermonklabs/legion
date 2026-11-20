@@ -15,6 +15,7 @@ import { join } from "node:path";
 import {
   bash,
   blackhole,
+  CURL_VERSION_LINE,
   closedPort,
   closingTarget,
   fakeDispatch,
@@ -29,6 +30,12 @@ import {
 } from "./outside-path-reach-fixtures";
 
 const { drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only } = reachFixtures();
+
+/** The line a run prints when the curl stand-in answered its `curl -q --version`, and so asked no
+ *  resolver (`CURL_VERSION_LINE`). One row of each way a run is given curl checks it (the default
+ *  PATH, `pathWithCurl`, `pathOf`), so a change to the script's version call, or a PATH that
+ *  leaves the stand-in out, fails a row rather than sending every run to the machine's DNS. */
+const answeredByStandIn = `outside-path-reach: curl ${CURL_VERSION_LINE.split(" ")[1]}\n`;
 
 describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
@@ -48,6 +55,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(lineFor(run, "closed-a")).toContain(" unreachable; curl exit 7,");
         expect(lineFor(run, "closed-b")).toContain(" unreachable; curl exit 7,");
         expect(verdict(run)).toStartWith("PASS");
+        expect(run.stdout).toContain(answeredByStandIn);
         expect(run.code).toBe(0);
         expect(await origin.seen()).toEqual([
           { method: "GET", path: "/healthz", credential: null },
@@ -206,6 +214,7 @@ describe.concurrent("outside-path-reach.sh", () => {
       );
       expect(readFileSync(log, "utf8")).toBe("probe\n".repeat(5));
       expect(lineFor(run, "ghost")).toContain(" unresolved; curl exit 6,");
+      expect(run.stdout).toContain(answeredByStandIn);
       expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
       expect(run.code).toBe(2);
     } finally {
@@ -720,6 +729,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         ]);
         expect(passing.stderr).toBe("");
         expect(verdict(passing)).toStartWith("PASS");
+        expect(passing.stdout).toContain(answeredByStandIn);
         expect(passing.code).toBe(0);
         expect(lineFor(failing, "hub")).toContain(" REACHED; ");
         expect(verdict(failing)).toBe("FAIL: reached hub");
