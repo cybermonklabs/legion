@@ -1965,29 +1965,37 @@ func statFS(t *testing.T, dir string) (unit, blocks, available uint64) {
 
 // The cache reads its own volume with the real reader (readVolume is volumestat.Read) at Options.Root:
 // on a temporary directory, the size /healthz answers is what `stat -f` prints as the fundamental
-// block size times the blocks, and the available bytes lie between that block size times the
-// available blocks read before the answer and after it, since a shared disk's available bytes
-// move. A cache with no clone yet answers 503, so the figures are in that answer too.
+// block size times the blocks, and the available bytes are that block size times the available
+// blocks. A shared disk's available bytes move, and not in one direction: on CI on 2026-11-20 the
+// answer read one block more than both `stat -f` readings around it. So each try reads `stat -f`,
+// then /healthz, then `stat -f` again, and the try that counts is the first whose two readings
+// agree, which the answer must then equal exactly; a disk that never holds still for one try fails
+// the test by name rather than passing it on a range. A cache with no clone yet answers 503, so the
+// figures are in that answer too.
 func TestTheCacheReadsItsVolume(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skipf("the volume is read with statfs on Linux alone; on %s the reader refuses", runtime.GOOS)
 	}
+	const tries = 20
 	root := t.TempDir()
 	c := cacheOn(t, Options{Repo: ghrepo.MustParse("acme/widgets"), Root: root, Log: func(string) {}})
-	unit, blocks, availableBefore := statFS(t, root)
-	status, health, _ := healthzOf(t, c)
-	unitAfter, blocksAfter, availableAfter := statFS(t, root)
-	if unitAfter != unit || blocksAfter != blocks {
-		t.Fatalf("stat -f read %d blocks of %d bytes, then %d of %d: the volume changed size under the test", blocks, unit, blocksAfter, unitAfter)
+	for try := 1; try <= tries; try++ {
+		unit, blocks, available := statFS(t, root)
+		status, health, _ := healthzOf(t, c)
+		unitAfter, blocksAfter, availableAfter := statFS(t, root)
+		if unitAfter != unit || blocksAfter != blocks || availableAfter != available {
+			continue
+		}
+		if status != http.StatusServiceUnavailable || health.VolumeError != "" || health.VolumeBytes == nil || health.AvailableBytes == nil {
+			t.Fatalf("/healthz of a cache with no clone answers %d %+v, want 503 with the volume's figures", status, health)
+		}
+		if want := unit * blocks; *health.VolumeBytes != want {
+			t.Errorf("/healthz answers a volume of %d bytes, want %d blocks of %d bytes, %d", *health.VolumeBytes, blocks, unit, want)
+		}
+		if want := unit * available; *health.AvailableBytes != want {
+			t.Errorf("/healthz answers %d bytes available, want %d available blocks of %d bytes, %d, as stat -f read them before and after it", *health.AvailableBytes, available, unit, want)
+		}
+		return
 	}
-	if status != http.StatusServiceUnavailable || health.VolumeError != "" || health.VolumeBytes == nil || health.AvailableBytes == nil {
-		t.Fatalf("/healthz of a cache with no clone answers %d %+v, want 503 with the volume's figures", status, health)
-	}
-	if want := unit * blocks; *health.VolumeBytes != want {
-		t.Errorf("/healthz answers a volume of %d bytes, want %d blocks of %d bytes, %d", *health.VolumeBytes, blocks, unit, want)
-	}
-	low, high := unit*min(availableBefore, availableAfter), unit*max(availableBefore, availableAfter)
-	if available := *health.AvailableBytes; available < low || available > high {
-		t.Errorf("/healthz answers %d bytes available, want between %d and %d, stat -f's readings before and after it", available, low, high)
-	}
+	t.Fatalf("stat -f read %s differently before and after each of %d /healthz answers: the disk never held still for one read", root, tries)
 }
