@@ -236,9 +236,10 @@ func (w *window) pin(wait time.Duration) error {
 }
 
 // pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to it and to its current life (connLife), unless another send pinned it first. The life
-// is taken before the connection is read connected, so a report of its end after that read closes
-// it, and a life that ended during the read has the connection read again.
+// the window to it and to its current life (connLife), unless another send pinned it first. The
+// reconnect count is read after the connection read CONNECTED and records the first pin of that
+// life; a report of its end after that read closes the life, and a life that ended during the read
+// has the connection read again.
 func (w *window) pinFirst(wait time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), wait)
 	defer cancel()
@@ -258,10 +259,10 @@ func (w *window) pinFirst(wait time.Duration) error {
 			w.client.mu.Lock()
 			pinned := connection{conn: w.client.Conn, js: w.client.js}
 			w.client.mu.Unlock()
-			pinned.life = lifeOf(pinned.conn).current()
 			if !pinned.conn.IsConnected() {
 				continue
 			}
+			pinned.life = lifeOf(pinned.conn).pin(pinned.conn.Stats().Reconnects)
 			select {
 			case <-pinned.life:
 				continue

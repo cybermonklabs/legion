@@ -225,6 +225,10 @@ type heldDurable struct {
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
 	delivering *intakeDelivery
+	// finalizers keep a stopped hold renewing while a hand-back still can reach NATS. The caller
+	// that closes d.nats waits for them after that close, while its database pool is still open
+	// (waitFinalizers).
+	finalizers sync.WaitGroup
 }
 
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
@@ -693,7 +697,11 @@ func (d *heldDurable) stop(ctx context.Context) {
 		// Another holder may act already, and there is no hold left to keep.
 	default:
 		slog.Warn(intakeHoldFinalizing, "name", d.name)
-		go d.finalizeHandBacks(delivery, hold, lapse)
+		d.finalizers.Add(1)
+		go func() {
+			defer d.finalizers.Done()
+			d.finalizeHandBacks(delivery, hold, lapse)
+		}()
 	}
 }
 
@@ -703,9 +711,13 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 
 // finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
 // releases it once that hand-back has landed and a flush of the connection answers, or once the
-// intake client's connection has closed, which leaves the hand-back unsent. It runs on a goroutine of
-// its own that nothing waits for, so it waits for nats.go's lock with no bound, and makes one flush at
-// a time. A lost hold ends it: another holder may then act, as after any loss of the hold.
+// intake client's connection has closed. Close flushes a NATS client's outbound buffer before it
+// closes its socket, so a hand-back waiting then is either sent at close or dropped with the
+// connection; only then is it safe to release the hold. It runs on a goroutine of its own that
+// nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
+// time. StartIntakes waits for it after it closes that client and before it returns to a caller
+// that can close the database pool. A lost hold ends it: another holder may then act, as after any
+// loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
 	select {
 	case <-delivery.handBacksLanded():
@@ -730,6 +742,11 @@ func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hol
 		}
 	}
 }
+
+// waitFinalizers waits for hand-backs a stopped durable left running to settle after its NATS
+// client closes. They can then no longer wait for that client, and release their holds through the
+// still-open database pool before its caller closes it (StartIntakes).
+func (d *heldDurable) waitFinalizers() { d.finalizers.Wait() }
 
 // releaseHold releases hold, or lapses it when the next holder must read a take-over's token.
 func (d *heldDurable) releaseHold(hold *duty.Hold, lapse bool) {

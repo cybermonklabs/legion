@@ -94,6 +94,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 
 	const inFlight = 100
 	holder := startIntakeProcess(t, pool, link.URL(), func(number int) bool { return number == inFlight })
+	row.holder = holder
 	awaitBoundDurable(t, publisher)
 	startIntakeProcess(t, pool, natsURL, nil)
 	holderConn := holder.client.Connection()
@@ -144,6 +145,7 @@ func stopWithAHeldHandBack(t *testing.T) heldHandBack {
 // returned; conn is the holder's connection, delivery the subscription its stop stopped, and from
 // the first durable event of the stop.
 type heldHandBack struct {
+	holder    *intakeProcess
 	pool      *store.Pool
 	thaw      func()
 	recorded  *durableEvents
@@ -246,15 +248,18 @@ func requireHandBackBeforeCreation(t *testing.T, recorded *durableEvents, from i
 //     holder then, and the standby has not created the durable. With the link still held, the hold is
 //     renewed before the database's clock passes the expiry it had as the stop returned, so it does
 //     not lapse, and the standby still has not created the durable. Once the link moves, the
-//     hand-back reaches the server before the standby creates the durable.
+//     hand-back reaches the server before the standby creates the durable;
+//   - a pending hand-back at shutdown: the Run returns at its deadline, then StartIntakes' stop
+//     closes the client that can still send it and waits for its finalizer. The hold is gone before
+//     that stop returns, so its caller can close the pool without leaving the hold to lapse.
 //
 // No step waits on a time but the stop's own deadline (intakeStopBudget) and the hold's own expiry;
 // a 30 s wait only guards against a stop that never returns. The negative controls: a release that
 // does not wait for the hand-backs fails the first's order; a stop that never releases its hold when
 // a publish was left running fails the first's release; a release made at the deadline with a
-// hand-back pending fails the second's hold; and a stop that leaves its hold to lapse with a
-// hand-back pending (this change's earlier 884d560ceb) fails the second's renewal: the standby could
-// recreate the durable at the lapse, under a hand-back a link that heals later still sends.
+// hand-back pending fails the second's hold; a stop that leaves its hold to lapse with a hand-back
+// pending (this change's earlier 884d560ceb) fails the second's renewal; and f83e859506's untracked
+// finalizer fails the third by returning from its shutdown stop with the hold live.
 func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	t.Run("a hand-back that lands before the stop's deadline", func(t *testing.T) {
 		logs := captureLogs(t)
@@ -302,6 +307,35 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatalf("the standby created the durable while the holder's hand-back was pending and its hold renewing: %q", row.recorded.since(row.from))
 		}
 		row.thaw()
+		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
+	})
+
+	t.Run("a pending hand-back at shutdown", func(t *testing.T) {
+		row := stopWithAHeldHandBack(t)
+		select {
+		case <-row.stopped:
+		case <-time.After(30 * time.Second):
+			t.Fatal("the holder's Run did not return within 30 s while its hand-back was held")
+		}
+		if !row.handBackPending() {
+			t.Fatal("control: the hand-back reached NATS before its client closed")
+		}
+		var runs sync.WaitGroup
+		closed := make(chan struct{})
+		go func() {
+			stopIntakes(&runs, []*bus.Client{row.holder.client}, &row.holder.intake.heldDurable)
+			close(closed)
+		}()
+		testnats.RequireLockHeld(t, row.conn)
+		row.thaw()
+		select {
+		case <-closed:
+		case <-time.After(30 * time.Second):
+			t.Fatal("StartIntakes' stop did not return within 30 s of the link moving")
+		}
+		if holdLive(t, row.pool) {
+			t.Fatal("the pending hand-back's finalizer returned after the client closed but left its hold live: shutdown could close the pool before releasing it")
+		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher)
 	})
 }

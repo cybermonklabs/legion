@@ -102,22 +102,22 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // first, with no deadline of its own: a message send among them finishes, bounded by the listener
 // client's receipt timeout. The document service settles the documents owed within
 // documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
-// signal with some still running. waitBackground then waits for the delivery hub, every live
-// socket and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes
-// for the GitHub intakes to finish their stop (delivery.StartIntakes' stop), which began at the
-// signal, beside the HTTP drain and the document shutdown: a message in its handler finishes and is
-// acknowledged, or is given up and handed back to NATS, delivery's intakeStopBudget (15 s) after
-// the signal at the latest, the one deadline of that stop, which counts from the signal and which a
-// take-over under way at the signal spends rather than extends. Each intake then releases its hold
-// through the pool, so another process takes its durable over at once. That wait ends 10 s inside
-// the latest the document service's budget ends (stopGrace less its 5 s reserve, 25 s after the
-// signal), which leaves the given-up handlers' prompt return, their negative acknowledgements, the
-// holds' release and the intakes' clients closing room inside it, so it never makes the shutdown
-// longer than the document budget already can, nor pushes deregister and the pool's close past
-// stopGrace. It comes before the pool closes because nothing else keeps the pool open for a
-// handler: one waiting on GitHub holds no connection, so waitUntilIdle finds the pool idle, and
-// its writes would fail on the closed pool once GitHub answered, with its message acknowledged all
-// the same, and because a hold released through a closed pool is a hold left in place for its TTL.
+// signal with some still running. waitBackground then waits for the delivery hub, every live socket
+// and the subscriptions they ran to finish their Lifetime-driven shutdown, and waitIntakes for the
+// GitHub intakes to finish their stop (delivery.StartIntakes' stop), which began at the signal beside
+// the HTTP drain and document shutdown. A message in its handler finishes and is acknowledged, or is
+// given up and handed back to NATS, delivery's intakeStopBudget (15 s) after the signal at the latest.
+// A hand-back still pending then is settled when waitIntakes closes the intake client, sent in its
+// close flush or dropped with the connection; waitIntakes then waits for its finalizer to release the
+// hold through the pool. That wait ends 10 s inside the latest the document service's budget ends
+// (stopGrace less its 5 s reserve, 25 s after the signal), which leaves the given-up handlers'
+// prompt return, their negative acknowledgements, the holds' release and the intakes' clients closing
+// room inside it, so it never makes the shutdown longer than the document budget already can, nor
+// pushes deregister and the pool's close past stopGrace. It comes before the pool closes because
+// nothing else keeps the pool open for a handler: one waiting on GitHub holds no connection, so
+// waitUntilIdle finds the pool idle and its writes would fail on the closed pool once GitHub answered,
+// with its message acknowledged all the same. A hold's finalizer has already released its hold before
+// waitIntakes returns.
 // The database pool closes once every request has answered and no connection of the shared,
 // document-rooms or room-appends pool is in use, and once the events outbox has stopped
 // (outboxStopped closes when its Run returns; nil is a process with no outbox), which it waits for
