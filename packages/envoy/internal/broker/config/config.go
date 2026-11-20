@@ -377,16 +377,20 @@ type Config struct {
 	JudgeTestSkipChecks bool
 	// BROKER_PROJECT_ACCESS_URL: the base URL of the Dispatch the broker asks whether a project
 	// is private, whether a person may see it, and what kind of member a person is
-	// (internal/broker/projectaccess), an absolute http(s) URL, read without the slashes it ends
-	// in. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks
-	// Dispatch nothing. A token that names no project, and an operator entry's token, whose
-	// project that operator's own setting chose, are minted as before; a person's trade that
-	// names a project is refused, since nothing could say that person may see it.
+	// (internal/broker/projectaccess), and which repositories a project's issues resolve to, the
+	// answer GET /v1/project-repositories relays to an edge listener (internal/broker/projectrepos),
+	// an absolute http(s) URL, read without the slashes it ends in. Set with
+	// BROKER_PROJECT_ACCESS_TOKEN_FILE or not at all: with neither, the broker asks Dispatch
+	// nothing. A token that names no project, and an operator entry's token, whose project that
+	// operator's own setting chose, are minted as before; a person's trade that names a project is
+	// refused, since nothing could say that person may see it; and every edge listener's read of a
+	// project's repositories is 503 REPOSITORIES_UNKNOWN.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
-	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker
-	// asks and not at boot, through brokertoken.AccountToken, which reads the file again once what
-	// it last read is 30 seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
+	// ServiceAccount token for that Dispatch, minted for Dispatch's audience, which both of the
+	// broker's clients of that Dispatch present. Read when the broker asks and not at boot,
+	// through brokertoken.AccountToken, which reads the file again once what it last read is 30
+	// seconds old. Set with BROKER_PROJECT_ACCESS_URL or not at all.
 	ProjectAccessTokenFile string
 	// BROKER_AZURE_TOKEN_FILE: the path of the broker pod's projected ServiceAccount token for
 	// azure-login releases, default /var/run/secrets/azure/tokens/azure-identity-token. Read only
@@ -740,13 +744,16 @@ type Config struct {
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
 	// listener, daemon or measure; * for the kind's whole grant, - for the projects the account's
 	// exchange entry lists), each account written as BROKER_API_ACCOUNTS writes one and read at
-	// start (natscallout.ParseServices). BROKER_NATS_K8S_AUDIENCE is the audience a service's
-	// projected Kubernetes token must carry, verified against BROKER_K8S_OIDC_ISSUER, which it
-	// needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a service's Google identity token must
-	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
-	// no audience is refused at start naming it. A session presents its broker access token and
-	// needs neither. All unset, the broker runs no auth service; any set needs the URLs and the
-	// three seed files.
+	// start (natscallout.ParseServices). An edge listener's entry,
+	// edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or - the projects
+	// GET /v1/project-repositories answers that account about; the auth service refuses its
+	// connection, since this build holds no edge listener's grant. BROKER_NATS_K8S_AUDIENCE is
+	// the audience a service's projected Kubernetes token must carry, verified against
+	// BROKER_K8S_OIDC_ISSUER, which it needs; BROKER_NATS_GOOGLE_AUDIENCE the audience a
+	// service's Google identity token must carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a
+	// service entry whose kind of token has no audience is refused at start naming it. A session
+	// presents its broker access token and needs neither. All unset, the broker runs no auth
+	// service; any set needs the URLs and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
@@ -882,10 +889,10 @@ const noUIToken = "the broker's approval routes take the calling service's own K
 // noDispatchCredential is why the broker's five Dispatch variables are gone: they named a
 // Dispatch the broker asked and issued in, which it still does not do. What it reads there now it
 // reads under settings of its own: the model judge's read of whether an issue is open and whom a
-// Legion pod's issue is assigned to, and the token exchange's read of whether a person may see a
-// project. So a deployment that still sets one of the five is configured for a Dispatch the broker
-// never writes to and a credential it never holds.
-const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there with two projected ServiceAccount tokens of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its token exchange, whether a person may see a project, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
+// Legion pod's issue is assigned to, and the project reads of whether a person may see a project
+// and which repositories a project's issues resolve to. So a deployment that still sets one of the
+// five is configured for a Dispatch the broker never writes to and a credential it never holds.
+const noDispatchCredential = "the broker opens no Dispatch ask and issues nothing in Dispatch; it reads there with two projected ServiceAccount tokens of its own, and writes nothing: its model judge, whether an issue is open and whom a Legion pod's issue is assigned to, at BROKER_JUDGE_DISPATCH_URL (BROKER_JUDGE_DISPATCH_TOKEN_FILE), and its project reads, whether a person may see a project and which repositories a project's issues resolve to, at BROKER_PROJECT_ACCESS_URL (BROKER_PROJECT_ACCESS_TOKEN_FILE)"
 
 // noDatabasePassword is why BROKER_DATABASE_PASSWORD and its placeholder are gone: BROKER_DATABASE_URL
 // alone says how the broker signs in.

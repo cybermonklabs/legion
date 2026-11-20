@@ -6,8 +6,9 @@
 // and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
 // broker's page, and relays a machine login's decision with its typed code. The broker reads
 // Dispatch in two places, each with its own projected ServiceAccount token: its model judge,
-// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its token exchange, whether a
-// person may see the projects a token names (BROKER_PROJECT_ACCESS_URL).
+// whether an issue is open (BROKER_JUDGE_DISPATCH_URL), and its project reads, whether a person
+// may see the projects a token names and which repositories a project's issues resolve to, which
+// it relays to an edge listener (BROKER_PROJECT_ACCESS_URL).
 package main
 
 import (
@@ -56,6 +57,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectrepos"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -524,11 +526,18 @@ func main() {
 		fatal(err)
 		exchangeConfig.GitHub = oauth.IssuerConfig{Issuer: cfg.ExchangeGitHubIssuer, Audience: cfg.ExchangeGitHubAudience, Keys: keys}
 	}
+	// What GET /v1/project-repositories relays to an edge listener: nil, a broker that reads no
+	// Dispatch, answers every one of them 503 REPOSITORIES_UNKNOWN.
+	var projectRepositories api.ProjectRepositoriesReader
 	if cfg.ProjectAccessURL != "" {
 		// The broker's own projected ServiceAccount token for Dispatch's audience, read at call
 		// time through the reader every projected token here goes through, so a rotation needs no
-		// restart. config.Load holds the two settings to both or neither.
-		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		// restart. config.Load holds the two settings to both or neither. The one reader serves
+		// both clients of that Dispatch, the membership check and the read of a project's
+		// repositories, so the broker has one Dispatch address and one account there.
+		account := brokertoken.NewAccountToken(cfg.ProjectAccessTokenFile)
+		exchangeConfig.Projects = projectaccess.New(cfg.ProjectAccessURL, account, nil)
+		projectRepositories = projectrepos.New(cfg.ProjectAccessURL, account, nil)
 		slog.Info("project access check", "state", "on", "url", redact.URL(cfg.ProjectAccessURL))
 	} else {
 		slog.Info("project access check", "state", "off",
@@ -665,6 +674,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
+		EdgeListeners: natscallout.EdgeListeners(natsServices), ProjectRepositories: projectRepositories,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},

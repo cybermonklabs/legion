@@ -119,6 +119,9 @@ const (
 	// CallerService is a service logged in with its own ServiceAccount token, by the service and
 	// the account it presented.
 	CallerService = "service"
+	// CallerEdgeListener is an edge listener, by the platform account an edge-listener entry of
+	// BROKER_NATS_SERVICES names.
+	CallerEdgeListener = "edge-listener"
 	// CallerSignIn is a person signed in to the broker's approval page, by their login.
 	CallerSignIn = "sign-in"
 	// CallerAirlock is a call through the airlock's proxy port, by the grant and the enrollment
