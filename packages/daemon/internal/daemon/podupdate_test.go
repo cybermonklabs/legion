@@ -152,6 +152,16 @@ type podUpdateRig struct {
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	t.Helper()
+	return newPodUpdateRigFeeding(t, nil, roles...)
+}
+
+// newPodUpdateRigFeeding is newPodUpdateRig with before run on each claim's feed before its
+// machine decides an event the feed took (supervisor.beforeDecision), as overrides.beforeDecision
+// runs in production. It is set before the boot restores the first machine, because the feeds
+// read it with no lock; a later restart carries it to the next daemon's feeds (restart). nil runs
+// nothing, which is newPodUpdateRig.
+func newPodUpdateRigFeeding(t *testing.T, before func(claim.Token, supervise.Event), roles ...podUpdateRole) *podUpdateRig {
+	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	dsn := pool.Config().ConnString()
@@ -206,6 +216,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	conns := fake.NewConns()
 	records := record.NewStore()
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
+	sup.beforeDecision = before
 	// The supervision is built before the machines are, because the machines are handed one of
 	// its answers: which roles a launch installs no plugin for, which only the daemon's own
 	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
@@ -456,10 +467,11 @@ func (r *podUpdateRig) runAsk(row record.OutboxRow) {
 // sweeping again, and a claim the sweep has asked is not asked again (supervision.askRound).
 //
 // The first poll sweeps nothing. A decision the last sweep made is posted to each claim's
-// machine and handled there (supervisor.post), so it is in flight rather than undecided, and a
-// sweep that read it half landed would decide the round a second time: it would replace the pod
-// again, or ask every worker of the round again over the claims the end has already reached
-// (openPodUpdate posts to every blocking claim). A wait for what a sweep has already decided is
+// machine and handled there (supervisor.post), so it is in flight rather than undecided, and the
+// poll leaves it the time to land: each sweep this makes reads the claims as the last sweep's
+// decisions left them, as the daemon's sweeps a minute apart do. A round the last sweep ended is
+// read as over while its end is on its way (podUpdateEnded), so a sweep over a half landed end
+// decides nothing of that round again. A wait for what a sweep has already decided is
 // awaitClaim's, as is one for what a posted event or a direct call brings about.
 //
 // A settleAll before each tick was tried here in place of that skipped poll, as the more
@@ -1561,7 +1573,8 @@ func TestPodUpdateResumesAnOpenRoundAfterARestart(t *testing.T) {
 }
 
 // restart is a second daemon over the same Postgres: new machines, a new runtime, and nothing of
-// the first daemon's memory.
+// the first daemon's memory. The new machines' feeds run what the first daemon's ran before each
+// decision (newPodUpdateRigFeeding), as the test's own seam rather than the daemon's memory.
 func (r *podUpdateRig) restart() *podUpdateRig {
 	r.t.Helper()
 	r.sup.stop()
@@ -1574,6 +1587,7 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 	rt.Now = r.clock.Now
 	conns := fake.NewConns()
 	sup := newSupervisor(r.ctx, st, podUpdateProject, r.t.TempDir(), quietLogger())
+	sup.beforeDecision = r.sup.beforeDecision
 	sup.deps = r.sup.deps
 	sup.deps.Runtime, sup.deps.Conns, sup.deps.Store = rt, conns, st
 	r.t.Cleanup(sup.stop)

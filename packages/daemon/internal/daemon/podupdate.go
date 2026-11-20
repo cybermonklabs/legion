@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -49,15 +50,24 @@ import (
 // Everything a round decides comes from the durable claim columns — the round, its reasons, when
 // it opened, when each worker was asked, when each answered, and when the operator's side was
 // told. A daemon restart therefore resumes a round exactly where it stood, and the same record
-// gives the same decision. This pass keeps two things of its own, and neither decides a round, so
-// neither goes in the store. One is the pace at which it opens new rounds: when it last opened
-// one, and the issues it has opened one for whose claims have not recorded it yet
-// (podUpdateOpenings). It paces this daemon's own openings, and a daemon that has just booted
-// opens its first round at its first sweep, one sweep interval after the start. The other is what
-// a round's one read of its issue's workspace found before the pod's replacement
-// (podUpdateWorkspace), which that replacement names: the replacement is made whatever the read
-// found, and a daemon that has just booted reads the workspace again before the round's
-// replacement.
+// gives the same decision. This pass keeps three things of its own in memory, and none of them
+// goes in the store:
+//
+//   - The pace at which it opens new rounds: when it last opened one, and the issues it has
+//     opened one for whose claims have not recorded it yet (podUpdateOpenings). It paces this
+//     daemon's own openings and decides no round. A daemon that has just booted opens its first
+//     round at its first sweep, one sweep interval after the start.
+//   - What a round's one read of its issue's workspace found before the pod's replacement
+//     (podUpdateWorkspace), which that replacement names. The replacement is made whatever the
+//     read found. A daemon that has just booted reads the workspace again before the round's
+//     replacement.
+//   - The rounds it has ended whose end a member's machine has not taken yet (podUpdateEnded).
+//     The end is posted to each member, and a machine in a relaunch takes the post only once the
+//     relaunch is done, so its claim keeps the round until then. While it does, the sweep reads
+//     that claim as the end leaves it: it decides the end once, and the round holds no
+//     open-round slot (reconcileIssuePodUpdate, dispatch://INFRA-4109 R6). A daemon that has
+//     just booted has lost this record and the posts not taken yet, and it makes the end once
+//     more for each claim the store still holds in the round (dispatch://INFRA-3276 R5).
 //
 // The sweep walks the issues in key order, decides each of them, and only then makes the pod
 // replacements those decisions left it, also in key order. A replacement waits its pod out — a
@@ -111,26 +121,45 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // reconcileIssuePodUpdate carries one issue's pod round a step. group is every claim of the issue
 // that has not retired, whatever state it is in.
 //
-// The decisions are taken in this order, and the order is the rule. A round open over a pod other
-// than the one the claims record is over: that pod went, and the pod the claims record now is the
-// one in its place. Such a round ends at that sweep whatever the runtime says of the pod that
-// replaced it, its drift included — a drifting replacement is given a round of its own at a later
-// sweep, an opening under the project's limits like any other — and the end is posted to the
-// members of that round alone (endPodUpdates), so a claim already in a round over the new pod
-// stays in it. Then the drift, which is also what says the pod is not there: a round open over a
-// pod the runtime no longer has ends at that reading, and a pod that has drifted from nothing and
-// has no round open over it needs no replacement. A round open over the pod the claims still
-// record goes on, drift or no drift: once opened, a round ends only by replacing its pod, or
-// because that pod is gone. Only then is a complete round acted on, and only then is a round
-// opened or kept open.
+// The decisions are taken in this order, and the order is the rule. A round the sweep has already
+// ended comes first, and is not decided again (below). A round open over a pod other than the one
+// the claims record is over: that pod went, and the pod the claims record now is the one in its
+// place. Such a round ends at that sweep whatever the runtime says of the pod that replaced it,
+// its drift included — a drifting replacement is given a round of its own at a later sweep, an
+// opening under the project's limits like any other — and the end is posted to the members of
+// that round alone (endPodUpdates), so a claim already in a round over the new pod stays in it.
+// Then the drift, which is also what says the pod is not there: a round open over a pod the
+// runtime no longer has ends at that reading, and a pod that has drifted from nothing and has no
+// round open over it needs no replacement. A round open over the pod the claims still record goes
+// on, drift or no drift: once opened, a round ends only by replacing its pod, or because that pod
+// is gone. Only then is a complete round acted on, and only then is a round opened or kept open.
 //
-// The end of a round over a replaced pod is read from the claims at every sweep, so an end that
-// never reached a machine is made again a minute later: the post that carries an end lives in
-// memory alone, a member whose machine is in a relaunch when the daemon stops loses it, and the
-// store keeps the round for the next boot to restore. Waiting for the pod in its place to stop
-// drifting would leave such a round open for as long as that pod drifted, and the dead round's
-// slot would hold the issue's own next round back behind the project's open-round limit
-// (dispatch://INFRA-3276, R5).
+// The sweep decides the end of a round once (dispatch://INFRA-4109 R6). Every end it makes is
+// posted to the round's members and kept as the issue's ended round (endPodUpdates,
+// podUpdateEnded). The post is asynchronous: a member whose machine is in a relaunch takes it
+// only once the relaunch is done, and its claim records the round until then. While a claim
+// records that round, the sweep reads the claim as the end leaves it, in no round
+// (withoutRound), and it decides, logs, posts and writes on the issue nothing of that round.
+// Read as it stands, the round would be ended again at every sweep, with its end posted to each
+// member again and its message written on the issue again: OSSV-522's round was ended at each of
+// 11 sweeps while its implementer's machine relaunched. Within one daemon a post to a machine's
+// queue is never lost (inbox), so the end reaches every member.
+//
+// Only the ended round is read as over. One group can hold the dead pod's round on one claim and
+// the round over the pod in its place on another (endPodUpdates), and that other round is decided
+// as usual, from the group as the end leaves it. Where no claim records another round, nothing
+// else of the issue is decided at that sweep: its claims are not yet as the end leaves them, what
+// they record of the pod can be the pod the ended round was opened over, and a round opened from
+// that pod would be the ended round again. The issue's next round can open from the first sweep
+// after the end reaches every member, and the ended round holds no slot meanwhile
+// (beginPodUpdateSweep).
+//
+// A restart forgets the ended rounds and the posts not taken yet, and the store keeps the round on
+// each claim whose machine did not take the end, for the next boot to restore. The end of a round
+// over a replaced pod is read from the claims, so that boot makes the end once more. Waiting for
+// the pod in its place to stop drifting would leave such a round open for as long as that pod
+// drifted, and the dead round's slot would hold the issue's own next round back behind the
+// project's open-round limit (dispatch://INFRA-3276, R5).
 //
 // A group whose claims record no pod at all decides nothing from its claims: no locator is no
 // evidence either way — every claim of the issue may be suspended (letGo clears the locator), or
@@ -161,6 +190,14 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // for the issue (reconcilePodUpdates, podReplacement).
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, now time.Time, sweep *podUpdateSweep) *podReplacement {
 	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
+	if ended := sweep.ended[issue]; ended != "" {
+		// A claim of the issue still records the round the sweep has ended (podUpdateSweep.ended
+		// keeps no other), so the issue is decided from the group as that end leaves it.
+		group = withoutRound(group, ended)
+		if openPodRound(group) == "" {
+			return nil
+		}
+	}
 	pod, split := groupPod(group)
 	if split {
 		s.log.Info("supervise: the claims of this issue run in two pods; their update round waits for the replacement in flight",
@@ -1478,11 +1515,20 @@ func (s *supervision) writeOnIssue(ctx context.Context, issue string, post recor
 }
 
 // endPodUpdates ends round of the issue on every claim of the group that is one of its members
-// (memberOf), and on no other. A round ends only where the pod it was opened over is gone —
-// replaced by the round itself, replaced under it, or gone for a failure of its own — so the post
-// carries nothing of that pod's fate (supervise.PodUpdateEnded). The read of the issue's
-// workspace the round kept goes with it (forgetWorkspaceRead): every end the sweep makes comes
-// here, and no replacement of the round is left to name the read.
+// (memberOf), and on no other. It is the one way the sweep ends a round: the round's own
+// replacement (replacePodForRound), its pod gone with another pod recorded in its place
+// (reconcileIssuePodUpdate), its pod read gone (endRoundOverAGonePod) and its pod gone with a
+// member's work (podWentWithoutItsRound) all end it here. A round ends only where the pod it was
+// opened over is gone — replaced by the round itself, replaced under it, or gone for a failure of
+// its own — so the post carries nothing of that pod's fate (supervise.PodUpdateEnded). The read of
+// the issue's workspace the round kept goes with it (forgetWorkspaceRead): no replacement of the
+// round is left to name the read.
+//
+// The end is kept as the issue's ended round (podUpdateEnded) in the same step that posts it. The
+// post is asynchronous, and a member's machine in a relaunch takes it only once the relaunch is
+// done, so the sweeps until then find the round on that member's claim. The kept end is what stops
+// those sweeps from deciding the round again (reconcileIssuePodUpdate): an end made anywhere else
+// would be made again at every sweep until each member took it.
 //
 // A claim of the group in another round is left in it. Read while a replacement settles, one
 // group can hold the dead pod's round on one claim and the round over the pod that replaced it on
@@ -1490,12 +1536,43 @@ func (s *supervision) writeOnIssue(ctx context.Context, issue string, post recor
 // round its workers have been asked to push for, over a pod that is still there.
 func (s *supervision) endPodUpdates(issue string, group []supervise.Claim, round string) {
 	s.forgetWorkspaceRead(issue, round)
+	s.keepEndedRound(issue, round)
 	for _, c := range group {
 		if !memberOf(c, round) {
 			continue
 		}
 		s.supervisor.post(c.Token, supervise.PodUpdateEnded{Claim: c.Token, Round: round})
 	}
+}
+
+// keepEndedRound keeps round as the round of the issue the sweep has ended (podUpdateEnded), in
+// place of whatever was kept for the issue before. One round is kept for each issue. A second end
+// on the issue while a claim still records the first needs two rounds on one group and two
+// machines in a relaunch at once, and then the first round is read again and ended once more, as
+// a restart ends it.
+func (s *supervision) keepEndedRound(issue, round string) {
+	s.podUpdateEndedMu.Lock()
+	defer s.podUpdateEndedMu.Unlock()
+	if s.podUpdateEnded == nil {
+		s.podUpdateEnded = map[string]string{}
+	}
+	s.podUpdateEnded[issue] = round
+}
+
+// endedRounds is the rounds the sweep has ended that a claim of their issue still records, by
+// issue, read once before the walk (beginPodUpdateSweep). An entry goes at the first sweep where
+// no claim of its issue records its round: every member's machine has taken the end, and nothing
+// of the round is left to read as over. byIssue is the sweep's groups, so an issue with no live
+// claim records no round. What is answered is a copy, so the walk reads it without this mutex.
+func (s *supervision) endedRounds(byIssue map[string][]supervise.Claim) map[string]string {
+	s.podUpdateEndedMu.Lock()
+	defer s.podUpdateEndedMu.Unlock()
+	for issue, round := range s.podUpdateEnded {
+		if !recordsRound(byIssue[issue], round) {
+			delete(s.podUpdateEnded, issue)
+		}
+	}
+	return maps.Clone(s.podUpdateEnded)
 }
 
 // podReading is what one sweep could read of the pod the group's claims record, and the one
@@ -1835,6 +1912,27 @@ func passedOverClaims(group []supervise.Claim, round string) []supervise.Claim {
 // ever in the pod whose disk went.
 func memberOf(c supervise.Claim, round string) bool {
 	return c.UpdateRound == round
+}
+
+// withoutRound is group as the end of round leaves it: each claim that records round reads as in
+// no round. The sweep reads a group so while an end it posted is on its way to a member's machine
+// (podUpdateEnded): the walk decides the issue from it (reconcileIssuePodUpdate), and the
+// project's open-round slots are counted over it (beginPodUpdateSweep). Only the round the claim
+// records is cleared, because every reading of a round here goes through it (memberOf, answered,
+// Claim.InPodRound, Claim.LeftPodRound), so a claim that records none is no member of any round
+// for each of them. A group where no claim records round, and every group for no round, is
+// answered as it is; any other is a copy, so the sweep's own group is not written.
+func withoutRound(group []supervise.Claim, round string) []supervise.Claim {
+	if round == "" || !recordsRound(group, round) {
+		return group
+	}
+	ended := slices.Clone(group)
+	for i := range ended {
+		if memberOf(ended[i], round) {
+			ended[i].UpdateRound = ""
+		}
+	}
+	return ended
 }
 
 // lostClaims is what the round's pod took with it: every member of the round with a worker that

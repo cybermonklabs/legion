@@ -1401,6 +1401,20 @@ type supervision struct {
 	// the pace podUpdateMu guards; the sweep is its one goroutine all the same.
 	podUpdateWorkspaceMu sync.Mutex
 	podUpdateWorkspace   map[string]workspaceRead
+	// podUpdateEndedMu guards podUpdateEnded, what the update-round sweep keeps between ticks of
+	// the rounds it has ended: by issue, the round whose end the sweep last posted to the round's
+	// members (endPodUpdates). The post is asynchronous (supervisor.post), and a member whose
+	// machine is in a relaunch takes it only once that relaunch is done, so its claim records the
+	// round until then. While a claim of the issue records that round, the sweep reads the claim
+	// as the end leaves it and decides nothing of that round again (reconcileIssuePodUpdate), and
+	// the round holds no open-round slot (beginPodUpdateSweep). The entry goes at the first sweep
+	// where no claim of the issue records the round (endedRounds). Within one daemon a post to a
+	// machine's queue is never lost (inbox), so the end reaches every member. Nothing of it is in
+	// the store: a restart forgets it with the posts not taken yet, and the next boot makes the end
+	// once more for a claim the store still holds in the round (dispatch://INFRA-3276 R5). A mutex
+	// of its own, for the reason podUpdateWorkspaceMu has one.
+	podUpdateEndedMu sync.Mutex
+	podUpdateEnded   map[string]string
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
