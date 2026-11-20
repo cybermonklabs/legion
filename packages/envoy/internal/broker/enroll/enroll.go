@@ -789,8 +789,9 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // was approved and whichever route the launcher reached; a full member, and a person Dispatch
 // holds no row for, enroll as before. Any failure to ask — Dispatch not answering, Dispatch
 // refusing the broker's own account (projectaccess.ErrBrokerRefused), a kind this broker does not
-// know (projectaccess.ErrUnknownMemberKind) — is a *projectaccess.MemberKindUncheckable: a check
-// that cannot decide refuses, and the launcher enrols again.
+// know (projectaccess.ErrUnknownMemberKind) — is the *projectaccess.MemberKindUncheckable
+// projectaccess.Restricted returns: a check that cannot decide refuses, and the launcher enrols
+// again.
 //
 // It asks nothing for an enrollment that acts for no person (a service's pod, a machine's own
 // session), for a person's sign-in on a machine, whose person the broker verified against
@@ -801,11 +802,11 @@ func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollmen
 	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
 		return nil
 	}
-	kind, err := s.Projects.MemberKind(ctx, *in.Operator)
+	restricted, err := projectaccess.Restricted(ctx, s.Projects, *in.Operator)
 	switch {
 	case err != nil:
-		return &projectaccess.MemberKindUncheckable{Person: *in.Operator, Err: err}
-	case kind == projectaccess.MemberRestricted:
+		return err
+	case restricted:
 		return fmt.Errorf("%w: %s is a restricted member", ErrRestrictedMember, *in.Operator)
 	}
 	return nil

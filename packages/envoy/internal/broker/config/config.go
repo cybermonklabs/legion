@@ -384,11 +384,10 @@ type Config struct {
 	// (requests.Machine.Projects), and while Dispatch cannot say what kind of member a person is,
 	// every enrollment under that person's login and every secret request and release of their
 	// sessions is refused 503 MEMBER_KIND_UNCHECKABLE. Set with BROKER_PROJECT_ACCESS_TOKEN_FILE
-	// or not at all: with
-	// neither, the broker asks Dispatch nothing. A token that names no project, and an operator
-	// entry's token, whose project that operator's own setting chose, are minted as before; a
-	// person's trade that names a project is refused, since nothing could say that person may see
-	// it; and every enrollment and secret request is decided as before.
+	// or not at all: with neither, the broker asks Dispatch nothing. A token that names no
+	// project, and an operator entry's token, whose project that operator's own setting chose,
+	// are minted as before; a person's trade that names a project is refused, since nothing could
+	// say that person may see it; and every enrollment and secret request is decided as before.
 	ProjectAccessURL string
 	// BROKER_PROJECT_ACCESS_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for that Dispatch, minted for Dispatch's audience. Read when the broker

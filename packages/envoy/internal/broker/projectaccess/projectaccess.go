@@ -120,7 +120,7 @@ const UncheckableCode = "MEMBER_KIND_UNCHECKABLE"
 // MemberKindUncheckable is the refusal of something done for Person — an enrollment, a secret
 // request, a release — because Dispatch could not be asked what kind of member Person is: a
 // check that cannot decide refuses rather than answer as if the person were a full member. Err is
-// the failure, which a caller logs. Error names the person and why in UncheckableReason's fixed
+// the failure, which a caller logs. Error names the person and why in uncheckableReason's fixed
 // words and never Err, which can carry Dispatch's address, so a caller answers it as it is.
 type MemberKindUncheckable struct {
 	Person string
@@ -128,17 +128,17 @@ type MemberKindUncheckable struct {
 }
 
 func (e *MemberKindUncheckable) Error() string {
-	return "whether Dispatch calls " + e.Person + " a restricted member cannot be read: " + UncheckableReason(e.Err)
+	return "whether Dispatch calls " + e.Person + " a restricted member cannot be read: " + uncheckableReason(e.Err)
 }
 
 // Unwrap is the failure, so errors.Is reads ErrBrokerRefused and ErrUnknownMemberKind through it.
 func (e *MemberKindUncheckable) Unwrap() error { return e.Err }
 
-// UncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
+// uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
 // in words a refused caller may read: Dispatch refusing the broker's own account, which the
 // deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
 // fixes; and otherwise Dispatch not answering, which clears by itself.
-func UncheckableReason(err error) string {
+func uncheckableReason(err error) string {
 	switch {
 	case errors.Is(err, ErrBrokerRefused):
 		return "Dispatch refused the broker's own account"
@@ -146,6 +146,18 @@ func UncheckableReason(err error) string {
 		return "Dispatch answered a member kind this broker does not know"
 	}
 	return "the broker could not ask Dispatch"
+}
+
+// Restricted reports whether Dispatch calls person a restricted member (MemberRestricted), for a
+// caller about to enroll, decide or release something for that person. Any MemberKind failure is
+// a *MemberKindUncheckable naming person, which the caller returns as it is: a check that cannot
+// decide refuses.
+func Restricted(ctx context.Context, a Access, person string) (bool, error) {
+	kind, err := a.MemberKind(ctx, person)
+	if err != nil {
+		return false, &MemberKindUncheckable{Person: person, Err: err}
+	}
+	return kind == MemberRestricted, nil
 }
 
 // Answer is Dispatch's answer for one project and one person.

@@ -523,13 +523,13 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 }
 
 // restrictedOperator reports whether Dispatch calls the person e acts for a restricted member
-// (projectaccess.MemberRestricted), asked through m.Projects on no transaction, as the rule
+// (projectaccess.Restricted), asked through m.Projects on no transaction, as the rule
 // internal/broker/projectaccess states for every caller is: Create asks it before it reads a
 // live grant to reuse, every release before it re-checks the grant, and every airlock proxy
 // connection before it carries anything (AirlockConnection), since the proxy holds a grant's
-// values past the release that read them. The person is the one
-// requester reads, so a pod whose account BROKER_POD_OPERATORS no longer maps, a service's pod
-// and a machine's own session ask nothing, and neither does a machine with no client of Dispatch.
+// values past the release that read them. The person is the one requester reads, so a pod whose
+// account BROKER_POD_OPERATORS no longer maps, a service's pod and a machine's own session ask
+// nothing, and neither does a machine with no client of Dispatch.
 //
 // It is the second half of the rule that a restricted member's agents get no secret, the first
 // being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
@@ -548,11 +548,7 @@ func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool
 	if m.Projects == nil || e.Operator == nil || m.unmappedPersonPod(e) {
 		return false, nil
 	}
-	kind, err := m.Projects.MemberKind(ctx, *e.Operator)
-	if err != nil {
-		return false, &projectaccess.MemberKindUncheckable{Person: *e.Operator, Err: err}
-	}
-	return kind == projectaccess.MemberRestricted, nil
+	return projectaccess.Restricted(ctx, m.Projects, *e.Operator)
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay

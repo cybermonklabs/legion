@@ -409,9 +409,6 @@ func (s *Session) refuse(reason string) {
 	}
 }
 
-// refusedCh is the channel refuse closes.
-func (s *Session) refusedCh() <-chan struct{} { return s.refused }
-
 // markLapsed is what a refused renew does: the broker no longer honours this enrollment (its lease
 // lapsed, or it was revoked), so the session stops counting as enrolled at once — sign and
 // sign-request answer as for any session still enrolling — and the enrollment becomes the lapsed

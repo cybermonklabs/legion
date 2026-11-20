@@ -684,7 +684,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	if wait > 0 && (credential || settled != nil) {
 		select {
 		case <-sess.readyCh():
-		case <-sess.refusedCh():
+		case <-sess.refused:
 		case <-settled:
 		case <-time.After(wait):
 		case <-sess.stop:
