@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -419,6 +422,87 @@ func TestACheckLookBoundAfterAPauseCountsFromTheCheckRolesReady(t *testing.T) {
 				t.Fatalf("after the look ended: %d issue_suspend and %d check_wake rows, want one of each", suspends, wakes)
 			}
 		})
+	}
+}
+
+// sentStatements records every statement a pool's connections send (pgx.QueryTracer).
+type sentStatements struct {
+	mu  sync.Mutex
+	sql []string
+}
+
+func (s *sentStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sql = append(s.sql, data.SQL)
+	return ctx
+}
+
+func (*sentStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (s *sentStatements) statements() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.sql)
+}
+
+// The look's read of the project's latest pause and of its role's claim (lookBoundAfterPause)
+// writes nothing and takes no lock, so its transaction opens read-only and reads no transaction
+// id (store.TransactWith, pgx.ReadOnly): the database refuses a write the read would make, and
+// the commit costs no id read. The pause ended after the look began, so the read goes on to the
+// role's claim and the look waits for its bound; the runner's pool records what it sends.
+func TestACheckLooksReadOfTheLatestPauseOpensReadOnlyAndReadsNoID(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	ended := now.Add(-time.Minute)
+	began := ended.Add(-3 * time.Hour)
+	endLegionPause(t, pool, openLegionPause(t, pool, began), ended)
+	root := checkRoot()
+	lookAt := began.Add(time.Hour)
+	check := openCheck(root, "a1b2c3d4")
+	check.LookWakeAt = &lookAt
+	sent := &sentStatements{}
+	cfg := pool.Config()
+	cfg.ConnConfig.Tracer = sent
+	traced, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open the recording pool: %v", err)
+	}
+	t.Cleanup(traced.Close)
+	runner := &outbox{pool: store.NewPool(traced), dispatchProject: "LEGION", records: record.NewStore(), project: "legion",
+		log: quietLogger(), now: func() time.Time { return now }}
+	row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt}, lookAt.Add(workflow.CheckLookBound))
+	err = runner.lookBoundAfterPause(ctx, row, 1, check)
+	if due, waits := wait.UntilAt(err); !waits || !due.Equal(ended.Add(workflow.CheckLookBound)) {
+		t.Fatalf("the look after the pause = %v, want it to wait a bound from the pause's end: the read found no ended pause", err)
+	}
+	statements := sent.statements()
+	if len(statements) == 0 {
+		t.Fatal("UNKNOWN: the pool sent no statement, so nothing says how the read opened its transaction")
+	}
+	begins, readOnly, ids, claims := 0, 0, 0, 0
+	for _, sql := range statements {
+		lower := strings.ToLower(strings.TrimSpace(sql))
+		if strings.HasPrefix(lower, "begin") {
+			begins++
+			if strings.Contains(lower, "read only") {
+				readOnly++
+			}
+		}
+		if strings.Contains(sql, "pg_current_xact_id_if_assigned") {
+			ids++
+		}
+		if strings.Contains(sql, "pending_task_deliveries") {
+			claims++
+		}
+	}
+	if claims != 1 {
+		t.Fatalf("reads of the role's claim = %d, want 1: the read stopped at the pause; sent %q", claims, statements)
+	}
+	if begins != 1 || readOnly != 1 || ids != 0 {
+		t.Errorf("the read began %d transactions, %d of them read-only, and read the transaction's id %d times; want one read-only transaction and no id read; sent %q",
+			begins, readOnly, ids, statements)
 	}
 }
 

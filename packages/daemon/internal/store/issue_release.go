@@ -239,7 +239,7 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's role stop requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {
@@ -320,7 +320,7 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 		return ReleaseDecision{}, errors.New("a release's save requires its project, its issue and its outbox row")
 	}
 	var decision ReleaseDecision
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		decision = ReleaseDecision{}
 		mark, held, err := readReleaseMark(ctx, tx, project, issue, row)
 		if err != nil || !held {

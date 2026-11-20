@@ -310,7 +310,7 @@ const conflictHoldersQuery = `select r.kind, r.name, h.claim
 // record, about 4.5 names a claim, not what the table has gathered (reviews N2 and F2 of #4220).
 func (s *Store) SessionConflicts(ctx context.Context, project string) ([]SessionConflict, error) {
 	var conflicts []SessionConflict
-	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+	err := TransactWith(ctx, s.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		current, abandoned, unholdable, err := recordedNames(ctx, tx, project)
 		if err != nil {
 			return err
