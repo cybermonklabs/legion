@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  With `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in envoy.json), the session takes its
+  inbound messages through the Envoy listener's relay socket, over HTTPS alone with its own broker
+  token, rather than over NATS: an agent on a machine with no NATS connection to the deployment
+  still receives its messages and answers each frame on the socket. A session switch opens the
+  socket again for the new session before it takes that session's relay subject. The socket carries
+  no agent stream, so the session opens no live view, and its start notice says so. With
+  `ENVOY_INBOUND` unset the session dials NATS as before.
+time: 2026-11-20T09:58:42Z
+custom:
+    Issue: feat-listener-relay-client
