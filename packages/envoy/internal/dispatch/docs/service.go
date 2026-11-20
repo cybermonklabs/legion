@@ -148,11 +148,12 @@ type Service struct {
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
-	// maxPendingItems is the pending queue the service's rooms decode their stored state under
-	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
-	// queue the check a room's load is compared with takes (validateUpdate). New sets it to
-	// maxUpdateItems, whose comment states the rule; a test lowers it, and the server's, before
-	// any room opens (shrinkPendingItems).
+	// maxPendingItems is the pending queue the service's copies of a room's stored state decode
+	// under (loadDecodedHistory, decodeStoredCopy) and the queue the check a room's load is
+	// compared with takes (validateUpdate). The room's own document parks no more than
+	// maxParkedStructs, far below it (Server.MaxPendingItems, which New sets and ygo reads as each
+	// room loads). New sets this to maxUpdateItems, whose comment states the rule; a test lowers
+	// it, and the server's, before any room opens (shrinkPendingItems).
 	maxPendingItems int
 	// afterEditNoticeIDs runs once an edit-notice sweep has read its due ids, with no lock held,
 	// and before it locks the first. Nil outside tests; tests use it to delete a document in that
@@ -519,9 +520,9 @@ type Service struct {
 	// room's document until they integrate or the room unloads - are not counted; parked rows
 	// already stored are part of the history a later load decodes, and count there. ygo bounds
 	// the parked ones per room in counts, not bytes: its structs by Server.MaxPendingItems, which
-	// this service sets to maxUpdateItems (1<<20; New, below, and persistence.go), and its delete
-	// ranges apart by Server.MaxPendingDeleteRanges, set to maxParkedDeleteRanges (4,096), each
-	// refusing an update that would park past it (theorem-labs/ygo v1.55.1-theorem.10,
+	// this service sets to maxParkedStructs (4,096; New, below), and its delete ranges apart by
+	// Server.MaxPendingDeleteRanges, set to maxParkedDeleteRanges (4,096), each refusing an update
+	// that would park past it (theorem-labs/ygo v1.55.1-theorem.11,
 	// provider/websocket/server.go:1378-1384, :2042-2043).
 	// Each load's bytes are counted against that load's token, and each unload of a name ends the
 	// name's oldest token, so a room that loaded again before an earlier room of the same name
@@ -963,21 +964,24 @@ func New(deps Deps) *Service {
 	// (room_appends.go), so the suppression slots still match one update apiece.
 	srv.PersistCoalesceWindow = -1
 	srv.CompactEvery = 200
-	// A room parks structs under the service's own cap (Service.maxPendingItems; see
-	// maxUpdateItems), which ygo reads as each room loads: about ten times ygo's default. ygo sets
-	// it before it runs OnLoadDocument and hands the room no state to decode itself (sjawhar/ygo
-	// v1.55.1-sami.8, loadRoom, provider/websocket/server.go:1921-1924), so that hook's own decode
-	// of the stored state and every peer's apply are capped (bootstrapLoadedState,
-	// TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad). The state it loads was decoded under
-	// this cap first (loadTree, or LoadDoc's decodeStoredCopy), so the room starts within it.
-	// Bounding what one peer's update can do to a room is LEGION-487. ygo's check of each update
-	// the service broadcasts (Server.BroadcastUpdate) takes no pending queue: the room has
-	// already applied the update (reearth/ygo#268, in the pinned fork).
-	srv.MaxPendingItems = service.maxPendingItems
-	// Its parked delete ranges have a cap of their own, far below that one
-	// (maxParkedDeleteRanges), set at the same point of the load: an update that would park more
-	// is refused before it changes anything, and its sender answered not applied and left
-	// connected, as for the structs' cap (refusedByApply).
+	// A room parks at most maxParkedStructs structs, a cap ygo reads as each room loads and far
+	// below the decode cap (maxUpdateItems): an update that would park more is refused before it
+	// changes anything, and its sender answered not applied and left connected (refusedByApply).
+	// Counted twice against the decode cap and charged in both of the room's copies, structs one
+	// writer parked at that cap under her own given id locked a document of 10 structs out of
+	// every other edit (maxParkedStructs). ygo sets the cap before it runs OnLoadDocument and hands
+	// the room no state to decode itself (sjawhar/ygo v1.55.1-sami.8, loadRoom,
+	// provider/websocket/server.go:1921-1924), so that hook's own decode of the stored state and
+	// every peer's apply are capped (bootstrapLoadedState,
+	// TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad); a stored state whose decode would park
+	// more fails the room's load. Bounding what one peer's update can do to a room is LEGION-487.
+	// ygo's check of each update the service broadcasts (Server.BroadcastUpdate) takes no pending
+	// queue: the room has already applied the update (reearth/ygo#268, in the pinned fork).
+	srv.MaxPendingItems = maxParkedStructs
+	// Its parked delete ranges have a cap of their own (maxParkedDeleteRanges), set at the same
+	// point of the load: an update that would park more is refused before it changes anything,
+	// and its sender answered not applied and left connected, as for the structs' cap
+	// (refusedByApply).
 	srv.MaxPendingDeleteRanges = maxParkedDeleteRanges
 	// A room whose last peer leaves, or that only Server.Apply touches, stays resident until it has
 	// been idle for roomIdleTimeout: ygo stamps a room idle when its last peer leaves, and when an
@@ -1086,16 +1090,22 @@ func New(deps Deps) *Service {
 	srv.AnswerOnceStored = true
 	// A read-only browser's sync step 2 reaches no hook, and ygo answers it by decoding the whole
 	// of it into a document of its own to ask whether the room holds it all, outside every load
-	// slot, and any signed-in person can open a read-only socket. One past unslottedApplyBytes,
-	// what a browser's apply decodes outside a slot, is answered not applied without a decode, so
-	// the page keeps its saved rows as it does for any answer not applied. One at or under it is
-	// decoded under the apply's own value limit (maxDecodedValuesPerApply): its decode stops past
-	// that many values and it is answered not applied, so a frame of up to 2 MiB dense in values
-	// costs no more than a browser's unslotted apply may
-	// (TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode; the value limit's own test is the
-	// fork's TestInteg_ReadOnlySyncStep2MaxValues_AStep2PastItIsAnsweredZeroAndDecodedNoFurther).
+	// slot, and any signed-in person can open a read-only socket. So it is decoded no further than
+	// a browser's apply decodes outside a slot. One past unslottedApplyBytes is answered not
+	// applied without a decode, so the page keeps its saved rows as it does for any answer not
+	// applied. One at or under it is decoded to no more than unslottedApplyStructs values (each
+	// struct, delete range, lib0 Any value and JSON value, as the apply's value limit counts
+	// them), the structs an apply may declare and take no slot: its decode stops past them and it
+	// is answered not applied, so a frame of up to 2 MiB dense in values or in structs builds no
+	// more than a browser's unslotted apply may. Under the apply's own value limit,
+	// maxDecodedValuesPerApply, a 2 MB step 2 of a million GC structs decoded whole outside every
+	// slot, allocating 196,950,064 bytes. The tests are
+	// TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode,
+	// TestAReadOnlySocketsStepTwoDenseInValuesDecodesNoFurtherThanTheApplysValueLimit and
+	// TestRV9AReadOnlyStepTwoOfAMillionStructsCostsNoMoreThanAWritersApply; the value limit's own
+	// is the fork's TestInteg_ReadOnlySyncStep2MaxValues_AStep2PastItIsAnsweredZeroAndDecodedNoFurther.
 	srv.ReadOnlySyncStep2MaxBytes = unslottedApplyBytes
-	srv.ReadOnlySyncStep2MaxValues = maxDecodedValuesPerApply
+	srv.ReadOnlySyncStep2MaxValues = unslottedApplyStructs
 	srv.OnLoadDocument = service.onLoadDocument
 	// ygo calls it as a room's first browser joins it, after the browser is in the room.
 	srv.OnFirstPeer = service.takeUpSettlementRoom

@@ -521,7 +521,8 @@ func newDocumentCopy(options ...crdt.DocOption) *crdt.Doc {
 }
 
 // newCappedDocumentCopy builds a fresh document for replay at the instance's pending-queue cap:
-// a copy of its room decodes what that instance decodes and refuses what it would refuse. The
+// a copy of its room decodes what that instance's other copies decode and refuses what they would
+// refuse, and the room's own document parks no more than maxParkedStructs, which is lower. The
 // cap follows the instance (newRoomServer, loadTree, replica); other callers use newDocumentCopy.
 // See maxUpdateItems for the production and protocol caps.
 //

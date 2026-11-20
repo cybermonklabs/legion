@@ -57,10 +57,11 @@ body: |-
     again is weighed as that browser's own.
     A parked delete range spends none of the decode cap's headroom, and the room budget charges each
     1,000 bytes on the room's live copy while it waits. A room parks at most 4,096 delete ranges and
-    1,048,576 structs, and an update that would park past either is answered not applied with its
-    socket left open, since it waits on edits the room has not received yet. What the queue holds of
-    content, the map keys of its structs included, is weighed as it holds it now, so content a later
-    edit or a server write landed is no longer charged after it.
+    4,096 structs, so structs one writer parks under her own client id no longer lock a small
+    document out of everyone else's edits, and an update that would park past either is answered
+    not applied with its socket left open, since it waits on edits the room has not received yet.
+    What the queue holds of content, the map keys of its structs included, is weighed as it holds
+    it now, so content a later edit or a server write landed is no longer charged after it.
     A browser's edit is now answered saved only once the commit that holds it is stored. A frame
     that commits nothing, such as a reconnect's sync step 2 carrying only what the room holds, is
     answered saved only once every commit the room had made by then is stored, and a room that could
@@ -85,7 +86,8 @@ body: |-
     answered not applied, and lands once the other person's browser sends the lost edit again. A
     socket given an id carries presence only under that id, and a read-only socket's presence, which
     ygo discards, is not read at all; its sync step 2 over 2 MiB is answered not applied without
-    being decoded, and one under it stops decoding at the apply's value limit. A page admitted
+    being decoded, and one under it stops decoding past 3,328 values, so a step 2 of a million
+    structs in 2 MB is answered not applied rather than decoded whole. A page admitted
     read-only stores no id: it is sent one that no row names, is given that one back at each
     read-only reconnect, so a reader's page is not reloaded at each, and keeps it once it is
     admitted writable, when it is stored. A person holds at most 64 ids in a document that no edit
@@ -131,10 +133,11 @@ body: |-
 
     What is transient rather than resident is held by one pool of bytes, the pod's load
     concurrency: slots of 600,000,000 bytes, one in a 4 GiB pod and 16 under a 32Gi container. A
-    whole-document decode, a live write's fork and one apply of a browser's update over 2 MiB each
-    take what their own copy costs, at the same two prices, the apply before any of the update is
-    read. The answer to one browser's first sync takes the greater of 8 bytes a byte of the room's
-    state, and 340 bytes a client the room holds with 4,096 bytes and 101 a struct for the frame
+    whole-document decode, a live write's fork and one apply of a browser's update over 2 MiB, or
+    of more than 3,328 structs however few its bytes, each take what their own copy costs, at the
+    same two prices, the apply before any of the update is decoded. The answer to one browser's
+    first sync takes the greater of 8 bytes a byte of the room's state, and 340 bytes a client the
+    room holds with 4,096 bytes and 101 a struct for the frame
     being packed, up to the 16,000 structs a frame can hold, and 40 bytes more for each client the
     browser's own sync step 1 names. No taker takes more than one slot, so the heaviest waits for
     its turn rather than being refused: a stored document always loads and no honest handoff is

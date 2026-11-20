@@ -451,17 +451,18 @@ func unfoldableHistory() ([][]byte, *crdt.Doc) {
 const testPendingItems = 64
 
 // shrinkPendingItems lowers to testPendingItems the pending queue the decodes of service - its
-// rooms' loads, whose cap ygo reads from the server as each room loads, and the validateUpdate
-// they are compared with - and of versioned - its folds, their read-backs and the documents their
-// states decode into - take, and restores both when the test ends. Either may be nil. Call it
-// before anything decodes under them: before any room of service opens, and before any fixture
-// that parks more than testPendingItems is stored or read.
+// rooms' own loads, whose cap ygo reads from the server as each room loads (maxParkedStructs in
+// production), its copies of their stored state and the validateUpdate they are compared with -
+// and of versioned - its folds, their read-backs and the documents their states decode into -
+// take, and restores each when the test ends. Either may be nil. Call it before anything decodes
+// under them: before any room of service opens, and before any fixture that parks more than
+// testPendingItems is stored or read.
 func shrinkPendingItems(t *testing.T, service *Service, versioned *PgVersioned) {
 	t.Helper()
 	if service != nil {
-		was := service.maxPendingItems
+		was, wasRooms := service.maxPendingItems, service.srv.MaxPendingItems
 		service.maxPendingItems, service.srv.MaxPendingItems = testPendingItems, testPendingItems
-		t.Cleanup(func() { service.maxPendingItems, service.srv.MaxPendingItems = was, was })
+		t.Cleanup(func() { service.maxPendingItems, service.srv.MaxPendingItems = was, wasRooms })
 	}
 	if versioned != nil {
 		was := versioned.maxPendingItems

@@ -40,10 +40,10 @@ import (
 // (liveWrite.releaseFork). A write never gives its grant back while it holds a fork, and the
 // decodes it makes inside the grant it already holds take nothing more (withLoadSlot, holdLoad).
 //
-// The third is one apply of a browser's update over unslottedApplyBytes, held across the apply
-// (Service.weighPeerUpdate): a reconnect storm's whole-state handoffs then decode as many at a
-// time as the pool holds rather than all at once, while a keystroke, far under that size, never
-// waits for the pool.
+// The third is one apply of a browser's update over unslottedApplyBytes, or declaring more than
+// unslottedApplyStructs structs, held across the apply (Service.weighPeerUpdate): a reconnect
+// storm's whole-state handoffs then decode as many at a time as the pool holds rather than all at
+// once, while a keystroke, far under both, never waits for the pool.
 //
 // The fourth is the answer to one browser's first sync, held from before that answer is built
 // until its frames are in the browser's write queue (Service.weighStateAnswer): answering a
@@ -60,11 +60,25 @@ import (
 // callers hand it no request context to bound a wait by.
 
 // unslottedApplyBytes is the update's own bytes at or under which an apply of a browser's update
-// takes no slot: 2 MiB, the figure the apply-heap bound used before the cut, over thirty times
-// the editor's 64 KiB paste and far past any keystroke, so typing never waits on a reconnect
-// storm's handoffs. A whole-state handoff is above it and waits
-// (dispatch://INFRA-179/artifact/infra179-simplify-measured-md).
+// takes no slot, where it declares no more than unslottedApplyStructs structs: 2 MiB, the figure
+// the apply-heap bound used before the cut, over thirty times the editor's 64 KiB paste and far
+// past any keystroke, so typing never waits on a reconnect storm's handoffs. A whole-state handoff
+// is above it and waits (dispatch://INFRA-179/artifact/infra179-simplify-measured-md).
 const unslottedApplyBytes = 2 << 20
+
+// unslottedApplyStructs is the most structs an update may declare and still apply with no slot,
+// and the most values a read-only socket's sync step 2 is decoded to
+// (Server.ReadOnlySyncStep2MaxValues, New): unslottedApplyBytes at bytesOfHeapAStruct, 3,328
+// structs. The bytes alone do not bound what a decode builds, since a struct can take two bytes of
+// the frame and an item of the heap: a 2,000,010-byte frame of a million GC structs allocated
+// 204,963,448 bytes to apply through the hook, 102.5 times the frame, and 196,950,064 bytes to
+// decode for a read-only socket's answer
+// (TestRV9AReadOnlyStepTwoOfAMillionStructsCostsNoMoreThanAWritersApply, 2026-11-20). An update
+// declaring more takes a slot of what its structs cost (copyWeight), and a read-only socket's
+// step 2 carrying more values is answered not applied once its decode reaches them, which costs
+// the page nothing: it keeps its saved rows, as for any answer not applied. A keystroke declares
+// a struct or two.
+const unslottedApplyStructs = unslottedApplyBytes / bytesOfHeapAStruct
 
 // loadSlotsName is what the slots are logged as (logLoadSlot).
 const loadSlotsName = "load"
@@ -325,7 +339,8 @@ type loadedHistory struct {
 // hand (withLoadSlot). It is the one way the service reads a history it decodes - a socket's
 // admission (loadTree), a room's load (loadDecoded) and a rebuild's source (rebuildSource) - so
 // that no new way out of one of them can leave a grant held. It decodes under maxPending, the
-// pending queue the rooms of the service that reads decode under (Service.maxPendingItems).
+// pending queue the service that reads decodes its copies of stored state under
+// (Service.maxPendingItems).
 // The grant is the history's own weight, which the read has in hand by the time the grant is
 // taken (copyWeight of the bytes it read). Nothing has decoded the history yet, so no struct
 // count can be read of it and the state term alone weighs it; a room of a mebibyte of prose

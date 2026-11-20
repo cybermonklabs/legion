@@ -63,10 +63,12 @@ import (
 // Every other message reaches ygo as it arrived, a sync step 2 among them: the filter reads no
 // more of one than its Hocuspocus header. ygo hands the peer update hook a step 2 and an
 // incremental update alike, and the hook judges both the same way (judgeClients), under the load
-// slot an update past unslottedApplyBytes takes (weighPeerUpdate), so the filter decodes nothing
-// of a document's content outside that slot. A read-only socket's step 2 reaches no hook: ygo
-// answers one past unslottedApplyBytes not applied without decoding it, and decodes a shorter one
-// to answer it (Server.ReadOnlySyncStep2MaxBytes, New).
+// slot an update past unslottedApplyBytes or declaring more than unslottedApplyStructs structs
+// takes (weighPeerUpdate), so the filter decodes nothing of a document's content outside that
+// slot. A read-only socket's step 2 reaches no hook: ygo answers one past unslottedApplyBytes not
+// applied without decoding it, and decodes a shorter one to answer it, no further than
+// unslottedApplyStructs values (Server.ReadOnlySyncStep2MaxBytes and
+// Server.ReadOnlySyncStep2MaxValues, New).
 
 const (
 	// maxAwarenessClientsPerSocket is how many awareness clients one document socket may hold at

@@ -447,13 +447,15 @@ func (s *Service) failRoomLoad(room string, load *roomLoad, cause error) {
 	s.failRoom(room, cause)
 }
 
-// validateUpdate decodes an update about to replace a stored history, as the room will decode it:
-// into a document with maxPending parked items, the caller's own pending queue
-// (PgVersioned.maxPendingItems for the store's check of a rebuilt seed; see maxUpdateItems for
-// the rule it follows), which is the cap a room's load hook decodes its stored state under
-// (bootstrapLoadedState), so a seed a room would serve is never judged one that cannot load. A
-// rebuild runs it on its seed alone (RebuildTx); the history it replaces is judged by the decode
-// the rebuild's source already made of it (rebuildSource), and a room's load by its own.
+// validateUpdate decodes an update about to replace a stored history, as the copies of a room's
+// stored state decode it: into a document with maxPending parked items, the caller's own pending
+// queue (PgVersioned.maxPendingItems for the store's check of a rebuilt seed; see maxUpdateItems
+// for the rule it follows), which is the cap those copies decode under (decodeStoredCopy), so a
+// seed a room would serve is never judged one that cannot load. The room's own document parks no
+// more than maxParkedStructs (bootstrapLoadedState), and a rebuild's seed is the state of a
+// document it built from its text (rebuiltSeed), which parks nothing. A rebuild runs it on its
+// seed alone (RebuildTx); the history it replaces is judged by the decode the rebuild's source
+// already made of it (rebuildSource), and a room's load by its own.
 func validateUpdate(update []byte, maxPending int) error {
 	if len(update) == 0 {
 		return nil
@@ -471,13 +473,14 @@ func decodeStoredState(doc *crdt.Doc, state []byte) error {
 
 // bootstrapLoadedState decodes state, what room's load read (takeLoadedState), into doc, the
 // room's document. It is the decode the room's load makes of its own: ygo is handed no bytes
-// (servicePersistenceAdapter.LoadDoc), so it decodes under the pending cap ygo set on doc before
-// its load hook ran, the server's MaxPendingItems, which New sets from the service's own cap
-// (Service.maxPendingItems; see maxUpdateItems), and through decodeStoredState, so a refusal
-// reads as every other decode of stored state does. The load decoded the same bytes once more,
-// into the copy the room's replica takes (decodeStoredCopy), under the same cap and with the same
-// cleanup off, so the room holds item for item what that copy holds. An empty state - an empty
-// history - decodes nothing.
+// (servicePersistenceAdapter.LoadDoc), so it decodes under the pending caps ygo set on doc before
+// its load hook ran, the server's MaxPendingItems and MaxPendingDeleteRanges, which New sets to
+// maxParkedStructs and maxParkedDeleteRanges, and through decodeStoredState, so a refusal reads
+// as every other decode of stored state does: a state that would park past either fails the
+// room's load. The load decoded the same bytes once more, into the copy the room's replica takes
+// (decodeStoredCopy), under the service's own cap (Service.maxPendingItems; see maxUpdateItems),
+// which is no lower, and with the same cleanup off, so a room whose decode stands holds item for
+// item what that copy holds. An empty state - an empty history - decodes nothing.
 //
 // It decodes with ygo's format cleanup off (crdt.Doc.SetFormatCleanup), which would follow an
 // apply that touches formatted text with a commit of the room's own: that commit reaches no
@@ -790,7 +793,7 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	s.unlockState(room, state)
 	// The room takes peer updates only once this hook returns, and every one of them under the
 	// room's scan budget, which keepReplica sets below (newRoomScans): the state the load decoded
-	// is the server's own and went in unbounded. ygo set the room's pending cap, maxUpdateItems,
+	// is the server's own and went in unbounded. ygo set the room's pending cap, maxParkedStructs,
 	// before it ran this hook (sjawhar/ygo v1.55.1-sami.8, loadRoom,
 	// provider/websocket/server.go:1921-1924), and this hook's own decode of the state ran under
 	// it (bootstrapLoadedState), as every peer's apply does
@@ -904,11 +907,11 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 // With the server's half (New: RelayIntegratedOnly, AnswerParkedNotApplied) a parked frame is
 // neither relayed, nor answered applied, nor stored, nor shown to a reader, so it is kept only by
 // the editor that sent it, which sends it again, and by the queue until the gap fills. The queue
-// itself stays bounded by the room's pending caps, Server.MaxPendingItems for its structs and
-// Server.MaxPendingDeleteRanges for its delete ranges (maxParkedDeleteRanges), which park only
-// under clients their sender's socket holds (parkJudge); its structs are charged against the
-// decode cap's headroom (ceilingWithQueue), and its delete ranges to the room budget
-// (bytesOfHeapAParkedRange).
+// itself stays bounded by the room's pending caps, Server.MaxPendingItems for its structs
+// (maxParkedStructs) and Server.MaxPendingDeleteRanges for its delete ranges
+// (maxParkedDeleteRanges), which park only under clients their sender's socket holds (parkJudge);
+// its structs are charged against the decode cap's headroom (ceilingWithQueue), and its delete
+// ranges to the room budget (bytesOfHeapAParkedRange).
 //
 // The replica's documents take it as the room's does, so the two agree on what a drain landed:
 // the only parked content a replica can hold is what a load decoded into both from rows an

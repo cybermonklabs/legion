@@ -527,7 +527,7 @@ func plusCapped(a, b uint64) uint64 {
 // structCeiling is how many items doc is weighed at against the decode cap, the one measure of a
 // document against that cap that costs neither an encode nor a decode: the structs its store
 // holds (crdt.Doc.StructCount, a walk of the handful of client slices) and what it has parked,
-// weighed as ceilingWithQueue weighs them. A room may park up to maxUpdateItems structs
+// weighed as ceilingWithQueue weighs them. A room may park up to maxParkedStructs structs
 // (Server.MaxPendingItems, which New sets), none of which the store holds yet. Every sum here is
 // capped rather than wrapped, for the reason clockSum gives.
 //
@@ -552,13 +552,15 @@ func structCeiling(doc *crdt.Doc) uint64 {
 // decodes but the pending queue the room holds in memory until its gap fills, which may never
 // happen while the room is loaded: held counts what the store will hold once a parked struct
 // lands, and this counts the queue's own hold on it until then, out of the same headroom as what
-// the room integrates. ygo bounds the queue only at Server.MaxPendingItems, which is the cap
-// itself, so without this the queue could take the whole of the headroom where, counted twice, it
-// takes half of it at most. Any struct an apply carries may park, and one that parks moves this
-// ceiling by two, so an apply's structs are charged two items each (capShares): charged one, two
-// frames of GC structs each behind a one-clock gap of its own, each within its allowance, took the
-// room past the cap (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap, dispatch://INFRA-179,
-// review 7).
+// the room integrates. ygo bounds the queue at Server.MaxPendingItems, which New sets to
+// maxParkedStructs, far below the cap, so counted twice what a room parks takes at most 8,192
+// items of the headroom. At the cap itself, which that bound was until round 10, one writer's
+// frames parked half the headroom under her own given id, and counted twice they took the whole
+// of it (TestRV9ParkedStructsUnderTheSendersOwnIdLockASmallDocument, review 9's finding 5). Any
+// struct an apply carries may park, and one that parks moves this ceiling by two, so an apply's
+// structs are charged two items each (capShares): charged one, two frames of GC structs each
+// behind a one-clock gap of its own, each within its allowance, took the room past the cap
+// (TestR7ParkedStructsBehindTheirOwnGapsPassTheDecodeCap, dispatch://INFRA-179, review 7).
 //
 // A parked delete range is counted nowhere here. The splits its landing makes are the drain's, and
 // the apply that lands it spends them from its own Split share, which counts the drain's splits

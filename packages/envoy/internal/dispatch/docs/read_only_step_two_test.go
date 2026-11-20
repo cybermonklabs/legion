@@ -124,13 +124,16 @@ func TestAReadOnlySocketsLongStepTwoIsAnsweredWithoutADecode(t *testing.T) {
 }
 
 // A read-only step 2 at or under unslottedApplyBytes is still decoded to answer it, and its
-// decode stops at the apply's own value limit (Server.ReadOnlySyncStep2MaxValues,
-// maxDecodedValuesPerApply), so a frame dense in values costs a read-only socket no more than a
-// browser's unslotted apply may. Bob's read-only page sends a 2,000,016-byte step 2 of one struct
-// holding 2,000,000 null values: it is answered not applied, and the process allocates a few
-// mebibytes from its first byte to the answer. With the limit unset the same frame allocated
-// 68,640,080 bytes (4,627,528 with it, measured 2026-11-19 in a scratch test that set the field
-// both ways on the same build).
+// decode stops past the values an unslotted apply's structs may number
+// (Server.ReadOnlySyncStep2MaxValues, unslottedApplyStructs), far below the apply's own value
+// limit (maxDecodedValuesPerApply), so a frame dense in values costs a read-only socket no more
+// than a browser's unslotted apply may. Bob's read-only page sends a 2,000,016-byte step 2 of one
+// struct holding 2,000,000 null values, past both: it is answered not applied, and the process
+// allocates a few mebibytes from its first byte to the answer. With the limit unset the same frame
+// allocated 68,640,080 bytes (4,627,528 with it at maxDecodedValuesPerApply, measured 2026-11-19
+// in a scratch test that set the field both ways on the same build, and 4,626,272 at
+// unslottedApplyStructs, read from this test's log on 2026-11-20). A step 2 dense in structs
+// rather than values is TestRV9AReadOnlyStepTwoOfAMillionStructsCostsNoMoreThanAWritersApply.
 func TestAReadOnlySocketsStepTwoDenseInValuesDecodesNoFurtherThanTheApplysValueLimit(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	writeIssueClosed(t, service.store, "DOC-1", true)
@@ -149,8 +152,8 @@ func TestAReadOnlySocketsStepTwoDenseInValuesDecodesNoFurtherThanTheApplysValueL
 	doc.Transact(func(txn *crdt.Transaction) { array.Insert(txn, 0, make([]any, values)) })
 	stepTwo := crdt.EncodeStateAsUpdateV1(doc, nil)
 	if len(stepTwo) > unslottedApplyBytes || values <= maxDecodedValuesPerApply {
-		t.Fatalf("the step 2 is %d bytes of %d values; want it at or under the %d bytes a read-only step 2 is decoded at, and past the %d-value limit",
-			len(stepTwo), values, unslottedApplyBytes, maxDecodedValuesPerApply)
+		t.Fatalf("the step 2 is %d bytes of %d values; want it at or under the %d bytes a read-only step 2 is decoded at, and past the %d-value limit of a browser's apply, and so the %d values a read-only step 2 is decoded to",
+			len(stepTwo), values, unslottedApplyBytes, maxDecodedValuesPerApply, unslottedApplyStructs)
 	}
 	message := encoding.EncodeBytes(func(encoder *encoding.Encoder) {
 		encoder.WriteVarString(artifactID)

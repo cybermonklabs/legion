@@ -132,8 +132,8 @@ const bytesOfHeapAParkedRange = 1_000
 // (websocket.Server.MaxPendingDeleteRanges, which New sets; crdt.WithMaxPendingDeleteRanges): an
 // update whose delete set would park more is refused before it changes anything
 // (crdt.ErrPendingCap), and its sender answered not applied and left connected, as for the
-// structs the queue parks, which MaxPendingItems caps at maxUpdateItems apart (refusedByApply). A
-// frame that parks only ranges already parked - the same frame sent again - is not refused.
+// structs the queue parks, which MaxPendingItems caps at maxParkedStructs apart (refusedByApply).
+// A frame that parks only ranges already parked - the same frame sent again - is not refused.
 //
 // No count of honest ranges sets it, since honest traffic parks none: over every honest drive of
 // round 9 - the browser suite's a2 block and its offline rows, the reconnect and lost-commit
@@ -145,6 +145,34 @@ const bytesOfHeapAParkedRange = 1_000
 // 4,078,736 the heaviest shape measured held. At maxUpdateItems, the cap ranges shared with the
 // structs before, one 4,186,013-byte frame held 29,370,136 bytes of a room's heap.
 const maxParkedDeleteRanges = 4096
+
+// maxParkedStructs is the most structs one room's document parks
+// (websocket.Server.MaxPendingItems, which New sets; crdt.WithMaxPendingItems): an update that
+// would park more is refused before it changes anything (crdt.ErrPendingCap), and its sender
+// answered not applied and left connected (refusedByApply), as for the delete ranges the queue
+// parks (maxParkedDeleteRanges).
+//
+// Its cost sets it, as the ranges' does. It is far below the decode cap (maxUpdateItems), which it
+// was until round 10, because a parked struct counts twice against that cap (ceilingWithQueue) and
+// is charged in both of the room's copies at bytesOfHeapAStruct (roomWeight), while it is one item
+// of the live copy's queue. At the decode cap one writer's frames parked 524,282 GC structs, each
+// behind a one-clock skip, under her own given id in a room of 10 structs: the room was weighed at
+// 1,048,574 items of the cap's 1,048,576 and charged 660,607,920 bytes for a stored state of 250
+// bytes, and another person's keystroke was refused DOC_NEEDS_REBUILD
+// (TestRV9ParkedStructsUnderTheSendersOwnIdLockASmallDocument, review 9's finding 5). At 4,096,
+// what a room parks takes at most 8,192 items of the cap's headroom and 5,160,960 bytes of the
+// room budget, beside the 4,096,000 its parked ranges may.
+//
+// No count of honest parked structs sets it. A struct parks only behind a clock the room lacks -
+// an edit typed after one the room lost or has not received yet
+// (TestAnEditParkedBehindALostCommitIsUnsavedUntilTheCommitThatLandsItIsStored) - and a frame past
+// the cap is answered not applied, which keeps the editor's row for the edit.
+//
+// The room's own decode of its stored state runs under it too, as under the ranges' cap: ygo sets
+// both before the load hook decodes that state into the room (bootstrapLoadedState). A room stores
+// nothing it parks (leaveParkedOut), so only rows an earlier build stored of what parked can park
+// at a load, and a history whose decode would park more than this fails that load.
+const maxParkedStructs = 4096
 
 // roomChargeWeight is what the budget charges a loaded room in all (roomCharge.weigh): its two
 // copies' weight at its resident bytes, stateBytes, and its structs (roomWeight), and the

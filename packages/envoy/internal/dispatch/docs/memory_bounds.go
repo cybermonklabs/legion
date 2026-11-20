@@ -32,8 +32,9 @@ type MemoryBounds struct {
 	DocumentReadCache int64
 	// LoadSlots is how many slots of loadSlotBytes the pod's whole-document copy heap holds
 	// (loadSlots). What that heap bounds is the bytes: each whole-document decode, live write's
-	// fork and apply of an update over unslottedApplyBytes takes out of one pool of
-	// LoadSlots × loadSlotBytes what its own copy costs (copyWeight), and a taker that finds too
+	// fork and apply of an update over unslottedApplyBytes or declaring more than
+	// unslottedApplyStructs structs takes out of one pool of LoadSlots × loadSlotBytes what its
+	// own copy costs (copyWeight), and a taker that finds too
 	// little of the pool free waits for the rest before it takes a database connection, its
 	// request's own deadline answering 503 (errWriteBusy). It is what the limit leaves above the
 	// room budget and the cold reads' cache, three quarters of it, divided by loadSlotBytes: 1

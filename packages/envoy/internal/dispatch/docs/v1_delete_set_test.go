@@ -146,3 +146,31 @@ func TestTheDeleteSetReaderRefusesWhatYgosDecoderRefuses(t *testing.T) {
 		})
 	}
 }
+
+// The structs an update declares are its groups' header counts, Skip runs among them, each held
+// to half the bytes left after its header, since a struct takes two bytes at least: what ygo's
+// apply reads struct by struct and reserves its list for (declaredStructs). The count stops where
+// the bytes stop reading, as the decoder does.
+func TestAnUpdateDeclaresTheStructsItsGroupsCountHeldToItsBytes(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		update []byte
+		want   uint64
+	}{
+		{"no structs", newV1Frame(0).noDeletes(), 0},
+		{"a GC run", newV1Frame(1).group(1, 8, 0).gc(10).noDeletes(), 1},
+		{"two groups with a skip among their structs", newV1Frame(2).group(2, 8, 0).gc(1).skip(3).group(1, 9, 0).gc(2).noDeletes(), 3},
+		// Five bytes follow the header, two structs' worth.
+		{"a header declaring more than its bytes hold", newV1Frame(1).group(1_000_000, 8, 0).gc(1).gc(1).noDeletes(), 2},
+		// Two bytes follow the first group's header, one struct's worth, and the second group's
+		// header is never reached.
+		{"a group cut short", newV1Frame(2).group(2, 8, 0).gc(1).done(), 1},
+		{"a header cut short", newV1Frame(1).uint(5).uint(8).done(), 0},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			if got := declaredStructs(row.update); got != row.want {
+				t.Fatalf("the %d-byte update declares %d structs, want %d", len(row.update), got, row.want)
+			}
+		})
+	}
+}

@@ -47,7 +47,8 @@ import (
 //
 // What it reads costs a pass over the update's bytes and nothing else, so a caller may read it
 // where it reads the update's header (refusedBeforeApply, parkedNeeds, heldAgainst), under the
-// load slot the hook takes for an update past unslottedApplyBytes (weighPeerUpdate).
+// load slot the hook takes for an update past unslottedApplyBytes or declaring more than
+// unslottedApplyStructs structs (weighPeerUpdate).
 func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, clock, length uint64)) bool {
 	r := v1Reader{rest: update, ok: true}
 	for groups := r.uint(); groups > 0 && r.ok; groups-- {
@@ -76,6 +77,34 @@ func eachV1Range(update []byte, structs, deletes func(client crdt.ClientID, cloc
 		}
 	}
 	return r.ok
+}
+
+// declaredStructs is how many structs update, a V1 update, declares in the headers of its client
+// groups, each group's count held to half the bytes left after its header, since a struct takes
+// two bytes at least. It is what the library's apply decodes of the update: it reads each group's
+// structs one by one, Skip runs included, counting each against its value limit before it reads it,
+// and reserves a one-client update's list of structs for its header's count held to the same half
+// of the bytes left (decodeStructs, crdt/update.go:912-948 in theorem-labs/ygo
+// v1.55.1-theorem.11). It passes each struct as eachV1Range does, building nothing, and stops where
+// the bytes stop reading, past which the decoder reads nothing either: it refuses the update there.
+// So the hook can weigh what an apply's decode will build before it decodes anything
+// (weighPeerUpdate).
+func declaredStructs(update []byte) uint64 {
+	r := v1Reader{rest: update, ok: true}
+	var structs uint64
+	for groups := r.uint(); groups > 0 && r.ok; groups-- {
+		count := r.uint()
+		r.uint() // the group's client
+		r.uint() // and the clock its first struct starts at
+		if !r.ok {
+			break
+		}
+		structs += min(count, uint64(len(r.rest)/2))
+		for ; count > 0 && r.ok; count-- {
+			r.passStruct()
+		}
+	}
+	return structs
 }
 
 // maxV1Clock is the highest clock the library's decoder lets a struct reach, 2^53 - 1, the largest

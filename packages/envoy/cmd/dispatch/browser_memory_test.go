@@ -150,7 +150,8 @@ const (
 	bytesOfAScanMarkForTest    = 76
 
 	// unslottedApplyBytesForTest mirrors unslottedApplyBytes, the update's own bytes at or under
-	// which an apply of a browser's update takes nothing of the pod's load concurrency
+	// which an apply of a browser's update declaring no more than 3,328 structs
+	// (unslottedApplyStructs) takes nothing of the pod's load concurrency
 	// (internal/dispatch/docs/copy_heap.go). A frame above it is held across its whole apply by
 	// a grant of what that apply costs, which is what makes a reconnect storm's whole-state
 	// handoffs decode as many at a time as the pool holds; a keystroke, far under it, never

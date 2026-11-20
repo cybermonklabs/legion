@@ -19,7 +19,7 @@ import (
 )
 
 // A room's document decodes its stored state with the pending caps lifted, and ygo sets the room's
-// caps - maxUpdateItems for its parked structs, and maxParkedDeleteRanges for its parked delete
+// caps - maxParkedStructs for its parked structs, and maxParkedDeleteRanges for its parked delete
 // ranges apart (Server.MaxPendingDeleteRanges) - once the state is in and before OnLoadDocument
 // (sjawhar/ygo v1.55.1-sami.1, provider/websocket/server.go:1830, :1897-1899; loadRoom in
 // theorem-labs/ygo v1.55.1-theorem.10), so every peer's apply after the load is held to them. A
@@ -154,8 +154,8 @@ func TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad(t *testing.T) {
 // more under the same id, apart from the others: ygo refuses that apply before it changes anything
 // (crdt.ErrPendingCap), and the hook answers it as it answers the structs' pending cap, not
 // applied with the socket left open (refusedByApply), so the room still parks the cap and alice's
-// page is still connected. Under the structs' cap, maxUpdateItems, which held the ranges too
-// before round 9, the range past this cap parked as well.
+// page is still connected. Under the cap the structs had then, maxUpdateItems, which held the
+// ranges too before round 9, the range past this cap parked as well.
 func TestABrowsersDeleteRangesParkUpToTheRoomsCapAndOnePastItIsAnsweredNotApplied(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	alice := openPage(t, serverURL, artifactID, "alice")

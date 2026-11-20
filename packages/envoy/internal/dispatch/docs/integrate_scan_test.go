@@ -333,9 +333,9 @@ func TestAnIntegrateScanRefusalLeavesTheRoomsChargeAndTotalAsTheyWere(t *testing
 // recorded delete ranges are as they were: nothing of the update was booked, so nothing is
 // refunded either.
 //
-// Only ygo's apply can make this refusal: a room's pending cap is maxUpdateItems
-// (TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad), far past the frames this test sends, so
-// the room here is given a cap as small as they are.
+// Only ygo's apply can make this refusal: a room's pending cap is maxParkedStructs structs and
+// maxParkedDeleteRanges delete ranges (TestAPeerApplyIsHeldToTheRoomsPendingCapAfterTheLoad), far
+// past the frames this test sends, so the room here is given a cap as small as they are.
 func TestAPendingCapRefusalCostsTheRoomNeitherChargeNorScans(t *testing.T) {
 	const parked = 4
 	// What ygo answers, which the hook's accounting rests on.

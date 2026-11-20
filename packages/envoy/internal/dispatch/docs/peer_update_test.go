@@ -1909,6 +1909,108 @@ func TestAHeavyApplyTakesASlotOfTheLoadConcurrencyAndAKeystrokeTakesNone(t *test
 	runtime.KeepAlive(replica)
 }
 
+// An update far under unslottedApplyBytes that declares more than unslottedApplyStructs structs
+// takes a slot of the pod's load concurrency as a long update does, of what its structs cost
+// (declaredStructs, copyWeight), and holds it across the apply: a GC struct is two bytes of the
+// frame and an item of the decode, so on its bytes alone a 2 MB frame of a million of them decoded
+// outside every slot (TestRV9AReadOnlyStepTwoOfAMillionStructsCostsNoMoreThanAWritersApply). With
+// the pod's whole pool held, a frame of 10,000 GC structs waits before its apply and the keystroke
+// beside it applies at once; once the pool is free the frame applies, holding what its structs
+// cost, and gives it back.
+func TestAnUpdateSmallInBytesAndHeavyInStructsTakesASlotOfWhatItsStructsCost(t *testing.T) {
+	const structs = 10_000
+	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
+	// The room already holds every clock the frame names, so its apply integrates no struct and
+	// no rule of the document's refuses it, while ygo decodes every struct of it.
+	if err := crdt.ApplyUpdateV1(room, newV1Frame(1).group(1, 7, 0).gc(structs).noDeletes(), nil); err != nil {
+		t.Fatal(err)
+	}
+	f := newV1Frame(1).group(structs, 7, 0)
+	for range structs {
+		f = f.gc(1)
+	}
+	heavy := f.noDeletes()
+	keystroke := peerTyping(t, room, "y")
+	if len(heavy) > unslottedApplyBytes || structs <= unslottedApplyStructs || declaredStructs(heavy) != structs {
+		t.Fatalf("the frame is %d bytes declaring %d structs, want it under the %d bytes a slot is taken over and its %d structs past the %d a slot is taken over",
+			len(heavy), declaredStructs(heavy), unslottedApplyBytes, structs, unslottedApplyStructs)
+	}
+	want := copyWeight(int64(len(heavy)), structs)
+	slots := useLoadSlots(t, newLoadSlots(1))
+	holder := newLoadSlot()
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
+	}
+	waiting := make(chan struct{})
+	var waitOnce sync.Once
+	slots.waiting = func() { waitOnce.Do(func() { close(waiting) }) }
+	taken := make(chan int64, 1)
+	slots.taken = func(held int64) {
+		select {
+		case taken <- held:
+		default:
+		}
+	}
+
+	applied := make(chan error, 1)
+	var reached atomic.Bool
+	go func() {
+		applied <- service.weighPeerUpdate(websocket.PeerUpdateInfo{Room: "room", Doc: room, Update: heavy}, func() error {
+			reached.Store(true)
+			return crdt.ApplyUpdateV1(room, heavy, nil)
+		})
+	}()
+	select {
+	case <-waiting:
+	case err := <-applied:
+		t.Fatalf("the %d-byte frame of %d structs was answered %v while the only slot was held, want it waiting for one", len(heavy), structs, err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("the frame neither waited for a slot nor answered in 30 s")
+	}
+	if reached.Load() {
+		t.Fatal("the frame reached its apply while the only slot was held")
+	}
+	// The keystroke takes no slot, so it applies beside the frame's wait.
+	typed := make(chan error, 1)
+	go func() {
+		err, called := weighInto(service, room, keystroke)
+		if err == nil && !called {
+			err = errors.New("the hook admitted the keystroke without applying it")
+		}
+		typed <- err
+	}()
+	select {
+	case err := <-typed:
+		if err != nil {
+			t.Fatalf("the keystroke was answered %v, want it applied while the frame waits for a slot", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the keystroke waited behind the frame's slot")
+	}
+
+	holder.release()
+	select {
+	case err := <-applied:
+		if err != nil || !reached.Load() {
+			t.Fatalf("the frame was answered %v (applied %t) once a slot was free, want it applied", err, reached.Load())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the frame did not apply in 30 s once a slot was free")
+	}
+	select {
+	case got := <-taken:
+		if got != want {
+			t.Fatalf("the frame held %d bytes of the pool, want the %d its %d structs cost (copyWeight)", got, want, structs)
+		}
+	default:
+		t.Fatal("the frame applied without taking any of the pool")
+	}
+	if held := slots.held.Load(); held != 0 {
+		t.Fatalf("%d bytes are held once the frame's apply has returned, want none", held)
+	}
+	runtime.KeepAlive(replica)
+}
+
 // marginTextKey is the margin key under which nestedMarginText nests a text.
 const marginTextKey = "nested"
 

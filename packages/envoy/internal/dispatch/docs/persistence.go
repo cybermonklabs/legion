@@ -1047,20 +1047,20 @@ var _ persistence.VersionedPersistence = (*PgVersioned)(nil)
 // that many - 1,050,470 clocks at a mebibyte of typed-over markdown, and 1,310,720 at 256 KiB
 // after a mebibyte of typing and deleting, both of which decode (growth.go gives the figures).
 //
-// It is also the pending queue every decode of document bytes takes, whether the service builds
-// the decoder (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode
-// runs for) or ygo builds it for the service (Server.MaxPendingItems: the rooms, which ygo caps
-// before it runs their load hook, sjawhar/ygo v1.55.1-sami.8, loadRoom,
-// provider/websocket/server.go:1921-1924, and which that hook's own decode of the stored state
-// takes, ygo being handed no bytes to decode with the queue lifted, bootstrapLoadedState; the
-// service decoded the same state under the same queue first, loadTree's or LoadDoc's
-// decodeStoredCopy, so a room starts within it). Two fields hold that per-instance cap -
-// PgVersioned.maxPendingItems, which the store's folds, read-backs and seed check take, and
-// Service.maxPendingItems, which the rooms and the check they are compared with take - and their
-// constructors set both to this (NewPgVersioned, New), so every production decode takes this
-// queue; only a test lowers the two (shrinkPendingItems), to make a log that does not fold out of
-// a few dozen items. ygo's decoder parks each item whose parent it cannot place yet, and each
-// later item of that client behind it, and refuses the update once its queue is full, 100,000
+// It is also the pending queue every decode of document bytes the service builds a decoder for
+// takes (newDocumentCopy, and newCappedDocumentCopy at the cap of the instance the decode runs
+// for). Two fields hold that per-instance cap - PgVersioned.maxPendingItems, which the store's
+// folds, read-backs and seed check take, and Service.maxPendingItems, which the copies of a room's
+// stored state (loadTree's or LoadDoc's decodeStoredCopy) and the check they are compared with
+// take - and their constructors set both to this (NewPgVersioned, New), so every such production
+// decode takes this queue; only a test lowers the two (shrinkPendingItems), to make a log that
+// does not fold out of a few dozen items. The rooms, whose documents ygo builds for the service,
+// park far fewer: Server.MaxPendingItems, maxParkedStructs, which ygo sets before it runs their
+// load hook (sjawhar/ygo v1.55.1-sami.8, loadRoom, provider/websocket/server.go:1921-1924) and
+// which that hook's own decode of the stored state takes, ygo being handed no bytes to decode with
+// the queue lifted (bootstrapLoadedState), so a state whose decode parks past it fails the room's
+// load. ygo's decoder parks each item whose parent it cannot place yet, and each later item of
+// that client behind it, and refuses the update once its queue is full, 100,000
 // items at ygo's default. An update decoded alone parks every item that leans on the document it
 // was written against, and no update carries more items than this, so no decode parks items past
 // it. The queue caps, apart, the delete ranges parked for structs the document does not hold

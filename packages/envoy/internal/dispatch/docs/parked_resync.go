@@ -33,7 +33,7 @@ import (
 // What this keeps is bounded by the room's pending queue: a sender is listed only while a frame
 // of its has left something parked, with one clock for each client its frames reach past the
 // room, each of which waits behind a struct or a delete range the queue holds, which takes at most
-// MaxPendingItems structs (maxUpdateItems) and MaxPendingDeleteRanges delete ranges
+// MaxPendingItems structs (maxParkedStructs) and MaxPendingDeleteRanges delete ranges
 // (maxParkedDeleteRanges), the ranges only under clients the sender's socket holds (parkJudge). A
 // sender is dropped once it is resynced, once its connection ends, and, while it waits on nothing
 // the queue still holds, once the queue empties: what it parked was then discarded with a refused

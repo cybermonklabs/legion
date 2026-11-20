@@ -829,7 +829,7 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received;
   parked rows already stored are part of the history a load decodes, so they count.
-  ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`),
+  ygo bounds those per room by count, not bytes: parked items by `MaxPendingItems`, which Dispatch sets to `maxParkedStructs` (4,096, `internal/dispatch/docs/service.go` `New`), far below the 1,048,576-struct decode cap, since each parked struct counts twice against that cap and is charged in both of the room's copies,
   and parked delete ranges, apart, by `MaxPendingDeleteRanges`, which it sets to `maxParkedDeleteRanges` (4,096).
   A browser's update that would park past either is answered not applied, its socket left open, since the edits it waits on may still arrive and the browser sends it again.
 
