@@ -1410,7 +1410,9 @@ test("every key legionSettings types is a scalar, so no path below a typed key i
 // field's name under its parent's name, as the source writes the two (`paused.by.kind`),
 // whichever schema the value was taken from. A field at the root has no parent: it is matched by
 // its bare name (nameOfRead), the third direction passes it over, and the set names it only where
-// plugin code takes its value off that answer. So a consumer source takes each field below the
+// plugin code takes its value off that answer, or off the same node reached by another path (the
+// issue record's root is the state's `issues{}`, so the record names what the `read_state`
+// summary reads off the state's issues). So a consumer source takes each field below the
 // root off its parent under the parent's own name: a field a helper reads off a parameter it was
 // handed is named under the parameter, not under a field of the answer, and is no read this census
 // sees, which is why `pauseSummary` (`packages/pi-legion/src/tools.ts`) takes each field off the

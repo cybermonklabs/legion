@@ -2146,7 +2146,10 @@ const ISSUE_RECORD_READS = [
  * took the value from, so such a field is named in every answer schema that has one of that name
  * under a parent of that name. A field at an answer's root has no parent: a read names it by its
  * bare name, and this set names it only where plugin code takes its value off that answer, as it
- * names `LegionHealthResponse`'s `project` and not its `status`.
+ * names `LegionHealthResponse`'s `project` and not its `status`, or off the same node reached by
+ * another path, since one node several paths reach is named at each of them (below): the issue
+ * record's root is the state's `issues{}` node, so the record names `status`, `holdReason`,
+ * `designGate` and `slot`, which the `read_state` summary reads off the state's issues.
  * A path names each key from that schema's root, with a record's value written `{}` and a list's
  * element `[]`, as the object census in `legion-api.test.ts` writes them, and a discriminated
  * union's member by its index after `|` (`paused.by|0.session`, the controller's entry). An
