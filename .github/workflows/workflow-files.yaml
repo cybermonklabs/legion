@@ -1,0 +1,42 @@
+name: Workflow files
+
+# why: .github/ci-notes/workflow-files.md#why-the-check-has-a-workflow-of-its-own-and-when-it-runs
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+
+# why: .github/ci-notes/workflow-files.md#what-a-newer-push-cancels
+concurrency:
+  group: workflow-files-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+# The job declares what it needs; nothing runs under this default.
+permissions: {}
+
+jobs:
+  workflow-files:
+    runs-on: ubuntu-24.04
+    # A sparse checkout and one pass over .github/workflows; this bounds a hung runner, not the
+    # check.
+    timeout-minutes: 10
+    # why: .github/ci-notes/workflow-files.md#why-the-job-holds-no-scope
+    permissions: {}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
+
+      # why: .github/ci-notes/workflow-files.md#what-the-check-step-measures-and-with-which-copy-of-the-check
+      - name: Check every workflow file GitHub can read and its size
+        run: .github/scripts/check-workflow-files.sh
+
+      # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
+      # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.
+      - name: Check every workflow file with actionlint
+        if: ${{ !cancelled() }}
+        run: >-
+          docker run --rm -e SHELLCHECK_OPTS=--severity=warning -v "$PWD:/repo" -w /repo
+          ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -verbose -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'

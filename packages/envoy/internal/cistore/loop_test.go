@@ -1329,7 +1329,7 @@ func TestSummaryTickPublishesLegacyResettledRecordWithoutTimestamps(t *testing.T
 	if err := json.Unmarshal([]byte(pub.last().Payload), &summary); err != nil {
 		t.Fatalf("decode settlement: %v", err)
 	}
-	if len(summary.CheckRuns) != 1 || summary.CheckRuns[0] != (CheckRunRef{Name: "build", ID: 814}) {
-		t.Fatalf("check_runs = %+v, want [{build 814}]", summary.CheckRuns)
+	if len(summary.CheckRuns) != 1 || summary.CheckRuns[0] != (CheckRunRef{Name: "build", ID: 814, Conclusion: "success"}) {
+		t.Fatalf("check_runs = %+v, want [{build 814 success}]", summary.CheckRuns)
 	}
 }

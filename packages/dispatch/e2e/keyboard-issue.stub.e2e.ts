@@ -3,7 +3,7 @@
  *  where, and which scope the Board registers.
  *
  *  Each runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The rows that write a priority or a pin,
+ *  (packages/dispatch/README.md, "The stubbed layer"). The rows that write a priority or a pin,
  *  and the ones that read the issue back to prove no write was made, stayed in
  *  `keyboard-issue.e2e.ts`.
  */

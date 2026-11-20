@@ -1,5 +1,5 @@
 /** The signed-in reader's empty Inbox. It reads only what the page draws, so it runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  The anonymous reader's row stayed in `smoke.e2e.ts`: this fixture's page is signed in,
  *  because the recording answers `/auth/whoami`. */
 import { expect } from "@playwright/test";

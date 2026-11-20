@@ -26,6 +26,19 @@ services:
       PORT: ${ENVOY_LISTENER_PORT:-9020}
       ENVOY_LISTEN_HOST: ${ENVOY_LISTEN_HOST:-127.0.0.1}
       ENVOY_API_TOKEN: ${ENVOY_API_TOKEN:-}
+      # Dispatch's identity, which this listener takes a send's role mark from alone
+      # (ENVOY_DISPATCH_PRINCIPAL): the verifier of a service-account token (the OIDC pair) or of a
+      # Google identity token (the Google pair), and the principal. A listener Dispatch sends role
+      # routes through sets one pair and the principal (deploy/README.md, "Dispatch's identity at
+      # the Envoy listener"); one no Dispatch calls leaves them empty. Setting a pair closes /v1 to
+      # every caller with no bearer, the host's own sessions included: set ENVOY_API_TOKEN with it
+      # and give those sessions that token (ENVOY_TOKEN, or envoy.token in their envoy.json).
+      ENVOY_OIDC_ISSUER: ${ENVOY_OIDC_ISSUER:-}
+      ENVOY_OIDC_AUDIENCE: ${ENVOY_OIDC_AUDIENCE:-}
+      ENVOY_OIDC_ACCOUNTS: ${ENVOY_OIDC_ACCOUNTS:-}
+      ENVOY_OIDC_GOOGLE_AUDIENCE: ${ENVOY_OIDC_GOOGLE_AUDIENCE:-}
+      ENVOY_OIDC_GOOGLE_ACCOUNTS: ${ENVOY_OIDC_GOOGLE_ACCOUNTS:-}
+      ENVOY_DISPATCH_PRINCIPAL: ${ENVOY_DISPATCH_PRINCIPAL:-}
       ENVOY_MACHINE_ID: ${ENVOY_MACHINE_ID}
       NATS_URLS: ${NATS_URLS}
       # This listener owns ENVOY_NOTIFICATIONS on the NATS above, which is the fleet's shared

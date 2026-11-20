@@ -2216,6 +2216,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session registry connection: %v", err)
 	}
+	t.Cleanup(routeClient.Close)
 	sessions, err := session.OpenSessionRegistry(t.Context(), bustest.Fixture(routeClient.Conn), session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open session registry: %v", err)

@@ -136,7 +136,10 @@ PPROF_OVERLAY=$here/zz_loadtest_pprof.go.txt
 DISPATCH_BINARIES=("$BIN/envoy-dispatch" "$BIN/dispatch-seed" "$BIN/dispatch-seed-stock")
 # Processes in stop order, and in start order (envoy_proxy and dispatch are started by seed and
 # reset).
-PROCESSES=(dispatch envoy_proxy listener nats proxy postgres)
+PROCESSES=(dispatch envoy_proxy listener issuer nats proxy postgres)
+# Dispatch's token for the listener's audience, which dev-oidc-issuer writes beside the listener
+# (start_listener).
+ISSUER_TOKEN_FILE=$RUN/dispatch-listener-token
 START_ORDER=(postgres proxy nats listener envoy_proxy dispatch)
 # The stack.json port keys (PORT_KEYS), each one's environment variable (PORT_VAR) and the default
 # ports of this root, which follow LOADTEST_ROOT, are common.sh's (stack_ports).
@@ -277,6 +280,7 @@ binary_of() {
     proxy | envoy_proxy) printf '%s\n' "$BIN/loadgen" ;;
     nats) printf '%s\n' "$BIN/nats-server" ;;
     listener) printf '%s\n' "$BIN/envoy-listener" ;;
+    issuer) printf '%s\n' "$BIN/dev-oidc-issuer" ;;
     dispatch) printf '%s\n' "${DISPATCH_BINARIES[@]}" ;;
   esac
 }
@@ -490,9 +494,27 @@ listener_up() {
     curl -fsS --max-time 2 -H @- "http://127.0.0.1:$(port listener)/v1/sessions"
 }
 
+# start_listener starts dev-oidc-issuer, the stand-in for Dispatch's service-account token issuer,
+# then the listener verifying its tokens. Dispatch presents the token the issuer writes and keeps
+# fresh (ISSUER_TOKEN_FILE) as its identity at the listener, the one the listener takes a send's
+# role mark from (ENVOY_DISPATCH_PRINCIPAL): without it Dispatch refuses every send for a `role:`
+# route, which the replay's role-routed issues make. The issuer serves a port the kernel picks,
+# which only the listener reads, and is stopped and started with it (stack.sh stop listener stops
+# both); its key lives in its memory, so a listener verifies only the tokens of the issuer started
+# beside it, and Dispatch reads the token file at each call.
+ISSUER_AUDIENCE=envoy-listener-loadtest
+ISSUER_PRINCIPAL=system:serviceaccount:loadtest:dispatch
+issuer_url() { grep -o 'issuer listening url=[^ ]*' "$LOGS/issuer.out" | tail -n1 | cut -d= -f2-; }
 start_listener() {
   running listener && return 0
   check_port listener listener
+  # shellcheck disable=SC2034
+  local issuer_env=("${base_env[@]}")
+  stop_one issuer
+  spawn issuer "$LOGS/issuer.out" issuer_env "$BIN/dev-oidc-issuer" \
+    --token "$ISSUER_AUDIENCE=$ISSUER_PRINCIPAL=$ISSUER_TOKEN_FILE"
+  wait_for "dev-oidc-issuer to report its URL" 30 issuer "$LOGS/issuer.out" issuer_url
+  set_pid issuer "$(pid_of issuer)"
   local log=$LOGS/listener.out
   # internal/config/config.go Load: the listener's settings.
   # shellcheck disable=SC2034
@@ -501,11 +523,14 @@ start_listener() {
     "ENVOY_LISTEN_HOST=127.0.0.1"
     "ENVOY_MACHINE_ID=$(stack_name)"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
-    "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")")
+    "ENVOY_API_TOKEN=$(jq -r .listener_token "$STACK")"
+    "ENVOY_OIDC_ISSUER=$(issuer_url)"
+    "ENVOY_OIDC_AUDIENCE=$ISSUER_AUDIENCE"
+    "ENVOY_DISPATCH_PRINCIPAL=$ISSUER_PRINCIPAL")
   spawn listener "$log" listener_env "$BIN/envoy-listener"
   wait_for "the listener's /v1/sessions" 60 listener "$log" listener_up
   set_pid listener "$(pid_of listener)"
-  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener)"
+  note "listener pid $(pid_of listener) on 127.0.0.1:$(port listener), Dispatch's identity from dev-oidc-issuer pid $(pid_of issuer) at $(issuer_url)"
 }
 
 dispatch_healthy() {
@@ -596,7 +621,8 @@ launch_dispatch() {
     "GOMAXPROCS=$procs"
     "NATS_URLS=nats://127.0.0.1:$(port nats)"
     "ENVOY_URL=http://127.0.0.1:$envoy_port"
-    "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")")
+    "ENVOY_TOKEN=$(jq -r .listener_token "$STACK")"
+    "ENVOY_ACCOUNT_TOKEN_FILE=$ISSUER_TOKEN_FILE")
   # LOADTEST_DISPATCH_ENV names a file of NAME=value lines appended to that environment, which is
   # how the spec-loop stack points Dispatch at `loadgen stub-embed` (DISPATCH_EMBEDDER=azure, the
   # DISPATCH_AZURE_* settings and SSL_CERT_FILE for the stub's own certificate). It is a file
@@ -719,9 +745,10 @@ cmd_setup() {
     note "building envoy-dispatch from $DISPATCH_SRC/packages/envoy into $BIN"
     (cd -- "$DISPATCH_SRC/packages/envoy" && go build -o "$BIN/envoy-dispatch" ./cmd/dispatch)
   fi
-  note "building envoy-listener, fixturebuckets and loadgen from $ENVOY_SRC into $BIN"
+  note "building envoy-listener, dev-oidc-issuer, fixturebuckets and loadgen from $ENVOY_SRC into $BIN"
   (cd -- "$ENVOY_SRC" &&
     go build -o "$BIN/envoy-listener" ./cmd/listener &&
+    go build -o "$BIN/dev-oidc-issuer" ./cmd/dev-oidc-issuer &&
     go build -o "$BIN/fixturebuckets" ./internal/testnats/cmd/fixturebuckets &&
     go build -o "$BIN/loadgen" ./loadtest)
   if [ -z "$commit" ]; then

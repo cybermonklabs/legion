@@ -305,7 +305,7 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 		// what is left of the previous outage's minute.
 		throttle.reset()
 		// ConnectedUrl is the server's URL.String(), userinfo and all, and a server nats.go
-		// discovered inherits the configured URL's (nats.go v1.50.0 nats.go:2025-2027);
+		// discovered inherits the configured URL's (nats.go v1.55.0 ConnectedUrl);
 		// ConnectedUrlRedacted keeps a token, which is a user name alone.
 		slog.Info("envoy nats reconnected", slog.String("name", name), slog.String("url", NATSURLWithoutUserinfo(nc.ConnectedUrl())))
 		if reconnectCB != nil {
@@ -326,8 +326,8 @@ func options(name string, urls []string, reconnectCB func(*nats.Conn), disconnec
 			// A server that closes the connection during a reconnect's CONNECT and PING handshake
 			// (a server restarting, or one that accepted the dial as it shut down) makes nats.go's
 			// sendConnect report the read's io.EOF here, and nowhere else: the reconnect loop then
-			// tries again without calling ReconnectErrCB (nats.go v1.50.0 nats.go:2930-2938,
-			// 3251-3258). It is a failed reconnect attempt, so it is logged as one, on the same
+			// tries again without calling ReconnectErrCB (nats.go v1.55.0 processConnectInit and doReconnect).
+			// It is a failed reconnect attempt, so it is logged as one, on the same
 			// throttle. Only that report is: the connection is still in that handshake
 			// (CONNECTING) or waiting for the next attempt (RECONNECTING) when the callback runs,
 			// and every other async error, an EOF on a connected connection included, stays an

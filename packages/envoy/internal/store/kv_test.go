@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -2437,9 +2438,9 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 	assertInterestMissing(t, reg, newSession)
 }
 
-// A hard claim's role write is unconditional (store.Registry.SetRoleWithPrevious), so a genuine
-// failure of it is still a failure: the claim is refused, the old holder keeps the role, and the
-// claimant's role topic is rolled back.
+// A hard claim writes with the revision of the record it read (store.Registry.SetRoleWithPrevious)
+// and retries only a conflict, so a genuine failure of that write is still a failure: the claim is
+// refused, the old holder keeps the role, and the claimant's role topic is rolled back.
 func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -2461,9 +2462,9 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 	}
 
 	reg.roleKV = bus.NewKeyValue(&failingKeyValue{
-		KeyValue:  reg.roleKV.Legacy(),
-		failPutAt: 1,
-		err:       errors.New("injected role write failure"),
+		KeyValue:     reg.roleKV.Legacy(),
+		failUpdateAt: 1,
+		err:          errors.New("injected role write failure"),
 	}, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 	if _, err := reg.SetRole(newSession, "example-host", role, false); err == nil {
 		t.Fatal("SetRole must return the failed role update")
@@ -3600,7 +3601,7 @@ func (h *holdAfter) release() {
 // the URL to connect to.
 func stallingProxy(t *testing.T, target, trigger string, budget int, hold time.Duration) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

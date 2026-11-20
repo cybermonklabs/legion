@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -685,6 +686,56 @@ func TestApplyFactRecordsRankTitleAndParentChangesAtTheSameStatus(t *testing.T) 
 	assertWaiting(t, pool, []string{"LEGION-3", "LEGION-2"})
 }
 
+// A title is a person's own text, so it can hold a NUL, which the store keeps as U+FFFD. The boot
+// listing shows the title as Dispatch holds it, at the sequence the record has already applied, and
+// the record keeps what the store made of it: the two are the same title, so the listing writes
+// nothing, as it writes nothing of any title the record already holds. Compared as listed, the
+// title would differ from its own stored copy, and the record would be written again at every boot.
+func TestTheBootListingOfATitleHoldingNULWritesNothingTheRecordAlreadyHolds(t *testing.T) {
+	pool := migratedPool(t)
+	facts := store.NewPool(pool)
+	admission := newAdmission(t, 1, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
+	seedSlotted(t, pool, "LEGION-1", "A")
+	seedWaiting(t, pool, "LEGION-3", "C")
+	const title = "re\x00named"
+	ctx := context.Background()
+
+	if _, err := intake.ApplyFact(ctx, facts, "dispatch", "rename", intake.DispatchIssue{Key: "LEGION-3", ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated",
+		Status: "todo", Title: title, Rank: "C", HandedOver: handed}, engine, admission); err != nil {
+		t.Fatalf("apply the rename: %v", err)
+	}
+	if got := issue(t, pool, "LEGION-3"); got.Title != "re\uFFFDnamed" || got.LastDispatchSeq != 2 {
+		t.Fatalf("the renamed record is titled %q at seq %d, want %q at 2", got.Title, got.LastDispatchSeq, "re\uFFFDnamed")
+	}
+	// xmin is the transaction that wrote the row's current version: every write of the row,
+	// whatever it changes, gives it another.
+	written := func() string {
+		t.Helper()
+		var xmin string
+		if err := pool.QueryRow(ctx, `select xmin::text from issues where key = $1`, "LEGION-3").Scan(&xmin); err != nil {
+			t.Fatalf("read the record's xmin: %v", err)
+		}
+		return xmin
+	}
+	before := written()
+
+	listed := []intake.DispatchIssue{intake.ListedIssue(dispatch.IssueSummary{Key: "LEGION-3", Title: title, Status: "todo", Rank: "C", HandedOver: handed, LastSeq: 2, ResolvedRepo: "acme/widgets"})}
+	scoped, committed := intake.WithCommitHooks(ctx)
+	if err := pgx.BeginFunc(scoped, facts, func(tx pgx.Tx) error {
+		return admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true})
+	}); err != nil {
+		t.Fatalf("reconcile the boot listing: %v", err)
+	}
+	committed()
+	if after := written(); after != before {
+		t.Fatalf("the boot listing of the title the record holds wrote the record again (xmin %s, then %s), want no write", before, after)
+	}
+	if got := issue(t, pool, "LEGION-3"); got.Title != "re\uFFFDnamed" || got.LastDispatchSeq != 2 {
+		t.Fatalf("the record after the boot listing is titled %q at seq %d, want %q at 2", got.Title, got.LastDispatchSeq, "re\uFFFDnamed")
+	}
+}
+
 // A generation owns its facts. Generation 1 left a merged, approved pull request, an implementer
 // two review rounds in, a READY pending, and an approved design gate; the re-admitted generation 2
 // starts with none of them. Its architect registers the spec again, the approval opens the gate,
@@ -1084,7 +1135,10 @@ func TestCapturedDispatchTodoEventAdmitsAndProjectsActiveSlot(t *testing.T) {
 			return false
 		}
 		defer tx.Rollback(context.Background())
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, nil, time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC))
+		state, err := projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: "CAPTURE",
+			Now: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC),
+		})
 		if err != nil {
 			return false
 		}

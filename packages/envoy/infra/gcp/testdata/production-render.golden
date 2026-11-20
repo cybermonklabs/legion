@@ -278,6 +278,39 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
             ],
+            "name": "example-dispatch-listener-nats-seed-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch-listener",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+            ],
             "name": "example-dispatch-nats-seed-accessor",
             "object": {
               "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch",
@@ -644,6 +677,10 @@
                             "value": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020"
                           },
                           {
+                            "name": "ENVOY_ACCOUNT_TOKEN_FILE",
+                            "value": "/var/run/secrets/envoy-listener/token"
+                          },
+                          {
                             "name": "ENVOY_TOKEN",
                             "valueFrom": {
                               "secretKeyRef": {
@@ -810,6 +847,11 @@
                             "readOnly": true
                           },
                           {
+                            "mountPath": "/var/run/secrets/envoy-listener",
+                            "name": "envoy-listener-account-token",
+                            "readOnly": true
+                          },
+                          {
                             "mountPath": "/var/run/secrets/dispatch",
                             "name": "agent-secrets-account-token",
                             "readOnly": true
@@ -899,6 +941,20 @@
                         "name": "nats-seed"
                       },
                       {
+                        "name": "envoy-listener-account-token",
+                        "projected": {
+                          "sources": [
+                            {
+                              "serviceAccountToken": {
+                                "audience": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020",
+                                "expirationSeconds": 3600,
+                                "path": "token"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
                         "name": "agent-secrets-account-token",
                         "projected": {
                           "sources": [
@@ -980,7 +1036,7 @@
             "customTimeouts": {},
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
-              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:scheduling.k8s.io/v1:PriorityClass::example-dispatch-priority-class"
             ],
@@ -1061,6 +1117,22 @@
                                 "name": "example-dispatch-listener"
                               }
                             }
+                          },
+                          {
+                            "name": "ENVOY_OIDC_ISSUER",
+                            "value": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch"
+                          },
+                          {
+                            "name": "ENVOY_OIDC_AUDIENCE",
+                            "value": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020"
+                          },
+                          {
+                            "name": "ENVOY_OIDC_ACCOUNTS",
+                            "value": "system:serviceaccount:example-dispatch:example-dispatch"
+                          },
+                          {
+                            "name": "ENVOY_DISPATCH_PRINCIPAL",
+                            "value": "system:serviceaccount:example-dispatch:example-dispatch"
                           }
                         ],
                         "image": "example.invalid/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -1140,7 +1212,7 @@
                     ],
                     "enableServiceLinks": false,
                     "priorityClassName": "example-shared-infra",
-                    "serviceAccountName": "example-dispatch",
+                    "serviceAccountName": "example-dispatch-listener",
                     "terminationGracePeriodSeconds": 40,
                     "topologySpreadConstraints": [
                       {
@@ -1178,6 +1250,7 @@
               "metadata": {},
               "spec": {
                 "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener"
                 ]
               }
@@ -2413,6 +2486,38 @@
             "version": "4.34.2"
           },
           "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+            ],
+            "name": "example-dispatch-listener",
+            "object": {
+              "apiVersion": "v1",
+              "kind": "ServiceAccount",
+              "metadata": {
+                "name": "example-dispatch-listener",
+                "namespace": "example-dispatch"
+              }
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "apiVersion": {},
+              "kind": {},
+              "metadata": {}
+            },
+            "provider": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$pulumi:providers:kubernetes::example-dispatch-kubernetes::example-dispatch-kubernetes-id",
+            "supportsResultReporting": true,
+            "type": "kubernetes:core/v1:ServiceAccount",
+            "version": "4.34.2"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
         },
         {
           "register": {
@@ -3567,6 +3672,39 @@
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
             ],
+            "name": "example-dispatch-listener-nats-seed-accessor",
+            "object": {
+              "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch-listener",
+              "role": "roles/secretmanager.secretAccessor",
+              "secretId": "projects/example-project/secrets/example-nats-seed-example-dispatch"
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "member": {
+                "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+                ]
+              },
+              "role": {},
+              "secretId": {}
+            },
+            "provider": "urn:pulumi:s::p::pulumi:providers:gcp::gcp-example::",
+            "supportsResultReporting": true,
+            "type": "gcp:secretmanager/secretIamMember:SecretIamMember",
+            "version": "10.1.0"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+            ],
             "name": "example-dispatch-nats-seed-accessor",
             "object": {
               "member": "principal://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/example-project.svc.id.goog/subject/ns/example-dispatch/sa/example-dispatch",
@@ -3933,6 +4071,10 @@
                             "value": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020"
                           },
                           {
+                            "name": "ENVOY_ACCOUNT_TOKEN_FILE",
+                            "value": "/var/run/secrets/envoy-listener/token"
+                          },
+                          {
                             "name": "ENVOY_TOKEN",
                             "valueFrom": {
                               "secretKeyRef": {
@@ -4107,6 +4249,11 @@
                             "readOnly": true
                           },
                           {
+                            "mountPath": "/var/run/secrets/envoy-listener",
+                            "name": "envoy-listener-account-token",
+                            "readOnly": true
+                          },
+                          {
                             "mountPath": "/var/run/secrets/dispatch",
                             "name": "agent-secrets-account-token",
                             "readOnly": true
@@ -4196,6 +4343,20 @@
                         "name": "nats-seed"
                       },
                       {
+                        "name": "envoy-listener-account-token",
+                        "projected": {
+                          "sources": [
+                            {
+                              "serviceAccountToken": {
+                                "audience": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020",
+                                "expirationSeconds": 3600,
+                                "path": "token"
+                              }
+                            }
+                          ]
+                        }
+                      },
+                      {
                         "name": "agent-secrets-account-token",
                         "projected": {
                           "sources": [
@@ -4278,7 +4439,7 @@
             "customTimeouts": {},
             "dependencies": [
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
-              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-nats-seed-accessor",
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:secretmanager/secretIamMember:SecretIamMember::example-dispatch-listener-nats-seed-accessor",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener",
               "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:scheduling.k8s.io/v1:PriorityClass::example-dispatch-priority-class"
             ],
@@ -4359,6 +4520,22 @@
                                 "name": "example-dispatch-listener"
                               }
                             }
+                          },
+                          {
+                            "name": "ENVOY_OIDC_ISSUER",
+                            "value": "https://container.googleapis.com/v1/projects/example-project/locations/us-central1/clusters/example-dispatch"
+                          },
+                          {
+                            "name": "ENVOY_OIDC_AUDIENCE",
+                            "value": "http://example-dispatch-listener.example-dispatch.svc.cluster.local:9020"
+                          },
+                          {
+                            "name": "ENVOY_OIDC_ACCOUNTS",
+                            "value": "system:serviceaccount:example-dispatch:example-dispatch"
+                          },
+                          {
+                            "name": "ENVOY_DISPATCH_PRINCIPAL",
+                            "value": "system:serviceaccount:example-dispatch:example-dispatch"
                           }
                         ],
                         "image": "example.invalid/envoy@sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -4438,7 +4615,7 @@
                     ],
                     "enableServiceLinks": false,
                     "priorityClassName": "example-shared-infra",
-                    "serviceAccountName": "example-dispatch",
+                    "serviceAccountName": "example-dispatch-listener",
                     "terminationGracePeriodSeconds": 40,
                     "topologySpreadConstraints": [
                       {
@@ -4476,6 +4653,7 @@
               "metadata": {},
               "spec": {
                 "urns": [
+                  "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch",
                   "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:Secret::example-dispatch-listener"
                 ]
               }
@@ -5711,6 +5889,38 @@
             "version": "4.34.2"
           },
           "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch"
+        },
+        {
+          "register": {
+            "acceptResources": true,
+            "acceptSecrets": true,
+            "acceptsByteString": true,
+            "custom": true,
+            "customTimeouts": {},
+            "dependencies": [
+              "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$gcp:container/cluster:Cluster::example-dispatch"
+            ],
+            "name": "example-dispatch-listener",
+            "object": {
+              "apiVersion": "v1",
+              "kind": "ServiceAccount",
+              "metadata": {
+                "name": "example-dispatch-listener",
+                "namespace": "example-dispatch"
+              }
+            },
+            "parent": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch::example-dispatch",
+            "propertyDependencies": {
+              "apiVersion": {},
+              "kind": {},
+              "metadata": {}
+            },
+            "provider": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$pulumi:providers:kubernetes::example-dispatch-kubernetes::example-dispatch-kubernetes-id",
+            "supportsResultReporting": true,
+            "type": "kubernetes:core/v1:ServiceAccount",
+            "version": "4.34.2"
+          },
+          "urn": "urn:pulumi:stack::project::envoy-infra:gcp:Dispatch$kubernetes:core/v1:ServiceAccount::example-dispatch-listener"
         },
         {
           "register": {
@@ -7220,13 +7430,17 @@
                           "exec": {
                             "command": [
                               "curl",
-                              "-fsS",
-                              "http://127.0.0.1:9020/healthz"
+                              "-sS",
+                              "-o",
+                              "/dev/null",
+                              "--max-time",
+                              "8",
+                              "http://127.0.0.1:9020/livez"
                             ]
                           },
-                          "failureThreshold": 2,
-                          "periodSeconds": 5,
-                          "timeoutSeconds": 6
+                          "failureThreshold": 3,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 9
                         },
                         "resources": {
                           "limits": {
@@ -7249,18 +7463,14 @@
                         "startupProbe": {
                           "exec": {
                             "command": [
-                              "curl",
-                              "-sS",
-                              "-o",
-                              "/dev/null",
-                              "--max-time",
-                              "8",
-                              "http://127.0.0.1:9020/livez"
+                              "/bin/sh",
+                              "-c",
+                              "curl -fsS --max-time 5 http://127.0.0.1:9020/metrics | grep -q '^envoy_active_interests '"
                             ]
                           },
-                          "failureThreshold": 24,
-                          "periodSeconds": 5,
-                          "timeoutSeconds": 9
+                          "failureThreshold": 60,
+                          "periodSeconds": 10,
+                          "timeoutSeconds": 6
                         },
                         "volumeMounts": [
                           {

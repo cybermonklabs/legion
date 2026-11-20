@@ -1,0 +1,16 @@
+{
+  "pause": {
+    "id": 7,
+    "since": "2026-11-15T09:00:00Z",
+    "by": {
+      "kind": "operator"
+    },
+    "reason": "the model provider is refusing every turn",
+    "endedAt": "2026-11-15T09:41:30Z",
+    "endedBy": {
+      "kind": "controller",
+      "session": "ses_controller"
+    }
+  },
+  "released": 3
+}

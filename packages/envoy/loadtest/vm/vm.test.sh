@@ -972,6 +972,7 @@ jq -n --arg remote "$remote" --arg loadgen "$bin/loadgen" --arg tunnel "$bin/ppr
   iamcredentials: "https://iamcredentials.googleapis.com",
   oslogin: "https://oslogin.googleapis.com",
   login_service_account: $account,
+  dispatch_service_account: "lt-dispatch@example-project.iam.gserviceaccount.com",
   vms: {
     app: {host: "10.138.0.21", instance: "lt-app"},
     generator: {host: "10.138.0.22", instance: "lt-gen"},

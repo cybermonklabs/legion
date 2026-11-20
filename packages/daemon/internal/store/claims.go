@@ -45,7 +45,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
-	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
+	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
@@ -83,8 +83,18 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 		}
 		return err
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	return nil
+}
+
+// PutClaimTx is PutClaim inside a caller's transaction: the stop a project's pause makes writes
+// the claim with the pause's records in one transaction (decision 6 of dispatch://INFRA-3759,
+// supervise.Deps.PauseStopped), so a stopped claim never stands without them. Like every claim
+// write it goes through putClaim, so the publication of the issue's role sessions it queues is in
+// the same transaction; it answers whether it queued one, and the caller tells CommittedClaim once
+// its transaction has committed.
+func (s *Store) PutClaimTx(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+	return s.putClaim(ctx, tx, c)
 }
 
 // PutClaimActivity writes the four activity columns of token's claim row and nothing else: what
@@ -282,10 +292,12 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // changes the session the row names as the holder of c's role (storedRoleHolder, roleHolder,
 // EnqueueRoleHolders): the agent registers, a new session takes the role, or the claim leaves a
 // state that holds it — retired, failed, suspended, or launching again. A write that changes no
-// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders).
+// holder queues nothing, and neither does a write that can queue none (queuesRoleHolders), such as
+// a write of a claim of another project's issue, whose row only that project's daemon runs.
 // It answers whether it queued, so that the caller can wake the lane once tx commits
-// (committedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
-// RetireDelivery and AdmitClaim — so whichever decision makes a write, the store holds the change
+// (CommittedClaim). Every claim write goes through here — PutClaim, PutClaimAndDelivery,
+// RetireDelivery, AdmitClaim, and the pause's stop through PutClaimTx and PutClaimAndDeliveryTx —
+// so whichever decision makes a write, the store holds the change
 // and its publication together, or neither; PutClaim alone writes on the pool when it can queue
 // none, since then nothing goes with the write.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
@@ -302,10 +314,11 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 	if roleHolder(c.State, c.Session) == stored {
 		return false, nil
 	}
-	if err := EnqueueRoleHolders(ctx, tx, c.Issue, time.Now().UTC()); err != nil {
+	queued, err := EnqueueRoleHolders(ctx, tx, c.Project, c.Issue, time.Now().UTC())
+	if err != nil {
 		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
-	return true, nil
+	return queued, nil
 }
 
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
@@ -344,6 +357,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	}
 	if c.Handshake.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: the generation %d of its handshake does not fit a bigint", c.Token, c.Handshake.Generation)
+	}
+	if c.AgentResumeGeneration > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: the generation %d of its resume by Oh My Pi's own lookup does not fit a bigint", c.Token, c.AgentResumeGeneration)
 	}
 	var locator []byte
 	if c.Locator != nil {
@@ -400,7 +416,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
-		plugin_contract, plugin_relaunch_for, delivered_rows,
+		plugin_contract, plugin_relaunch_for, agent_resume_generation, delivered_rows,
 		last_turn_start, last_turn_end,
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
@@ -411,7 +427,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58,
+		$55, $56, $57, $58, $59,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -435,6 +451,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		suspended_by = excluded.suspended_by,
 		plugin_contract = excluded.plugin_contract,
 		plugin_relaunch_for = excluded.plugin_relaunch_for,
+		agent_resume_generation = excluded.agent_resume_generation,
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
@@ -471,7 +488,11 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		-- launchNow), and it clears the report. The report describes the process that made it,
 		-- and the launch replaces that process; a Claude Code worker reports only at its Stop
 		-- hook, so its dead process's report would otherwise stand, background work and all.
-		-- This is the one place the rule lives: no reader of the columns checks anything.
+		-- This is the one place the rule lives. Two readers check the generation as well, each
+		-- because it holds a launch apart from the row: ClaimActivity answers only the launch it
+		-- is asked of, and the update round (internal/daemon's roundGroup) takes a row's report
+		-- onto a machine's view only where the view is of the row's own generation, because a
+		-- view of another launch is a process the row's report does not describe.
 		activity_at = case when claims.generation <> excluded.generation
 			then null else claims.activity_at end,
 		activity_background = case when claims.generation <> excluded.generation
@@ -486,7 +507,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
 		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.GivenEntry, c.ServedEntry,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
-		c.PluginContract, c.PluginRelaunchFor, delivered,
+		c.PluginContract, c.PluginRelaunchFor, int64(c.AgentResumeGeneration), delivered,
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
@@ -583,8 +604,14 @@ func (s *Store) ClaimUnretired(ctx context.Context, token claim.Token) (bool, er
 
 // runsNothingStates is supervise's runs-nothing set (supervise.RunsNothingStates), as the text
 // array a query binds: the store names no state of that set itself.
-func runsNothingStates() []string {
-	states := supervise.RunsNothingStates()
+func runsNothingStates() []string { return claimStateNames(supervise.RunsNothingStates()) }
+
+// goneStates is supervise's gone set (supervise.GoneStates: suspended, failed, retired), as the
+// text array a query binds: the store names no state of that set itself.
+func goneStates() []string { return claimStateNames(supervise.GoneStates()) }
+
+// claimStateNames is states as the text array a query binds.
+func claimStateNames(states []supervise.ClaimState) []string {
 	names := make([]string, len(states))
 	for i, state := range states {
 		names[i] = string(state)
@@ -716,15 +743,25 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d supervise.Delivery) error {
 	var queued bool
 	if err := s.Tx(ctx, func(tx pgx.Tx) (err error) {
-		if queued, err = s.putClaim(ctx, tx, c); err != nil {
-			return err
-		}
-		return putDelivery(ctx, tx, c.Token, d)
+		queued, err = s.PutClaimAndDeliveryTx(ctx, tx, c, d)
+		return err
 	}); err != nil {
 		return err
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	return nil
+}
+
+// PutClaimAndDeliveryTx is PutClaimAndDelivery inside a caller's transaction, for the stop a
+// project's pause makes of a claim that holds a pending delivery (PutClaimTx). It answers whether
+// the claim's write queued the publication of its issue's role sessions, for the caller's
+// CommittedClaim once its transaction has committed.
+func (s *Store) PutClaimAndDeliveryTx(ctx context.Context, tx pgx.Tx, c supervise.Claim, d supervise.Delivery) (bool, error) {
+	queued, err := s.putClaim(ctx, tx, c)
+	if err != nil {
+		return false, err
+	}
+	return queued, putDelivery(ctx, tx, c.Token, d)
 }
 
 // RetireDelivery removes the claim's pending delivery, fenced on its id: retiring a delivery the
@@ -778,7 +815,7 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 	}); err != nil {
 		return err
 	}
-	s.committedClaim(c, queued)
+	s.CommittedClaim(c, queued)
 	return nil
 }
 
@@ -789,6 +826,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		cause, pendingCause         string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
+		agentResumeGeneration       int64
 		locator                     []byte
 		deliveryID, task            *string
 		markedBy                    *string
@@ -835,7 +873,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
-		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
+		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
@@ -862,6 +900,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.AgentResumeGeneration = uint64(agentResumeGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed

@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -46,14 +51,15 @@ const (
 )
 
 // checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
-// and how much of the check's own words the line of a derived result carries (ciVerdictLine).
+// and how much of the check's own words the line of a derived result carries (ciVerdictLine),
+// each counted on what lineWords keeps of the text.
 const checkResultReadingRunes = 80
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
 // order.
 const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact_id::text, check_block_id,
 	check_version, check_sha256, role, surface, run, observed, commit_sha, negative_control,
-	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq`
+	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq, commit_repo`
 
 // checkBlockRef is where one `check` block a result names lives: the issue whose Verification
 // document holds it, that document, and the block within it. The resolve settles it and nothing
@@ -113,6 +119,26 @@ type checkResultRecorded struct {
 	Result model.CheckResult `json:"result"`
 }
 
+// checkResultDryRun is the body POST /api/v1/issues/{key}/results/dry-run answers.
+type checkResultDryRun struct {
+	Line string `json:"line"`
+}
+
+// resultRequest is a result's body as the record and its dry run have judged it before anything
+// is written (readResultRequest): the input and its actor, the issue it is recorded on, the check
+// it names, the one repository the check's issue resolves to, the linked repository the commit is
+// taken to be of (refuseUnknownCommit, nil where it is taken to be repo's), and the rule the
+// pull-request body line keeps words by.
+type resultRequest struct {
+	issueKey         string
+	input            checkResultInput
+	actor            model.Actor
+	check            resolvedCheck
+	repo             *string
+	linkedCommitRepo *string
+	words            lineWords
+}
+
 // POST /api/v1/issues/{key}/results  (any authenticated actor)
 //
 // Records one result against one check. {key} is the recording issue, which need not be the
@@ -121,24 +147,90 @@ type checkResultRecorded struct {
 // a pull request of the check's own issue (comparisonReader). The answer carries the stored
 // row and the pull-request body line it implies, so every writer writes one grammar.
 func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
-	var input checkResultInput
-	if err := decodeJSON(r, &input); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	request, ok := s.readResultRequest(w, r)
 	if !ok {
 		return
 	}
-	if err := input.refusal(); err != nil {
+	// The row keeps linkedCommitRepo, so the results read compares the result with the branches
+	// of that linked repository (comparisonReader, onNamedBranch), reads its pull requests
+	// through it (readThroughHead) and decides a `before_merge` result by it (commitStands):
+	// asked of repo, the repository the check's issue resolves to, GitHub answers 404 for such a
+	// commit and the result reads unknown. Such a repository is one GitHub said holds the commit.
+	// Every other row keeps none and is compared in the repository the check's issue resolves to,
+	// as every row recorded before the column existed is, at the cost it always had.
+	//
+	// The reading resolveCheck made is the block's only while the version and digest the index
+	// holds for it have not moved since, which the locked half re-reads and judges; the one
+	// re-read a moved pair needs runs there too, with every lock given back.
+	written, err := s.recordResultWithFreshWords(
+		r.Context(), request.issueKey, request.check, request.input, request.linkedCommitRepo, request.actor)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The read-through runs before the event: the Verification tab refetches on
+	// result.recorded, and no later event refreshes it, so a tab that read the results before
+	// the pull request row landed would show this result standing at no basis until something
+	// else happened. It reads through the repository the commit is taken to be of: the linked
+	// one, and else repo.
+	readThrough := request.repo
+	if request.linkedCommitRepo != nil {
+		readThrough = request.linkedCommitRepo
+	}
+	s.readThroughPullRequests(r.Context(), request.check.IssueKey, written.result.CommitSHA, readThrough)
+	s.publish(r.Context(), written.event)
+	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
+	WriteJSON(w, http.StatusCreated, checkResultRecorded{
+		// The check as the transaction that wrote the row saw it, which after a redo is not the
+		// one resolveCheck read: the line names the `when` the result was judged by.
+		Line:   checkResultLine(written.check, written.result, request.words),
+		Result: written.result,
+	})
+}
+
+// POST /api/v1/issues/{key}/results/dry-run  (any authenticated actor)
+//
+// The record's dry run: it takes the record's body, makes every refusal the record makes before
+// it opens its transaction (readResultRequest), and answers the pull-request body line the record
+// would answer, writing nothing. The refusals the record makes under its locks - a closed issue,
+// a screenshot of another issue, a check a document version rewords at every attempt - are the
+// record's alone. It is a path of its own, not a flag on the record's, because a release that
+// does not serve it answers a path it does not know 404, where it would drop a flag it does not
+// know and record the result.
+func (s *server) dryRunCheckResult(w http.ResponseWriter, r *http.Request) {
+	request, ok := s.readResultRequest(w, r)
+	if !ok {
+		return
+	}
+	WriteJSON(w, http.StatusOK, checkResultDryRun{Line: checkResultLine(request.check, model.CheckResult{
+		Role: request.input.Role, Observed: request.input.Observed,
+		CommitSHA: request.input.Commit, Verdict: request.input.Verdict,
+	}, request.words)})
+}
+
+// readResultRequest decodes a result's body and judges it as far as the record goes before it
+// opens its transaction, for the record and its dry run alike. A refusal is written to w and
+// answers false.
+func (s *server) readResultRequest(w http.ResponseWriter, r *http.Request) (resultRequest, bool) {
+	refused := func(err error) (resultRequest, bool) {
+		s.writeHandlerError(w, err)
+		return resultRequest{}, false
+	}
+	var input checkResultInput
+	if err := decodeJSON(r, &input); err != nil {
+		return refused(err)
+	}
+	actor, ok := s.requireActor(w, r, input.Actor)
+	if !ok {
+		return resultRequest{}, false
+	}
+	if err := input.refusal(); err != nil {
+		return refused(err)
 	}
 	issueKey := r.PathValue("key")
 	pool, err := s.readyPool()
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 
 	// The check is resolved before the transaction opens. Resolving it folds the live
@@ -151,31 +243,35 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
 	// so no GitHub read is spent on it.
 	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
 
-	// The one repository the check's issue resolves to, read once for the two callers below:
-	// the refusal of a commit it does not hold, and the read-through of the pull requests
-	// GitHub names for that commit after the write. It is nil when there is nothing to ask
-	// GitHub about — a deployment with no App key, an issue that resolves to no repository,
-	// and a read of Dispatch's own rows that failed, which is logged and stores the result as
-	// every answer but the proof of absence does.
+	// The one repository the check's issue resolves to, read once for the refusal below of a
+	// commit no repository the result may name holds. That refusal answers the linked repository
+	// the commit is taken to be of, if any, and the read-through of the pull requests GitHub
+	// names for that commit reads after the write through it, or through this one. It is
+	// nil when there is nothing to ask GitHub about — a deployment with no App key, an issue that
+	// resolves to no repository, and a read of Dispatch's own row of the issue's repository that
+	// failed, which is logged; with no repository to ask about, none of the refusals below is
+	// asked, and the result is stored, as with no App key. A failed read of Dispatch's own rows of
+	// the issue's links is another read, which the
+	// refusal below makes where there is a repository to ask about and GitHub does not say it
+	// holds the commit, and it refuses the record with 500 and stores nothing
+	// (refuseUnknownCommit, results_linked.go).
 	//
-	// It is the check's issue's repository, not the recording issue's: readThroughPullRequests
-	// and the results read both resolve check_issue_key, and a refusal keyed on the recording
-	// issue would disagree with the read about which repository the commit belongs to. It is
-	// resolved through the one helper the results read resolves through (results_comparison.go,
-	// server.checkIssueRepository), under the canonical name the repository is called today: a
-	// refusal asking under a name the repository was renamed away from reads the 404 GitHub
-	// answers for that name's installation, where the read reads the commit — so it would
-	// store every result of such an issue.
+	// It is the check's issue's repository, not the recording issue's, and refuseUnknownCommit
+	// reads the links of the check's issue too: the results read resolves check_issue_key, and a
+	// refusal keyed on the recording issue would disagree with the read about which repository
+	// the commit belongs to. It is resolved through the one helper the results read resolves
+	// through (issue_repo.go, server.checkIssueRepository), under the canonical name the
+	// repository is called today: a refusal asking under a name the repository was renamed away
+	// from reads the 404 GitHub answers for that name's installation, where the read reads the
+	// commit — so it would store every result of such an issue.
 	//
 	// The App key is checked here and not in the helper: every use of the answer below is a
 	// GitHub round trip, while the results read needs the repository even with no App key, for
@@ -183,46 +279,43 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	//
 	// The helper says whether its resolve answered at all, which the results read needs to tell
 	// a check that compares with nothing from one it could not compare (results_comparison.go,
-	// nothingReason). This route takes the repository alone, on purpose: both of its uses below
-	// are already answered by a nil, and the two nothings would earn one answer here anyway.
-	// Nothing but GitHub's proof that the repository holds no such commit refuses a record, so
-	// a resolve that did not answer must store the result, exactly as a deployment with no App
-	// key and an issue with no repository do.
+	// nothingReason). This route takes the repository alone, on purpose: the refusal below and
+	// the read-through it answers for are already answered by a nil, and the two nothings would
+	// earn one answer here anyway. Only GitHub's proof that the repository holds no such commit,
+	// a read of a linked repository that did not answer and a failed read of the issue's links
+	// refuse a record, and none of them is asked of a nil repository, so a resolve that did not
+	// answer stores the result, exactly as a deployment with no App key and an issue with no
+	// repository do.
 	var checkRepo *string
 	if s.deps.GitHub != nil {
 		checkRepo, _ = s.checkIssueRepository(r.Context(), pool, check.IssueKey)
 	}
 
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is
-	// a GitHub round trip, and the comment over that resolve records what a slow read under the
-	// two issues' owner locks costs. Nothing is written before it, so a refusal leaves no row and
-	// no event behind.
-	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// one GitHub round trip or more, and the comment over that resolve records what a slow read
+	// under the two issues' owner locks costs. Nothing is written before it, so a refusal leaves
+	// no row and no event behind. linkedCommitRepo is the linked repository the commit is taken
+	// to be of, and nil where it is taken to be checkRepo's: a result at the head of a pull
+	// request the issue links in another repository names a commit of that repository. A linked
+	// read that did not answer, where no repository was shown to hold the commit, refuses the
+	// record for now rather than storing it under a repository no read showed to hold it
+	// (refuseUnknownCommit, results_linked.go).
+	linkedCommitRepo, err := s.refuseUnknownCommit(r.Context(), pool, check.IssueKey, checkRepo, input.Commit)
+	if err != nil {
+		return refused(err)
 	}
 
-	// The reading resolveCheck made is the block's only while the version and digest the index
-	// holds for it have not moved since, which the locked half re-reads and judges; the one
-	// re-read a moved pair needs runs there too, with every lock given back.
-	written, err := s.recordResultWithFreshWords(r.Context(), issueKey, check, input, actor)
+	// The project keys the line drops issue keys by are read before the transaction too, so a
+	// read that fails refuses the record with nothing written: read after the commit, it would
+	// lose the answer to a write that landed.
+	words, err := s.readLineWords(r.Context(), pool)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return refused(err)
 	}
-	// The read-through runs before the event: the Verification tab refetches on
-	// result.recorded, and no later event refreshes it, so a tab that read the results before
-	// the pull request row landed would show this result standing at no basis until something
-	// else happened.
-	s.readThroughPullRequests(r.Context(), check.IssueKey, written.result.CommitSHA, checkRepo)
-	s.publish(r.Context(), written.event)
-	s.storeDisplayTrees(r.Context(), written.result.ID, written.result.Observed)
-	WriteJSON(w, http.StatusCreated, checkResultRecorded{
-		// The check as the transaction that wrote the row saw it, which after a redo is not the
-		// one resolveCheck read: the line names the `when` the result was judged by.
-		Line:   checkResultLine(written.check, written.result),
-		Result: written.result,
-	})
+	return resultRequest{
+		issueKey: issueKey, input: input, actor: actor, check: check,
+		repo: checkRepo, linkedCommitRepo: linkedCommitRepo, words: words,
+	}, true
 }
 
 // checkContended is the code of a results write whose check a document version moved at every
@@ -272,8 +365,13 @@ type recordedCheckResult struct {
 // before the transaction opened, and that reading is what the first attempt is handed. Only a
 // redo reads the document again, and it reads the attributes alone, with nothing held, against
 // the version and digest the refused attempt's locks found.
+//
+// linkedCommitRepo is what the row keeps as commit_repo (recordCheckResult): the linked
+// repository refuseUnknownCommit answered, or nil. A redo writes the same one, since it is the
+// commit's answer and no rewording of the check moves it.
 func (s *server) recordResultWithFreshWords(
-	ctx context.Context, issueKey string, check resolvedCheck, input checkResultInput, actor model.Actor,
+	ctx context.Context, issueKey string, check resolvedCheck, input checkResultInput,
+	linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, error) {
 	refusal := errorf(http.StatusConflict, checkContended,
 		"check %s was reworded at each of %d attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry",
@@ -298,7 +396,8 @@ func (s *server) recordResultWithFreshWords(
 			return checkResolution{indexedCheck: locked, Attributes: attributes}, nil
 		},
 		func(ctx context.Context, resolution checkResolution) (recordedCheckResult, error) {
-			written, found, err := s.recordResultUnderOwnerLocks(ctx, issueKey, check.checkBlockRef, resolution, input, actor)
+			written, found, err := s.recordResultUnderOwnerLocks(
+				ctx, issueKey, check.checkBlockRef, resolution, input, linkedCommitRepo, actor)
 			locked = found
 			return written, err
 		},
@@ -315,7 +414,7 @@ func (s *server) recordResultWithFreshWords(
 // digest the locks found come back beside it, for the redo to read the words of.
 func (s *server) recordResultUnderOwnerLocks(
 	ctx context.Context, issueKey string, check checkBlockRef, resolved checkResolution,
-	input checkResultInput, actor model.Actor,
+	input checkResultInput, linkedCommitRepo *string, actor model.Actor,
 ) (recordedCheckResult, indexedCheck, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -373,7 +472,7 @@ func (s *server) recordResultUnderOwnerLocks(
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: resolved.Version, CheckSHA256: resolved.SHA256,
 		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
-		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
+		CommitSHA: input.Commit, CommitRepo: linkedCommitRepo, NegativeControl: input.NegativeControl,
 		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
 		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
 		Session: sessionOf(actor), Actor: actor,
@@ -931,9 +1030,12 @@ func (s *server) checkBlocksOf(ctx context.Context, q queryer, artifact model.Ar
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single
-// blanks, with the text of a link and every dispatch:// reference dropped, so the pull-request
-// body line the result implies carries no link and no Dispatch host. blockContent is the same
-// block with both kept.
+// blanks, with the text of a link and every word holding `://` (holdsLink) dropped. Dispatch reads
+// the markdown as GFM does, so a bare `www.` address is link text and is dropped too, while a host
+// written with neither a scheme nor `www.`, such as `example.com/logs`, stays
+// (TestALineKeepsAPublicHostWithNoSchemeAsTheParseLeavesIt). It is a check's or a requirement's
+// `text`, and the line of a check CI proves keeps a check's words by lineWords (ciVerdictLine).
+// blockContent is the same block with both kept.
 func blockWords(node *pmdoc.Node) string {
 	var words []string
 	pmdoc.Walk(node, func(child *pmdoc.Node) bool {
@@ -946,7 +1048,7 @@ func blockWords(node *pmdoc.Node) string {
 			}
 		}
 		for _, word := range strings.Fields(child.Text) {
-			if strings.Contains(word, "://") {
+			if holdsLink(word) {
 				continue
 			}
 			words = append(words, word)
@@ -954,6 +1056,173 @@ func blockWords(node *pmdoc.Node) string {
 		return true
 	})
 	return strings.Join(words, " ")
+}
+
+// holdsLink reports whether a word holds `://`, which a dispatch:// reference and every URL written
+// with a scheme and a host carry; a link written another way, such as GitHub's `www.` autolink,
+// holds none. blockWords and lineWords drop such a word by this one rule.
+func holdsLink(word string) bool {
+	return strings.Contains(word, "://")
+}
+
+// lineWords is the rule a pull-request body line keeps the words of a text by: the reading a
+// recorded result's line carries (checkResultLine) and the check's words a CI result's line
+// carries (ciVerdictLine). The line is written into a pull request unchanged, and a pull request
+// can be public, so it keeps only a plain word (plainWord), and drops every word that holds `://`
+// (holdsLink), a private host (privateHost, tailnetHost), this Dispatch's own host, or an issue key
+// of a project this Dispatch holds. No line is stored: each is written when the record, its dry run
+// or the results read answers it, by the projects Dispatch holds then.
+type lineWords struct {
+	// issueKey matches a word holding an issue key of a project this Dispatch holds; nil when it
+	// holds no project (lineWordsFor).
+	issueKey *regexp.Regexp
+	// host is the host name of this Dispatch's own URL in lower case, so a link to it written
+	// without its scheme is dropped too; "" when the configured URL names no host (none is
+	// configured, or it does not parse).
+	host string
+	// punctuation is the punctuation a plain word may hold: plainPunctuation, which lineWordsFor
+	// sets, and which a test widens by one rune to show its property can fail.
+	punctuation string
+}
+
+// plainPunctuation is the punctuation a word of a pull-request body line may hold besides visible
+// letters and digits (plainWord).
+// Runes: . , ; : ! ? ' " - ( ) /
+// The line drops whole every word that holds any other rune: every other ASCII punctuation mark
+// and symbol (`*`, `_` and `~` for emphasis and strikethrough, where `_X_` at a word's edge hides
+// where a key ends; the backtick; `<` and `>` for HTML tags and comments; `[` and `]` for links;
+// `\` for escapes; `&` for character references; `$` for math; `@` and `#` for mentions and
+// references; and the rest), every Unicode punctuation mark and symbol (dashes and quotation marks
+// among them), every combining mark, every number that is no decimal digit (superscripts,
+// fractions, Roman numerals), every default-ignorable code point (the zero-width space, variation
+// selectors and the Hangul filler letters among them), every control code point that is no white
+// space (white space ends a word), and every private-use and unassigned code point. Many of these
+// can split, join, hide or forge a key or a host once GitHub renders the line, which one word read
+// alone cannot see; rather than list which, the rule allows these few runes and nothing else, which
+// closes that class.
+// Three look-alikes pass by design: a letter or digit of another script that looks like a Latin
+// letter or digit, such as Cyrillic `А` in `АСМЕ-12`; a letter that looks like the key's `-`, such
+// as the prolonged sound mark `ー` in `ACMEー12`; and GitHub's `:name:` emoji shortcodes, such as
+// `:one:`, a picture that can look like a digit. None is made of the characters of a key.
+// Excluding the letters and digits of other scripts would break international text, and excluding
+// `:` would drop from the line every word of ordinary prose that ends in `:`.
+// The cost is that a word such as `Vec<u8>`, `$PATH`, `ENVOY_TOKEN`, `a->b` or `it’s` leaves the
+// line, while the record keeps the whole reading.
+const plainPunctuation = `.,;:!?'"-()/`
+
+// plainWord reports whether every rune of word is a visible letter, a digit or one of
+// punctuation. A letter that is a default-ignorable code point, such as the Hangul fillers
+// U+115F, U+1160, U+3164 and U+FFA0, which render as nothing, is no plain letter: it could sit
+// inside a key unseen.
+func plainWord(word, punctuation string) bool {
+	for _, r := range word {
+		letter := unicode.IsLetter(r) &&
+			!unicode.In(r, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector, unicode.Cf)
+		if !letter && !unicode.IsDigit(r) && !strings.ContainsRune(punctuation, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// privateHost and tailnetHost are the two host rules of .github/scripts/check-private-names.sh,
+// read in any case as that script reads them: a host below `.internal.`, and a Tailscale MagicDNS
+// host, a DNS label then `.ts.net` with no ASCII letter or digit after it. privateHost also takes
+// a host that ends in `.internal` with no ASCII letter or digit after it (a full stop, a
+// parenthesis or a hyphen included). Both read case-insensitively, so the Kelvin sign U+212A and
+// the long s U+017F, which fold to `k` and `s`, count as letters after a host too, while `é` does
+// not. privateHost's trailing `.internal` is what the script does not refuse: the script guards the
+// whole repository, where names such as metadata.google.internal and host.docker.internal are
+// well known and not private, while the line is pasted into public text with no reader in
+// between, so it is stricter on purpose. The line drops every word holding one, written without a
+// scheme too, and the script's reserved example hosts with them, since no line needs such a host.
+var (
+	privateHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]internal([^[:alnum:]]|$)`)
+	tailnetHost = regexp.MustCompile(`(?i)[[:alnum:]-]+[.]ts[.]net([^[:alnum:]]|$)`)
+)
+
+// readLineWords is lineWords for every project q reads and for this Dispatch's own URL.
+func (s *server) readLineWords(ctx context.Context, q queryer) (lineWords, error) {
+	rows, err := q.Query(ctx, `select key from projects`)
+	if err != nil {
+		return lineWords{}, err
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return lineWords{}, err
+	}
+	return lineWordsFor(keys, s.deps.ServerURL), nil
+}
+
+// lineWordsFor is lineWords for the projects keys names and the Dispatch at serverURL. A word
+// holds an issue key where one of those keys stands in it, in any case, at the word's start or
+// after a character that is neither a letter nor a digit, followed by `-` and a number that ends
+// there: at the word's end, or before a character that is neither a letter, a digit, nor a `.`
+// that a digit follows. So `ACME-12's`, `(ACME-12)`, `fix/acme-12-lines` and
+// `legion-acme-acme-12-tester` hold ACME-12, and the lower case is caught because branch names and
+// role tokens spell a key so. `UTF-8`, `SHA-256`, `x86-64` and `TEST-1` hold no key while no
+// project bears that name, and `kernel-6.8` holds none even where a project KERNEL exists, since a
+// number running on into a decimal part is a version. A shape alone, such as [A-Z]+-[0-9]+, would
+// drop UTF-8 and SHA-256 too, which is why the keys are the projects Dispatch holds.
+func lineWordsFor(keys []string, serverURL string) lineWords {
+	words := lineWords{punctuation: plainPunctuation}
+	if parsed, err := url.Parse(serverURL); err == nil {
+		words.host = strings.ToLower(parsed.Hostname())
+	}
+	if len(keys) == 0 {
+		return words
+	}
+	quoted := make([]string, len(keys))
+	for index, key := range keys {
+		quoted[index] = regexp.QuoteMeta(key)
+	}
+	words.issueKey = regexp.MustCompile(`(?i)(?:^|[^\p{L}\p{N}])(?:` + strings.Join(quoted, "|") +
+		`)-[0-9]+(?:$|[^\p{L}\p{N}.]|\.(?:$|[^0-9]))`)
+	return words
+}
+
+// drops reports whether the line leaves word out: when it is not a plain word (plainWord), or
+// when the word as written, or as NFKC reads it (fullwidth and mathematical letters as their
+// plain forms), holds what the line never carries.
+func (w lineWords) drops(word string) bool {
+	return !plainWord(word, w.punctuation) || w.holds(word) || w.holds(norm.NFKC.String(word))
+}
+
+// holds reports whether word holds `://`, a private host, this Dispatch's own host or an issue
+// key of a project this Dispatch holds.
+func (w lineWords) holds(word string) bool {
+	return holdsLink(word) || privateHost.MatchString(word) || tailnetHost.MatchString(word) ||
+		(w.host != "" && strings.Contains(strings.ToLower(word), w.host)) ||
+		(w.issueKey != nil && w.issueKey.MatchString(word))
+}
+
+// keep is text's words joined by single blanks, less every word the line drops.
+func (w lineWords) keep(text string) string {
+	return w.keepThrough(text, math.MaxInt)
+}
+
+// keepThrough is keep stopped once what it has kept is longer than budget runes. cut reads no more
+// of a text than that (text.HeadWords reads its first budget runes and whether there are more), so
+// a word past that point can change no line, and judging it would cost work that grows with the
+// text and changes nothing.
+func (w lineWords) keepThrough(text string, budget int) string {
+	var kept strings.Builder
+	runes := 0
+	for word := range strings.FieldsSeq(text) {
+		if runes > budget {
+			break
+		}
+		if w.drops(word) {
+			continue
+		}
+		if kept.Len() > 0 {
+			kept.WriteByte(' ')
+			runes++
+		}
+		kept.WriteString(word)
+		runes += utf8.RuneCountInString(word)
+	}
+	return kept.String()
 }
 
 // blockContent is a typed block's own content as markdown: what stands between its opening line
@@ -981,33 +1250,49 @@ func blockContent(node *pmdoc.Node) string {
 }
 
 // checkResultLine is the pull-request body line one recorded result implies. Dispatch writes it
-// rather than each caller, so every writer writes one grammar; it carries no link to Dispatch
-// and no Dispatch host.
+// rather than each caller, so every writer writes one grammar. Its reading carries no word
+// holding `://` (holdsLink), no private or Dispatch host, no word that is not plain but for the
+// ellipsis that marks a cut, and no word holding an issue key of a project Dispatch holds as
+// lineWordsFor reads one (lineWords). A public host written as `www.` and a domain, which GitHub
+// renders as a link, is kept, and the check's block id and the role are printed as written.
 //
 // The tail is the reading the role recorded (Observed) and not the check's own words, which
 // every reader of the pull request can read on the issue and which a pass and a fail would
-// carry alike: the line's whole purpose is to say what was seen. A reading longer than the
-// budget is cut at a word boundary and marked with an ellipsis, so a reader can tell a cut
-// line from a short one; a result with no reading says so, since a line that simply stopped
-// after the role would read as a reading nobody recorded.
-func checkResultLine(check resolvedCheck, result model.CheckResult) string {
+// carry alike: the line's whole purpose is to say what was seen. What words keeps of a reading
+// is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
+// cut line from a short one; the cut falls at a word boundary where the budget's first runes hold
+// one (cut). A result with no reading says so, since a line that simply stopped after the role
+// would read as a reading nobody recorded, and a reading of which nothing is left after the cut
+// says that, whether words kept nothing of it or the cut's second judging dropped what it kept.
+func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
-	reading := strings.Join(strings.Fields(result.Observed), " ")
-	if reading == "" {
+	if strings.TrimSpace(result.Observed) == "" {
 		return line + " The role recorded no reading."
 	}
-	return line + " " + cutWords(reading)
+	tail := words.cut(words.keepThrough(result.Observed, checkResultReadingRunes))
+	if tail == "" {
+		return line + " The reading holds only words this line leaves out."
+	}
+	return line + " " + tail
 }
 
-// cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
-// cut, so a reader can tell a cut line from a short one (text.HeadWords).
-func cutWords(s string) string {
-	head, cut := text.HeadWords(s, checkResultReadingRunes)
-	if cut {
-		head += "…"
+// cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
+// an ellipsis where it was cut, so a reader can tell a cut line from a short one
+// (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
+// what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
+// `ACME-12`), so a cut text is kept by w once more. cut is empty when nothing is left: when kept
+// is, or when w keeps nothing of the cut text, so a caller decides that nothing is left from what
+// cut answers and never prints a bare ellipsis.
+func (w lineWords) cut(kept string) string {
+	head, cut := text.HeadWords(kept, checkResultReadingRunes)
+	if !cut {
+		return head
 	}
-	return head
+	if head = w.keep(head); head == "" {
+		return ""
+	}
+	return head + "…"
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.
@@ -1061,15 +1346,15 @@ func insertCheckResult(ctx context.Context, tx pgx.Tx, result *model.CheckResult
 		insert into check_results (
 			id, issue_key, check_issue_key, check_artifact_id, check_block_id, check_version,
 			check_sha256, role, surface, run, observed, commit_sha, negative_control,
-			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq
+			failed, skipped, excluded, verdict, screenshots, session, actor, event_seq, commit_repo
 		)
-		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+		values ($1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		returning created_at
 	`,
 		result.ID, result.IssueKey, result.CheckIssueKey, result.CheckArtifactID, result.CheckBlockID,
 		result.CheckVersion, result.CheckSHA256, result.Role, result.Surface, result.Run, result.Observed,
 		result.CommitSHA, result.NegativeControl, result.Failed, result.Skipped, result.Excluded,
-		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq,
+		result.Verdict, result.Screenshots, result.Session, actorJSON, result.EventSeq, result.CommitRepo,
 	).Scan(&result.CreatedAt)
 }
 
@@ -1110,7 +1395,7 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 		&result.CheckVersion, &result.CheckSHA256, &result.Role, &result.Surface, &result.Run,
 		&result.Observed, &result.CommitSHA, &result.NegativeControl, &result.Failed, &result.Skipped,
 		&result.Excluded, &result.Verdict, &result.Screenshots, &result.Session, &actorJSON,
-		&result.CreatedAt, &result.EventSeq,
+		&result.CreatedAt, &result.EventSeq, &result.CommitRepo,
 	); err != nil {
 		return model.CheckResult{}, err
 	}
@@ -1120,48 +1405,16 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 	return result, nil
 }
 
-// refuseUnknownCommit refuses a result at a commit repo definitely does not hold: 400
-// RESULT_COMMIT_UNKNOWN, naming the commit and that `owner/repo`. repo is the repository the
-// check's issue resolves to, which recordCheckResult reads once for this refusal and for the
-// read-through after the write; a nil repo is nothing to ask GitHub about and no refusal. A
-// deployment with no App key resolves none, so the key is not checked again here.
-//
-// It runs before the transaction opens, so a refused result leaves no check_results row and no
-// result.recorded event behind. Dispatch stored a result at a mistyped commit no repository
-// held once, and a reader could not tell it from the real head, since both print as twelve
-// characters.
-//
-// It refuses on nothing but GitHub's proof that the repository does not hold the commit, which
-// delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
-// commit for the SHA. No other GitHub answer can block the result a closed issue takes, the
-// production check's after-merge result — whose merge commit is on the branch its pull request
-// merged into and is held anyway.
-func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha string) error {
-	if repo == nil {
-		return nil
-	}
-	held, err := delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, *repo, sha)
-	if err != nil {
-		slog.Info("dispatch: GitHub could not say whether a recorded result's commit is held",
-			"repo", *repo, "commit", sha, "error", err)
-		return nil
-	}
-	if held {
-		return nil
-	}
-	return errorf(http.StatusBadRequest, "RESULT_COMMIT_UNKNOWN",
-		"%s holds no commit %s: record the result once the commit is pushed", *repo, sha)
-}
-
 // readThroughPullRequests teaches Dispatch the pull requests GitHub names for a result's
 // commit when that commit is the head of none it already knows for the check's issue, so a
 // result recorded at the head of a pull request no event has reached Dispatch for stands at
-// that head at once. It asks about the check's own issue and reads through repo, the one
-// repository that issue resolves to, which recordCheckResult resolved before the write: the
-// issue comparisonReader.headBases names the heads of. A nil repo — a deployment with no App
-// key, an issue resolving to no repository, or a resolve that failed — leaves nothing to read
-// through, and it is answered before the database is read, since no head this read found
-// could be used.
+// that head at once. It asks about the check's own issue and reads through repo, the one the
+// commit is taken to be of: the linked repository refuseUnknownCommit answered before the write
+// (results_linked.go), and else the repository the check's issue resolves to. So the pull
+// request of a linked repository is learned from that repository, not from the one the issue
+// resolves to, which does not hold the commit. A nil repo — a deployment with no App key, an
+// issue resolving to no repository, or a resolve that failed — leaves nothing to read through,
+// and it is answered before the database is read, since no head this read found could be used.
 //
 // It never fails the record: the row is written, and a head Dispatch could not learn leaves
 // the result read exactly as it would have been without the call.

@@ -107,6 +107,7 @@ func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 		roleDeadLetters:     metrics.New().NewCounter("test_role_dead_letters", "test"),
 		roleKeptUndecodable: metrics.New().NewCounter("test_role_kept_undecodable", "test"),
 		publishDeadLetter:   d.client.PublishStoredAs,
+		keepPublish:         d.client.PublishStoredAck,
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
 	}

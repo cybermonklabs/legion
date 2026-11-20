@@ -31,6 +31,12 @@ mkdir -p "$evidence/logs" "$evidence/checks"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing carries none and is stopped by its pid (run_marks' comment there). The
+# transcript's tee, started above, carries none, so it outlives the sweep and writes the run's last
+# line.
+export LEGION_E2E_RUN=$work
 ok=
 daemon_pid=
 listener_pid=
@@ -72,7 +78,7 @@ cleanup() {
   TMUX_TMPDIR=$work/tmux tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
@@ -94,18 +100,41 @@ log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" 
 # daemon starts in it (start_kept).
 operator_shell=(env "${omp_session_unsets[@]}" HOME="$omp_home" OMP_PROFILE="$profile")
 operator_env() { "${operator_shell[@]}" "$@"; }
-# controller_omp STATE_DIR: the pid of the Oh My Pi `legion controller start` launched for STATE_DIR.
+# controller_omp STATE_DIR CLI_PID: the pid of the Oh My Pi that the run's `legion controller start`,
+# the process CLI_PID its pane recorded as it started it (record_pid_sh, lib/process-tree.sh),
+# launched for STATE_DIR. The command starts Oh My Pi through `sh -c` (controller.go's exec.Command),
+# so it is the process below CLI_PID that runs the pinned Oh My Pi, $omp_exe (launched,
+# lib/process-tree.sh), and its
+# environment, read once in this shell with no pipe, must name STATE_DIR. Nothing searches the
+# machine's /proc for it: there it shares argv[0] with every other Oh My Pi and its own daemon
+# broker child, an Oh My Pi run through another name (an omp_invocation may name any program) has
+# none, a walk of every entry costs minutes on a loaded devbox, and an environment read through
+# `tr | grep -q` was missed whenever grep stopped before tr had written the rest (pipefail's 141).
+# It prints why and fails when no such process is there.
 controller_omp() {
-  local p
-  for p in /proc/[0-9]*; do
-    [ "$(basename -- "$( (tr '\0' '\n' <"$p/cmdline") 2>/dev/null | head -1)" 2>/dev/null)" = omp ] || continue
-    (tr '\0' '\n' <"$p/environ") 2>/dev/null | grep -qxF "LEGION_STATE_DIR=$1" || continue
-    echo "${p#/proc/}"
-    return 0
+  local found entry state='' named=''
+  local -a entries
+  if ! found=$(launched "$2" "$omp_exe"); then
+    printf '%s\n' "$found"
+    return 1
+  fi
+  if ! { mapfile -d '' -t entries <"/proc/$found/environ"; } 2>/dev/null || [ "${#entries[@]}" = 0 ]; then
+    printf 'the environment of the Oh My Pi %s of %s could not be read (/proc/%s/environ)\n' "$found" "$2" "$found"
+    return 1
+  fi
+  for entry in "${entries[@]}"; do
+    case $entry in LEGION_STATE_DIR=*)
+      state=${entry#*=} named=1
+      break
+      ;;
+    esac
   done
-  return 1
+  if [ -z "$named" ] || [ "$state" != "$1" ]; then
+    printf 'the Oh My Pi %s of %s has LEGION_STATE_DIR=%s, want %s\n' "$found" "$2" "${named:+$state}" "$1"
+    return 1
+  fi
+  printf '%s\n' "$found"
 }
-env_of() { tr '\0' '\n' <"/proc/$1/environ" | sed -n "s/^$2=//p"; }
 
 # ---- setup -----------------------------------------------------------------------------------------
 for tool in go docker jq curl python3 tmux bun mise; do command -v "$tool" >/dev/null || fail "$tool is required"; done
@@ -118,6 +147,9 @@ LEGION_GH_PATH=$(mise which gh) || fail "mise has no gh"
 export LEGION_GH_PATH
 pin=$(<"$root/.omp-pin")
 mise where "$pin" >/dev/null 2>&1 || mise install "$pin" >&2
+# The program the controller's Oh My Pi runs: what controller.yaml's omp_invocation, `mise x $pin --
+# omp`, execs. controller_omp knows the controller's process by it, as the kernel records it.
+omp_exe=$(realpath -e -- "$(mise where "$pin")/bin/omp") || fail "the pinned Oh My Pi $pin has no bin/omp"
 # The daemon's port is one the kernel chose, held by a keeper for the run (lib/rig.sh's keep_port),
 # so legion.yaml and controller.yaml can name it before the daemon starts on a copy of its socket.
 keep_port daemon_keeper daemon_port
@@ -193,9 +225,11 @@ envoy_token_file: $work/envoy-token
 probe_interval_seconds: 5
 # The wake pacing off (INFRA-976): this proof starts roles and waits on bounded times, and at the
 # default of 8 wakes a minute every wake after the first would spend those waits queueing. The two
-# wake keys add no line to legion config check, which prints the renames, the open
-# capability rows and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
-# config-check-passes below compares everything after the OK line with a fixed string.
+# wake keys add no line to legion config check, which prints the renames, the open capability
+# rows, the pause line and, under Kubernetes alone, the pod lines (checkConfig in cmd/legion):
+# under tmux the pause line names runtime: tmux whatever the pacing is (pause.Unavailable reads
+# the runtime first). config-check-passes below compares everything after the OK line with a fixed
+# string.
 worker_wakes_per_minute: 0
 EOF
 printf 'Always answer in one sentence.\n' >"$work/instructions.md"
@@ -219,10 +253,13 @@ out=$(legion config check --config "$work/legion.yaml")
 [ "$(head -1 <<<"$out")" = "Config OK: project=$project design-gate-steps=spec" ] || fail "got $out"
 # After the OK line, one line per deployment capability the file alone leaves open, in boot's words
 # (LEGION-578): under tmux the secrets and resource-limits rows, each ending with the legion.yaml
-# line that records a decision. A report, so the exit stayed 0.
+# line that records a decision. Then the line that says this daemon cannot pause its project and
+# names the setting, which under tmux is the runtime (checkConfig in cmd/legion,
+# pause.Unavailable). A report, so the exit stayed 0.
 want_gaps='capability secrets is open: the tmux runtime enrolls no process with the secrets broker; to record a decision, add to legion.yaml: capabilities.decided.secrets: "<reason>"
-capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: "<reason>"'
-[ "$(tail -n +2 <<<"$out")" = "$want_gaps" ] || fail "the lines after the OK line are not the two open gaps: $out"
+capability resource-limits is open: the tmux runtime sets no requests or limits on a pane; to record a decision, add to legion.yaml: capabilities.decided.resource-limits: "<reason>"
+pause unavailable: runtime: tmux'
+[ "$(tail -n +2 <<<"$out")" = "$want_gaps" ] || fail "the lines after the OK line are not the two open gaps and the pause line: $out"
 note "$out"
 pass
 
@@ -299,7 +336,9 @@ note "the daemon minted nothing; $ctl_state not created"
 pass
 
 begin controller-claims-the-role
-tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
+# The pane's command records the pid of the `legion controller start` it runs (record_pid_sh,
+# lib/process-tree.sh), which execs in that process, so the run knows the command by the pid it started.
+tm new-session -d -s ctl1 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl1.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl1.stderr'; echo \$? >'$evidence/checks/ctl1.exit'; sleep 600"
 until_true 180 "controllerLocator in the state" sh -c "'$work/legion' state --json --port $daemon_port | jq -e '.controllerLocator.sessionId != null'"
 locator1=$(state_json | jq -c .controllerLocator)
 session1=$(jq -r .sessionId <<<"$locator1")
@@ -312,7 +351,12 @@ note "GET /v1/roles/$role → holder $(envoy_role "$role" | jq -r .holder)"
 registered=$(jq -R -c --arg s "$session1" 'fromjson? | select(.msg == "api: controller registered" and .session == $s) | {claim, generation, session, pluginContract}' "$daemon_log" | head -1)
 [ -n "$registered" ] || fail "the daemon logged no controller registration for $session1"
 note "daemon: api: controller registered $registered"
-omp1=$(controller_omp "$ctl_state") || fail "no omp process carries LEGION_STATE_DIR=$ctl_state"
+cli1=$(recorded_pid "$evidence/checks/ctl1.pid" "$work/legion") ||
+  fail "$evidence/checks/ctl1.pid names no process running $work/legion: $(cat "$evidence/checks/ctl1.pid" 2>&1)"
+omp1=$(controller_omp "$ctl_state" "$cli1") || fail "legion controller start ($cli1) runs no Oh My Pi for $ctl_state: $omp1"
+# Its environment and its command line are read with no pipe between the read and the check
+# (env_of, env_has, process_args).
+env_of "$omp1" HOME >/dev/null || fail "omp $omp1's environment could not be read"
 for pair in LEGION_CONTROLLER=1 LEGION_ROLE=controller "LEGION_PROJECT=$ptoken" \
   "LEGION_CONTROLLER_SECRET_FILE=$ctl_state/secrets/$role" \
   "ENVOY_TOKEN_FILE=$work/envoy-token" "ENVOY_NATS_URL=$nats_url" "HOME=$omp_home" "OMP_PROFILE=$profile"; do
@@ -321,9 +365,11 @@ done
 # No grant file: the controller's `legion` tool (read_state, set_status) mints its grants
 # in-process, and no agent runs `legion` from bash.
 for absent in LEGION_GRANT_FILE LEGION_GRANT; do
-  ! tr '\0' '\n' <"/proc/$omp1/environ" | grep -q "^$absent=" || fail "omp $omp1 carries $absent=$(env_of "$omp1" "$absent")"
+  st=0
+  env_has "$omp1" "$absent" || st=$?
+  [ "$st" = 1 ] || fail "omp $omp1 carries $absent=$(env_of "$omp1" "$absent") (env_has status $st)"
 done
-env_of "$omp1" PI_SHELL_PREFIX | grep -qF "PATH='$ctl_state/bin'\${__legion_path" || fail "PI_SHELL_PREFIX = $(env_of "$omp1" PI_SHELL_PREFIX)"
+[[ $(env_of "$omp1" PI_SHELL_PREFIX) == *"PATH='$ctl_state/bin'\${__legion_path"* ]] || fail "PI_SHELL_PREFIX = $(env_of "$omp1" PI_SHELL_PREFIX)"
 case "$(env_of "$omp1" PATH)" in
   "$ctl_state/bin:"*) ;;
   *) fail "PATH = $(env_of "$omp1" PATH), want the controller's legion launcher directory first" ;;
@@ -332,8 +378,16 @@ case ":$(env_of "$omp1" PATH):" in
   *worker-bin*) fail "PATH = $(env_of "$omp1" PATH) names a worker-bin directory; no daemon installs a gh shim any more" ;;
 esac
 [ -z "$(env_of "$omp1" LEGION_CONTROLLER_SECRET)" ] || fail "the controller secret's value is in omp's environment"
-tr '\0' '\n' <"/proc/$omp1/cmdline" | grep -qxF -- "--append-system-prompt" || fail "omp has no --append-system-prompt"
-! tr '\0' '\n' <"/proc/$omp1/cmdline" | grep -qx -- "--mode\|rpc\|--resume.*" || fail "omp runs --mode rpc or --resume"
+omp_args=()
+process_args "$omp1" omp_args || fail "omp $omp1's command line could not be read"
+prompted=
+for arg in "${omp_args[@]}"; do
+  case $arg in
+    --append-system-prompt) prompted=1 ;;
+    --mode | rpc | --resume*) fail "omp runs --mode rpc or --resume: ${omp_args[*]}" ;;
+  esac
+done
+[ -n "$prompted" ] || fail "omp has no --append-system-prompt: ${omp_args[*]}"
 [ "$(stat -c %a "$ctl_state/secrets/$role")" = 600 ] || fail "the secret file is not 0600"
 note "omp $omp1: LEGION_CONTROLLER=1 PI_SHELL_PREFIX over $ctl_state; secret only as a 0600 file; interactive (no --mode rpc); HOME=$omp_home"
 # The profile Oh My Pi runs on is the run's own, inside its work directory (its plugin links and the
@@ -352,11 +406,10 @@ note "no GitHub App: ctl1.stderr says the controller's gh acts as nobody; $ctl_s
 pass
 
 begin ctrl-c-reaches-omp-not-the-cli
-cli1=$(pgrep -f "^$work/legion controller start --config $work/controller.yaml" | head -1)
-[ -n "$cli1" ] || fail "no legion controller start process"
+cli1=$(recorded_pid "$evidence/checks/ctl1.pid" "$work/legion") || fail "no legion controller start process"
 tm send-keys -t ctl1 C-c
 sleep 2
-kill -0 "$cli1" 2>/dev/null || fail "one Ctrl-C ended legion controller start"
+recorded_pid "$evidence/checks/ctl1.pid" "$work/legion" >/dev/null || fail "one Ctrl-C ended legion controller start"
 kill -0 "$omp1" 2>/dev/null || fail "one Ctrl-C ended Oh My Pi"
 [ ! -e "$evidence/checks/ctl1.exit" ] || fail "the command exited on one Ctrl-C"
 note "after one Ctrl-C both legion ($cli1) and omp ($omp1) run; Oh My Pi owns the terminal"
@@ -393,7 +446,7 @@ if [ "$code" != 500 ] || ! grep -qF DISPATCH_UNAVAILABLE "$evidence/checks/grant
   fail "the grant answered $code $(cat "$evidence/checks/grant-before-second-start.json") before the second start, want 500 DISPATCH_UNAVAILABLE"
 fi
 note "the grant, before the second start → $code $(cat "$evidence/checks/grant-before-second-start.json")"
-tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
+tm new-session -d -s ctl2 -x 200 -y 50 "cd '$work' && sh -c '$record_pid_sh' record-pid '$evidence/checks/ctl2.pid' env ${omp_session_unsets[*]} HOME='$omp_home' OMP_PROFILE='$profile' '$work/legion' controller start --config '$work/controller.yaml' 2>'$evidence/checks/ctl2.stderr'; echo \$? >'$evidence/checks/ctl2.exit'; sleep 600"
 until_true 180 "controllerLocator to name a second session" sh -c "'$work/legion' state --json --port $daemon_port | jq -e --arg s '$session1' '.controllerLocator.sessionId != null and .controllerLocator.sessionId != \$s'"
 locator2=$(state_json | jq -c .controllerLocator)
 session2=$(jq -r .sessionId <<<"$locator2")

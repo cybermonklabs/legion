@@ -74,7 +74,7 @@ func LocalNATSURL(raw string) bool {
 
 // NATSURLWithoutUserinfo renders raw, a configured NATS server URL, for a log line or an error
 // that is logged, with no userinfo at all. nats.go authenticates with the URL's userinfo
-// (connectProto, nats.go v1.50.0 nats.go:2807-2817): a user name alone is a token and
+// (connectProto, nats.go v1.55.0 nats.go:3133-3143): a user name alone is a token and
 // user:password a password, so both parts are the credential, and url.URL.Redacted, which keeps
 // the user name, would log a token whole. raw is read as LocalNATSURL reads it. A URL with no "@"
 // carries no userinfo and comes back as written. Any other comes back as nothing that preceded an

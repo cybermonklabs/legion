@@ -269,6 +269,10 @@ flags_name_dir() {
 case $verb in
   get)
     case "$*" in
+      *"get --raw /.well-known/openid-configuration"*)
+        # The cluster's ServiceAccount token issuer, which up records for the copy's listener.
+        printf '{"issuer":"https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example","jwks_uri":"https://203.0.113.1:443/openid/v1/jwks"}\n'
+        ;;
       *"configmap dispatch-loadtest-lock"*)
         # FAKE_LOCK_GET_FAIL: a read of the lock fails with a refused API server connection once
         # the lock exists, so the command that takes it goes on and every read after that fails.
@@ -2179,6 +2183,7 @@ pass "up stops after five quota races in a row on one manifest"
   NS=$ns
   digest=sha256:$(printf '%064d' 7)
   values=(NAMESPACE=loadtest RUN_ID=lt-20261028t120000-abcd STORAGE_CLASS=premium-rwo
+    OIDC_ISSUER=https://container.googleapis.com/v1/projects/example-project/locations/us-west1/clusters/example
     "ENVOY_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest" "LISTENER_IMAGE=ghcr.io/cybermonklabs/legion/envoy@$digest"
     "PG_IMAGE=mirror.gcr.io/pgvector/pgvector@$digest" "SOCAT_IMAGE=mirror.gcr.io/alpine/socat@$digest"
     "RUNNER_IMAGE=mirror.gcr.io/library/debian@$digest")

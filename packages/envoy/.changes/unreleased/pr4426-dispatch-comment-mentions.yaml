@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  The generated `dispatch_comment` tool schema carries `mentions`, the roles and sessions that
+  Dispatch delivers the comment to.

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -41,20 +42,20 @@ func TestSessionFileOfFindsTheRecordedSessionWhereItWasCarried(t *testing.T) {
 	t.Run("at its recorded path", func(t *testing.T) {
 		here := filepath.Join(t.TempDir(), "--work--", "2026-10-20T10-00-00-000Z_ses-here.jsonl")
 		writeSession(t, here, old)
-		if got, _, err := sessionFileOf(here, nil); err != nil || got != here {
+		if got, _, _, err := sessionFileOf(here, nil); err != nil || got != here {
 			t.Fatalf("sessionFileOf = %q, %v; want the recorded %s", got, err, here)
 		}
 	})
 
 	carried := filepath.Join(sessions, "--pod-work--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
 	writeSession(t, carried, old)
-	if got, _, err := sessionFileOf(recorded, nil); err != nil || got != carried {
+	if got, _, _, err := sessionFileOf(recorded, nil); err != nil || got != carried {
 		t.Fatalf("sessionFileOf with the session in another folder = %q, %v; want %s", got, err, carried)
 	}
 
 	renamed := filepath.Join(sessions, "--state-work--", "2026-10-21T09-00-00-000Z_ses-abc.jsonl")
 	writeSession(t, renamed, time.Now())
-	if got, _, err := sessionFileOf(recorded, nil); err != nil || got != renamed {
+	if got, _, _, err := sessionFileOf(recorded, nil); err != nil || got != renamed {
 		t.Fatalf("sessionFileOf with two copies = %q, %v; want the one written last, %s", got, err, renamed)
 	}
 
@@ -63,7 +64,7 @@ func TestSessionFileOfFindsTheRecordedSessionWhereItWasCarried(t *testing.T) {
 	}
 	other := filepath.Join(sessions, "--pod-work--", "2026-10-20T10-00-00-000Z_ses-abcd.jsonl")
 	writeSession(t, other, time.Now().Add(time.Hour))
-	if got, _, err := sessionFileOf(recorded, nil); err != nil || got != renamed {
+	if got, _, _, err := sessionFileOf(recorded, nil); err != nil || got != renamed {
 		t.Fatalf("sessionFileOf beside a directory of the name and another session's file = %q, %v; want %s", got, err, renamed)
 	}
 }
@@ -80,7 +81,7 @@ func TestSessionFileOfFindsAPodsSessionInThePanesSessionsDirectory(t *testing.T)
 		t.Run(name, func(t *testing.T) {
 			pane := filepath.Join(t.TempDir(), "home", ".omp", "agent", "sessions")
 			writeSession(t, filepath.Join(pane, carried), time.Now())
-			got, searched, err := sessionFileOf(podSession, paneAt(pane))
+			got, searched, _, err := sessionFileOf(podSession, paneAt(pane))
 			if err != nil || got != filepath.Join(pane, carried) {
 				t.Fatalf("sessionFileOf = %q, %v; want %s", got, err, filepath.Join(pane, carried))
 			}
@@ -100,7 +101,7 @@ func TestSessionFileOfSearchesTheRecordedSessionsDirectoryBeforeThePanes(t *test
 	first := filepath.Join(sessions, "--pod-work--", filepath.Base(recorded))
 	writeSession(t, first, time.Now().Add(-time.Hour))
 	writeSession(t, filepath.Join(pane, "--pane-work--", filepath.Base(recorded)), time.Now())
-	if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != first {
+	if got, _, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != first {
 		t.Fatalf("sessionFileOf = %q, %v; want %s, in the recorded path's sessions directory", got, err, first)
 	}
 }
@@ -112,45 +113,206 @@ func TestSessionFileOfFindsAClaudeSessionByItsName(t *testing.T) {
 	recorded := filepath.Join(projects, "-legion-workspace", "5f0c2a.jsonl")
 	carried := filepath.Join(projects, "-pod-work", "5f0c2a.jsonl")
 	writeSession(t, carried, time.Now())
-	if got, _, err := sessionFileOf(recorded, nil); err != nil || got != carried {
+	if got, _, _, err := sessionFileOf(recorded, nil); err != nil || got != carried {
 		t.Fatalf("sessionFileOf = %q, %v; want %s", got, err, carried)
 	}
 	pane := filepath.Join(t.TempDir(), "claude", "projects")
 	elsewhere := filepath.Join(pane, "-state-work", "7a1b3c.jsonl")
 	writeSession(t, elsewhere, time.Now())
-	if got, _, err := sessionFileOf(filepath.Join("/elsewhere/projects/-pod-work", "7a1b3c.jsonl"), paneAt(pane)); err != nil || got != elsewhere {
+	if got, _, _, err := sessionFileOf(filepath.Join("/elsewhere/projects/-pod-work", "7a1b3c.jsonl"), paneAt(pane)); err != nil || got != elsewhere {
 		t.Fatalf("sessionFileOf in the pane's projects directory = %q, %v; want %s", got, err, elsewhere)
 	}
 }
 
 // A session found nowhere is no file and no error, with every sessions directory searched, each
-// once; a recorded name holding a glob character is searched for nowhere, and a sessions directory
-// holding one is skipped, since either would match other sessions.
+// once; the pane's sessions directory here does not exist, and holds none.
 func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testing.T) {
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
 	writeSession(t, filepath.Join(sessions, "--pod-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
 	pane := filepath.Join(t.TempDir(), "pane-sessions")
-	got, searched, err := sessionFileOf(recorded, paneAt(pane))
+	got, searched, _, err := sessionFileOf(recorded, paneAt(pane))
 	if err != nil || got != "" || !slices.Equal(searched, []string{sessions, pane}) {
 		t.Fatalf("sessionFileOf = %q, %v, %v; want nothing found in %s and %s", got, searched, err, sessions, pane)
 	}
 	if want := sessions + " or of the pane's sessions directory " + pane; searchedIn(searched) != want {
 		t.Errorf("searchedIn = %q, want %q", searchedIn(searched), want)
 	}
-	if _, searched, _ := sessionFileOf(recorded, paneAt(sessions)); !slices.Equal(searched, []string{sessions}) || searchedIn(searched) != sessions {
+	if _, searched, _, _ := sessionFileOf(recorded, paneAt(sessions)); !slices.Equal(searched, []string{sessions}) || searchedIn(searched) != sessions {
 		t.Errorf("the recorded sessions directory as the pane's is searched %v, want once", searched)
 	}
+}
 
-	globbed := filepath.Join(sessions, "--legion-workspace--", "*_ses-xyz.jsonl")
-	writeSession(t, filepath.Join(pane, "--pane-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
-	if got, _, err := sessionFileOf(globbed, paneAt(pane)); err != nil || got != "" {
-		t.Fatalf("sessionFileOf of a name holding a glob = %q, %v; want nothing", got, err)
+// Every directory and name is matched as written: a pane sessions directory whose name holds
+// glob characters is searched as it is, and finds the session, a sibling directory that name would
+// match as a pattern is not searched, and a recorded name whose session id holds `*`, or a Claude
+// Code name `*.jsonl`, matches no other session's file.
+func TestSessionFileOfMatchesTheSessionsDirectoryAndTheNameAsWritten(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	writeSession(t, filepath.Join(sessions, "--pod-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
+	pane := filepath.Join(t.TempDir(), "pane-sessions")
+
+	starred := filepath.Join(t.TempDir(), "pane*[sessions")
+	inStarred := filepath.Join(starred, "--pane-work--", filepath.Base(recorded))
+	writeSession(t, inStarred, time.Now())
+	if got, _, _, err := sessionFileOf(recorded, paneAt(starred)); err != nil || got != inStarred {
+		t.Fatalf("sessionFileOf in the pane sessions directory %s = %q, %v; want %s", starred, got, err, inStarred)
 	}
-	starred := filepath.Join(t.TempDir(), "pane*sessions")
-	writeSession(t, filepath.Join(starred, "--pane-work--", filepath.Base(recorded)), time.Now())
-	if got, _, err := sessionFileOf(recorded, paneAt(starred)); err != nil || got != "" {
-		t.Fatalf("sessionFileOf in a pane sessions directory holding a glob = %q, %v; want nothing", got, err)
+	beside := t.TempDir()
+	patterned := filepath.Join(beside, "pane*sessions")
+	writeSession(t, filepath.Join(beside, "paneXsessions", "--pane-work--", filepath.Base(recorded)), time.Now())
+	if got, searched, _, err := sessionFileOf(recorded, paneAt(patterned)); err != nil || got != "" || !slices.Equal(searched, []string{sessions, patterned}) {
+		t.Fatalf("sessionFileOf in the pane sessions directory %s, beside paneXsessions, which holds the session = %q, %v, %v; want nothing found in %s and %s",
+			patterned, got, searched, err, sessions, patterned)
+	}
+
+	writeSession(t, filepath.Join(pane, "--pane-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
+	writeSession(t, filepath.Join(pane, "--pane-work--", "ses-xyz.jsonl"), time.Now())
+	for _, name := range []string{"2026-10-20T10-00-00-000Z_ses*.jsonl", "*.jsonl"} {
+		if got, _, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane)); err != nil || got != "" {
+			t.Errorf("sessionFileOf of the recorded name %s, beside the files of session ses-xyz = %q, %v; want nothing", name, got, err)
+		}
+	}
+}
+
+// A searched sessions directory that cannot be read may hold the session: the search that cannot
+// read it is a failure to look, an error and no file, never the session found nowhere, which the
+// claim's machine would answer by forgetting the session.
+func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
+	recorded := filepath.Join(t.TempDir(), "sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	pane := filepath.Join(t.TempDir(), "pane-sessions")
+	writeSession(t, filepath.Join(pane, "--pane-work--", filepath.Base(recorded)), time.Now())
+	unreadable(t, pane)
+	if got, _, _, err := sessionFileOf(recorded, paneAt(pane)); err == nil || got != "" {
+		t.Fatalf("sessionFileOf with the pane's sessions directory unreadable = %q, %v; want no file and an error", got, err)
+	}
+}
+
+// A folder of a sessions directory that cannot be read, and a matching file that cannot be checked
+// — in a folder that can be listed but not entered — are skipped, and the skipped list names each:
+// the search runs as the user Oh My Pi runs as, so what that user cannot read holds no session Oh
+// My Pi could resume. With the session in another, readable folder, it is found; with the session
+// nowhere else, the search answers no file and no error, the session found nowhere, which the
+// claim's machine meets with a fresh agent charged nothing. A recorded file gone from directly
+// under a temporary directory, as the real tmux rig's under /tmp, sends the search to the folders
+// of that directory's parent, and one of them, as /tmp/snap-private-tmp, may be another user's. An
+// entry of the sessions directory that is no folder holds no session: a file, one it may not read
+// among them, is skipped by its type and never opened, and a symlink to a file or to nothing is
+// skipped because it reads as no folder (not a directory, or not there). Neither is a failure to
+// read, so the list names none of them.
+func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
+	recorded := filepath.Join(t.TempDir(), "sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	for name, shut := range map[string]func(t *testing.T, folder string) (unread string){
+		"a folder it cannot read": func(t *testing.T, folder string) string {
+			unreadable(t, folder)
+			return folder
+		},
+		"a matching file in a folder it can list but not enter": func(t *testing.T, folder string) string {
+			if err := os.Chmod(folder, 0o400); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(folder, 0o700); err != nil {
+					t.Error(err)
+				}
+			})
+			return filepath.Join(folder, filepath.Base(recorded))
+		},
+	} {
+		for where, elsewhere := range map[string]bool{"the session in another folder": true, "the session nowhere else": false} {
+			t.Run(name+", "+where, func(t *testing.T) {
+				pane := filepath.Join(t.TempDir(), "pane-sessions")
+				folder := filepath.Join(pane, "--pane-work--")
+				writeSession(t, filepath.Join(folder, filepath.Base(recorded)), time.Now())
+				want := ""
+				if elsewhere {
+					want = filepath.Join(pane, "--pod-work--", filepath.Base(recorded))
+					writeSession(t, want, time.Now().Add(-time.Hour))
+				}
+				unread := shut(t, folder)
+				got, _, skipped, err := sessionFileOf(recorded, paneAt(pane))
+				if err != nil || got != want {
+					t.Fatalf("sessionFileOf beside %s = %q, %v; want %q and no error", unread, got, err, want)
+				}
+				if !slices.Equal(skipped, []string{denied(unread)}) {
+					t.Errorf("skipped %q, want %q", skipped, []string{denied(unread)})
+				}
+			})
+		}
+	}
+
+	t.Run("a recorded file gone from a temporary directory, beside a folder it cannot read", func(t *testing.T) {
+		tmp := t.TempDir()
+		recorded := filepath.Join(tmp, "lg1234567", "no-such-session.jsonl")
+		private := filepath.Join(tmp, "snap-private-tmp")
+		for _, dir := range []string{filepath.Dir(recorded), private} {
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		unreadable(t, private)
+		got, searched, skipped, err := sessionFileOf(recorded, nil)
+		if err != nil || got != "" || !slices.Equal(searched, []string{tmp}) {
+			t.Fatalf("sessionFileOf of %s = %q, %v, %v; want nothing found in %s and no error", recorded, got, searched, err, tmp)
+		}
+		if !slices.Equal(skipped, []string{denied(private)}) {
+			t.Errorf("skipped %q, want %q", skipped, []string{denied(private)})
+		}
+	})
+
+	t.Run("an entry that is no folder", func(t *testing.T) {
+		pane := filepath.Join(t.TempDir(), "pane-sessions")
+		carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
+		writeSession(t, carried, time.Now())
+		file := filepath.Join(pane, "--a-file--")
+		writeSession(t, file, time.Now())
+		if err := os.Symlink(file, filepath.Join(pane, "--a-link-to-a-file--")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(pane, "gone"), filepath.Join(pane, "--a-link-to-nothing--")); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, skipped, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried || len(skipped) != 0 {
+			t.Fatalf("sessionFileOf beside a file, a symlink to it and one to nothing = %q, skipped %q, %v; want %s, nothing skipped", got, skipped, err, carried)
+		}
+	})
+
+	t.Run("a file it may not read among the folders", func(t *testing.T) {
+		pane := filepath.Join(t.TempDir(), "pane-sessions")
+		carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
+		writeSession(t, carried, time.Now())
+		stray := filepath.Join(pane, "--a-stray-file--")
+		writeSession(t, stray, time.Now())
+		unreadable(t, stray)
+		if got, _, skipped, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried || len(skipped) != 0 {
+			t.Fatalf("sessionFileOf beside a file it may not read = %q, skipped %q, %v; want %s, nothing skipped", got, skipped, err, carried)
+		}
+	})
+}
+
+// denied is how a search's skipped list names path, a folder it may not read or a file it may not
+// check: permission denied.
+func denied(path string) string {
+	return path + ": " + syscall.EACCES.Error()
+}
+
+// unreadable takes every permission off path, a directory or a file, until the test's cleanup
+// gives them back, so the test's temporary directory can still be removed. A test that runs as
+// root opens path all the same, and so would prove nothing: it fails rather than pass on that.
+func unreadable(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if f, err := os.Open(path); err == nil {
+		f.Close()
+		t.Fatalf("%s opens at mode 000, so this row would prove nothing (is the test running as root?)", path)
 	}
 }
 
@@ -160,10 +322,10 @@ func TestSessionFileOfResolvesThePanesSessionsDirectoryOnlyWhenItSearches(t *tes
 	here := filepath.Join(t.TempDir(), "--work--", "2026-10-20T10-00-00-000Z_ses-here.jsonl")
 	writeSession(t, here, time.Now())
 	refused := func() (string, error) { return "", errors.New("no home to resolve under") }
-	if got, _, err := sessionFileOf(here, refused); err != nil || got != here {
+	if got, _, _, err := sessionFileOf(here, refused); err != nil || got != here {
 		t.Fatalf("sessionFileOf of a session at its recorded path = %q, %v; want it, the pane's directory unresolved", got, err)
 	}
-	if _, _, err := sessionFileOf(filepath.Join(filepath.Dir(here), "gone_ses-gone.jsonl"), refused); err == nil || err.Error() != "no home to resolve under" {
+	if _, _, _, err := sessionFileOf(filepath.Join(filepath.Dir(here), "gone_ses-gone.jsonl"), refused); err == nil || err.Error() != "no home to resolve under" {
 		t.Fatalf("sessionFileOf with an unresolvable pane directory = %v, want its error", err)
 	}
 }
