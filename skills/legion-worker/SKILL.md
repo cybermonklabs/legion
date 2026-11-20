@@ -30,7 +30,7 @@ Your role prompt gives the workspace, the push, the handoff, `handoff_complete`,
   - a pushing role whose second push still did not carry the pull request onto its commit.
 - Send any other decision someone else owns (product, scope, design, lifecycle, another phase's) to the owning architect with what you observed, what you tried and the decision needed, then go on.
 - No surface reaches the changed path: report it to the architect, never complete (`skill://legion-worker/references/pr-body.md`).
-- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives, except on a microVM pod's kept volume (`runtime.kubernetes.sandbox.microvm.keep_volume`), which stays with the issue's Sandbox until a reset or the issue's close deletes it.
+- A released pod is not a stop. Your session, phase and task are kept, and the next pod restores your unpushed tracked work; nothing else of the disk survives.
 - When another role's topic answers 404, read its handoff with `dispatch handoff-read`.
 
 ## Commits and pushes
