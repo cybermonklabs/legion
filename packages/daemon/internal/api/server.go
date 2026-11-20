@@ -851,10 +851,13 @@ func statementBound(bound time.Duration) int64 {
 // mergeWaitContract, the contract that added what a reviewing issue's round waits on from
 // GitHub, is served it without `mergeWait` (withoutMergeWait); a caller below
 // assignmentsContract, the contract that added the experiment answers each issue runs under, is
-// served every issue without `assignments` (withoutAssignments); and a caller below
+// served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
+// below cachesSourceContract, the contract that added `caches` to a capability row's `source`, is
+// served every row of that source without its `source` (withoutCachesSource), a word and not a
+// key, the row itself kept.
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -983,6 +986,7 @@ var stateNarrowings = []stateNarrowing{
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
+	{cachesSourceContract, carriesCachesSource, withoutCachesSource, "the source of each capability read from the repository caches"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1118,10 +1122,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
-// this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
-// shape of the state).
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's and
+// cachesSourceContract's, the last this daemon's own contract — so a caller from it up is served
+// the measure, and none of what a later row adds until it reaches that row's contract (123,
+// INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1165,6 +1169,18 @@ const assignmentsContract = 141
 // it with no row of stateNarrowings between the two, so a caller in a pod at or above
 // assignmentsContract and below this contract is served `assignments` and not these three keys.
 const entryTimesContract = 146
+
+// cachesSourceContract is the daemon contract that added `caches` to a capability row's `source`
+// (version.go's 181): the repository-cache-room row's, what the repository caches' last health
+// reads said of their room (capabilities.SourceCaches). A plugin from 25, the contract that added
+// `source`, up to it reads the field with a `z.enum` of the two words before it, `configuration`
+// and `boot`, which refuses a word it does not name and with it the whole state body, so a caller
+// below 181 is served such a row without its `source` (withoutCachesSource), which that schema
+// takes as optional. The row is not taken out: its `name` is a plain string to every schema, so
+// the rest of it parses, and the controller of an older plugin still has the right to see the
+// gap. TestTheCachesSourceContractIsItsReleasedNumber pins this constant to that literal, so a
+// forward merge that moves DaemonAPIVersion and leaves this behind fails there.
+const cachesSourceContract = 181
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1715,6 +1731,38 @@ func withoutWaitingOnIssue(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// cachesSource is the word capabilities.SourceCaches writes on the wire, named once for the
+// question and the strip of cachesSourceContract below.
+var cachesSource = string(capabilities.SourceCaches)
+
+// carriesCachesSource is whether any capability row of state carries the `source` word
+// cachesSourceContract added. It is asked of the state rather than answered true, as
+// carriesWaitingOnIssue is: every report this release renders carries the repository-cache-room
+// row, but the state may hold its `capabilities` empty, as the Stage 3 fixture does
+// (TestStateStage3Golden), and a state with no row of that source is the body an older caller
+// reads already.
+func carriesCachesSource(state State) bool {
+	return slices.ContainsFunc(state.Capabilities, func(row CapabilityState) bool { return row.Source == cachesSource })
+}
+
+// withoutCachesSource is state with every capability row whose `source` is `caches` served
+// without its `source`, the one word cachesSourceContract added; the rest of the row stays — its
+// name, status, detail, decision and config line — since every other field of it is a field of
+// the contract before, and `source` is omitempty, so the emptied field writes no key. The slice
+// is copied, so the state the source answered is left as it was for the next caller, as
+// withoutRetiredStranded leaves it.
+func withoutCachesSource(state State) State {
+	rows := make([]CapabilityState, len(state.Capabilities))
+	for i, row := range state.Capabilities {
+		if row.Source == cachesSource {
+			row.Source = ""
+		}
+		rows[i] = row
+	}
+	state.Capabilities = rows
 	return state
 }
 

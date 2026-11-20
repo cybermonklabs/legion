@@ -459,7 +459,7 @@ func TestOpenAndLogNameTheGapsAlone(t *testing.T) {
 // decides, each as Report renders it — secrets where no broker is configured, resource-limits where
 // a pod lacks a reservation — and never a configured broker's secrets row, whose login boot
 // measures, nor model fallback, which the probe or the plugin gate reads, nor pool capacity, which
-// the probe's run measures.
+// the probe's run measures, nor the repository caches' room, which their health reads measure.
 func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 	lacking := []Pod{PodIssue}
 	for _, tc := range []struct {
@@ -476,6 +476,10 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 		{"fallback unread alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, ModelFallback: bootprobe.ModelFallbackUnread}, nil},
 		{"fallback never read alone", Deployment{Runtime: "kubernetes", AgentSecrets: true}, nil},
 		{"a probe that waited on capacity alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Probed: true, ProbeCapacityWaits: 1, ProbeCapacityReason: "the pool is full"}, nil},
+		{"a repository cache out of room alone", Deployment{Runtime: "kubernetes", AgentSecrets: true, Caches: []Cache{{
+			Repo: "acme/widgets", Claim: "cache-legion-acme-cache-acme-widgets-1234abcd", Read: true, Reported: true,
+			VolumeBytes: 20 << 30, AvailableBytes: 1 << 20, Bytes: 19 << 30, RepackOutOfSpaceAt: time.Date(2026, 11, 19, 2, 15, 33, 0, time.UTC),
+		}}}, nil},
 		{"tmux", Deployment{Runtime: "tmux"}, []Name{Secrets, ResourceLimits}},
 		{"tmux, both decided", Deployment{Runtime: "tmux", Decided: map[Name]string{Secrets: "later", ResourceLimits: "one tree per node"}}, nil},
 	} {
@@ -497,10 +501,11 @@ func TestOpenFromConfigurationNamesTheGapsTheFileAloneDecides(t *testing.T) {
 					t.Errorf("%s = %+v, want Report's %+v", state.Name, state, want)
 				}
 			}
-			// Every open row the check leaves out is boot's to measure, and says so.
+			// Every open row the check leaves out is boot's or the repository caches' to measure,
+			// and says so.
 			for _, state := range tc.deployment.openStates() {
-				if !slices.Contains(names, state.Name) && state.Source != SourceBoot {
-					t.Errorf("%s is open with Source %q and left out, want %q on every open row the check leaves out", state.Name, state.Source, SourceBoot)
+				if !slices.Contains(names, state.Name) && state.Source != SourceBoot && state.Source != SourceCaches {
+					t.Errorf("%s is open with Source %q and left out, want %q or %q on every open row the check leaves out", state.Name, state.Source, SourceBoot, SourceCaches)
 				}
 			}
 		})

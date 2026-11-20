@@ -1713,8 +1713,10 @@ test("the state golden carries each issue's repository and the repositories it s
 // the deployment renders each as `unchecked` with its citation (contract 21) — and the report is
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
-// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured);
-// a live row carries none.
+// (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
+// or, on `repository-cache-room`, `caches` (contract 181), what the repository caches' last health
+// reads said of their room: the golden's one cache ran out of room, so that row is open too. A
+// live row carries none.
 test("the state golden carries the deployment's capability report", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
 
@@ -1759,18 +1761,45 @@ test("the state golden carries the deployment's capability report", () => {
   }
   expect(statuses).not.toContain("installed");
 
+  expect(rows["repository-cache-room"]).toMatchObject({
+    status: "open",
+    configLine: 'capabilities.decided.repository-cache-room: "<reason>"',
+    source: "caches",
+  });
+  expect(rows["repository-cache-room"].detail).toContain("acme/widgets on a 20.0 GiB volume");
+
   const deploymentRows = [
     rows.secrets,
     rows["model-fallback"],
     rows["resource-limits"],
     rows["pool-capacity"],
+    rows["repository-cache-room"],
   ];
   for (const row of deploymentRows) {
-    expect(["configuration", "boot"]).toContain(row.source ?? "");
+    expect(["configuration", "boot", "caches"]).toContain(row.source ?? "");
   }
 
   const emptied = fixture("state-stage3.json") as { capabilities: unknown[] };
   expect(emptied.capabilities).toEqual([]);
+});
+
+// `source` is a finite set, so the schema names its three words and no other: a state whose
+// capability row carries `caches`, as a daemon at contract 181 writes the repository caches' row,
+// parses, and a fourth word is refused with the whole state, as `caches` was before it joined the
+// enum.
+test("a capability row read from the repository caches carries source caches, and no other word parses", () => {
+  const golden = fixture("state.json") as { capabilities: Array<Record<string, unknown>> };
+  const caches = {
+    name: "repository-cache-room",
+    status: "present",
+    detail: "no repository cache reports a failure for lack of space (3 caches read)",
+    source: "caches",
+  } as const;
+  const parsed = LegionStateResponse.parse({ ...golden, capabilities: [caches] });
+  expect(parsed.capabilities).toEqual([caches]);
+
+  const unknown = { ...golden, capabilities: [{ ...caches, source: "volume" }] };
+  expect(LegionStateResponse.safeParse(unknown).success).toBeFalse();
 });
 
 test("a capability row's status is one the report renders, and the report cannot be dropped", () => {

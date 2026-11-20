@@ -262,6 +262,38 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// stripCachesSources takes `source` off every capability row of a decoded state body whose source
+// is `caches`, which is what a caller below cachesSourceContract is served of the capability
+// report (api's withoutCachesSource): the row stays, every other field of it as it is. It is the
+// one statement of that strip over a decoded body, and the two contract tables that must agree
+// about it read it here: withoutCachesSources below, which takes the word off a whole body, and
+// the table of memory_test.go, which takes it off the body it expects.
+func stripCachesSources(served map[string]any) {
+	for _, row := range served["capabilities"].([]any) {
+		if row := row.(map[string]any); row["source"] == cachesSource {
+			delete(row, "source")
+		}
+	}
+}
+
+// withoutCachesSources is a state body with no capability row carrying `source: "caches"`, which
+// is what a caller below cachesSourceContract is served of a state whose report carries the
+// repository caches' row. It serves the table below as withoutQuietKeys does: a row's baseline is
+// the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutCachesSources(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	stripCachesSources(served)
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its caches' source: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -384,10 +416,11 @@ func withoutAnswerKeys(t *testing.T, body []byte) []byte {
 // views' step record, the places in the admission line, the workers' counts of the moves back,
 // each issue's two entry numbers, the issues the record holds in the workflow, each issue's
 // tree quiet time, what each reviewing issue's round waits on from GitHub, each issue's
-// experiment assignments and the two times of each issue's entry task among the keys it is
-// served without, since such a pod is below every row of stateNarrowings. The measure of a tree
-// that has stopped is read in finer grain by quiet_time_test.go, and the two times by
-// architect_handshake_test.go. A pod at this contract, and a caller in no pod — the operator's
+// experiment assignments, the two times of each issue's entry task and the repository caches'
+// word for the source of their capability row among the keys it is served without, since such a
+// pod is below every row of stateNarrowings. The measure of a tree that has stopped is read in
+// finer grain by quiet_time_test.go, and the two times by architect_handshake_test.go. A pod at
+// this contract, and a caller in no pod — the operator's
 // `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
 // and whose tool-call line reads the step records — are served everything. The claims are the
 // state snapshot's own, so there is no readable state whose caller's contract is unknown: a
@@ -452,6 +485,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// that added them), so a pod at it or above is served them and every older pod is not.
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
+		// caches is whether the caller is served the repository-cache-room row's `source`,
+		// `caches` (cachesSourceContract, the contract that added the word), so a pod at it or
+		// above is served the word and every older pod the row without it.
+		caches bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -487,14 +524,20 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The band from mergeWaitContract to below assignmentsContract: `mergeWait` is served
 		// too, and the assignments and every key a later row adds are still held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
-		// The band from assignmentsContract to below entryTimesContract, the last band under the
-		// declared contract: the assignments are served too, and the entry times and the
-		// architect-stalled arms are held back, at the band's foot and at its top alike.
+		// The band from assignmentsContract to below entryTimesContract: the assignments are
+		// served too, and the entry times and the architect-stalled arms are held back, at the
+		// band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		// The band from entryTimesContract to below cachesSourceContract, the last band under the
+		// declared contract: the entry times and the architect-stalled arms are served too, and
+		// the repository caches' row is served without its `source`, at the band's foot and at its
+		// top alike.
+		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		{name: "a pod just below cachesSourceContract", remote: statePodAddr + ":41000", claims: podClaims(cachesSourceContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, caches: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, caches: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, caches: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -547,6 +590,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.times {
 					want = withoutEntryTimeKeys(t, want)
 				}
+				if !tc.caches {
+					want = withoutCachesSources(t, want)
+				}
 				if unmarked(t, body) != unmarked(t, want) {
 					t.Fatalf("state = %s, want the state as this row's contract is served it, %s", body, want)
 				}
@@ -588,8 +634,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `treeMovedAt` and `quietHours` (withoutQuietTime), with what each reviewing issue's
 			// round waits on from GitHub gone, the object contract 133 added (withoutMergeWait),
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
-			// (withoutAssignments), and with each issue's `entryQueuedAt`, `entryConfirmedAt` and
-			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes).
+			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
+			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
+			// and with the repository caches' capability row without its `source`, the word
+			// cachesSourceContract added (withoutCachesSource, stripCachesSources above).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
 			// this fixture stands no member of that kind.
@@ -597,6 +645,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
 			}
+			stripCachesSources(want)
 			if !tc.wakes {
 				delete(want, "wakesWaiting")
 			}

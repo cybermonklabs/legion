@@ -316,17 +316,23 @@ jq -e --arg p "$project" \
 # withheld row carries `source` at all. The twenty-first row is `claude-code` (INFRA-220): the
 # worker image carries Claude Code's pin and the Legion plugin unconditionally — the binary itself
 # a pod installs at launch — so every deployment's image is probed for the pin and the plugin,
-# this one included.
-jq -e '(.capabilities | length) == 21
+# this one included. The twenty-second is `repository-cache-room` (INFRA-4036): present, since
+# the tmux runtime runs no repository cache, and carrying `source` "caches" (contract 181), the
+# repository caches' health reads being where that row is measured from whatever the runtime;
+# `legion state` is read from no pod, so nothing narrows the word away here.
+jq -e '(.capabilities | length) == 22
   and (.capabilities | map(select(.name == "resource-limits" and .status == "open"
     and .configLine == "capabilities.decided.resource-limits: \"<reason>\""
     and .source == "configuration")) | length) == 1
   and (.capabilities | map(select(.name == "pool-capacity" and .status == "present"
     and .source == "configuration")) | length) == 1
+  and (.capabilities | map(select(.name == "repository-cache-room" and .status == "present"
+    and .source == "caches")) | length) == 1
   and (.capabilities | map(select((.name != "resource-limits" and .name != "pool-capacity"
-    and .name != "secrets" and .name != "model-fallback") and has("source"))) | length) == 0' \
+    and .name != "secrets" and .name != "model-fallback" and .name != "repository-cache-room")
+    and has("source"))) | length) == 0' \
   "$work/state1.json" || {
-  echo "the state does not carry the 21-row capability report with resource-limits and pool-capacity's source under tmux"
+  echo "the state does not carry the 22-row capability report with resource-limits, pool-capacity and repository-cache-room's sources under tmux"
   exit 1
 }
 # The daemon's resolved settings ride the same document (LEGION-791, contract 35): the value the

@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -239,21 +242,21 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
 	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
-		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
+		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(cachesSourceContract-1))
 
-		if bytes.Contains(body, []byte(`"assignments"`)) {
-			t.Errorf("the body served to a pod below %d carries `assignments`, the field that contract added: %s",
-				assignmentsContract, body)
+		if bytes.Contains(body, []byte(`"source":"`+cachesSource+`"`)) {
+			t.Errorf("the body served to a pod below %d carries a capability row whose source is %q, the word that contract added: %s",
+				cachesSourceContract, cachesSource, body)
 		}
-		want := narrowingsExpected(assignmentsContract - 1)
+		want := narrowingsExpected(cachesSourceContract - 1)
 		if len(narrowings) != len(want) {
 			t.Fatalf("the daemon wrote %d narrowing lines for a caller at %d, want %d, one for each contract above it: %+v",
-				len(narrowings), assignmentsContract-1, len(want), narrowings)
+				len(narrowings), cachesSourceContract-1, len(want), narrowings)
 		}
 		for i, line := range narrowings {
 			if line.Dropped != want[i] {
 				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
-					i, assignmentsContract-1, line.Dropped, want[i])
+					i, cachesSourceContract-1, line.Dropped, want[i])
 			}
 		}
 	})
@@ -340,5 +343,136 @@ func TestTheRecordFieldsContractIsNotAboveTheDaemonsOwn(t *testing.T) {
 	if recordFieldsContract > DaemonAPIVersion {
 		t.Fatalf("recordFieldsContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
 			recordFieldsContract, DaemonAPIVersion)
+	}
+}
+
+// capabilityRowServed is the capability row named name of a state body, decoded as a plugin's
+// reader sees it, and whether the body carries such a row at all.
+func capabilityRowServed(t *testing.T, body []byte, name capabilities.Name) (map[string]any, bool) {
+	t.Helper()
+	var state struct {
+		Capabilities []map[string]any `json:"capabilities"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, row := range state.Capabilities {
+		if row["name"] == string(name) {
+			return row, true
+		}
+	}
+	return nil, false
+}
+
+// A caller below cachesSourceContract reads a capability row's `source` with the two words
+// contract 25 gave it and refuses the whole state body for a third, so it is served the
+// repository-cache-room row with every other field of it — its status, its detail naming the
+// full cache, its config line — and without its `source`, and the daemon's log names what it
+// took; every row of another source keeps its own. A caller at the contract is served `source:
+// "caches"`, and so is every caller nothing narrows: one the daemon places in no pod, the
+// operator's `legion state`, and every pane of a daemon that places no caller in a pod, which is
+// the tmux runtime. The row is never taken out, and the state the source answered keeps the word
+// for the next caller.
+func TestACallerBelowTheCachesSourceContractGetsNoCachesSource(t *testing.T) {
+	const dropped = "the source of each capability read from the repository caches"
+	state := populatedState(t)
+	encoded, err := json.Marshal(state.Capabilities)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(encoded, &rows); err != nil {
+		t.Fatal(err)
+	}
+	var full map[string]any
+	for _, row := range rows {
+		if row["name"] == string(capabilities.RepositoryCacheRoom) {
+			full = row
+		}
+	}
+	if full["source"] != cachesSource || full["status"] != capabilities.StatusOpen || full["configLine"] == nil {
+		t.Fatalf("the fixture's %s row is %v, want an open row from the caches; this test proves nothing", capabilities.RepositoryCacheRoom, full)
+	}
+	withoutSource := maps.Clone(full)
+	delete(withoutSource, "source")
+
+	t.Run("a caller below the contract reads the row without its source", func(t *testing.T) {
+		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(cachesSourceContract-1))
+		row, carried := capabilityRowServed(t, body, capabilities.RepositoryCacheRoom)
+		if !carried || !reflect.DeepEqual(row, withoutSource) {
+			t.Errorf("a pod at %d is served the %s row %v (carried %v), want every field but source, %v",
+				cachesSourceContract-1, capabilities.RepositoryCacheRoom, row, carried, withoutSource)
+		}
+		for name, source := range map[capabilities.Name]capabilities.Source{
+			capabilities.Secrets:      capabilities.SourceConfiguration,
+			capabilities.PoolCapacity: capabilities.SourceBoot,
+		} {
+			if row, _ := capabilityRowServed(t, body, name); row["source"] != string(source) {
+				t.Errorf("a pod at %d is served the %s row %v, want its source %q kept: that word is not this contract's",
+					cachesSourceContract-1, name, row, source)
+			}
+		}
+		// Named as a literal, as the assignments line is in TestANarrowedBodySaysSo: a strip
+		// applied beside the table's loop would write no line and leave every row read from the
+		// table green.
+		told := false
+		for _, line := range narrowings {
+			told = told || line.Dropped == dropped
+		}
+		if !told {
+			t.Errorf("a caller at %d was served no line saying it dropped %q; the daemon wrote %+v",
+				cachesSourceContract-1, dropped, narrowings)
+		}
+	})
+
+	for _, tc := range []struct {
+		name     string
+		remote   string
+		contract int
+		// tmux is a daemon that places no caller in a pod, as the tmux runtime's is.
+		tmux bool
+	}{
+		{name: "a caller at the contract", remote: statePodAddr + ":41000", contract: cachesSourceContract},
+		{name: "the operator's own answer", remote: "192.0.2.1:41000", contract: cachesSourceContract - 1},
+		{name: "a tmux pane", remote: statePodAddr + ":41000", tmux: true, contract: cachesSourceContract - 1},
+	} {
+		t.Run(tc.name+" reads source caches", func(t *testing.T) {
+			options := stateOptions(state, podClaims(tc.contract))
+			if tc.tmux {
+				options.CallerPod = nil
+			}
+			body := stateAsked(t, NewServer("127.0.0.1", 8437, options).Handler, tc.remote)
+			if row, carried := capabilityRowServed(t, body, capabilities.RepositoryCacheRoom); !carried || !reflect.DeepEqual(row, full) {
+				t.Errorf("%s is served the %s row %v (carried %v), want it whole, %v", tc.name, capabilities.RepositoryCacheRoom, row, carried, full)
+			}
+		})
+	}
+
+	if got := state.Capabilities; !slices.ContainsFunc(got, func(row CapabilityState) bool { return row.Source == cachesSource }) {
+		t.Errorf("the strip wrote through to the state the source answered: its capability rows are %+v", got)
+	}
+}
+
+// cachesSourceContract is the contract whose entry in version.go added the word, written here
+// as that literal rather than bounded
+// (docs/solutions/legion/a-constant-that-must-equal-a-released-number-is-pinned-to-a-literal-never-bounded-pr2538.md):
+// a forward merge that moves DaemonAPIVersion and leaves the constant behind would serve the word
+// to a plugin of every number between the two, each built with the enum of two words, and a bound
+// passes that as surely as the right value. Every other test of this narrowing spells the number
+// relatively because this one pins it, so an edit of the literal is a contract change, not a test
+// fix. The constant is never above the daemon's own contract, and it stands above
+// entryTimesContract, the row before it in stateNarrowings.
+func TestTheCachesSourceContractIsItsReleasedNumber(t *testing.T) {
+	const addedCachesSource = 181
+	if cachesSourceContract != addedCachesSource {
+		t.Fatalf("cachesSourceContract = %d, want %d, the contract whose entry in version.go added the source `caches`",
+			cachesSourceContract, addedCachesSource)
+	}
+	if cachesSourceContract > DaemonAPIVersion {
+		t.Fatalf("cachesSourceContract = %d, above DaemonAPIVersion %d: no caller could be served the word",
+			cachesSourceContract, DaemonAPIVersion)
+	}
+	if cachesSourceContract <= entryTimesContract {
+		t.Fatalf("cachesSourceContract = %d, not above entryTimesContract %d, the row before it", cachesSourceContract, entryTimesContract)
 	}
 }

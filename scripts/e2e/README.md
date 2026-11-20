@@ -57,8 +57,8 @@ Each item below names a script, then what it proves.
 - `stage1-skeleton.sh`
 
   `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
-  answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
-  `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, and refuses an unreachable Postgres by the host it could not reach and never by the password
+  answers `legion state` with the 22-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
+  `pool-capacity` present, since tmux runs no probe pod; `repository-cache-room` present with `source` `caches`, since tmux runs no repository cache), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, and refuses an unreachable Postgres by the host it could not reach and never by the password
 
 - `stage2-tmux-supervision.sh`
 

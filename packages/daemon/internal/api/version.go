@@ -2420,4 +2420,39 @@ package api
 // #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
-const DaemonAPIVersion = 168
+//
+// 181: INFRA-4036 (cybermonklabs/legion) -- the deployment's capability report on `GET
+// /legion/v1/state` gains a row, `repository-cache-room`, and with it a third word of a capability
+// row's `source`, `caches` (capabilities.SourceCaches): what the repository caches' last health
+// reads said of their room, which is where that row is measured from. The row is present while no
+// cache that reports its room carries a failure for lack of space, open while one does, its detail
+// naming each such cache's repository, volume, claim, available bytes and clone and where room
+// comes from, and decided where `capabilities.decided.repository-cache-room` records a reason
+// (capabilities.Deployment.cacheRoom). A capability `name` is a plain non-empty string to every
+// schema already published, so the row parses there, as `claude-code` did; its `source` does
+// not. A plugin from 25 through 180 reads `source` with a `z.enum` of the two words before it,
+// `configuration` and `boot`, which refuses a word it does not name and with it the whole state
+// body: the controller's `read_state`, every role's `read_record` and claude-envoy's own reads of
+// the state. So a caller from a pod whose claims record a contract below 181 is served every
+// capability row whose `source` is `caches` without its `source` (api's stateFor,
+// withoutCachesSource), which that schema takes as optional; the row itself stays, its name,
+// status, detail, decision and config line as they are, because a controller on an older plugin
+// still has the right to see the gap. Its row of stateNarrowings stands after 146's. The room
+// fields the repository cache's own `/healthz` gains beside this (repocache.Health) are read by
+// the daemon alone and by no plugin, so they are no part of this number, and nothing else of this
+// change is on a surface this contract names.
+// The bump relaunches every registered claim onto the new plugin, as every bump does (the
+// stale-plugin lane, internal/daemon's refreshStalePlugins), and that relaunch reaches each claim
+// at its own time, so for the length of the wave some pods still run a plugin below 181: those
+// are the callers the narrowing serves.
+// (This entry takes 181, the lowest number above main's 168 that no open pull request declared
+// when this change first took a number: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request that changes this file, the one
+// .github/scripts/check-daemon-api-contract.sh makes when it refuses, made between
+// 2026-11-20T00:13:05Z and 00:15:16Z, found 169 declared by #4273, 170 by #4495, 171 by #2230 and
+// #4065, 172 by #3659, 173 by #4493, 174 by #3993, 175 by #3712 and #4432, 176 by #4030, #4173,
+// #4180, #4182, #4193, #4251, #4259, #4261, #4269 and #4290, 177 by #4017, 178 by #3831 and
+// #4115, 179 by #4392 and #4540, and 180 by #4049 and #4175, and no open head declaring 181.
+// Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
+const DaemonAPIVersion = 181
