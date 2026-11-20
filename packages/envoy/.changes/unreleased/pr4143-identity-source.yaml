@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  `agent-secrets identity --source` prints the source of the broker identity the client would use,
+  and the helper's socket beside it when the helper answered and is not that source.
+  `agent-secrets identity` still asks the network nothing and keeps its exit codes.

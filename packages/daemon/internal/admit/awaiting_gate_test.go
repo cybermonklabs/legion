@@ -54,15 +54,27 @@ func architectToken(t *testing.T, root string) claim.Token {
 // seedArchitectClaim records session as the architect of the tree rooted at root, running a turn
 // it has taken its task for: the session SessionClaimsTree finds within that tree, and an
 // architect that owes nothing (workflow's owed), so the root may wait on a person.
+//
+// It holds the architect's phases row at entry 1 with its claim given and serving that entry,
+// which is where every architect this release started stands: the admission that starts one
+// raises its entry (workflow.Engine.EnterArchitect) and the delivery records it as given. An
+// architect claim beside a row that names no entry is the one shape the sweep hands an entry to
+// (admit's resumeSlottedWorkers), so a running architect seeded without it would be sent a first
+// task here.
 func seedArchitectSession(t *testing.T, pool *pgxpool.Pool, root, session string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if _, err := tx.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0)
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry, served_entry)
+			values ($1, 'LEGION', $2, $2, 'architect', 1, $3, '', 'working', 0, 0, 0, 0, 1, 1)
 			on conflict (token) do update set session = excluded.session, state = excluded.state`,
 			string(architectToken(t, root)), root, session); err != nil {
 			t.Fatalf("seed architect claim: %v", err)
+		}
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root,
+			Role: claim.RoleArchitect, Claim: architectToken(t, root), Entry: 1,
+			EntryTask: root + " is yours.", EntryRaisedAt: fixedNow}); err != nil {
+			t.Fatalf("seed the architect's phases row of %s: %v", root, err)
 		}
 	})
 }

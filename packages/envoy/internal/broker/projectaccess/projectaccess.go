@@ -82,11 +82,18 @@ var (
 	// ErrListRequired is a restricted member's credential that names no project: such a person
 	// sees only the projects that name them, so their credential names which.
 	ErrListRequired = errors.New("projectaccess: a restricted member's credential names its projects")
-	// ErrBrokerRefused is Dispatch answering 401 or 403 to the broker's own account token: it does
-	// not list the broker's account as one that may ask, or does not accept the token (one minted
-	// for another audience, say). It is a misconfiguration and not an outage, so no caller mints
-	// or enrolls through it as it would through a failure to reach Dispatch.
-	ErrBrokerRefused = errors.New("projectaccess: dispatch refused the broker's own account token")
+	// ErrBrokerRefused is the broker's own account token not working: Dispatch answering 401 or
+	// 403 to it (Dispatch does not list the broker's account as one that may ask, or does not
+	// accept the token, one minted for another audience, say), or the broker unable to read it
+	// from BROKER_PROJECT_ACCESS_TOKEN_FILE at all (missing, empty or unreadable). Either is a
+	// misconfiguration and not an outage, so no caller mints or enrolls through it as it would
+	// through a failure to reach Dispatch: every check made with that credential would be wrong.
+	ErrBrokerRefused = errors.New("projectaccess: the broker's own account token was refused or could not be read")
+	// ErrUnknownMemberKind is Dispatch answering a member kind that is none of MemberFull,
+	// MemberRestricted and MemberNone. The broker cannot tell whether such a person is held to the
+	// projects that name them, so no caller reads it as any of the three, and none mints or
+	// enrolls through it.
+	ErrUnknownMemberKind = errors.New("projectaccess: dispatch answered a member kind this broker does not know")
 	// ErrUnchecked is ListAllowed's answer for an empty list whose person's member kind Dispatch
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
@@ -216,7 +223,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	return answer, nil
 }
 
-// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL.
+// MemberKind is the person's member kind, from the cache while it is younger than CacheTTL: one of
+// MemberFull, MemberRestricted and MemberNone. Any other answer, an empty one included, is
+// ErrUnknownMemberKind naming it, never kept and never a failure to ask.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
@@ -236,8 +245,13 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	if status == http.StatusNotFound || answer.MemberKind == "" {
+	if status == http.StatusNotFound {
 		return "", fmt.Errorf("projectaccess: dispatch answered %d with no member kind for %s", status, person)
+	}
+	switch answer.MemberKind {
+	case MemberFull, MemberRestricted, MemberNone:
+	default:
+		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
 	}
 	c.mu.Lock()
 	if len(c.kinds) >= maxCached {
@@ -308,19 +322,21 @@ func (c *Client) sweepLocked() {
 	}
 }
 
-// get asks one route and decodes a 200 into into. A 401 or a 403 is ErrBrokerRefused, Dispatch
-// refusing the broker's own account token, decided by the status alone before any of the body is
-// read: a body cut short or past the bound only leaves the error without the code it names, and
-// never turns the refusal into a failure to ask, which a caller mints through. A 404 is an answer,
-// returned as its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code
-// Dispatch's project route answers a project it does not hold with; any other 404 (a Dispatch
-// that does not serve the route, a wrong path behind an ingress) is a failure naming its code.
-// Every other status, an account token it could not read, a transport failure and a body it could
-// not read or decode are errors naming what failed and never the token.
+// get asks one route and decodes a 200 into into. An account token it cannot read is
+// ErrBrokerRefused naming BROKER_PROJECT_ACCESS_TOKEN_FILE, asked nothing: the broker's own
+// credential is broken, not Dispatch. A 401 or a 403 is ErrBrokerRefused too, Dispatch refusing
+// that token, decided by the status alone before any of the body is read: a body cut short or
+// past the bound only leaves the error without the code it names, and never turns the refusal
+// into a failure to ask, which a caller mints through. A 404 is an answer, returned as its status
+// with no error, only when its body's code is PROJECT_NOT_FOUND, the code Dispatch's project route
+// answers a project it does not hold with; any other 404 (a Dispatch that does not serve the
+// route, a wrong path behind an ingress) is a failure naming its code. Every other status, a
+// transport failure and a body it could not read or decode are errors naming what failed and
+// never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, into any) (int, error) {
 	bearer, err := c.account.Read()
 	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read the broker's account token: %w", err)
+		return 0, fmt.Errorf("%w: BROKER_PROJECT_ACCESS_TOKEN_FILE could not be read: %w", ErrBrokerRefused, err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -431,23 +447,29 @@ func (c *Client) clock() time.Time { return c.now() }
 
 // ListAllowed is the one statement of the rule for a person's list, used by the exchange and by
 // an enrollment alike. A non-empty list must pass Visible. An empty list is refused with
-// ErrListRequired only when MemberKind answers MemberRestricted; MemberFull and MemberNone answer
-// nil, so a person Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
-// ErrBrokerRefused is returned as it is, and no caller mints through it. Any other MemberKind
-// failure answers an error that is ErrUnchecked and wraps it: the list is allowed, as it is today
-// while Dispatch cannot be reached, and the caller that goes on logs that it did so unchecked.
+// ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
+// answers a kind that is none of the three; MemberFull and MemberNone answer nil, so a person
+// Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
+// ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
+// either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
+// list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
+// logs that it did so unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)
 	}
 	kind, err := a.MemberKind(ctx, person)
 	switch {
-	case errors.Is(err, ErrBrokerRefused):
+	case errors.Is(err, ErrBrokerRefused), errors.Is(err, ErrUnknownMemberKind):
 		return err
 	case err != nil:
 		return fmt.Errorf("%w: %w", ErrUnchecked, err)
-	case kind != MemberRestricted:
-		return nil
 	}
-	return fmt.Errorf("%w: %s", ErrListRequired, person)
+	switch kind {
+	case MemberFull, MemberNone:
+		return nil
+	case MemberRestricted:
+		return fmt.Errorf("%w: %s", ErrListRequired, person)
+	}
+	return fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, kind, person)
 }

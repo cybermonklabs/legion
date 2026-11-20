@@ -60,6 +60,7 @@ GET /api/v1/credential-requests any
 POST /api/v1/credential-requests/machine-lookup any
 POST /api/v1/credential-requests/{id}/approve any
 POST /api/v1/credential-requests/{id}/deny any
+POST /api/v1/credential-requests/{id}/dismiss any
 GET /api/v1/credentials/capabilities any
 GET /api/v1/dashboard/builds any
 GET /api/v1/delivery/measures any
@@ -110,6 +111,10 @@ GET /api/v1/issues/{key}/messages/{id} any
 GET /api/v1/issues/{key}/references any
 GET /api/v1/issues/{key}/results any
 POST /api/v1/issues/{key}/results any
+GET /api/v1/issues/{key}/role-holders any
+PUT /api/v1/issues/{key}/role-holders any
+GET /api/v1/issues/{key}/steps any
+PUT /api/v1/issues/{key}/steps/{id} any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
@@ -139,6 +144,8 @@ GET /api/v1/messages/{id}/blocks any
 POST /api/v1/messages/{id}/deliveries any
 POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
+GET /api/v1/near-copy-checks any
+GET /api/v1/near-copy-checks/{id} any
 GET /api/v1/priorities any
 POST /api/v1/priorities any
 DELETE /api/v1/priorities/{id} any
@@ -165,8 +172,13 @@ POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
 PUT /api/v1/projects/{key}/gated-steps any
+GET /api/v1/projects/{key}/legion/board any
+DELETE /api/v1/projects/{key}/legion/daemon any
+GET /api/v1/projects/{key}/legion/daemon any
+PUT /api/v1/projects/{key}/legion/daemon any
 GET /api/v1/projects/{key}/related any
 POST /api/v1/projects/{key}/related any
+GET /api/v1/reference-targets any
 GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any

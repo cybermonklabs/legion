@@ -53,11 +53,11 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	ctx := context.Background()
 	// before is how many messages the stream holds when the consumer is created (N).
 	const before = 20
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	id := streamIDOf(t, consumers)
 	start, err := consumers.Ensure(ctx, session, filters, 0)
@@ -105,6 +105,8 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 		t.Fatalf("the server reports the consumer's ack floor as %d, want it above the stream's last sequence %d: the consumer this case is for is the one nats-server v2.15.1 leaves unreconciled at the floor %d it had before the loss", info.AckFloor.Stream, held[1], before)
 	}
 
+	// The reconcile the restarted server made of the consumer kicked its state file's write.
+	waitForStoredState(t, owner, session)
 	restarted := path(t, consumers, session, filters)
 	if want := (SessionConsumerStart{Created: true, StartSeq: 1, StreamID: id, AckFloor: 0}); restarted != want {
 		t.Errorf("the restart of a consumer whose ack floor %d is above the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", info.AckFloor.Stream, held[1], restarted, want)

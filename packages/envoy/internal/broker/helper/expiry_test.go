@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/brokeraddr"
 )
 
 // expiryLogin logs b in against f, whose poll answers issued at once, and waits for the
@@ -62,7 +64,7 @@ func recordTime(t *testing.T, rec map[string]any) time.Time {
 	return at
 }
 
-const expiredMsg = dropExpired + "; cleared: no session can enroll until a human approves a new machine login (run: agent-secrets machine login)"
+const expiredMsg = dropExpired + "; cleared: no session can enroll under this machine's credential; run: agent-secrets machine login, and have a human approve it"
 
 // expiryTimers stands in for watchExpiry's timers (Broker.testAfter): each timer a watch starts
 // is recorded with how long it was asked to wait, and fires only when the test fires it.
@@ -122,7 +124,7 @@ func (et *expiryTimers) fire(t *testing.T, cred *machineCredential, n int) time.
 func TestTheHelperWarnsBeforeItsLauncherCredentialExpiresAndDropsItThen(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), expiryWarning: 2 * time.Hour}
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
@@ -176,7 +178,7 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 			f.mu.Lock()
 			f.loginLifetime = tc.lifetime
 			f.mu.Unlock()
-			b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+			b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 				Log: slog.New(slog.NewJSONHandler(&out, nil))}
 			t.Cleanup(b.Close)
 			expiryLogin(t, b)
@@ -200,7 +202,7 @@ func TestTheHelperWarnsADayBeforeTheExpiry(t *testing.T) {
 func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
 	var out syncBuffer
 	f := newFakeBroker(t)
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil)), expiryWarning: time.Hour}
 	t.Cleanup(b.Close)
 	timers := installExpiryTimers(b)
@@ -236,13 +238,13 @@ func TestATokenAnswerWithoutTheCredentialIsNotKept(t *testing.T) {
 	f.mu.Lock()
 	f.loginLifetime = 0
 	f.mu.Unlock()
-	b := &Broker{URL: f.srv.URL, OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
+	b := &Broker{URL: brokeraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: machineFilePath(t), HTTP: f.srv.Client(),
 		Log: slog.New(slog.NewJSONHandler(&out, nil))}
 	t.Cleanup(b.Close)
 	if _, err := b.Login(context.Background(), "example-host-devbox"); err != nil {
 		t.Fatal(err)
 	}
-	line := waitForRecord(t, &out, "machine login approved, but the helper could not keep it; run: agent-secrets machine login again")
+	line := waitForRecord(t, &out, "machine login approved, but the helper could not keep it; run: agent-secrets machine login, and have a human approve it")
 	if line["level"] != "ERROR" {
 		t.Fatalf("the line: %v; want an ERROR", line)
 	}

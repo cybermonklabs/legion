@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
-import { agentSubject } from "@legion/contracts"
+import { legacyAgentSubject } from "@legion/contracts"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -32,7 +32,7 @@ isolatePaneEnvironment()
 const scratchState = useScratchState()
 
 const SESSION = "ses_claude"
-const DIRECT = agentSubject(SESSION)
+const DIRECT = legacyAgentSubject(SESSION)
 const STREAM = "stream-1"
 
 const CONSUMER = consumerDelivery(SESSION, { streamID: STREAM })

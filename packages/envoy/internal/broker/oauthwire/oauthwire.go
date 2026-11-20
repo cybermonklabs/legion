@@ -1,9 +1,10 @@
 // Package oauthwire is the wire contract of the broker's OAuth endpoints that the broker and the
-// callers it answers share: the clients they present, the scope a machine login asks for, the
-// names the token exchange knows a subject token by, the fields the broker adds to a token
-// answer, and the one grammar of a token's list of projects. It imports nothing of the broker —
-// only the standard library and the project-key rule internal/contracts generates — so the
-// agent-secrets helper reads it without the broker's storage.
+// callers it answers share: the clients they present, the scope a machine login asks for and the
+// one a read entry's token holds, the names the token exchange knows a subject token by, the
+// fields the broker adds to a token answer, and the one grammar of a token's list of projects. It
+// imports nothing of the broker — only the standard library and the project-key rule
+// internal/contracts generates — so the agent-secrets helper reads it without the broker's
+// storage.
 package oauthwire
 
 import (
@@ -21,6 +22,13 @@ const (
 	ClientID = "agent-secrets-helper"
 	// Scope is the one scope a machine login asks for and is granted.
 	Scope = "machine"
+	// ScopeRead is the one OAuth scope a token minted from a read entry
+	// (BROKER_EXCHANGE_READ_ACCOUNTS) holds, and the only scope the exchange grants: a token
+	// that writes nothing and reads only the routes a resource server lists for it, which
+	// Dispatch does in its read list and every other service refuses (brokertoken). The entry
+	// decides it, never the request: the exchange client is registered for Scope alone, so the
+	// library refuses a request that names this one invalid_scope under every entry.
+	ScopeRead = "read"
 	// ExtraCredentialID is the token answer's field naming the launcher credential the login holds;
 	// the login's session carries it under the same key.
 	ExtraCredentialID = "credential_id"
@@ -34,7 +42,7 @@ const (
 	// token it carries and the proof of its own key are what the broker judges the request on.
 	ExchangeClientID = "dispatch-token-exchange"
 	// FormSession is the exchange request's own form parameter: the session name the minted
-	// token writes under. RFC 8693 registers none, so the broker defines this one; an entry
+	// token carries. RFC 8693 registers none, so the broker defines this one; an entry
 	// that fixes a session refuses a request naming another, and an entry that fixes none
 	// requires it.
 	FormSession = "session"
@@ -93,6 +101,16 @@ const (
 	// exchange mints, the kind it asks for, and the kind a dev box session presents its machine
 	// login's token as. The library spells it in a package its users cannot import.
 	SubjectTokenTypeAccessToken = "urn:ietf:params:oauth:token-type:access_token" //nolint:gosec // a token type's name, not a token
+	// PodSessionNotRegistered, then a colon, begins the error_description of the exchange's
+	// invalid_grant for a pod whose session no registration names yet (internal/broker/oauth,
+	// registeredPodSession). A pod's trade can reach the broker before its registration does, so
+	// it is a refusal of the broker's state that a later trade cures: the Go client's
+	// RefusedError.Permanent and the TypeScript client's BrokerRefusedError.permanent read it
+	// off these words, and both clients trade again on it for as long as their caller runs.
+	PodSessionNotRegistered = "pod_session_not_registered"
+	// MembershipHeld is the token endpoint's refusal of a credential whose person Dispatch holds
+	// until they sign in to Dispatch again, or a refresh confirms them. It is not permanent.
+	MembershipHeld = "membership_held"
 )
 
 // The wire names of a token's project scope, which an introspection answer's ProjectScope carries
@@ -107,6 +125,11 @@ const (
 	// ProjectScopePerson is a token that acts as its person: its Projects holds the 0 to
 	// MaxProjects projects the trade asked for, each one its person could see at the trade.
 	ProjectScopePerson = "person"
+	// ProjectScopeNone is a token that may write no project and names none: the token a read
+	// entry mints, which holds the scope ScopeRead and nothing else. A resource server of a
+	// build that predates it refuses it, since it accepts only the two words above, and one of
+	// this build accepts it only where it asks to (brokertoken).
+	ProjectScopeNone = "none"
 )
 
 // MaxProjects is the most projects one token names.
@@ -182,9 +205,10 @@ type Introspection struct {
 	// Person is the person the session acts for.
 	Person string `json:"person,omitempty"`
 	// Service is the service a token that names no person was minted for: the fleet its machine
-	// belongs to, as BROKER_VM_SERVICES names it. A token names a person or a service and never
-	// both, so a reader that records who is answerable for a write reads Person, and one that
-	// decides what a machine may reach reads this.
+	// belongs to, as BROKER_VM_SERVICES names it, or the service a read entry names
+	// (BROKER_EXCHANGE_READ_ACCOUNTS). A token names a person or a service and never both, so a
+	// reader that records who is answerable for a write reads Person, and one that decides what a
+	// machine may reach reads this.
 	Service string `json:"service,omitempty"`
 	// Machine is the machine a person signed in on acted through: the Google account of the
 	// actor token the exchange was made with, as BROKER_VM_SERVICES lists it. It is set only
@@ -193,15 +217,18 @@ type Introspection struct {
 	// as the actor token's issuer spells it, which is a Google subject rather than an account,
 	// so this is the name a reader can act on.
 	Machine string `json:"machine,omitempty"`
-	// ProjectScope is what Projects means: ProjectScopeNamed or ProjectScopePerson. A machine
-	// login's own token, which no exchange decided for, carries neither this nor Projects.
+	// ProjectScope is what Projects means: ProjectScopeNamed, ProjectScopePerson or
+	// ProjectScopeNone. A machine login's own token, which no exchange decided for, carries
+	// neither this nor Projects.
 	ProjectScope string `json:"project_scope,omitempty"`
 	// Projects is the token's list of projects: for a ProjectScopeNamed token, the entry's one
 	// project, or none for an account entry naming none; for a ProjectScopePerson token, the 0 to
-	// MaxProjects projects its trade asked for, each one its person could see then. Sorted, each
-	// once; absent for none.
+	// MaxProjects projects its trade asked for, each one its person could see then; for a
+	// ProjectScopeNone token, none. Sorted, each once; absent for none.
 	Projects []string `json:"projects,omitempty"`
-	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it.
+	// Scope is the OAuth scope the token was granted, space-separated as RFC 7662 spells it. An
+	// exchanged token holds ScopeRead when a read entry minted it and no scope otherwise, and a
+	// machine login's own token holds Scope.
 	Scope string `json:"scope,omitempty"`
 	// ExpiresAt is when the token expires, in seconds since the epoch (RFC 7662's 'exp'), so a
 	// caller that remembers an affirmative answer can keep it no longer than the token lives.

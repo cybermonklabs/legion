@@ -21,7 +21,7 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 // The two writers of these tests: a person and a session, the two shapes an actor is recorded in.
 var (
-	alice = model.Actor{Kind: "user", ID: "alice@theorem.dev"}
+	alice = model.Actor{Kind: "user", ID: "alice@example.com"}
 	bob   = model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 )
 
@@ -51,7 +51,7 @@ func TestAPriorityIsWrittenRenamedAndRetractedWithNoRowEverRewritten(t *testing.
 	written := map[string]string{
 		AttributeTitle:       "Agents stop losing work",
 		AttributeDescription: "Every project's work, read in one place.",
-		AttributeOwner:       "sami@theorem.dev",
+		AttributeOwner:       "sami@example.com",
 		AttributeRank:        "U",
 	}
 	writeOnce(t, pool, func(tx pgx.Tx) error { return Create(ctx, tx, id, written, alice, start) })

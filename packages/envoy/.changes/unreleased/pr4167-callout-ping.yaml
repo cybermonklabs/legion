@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  With a callout, the hub's NATS configuration ends with `ping_interval: "20s"` and `ping_max: 2`, so a replica of the auth service that hangs leaves the callout's queue group 40 to 80 s after it hangs, where nats-server's defaults kept it there 4 to 8 minutes while each client sent to it was refused.
+  `ping_interval` applies to every client: a client whose event loop blocks or whose link stalls keeps its connection through any stall shorter than 40 s, and is closed as stale and reconnects after one longer than 40 to 80 s. Without a callout the configuration renders exactly as before.
+  Beside a callout, `gcp:ClusteredNatsHub` keeps its routes' own ping at `ping_interval: "30s"` and `ping_max: 2` in `nats.conf`'s `cluster` block, so a route is closed as stale only when its queue takes more than 60 to 90 s to drain, as today. A change of the callout's lines, the ping lines among them, rolls the clustered hub's pods.

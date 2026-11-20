@@ -8,12 +8,14 @@ import {
   sleep,
 } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
   DispatchNoRouteError,
+  DispatchWriteUnsettledError,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -125,8 +127,9 @@ describe("DispatchClient", () => {
   });
 
   // A JSON answer that is not a page is Dispatch's own and comes back the same on a retry; text in
-  // its place is most likely a proxy or gateway page, which a retry can get past. The agent acts on
-  // the advice, so each kind gets its own.
+  // its place is most likely a proxy or gateway page, which a retry can get past, and the read
+  // path refuses it before any listing reads it (`#response`). The agent acts on the advice, so
+  // each kind gets its own.
   test("refuses an issue listing answer that is not a page, naming what arrived and whether a retry can help", async () => {
     const { fetchImpl } = fakeFetch([
       jsonResponse({ issues: "DSP-1", total: 1 }),
@@ -148,14 +151,22 @@ describe("DispatchClient", () => {
       ". Retrying will not help: the same request gets the same answer until that Dispatch is " +
       "upgraded or fixed.";
     const maySucceed =
-      "and got text that is not a JSON page, which looks like a proxy or gateway page rather than " +
-      "Dispatch's own answer, so a retry may succeed.";
+      "which looks like a proxy or gateway page rather than Dispatch's own answer, so a retry may " +
+      "succeed.";
 
     expect(await refusal()).toEndWith(
       `and got an object without an issues array or a numeric limit or a numeric offset${sameAgain}`
     );
     expect(await refusal()).toEndWith(`and got null${sameAgain}`);
-    for (const text of [await refusal(), await refusal()]) {
+    const html = await refusal();
+    expect(html).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("bad gateway")'
+    );
+    const truncated = await refusal();
+    expect(truncated).toStartWith(
+      'GET http://dispatch.test/api/v1/issues?project=DSP&limit=50&offset=0 answered 200 with a body that is not JSON ("{truncat")'
+    );
+    for (const text of [html, truncated]) {
       expect(text).toEndWith(maySucceed);
       expect(text).not.toContain("Retrying will not help");
     }
@@ -738,6 +749,95 @@ describe("DispatchClient", () => {
     expect(notFound).toEqual(expect.objectContaining({ code: "HTTP_404", transient: false }));
   });
 
+  // F5 (the review of 81d860a8f7): a read behind a redirect is told where the redirect pointed,
+  // by origin alone, which is what tells a Dispatch URL to correct. The redirect is not followed,
+  // and the Location's user info, path and query are never printed.
+  test("a read a redirect answers names the origin the redirect points at, and does not follow it", async () => {
+    const { fetchImpl, requests } = fakeFetch([
+      new Response("<html><body>Moved</body></html>", {
+        status: 302,
+        statusText: "Found",
+        headers: {
+          "Content-Type": "text/html",
+          Location: "https://user:secret@elsewhere.test:8443/login?token=abc",
+        },
+      }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: Error) => caught
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init.redirect).toBe("manual");
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    expect(error.message).toStartWith(
+      "GET http://dispatch.test/api/v1/issues/DSP-1/events?after=4&limit=10 answered 302 Found " +
+        "(a redirect to https://elsewhere.test:8443, which this client does not follow) with a body " +
+        `that is not Dispatch's error JSON ("Moved")`
+    );
+    expect(error.message).not.toContain("user:");
+    expect(error.message).not.toContain("token=abc");
+    expect(error.message).not.toContain("/login");
+  });
+
+  // Red team 7 and 4 (the review of 4dad905e68): a read's 2xx that is not JSON is a
+  // DispatchGatewayError, with its status, advice that a retry may succeed, and `transient` saying
+  // so too: a portal or a proxy in the way, which a later request can get past, and which never
+  // reached Dispatch. A JSON answer is read whatever the case of its type, and a `+json` type is
+  // JSON; a bodiless 204 is no answer to refuse.
+  test("a read's 2xx that is not JSON is a gateway error a retry may clear; any JSON type and a 204 are read", async () => {
+    const { fetchImpl } = fakeFetch([
+      new Response("<html><title>Sign in to the network</title></html>", {
+        status: 200,
+        headers: { "Content-Type": "text/html" },
+      }),
+      new Response(JSON.stringify([{ id: 5 }]), {
+        status: 200,
+        headers: { "Content-Type": "Application/JSON; charset=utf-8" },
+      }),
+      new Response(JSON.stringify([{ id: 6 }]), {
+        status: 200,
+        headers: { "Content-Type": "application/vnd.dispatch+json" },
+      }),
+      new Response(null, { status: 204 }),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    const error = await client.getIssueEvents("DSP-1", 4, 10).then(
+      () => {
+        throw new Error("expected a refusal");
+      },
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(DispatchGatewayError);
+    const gateway = error as DispatchGatewayError;
+    expect(gateway.status).toBe(200);
+    expect(gateway.advice).toBe("a retry may succeed");
+    expect(gateway.transient).toBe(true);
+    expect(gateway.mayHaveReachedDispatch).toBe(false);
+    expect(gateway.message).toContain(
+      'answered 200 with a body that is not JSON ("Sign in to the network")'
+    );
+
+    const read = async (): Promise<unknown> => await client.getIssueEvents("DSP-1", 4, 10);
+    expect(await read()).toEqual([{ id: 5 }]);
+    expect(await read()).toEqual([{ id: 6 }]);
+    expect(await read()).toBe("");
+  });
+
   // A gateway's 5xx can come back after it forwarded a write and Dispatch applied it, so advising
   // a retry there can post a message twice: the write is told to check what took effect. A 408 or
   // 429 is the gateway's own timeout or rate limit, sent before it forwards the request, so the
@@ -774,13 +874,18 @@ describe("DispatchClient", () => {
     const gateway = ", which looks like a proxy or gateway page rather than Dispatch's own answer";
     const page404 = `${request}404 Not Found with a body that is not Dispatch's error JSON ("404 Not Found")`;
 
+    // A 502 can come after Dispatch committed the write, so with no ask left the write ends
+    // unsettled (the transition table, write-outcome.ts), the gateway's page as its cause.
     const badGateway = await refusal();
+    expect(badGateway).toBeInstanceOf(DispatchWriteUnsettledError);
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
-        `${gateway}, so the write may or may not have reached Dispatch: check whether it took ` +
-        "effect before retrying it."
+        `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
+        "it may or may not have taken effect: check whether it did before retrying it."
     );
-    expect(badGateway).toEqual(expect.objectContaining({ mayHaveReachedDispatch: true }));
+    expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
+      expect.objectContaining({ mayHaveReachedDispatch: true })
+    );
     for (const [status, statusText] of [
       [408, "Request Timeout"],
       [429, "Too Many Requests"],
@@ -806,7 +911,7 @@ describe("DispatchClient", () => {
   // quoted: the client's own bearer wherever it appears (trimmed, as fetch sends it), and the
   // value after `Authorization:` or `Bearer`. The reason phrase is cut to one line like the body.
   test("redacts the bearer and an Authorization or Bearer value from the excerpt and the reason phrase", async () => {
-    const token = "dsp_live_4f9a2c7e";
+    const token = fixtureSecret("dsp");
     const echo =
       `<html><body><h1>401 Unauthorized</h1><pre>token=${token}\r\n` +
       "Authorization: Basic dXNlcjpwYXNz\r\nX-Forwarded: Bearer other.jwt-value</pre></body></html>";
@@ -860,6 +965,48 @@ describe("DispatchClient", () => {
       expect(message).not.toContain("dXNlcjpwYXNz");
       expect(message).not.toContain("other.jwt-value");
     }
+  });
+
+  // M4 (the review of 99b1e438db): a DPoP token after `Authorization: DPoP` or `DPoP` is redacted
+  // as a bearer's is, and so is the token the request was sent with when the credential names
+  // another by the time the answer comes (a renewal between the two): the excerpt redacts every
+  // token this client presented, not only the one `secret()` names now.
+  test("redacts a DPoP value and the token a request was sent with, after the credential renewed", async () => {
+    const sent = fixtureSecret("sent");
+    const renewed = fixtureSecret("renewed");
+    let presentations = 0;
+    const credential: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => {
+        presentations += 1;
+        return { Authorization: `DPoP ${sent}`, DPoP: "proof" };
+      },
+      // The renewal landed while the request was out: the credential names the next token.
+      secret: () => (presentations === 0 ? sent : renewed),
+    };
+    const echo =
+      `<html><body><h1>502 Bad Gateway</h1><pre>Authorization: DPoP ${sent}\r\n` +
+      `X-Echo: DPoP ${sent.slice(2)}\r\nX-Raw: ${sent}</pre></body></html>`;
+    const { fetchImpl } = fakeFetch([
+      new Response(echo, {
+        status: 502,
+        statusText: "Bad Gateway",
+        headers: { "Content-Type": "text/html" },
+      }),
+    ]);
+    const client = new DispatchClient("http://dispatch.test", credential, fetchImpl, {
+      retryNoRoute: false,
+    });
+
+    const message = await client.getIssue("DSP-1").then(
+      () => "",
+      (error: Error) => error.message
+    );
+
+    expect(message).toContain(
+      '("502 Bad Gateway Authorization: DPoP [redacted] X-Echo: DPoP [redacted] X-Raw: [redacted]")'
+    );
+    expect(message).not.toContain(sent.slice(-12));
   });
 
   // A Dispatch URL may carry a user and a password: the config accepts such a URL, and the
@@ -1365,7 +1512,7 @@ test("createProject posts the key, name and actor and answers the created projec
     key: "CORE",
     name: "Core",
     open_asks: 0,
-    default_assignee: "alice@theorem.dev",
+    default_assignee: "alice@example.com",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
   };
@@ -1740,23 +1887,30 @@ describe("a broker token Dispatch says is not live", () => {
 
   /**
    * A credential like the broker's: each presentation carries the token it holds now, and
-   * `stale`, which records what it was told, moves it to the next of `tokens`. `refusal`, where
-   * given, is what a presentation after `stale` throws, as a trade the broker refuses does.
+   * `stale`, which records what it was told (the session and the presentation it names), moves it
+   * to the next of `tokens`. `refusal`, where given, is what a presentation after `stale` throws,
+   * as a trade the broker refuses does. `headers` keeps every object it answered, so a row can
+   * check that `stale` names the very presentation the dead token went out in.
    */
   function brokered(tokens: readonly string[], refusal?: Error) {
     const stales: (string | undefined)[] = [];
+    const told: (Readonly<Record<string, string>> | undefined)[] = [];
+    const answered: Readonly<Record<string, string>>[] = [];
     const credential: RequestCredential = {
       scheme: "DPoP",
       headers: () => {
         if (refusal !== undefined && stales.length > 0) throw refusal;
-        return { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        const headers = { Authorization: `DPoP ${tokens[stales.length]}`, DPoP: "proof" };
+        answered.push(headers);
+        return headers;
       },
-      stale: (session) => {
+      stale: (session, presented) => {
         stales.push(session);
+        told.push(presented);
       },
       secret: () => tokens[stales.length] ?? "",
     };
-    return { credential, stales };
+    return { credential, stales, told, answered };
   }
 
   /** What each request presented, in order. */
@@ -1766,21 +1920,26 @@ describe("a broker token Dispatch says is not live", () => {
   test("a read is sent once more with a fresh token", async () => {
     const listed = [{ key: "DSP-1", title: "DSP-1", status: "todo" }];
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse(listed)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     expect(await client.listAllIssues({})).toEqual(listed as unknown as IssueSummary[]);
     expect(stales).toEqual([undefined]);
+    // The credential is told which presentation was dead: the first `headers` answer itself.
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
   });
 
   test("a write is sent once more with a fresh token, under the same Idempotency-Key", async () => {
     const { fetchImpl, requests } = fakeFetch([notLive(), jsonResponse({ id: "message-1" }, 201)]);
-    const { credential, stales } = brokered(["dead", "fresh"]);
+    const { credential, stales, told, answered } = brokered(["dead", "fresh"]);
     const client = new DispatchClient("http://dispatch.test", credential, fetchImpl);
 
     await client.message("DSP-1", { body: "Shipped.", actor });
     expect(stales).toEqual([undefined]);
+    expect(told).toHaveLength(1);
+    expect(told[0]).toBe(answered[0] as Readonly<Record<string, string>>);
     expect(presented(requests)).toEqual(["DPoP dead", "DPoP fresh"]);
     const keys = requests.map(
       (request) => (request.init.headers as Record<string, string>)["Idempotency-Key"]

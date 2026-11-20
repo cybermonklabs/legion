@@ -14,9 +14,11 @@ body: |-
   replica holds at most 1024 requests waiting for a decision and refuses the next at once
   (`reason="waiting_bound"` in `broker_nats_callout_decisions_total`), with at most 1024 such
   refusals in flight; past both it drops the request, and the hub refuses that client at its own
-  timeout. A request the hub has already given up on is dropped without a decision. The broker's
-  metrics port answers `GET /livez` with 503 once the service's loop has not turned for ten
-  seconds, so a liveness probe restarts a replica that has stalled.
+  timeout. A request the hub has already given up on, read from the hub's own clock so no skew
+  between the broker's and the hub's clocks enters, is dropped without a decision. Every drop is
+  counted in `broker_nats_callout_dropped_total` by reason, and the first in a minute logged. The
+  broker's metrics port answers `GET /livez` with 503 once the service's loop has not turned for
+  ten seconds, so a liveness probe restarts a replica that has stalled.
   Go clients present those credentials through `NATS_SERVICE_TOKEN_FILE` or
   `NATS_SERVICE_GOOGLE_AUDIENCE` for a service, and through the token client for a session, each
   reconnecting before its user expires. A service reconnects only once a throwaway connection

@@ -79,6 +79,11 @@ const (
 	ExchangeSession = "example-worker"
 )
 
+// The second account every Rig's BROKER_EXCHANGE_ACCOUNTS lists: its entry fixes no session, as
+// a Legion issue pod's does, so each pod of it trades only for a session a registrar registered for
+// that pod (POST /v1/oauth/exchange/pod-sessions), with the key the registration names.
+const ExchangeRolesAccount = "system:serviceaccount:example-ns:example-roles"
+
 // The one workflow every Rig's BROKER_EXCHANGE_WORKFLOWS lists and what a run of it may write. It
 // fixes no session, so a run names its own.
 const (
@@ -154,8 +159,8 @@ func WithPoolMaxConns(n int) Option {
 	return func(c *rigConfig) { c.maxConns = n }
 }
 
-// WithMinters gives the broker a minter for each kind minters names, as cmd/broker/main.go's
-// kindMinters does, so a test releases a kind secret through a minter aimed at its own stub
+// WithMinters gives the broker a minter for each type minters names, as cmd/broker/main.go's
+// typeMinters does, so a test releases a type secret through a minter aimed at its own stub
 // upstream; none by default.
 func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
@@ -282,9 +287,9 @@ const MachineLoginURL = "https://dispatch.example/credentials/machine"
 // cmd/broker/main.go does: device codes live as long as a pending machine login, access tokens
 // fifteen minutes, refresh tokens as long as a launcher credential, and verification_uri is
 // MachineLoginURL. Its token exchange reads issuer for both kinds of subject token — a pod's, for
-// exchangeAudience, and a workflow run's, for githubAudience — and lists the one account and the
-// one workflow the Rig's constants name, so an exchange test has an identity to be and an unlisted
-// one to be refused as.
+// exchangeAudience, and a workflow run's, for githubAudience — and lists the two accounts and the
+// one workflow the Rig's constants name, so an exchange test has an identity to be, a registered
+// one, and an unlisted one to be refused as.
 func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *oauth.Provider {
 	t.Helper()
 	oauthStore := oauthstore.New(st.Pool)
@@ -294,7 +299,11 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer) *o
 		t.Fatalf("OAuth secret: %v", err)
 	}
 	policy, err := exchange.NewSet(
-		[]exchange.AccountEntry{{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession}},
+		[]exchange.AccountEntry{
+			{Account: ExchangeAccount, Project: ExchangeProject, Person: ExchangePerson, Session: ExchangeSession},
+			{Account: ExchangeRolesAccount, Project: ExchangeProject, Person: ExchangePerson},
+		},
+		nil,
 		[]exchange.WorkflowEntry{{Repository: ExchangeRepository, Workflow: ExchangeWorkflow, Ref: ExchangeRef, Project: ExchangeProject, Person: ExchangePerson}},
 		nil,
 		// The rig lists no machine, so there is no box a person could have signed in on and no

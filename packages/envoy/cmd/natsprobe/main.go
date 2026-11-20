@@ -16,10 +16,11 @@
 // It prints `connected as <name>`, the name the hub reports the connection by for a session
 // (session/<id>) and the account its token names for a service, then one of: `served <subject>`,
 // exit 0; `refused: <the server's text>`, exit 3, when the hub refused the subscribe or publish;
-// `not admitted: <the server's text>`, exit 4, when the hub refused the connection. A usage error
-// exits 2 and any other failure 1; a session's credential tried on a hub with no auth service,
-// which sends no nonce to sign, is such a failure, and names the flags of the credentials that hub
-// takes. It prints no token.
+// `not admitted: <the server's text>`, exit 4, when the hub refused the connection, its
+// Authorization Violation (nats.ErrAuthorization). A usage error exits 2 and any other failure 1,
+// a connection that fails any other way, such as a hub that is not listening, included; a
+// session's credential tried on a hub with no auth service, which sends no nonce to sign, is such
+// a failure, and names the flags of the credentials that hub takes. It prints no token.
 package main
 
 import (
@@ -34,6 +35,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/natscred"
@@ -99,6 +101,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			}
 		}))
 	if err != nil {
+		// Only the hub's own refusal of the CONNECT is an answer of the hub's (nats.go,
+		// sendConnect: an Authorization Violation is ErrAuthorization); any other failure, a hub
+		// that is not listening included, says nothing of what the hub admits.
+		if errors.Is(err, nats.ErrAuthorization) {
+			fmt.Fprintf(stdout, "not admitted: %s\n", serverText(err))
+			return exitNotAdmitted
+		}
 		// nats.go wraps the signature callback's error ("error signing nonce: %w", nats.go:3087-3090)
 		// and Connect returns it: the probe never sent a CONNECT, so the hub refused nothing, and
 		// which credential such a hub takes is the probe's to say, by its flags.
@@ -106,8 +115,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			fmt.Fprintf(stderr, "natsprobe: %v; name the credential it does take: --no-credential, --service-token-file or --service-google-audience\n", err)
 			return exitFailed
 		}
-		fmt.Fprintf(stdout, "not admitted: %s\n", serverText(err))
-		return exitNotAdmitted
+		fmt.Fprintf(stderr, "natsprobe: connect: %v\n", err)
+		return exitFailed
 	}
 	defer nc.Close()
 	fmt.Fprintf(stdout, "connected as %s\n", name)
@@ -179,7 +188,7 @@ func credential(getenv func(string) string, tokenFile, googleAudience string, no
 		return nil, "", err
 	}
 	client, err := brokerclient.New(brokerclient.Config{
-		BrokerURL: getenv(brokerclient.BrokerURLVar), Key: key, Subject: subject, Session: session,
+		BrokerURL: brokeraddr.New(getenv(brokerclient.BrokerURLVar)), Key: key, Subject: subject, Session: session,
 		Projects: projects, NoLauncherCredential: true, HTTP: brokerclient.HTTPClient(),
 	})
 	if err != nil {

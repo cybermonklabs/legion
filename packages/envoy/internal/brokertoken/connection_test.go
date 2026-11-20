@@ -195,9 +195,11 @@ func TestAConnectionProofIsRefused(t *testing.T) {
 	})
 }
 
-// SessionCaller is the reading Verify makes of the broker's answer: for every answer, a live one
-// and each one Verify refuses, it answers what Verify answers for a request presenting a token the
-// broker answers that way with a sound proof.
+// SessionCaller is the reading a verifier built without Options.ServesReadOnly makes of the
+// broker's answer: for every answer, a live one and each one Verify refuses, it answers what such a
+// verifier's Verify answers for a request presenting a token the broker answers that way with a
+// sound proof. A verifier with the switch also admits a read-only token, which SessionCaller
+// refuses (TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne).
 func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	rig := newRig(t)
 	caller := newSigner(t)
@@ -213,14 +215,14 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
-	// INFRA-3885: a named answer may name no project when it names a person (an account entry may
+	// A named answer may name no project when it names a person (an account entry may
 	// name none), and names at most one.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = brokertoken.ProjectScopeNamed, nil
 	namedTwoProjects := liveToken(caller.jkt, time.Hour)
-	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = brokertoken.ProjectScopeNamed, []string{"INFRA", "OSSV"}
+	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = brokertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
-	serviceWithProjects.Projects = []string{"INFRA"}
+	serviceWithProjects.Projects = []string{"ACME"}
 	// Each row names whether Verify admits it, so a row that answers otherwise fails by name with
 	// Verify's own error, rather than as a count that names none.
 	for _, row := range []struct {

@@ -78,27 +78,17 @@ func keptService(reader natscred.TokenReader) nats.Option {
 
 // keepAlongside runs keeper beside the connection the options it applies to make, from that
 // connection's first connect until it closes: the service's keeper reconnects it with a later
-// token before the user its current one was admitted as expires. The callbacks the options
-// already hold run as before.
+// token before the user its current one was admitted as expires, and ends when the connection
+// closes, by any path (natscred.Keeper), the discard of a replacement that clears the
+// connection's ClosedCB among them (ensureConnWithContext). The ConnectedCB the options already
+// hold runs as before.
 func keepAlongside(keeper natscred.Keeper) nats.Option {
 	return func(o *nats.Options) error {
-		ctx, cancel := context.WithCancel(context.Background())
-		started := false
-		connected, closed := o.ConnectedCB, o.ClosedCB
+		connected := o.ConnectedCB
 		o.ConnectedCB = func(nc *nats.Conn) {
-			// nats.go runs its callbacks one at a time on one goroutine, so started needs no lock.
-			if !started {
-				started = true
-				go keeper.Keep(ctx, nc)
-			}
+			go keeper.Keep(context.Background(), nc)
 			if connected != nil {
 				connected(nc)
-			}
-		}
-		o.ClosedCB = func(nc *nats.Conn) {
-			cancel()
-			if closed != nil {
-				closed(nc)
 			}
 		}
 		return nil

@@ -27,14 +27,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -175,12 +182,14 @@ func (b *twoBuilds) options(env map[string]string) dispatchOptions {
 }
 
 // startPrevious starts a process of the previous build, its own web app served, and returns once it
-// answers /healthz. The previous build may predate DISPATCH_LISTEN_FD, so it binds its port itself.
+// answers /healthz. It serves on the socket the test holds, as the current build does
+// (startDispatchProcessWith): every build this suite runs serves an inherited DISPATCH_LISTEN_FD,
+// the first-rollout build, the oldest, among them. A port the test let go of for the process to
+// bind would be any program's to take first, and the start would fail on `address already in use`.
 func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
 	options := b.options(env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
-	options.BindsItsPort = true
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
 	b.a.waitHealthy(t)
 	return b.a
@@ -248,4 +257,86 @@ func jsonBody(t *testing.T, value any) string {
 		t.Fatalf("encode a request body: %v", err)
 	}
 	return string(body)
+}
+
+// ───── the previous build's owner lock protocol ─────────────────────────────
+
+// registeredOwnerLockProtocol waits up to within for the one server process database's registry
+// holds (server_processes) and answers the owner lock protocol it registered with
+// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
+// before the owner lock, which writes no such column). process is that process, and name what a
+// failure calls it. The read polls, since a build may serve a moment before its registration
+// commits. It fails the test when the registry holds more than one process, when process exits
+// before its row reads, or when within passes first.
+func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		protocols, err := pgx.CollectRows(rows, pgx.RowTo[int])
+		if err != nil {
+			t.Fatalf("read the registered server processes: %v", err)
+		}
+		switch {
+		case len(protocols) == 1:
+			return protocols[0]
+		case len(protocols) > 1:
+			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
+				len(protocols), protocols, name)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
+		}
+		select {
+		case <-process.Exited:
+			t.Fatalf("the %s exited before it registered:\n%s", name, process.Output.String())
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+// probedOwnerLockProtocols is the owner lock protocol each previous build registered when
+// previousBuildOwnerLockProtocol booted it, by the build's directory. It lasts as long as the test
+// binary, so the rows that ask boot one probe between them.
+var probedOwnerLockProtocols = struct {
+	sync.Mutex
+	byDir map[string]int
+}{byDir: map[string]int{}}
+
+// previousBuildOwnerLockProtocol answers the owner lock protocol build registers, for a row that
+// must know it before build boots on the row's own database. A probe there would be the very thing
+// such a row tests: a build before the owner lock that boots on a database is an arrival there,
+// which stamps the database's mark of an earlier build (owner_lock_legacy_mark) for an hour
+// (store.OwnerLockMarkWindow) and puts every process of this tree on it in the mode beside an
+// earlier build. So the probe boots build once alone, on a database (storetest.Open) and a NATS
+// server of its own, reads the protocol its process registers (registeredOwnerLockProtocol), and
+// kills the process. The answer is kept by the build's directory for the rest of the test binary,
+// and a later row reads it without a boot.
+func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
+	t.Helper()
+	probed := &probedOwnerLockProtocols
+	probed.Lock()
+	defer probed.Unlock()
+	if protocol, known := probed.byDir[build.dir]; known {
+		return protocol
+	}
+	name := "probe of the previous build (" + shortCommit(build.commit) + ")"
+	database := storetest.Open(t)
+	_, nats := multiprocessNATS(t)
+	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
+		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
+	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	if err := probe.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill the %s: %v", name, err)
+	}
+	select {
+	case <-probe.Exited:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the %s was still running 30s after it was killed:\n%s", name, probe.Output.String())
+	}
+	probed.byDir[build.dir] = protocol
+	return protocol
 }

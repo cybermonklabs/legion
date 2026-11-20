@@ -37,9 +37,10 @@ const (
 	// its own, which a daemon, a command and this helper are (TradeSession).
 	SessionVar = "AGENT_SECRETS_SESSION"
 	// ProjectsVar is the projects a session works on, project keys separated by white space,
-	// which a trade that acts as its person asks the broker to name in its token (TradeProjects).
-	// The broker names only projects the person may see, and a restricted member's token must
-	// name at least one.
+	// which a trade that acts as its person may ask the broker to name in its token
+	// (TradeProjects). The broker names only projects the person may see, and a restricted
+	// member's token must name at least one. The TypeScript sign-in client sends it; no Go trade
+	// of this release reads it yet.
 	ProjectsVar = "AGENT_SECRETS_PROJECTS"
 	// SignInIssuerVar is the OpenID provider a person signs in at, Google's unless a dev stack
 	// says otherwise.
@@ -87,8 +88,9 @@ func TradeSession(getenv func(string) string, own string) string {
 
 // TradeProjects is the projects a trade acting as its person asks for: ProjectsVar, in the
 // grammar the broker reads (oauthwire.ParseProjects), sorted and each once; nil when it is blank.
-// A value that is no list is an error naming the variable, never a trade naming fewer projects
-// than its session was started with. The TypeScript client reads the same variable the same way
+// A value that is no list is an error naming the variable, never a list quietly cut short. It is
+// the declaration a Go trade naming its projects reads them through; no Go trade of this release
+// calls it. The TypeScript client reads the same variable the same way
 // (packages/broker-client/src/environment.ts, tradeProjects).
 func TradeProjects(getenv func(string) string) ([]string, error) {
 	projects, err := oauthwire.ParseProjects(getenv(ProjectsVar))

@@ -3,6 +3,7 @@ package brokerclient_test
 import (
 	"crypto"
 	"encoding/base64"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -33,11 +34,23 @@ func TestConnectionProofIsTheOneTheServiceChecks(t *testing.T) {
 
 	again, err := brokerclient.ConnectionProof(key, "the-access-token", "the-server-nonce")
 	require.NoError(t, err)
-	require.NotEqual(t, signed, again, "each proof names a 'jti' of its own")
+	jti := func(signed string) string {
+		t.Helper()
+		parsed, err := jose.ParseSigned(signed, []jose.SignatureAlgorithm{jose.ES256})
+		require.NoError(t, err)
+		var claims struct {
+			JTI string `json:"jti"`
+		}
+		require.NoError(t, json.Unmarshal(parsed.UnsafePayloadWithoutVerification(), &claims))
+		require.NotEmpty(t, claims.JTI, "a proof names no 'jti'")
+		return claims.JTI
+	}
+	require.NotEqual(t, jti(signed), jti(again), "each proof names a 'jti' of its own")
 }
 
-// A server with no auth service sends no nonce, so a caller that chose a session's credential for
-// it is told that, as ErrNoNonce, which a caller that knows what else it could present tests for.
+// A server that sends no nonce leaves a session's proof nothing to sign, so a caller that chose a
+// session's credential for it is told that, as ErrNoNonce, which a caller that knows what else it
+// could present tests for.
 func TestConnectionProofNamesAHubWithNoAuthService(t *testing.T) {
 	key, err := proof.NewKey()
 	require.NoError(t, err)

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // brokenPipeReadKV is an interest bucket whose reads fail with the raw socket error nats.go v1.50.0
@@ -59,11 +60,11 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 // An interest read is answered only by its named answers: no key, a record this build cannot
 // decode, or a key the bucket refuses. Any other error is a read that did not answer, whatever it
 // names, so a raw socket error from a broken connection is the bus-unavailable 503 with
-// Retry-After: 1 on GET /v1/registry/<session_id>, never a session answered with no topics.
+// Retry-After: 1 on GET /v1/registry/<session_id>, never a row answered with topics as [].
 //
 // GET /v1/sessions reads no record at all: it joins the interest copy (store.Registry.Cached), so
 // the same broken reads leave it answering its 200 list. A session the copy holds nothing for is
-// listed with no topics, and that is not the answer this test forbids on the read-through route:
+// listed with topics as [], and that is not the answer this test forbids on the read-through route:
 // the copy can be served (kvwatch.Watcher.Servable), which means a read of the whole bucket
 // completed and found that session no interest record, rather than a read that failed saying
 // nothing.
@@ -101,7 +102,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 		if recorder.Code != http.StatusServiceUnavailable {
 			t.Fatalf("GET /v1/registry/%s with the interest read failing on a broken pipe: status %d, body %s; want 503", missed, recorder.Code, recorder.Body.String())
 		}
-		var refusal apiError
+		var refusal listenerwire.APIError
 		if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 			t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 		}
@@ -118,7 +119,7 @@ func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing
 			t.Fatalf("GET /v1/sessions with the interest read failing on a broken pipe: status %d, body %s; want the 200 the copies answer, since the listing reads no record",
 				recorder.Code, recorder.Body.String())
 		}
-		var rows []sessionInfo
+		var rows []listenerwire.SessionInfo
 		if err := json.Unmarshal(recorder.Body.Bytes(), &rows); err != nil {
 			t.Fatalf("decode the session list %s: %v", recorder.Body.String(), err)
 		}

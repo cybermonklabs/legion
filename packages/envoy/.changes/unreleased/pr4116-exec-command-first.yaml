@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `agent-secrets NAME -- command` looks the command up on `PATH` before it asks the broker
+  anything, so a command that is not there is refused at once, with the exit status (1) and the
+  line it always had, and no request for it waits on an approver.

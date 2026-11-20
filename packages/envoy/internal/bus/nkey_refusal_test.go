@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// R12 (dispatch://INFRA-840/spec#b-r-unchanged-without-callout): a hub configured with no auth
+// R12 of the auth service's spec (unchanged without the callout): a hub configured with no auth
 // service, and clients configured with none, run exactly as they run today. Today (the merge base,
 // 1610472cb1) a bus connection that holds a stored nkey seed, and that the hub refuses twice in a
 // row - a seed rotated or revoked on the hub - closes for good, as nats.go does by default

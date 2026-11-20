@@ -138,15 +138,14 @@ func Listener(machineID string) Permissions {
 // machineID: the listener's set (Listener), the session consumers' calls included, then a
 // subscribe to every notification topic (bus.NotificationTopicPrefix) that nothing now uses. It
 // existed for the opt-in that had a listener hold a core subscription on notifications.> for the
-// sessions it served, and that opt-in went with the listener's push to a session's serving port
-// (dispatch://INFRA-889), so this set grants the listener's set and the one subscribe nothing
-// reads. It keeps the subscribe rather than dropping it, and so stays a set of its own rather than
-// an alias, because a change to a set rewrites every hub's rendered authorization: it replaces a
-// VM hub's instance and reaches a clustered hub only as a live reload, which
-// dispatch://INFRA-429's non-goals leave to dispatch://INFRA-551. The set holds none of the
-// session's publish entries, so a process connecting as this user can neither publish a session's
-// agent stream frames nor subscribe to a session's control subject. Host stays the set of a user a
-// host's sessions share.
+// sessions it served, and that opt-in went with the listener's push to a session's serving port,
+// so this set grants the listener's set and the one subscribe nothing reads. It keeps the
+// subscribe rather than dropping it, and so stays a set of its own rather than an alias, because a
+// change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
+// reaches a clustered hub only as a live reload, which is left to later work. The set holds none
+// of the session's publish entries, so a process connecting as this user can neither publish a
+// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
+// of a user a host's sessions share.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
@@ -158,7 +157,8 @@ func ListenerHost(machineID string) Permissions {
 // Beside them is the update of the bucket's stream: a start, and the program's keeper every 30
 // seconds after it, raises a bucket found with fewer copies than the deployment's replica count
 // (bus.ReplicasEnvVar) with a stream update (bus.EnsureKeyValue, bus.WithKeptBuckets). Without
-// that grant the raise times out and the start stops naming the bucket.
+// that grant the server refuses the raise and the start stops naming the bucket, the setting and
+// the refusal.
 func KVWrite(bucket string) []string {
 	stream := kvStream + bucket
 	return []string{
@@ -380,16 +380,23 @@ const systemAccountPrefix = "$SYS"
 
 // NamesSystemSubject returns the first entry of p, publish then subscribe, that can match a
 // system subject: one whose first token is $SYS, or a wildcard that a $SYS subject's first token
-// matches (* or >). A subscribe entry's queue group, after a space, is not part of its subject.
+// matches (* or >). A subscribe entry's queue group is not part of its subject, and the entry is
+// split as nats-server splits it (server/client.go, splitSubjectQueue: strings.Fields), at any
+// whitespace, so a tab or a no-break space before a queue group hides no subject from this.
 // The auth service refuses any answer whose grant names one: the server takes from a callout
 // client only the publish of $SYS.REQ.USER.AUTH, so a grant naming a system subject would hand a
 // connection a subscribe the server does not take away.
 func NamesSystemSubject(p Permissions) (string, bool) {
-	for _, entry := range slices.Concat(p.Publish, p.Subscribe) {
-		subject, _, _ := strings.Cut(strings.TrimSpace(entry), " ")
-		first, _, _ := strings.Cut(subject, ".")
-		if first == systemAccountPrefix || first == "*" || first == ">" {
-			return entry, true
+	for _, entries := range [...][]string{p.Publish, p.Subscribe} {
+		for _, entry := range entries {
+			fields := strings.Fields(entry)
+			if len(fields) == 0 {
+				continue
+			}
+			first, _, _ := strings.Cut(fields[0], ".")
+			if first == systemAccountPrefix || first == "*" || first == ">" {
+				return entry, true
+			}
 		}
 	}
 	return "", false

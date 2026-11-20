@@ -95,7 +95,7 @@ func TestTheServiceAnswersInsideTheGoClientsConnectDeadline(t *testing.T) {
 		// The client is gone before the raised budget would have answered. Which of the two
 		// two-second timers fires first — nats.go's own handshake deadline or the server giving
 		// up and refusing — is a race, and the point is that neither waits for the answer: it
-		// would have come at three seconds.
+		// would have come at the raised budget, when the stub returns on its cancelled context.
 		require.Error(t, err, "a client admitted with the budget at %s: the budget would be arbitrary", raisedBudget)
 		require.Less(t, took, raisedBudget,
 			"the client waited %s, so the answer at %s could still have reached it and the control proves nothing", took, raisedBudget)

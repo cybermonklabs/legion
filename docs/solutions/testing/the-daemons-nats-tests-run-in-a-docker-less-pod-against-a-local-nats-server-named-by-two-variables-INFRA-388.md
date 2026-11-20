@@ -20,8 +20,9 @@ related_issues:
 
 Extends docs/solutions/testing/an-embedded-postgres-from-the-zonky-jar-runs-the-pods-postgres-lanes-and-the-nats-only-tests-are-skipped-by-name-LEGION-668.md: its NATS skip list is no longer needed in `packages/daemon`. Its Postgres recipe stands.
 
-- Install and start NATS on the issue volume:
-  `GOBIN=$TMPDIR/gobin go install github.com/nats-io/nats-server/v2@v2.10.22`, then
+- Install and start NATS on the issue volume, at the hub's v2.15.1, since the daemon refuses a
+  nats-server below v2.11.12, v2.12.4 or v2.14.0:
+  `GOBIN=$TMPDIR/gobin go install github.com/nats-io/nats-server/v2@v2.15.1`, then
   `$TMPDIR/gobin/nats-server -js -a 127.0.0.1 -p <port> -m <monitor port> -sd $TMPDIR/natsdata`
   as a service.
 - Export `LEGION_TEST_NATS_URL=nats://127.0.0.1:<port>` and

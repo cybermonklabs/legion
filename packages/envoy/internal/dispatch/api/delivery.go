@@ -92,13 +92,44 @@ func parseOptionalRFC3339(query url.Values, name string, fallback time.Time) (ti
 	return parsed, nil
 }
 
+// deliveryNotConfiguredCode and deliveryNotConfiguredMessage are the one refusal a Dispatch with
+// no delivery settings gives, from this route and from the live hub's worker alike.
+const (
+	deliveryNotConfiguredCode    = "DELIVERY_NOT_CONFIGURED"
+	deliveryNotConfiguredMessage = "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery"
+)
+
+// parseOptionalWindow is a record route's [from, to) window: each bound an RFC3339 time, nil when
+// the query leaves it out or blank, and from before to when both are given. Its error is the text
+// of the route's 400 INVALID_QUERY. The loop's variable is not `name`: the query-key walk
+// (routes_query_keys_test.go) resolves a read by the variable a file ranges over a literal list
+// with, and parseOptionalRFC3339 reads its own `name` parameter, which that walk pins as a read it
+// cannot resolve.
+func parseOptionalWindow(query url.Values) (from, to *time.Time, err error) {
+	bounds := [2]*time.Time{}
+	for index, bound := range []string{"from", "to"} {
+		if strings.TrimSpace(query.Get(bound)) == "" {
+			continue
+		}
+		parsed, err := parseOptionalRFC3339(query, bound, time.Time{})
+		if err != nil {
+			return nil, nil, err
+		}
+		bounds[index] = &parsed
+	}
+	if bounds[0] != nil && bounds[1] != nil && !bounds[0].Before(*bounds[1]) {
+		return nil, nil, errors.New("from must be before to")
+	}
+	return bounds[0], bounds[1], nil
+}
+
 // deliverySettings reads the timeline's configuration record, answering 404
 // DELIVERY_NOT_CONFIGURED (or the store's error) and false when it cannot.
 func (s *server) deliverySettings(w http.ResponseWriter, r *http.Request) (delivery.DeliverySettings, bool) {
 	settings, err := delivery.GetSettings(r.Context(), s.deps.Store.Pool)
 	if err != nil {
 		if errors.Is(err, delivery.ErrNoSettings) {
-			writeError(w, "DELIVERY_NOT_CONFIGURED", http.StatusNotFound, "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery")
+			writeError(w, deliveryNotConfiguredCode, http.StatusNotFound, deliveryNotConfiguredMessage)
 			return delivery.DeliverySettings{}, false
 		}
 		s.writeHandlerError(w, err)

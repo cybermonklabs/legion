@@ -432,6 +432,7 @@ export function sessionOptions(
     configFile: sessionConfigFile("claude", process.env),
     stateDirectory,
     clientInstanceID: randomBytes(16).toString("hex"),
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
     ...extra,
   }

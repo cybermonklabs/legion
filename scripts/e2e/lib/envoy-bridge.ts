@@ -63,7 +63,11 @@ export function bridgeConfigFromEnvironment(
   environment: Record<string, string | undefined>
 ): BridgeConfig {
   const repository = environment.SMOKE_REPO?.trim() ?? "";
-  if (!/^[A-Za-z0-9][A-Za-z0-9.-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repository)) {
+  // The owner half is ghrepo's own grammar for an account (packages/daemon/internal/ghrepo): a
+  // letter or digit, then up to 38 letters, digits, hyphens and underscores. The underscore is
+  // there because a managed user's login ends in `_<shortcode>`, and the dot this check used to
+  // admit in an owner is gone, since no login holds one.
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,38}\/[A-Za-z0-9][A-Za-z0-9._-]*$/.test(repository)) {
     throw new Error("SMOKE_REPO must be a literal <owner>/<repo> repository");
   }
   const downstreamUrl = environment.SMOKE_RIG_NATS?.trim() ?? "";

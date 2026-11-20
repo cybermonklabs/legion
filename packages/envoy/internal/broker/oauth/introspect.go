@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,8 +34,8 @@ import (
 // A token whose HMAC is not the broker's is answered not live before anything is read: the
 // provider's own HMAC strategy (codeStrategy, built in New) checks it, as ValidateAccessToken ends
 // by doing (authelia strategy_hmac.go:125-141), with no prefix to trim since the broker's tokens
-// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every token a NATS
-// connection presents, so a forged one must cost the broker no database query.
+// carry none (compose.NewOAuth2HMACStrategy). The auth service introspects every session token a
+// NATS connection presents, so a forged one must cost the broker no database query.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -116,7 +117,8 @@ var ErrStoredClaimMalformed = errors.New("oauth: the token's stored project clai
 // signature to look up (oauth2.ErrNotFound, which the library wraps itself), a row the store
 // answers revoked (oauth2.ErrInactiveToken), a token past its expiry, and one whose bytes do not
 // check against the secret. errors.Is matches an *oauth2.RFC6749Error on its error code and
-// status, and each of these has its own.
+// status, and each of these has its own. A string with a half that is not base64url has no
+// sentinel: notLive tells it apart by its decode error.
 var notLiveCauses = []error{
 	oauth2.ErrNotFound, oauth2.ErrInactiveToken, oauth2.ErrTokenExpired,
 	oauth2.ErrInvalidTokenFormat, oauth2.ErrTokenSignatureMismatch,
@@ -132,17 +134,39 @@ var notLiveCauses = []error{
 // ErrRequestUnauthorized wrapping nothing at all: the store answers a row it does not have
 // oauth2.ErrNotFound and nothing else does (oauthstore's hydrate keeps the sentinel out of a row
 // it cannot decode), the library takes that as "not mine" from every introspector, and
-// IntrospectToken then answers that bare error. Anything else wraps an error of the store's own —
-// a read that failed, or a row it could not decode — and is the broker's failure, never a
-// confident "not live": a cause this does not recognise is answered as an outage rather than as a
-// negative.
+// IntrospectToken then answers that bare error.
+//
+// Nor is it live when the chain holds a base64.CorruptInputError and no ErrRequestUnauthorized:
+// that is a presented string with a half that is not base64url, a live token with a character
+// added in front among them, which is a token the broker never minted. Its signature half can be
+// a live token's own, so the store finds that token's row, and the library's HMAC check of the
+// string then fails with no sentinel. In authelia.com/provider/oauth2@v0.3.3, validate decodes
+// each half (token/hmac/hmacsha.go:165-173) and Validate returns the decode error as it is
+// (:135); ValidateAccessToken (handler/oauth2/strategy_hmac.go:140, ValidateRefreshToken at
+// :243-250) and the introspector (handler/oauth2/introspector.go:168-169) pass it up unwrapped,
+// and IntrospectToken (introspect.go:65) wraps it as the library's unknown error
+// (errors.go:389-395), a 500 that is no ErrRequestUnauthorized. That is the token being
+// malformed, not the broker failing. A row fails with the same decode error: oauthstore's
+// hydrate (store.go:350) reads the session's public_key_jwk, a []byte, with json.Unmarshal,
+// which decodes it as base64, so a row holding one that does not decode fails with it. The
+// library wraps that failed read, as it does every failed read of a row, in
+// ErrRequestUnauthorized (handler/oauth2/introspector.go:165, 204), and that is what keeps an
+// undecodable row the broker's failure.
+//
+// Anything else wraps an error of the store's own — a read that failed, or a row it could not
+// decode — and is the broker's failure, never a confident "not live": a cause this does not
+// recognise is answered as an outage rather than as a negative.
 func notLive(err error) bool {
 	for _, cause := range notLiveCauses {
 		if errors.Is(err, cause) {
 			return true
 		}
 	}
-	return errors.Is(err, oauth2.ErrRequestUnauthorized) && errors.Unwrap(oauth2.ErrorToRFC6749Error(err)) == nil
+	if errors.Is(err, oauth2.ErrRequestUnauthorized) {
+		return errors.Unwrap(oauth2.ErrorToRFC6749Error(err)) == nil
+	}
+	var corrupt base64.CorruptInputError
+	return errors.As(err, &corrupt)
 }
 
 // brokerFailure is err, an IntrospectToken failure notLive does not recognise, as an error that

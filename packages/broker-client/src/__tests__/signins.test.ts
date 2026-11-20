@@ -8,6 +8,7 @@
 import { expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, signInPath, writeSignIn } from "../../test/sign-ins";
 import {
@@ -29,6 +30,8 @@ import {
 import { refusalOf } from "./stub";
 
 const makeDirectory = temporaryDirectories("broker-signins");
+/** The sign-in client's secret, as its file holds it. */
+const CLIENT_SECRET = fixtureSecret("client");
 
 test("the directory is the variable's, else the XDG state directory's, else HOME's", () => {
   const everything = {
@@ -219,7 +222,7 @@ test("a sign-in client is both variables or neither", async () => {
   ).toBe(both);
 
   const secretFile = join(makeDirectory(), "client-secret");
-  await writeFile(secretFile, "example-client-not-a-secret\n", { mode: 0o600 });
+  await writeFile(secretFile, `${CLIENT_SECRET}\n`, { mode: 0o600 });
   const configured = {
     [SIGNIN_CLIENT_ID_VAR]: " example-client ",
     [SIGNIN_CLIENT_SECRET_FILE_VAR]: secretFile,
@@ -227,7 +230,7 @@ test("a sign-in client is both variables or neither", async () => {
   expect(await signInFlow(configured)).toEqual({
     issuer: DEFAULT_SIGNIN_ISSUER,
     clientId: "example-client",
-    clientSecret: "example-client-not-a-secret",
+    clientSecret: CLIENT_SECRET,
   });
   expect(
     (await signInFlow({ ...configured, [SIGNIN_ISSUER_VAR]: " http://127.0.0.1:5556// " }))?.issuer
@@ -239,7 +242,7 @@ test("a secret file that cannot be read is refused naming the variable, never it
   // The variable names the directory the secret is in rather than the file: no read of it
   // answers anything, and no refusal may carry what the directory holds. Nor may it carry the
   // path, which is what a secret pasted into the variable would be.
-  await writeFile(join(dir, "client-secret"), "example-client-not-a-secret\n", { mode: 0o600 });
+  await writeFile(join(dir, "client-secret"), `${CLIENT_SECRET}\n`, { mode: 0o600 });
   for (const [unreadable, code] of [
     [dir, "EISDIR"],
     [join(dir, "missing"), "ENOENT"],
@@ -255,13 +258,13 @@ test("a secret file that cannot be read is refused naming the variable, never it
       `read the sign-in client's secret: ${SIGNIN_CLIENT_SECRET_FILE_VAR} names a file that could not be read (${code})`
     );
     expect(Bun.inspect(refusal)).not.toContain(unreadable);
-    expect(Bun.inspect(refusal)).not.toContain("example-client-not-a-secret");
+    expect(Bun.inspect(refusal)).not.toContain(CLIENT_SECRET);
   }
 });
 
 test("an issuer that is no http or https URL is refused naming the variable alone", async () => {
   const secretFile = join(makeDirectory(), "client-secret");
-  await writeFile(secretFile, "example-client-not-a-secret\n", { mode: 0o600 });
+  await writeFile(secretFile, `${CLIENT_SECRET}\n`, { mode: 0o600 });
   const pw = "canary-pw-7c1e";
   for (const pasted of ["canary-pasted-issuer", `https://u:${pw}@accounts.example:99999`]) {
     const refusal = await refusalOf(() =>

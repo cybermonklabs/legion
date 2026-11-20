@@ -43,7 +43,7 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -162,6 +162,14 @@ jobs:
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
+      # The listener and the Legion daemon refuse a nats-server below packages/envoy/natsversion's
+      # floor, so a live proof that starts one, and a script or page that installs one, must name
+      # one the floor takes. The test scans every tracked shell script and every tracked text file
+      # for those, so it runs here, on every change: the test job runs it too, but only when its
+      # filter selects scripts/e2e, and a new driver or page can be anywhere.
+      - name: Check every NATS server a script starts or installs is one the floor takes
+        run: bun test scripts/e2e/lib/nats-image.test.ts
+
       # After the install, which is what gives it node_modules: it lists each Bun gate's tsc
       # program with `bunx tsc --listFilesOnly`, and the modules each entry a gate's job runs
       # loads with `bun build --metafile`, and holds every such file to that gate's filter,
@@ -184,8 +192,8 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-notices-{0}-', runner.os) }}
+          key: go-notices-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.os, runner.arch) }}
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
@@ -201,7 +209,7 @@ jobs:
       # notices script changed), and whenever `changes` did not succeed.
       #
       # The loops are in .github/scripts/go-release-notices.sh, which
-      # .github/workflows/ci-caches.yaml's daemon job runs too, to fill the go-notices entry this
+      # .github/workflows/ci-caches.yaml's notices job runs too, to fill the go-notices entry this
       # step restores: one script, so the fill cannot warm anything but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'

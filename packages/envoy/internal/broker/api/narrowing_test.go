@@ -38,7 +38,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 	s := &narrowingServer{}
 	s.testServer = newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
 				defer s.mu.Unlock()
 				s.minted = append(s.minted, req.GitHubNarrowing)
@@ -52,7 +52,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 			},
 		}
 	})
-	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	s.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "plain-v1"))
 	for _, name := range []string{"APP_KEY", "PLAIN_KEY"} {
 		if status, body := s.req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil); status != http.StatusOK {
@@ -247,7 +247,7 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
 	s := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
-			policy.KindGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				if req.GitHubNarrowing == nil {
 					return secrets.Minted{Value: "owner-wide"}, nil
 				}
@@ -255,7 +255,7 @@ func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.
 			},
 		}
 	})
-	s.Secrets.Put(policytest.KindSecret("APP_KEY", testApprover, policy.TierAgent, policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	if status, body := s.req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
 		t.Fatalf("reread APP_KEY = %d %s", status, body)
 	}

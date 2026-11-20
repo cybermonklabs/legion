@@ -21,7 +21,7 @@ import (
 )
 
 // serviceAccountEmail is the account a google-service-account secret of a person's fleet names.
-const serviceAccountEmail = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+const serviceAccountEmail = "dev-aditya@example-identities.iam.gserviceaccount.com"
 
 // serviceAccountPath is the resource the broker must ask for that account: the generateAccessToken
 // verb keeps its colon, which an escaped path would have turned into %3A.
@@ -195,12 +195,12 @@ func TestGoogleServiceAccountMintRefusesAValueThatIsNoServiceAccount(t *testing.
 		name  string
 		value string
 	}{
-		{"a person's email", `{"service_account":"aditya@theorem.dev"}`},
-		{"a person's email at the service account domain", `{"service_account":"aditya@theorem.dev.iam.gserviceaccount.com."}`},
+		{"a person's email", `{"service_account":"aditya@example.com"}`},
+		{"a person's email at the service account domain", `{"service_account":"aditya@example.com.iam.gserviceaccount.com."}`},
 		{"two accounts", `{"service_account":"dev-aditya@p.iam.gserviceaccount.com,dev-sami@p.iam.gserviceaccount.com"}`},
 		{"an empty field", `{"service_account":""}`},
-		{"a missing field", `{"project":"theorem-agent-identities"}`},
-		{"no JSON object", "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"},
+		{"a missing field", `{"project":"example-identities"}`},
+		{"no JSON object", "dev-aditya@example-identities.iam.gserviceaccount.com"},
 		{"a path of its own", `{"service_account":"../../projects/other/serviceAccounts/x@p.iam.gserviceaccount.com"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,7 +289,7 @@ func TestGoogleServiceAccountResolvesItsOwnCredentialsOnce(t *testing.T) {
 // TestGoogleServiceAccountScopes pins what a release's scopes reach Google as: the whole scope
 // URLs the secret's scopes tag named, each under https://www.googleapis.com/auth/, in the one
 // order policy.ParseScopes answers and no other, beside the fixed one-hour lifetime; a release
-// whose secret names none asks for cloud-platform alone, as every token of this kind did before
+// whose secret names none asks for cloud-platform alone, as every token of this type did before
 // the tag existed. The list is built the way a release builds it, from a policy.Secret's
 // ScopeURLs, so what is pinned is the path a release takes and not a hand-written list.
 func TestGoogleServiceAccountScopes(t *testing.T) {
@@ -354,17 +354,17 @@ func TestGoogleServiceAccountScopes(t *testing.T) {
 // below, and the fake IAM endpoint sees no request of its own. The refusal names the secret and
 // the bound account, which an operator reads to fix the setting, and never the stored value.
 func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
-	const otherAccount = "dev-sami@theorem-agent-identities.iam.gserviceaccount.com"
+	const otherAccount = "dev-sami@example-identities.iam.gserviceaccount.com"
 	const otherValue = `{"service_account":"` + otherAccount + `"}`
 	server, calls := iamServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-access-token"})
 	})
-	accounts := map[string]string{"DEV_ADITYA": serviceAccountEmail}
+	accounts := map[string]string{"DEV_PERSON": serviceAccountEmail}
 	bound := &secrets.GoogleServiceAccount{
 		BaseURL: server.URL, HTTP: server.Client(), Source: brokerSource(), Accounts: accounts,
 	}
 
-	got, err := bound.Mint(t.Context(), secrets.MintRequest{Name: "DEV_ADITYA", Value: serviceAccountValue})
+	got, err := bound.Mint(t.Context(), secrets.MintRequest{Name: "DEV_PERSON", Value: serviceAccountValue})
 	if err != nil || got.Value != "impersonated-access-token" {
 		t.Fatalf("Mint of the bound secret = %q, %v; want the bare access token", got.Value, err)
 	}
@@ -377,8 +377,8 @@ func TestGoogleServiceAccountBindingRefusesAnUnboundSecret(t *testing.T) {
 		names []string
 	}{
 		{"a stored value naming another person's account",
-			secrets.MintRequest{Name: "DEV_ADITYA", Value: otherValue},
-			[]string{"DEV_ADITYA", serviceAccountEmail}},
+			secrets.MintRequest{Name: "DEV_PERSON", Value: otherValue},
+			[]string{"DEV_PERSON", serviceAccountEmail}},
 		{"a secret the deployment binds to nothing",
 			secrets.MintRequest{Name: "GCP_ADMIN", Value: serviceAccountValue},
 			[]string{"GCP_ADMIN"}},

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import publicUrlFixture from "../../../contracts/fixtures/dispatch-public-url.json";
 import {
@@ -16,6 +17,19 @@ import {
 } from "../session-settings";
 
 const tempDir = temporaryDirectories("dispatch-config");
+
+/** The Dispatch bearer DISPATCH_TOKEN hands a session. */
+const ENVIRONMENT_TOKEN = fixtureSecret("dsp");
+/** The Dispatch bearer an envoy.json's `dispatch.token` names. */
+const FILE_TOKEN = fixtureSecret("file");
+/** The Dispatch bearer a DISPATCH_TOKEN_FILE holds. */
+const POINTER_TOKEN = fixtureSecret("pointer");
+/** The Dispatch bearer a profile's envoy.json names. */
+const PROFILE_TOKEN = fixtureSecret("profile");
+/** The Dispatch bearer the user's envoy.json names, beside a checkout's. */
+const USER_TOKEN = fixtureSecret("user");
+/** The Dispatch bearer a checkout's `.envoy/envoy.json` names. */
+const REPO_TOKEN = fixtureSecret("repo");
 
 /** Writes the neutral file, `$HOME/.config/legion/envoy.json`, which a command reads when it is
  * handed no file and runs under no harness. Returns its path. */
@@ -55,7 +69,7 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("ignores DISPATCH_MCP_URL even when a file token resolves, so no host ever receives it", () => {
     const home = tempDir();
     const file = writeUserConfig(home, {
-      dispatch: { token: "file-token" },
+      dispatch: { token: FILE_TOKEN },
     });
 
     expect(
@@ -73,13 +87,13 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("reads an optional token from enabled envoy.json dispatch configuration", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "http://dispatch.test/", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "http://dispatch.test/", token: FILE_TOKEN },
     });
 
     expect(dispatchFor({ HOME: home }, { ...command, cwd: tempDir() })).toEqual({
       enabled: true,
       url: "http://dispatch.test",
-      token: "file-token",
+      token: FILE_TOKEN,
     });
   });
 
@@ -92,7 +106,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     writeFileSync(
       path.join(profile, "envoy.json"),
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "profile-token" },
+        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: PROFILE_TOKEN },
       })
     );
     const env = { HOME: home, OMP_PROFILE: "work", PI_CODING_AGENT_DIR: profile };
@@ -100,7 +114,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     expect(dispatchFor(env, { harness: "omp", cwd: tempDir() })).toEqual({
       enabled: true,
       url: "https://dispatch.example",
-      token: "profile-token",
+      token: PROFILE_TOKEN,
     });
     expect(dispatchFor(env, { harness: "claude", cwd: tempDir() })).toEqual({
       enabled: true,
@@ -112,7 +126,7 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("uses DISPATCH_URL and DISPATCH_TOKEN ahead of file settings", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "http://file.test", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "http://file.test", token: FILE_TOKEN },
     });
 
     expect(
@@ -120,17 +134,17 @@ describe("Dispatch from a harness's envoy.json", () => {
         {
           HOME: home,
           DISPATCH_URL: "http://override.test/",
-          DISPATCH_TOKEN: "environment-token",
+          DISPATCH_TOKEN: ENVIRONMENT_TOKEN,
         },
         { ...command, cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "http://override.test", token: "environment-token" });
+    ).toEqual({ enabled: true, url: "http://override.test", token: ENVIRONMENT_TOKEN });
   });
 
   test("refuses DISPATCH_URL at another origin than the file's server when the token is the file's", () => {
     const home = tempDir();
     const file = writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: FILE_TOKEN },
     });
 
     expect(
@@ -153,7 +167,7 @@ describe("Dispatch from a harness's envoy.json", () => {
 
   test("a file's token with no server of its own goes only to the default server", () => {
     const home = tempDir();
-    const file = writeUserConfig(home, { dispatch: { token: "file-token" } });
+    const file = writeUserConfig(home, { dispatch: { token: FILE_TOKEN } });
     expect(
       dispatchFor(
         { HOME: home, DISPATCH_URL: "https://other.internal.example" },
@@ -169,13 +183,13 @@ describe("Dispatch from a harness's envoy.json", () => {
         { HOME: home, DISPATCH_URL: "http://localhost:8766/" },
         { ...command, cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "http://localhost:8766", token: "file-token" });
+    ).toEqual({ enabled: true, url: "http://localhost:8766", token: FILE_TOKEN });
   });
 
   test("pairs DISPATCH_URL with the file's token when both name the same origin", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: FILE_TOKEN },
     });
 
     expect(
@@ -183,13 +197,13 @@ describe("Dispatch from a harness's envoy.json", () => {
         { HOME: home, DISPATCH_URL: "https://dispatch.example/" },
         { ...command, cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "https://dispatch.example", token: "file-token" });
+    ).toEqual({ enabled: true, url: "https://dispatch.example", token: FILE_TOKEN });
   });
 
   test("a file with dispatch.enabled false is off whatever the variables say", () => {
     const home = tempDir();
     const file = writeUserConfig(home, {
-      dispatch: { enabled: false, serverUrl: "https://dispatch.example", token: "file-token" },
+      dispatch: { enabled: false, serverUrl: "https://dispatch.example", token: FILE_TOKEN },
     });
 
     expect(
@@ -197,7 +211,7 @@ describe("Dispatch from a harness's envoy.json", () => {
         {
           HOME: home,
           DISPATCH_URL: "https://dispatch.example",
-          DISPATCH_TOKEN: "environment-token",
+          DISPATCH_TOKEN: ENVIRONMENT_TOKEN,
         },
         { ...command, cwd: tempDir() }
       )
@@ -273,7 +287,11 @@ describe("Dispatch from a harness's envoy.json", () => {
     }
     expect(
       dispatchFor(
-        { HOME: tempDir(), DISPATCH_URL: "http://dispatch.test", DISPATCH_TOKEN: "S3CRET\nnotes" },
+        {
+          HOME: tempDir(),
+          DISPATCH_URL: "http://dispatch.test",
+          DISPATCH_TOKEN: "S3CRET\nnotes", // fixture-secret: bearerSource refuses its newline (sendable) before any holdSecret
+        },
         { ...command, cwd: tempDir() }
       )
     ).toEqual({
@@ -354,7 +372,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     ).toMatchObject({ linkNotice: notice("DISPATCH_PUBLIC_URL") });
     const home = tempDir();
     const file = writeUserConfig(home, {
-      dispatch: { serverUrl: `https://user:${secret}@dispatch.example`, token: "file-token" },
+      dispatch: { serverUrl: `https://user:${secret}@dispatch.example`, token: FILE_TOKEN },
     });
     const fromFile = dispatchFor({ HOME: home }, { ...command, cwd: tempDir() });
     expect(fromFile).toMatchObject({ linkNotice: notice(`dispatch.serverUrl in ${file}`) });
@@ -366,12 +384,12 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("an empty DISPATCH_URL, DISPATCH_TOKEN or DISPATCH_TOKEN_FILE reads as unset", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: FILE_TOKEN },
     });
     const fromFile = {
       enabled: true,
       url: "https://dispatch.example",
-      token: "file-token",
+      token: FILE_TOKEN,
     } as const;
     expect(
       dispatchFor(
@@ -399,17 +417,17 @@ describe("Dispatch from a harness's envoy.json", () => {
 
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL names the lost DISPATCH_URL, not the chosen file", () => {
     const tokenFile = path.join(tempDir(), "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "pointer-token\n");
+    writeFileSync(tokenFile, `${POINTER_TOKEN}\n`);
     const missingHome = tempDir();
     const home = tempDir();
-    writeUserConfig(home, { dispatch: { token: "file-token" } });
+    writeUserConfig(home, { dispatch: { token: FILE_TOKEN } });
     for (const env of [
       { HOME: missingHome, DISPATCH_TOKEN_FILE: tokenFile },
       // `export DISPATCH_URL=` empties it, which reads as unset.
       {
         HOME: missingHome,
         DISPATCH_URL: "",
-        DISPATCH_TOKEN: "environment-token",
+        DISPATCH_TOKEN: ENVIRONMENT_TOKEN,
         DISPATCH_TOKEN_FILE: tokenFile,
       },
       // A chosen file that names no server says the same.
@@ -424,7 +442,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     // DISPATCH_TOKEN alone also goes with a server an envoy.json names, so it keeps the file's notice.
     expect(
       dispatchFor(
-        { HOME: missingHome, DISPATCH_TOKEN: "environment-token", DISPATCH_TOKEN_FILE: "" },
+        { HOME: missingHome, DISPATCH_TOKEN: ENVIRONMENT_TOKEN, DISPATCH_TOKEN_FILE: "" },
         { ...command, cwd: tempDir() }
       )
     ).toEqual({
@@ -438,7 +456,7 @@ describe("Dispatch from a harness's envoy.json", () => {
   // read, so those reasons are said, not the lost DISPATCH_URL.
   test("a file that turns Dispatch off or cannot be read is said before the lost DISPATCH_URL", () => {
     const tokenFile = path.join(tempDir(), "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "pointer-token\n");
+    writeFileSync(tokenFile, `${POINTER_TOKEN}\n`);
     const off = tempDir();
     const offFile = writeUserConfig(off, { dispatch: { enabled: false } });
     expect(
@@ -480,7 +498,7 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("DISPATCH_TOKEN_FILE with no DISPATCH_URL still names a dangling link and the unread old user file", () => {
     const home = tempDir();
     const tokenFile = path.join(home, "DISPATCH_TOKEN");
-    writeFileSync(tokenFile, "pointer-token\n");
+    writeFileSync(tokenFile, `${POINTER_TOKEN}\n`);
     const old = path.join(home, ".config", "opencode", "envoy.json");
     mkdirSync(path.dirname(old), { recursive: true });
     writeFileSync(old, JSON.stringify({ dispatch: { serverUrl: "http://old.test" } }));
@@ -505,32 +523,32 @@ describe("Dispatch from a harness's envoy.json", () => {
   test("resolves the token from DISPATCH_TOKEN_FILE ahead of DISPATCH_TOKEN and dispatch.token", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "http://file.test", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "http://file.test", token: FILE_TOKEN },
     });
     const tokenFile = path.join(tempDir(), "dispatch-token");
-    writeFileSync(tokenFile, "pointer-token\n");
+    writeFileSync(tokenFile, `${POINTER_TOKEN}\n`);
 
     expect(
       dispatchFor(
         {
           HOME: home,
           DISPATCH_URL: "http://override.test",
-          DISPATCH_TOKEN: "environment-token",
+          DISPATCH_TOKEN: ENVIRONMENT_TOKEN,
           DISPATCH_TOKEN_FILE: tokenFile,
         },
         { ...command, cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "http://override.test", token: "pointer-token" });
+    ).toEqual({ enabled: true, url: "http://override.test", token: POINTER_TOKEN });
   });
 
   test("disables Dispatch naming DISPATCH_TOKEN_FILE, never its path, when the file is unreadable or empty, without falling back", () => {
     const home = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "http://file.test", token: "file-token" },
+      dispatch: { enabled: true, serverUrl: "http://file.test", token: FILE_TOKEN },
     });
     const missing = path.join(tempDir(), "missing");
     const unreadable = dispatchFor(
-      { HOME: home, DISPATCH_TOKEN: "environment-token", DISPATCH_TOKEN_FILE: missing },
+      { HOME: home, DISPATCH_TOKEN: ENVIRONMENT_TOKEN, DISPATCH_TOKEN_FILE: missing },
       { ...command, cwd: tempDir() }
     );
     expect(unreadable).toMatchObject({
@@ -555,7 +573,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     const home = tempDir();
     const cwd = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "user-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: USER_TOKEN },
     });
     const repoConfig = path.join(cwd, ".envoy");
     mkdirSync(repoConfig, { recursive: true });
@@ -576,25 +594,25 @@ describe("Dispatch from a harness's envoy.json", () => {
     const home = tempDir();
     const cwd = tempDir();
     writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "user-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: USER_TOKEN },
     });
     mkdirSync(path.join(cwd, ".envoy"), { recursive: true });
     writeFileSync(
       path.join(cwd, ".envoy", "envoy.json"),
       JSON.stringify({
-        dispatch: { serverUrl: "https://repo.internal.example", token: "repo-token" },
+        dispatch: { serverUrl: "https://repo.internal.example", token: REPO_TOKEN },
       })
     );
 
     expect(
-      dispatchFor({ HOME: home, DISPATCH_TOKEN: "environment-token" }, { ...command, cwd })
-    ).toEqual({ enabled: true, url: "https://repo.internal.example", token: "repo-token" });
+      dispatchFor({ HOME: home, DISPATCH_TOKEN: ENVIRONMENT_TOKEN }, { ...command, cwd })
+    ).toEqual({ enabled: true, url: "https://repo.internal.example", token: REPO_TOKEN });
   });
 
   test("compares DISPATCH_URL with the server of the chosen file's token; a checkout's server and token are not used beside it", () => {
     const home = tempDir();
     const user = writeUserConfig(home, {
-      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "user-token" },
+      dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: USER_TOKEN },
     });
     const cwd = tempDir();
     mkdirSync(path.join(cwd, ".envoy"), { recursive: true });
@@ -615,7 +633,7 @@ describe("Dispatch from a harness's envoy.json", () => {
     writeFileSync(
       checkout,
       JSON.stringify({
-        dispatch: { serverUrl: "https://staging.internal.example", token: "repo-token" },
+        dispatch: { serverUrl: "https://staging.internal.example", token: REPO_TOKEN },
       })
     );
     expect(dispatchFor(env, { ...command, cwd })).toEqual(refusal);
@@ -629,11 +647,11 @@ describe("Dispatch from a harness's envoy.json", () => {
           XDG_CONFIG_HOME: "relative/config",
           CLAUDE_CONFIG_DIR: tempDir(),
           DISPATCH_URL: "https://dispatch.example",
-          DISPATCH_TOKEN: "environment-token",
+          DISPATCH_TOKEN: ENVIRONMENT_TOKEN,
         },
         { harness: "claude", cwd: tempDir() }
       )
-    ).toEqual({ enabled: true, url: "https://dispatch.example", token: "environment-token" });
+    ).toEqual({ enabled: true, url: "https://dispatch.example", token: ENVIRONMENT_TOKEN });
   });
 
   test("a file location that cannot be worked out is an error", () => {

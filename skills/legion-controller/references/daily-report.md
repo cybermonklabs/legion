@@ -69,8 +69,8 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
 - **Waiting on Dispatch links.** Each root and child in `admission.blocked`, with what it waits
   on: the issues of its `blocked_by` links, or the open children children-first holds it for. A
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
-  merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
-  ends when the last open child leaves the workflow, so take nothing for them.
+  merge) or its link is taken off (by a person or an architect of the tree), and a children-first
+  wait ends when the last open child leaves the workflow, so take nothing for them.
   Of the issues here, say of each whose `issues.<KEY>.waitingLine.kind` is `waiting_on_issue`
   that it holds no admission slot while it waits,
   that nothing of its work has stopped,
@@ -118,8 +118,7 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   parked descendants; each nudge you sent, by its tree; and the consolidation passes' three counts
   summed over the week, with the link of the report issue's `consolidation.md` artifact, which
   lists each pair and group with what was done about it or what settles it. Name beside each
-  number the command that recounts it. When you lead a stream that keeps a scoreboard, the same
-  two measures go on it under `forced_creates_by_filer` and `tree_sizes`.
+  number the command that recounts it.
 
 A day with nothing finished says so in one sentence. When the lists do not fit, give each list's
 count and name its issues of `--priority 0` and `--priority 1`, in board rank order.

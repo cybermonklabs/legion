@@ -203,6 +203,19 @@ type IssuePodReader interface {
 	IssuePod(issue string) (pod string, read bool)
 }
 
+// LaunchSessionNamer names the session a launch's agent starts or resumes under, where the
+// runtime chose it before the agent started rather than leaving it to the agent to mint: a
+// Claude Code role's, whose `--session-id` or `--resume <id>` the Sandbox runtime decides when it
+// prepares the launch (claudeInputs). It answers for the incarnation loc records, and false for
+// any other — an Oh My Pi role, whose id its agent mints and reports at its registration, a
+// launch the runtime does not remember (a daemon restarted since), or an earlier incarnation. It
+// is what lets the daemon register a Claude role's session for its pod at the shim's hello, before
+// the agent registers (supervise's ensureRegistered). A runtime that names no session implements
+// nothing here.
+type LaunchSessionNamer interface {
+	LaunchSession(loc Locator) (session string, named bool)
+}
+
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted
@@ -266,12 +279,15 @@ type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCre
 type WorkspaceBundleRestored func(ctx context.Context, issue string, release int64) error
 
 // MemoryGuardKilled is the daemon's reading of one process an issue pod's launcher ended with
-// SIGKILL because the pod was near its memory limit (shimwire.LauncherMemoryKill): the launcher
-// sends the report on the connection of the role whose process it was, and the daemon tells that
-// role why the process is gone. The session gives it the issue key, the claim token of the role
-// the connection authenticated for, the uid of the pod the launcher runs in and the report; the
-// three are the session's own and never the report's, so a launcher cannot name another role,
-// issue or pod.
+// SIGKILL because the pod was near its memory limit, or, in a microVM pod, one that the pod's own
+// kernel stopped because the pod ran out of memory (the report's Cause,
+// shimwire.MemoryKillCauseKernel, or shimwire.MemoryKillCauseKernelProtected for a process that
+// runs the role's session), which the launcher's guest watch names
+// (shimwire.LauncherMemoryKill): the launcher sends the report on the connection of the role whose
+// process it was, and the daemon tells that role why the process is gone. The session gives it the
+// issue key, the claim token of the role the connection authenticated for, the uid of the pod the
+// launcher runs in and the report; the three are the session's own and never the report's, so a
+// launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
 // of the daemon's own packages, so the import is acyclic, and a second copy of the report would
@@ -397,12 +413,23 @@ type SpawnSpec struct {
 // It is for a pod's drift report (internal/runtime/sandbox's movedRoleOverlays), which names a
 // moved overlay of the block's own arm `memory.config_files <file>`, the spelling it had before
 // any experiment was declared, and every other arm's by ConfigFilesField.
+//
+// Roles is the issue roles the arm's experiment reaches (config.Experiment.Roles), nil for every
+// issue role: a role it leaves out never starts on the arm's overlays, so the readers of every
+// tail a role may start on pass the arm over for that role (Reaches, RoleOverlayValues).
 type Variant struct {
 	Experiment       string
 	Name             string
 	ConfigFiles      []string
 	ConfigFilesField string
 	MemoryBlock      bool
+	Roles            []claim.Role
+}
+
+// Reaches is whether a launch of role may start on this arm's overlays: every issue role where
+// the arm's experiment names no roles, and only the roles it names where it names some.
+func (variant Variant) Reaches(role claim.Role) bool {
+	return variant.Roles == nil || slices.Contains(variant.Roles, role)
 }
 
 // VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:
@@ -432,7 +459,8 @@ type RoleOverlayValue struct {
 // variants, the arms of every experiment the project declares, that names any — one value per
 // arm, never one value holding two arms' files, since the union of two arms is a configuration
 // no launch produces. An arm that names no overlay adds no value of its own, because its roles
-// start on the role's own files, which the role's own value already is. A role no arm reaches
+// start on the role's own files, which the role's own value already is, and neither does an arm
+// whose experiment leaves the role out of its `roles` (Variant.Reaches). A role no arm reaches
 // answers that one value, which is the value every role was told before any experiment existed.
 //
 // The controller runs in no tree, so it is in no arm and answers its own files alone whatever
@@ -448,7 +476,7 @@ func RoleOverlayValues(role claim.Role, own []string, variants []Variant) []Role
 	var values []RoleOverlayValue
 	if role != claim.RoleController {
 		for i, variant := range variants {
-			if len(variant.ConfigFiles) > 0 {
+			if len(variant.ConfigFiles) > 0 && variant.Reaches(role) {
 				values = append(values, RoleOverlayValue{Variant: &variants[i], Files: slices.Concat(own, variant.ConfigFiles)})
 			}
 		}
@@ -481,8 +509,9 @@ type PluginInstall struct {
 }
 
 // PromptParts are the pieces of the agent's system prompt, in the one order the runtime
-// concatenates them into exactly one `--append-system-prompt` word — one, because a second
-// occurrence of the flag replaces the first rather than adding to it: the role prompt files, the
+// concatenates them into exactly one text (ComposePrompt), which the agent reads from the one
+// file its one `--append-system-prompt` names — one, because a second occurrence of the flag
+// replaces the first rather than adding to it: the role prompt files, the
 // sentence that tells the agent which claim it is, the operator's deployment instructions, and
 // the instructions of each variant the launch runs in. VariantInstructionsPaths are the daemon's
 // own copies of those files, one per variant that names one, in the order the project's file

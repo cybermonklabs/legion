@@ -242,6 +242,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
+		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator:    locator,
@@ -250,7 +251,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
 		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
 		PendingCause:   supervise.CauseDied,
-		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
+		LeakCheckCause: "the shared public leak check could not be installed: the tarball of example-org/deployment at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,

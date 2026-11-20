@@ -4,7 +4,8 @@
 // runtime, so neither script can run the NATS image. e2e-refill.sh also stops, kills and restarts
 // it under a running listener, and a restart reads back the JetStream store the directory holds.
 //
-// With -callout-keys <dir> it runs the server testnats.StartWithCallout runs instead: every
+// With -callout-keys <dir> it runs the configuration testnats.StartWithCallout runs instead, on
+// options of its own, so it keeps nats-server's short first PING as a deployed hub does: every
 // client but the auth service's own user is sent to the auth service (packages/envoy/scripts/
 // dev-stack.sh --callout runs that service in its brokers). The service's user, the issuer and the
 // curve key are made the first time, as testnats.NewCalloutKeys makes them, and written to

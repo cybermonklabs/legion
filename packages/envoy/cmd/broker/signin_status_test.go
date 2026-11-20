@@ -6,7 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"slices"
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -74,12 +74,10 @@ func awaitClientCheck(t *testing.T, base string) (signInStatus, string) {
 	return status, body
 }
 
-// unreachableIssuer is an address nothing listens on: the server is closed before anything dials
-// it.
-func unreachableIssuer() string {
-	gone := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	gone.Close()
-	return gone.URL
+// unreachableIssuer is an issuer nothing answers for: a port the test holds and nothing listens
+// on (testport.Refused), so every dial to it is refused.
+func unreachableIssuer(t *testing.T) string {
+	return "http://" + testport.Refused(t)
 }
 
 // TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient drives one pass of the check
@@ -94,7 +92,7 @@ func TestClientCheckWritesWhatTheProviderAnsweredAboutTheClient(t *testing.T) {
 
 	rejected, unreachable := signIn, signIn
 	rejected.ClientSecret = "not-the-client-secret"
-	unreachable.Issuer = unreachableIssuer()
+	unreachable.Issuer = unreachableIssuer(t)
 
 	var logged clientCheckLog
 	for _, c := range []struct {
@@ -185,7 +183,7 @@ func TestClientCheckLogsAChangeOfStateNotEachPass(t *testing.T) {
 	signIn := brokertest.SignIn(issuer, issuer.PublishKey(t, "signin-key"))
 	rejected, unreachable := signIn, signIn
 	rejected.ClientSecret = "not-the-client-secret"
-	unreachable.Issuer = unreachableIssuer()
+	unreachable.Issuer = unreachableIssuer(t)
 
 	failed := "WARN " + clientCheckFailedMessage + " state="
 	passClientChecks(t, []clientCheckPass{

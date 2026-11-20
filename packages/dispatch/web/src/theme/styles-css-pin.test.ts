@@ -24,7 +24,7 @@ for (const value of Object.values(P)) {
 /** A hex or `rgb()`/`rgb(... / N%)` color literal immediately followed by `;` and an annotation
  * comment naming the swatch it's meant to equal. */
 const ANNOTATED_COLOR_PATTERN =
-  /(#[0-9a-fA-F]{6}|rgb\([^)]+\));\s*\/\*\s*([a-z]+-\d{2,3})(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//g;
+  /(#[0-9a-fA-F]{6}|rgb\([^)]+\));\s*\/\*\s*([a-z]+(?:-[a-z0-9]+)+)(?:\s+at\s+[\d.]+%\s+alpha)?\s*\*\//g;
 
 function hexToRgb(hex: string): readonly [number, number, number] {
   const value = Number.parseInt(hex.slice(1), 16);

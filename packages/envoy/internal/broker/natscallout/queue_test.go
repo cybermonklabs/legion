@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -146,8 +149,8 @@ func TestAWaitingRequestIsRefusedWhenItsBudgetIsSpent(t *testing.T) {
 }
 
 // A request whose wait for a slot spent its budget is refused naming the wait, not the step its
-// decision would have reached. One slot is held almost to its own deadline by a decision that
-// sleeps and then introspects; the request behind it gets the slot with tens of milliseconds left.
+// decision would have reached. The one slot is held by a decision that waits until the waiter's
+// refusal is counted, so the request behind it spends its whole budget waiting for the slot.
 // Started, its 200 ms introspection would be cancelled and named; it is refused naming the wait
 // instead, and the broker is never asked about its token.
 func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
@@ -166,9 +169,14 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	}
 	log := &logtest.Buffer{}
 	deps.Log = slog.New(slog.NewTextHandler(log, nil))
+	registry := metrics.New()
+	deps.Metrics = NewMetrics(registry)
+	// The holder keeps the one slot until the waiter's refusal is counted, so the waiter's is the
+	// first refusal, whose detail the reporter's line carries (report).
+	release := make(chan struct{})
 	startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		if req.Token == holder.token {
-			time.Sleep(decideBudget - 100*time.Millisecond)
+			<-release
 		}
 		return Decide(ctx, deps, services, req)
 	})
@@ -177,8 +185,12 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	_, err := connectSession(t, url, waiter, nil)
 	require.ErrorIs(t, err, nats.ErrAuthorization)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "both refusals in the broker's log", func() bool {
-		return strings.Count(log.String(), "refused a NATS connection") >= 2
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the waiter's refusal counted", func() bool {
+		return refusedFor(t, registry, labelBudget) == 1
+	})
+	close(release)
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
+		return strings.Contains(log.String(), "budget=")
 	})
 	require.Contains(t, log.String(), "budget at the wait for a decision slot", "no refusal named the wait:\n%s", log.String())
 	require.Zero(t, asked.Load(), "the broker was asked about a token whose wait had spent its budget:\n%s", log.String())
@@ -186,9 +198,13 @@ func TestABudgetSpentWaitingForASlotNamesTheWait(t *testing.T) {
 
 // A replica holds at most maxWaiting requests waiting for a decision slot, and refuses the one past
 // the bound at once, naming the bound, while the ones it holds wait on and are decided. One slot is
-// held for a second by a decision that sleeps; two requests, the bound, wait behind it; a third is
-// refused within half a second rather than waiting, and the two held are admitted once the slot
-// frees. With no bound the third waits behind the slot too and is admitted.
+// held by a decision until that refusal is heard; two requests, the bound, wait behind it; a third
+// is refused within half a second rather than waiting, and the holder and the two held are then
+// admitted. With no bound the third waits behind the slot too, past half a second.
+//
+// The refusal's reason is read after Close, whose last report writes whatever is still counted
+// (report), so it is in the log whether a tick's line or that last one carried it, and the test
+// waits on no tick of the reporter.
 func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 2)
@@ -197,12 +213,16 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	holder, extra := newSession(t, "ses_holder", 15*time.Minute), newSession(t, "ses_extra", 15*time.Minute)
 	waiters := sessionsNamed(t, "ses_waiting", 2)
 	log := &logtest.Buffer{}
-	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil))}
-	holding := make(chan struct{})
+	registry := metrics.New()
+	deps := Deps{Introspect: introspector(append([]*session{holder, extra}, waiters...)...), Log: slog.New(slog.NewTextHandler(log, nil)), Metrics: NewMetrics(registry)}
+	holding, release := make(chan struct{}), make(chan struct{})
 	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		if req.Token == holder.token {
 			close(holding)
-			time.Sleep(time.Second)
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
 		}
 		return Decide(ctx, deps, services, req)
 	})
@@ -228,24 +248,27 @@ func TestARequestPastTheWaitingBoundIsRefusedAtOnce(t *testing.T) {
 	began := time.Now()
 	_, err := connectSession(t, url, extra, nil)
 	took := time.Since(began)
+	close(release)
 	require.ErrorIs(t, err, nats.ErrAuthorization, "the request past the waiting bound was admitted after %s", took)
 	require.Less(t, took, 500*time.Millisecond, "the request past the waiting bound was answered after %s: it waited rather than being refused at once", took)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the refusal in the broker's log", func() bool {
-		return strings.Contains(log.String(), "label="+labelWaitingBound)
-	})
-	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 	require.NoError(t, <-held, "the slot's holder was refused")
 	for index, err := range <-results {
 		require.NoError(t, err, "waiter %d of the bound was refused", index)
 	}
+	service.Close()
+	require.Equal(t, 1, refusedFor(t, registry, labelWaitingBound), "the refusal was not counted under its label")
+	require.Contains(t, log.String(), labelWaitingBound+"=1", "the refusal was not in the broker's log:\n%s", log.String())
+	require.Contains(t, log.String(), "2 requests already wait for a decision slot", "the refusal did not name the bound:\n%s", log.String())
 }
 
 // A request past both bounds, the requests waiting for a decision slot and the requests being
 // refused, is dropped unanswered, the hub refuses its client itself at its authorization timeout,
-// and the replica reports how many it dropped: not from the delivery goroutine, which writes no log
-// line (deliver), but at the heartbeat's next tick, so a flood of drops is a line a tick rather than
-// a line a request. Both bounds are zero here, so the replica drops every request it is sent.
-func TestARequestPastBothBoundsIsDroppedAndReported(t *testing.T) {
+// and the replica counts each drop under its reason and logs the first in a minute: not from the
+// delivery goroutine, which writes no log line (deliver), but at the reporter's next tick, so a
+// flood of drops is a counter and a line a minute rather than a line a request. Both bounds are
+// zero here, so the replica drops every request it is sent; of two, both are counted and the
+// first alone is logged.
+func TestARequestPastBothBoundsIsDroppedCountedAndLoggedOnceAMinute(t *testing.T) {
 	withWaitingBound(t, 0)
 	withRefusingBound(t, 0)
 	withLiveness(t, 20*time.Millisecond, 10*time.Second)
@@ -255,23 +278,29 @@ func TestARequestPastBothBoundsIsDroppedAndReported(t *testing.T) {
 	var asked atomic.Int32
 	introspect := introspector(dropped)
 	log := &logtest.Buffer{}
+	registry := metrics.New()
 	deps := Deps{
 		Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
 			asked.Add(1)
 			return introspect(ctx, token)
 		},
-		Log: slog.New(slog.NewTextHandler(log, nil)),
+		Log:     slog.New(slog.NewTextHandler(log, nil)),
+		Metrics: NewMetrics(registry),
 	}
 	service := startService(t, url, keys, deps, Decide)
 
-	began := time.Now()
-	_, err := connectSession(t, url, dropped, nil)
-	took := time.Since(began)
-	require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a client whose request was dropped")
-	require.Greater(t, took, time.Second, "the client heard after %s: the replica answered a request past both bounds", took)
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the drop reported in the broker's log", func() bool {
-		return strings.Contains(log.String(), "dropped=1")
-	})
+	for attempt := range 2 {
+		began := time.Now()
+		_, err := connectSession(t, url, dropped, nil)
+		took := time.Since(began)
+		require.ErrorIs(t, err, nats.ErrAuthorization, "the hub admitted a client whose request was dropped")
+		require.Greater(t, took, time.Second, "the client heard after %s: the replica answered a request past both bounds", took)
+		testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the drop counted under its reason", func() bool {
+			return strings.Contains(scrape(t, registry), fmt.Sprintf(`broker_nats_callout_dropped_total{reason="past_bounds"} %d`, attempt+1))
+		})
+	}
+	require.Equal(t, 1, strings.Count(log.String(), "dropped authorization requests"), "the drops were not logged once in the minute:\n%s", log.String())
+	require.Contains(t, log.String(), "past_bounds=1")
 	require.Zero(t, asked.Load(), "the broker was asked about a dropped request")
 	require.Zero(t, service.waiting.Load(), "a dropped request is still counted waiting")
 	require.Zero(t, service.refusing.Load(), "a dropped request is still counted being refused")
@@ -497,17 +526,16 @@ func TestAReplicaThatReconnectsWhileItDrainsLeavesTheGroup(t *testing.T) {
 // the one that callback was about to start, and returned with it still to run. Here delivery is
 // held with one request at the hold when the hub stops, the replica is closed while reconnecting,
 // and the hold is released a moment later: the request's decision, a second long, has ended by
-// the time Close returns. The hold spans the hub's stop, which can take seconds, so the broker's
-// clock runs half a minute behind here: the hub's expiry on the held request then never reads as
-// past, which would have it dropped undecided (answer), and the proof's issue time stays inside its
-// minute of clock skew (brokertoken.ProofClockSkew).
+// the time Close returns. The hold spans the hub's stop, which can take seconds; the request is the
+// first this replica has from that hub, so it shows the replica none of that time (hubClock), and
+// it is decided rather than dropped as one the hub had given up on.
 func TestCloseWaitsForTheRequestItWasDeliveringWhenItUnsubscribed(t *testing.T) {
 	target, entered, release := holdDeliveries(t)
 	keys := testnats.NewCalloutKeys(t)
 	server, url := testnats.StartWithCalloutServer(t, keys)
 	held := newSession(t, "ses_held", 15*time.Minute)
 	var started, finished atomic.Int32
-	deps := Deps{Introspect: introspector(held), Now: func() time.Time { return time.Now().Add(-30 * time.Second) }}
+	deps := Deps{Introspect: introspector(held)}
 	service := startService(t, url, keys, deps, func(ctx context.Context, deps Deps, services []ServiceEntry, req Request) (Decision, error) {
 		started.Add(1)
 		defer finished.Add(1)
@@ -539,40 +567,115 @@ func TestCloseWaitsForTheRequestItWasDeliveringWhenItUnsubscribed(t *testing.T) 
 }
 
 // A request the hub has already given up on is dropped without a decision, and the broker is never
-// asked about its token. The hub writes the request's expiry as its authorization timeout from the
-// moment it sent it, in whole seconds (nats-server server/auth_callout.go:386-387), so a request
-// held three seconds is past it whenever it was sent. Delivery is held that long here, as a replica
-// whose delivery goroutine fell behind holds what it has not reached; decided, the request would
-// cost a broker call for an answer the hub reads no longer.
-func TestARequestTheHubHasGivenUpOnIsDroppedUndecided(t *testing.T) {
+// asked about its token, whatever this broker's wall clock reads against the hub's: the drop reads
+// how long the hub has waited from the hub's own clock (hubClock), never from the broker's. In each
+// row a live request is decided and admitted, and a request held past its lifetime is dropped. The
+// held one is held before it reaches the subscription, as a replica whose delivery goroutine fell
+// behind holds what it has not reached; an earlier request from the same hub shows the replica the
+// hub's clock, which is how it sees the hold. The drop is counted under its reason, and logged.
+//
+// Each row fails a drop that reads the broker's wall clock against the hub's expiry, each on one of
+// its two requests. Three seconds ahead, that drop reads the live request as given up on, refuses
+// it and fails the first step. Thirty seconds behind, it reads the request held seven seconds as
+// live, asks the broker about it and admits it. Three seconds behind would fail nothing: seven
+// seconds on the hub is past the expiry even read three seconds late, and a hold short enough to
+// read as live then is one the hub's clock reads inside the two seconds the drop allows
+// (hubWholeSeconds), within a second of either side by where the hub's seconds fall, so no hold
+// separates the two every run. Thirty seconds is inside the minute a connection proof's issue time
+// may be off this broker's clock (brokertoken.ProofClockSkew), so the live request's proof is
+// accepted.
+func TestARequestTheHubHasGivenUpOnIsDroppedWhateverTheBrokersClockReads(t *testing.T) {
+	for name, skew := range map[string]time.Duration{
+		"the broker 3 s ahead of the hub": 3 * time.Second,
+		"the broker 30 s behind the hub":  -30 * time.Second,
+	} {
+		t.Run(name, func(t *testing.T) {
+			target, entered, release := holdDeliveries(t)
+			keys := testnats.NewCalloutKeys(t)
+			url := testnats.StartWithCallout(t, keys)
+			live, late := newSession(t, "ses_live", 15*time.Minute), newSession(t, "ses_late", 15*time.Minute)
+			var asked atomic.Int32
+			introspect := introspector(live, late)
+			log := &logtest.Buffer{}
+			registry := metrics.New()
+			deps := Deps{
+				Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
+					asked.Add(1)
+					return introspect(ctx, token)
+				},
+				Log:     slog.New(slog.NewTextHandler(log, nil)),
+				Metrics: NewMetrics(registry),
+				Now:     func() time.Time { return time.Now().Add(skew) },
+			}
+			service := startService(t, url, keys, deps, Decide)
+
+			nc, err := connectSession(t, url, live, nil)
+			require.NoError(t, err, "a live request was not admitted with the broker's clock %s off the hub's:\n%s", skew, log.String())
+			nc.Close()
+			require.EqualValues(t, 1, asked.Load(), "the live request was not decided")
+
+			target.Store(service)
+			refused := make(chan error, 1)
+			go func() {
+				_, err := connectSession(t, url, late, nil)
+				refused <- err
+			}()
+			<-entered
+			// Past the request's two-second lifetime and the two seconds the drop allows for the
+			// hub writing whole seconds (hubClock.gaveUp), with a second to spare.
+			time.Sleep(7 * time.Second)
+			release()
+			// Close waits until the released request is answered or dropped, then moves what the
+			// replica counted into the metric and has the reporter write its last line, so the read
+			// below needs no time bound however late the replica's goroutines run. Close waits for
+			// that line for drainBound at most, so the read waits for the reporter to end, and fails
+			// rather than hangs if it never does.
+			service.Close()
+			select {
+			case <-service.reported:
+			case <-time.After(2 * drainBound):
+				t.Fatalf("the reporter had not ended %s after Close, which waits for it %s at most:\n%s", 2*drainBound, drainBound, log.String())
+			}
+			require.Contains(t, scrape(t, registry), `broker_nats_callout_dropped_total{reason="hub_gave_up"} 1`,
+				"the drop was not counted under its reason:\n%s", log.String())
+			require.Contains(t, log.String(), "hub_gave_up=1", "the drop was not logged")
+			require.EqualValues(t, 1, asked.Load(), "the broker was asked about a request the hub had given up on:\n%s", log.String())
+			require.ErrorIs(t, <-refused, nats.ErrAuthorization, "the hub admitted a client whose request it had given up on")
+		})
+	}
+}
+
+// scrape is registry's whole Prometheus text, as the broker's metrics port serves it.
+func scrape(t *testing.T, registry *metrics.Registry) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	return recorder.Body.String()
+}
+
+// A request nats.go drops on arrival, past the subscription's pending limits (start), never reaches
+// deliver, and is counted all the same: the counter reads the subscription's own count of them
+// (Subscription.Dropped) into broker_nats_callout_dropped_total under pending_limit. Both bounds
+// are zero here, so the limit is one request; delivery of the first is held, and the two sent
+// behind it find the limit full.
+func TestARequestDroppedPastThePendingLimitIsCounted(t *testing.T) {
+	withWaitingBound(t, 0)
+	withRefusingBound(t, 0)
+	withLiveness(t, 20*time.Millisecond, 10*time.Second)
 	target, entered, release := holdDeliveries(t)
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
-	late := newSession(t, "ses_late", 15*time.Minute)
-	var asked atomic.Int32
-	introspect := introspector(late)
-	log := &logtest.Buffer{}
-	deps := Deps{
-		Introspect: func(ctx context.Context, token string) (oauthwire.Introspection, error) {
-			asked.Add(1)
-			return introspect(ctx, token)
-		},
-		Log: slog.New(slog.NewTextHandler(log, nil)),
-	}
-	service := startService(t, url, keys, deps, Decide)
+	registry := metrics.New()
+	service := startService(t, url, keys, Deps{Metrics: NewMetrics(registry)}, Decide)
 	target.Store(service)
 
-	refused := make(chan error, 1)
-	go func() {
-		_, err := connectSession(t, url, late, nil)
-		refused <- err
-	}()
+	connect := func() { _, _ = nats.Connect(url, nats.NoReconnect(), nats.Timeout(5*time.Second)) }
+	go connect()
 	<-entered
-	time.Sleep(3*time.Second + 100*time.Millisecond)
-	release()
-	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the drop in the broker's log", func() bool {
-		return strings.Contains(log.String(), "the hub had already given up on")
+	go connect()
+	go connect()
+	testwait.WithinPolling(t, 5*time.Second, 20*time.Millisecond, "the requests past the pending limit counted", func() bool {
+		return strings.Contains(scrape(t, registry), `broker_nats_callout_dropped_total{reason="pending_limit"} 2`)
 	})
-	require.Zero(t, asked.Load(), "the broker was asked about a request the hub had given up on:\n%s", log.String())
-	require.ErrorIs(t, <-refused, nats.ErrAuthorization, "the hub admitted a client whose request it had given up on")
+	release()
 }

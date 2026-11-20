@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -122,6 +123,72 @@ func TestAWebSocketUpgradeIsSwappedAndThenJoined(t *testing.T) {
 	}
 	if want := "the service read a frame from the command\n"; frame != want {
 		t.Fatalf("the service's frame is %q; want %q: the bytes pass both ways", frame, want)
+	}
+}
+
+// TestNoProtocolSwitchIsCarriedOnADecryptedConnection: on a connection the proxy has decrypted, a
+// CONNECT asks the service to open a tunnel and an Upgrade naming h2c asks it to speak HTTP/2 in
+// the clear on that connection; either way what crosses after the answer is no request the proxy
+// reads, so the decision would be made for one request and the value carried with every byte
+// after it. Each is refused with its own words, under PROTOCOL_SWITCH_REFUSED, and the service is
+// sent nothing - under an entry that allows every method and path, so what refuses them is the
+// proxy and not the entry's methods. These are HTTP/1.1 requests; their HTTP/2 forms are
+// TestEachStreamOfOneH2ConnectionIsDecidedOnItsOwn's CONNECT stream, and an Upgrade header, which
+// net/http's HTTP/2 server answers 400 before any handler runs. The named revert: the refusal
+// taken out of serveBound, which carries both to the service.
+func TestNoProtocolSwitchIsCarriedOnADecryptedConnection(t *testing.T) {
+	for _, row := range []struct {
+		name, request, reason string
+	}{
+		{
+			name: "a CONNECT",
+			request: "CONNECT " + boundHost + ":443 HTTP/1.1\r\n" +
+				"Host: " + boundHost + ":443\r\n" +
+				"Authorization: Bearer " + workerPlaceholder + "\r\n\r\n",
+			reason: "a CONNECT inside a connection the proxy decrypted",
+		},
+		{
+			name: "an upgrade to h2c",
+			request: "GET /v1/things HTTP/1.1\r\n" +
+				"Host: " + boundHost + "\r\n" +
+				"Connection: Upgrade, HTTP2-Settings\r\n" +
+				"Upgrade: h2c\r\n" +
+				"HTTP2-Settings: AAMAAABkAARAAAAAAAIAAAAA\r\n" +
+				"Authorization: Bearer " + workerPlaceholder + "\r\n\r\n",
+			reason: "an upgrade to h2c",
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			r := newRig(t, Options{Rules: airlock.Rules{Secrets: []airlock.SecretRule{{
+				Name: workerName, Hosts: []string{boundHost}, Headers: []string{"authorization"},
+			}}}})
+			answer, conn, _ := r.connectRaw(net.JoinHostPort(boundHost, "443"), basic(workerPlaceholder))
+			if answer.StatusCode != http.StatusOK {
+				t.Fatalf("the CONNECT answered %d; want 200", answer.StatusCode)
+			}
+			decrypted := tls.Client(conn, &tls.Config{RootCAs: r.trust, ServerName: boundHost})
+			t.Cleanup(func() { decrypted.Close() })
+			if _, err := decrypted.Write([]byte(row.request)); err != nil {
+				t.Fatalf("write the request: %v", err)
+			}
+			if err := decrypted.SetReadDeadline(time.Now().Add(20 * time.Second)); err != nil {
+				t.Fatalf("set the read deadline: %v", err)
+			}
+			refused, err := http.ReadResponse(bufio.NewReader(decrypted), &http.Request{Method: http.MethodGet})
+			if err != nil {
+				t.Fatalf("read the answer: %v", err)
+			}
+			body, _ := io.ReadAll(refused.Body)
+			if refused.StatusCode != http.StatusForbidden || !strings.Contains(string(body), row.reason) {
+				t.Fatalf("the request was answered %d %q; want 403 naming %q", refused.StatusCode, body, row.reason)
+			}
+			if seen := r.requests(); len(seen) != 0 {
+				t.Fatalf("the service was sent %v; want nothing", seen)
+			}
+			if refusals := r.logs.refusals(); len(refusals) != 1 || refusals[0].fields["code"] != codeProtocolSwitch {
+				t.Fatalf("the refusal recorded %v; want one record coded %s", refusals, codeProtocolSwitch)
+			}
+		})
 	}
 }
 
@@ -404,6 +471,38 @@ func TestAJoinedConnectionIsClosedWhenTheCurrentPolicyRefusesItsGrant(t *testing
 	}
 }
 
+// TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot: a joined connection decided
+// for one github-app installation's slot is closed once the broker's read of the name no longer
+// releases that slot - the installation has gone - on the rule a new call of that slot is refused
+// by (serveBound): the frames stop, and a frame written after that reaches no service. Before
+// this, the watcher read the name alone, and the join ran on with the gone installation's token.
+// The named revert: proxy-carry-ignores-slot.
+func TestAJoinedConnectionIsClosedWhenTheBrokerNoLongerReleasesItsSlot(t *testing.T) {
+	const carried = "a frame while the broker releases this slot"
+	r := newRig(t, Options{Watch: watchFast})
+	r.useGitHubAppGrant()
+	stand, conn, reader := joinedThrough(t, r)
+	frame(t, conn, reader, carried)
+
+	r.removeAcmeInstallation()
+	waitClosed(t, conn, reader)
+	_, _ = conn.Write([]byte("a frame after the broker stopped releasing the slot\n"))
+	time.Sleep(5 * watchFast)
+	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {
+		t.Fatalf("the service read %q; want the one frame from before the broker stopped releasing the slot", frames)
+	}
+	lines := r.logs.joins()
+	if len(lines) != 1 {
+		t.Fatalf("the proxy wrote %d lines for the close; want the one", len(lines))
+	}
+	if got := lines[0].fields["reason"]; got != noAcmeValue {
+		t.Errorf("the close logged the reason %v; want %q", got, noAcmeValue)
+	}
+	if got := lines[0].fields["slot"]; got != githubAcmeSlot {
+		t.Errorf("the close logged the slot %v; want %s", got, githubAcmeSlot)
+	}
+}
+
 // TestAJoinedConnectionIsClosedAtItsGrantsExpiry: when a grant ends is a time the broker already
 // holds, so a joined connection is closed at it without reading anything.
 func TestAJoinedConnectionIsClosedAtItsGrantsExpiry(t *testing.T) {
@@ -456,7 +555,7 @@ func TestAGrantReadThatFailedLeavesAJoinedConnectionAlone(t *testing.T) {
 // holding a minted name re-mints it, and a minter that could not ask its upstream - no answer,
 // a 5xx, a rate limit - refuses with ErrMintUpstream inside an ErrMintFailed. That is a
 // refusal of the requests package and no answer about this grant: the grant is live and the
-// command's placeholder still opens it. GCLOUD_SAMI, AZURE_ADMIN and GWS_THEOREM_ADMIN_OAUTH
+// command's placeholder still opens it. GCLOUD_DEMO, AZURE_ADMIN and GWS_THEOREM_ADMIN_OAUTH
 // are minted names this deployment puts behind the airlock, so a bad minute of Google's or
 // GitHub's would otherwise cut every WebSocket the airlock carries for them.
 func TestAJoinedConnectionSurvivesAMintWhoseUpstreamCouldNotBeAsked(t *testing.T) {
@@ -661,7 +760,7 @@ func (s *copySink) waitFor(t *testing.T, want, when string) {
 // close does to the bytes in flight under it, which is decided by those two halves alone.
 type joinedStandIn struct {
 	command *tls.Conn     // the command's side, which writes the frames
-	joined  *tls.Conn     // the side watchJoined closes
+	joined  *tls.Conn     // the side watchCarried closes (cutJoined)
 	cut     *cutConn      // the connection under that side's TLS, which the cut stops
 	sink    *copySink     // the service the join copies the command's side to
 	copied  chan struct{} // closed when that copy returns

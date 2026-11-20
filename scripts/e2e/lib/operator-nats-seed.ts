@@ -20,9 +20,10 @@ import {
  * inbound messages off, `inbound.off` naming the refusal, and are a refusal here all the same).
  * Throws too where the operator's settings name a session's broker token (`NATS_AUTH=broker`): a
  * hub's auth service grants that token one session's own channels, and these scripts read the
- * hub's other subjects and its streams, so they connect with a seed or with none. Each refusal is
- * composed of the settings' own words, never a value they hold, so a failure line prints it
- * (`LoggableError`).
+ * hub's other subjects and its streams, so they connect with a seed or with none. These scripts
+ * name no session, so the settings turn inbound off for it (`EnvoyInbound.noSessionNamed`), and
+ * the refusal names the seed to set. Each refusal is composed of the settings' own words, never a
+ * value they hold, so a failure line prints it (`LoggableError`).
  */
 export function operatorNatsSeed(
   servers: string,
@@ -33,10 +34,16 @@ export function operatorNatsSeed(
   const named = { ...env, ENVOY_NATS_URL: servers };
   const settings = sessionEnvoySettings(sessionConfigFile("command", named), named, { cwd });
   const refused = `the NATS seed for ${label} (resolved as ENVOY_NATS_URL)`;
+  const broker = new LoggableError(
+    `${refused}: NATS_AUTH (or envoy.natsAuth) names a session's broker token, which a hub grants only that session's own channels; set NATS_NKEY_SEED_FILE for ${label}`
+  );
   if (!settings.enabled)
     throw new LoggableError(`${refused}: ${settings.error ?? settings.notice}`);
   const { inbound } = settings;
-  if ("off" in inbound) throw new LoggableError(`${refused}: ${inbound.off}`);
+  if ("off" in inbound) {
+    if (inbound.noSessionNamed === true) throw broker;
+    throw new LoggableError(`${refused}: ${inbound.off}`);
+  }
   const credential = inbound.natsCredential;
   switch (credential.kind) {
     case "seed":
@@ -44,9 +51,7 @@ export function operatorNatsSeed(
     case "none":
       return undefined;
     case "broker":
-      throw new LoggableError(
-        `${refused}: NATS_AUTH (or envoy.natsAuth) names a session's broker token, which a hub grants only that session's own channels; set NATS_NKEY_SEED_FILE for ${label}`
-      );
+      throw broker;
     default: {
       // No tsconfig covers scripts/e2e, so a credential kind added later fails here by name
       // rather than connecting these scripts with no credential.

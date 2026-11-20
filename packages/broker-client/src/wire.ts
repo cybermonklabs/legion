@@ -14,7 +14,7 @@ export const GRANT_TYPE_TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token
 /** The OAuth client every caller of the exchange asks as (`oauthwire.ExchangeClientID`). */
 export const EXCHANGE_CLIENT_ID = "dispatch-token-exchange";
 
-/** The broker's own form parameter: the session name the minted token writes under. RFC 8693 has
+/** The broker's own form parameter: the session name the minted token carries. RFC 8693 has
  *  none, and an entry that fixes no session requires it. */
 export const FORM_SESSION = "session";
 
@@ -52,3 +52,8 @@ export const ACTOR_TOKEN_TYPE_MACHINE = "urn:envoy:params:oauth:token-type:machi
 /** The only `token_type` this grant mints: every token it answers is bound to the key the caller
  *  proved, and is presented as `Authorization: DPoP <token>` beside a proof of that key. */
 export const TOKEN_TYPE_DPOP = "DPoP";
+
+/** Followed by a colon, begins the `error_description` of the broker's `invalid_grant` for a pod
+ *  whose session no registration names yet (`oauthwire.PodSessionNotRegistered`): a refusal of
+ *  the broker's state that a later trade cures, which a client trades again on rather than stop. */
+export const POD_SESSION_NOT_REGISTERED = "pod_session_not_registered";

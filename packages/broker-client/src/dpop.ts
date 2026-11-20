@@ -24,7 +24,6 @@ import {
   sign,
 } from "node:crypto";
 import type { JWK } from "jose";
-import { messageOf } from "./error-text";
 
 /** The signature algorithm every proof carries: ES256 over a P-256 key, the one the broker's
  *  exchange and its resource servers accept. */
@@ -161,14 +160,17 @@ export async function newDpopKey(): Promise<DpopKey> {
  * The key `pkcs8Pem` holds, as a DPoP key: a person's box key, which `agent-secrets login`
  * wrote as PKCS#8 PEM and the broker bound their sign-in to, so every trade of that sign-in
  * proves this key and no other. `name` says whose key it is, for a refusal to name. A key that is
- * not P-256 is refused.
+ * not P-256 is refused. A key that does not parse is refused in this package's own words, naming
+ * what was read, with none of the runtime's text and no cause: a parse error can quote the bytes
+ * it was handed, which here are key material, and a cause is printed with the error wherever the
+ * error is printed whole.
  */
 export async function importDpopKey(pkcs8Pem: string, name: string): Promise<DpopKey> {
   let privateKey: KeyObject;
   try {
     privateKey = createPrivateKey(pkcs8Pem);
-  } catch (error) {
-    throw new Error(`read ${name}: ${messageOf(error)}`, { cause: error });
+  } catch {
+    throw new Error(`read ${name}: it does not parse as a PKCS#8 PEM private key`);
   }
   return dpopKey(privateKey, publicJwkOf(privateKey, name));
 }

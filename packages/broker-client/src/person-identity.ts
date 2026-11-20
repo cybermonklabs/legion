@@ -5,7 +5,7 @@
 // and `DeviceFlow.Refresh` (`packages/envoy/internal/brokerclient/device.go`), with
 // `openid-client` in the place of x/oauth2.
 
-import { holdSecret } from "@legion/contracts/held-secrets";
+import { holdSecret, holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, urlForText } from "@legion/contracts/log-text";
 import {
   allowInsecureRequests,
@@ -19,9 +19,11 @@ import {
   type ServerMetadata,
   type TokenEndpointResponse,
 } from "openid-client";
+import { REFUSAL_TEXT_WITHHELD, shownOAuthCode } from "./refusal-text";
 import { SIGNIN_COMMAND, SIGNIN_ISSUER_VAR, type SignInFlow, type SignInRecord } from "./signins";
 import type { SubjectToken, TokenSource } from "./source";
-import { REFUSAL_TEXT_WITHHELD, requestInit, SignInEndedError, statusOf } from "./token-client";
+import { requestInit, statusOf } from "./token-client";
+import { SignInEndedError } from "./token-errors";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "./wire";
 
 /** Bounds each call to the issuer, as the Go client's `HTTPClient` bounds each of its calls
@@ -39,9 +41,6 @@ export interface PersonIdentityOptions {
   readonly fetch?: typeof fetch | undefined;
 }
 
-/** An OAuth error code as RFC 6749 writes them (`invalid_client`), never a peer's free text. */
-const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
-
 /**
  * What the issuer said in `error`: the status and OAuth code it answered, its description
  * withheld (`REFUSAL_TEXT_WITHHELD`), since an issuer, or anything at
@@ -54,7 +53,8 @@ const OAUTH_ERROR_CODE = /^[a-z][a-z0-9_]{0,63}$/;
  */
 function issuerSaid(error: unknown): string {
   if (error instanceof ResponseBodyError) {
-    const code = OAUTH_ERROR_CODE.test(error.error) ? ` ${error.error}` : "";
+    const shown = shownOAuthCode(error.error);
+    const code = shown === "" ? "" : ` ${shown}`;
     const withheld = (error.error_description ?? "") === "" ? "" : `: ${REFUSAL_TEXT_WITHHELD}`;
     return `HTTP ${error.status}${code}${withheld}`;
   }
@@ -100,7 +100,7 @@ export function personIdentity(
     );
   }
   const send = options.fetch ?? fetch;
-  const insecure = flow.issuer.startsWith("http:");
+  const insecure = holdUrlUserinfo(flow.issuer).startsWith("http:");
   // Named as every client names a URL (`urlForText`); requests go to the issuer as configured.
   const issuer = urlForText(flow.issuer, SIGNIN_ISSUER_VAR);
   let discovered: Promise<ServerMetadata> | null = null;

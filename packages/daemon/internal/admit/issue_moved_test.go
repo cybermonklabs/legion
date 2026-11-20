@@ -662,8 +662,12 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		started := resent.Add(time.Minute)
 		now = started
 		inTx(t, pool, func(tx pgx.Tx) {
-			if err := engine.StartPromotedWorker(ctx, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
+			fact := engine.OpenFact(ctx)
+			if err := engine.StartPromotedWorker(fact, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
 				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
+			}
+			if err := engine.SettleFact(fact, tx); err != nil {
+				t.Fatalf("settle the start of %s: %v", issueKey, err)
 			}
 		})
 		if got := movedAt(t, pool, issueKey); !got.Equal(started) {

@@ -1,6 +1,7 @@
 package testnats
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -129,5 +130,44 @@ func TestAProxyWithLatencyAddsItsRoundTrip(t *testing.T) {
 	}
 	if took := time.Since(started); took < rtt {
 		t.Fatalf("a round trip through the proxy took %v, want at least the %v it adds", took, rtt)
+	}
+}
+
+// ProxyRate moves no faster than its rate: a payload of twice the rate takes about two seconds to
+// cross the proxy, where a proxy with no rate moves it at once. The proxy forwards each read before
+// it sleeps for it, so the last read of the payload, up to proxyReadBuffer bytes, crosses
+// uncharged; the bound allows exactly that and nothing more.
+func TestAProxyWithARateMovesNoFasterThanIt(t *testing.T) {
+	const rate = 200_000
+	uri := URL(t)
+	proxy := StartProxy(t, uri, ProxyRate(rate))
+	conn, _, _ := proxiedClient(t, proxy)
+	direct := Connect(t, uri)
+	t.Cleanup(direct.Close)
+	var received atomic.Int64
+	if _, err := direct.Subscribe("proxy.rate", func(m *natsgo.Msg) { received.Add(int64(len(m.Data))) }); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := direct.Flush(); err != nil {
+		t.Fatalf("flush the subscription: %v", err)
+	}
+
+	payload := make([]byte, 16<<10)
+	const chunks = 2 * rate / (16 << 10)
+	total := int64(chunks * len(payload))
+	started := time.Now()
+	for range chunks {
+		if err := conn.Publish("proxy.rate", payload); err != nil {
+			t.Fatalf("publish through the proxy: %v", err)
+		}
+	}
+	for received.Load() < total {
+		if time.Since(started) > 10*time.Second {
+			t.Fatalf("%d of %d bytes crossed the proxy in 10 s", received.Load(), total)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if took, least := time.Since(started), time.Duration(total-proxyReadBuffer)*time.Second/rate; took < least {
+		t.Fatalf("%d bytes crossed a proxy of %d B/s in %v, want at least %v", total, rate, took, least)
 	}
 }

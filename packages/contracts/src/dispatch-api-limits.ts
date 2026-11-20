@@ -116,6 +116,18 @@ export type SettledDeliveryState = (typeof SETTLED_DELIVERY_STATES)[number];
 export const MAX_BROADCAST_RECIPIENTS = 100;
 
 /**
+ * The most references one `GET /api/v1/reference-targets` may name, one `ref` each; past it the
+ * server answers `400 CAP_EXCEEDED`. It is set above the heaviest set a page was seen to name:
+ * 247 distinct references, measured on 2026-11-05 on the issue the new issue page was designed
+ * on and its four largest documents. The issue page read its chips with one
+ * `GET /api/v1/references` each, 14 on its heaviest tab, measured on 2026-11-05. So the count
+ * does not split such a load into a second request, while the client's own budget for the
+ * request line can. Generated into Go as `contracts.ReferenceTargetsMax`, which the server
+ * enforces, so the server's refusal and the client's batches are one number.
+ */
+export const REFERENCE_TARGETS_MAX = 256;
+
+/**
  * The request header that names one write's intent: the same on every retry of that write, and
  * different for every new press. Dispatch accepts it, optionally, on every `POST` and `PATCH`
  * route (`PUT` and `DELETE` are idempotent already): a repeat with the same key and the same
@@ -179,8 +191,9 @@ export const IDEMPOTENCY_ANSWER_NOT_KEPT = "ANSWER_NOT_KEPT";
  * anything runs, its key untouched, when the request's caller is another person or no person at
  * all, so a write one person pressed never runs under another's session - another tab signs in
  * in place, and this tab's retry goes out on the new cookie before it learns of it. A caller that
- * resolves to nobody (a lapsed cookie) is answered by the route's own `401`. A write without the
- * header (the `dispatch` command, an agent) is not checked.
+ * resolves to nobody (a lapsed cookie) is answered by the `401` written further in: the keyed
+ * layer's for a keyed write, the handler's for any other. A write without the header (the
+ * `dispatch` command, an agent) is not checked.
  */
 export const DISPATCH_LOGIN_HEADER = "Dispatch-Login";
 
@@ -196,6 +209,17 @@ export const DISPATCH_LOGIN_CHANGED = "LOGIN_CHANGED";
  * the refusal is whoever must run it.
  */
 export const DISPATCH_SIGN_IN_REQUIRED = "SIGN_IN_REQUIRED";
+
+/**
+ * The code of the `403` for a request by an access token the secrets broker issued that holds
+ * only the OAuth scope `read`, to a route the read list does not name. Such a token names a
+ * service and a session, no person and no project, and Dispatch serves it on the routes its read
+ * list (`readScopeRoutes`) names and refuses it on every other one, before the route's handler
+ * runs and before its idempotency key is read, so the refused request claims no key and writes
+ * nothing but the row that records its DPoP proof as spent. No sign-in and no other scope makes
+ * the request possible for that token.
+ */
+export const DISPATCH_READ_ONLY_TOKEN = "READ_ONLY_TOKEN";
 
 /** The codes of a write Dispatch made and has no answer to give for: `409 KEY_COMMITTED`, or a
  *  replayed 2xx reading `ANSWER_NOT_KEPT`. A client treats either as landed. */
@@ -350,16 +374,24 @@ export const SEARCH_OPERATORS = [
 export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
 
 /** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
- *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
- *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
- *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
- *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
- *  the item of the new kind `declined`, whose `text` is the person's own note and whose
- *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
- *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
+ *  relation, each spelling the phrase a reader prints. A session owns an ask when it asked it or
+ *  follows it, and only an owner reads `answered_your_ask`, `declined_your_ask` or
+ *  `replied_on_your_ask`. In order: a person answered the session's ask; answered an ask the
+ *  session does not own, which reached it for another reason (the issue's route or its claim);
+ *  declined to answer the session's ask; declined to answer an ask the session does not own;
+ *  replied in the thread of the session's ask; replied in a comment thread it wrote in; commented
+ *  on a document it wrote; commented on an issue that reaches it (its route, its claim, or a
+ *  credit on its primary document); mentioned it; sent it a message (direct, on an issue, or a
+ *  broadcast's copy); or replied to its message. A reply in the thread of an ask the session does
+ *  not own carries the relation of the reason that delivered it. A decline is the item of the
+ *  kind `declined`, whose `text` is the person's own note; on `declined_your_ask` alone,
+ *  `dispatch_words` is what Dispatch wrote beside it for the asking agent, so a reader draws the
+ *  two apart. Mirrored in Go as the `model.SessionAnswerRelation*` constants, in this order. */
 export const SESSION_ANSWER_RELATIONS = [
   "answered_your_ask",
+  "answered_an_ask",
   "declined_your_ask",
+  "declined_an_ask",
   "replied_on_your_ask",
   "replied_in_a_comment_thread",
   "commented_on_a_document",
@@ -422,7 +454,9 @@ export const DOCUMENT_NEWER_CONTENT_CLOSE_REASON = "DOC_NEWER_CONTENT";
  * reconnecting only on 4401, 4403 and 1009 (`HocuspocusProviderWebsocket.ts` `onClose`), so the
  * page reconnects on this code, presents its numbers again and is admitted again: read-only,
  * unless a live process admits it. 412 is HTTP's "Precondition Failed", which the admission the
- * fleet withdrew is. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
+ * fleet withdrew is. The socket closes with it too once the Identity-Aware Proxy assertion its
+ * upgrade carried expires (`DISPATCH_IDENTITY=iap`): the reconnect carries a fresh assertion, which
+ * is judged again. Generated into Go as `contracts.DocumentAdmissionRevokedCloseCode`.
  */
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 
@@ -431,9 +465,10 @@ export const DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE = 4412;
 export const DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON = "DOC_ADMISSION_REVOKED";
 
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
- *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart
- *  from the 4000 a page closes a silent socket with: the page reopens at once and resumes every
- *  subscription, showing no pill and refreshing nothing. */
+ *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS), or once the Identity-Aware Proxy assertion
+ *  its upgrade carried expires (`DISPATCH_IDENTITY=iap`). It is in the private 4000-4999 range,
+ *  apart from the 4000 a page closes a silent socket with: the page reopens at once and resumes
+ *  every subscription, showing no pill and refreshing nothing. */
 export const LIVE_SOCKET_MAX_AGE_CLOSE = 4001;
 /** The youngest age at which Dispatch ends a live socket: 30 minutes. */
 export const LIVE_SOCKET_MIN_AGE_MS = 1_800_000;

@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // publishTo publishes item to subject over core NATS and flushes, as a router that forwards an
@@ -129,7 +130,7 @@ func startStandIn(t *testing.T, uri, sessionID string) <-chan contracts.Envelope
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan contracts.Envelope, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		var frame contracts.Envelope
 		if err := json.Unmarshal(message.Data, &frame); err != nil {
 			t.Errorf("stand-in %s decode frame: %v", sessionID, err)
@@ -224,7 +225,7 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d after %s, want 200; body %s", recorder.Code, elapsed, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
@@ -253,14 +254,14 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d after %s, want 200; body %s", recorder.Code, elapsed, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
 	if answer.Holder != "ses_offline" || answer.DedupeKey != "publish.offline-1" {
 		t.Fatalf("answer %s, want holder ses_offline and dedupe key publish.offline-1", recorder.Body.String())
 	}
-	subject := contracts.AgentSubject("ses_offline")
+	subject := contracts.LegacyAgentSubject("ses_offline")
 	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
 	if err != nil {
 		t.Fatalf("read the stream's forward on %s: %v", subject, err)
@@ -305,7 +306,7 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 			t.Fatalf("forward %d: dedupe key %s, want %s", i+1, frame.DedupeKey, roleForwardDedupePrefix+"publish.stored-once-1")
 		}
 	}
-	subject := contracts.AgentSubject("ses_one_copy")
+	subject := contracts.LegacyAgentSubject("ses_one_copy")
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s after two forwards of publish.stored-once-1, want the one copy their Nats-Msg-Id keeps", count, subject)
 	}
@@ -323,11 +324,11 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -345,7 +346,7 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
@@ -392,7 +393,7 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d, want 200; body %s", recorder.Code, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_self" {
 		t.Fatalf("answer %s (%v), want holder ses_self", recorder.Body.String(), err)
 	}
@@ -421,7 +422,7 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 	if repeat.Code != http.StatusOK {
 		t.Fatalf("repeat send: status %d, want 200; body %s", repeat.Code, repeat.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(repeat.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_holder" || answer.DedupeKey != "publish.repeat-1" {
 		t.Fatalf("repeat answer %s (%v), want holder ses_holder under publish.repeat-1", repeat.Body.String(), err)
 	}
@@ -443,7 +444,7 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
-	publishTo(t, harness.client, contracts.AgentSubject("ses_self_subscribed"), forwardCopy)
+	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)

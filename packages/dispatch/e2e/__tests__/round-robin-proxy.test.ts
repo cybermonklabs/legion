@@ -10,6 +10,7 @@ import type { Server, Subprocess } from "bun";
 
 import type { DispatchProcess } from "../harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
+import { eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
 // two Dispatch processes it proxies and opens its websockets with `ws`'s client. The test preload
@@ -358,53 +359,61 @@ describe("round-robin proxy", () => {
     expect(await answeredBy("/who")).toBe("a");
   });
 
-  test("relays a websocket to its pinned process both ways, and logs it", async () => {
-    const pinned = openSocket({ Cookie: "dispatch-e2e-process=b" });
-    expect(await pinned.received(1)).toEqual(["opened on b"]);
-    pinned.socket.send("hello");
-    expect(await pinned.received(2)).toEqual(["opened on b", "b echoes hello"]);
-    expect(await proxySockets()).toEqual([
-      {
-        id: expect.any(Number),
-        open: true,
-        openedAt: expect.any(Number),
-        path: "/socket",
-        upstream: "b",
-      },
-    ]);
-    expect(b.seen.at(-1)?.host).toBe(`127.0.0.1:${proxyPort}`);
-    pinned.socket.close();
-    await pinned.closed;
-    // The proxy marks the row when its own side of the socket closes, of which this process sees
-    // no event; its log is read until it says so.
-    const deadline = Date.now() + 3_000;
-    while ((await proxySockets())[0]?.open !== false && Date.now() < deadline) await Bun.sleep(25);
-    expect((await proxySockets())[0]?.open).toBe(false);
+  test(
+    "relays a websocket to its pinned process both ways, and logs it",
+    async () => {
+      const pinned = openSocket({ Cookie: "dispatch-e2e-process=b" });
+      expect(await pinned.received(1)).toEqual(["opened on b"]);
+      pinned.socket.send("hello");
+      expect(await pinned.received(2)).toEqual(["opened on b", "b echoes hello"]);
+      const opened = await proxySockets();
+      expect(opened).toEqual([
+        {
+          id: expect.any(Number),
+          open: true,
+          openedAt: expect.any(Number),
+          path: "/socket",
+          upstream: "b",
+        },
+      ]);
+      expect(b.seen.at(-1)?.host).toBe(`127.0.0.1:${proxyPort}`);
+      pinned.socket.close();
+      await pinned.closed;
+      // The proxy marks the row when its own side of the socket closes, of which this process
+      // sees no event; its log is read until it says so.
+      await eventually(
+        `the proxy to log socket ${opened[0]?.id} (/socket, pinned to b) as closed`,
+        async () => (await proxySockets())[0]?.open === false
+      );
 
-    // Unpinned upgrades alternate on a turn of their own, logged in open order, and a server's
-    // close code reaches the browser.
-    const first = openSocket({});
-    expect(await first.received(1)).toEqual(["opened on a"]);
-    const second = openSocket({ "X-Dispatch-E2E-Process": "a" });
-    expect(await second.received(1)).toEqual(["opened on a"]);
-    const third = openSocket({});
-    expect(await third.received(1)).toEqual(["opened on b"]);
-    const logged = await proxySockets();
-    expect(logged.map((entry) => [entry.upstream, entry.open])).toEqual([
-      ["b", false],
-      ["a", true],
-      ["a", true],
-      ["b", true],
-    ]);
-    expect(logged.map((entry) => entry.id)).toEqual(
-      logged.map((entry) => entry.id).sort((left, right) => left - right)
-    );
-    first.socket.send("close 1012");
-    expect(await first.closed).toBe(1012);
-    second.socket.close();
-    third.socket.close();
-    await Promise.all([second.closed, third.closed]);
-  });
+      // Unpinned upgrades alternate on a turn of their own, logged in open order, and a server's
+      // close code reaches the browser.
+      const first = openSocket({});
+      expect(await first.received(1)).toEqual(["opened on a"]);
+      const second = openSocket({ "X-Dispatch-E2E-Process": "a" });
+      expect(await second.received(1)).toEqual(["opened on a"]);
+      const third = openSocket({});
+      expect(await third.received(1)).toEqual(["opened on b"]);
+      const logged = await proxySockets();
+      expect(logged.map((entry) => [entry.upstream, entry.open])).toEqual([
+        ["b", false],
+        ["a", true],
+        ["a", true],
+        ["b", true],
+      ]);
+      expect(logged.map((entry) => entry.id)).toEqual(
+        logged.map((entry) => entry.id).sort((left, right) => left - right)
+      );
+      first.socket.send("close 1012");
+      expect(await first.closed).toBe(1012);
+      second.socket.close();
+      third.socket.close();
+      await Promise.all([second.closed, third.closed]);
+    },
+    // The one wait this row ends at a bound itself: the proxy's log marking the pinned socket
+    // closed, which the short bound of `eventually` ends.
+    rowLimit("short")
+  );
 
   test("streams an event stream from its pinned process as it is written", async () => {
     const response = await get("/events", { "X-Dispatch-E2E-Process": "b" });
@@ -424,127 +433,144 @@ describe("round-robin proxy", () => {
 });
 
 describe("DISPATCH_E2E_PROCESSES", () => {
-  const run = async (argv: string[], env: Record<string, string>) => {
-    const child = Bun.spawn(argv, {
+  const run = (argv: string[], env: Record<string, string>) =>
+    runBounded({
+      argv,
+      bound: "short",
       env: { PATH: process.env.PATH ?? "", HOME: childHome, TMPDIR: tmpdir(), ...env },
-      stderr: "pipe",
-      stdout: "pipe",
+      from: import.meta.url,
     });
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ]);
-    return { code, stderr, stdout };
-  };
   // A process of its own per import: the refusal is the module's evaluation, which runs once.
   const importPorts = (env: Record<string, string>) =>
     run(["bun", "-e", `await import(${JSON.stringify(harnessPortsModule)})`], env);
 
-  test("every harness importer refuses a value other than 1, 2 or unset, naming those", async () => {
-    for (const value of ["3", "two", " 2", "0"]) {
-      const { code, stderr } = await importPorts({ DISPATCH_E2E_PROCESSES: value });
-      expect(code).not.toBe(0);
-      expect(stderr).toContain(
-        `DISPATCH_E2E_PROCESSES must be "1", "2" or unset, not ${JSON.stringify(value)}`
-      );
-    }
-    for (const value of ["", "1", "2"]) {
-      expect((await importPorts({ DISPATCH_E2E_PROCESSES: value })).code).toBe(0);
-    }
-  });
+  // Each value is one import of its own, so the row's limit is read from the two lists.
+  const refusedProcesses = ["3", "two", " 2", "0"];
+  const acceptedProcesses = ["", "1", "2"];
+  test(
+    "every harness importer refuses a value other than 1, 2 or unset, naming those",
+    async () => {
+      for (const value of refusedProcesses) {
+        const { code, stderr } = await importPorts({ DISPATCH_E2E_PROCESSES: value });
+        expect(code).not.toBe(0);
+        expect(stderr).toContain(
+          `DISPATCH_E2E_PROCESSES must be "1", "2" or unset, not ${JSON.stringify(value)}`
+        );
+      }
+      for (const value of acceptedProcesses) {
+        expect((await importPorts({ DISPATCH_E2E_PROCESSES: value })).code).toBe(0);
+      }
+    },
+    rowLimit(...[...refusedProcesses, ...acceptedProcesses].map(() => "short" as const))
+  );
 
-  test("run-server.sh refuses it too, and two processes without one cookie key", async () => {
-    const database = { DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened" };
-    const unknown = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "3" });
-    expect(unknown.code).toBe(1);
-    expect(unknown.stderr).toContain("DISPATCH_E2E_PROCESSES must be 1, 2 or unset, not '3'");
-    const keyless = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "2" });
-    expect(keyless.code).not.toBe(0);
-    expect(keyless.stderr).toContain("DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes");
-  });
-
-  test("run-server.sh runs DISPATCH_E2E_SERVER_BIN, when set, as it runs the one it builds", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "run-server-binary-"));
-    try {
-      const binary = join(directory, "envoy-dispatch");
-      // The binary reports the directory it runs in, the settings run-server.sh sweeps the
-      // environment down to, and how it was told to listen: the socket it inherited, or the port
-      // it was handed.
-      writeFileSync(
-        binary,
-        [
-          "#!/usr/bin/env bash",
-          'fd="$DISPATCH_LISTEN_FD"',
-          "socket=none",
-          'if [ -n "$fd" ] && [ -S "/dev/fd/$fd" ]; then',
-          "  socket=listening",
-          "fi",
-          '[ -n "$fd" ] || fd=none',
-          'echo "given binary in $PWD with DISPATCH_TEST_HOOKS=$DISPATCH_TEST_HOOKS' +
-            " DISPATCH_WEB_DIST=$DISPATCH_WEB_DIST DISPATCH_LISTEN_FD=$fd socket=$socket" +
-            ' DISPATCH_PORT=$DISPATCH_PORT DISPATCH_SERVER_URL=$DISPATCH_SERVER_URL"',
-          "",
-        ].join("\n"),
-        { mode: 0o755 }
+  test(
+    "run-server.sh refuses it too, and two processes without one cookie key",
+    async () => {
+      const database = { DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened" };
+      const unknown = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "3" });
+      expect(unknown.code).toBe(1);
+      expect(unknown.stderr).toContain("DISPATCH_E2E_PROCESSES must be 1, 2 or unset, not '3'");
+      const keyless = await run(["bash", runServer], { ...database, DISPATCH_E2E_PROCESSES: "2" });
+      expect(keyless.code).not.toBe(0);
+      expect(keyless.stderr).toContain(
+        "DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes"
       );
-      // run-server.sh reads the fakes' ports, and binds the port it is given.
-      const environment = {
-        DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened",
-        DISPATCH_E2E_PORT: "8777",
-        DISPATCH_E2E_SERVER_BIN: binary,
-        DISPATCH_E2E_SERVER_WEB_DIST: "/given/web",
-        FAKE_BROKER_PORT: "9024",
-        FAKE_ENVOY_PORT: "9021",
-        FAKE_GITHUB_PORT: "9022",
-      };
-      const { code, stdout } = await run(["bash", runServer], environment);
-      expect(code).toBe(0);
-      expect(stdout).toBe(
-        `given binary in ${envoyDirectory} with DISPATCH_TEST_HOOKS=1 DISPATCH_WEB_DIST=/given/web ` +
-          "DISPATCH_LISTEN_FD=none socket=none DISPATCH_PORT=8777 " +
-          "DISPATCH_SERVER_URL=http://127.0.0.1:8777\n"
-      );
+    },
+    rowLimit("short", "short")
+  );
 
-      const missing = await run(["bash", runServer], {
-        ...environment,
-        DISPATCH_E2E_SERVER_BIN: join(directory, "absent"),
-      });
-      expect(missing.code).not.toBe(0);
-      expect(missing.stderr).toContain(
-        `DISPATCH_E2E_SERVER_BIN=${join(directory, "absent")} is not an executable file`
-      );
+  test(
+    "run-server.sh runs DISPATCH_E2E_SERVER_BIN, when set, as it runs the one it builds",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "run-server-binary-"));
+      try {
+        const binary = join(directory, "envoy-dispatch");
+        // The binary reports the directory it runs in, the settings run-server.sh sweeps the
+        // environment down to, and how it was told to listen: the socket it inherited, or the
+        // port it was handed.
+        writeFileSync(
+          binary,
+          [
+            "#!/usr/bin/env bash",
+            'fd="$DISPATCH_LISTEN_FD"',
+            "socket=none",
+            'if [ -n "$fd" ] && [ -S "/dev/fd/$fd" ]; then',
+            "  socket=listening",
+            "fi",
+            '[ -n "$fd" ] || fd=none',
+            'echo "given binary in $PWD with DISPATCH_TEST_HOOKS=$DISPATCH_TEST_HOOKS' +
+              " DISPATCH_WEB_DIST=$DISPATCH_WEB_DIST DISPATCH_LISTEN_FD=$fd socket=$socket" +
+              ' DISPATCH_PORT=$DISPATCH_PORT DISPATCH_SERVER_URL=$DISPATCH_SERVER_URL"',
+            "",
+          ].join("\n"),
+          { mode: 0o755 }
+        );
+        // run-server.sh reads the fakes' ports, and binds the port it is given.
+        const environment = {
+          DATABASE_URL: "postgres://postgres@127.0.0.1:1/never-opened",
+          DISPATCH_E2E_PORT: "8777",
+          DISPATCH_E2E_SERVER_BIN: binary,
+          DISPATCH_E2E_SERVER_WEB_DIST: "/given/web",
+          FAKE_BROKER_PORT: "9024",
+          FAKE_ENVOY_PORT: "9021",
+          FAKE_GITHUB_PORT: "9022",
+        };
+        const { code, stdout } = await run(["bash", runServer], environment);
+        expect(code).toBe(0);
+        expect(stdout).toBe(
+          `given binary in ${envoyDirectory} with DISPATCH_TEST_HOOKS=1 DISPATCH_WEB_DIST=/given/web ` +
+            "DISPATCH_LISTEN_FD=none socket=none DISPATCH_PORT=8777 " +
+            "DISPATCH_SERVER_URL=http://127.0.0.1:8777\n"
+        );
 
-      // With no port of its own the given binary serves on the socket held for it, as a build
-      // from this tree does: held-port.py hands it the listening socket as DISPATCH_LISTEN_FD and
-      // names its port. A previous release adopts it (legion-envoy-v20.1.0 and later), so a
-      // two-build run holds B's port like A's and sets none.
-      const { DISPATCH_E2E_PORT: _, ...portless } = environment;
-      const held = await run(["bash", runServer], portless);
-      expect(held.code).toBe(0);
-      const port = /DISPATCH_PORT=([1-9][0-9]*) /.exec(held.stdout)?.[1];
-      expect(port).toBeDefined();
-      expect(held.stdout).toBe(
-        `given binary in ${envoyDirectory} with DISPATCH_TEST_HOOKS=1 DISPATCH_WEB_DIST=/given/web ` +
-          `DISPATCH_LISTEN_FD=3 socket=listening DISPATCH_PORT=${port} ` +
-          `DISPATCH_SERVER_URL=http://127.0.0.1:${port}\n`
-      );
-    } finally {
-      rmSync(directory, { force: true, recursive: true });
-    }
-  });
+        const missing = await run(["bash", runServer], {
+          ...environment,
+          DISPATCH_E2E_SERVER_BIN: join(directory, "absent"),
+        });
+        expect(missing.code).not.toBe(0);
+        expect(missing.stderr).toContain(
+          `DISPATCH_E2E_SERVER_BIN=${join(directory, "absent")} is not an executable file`
+        );
 
-  test("A's and B's ports join the collision check in two-process mode only", async () => {
-    // The ports resolve, and a collision is refused, when `harnessPorts` is called, not on import.
-    const resolve = [
-      "bun",
-      "-e",
-      `(await import(${JSON.stringify(harnessPortsModule)})).harnessPorts()`,
-    ];
-    const clash = { DISPATCH_E2E_PORT_A: "9021", FAKE_ENVOY_PORT: "9021" };
-    const twoProcesses = await run(resolve, { ...clash, DISPATCH_E2E_PROCESSES: "2" });
-    expect(twoProcesses.code).not.toBe(0);
-    expect(twoProcesses.stderr).toContain("DISPATCH_E2E_PORT_A and FAKE_ENVOY_PORT name port 9021");
-    expect((await run(resolve, clash)).code).toBe(0);
-  });
+        // With no port of its own the given binary serves on the socket held for it, as a build
+        // from this tree does: held-port.py hands it the listening socket as DISPATCH_LISTEN_FD
+        // and names its port. A previous release adopts it (legion-envoy-v20.1.0 and later), so a
+        // two-build run holds B's port like A's and sets none.
+        const { DISPATCH_E2E_PORT: _, ...portless } = environment;
+        const held = await run(["bash", runServer], portless);
+        expect(held.code).toBe(0);
+        const port = /DISPATCH_PORT=([1-9][0-9]*) /.exec(held.stdout)?.[1];
+        expect(port).toBeDefined();
+        expect(held.stdout).toBe(
+          `given binary in ${envoyDirectory} with DISPATCH_TEST_HOOKS=1 DISPATCH_WEB_DIST=/given/web ` +
+            `DISPATCH_LISTEN_FD=3 socket=listening DISPATCH_PORT=${port} ` +
+            `DISPATCH_SERVER_URL=http://127.0.0.1:${port}\n`
+        );
+      } finally {
+        rmSync(directory, { force: true, recursive: true });
+      }
+    },
+    rowLimit("short", "short", "short")
+  );
+
+  test(
+    "A's and B's ports join the collision check in two-process mode only",
+    async () => {
+      // The ports resolve, and a collision is refused, when `harnessPorts` is called, not on import.
+      const resolve = [
+        "bun",
+        "-e",
+        `(await import(${JSON.stringify(harnessPortsModule)})).harnessPorts()`,
+      ];
+      const clash = { DISPATCH_E2E_PORT_A: "9021", FAKE_ENVOY_PORT: "9021" };
+      const twoProcesses = await run(resolve, { ...clash, DISPATCH_E2E_PROCESSES: "2" });
+      expect(twoProcesses.code).not.toBe(0);
+      expect(twoProcesses.stderr).toContain(
+        "DISPATCH_E2E_PORT_A and FAKE_ENVOY_PORT name port 9021"
+      );
+      expect((await run(resolve, clash)).code).toBe(0);
+    },
+    rowLimit("short", "short")
+  );
 });

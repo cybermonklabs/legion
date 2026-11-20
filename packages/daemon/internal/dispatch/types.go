@@ -48,6 +48,13 @@ type Client interface {
 	// the issue's Dispatch row, replacing whatever set it holds; an empty list is an issue whose
 	// gates record none.
 	PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error
+	// PutRoleHolders publishes the session that holds each Legion role of the issue onto the
+	// issue's Dispatch row, replacing whatever set it holds; an empty list is an issue where no
+	// session holds a role.
+	PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error
+	// PutStep writes one start or one end of a step onto Dispatch's record id of the issue's
+	// steps. Dispatch writes each field once and keeps every field the write leaves out.
+	PutStep(ctx context.Context, key, id string, write StepWrite) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -69,6 +76,37 @@ type RepoProject struct {
 type DesignGateDocument struct {
 	Step       string `json:"step"`
 	ArtifactID string `json:"artifact_id"`
+}
+
+// RoleHolder is one entry of an issue's role-holder publication, as Dispatch's route takes it: Role
+// is one of the six Legion roles and Session the session that holds it on the issue. The role is a
+// string here rather than claim.Role, because this package names Dispatch's wire shapes.
+type RoleHolder struct {
+	Role    string `json:"role"`
+	Session string `json:"session"`
+}
+
+// StepWrite is the body of a step record's write, as Dispatch's route takes it, the actor aside:
+// every identity field of the step, written whatever its value, and each field the write may not
+// know as a pointer, left out when nil. Dispatch writes each field once and keeps what a write
+// leaves out, and it takes a text field sent as "" as left out; a time and ReturnedTo are pointers
+// because their zero is a value (a moment, and the retro's place 0). It mirrors the record's own
+// StepRecord, because this package imports no record of the daemon's.
+type StepWrite struct {
+	Task       string     `json:"task"`
+	Step       int        `json:"step"`
+	Kind       string     `json:"kind"`
+	Role       string     `json:"role"`
+	Type       string     `json:"type"`
+	Agent      string     `json:"agent"`
+	Generation uint64     `json:"generation"`
+	Session    *string    `json:"session,omitempty"`
+	Model      *string    `json:"model,omitempty"`
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	EndedAt    *time.Time `json:"ended_at,omitempty"`
+	Result     *string    `json:"result,omitempty"`
+	ReturnedTo *int       `json:"returned_to,omitempty"`
+	Report     *string    `json:"report,omitempty"`
 }
 
 // LegionLabel is the Dispatch label that hands an issue to Legion. A human sets it from the issue
@@ -344,6 +382,25 @@ const (
 // one of them. No mechanism shares a value between this module and Dispatch's, so the spellings
 // change together.
 const IssueNotFound = "ISSUE_NOT_FOUND"
+
+// NoRoute is whether err is a Dispatch process's answer that it has no route for the request: its
+// router's 404 under the code NOT_FOUND whose message starts "no route for "
+// (packages/envoy/internal/dispatch/routes/router.go, staticHandler; the TypeScript clients'
+// NO_ROUTE_MESSAGE_PREFIX). A Dispatch older than a route answers it this way, and so does the
+// older build while a release rolls out, so no handler ran and the request is taken once the
+// release that serves the route is live. A handler's own 404 NOT_FOUND, for a resource it does not
+// know, says "not found" instead, and is not this answer. No mechanism shares a value between
+// this module and Dispatch's, so the spellings change together.
+func NoRoute(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound && refusal.Code == noRouteCode &&
+		strings.HasPrefix(refusal.Message, noRouteMessagePrefix)
+}
+
+const (
+	noRouteCode          = "NOT_FOUND"
+	noRouteMessagePrefix = "no route for "
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

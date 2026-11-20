@@ -36,7 +36,17 @@ const (
 	// ProjectScopePerson means the token acts as its person, and Projects is what its trade
 	// asked for.
 	ProjectScopePerson = oauthwire.ProjectScopePerson
+	// ProjectScopeNone means the token writes no project and names none: a read-only token,
+	// which holds ScopeRead and nothing else beside it (shapeOf) and which a verifier accepts
+	// only under Options.ServesReadOnly.
+	ProjectScopeNone = oauthwire.ProjectScopeNone
 )
+
+// ScopeRead is the one OAuth scope a read-only token holds, in the answer's space-separated
+// Scope: the broker's own wire name, carried here for the reason the project scopes are. Beside
+// ProjectScopeNone it is a read-only token, and beside any other project scope it is no
+// session's credential (ErrNotASession).
+const ScopeRead = oauthwire.ScopeRead
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
 // the RFC 8693 exchange a pod, a workflow run or a dev box session asks for a Dispatch access
@@ -64,14 +74,19 @@ func expiryOf(answer Introspection) time.Time {
 }
 
 // callerOf is the Caller a live answer names, the one shape both checks hand back. The list of
-// projects is carried whole, under either scope, as the caller's own copy, and the scope beside
-// it, because a reader deciding what the token may do needs the scope itself and not only the
-// list. The service is carried as the broker answered it, which is set exactly where the person
-// is not (live refuses an answer naming neither).
-func callerOf(answer Introspection) Caller {
+// projects is carried whole, under any scope, as the caller's own copy, and the scope beside it,
+// because a reader deciding what the token may do needs the scope itself and not only the list;
+// a read-only answer names none, which sessionCaller holds it to. The service is carried as the
+// broker answered it, which is set exactly where the person is not (sessionCaller refuses an
+// answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
+// and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
+// sessionCaller lets a read-only answer through only with its switch set, which only a verifier
+// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+func callerOf(answer Introspection, shape tokenShape) Caller {
 	return Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
 		Projects: slices.Clone(answer.Projects), ProjectScope: answer.ProjectScope,
+		ReadOnly: shape == shapeReadOnly,
 	}
 }
 

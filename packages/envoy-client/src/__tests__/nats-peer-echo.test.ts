@@ -62,6 +62,9 @@ describe("a peer that is no nats-server", () => {
       renew: async () => {},
       expiresAt: () => new Date(Date.now() + 3_600_000),
       needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => undefined,
       authenticator: () => ({ auth_token: token, sig: "the-proof" }),
     };
     capture();

@@ -14,6 +14,7 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { importDpopKey } from "../dpop";
@@ -29,6 +30,7 @@ import { personIdentity } from "../person-identity";
 import { poolIdentity } from "../pool-identity";
 import { projectedToken } from "../projected-token";
 import { BrokerTokenClient } from "../token-client";
+import { TradeRetryingError } from "../token-errors";
 import {
   ACTOR_TOKEN_TYPE_MACHINE,
   SUBJECT_TOKEN_TYPE_GOOGLE,
@@ -36,15 +38,16 @@ import {
 } from "../wire";
 import { accepted, refusalOf, stubBroker } from "./stub";
 
-const EXTERNAL_TOKEN = "the.credential.this.machine.holds";
-const FEDERATED_TOKEN = "federated-access-token";
-const MINTED_TOKEN = "google.identity.token.minted.for.the.pool";
+const EXTERNAL_TOKEN = fixtureSecret("external");
+const FEDERATED_TOKEN = fixtureSecret("fed");
+const MINTED_TOKEN = fixtureSecret("minted");
 const POOL_AUDIENCE =
   "//iam.googleapis.com/projects/000000000000/locations/global/workloadIdentityPools/example-pool/providers/example-provider";
 const SERVICE_ACCOUNT = "example-fleet@example-project.iam.gserviceaccount.com";
 const CLIENT_ID = "example-machine-client-id";
 const PERSON = "ada@example.com";
 const SIGNIN_CLIENT_ID = "example-device-client";
+const SIGNIN_CLIENT_SECRET = fixtureSecret("client");
 
 const makeDirectory = temporaryDirectories("pool-identity");
 
@@ -195,6 +198,29 @@ test("a security token service that refuses is an error naming it, its status an
   expect(iam.posted).toHaveLength(0);
 });
 
+// A 307 or 308 in front of the security token service would send the POST, the subject token in
+// its body, on to another origin. Google's services answer no redirect, so the call follows none:
+// the redirect is the refusal, and its target is asked nothing (the review of 81d860a8f7, P1).
+test("a redirect from the security token service is refused, and its target is asked nothing", async () => {
+  const elsewhere = stubService(federating);
+  const moving = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () =>
+      new Response(null, { status: 307, headers: { Location: `${elsewhere.url}/v1/token` } }),
+  });
+  stops.push(() => moving.stop(true));
+  const iam = stubService(minting);
+  const refusal = await refusalOf(async () =>
+    (await poolAt(`http://127.0.0.1:${moving.port}`, iam.url)).read()
+  );
+  expect(refusal?.message).toBe(
+    `trade this machine's credential at the security token service http://127.0.0.1:${moving.port}/v1/token: HTTP 307`
+  );
+  expect(elsewhere.posted).toHaveLength(0);
+  expect(iam.posted).toHaveLength(0);
+});
+
 test("a security token service that answers no access_token is an error naming it", async () => {
   const sts = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const iam = stubService(minting);
@@ -246,7 +272,7 @@ test("an answer that is not JSON is named without its text, which could be a tok
 // mint as the request built on IAM Credentials' plain base (`requestForText`), and a URL that
 // carries user info by its fixed phrase alone, no part of it.
 test("the security token service and IAM Credentials are named only where their URL is plain", async () => {
-  const password = `canary-pw-${crypto.randomUUID()}`;
+  const password = fixtureSecret("pw");
   const withUser = (url: string) => url.replace("http://", `http://operator:${password}@`);
   const unanswering = stubService(() => ({ body: { token_type: "Bearer", expires_in: 3600 } }));
   const sts = stubService(federating);
@@ -346,10 +372,11 @@ async function personOnPoolMachine(sts: string, iam: string, brokerUrl: string) 
     subject: personIdentity(record, {
       issuer: issuer.url,
       clientId: SIGNIN_CLIENT_ID,
-      clientSecret: "example-device-client-not-a-secret",
+      clientSecret: SIGNIN_CLIENT_SECRET,
     }),
     actor: await poolAt(sts, iam),
     session: "ses_01a9",
+    log: () => {},
   });
   return { client, issuer };
 }
@@ -369,13 +396,18 @@ test("a person's trade on a pool machine shows the broker the minted token as th
   expect(form?.get("actor_token_type")).toBe(ACTOR_TOKEN_TYPE_MACHINE);
 });
 
+// An identity source's failure is traded again on the retry loop's long schedule, as the Go
+// client trades again on every failure but the broker's permanent refusals, so a caller is told it
+// at its deadline, in the source's own words (`TradeRetryingError`).
 test("with the security token service refusing, a person's trade fails naming it and the broker is asked nothing", async () => {
   const sts = stubService(() => ({ status: 400, body: '{"error":"invalid_grant"}' }));
   const iam = stubService(minting);
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
     `the security token service ${sts.url}/v1/token: HTTP 400 invalid_grant`
   );
@@ -390,7 +422,9 @@ test("with generateIdToken refusing, a person's trade fails naming it and the br
   const broker = stubBroker(() => ({ body: accepted("never", 600) }));
   stops.push(broker.stop);
   const { client } = await personOnPoolMachine(sts.url, iam.url, broker.url);
-  const refusal = await refusalOf(() => client.token());
+  stops.push(() => client.close());
+  const refusal = await refusalOf(() => client.token(AbortSignal.timeout(1_000)));
+  expect(refusal).toBeInstanceOf(TradeRetryingError);
   expect(refusal?.message).toContain(
     `mint this machine's identity token at ${iam.url}/v1/projects/-/serviceAccounts/${SERVICE_ACCOUNT}:generateIdToken: HTTP 403`
   );

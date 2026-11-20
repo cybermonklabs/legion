@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 const daemonAccount = "system:serviceaccount:example-ns:example-daemon"
@@ -169,9 +170,9 @@ func TestNatsprobeSaysWhatTheHubAnswered(t *testing.T) {
 	}
 }
 
-// A hub with no auth service sends no nonce, so the probe cannot sign a session's proof for it: it
-// says so, names the credentials such a hub does take, and exits 1, since the hub refused
-// nothing. The control is the probe printing brokerclient's error without that hint.
+// A hub that sends no nonce, as this plain one does, gives the probe nothing to sign a session's
+// proof over: it says so, names the credentials such a hub does take, and exits 1, since the hub
+// refused nothing. The control is the probe printing brokerclient's error without that hint.
 func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
 	_, url := testnats.Start(t)
 	stub := newBroker(t)
@@ -191,4 +192,18 @@ func TestNatsprobeNamesTheCredentialsAHubWithNoAuthServiceTakes(t *testing.T) {
 	require.Contains(t, stderr.String(), "the NATS server sent no nonce to sign, so it runs no auth service and takes no session's broker token")
 	require.Contains(t, stderr.String(), "name the credential it does take: --no-credential, --service-token-file or --service-google-audience")
 	require.NotContains(t, stderr.String(), "tok-")
+}
+
+// The probe says "not admitted", exit 4, only for the hub's own refusal of the connection
+// (nats.ErrAuthorization). A connection that fails any other way, here a hub that is not
+// listening, is no answer of the hub's: it exits 1, prints nothing on stdout, and says on stderr
+// why it could not connect. The control is the TestNatsprobeSaysWhatTheHubAnswered row of a
+// connection with no credential, which the hub refuses and the probe reports exit 4.
+func TestAnUnreachableHubIsNoRefusal(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	exit := run([]string{"--servers", "nats://" + testport.Refused(t), "--wait", "1s", "--no-credential",
+		"--subscribe", "notifications.envoy.deliver.ses_a"}, func(string) string { return "" }, &stdout, &stderr)
+	require.Equal(t, exitFailed, exit, "stdout:\n%s\nstderr:\n%s", stdout.String(), stderr.String())
+	require.Empty(t, stdout.String(), "the probe reported an answer of a hub it never reached")
+	require.Contains(t, stderr.String(), "natsprobe: connect: ")
 }

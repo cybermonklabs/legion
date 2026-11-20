@@ -1,0 +1,39 @@
+{"Time":"2026-11-16T16:19:19.911259891Z","Action":"start","Package":"example.com/acme/gotest/killfirst"}
+{"Time":"2026-11-16T16:19:19.97492119Z","Action":"run","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout"}
+{"Time":"2026-11-16T16:19:19.975015996Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"=== RUN   TestSleepsPastTheTimeout\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:19.975050751Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"    killfirst_test.go:11: sleeps for 5 s under -timeout 1s\n"}
+{"Time":"2026-11-16T16:19:20.976727266Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T16:19:20.976779719Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\trunning tests:\n"}
+{"Time":"2026-11-16T16:19:20.976784775Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\t\tTestSleepsPastTheTimeout (1s)\n"}
+{"Time":"2026-11-16T16:19:20.976789372Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\n"}
+{"Time":"2026-11-16T16:19:20.976793621Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"goroutine 311 [running]:\n"}
+{"Time":"2026-11-16T16:19:20.976805088Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-11-16T16:19:20.976807894Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2961 +0x34a\n"}
+{"Time":"2026-11-16T16:19:20.97681035Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"created by time.goFunc\n"}
+{"Time":"2026-11-16T16:19:20.9768128Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttime/sleep.go:182 +0x2d\n"}
+{"Time":"2026-11-16T16:19:20.976815716Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\n"}
+{"Time":"2026-11-16T16:19:20.976818771Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-11-16T16:19:20.976821751Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.(*T).Run(0x37b929a28008, {0x55a968?, 0x37b929824aa0?}, 0x6d3da8)\n"}
+{"Time":"2026-11-16T16:19:20.97682529Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2268 +0x4f2\n"}
+{"Time":"2026-11-16T16:19:20.976827201Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.runTests.func1(0x37b929a28008)\n"}
+{"Time":"2026-11-16T16:19:20.976829978Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2744 +0x37\n"}
+{"Time":"2026-11-16T16:19:20.976832081Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.tRunner(0x37b929a28008, 0x37b929824bc8)\n"}
+{"Time":"2026-11-16T16:19:20.976834731Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-16T16:19:20.976836938Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.runTests({0x55a449, 0x17}, {0x55d535, 0x21}, 0x37b92931a090, {0x6f2d20, 0x3, 0x3}, {0xc2b6e9223a106934, 0x3babe034, ...})\n"}
+{"Time":"2026-11-16T16:19:20.976842066Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2742 +0x510\n"}
+{"Time":"2026-11-16T16:19:20.97688791Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.(*M).Run(0x37b92a38c140)\n"}
+{"Time":"2026-11-16T16:19:20.97689375Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2602 +0x6af\n"}
+{"Time":"2026-11-16T16:19:20.97689662Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"main.main()\n"}
+{"Time":"2026-11-16T16:19:20.976899909Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\t_testmain.go:50 +0x9b\n"}
+{"Time":"2026-11-16T16:19:20.976906738Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\n"}
+{"Time":"2026-11-16T16:19:20.976912672Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"goroutine 310 [sleep]:\n"}
+{"Time":"2026-11-16T16:19:20.976916152Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"time.Sleep(0x12a05f200)\n"}
+{"Time":"2026-11-16T16:19:20.976918714Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\truntime/time.go:368 +0x165\n"}
+{"Time":"2026-11-16T16:19:20.97692088Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"example.com/acme/gotest/killfirst.TestSleepsPastTheTimeout(0x37b929a28248?)\n"}
+{"Time":"2026-11-16T16:19:20.976922872Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\texample.com/acme/gotest/killfirst/killfirst_test.go:12 +0x48\n"}
+{"Time":"2026-11-16T16:19:20.976926749Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"testing.tRunner(0x37b929a28248, 0x6d3da8)\n"}
+{"Time":"2026-11-16T16:19:20.97692945Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-16T16:19:20.976931333Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-11-16T16:19:20.976933556Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Test":"TestSleepsPastTheTimeout","Output":"\ttesting/testing.go:2260 +0x4d4\n"}
+{"Time":"2026-11-16T16:19:20.986916781Z","Action":"output","Package":"example.com/acme/gotest/killfirst","Output":"FAIL\texample.com/acme/gotest/killfirst\t1.075s\n","OutputType":"frame"}
+{"Time":"2026-11-16T16:19:20.986955845Z","Action":"fail","Package":"example.com/acme/gotest/killfirst","Elapsed":1.076}

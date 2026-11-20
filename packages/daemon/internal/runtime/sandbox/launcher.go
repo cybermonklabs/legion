@@ -590,10 +590,13 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "release", report.Release)
 }
 
-// memoryKilled hands the daemon one process the pod's memory guard ended with SIGKILL, as
-// the launcher reported it on the connection of the role whose process it was
+// memoryKilled hands the daemon one process of a role that was stopped because the pod was out
+// of memory, by the pod's memory guard or, in a microVM pod, by the pod's own kernel, as the
+// launcher reported it on the connection of the role whose process it was
 // (shimwire.LauncherMemoryKill). The launcher sends it unasked, and only on a connection whose
-// acknowledgement carried guard settings, which is a daemon that knows the frame.
+// acknowledgement carried guard settings (a gVisor pod's launcher) or KernelKills (a microVM
+// pod's), which is a daemon that knows the frame and its cause. The report goes on whole, its
+// cause included, which chooses the note the role is told (workflow's memoryGuardKill).
 //
 // The issue, the role and the pod the kill is credited to are the session's own, as the hello's
 // authentication bound them (launcherCredential), and never anything the frame says: a launcher
@@ -766,7 +769,12 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
-// launch credentials it writes into its private directory, and the session a resume continues.
+// launch credentials and files it writes into its private directory, and the session a resume
+// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
+// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
+// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
+// runtime.SystemPromptFile why it is a file).
+//
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
 // which the launcher kills it. A tree role's shim is told --warm-codegraph: once its Oh My Pi has
@@ -782,11 +790,9 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // a Spawn's, a Resume's and a replaced pod's alike. A Claude Code launch is wrapped whatever else
 // it carries, for the `mkdir -p` of its configuration directory (claudeConfigDir) and the install
 // of the pinned Claude Code its agent command names (claudeCodeBlock: the image carries the pin
-// and never the binary), and adds one file to the generation's credentials: the MCP document its
-// agent command reads
-// (claudeMCPFile), which the launcher writes 0600 into the 0700 private directory it makes for
-// the generation and removes with the rest when the generation ends (internal/launcher). It
-// travels in Files and never in spec.Secrets, which would be two wrongs: every secret name also
+// and never the binary), and adds one more file to the generation's: the MCP document its agent
+// command reads (claudeMCPFile), which the launcher writes and removes as it does the prompt. Both
+// travel in Files and never in spec.Secrets, which would be two wrongs: every secret name also
 // gets a `<NAME>_FILE` pointer in the worker's environment (mainEnvironment), and
 // ValidateSpawnSpec refuses a credential-shaped name outright.
 //
@@ -826,16 +832,35 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 		files = map[string]string{}
 	}
 	files[bootTokenKey] = l.spec.BootToken
+	files[runtime.SystemPromptFile] = l.prompt
 	claudeDir := ""
 	if l.runsClaude() {
 		claudeDir = claudeConfigDir(l.spec.Role)
 		files[claudeMCPFile] = l.claude.mcp
 	}
-	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, l.skillsInstall(r), r.setup,
+	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
 	return shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+}
+
+// checkStartFrame refuses command, the start l's role would be sent, when the frame that carries
+// it would be longer than a launcher reads (shimwire.FrameLen, shimwire.MaxFrameBytes): the one
+// bound a prompt still meets in a pod (runtime.PromptTooLarge, which supervise charges no launch
+// failure). prepare runs it on the start a pod built now would receive, before anything of the pod
+// is touched, and relaunch again on the start it sends, which carries what the launch learned from
+// the cluster since — the gh bundle's default owner, and for a pod it keeps, the overlays and
+// enrollment that pod was built with.
+func (l launch) checkStartFrame(command shimwire.LauncherStart) error {
+	frame, err := shimwire.FrameLen(command)
+	if err != nil {
+		return err
+	}
+	if frame > shimwire.MaxFrameBytes {
+		return &runtime.PromptTooLarge{Role: l.spec.Role, Bytes: len(l.prompt), Frame: frame}
+	}
+	return nil
 }

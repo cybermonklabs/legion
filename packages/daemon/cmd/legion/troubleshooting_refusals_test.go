@@ -27,7 +27,7 @@ const troubleshootingExtract = "troubleshooting_refusals_extract.txt"
 const daemonWillNotStart = "## The daemon will not start"
 
 // refusalFixtures is every row of that table a fixture drives: the row's refusal text, as the
-// `It says` cell writes it, and a fixture that makes `legion start --check-config` — the loader
+// `It says` cell writes it, and a fixture that makes `legion config check` — the loader
 // (config.LoadForValidation) and the boot gate (daemon.CheckStart) behind it — print a message
 // the row matches. A row whose wording the code no longer produces fails here, printing the row
 // and the message, which is the whole point of the table: an operator reads the row and greps the
@@ -148,6 +148,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	`projects.<KEY>.experiments.<NAME>.unit must be tree or issue (got "…")`: func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {unit: pod, variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
 	},
+	`projects.<KEY>.experiments.<NAME>.roles names "…", which is not a Legion issue role (…)`: func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {plan-length: {roles: [controller], variants: [{name: long}, {name: control}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments.<NAME>.variants is required: an experiment draws among the variants its block lists": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {plan-length: {mode: random}}\n"}.refuse(t)
 	},
@@ -187,10 +190,10 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 }
 
 // refusalsNoFixtureDrives is every row of that table no fixture can drive, and why. Neither is a
-// refusal the configuration's own read makes, which is all `legion start --check-config` runs.
+// refusal the configuration's own read makes, which is all `legion config check` runs.
 var refusalsNoFixtureDrives = map[string]string{
 	"<PROJECT> is already running (pid <n>)": "`legion start` itself prints it, from this machine's registry of running daemons, " +
-		"after the configuration is read: a fixture would have to register a daemon, and --check-config, which claims no team, never reads the registry",
+		"after the configuration is read: a fixture would have to register a daemon, and `legion config check`, which claims no team, never reads the registry",
 	`capability <name> is open: <detail>; to record a decision, add to legion.yaml: capabilities.decided.<name>: "<reason>"`: "the row marks it a report rather than a refusal: " +
 		"the check prints it after the Config OK line and exits 0, so no fixture makes it the message a refusal carries",
 }
@@ -344,10 +347,10 @@ func troubleshootingRows(t *testing.T) []string {
 	return rows
 }
 
-// refusalFile is the legion.yaml one fixture writes: a file `legion start --check-config` passes,
+// refusalFile is the legion.yaml one fixture writes: a file `legion config check` passes,
 // minus every base line drop names and plus the fixture's own keys, so a fixture's refusal is the
 // one thing it asks for. Its Postgres is unreachable and its App keys are never run, as every
-// check-config fixture's are: the base is the one main_test.go's own passing fixtures are built
+// `legion config check` fixture's are: the base is the one main_test.go's own passing fixtures are built
 // from (tmuxCheckKeys, kubernetesCheckKeys, kubernetesCheckRuntime, checkConfigKubeconfig), so a
 // key a passing file needs is written once for both.
 type refusalFile struct {
@@ -358,17 +361,17 @@ type refusalFile struct {
 	project    string   // extra lines of projects.DEMO, four spaces in
 }
 
-// refuse runs the real `legion start --check-config` over the file and answers the one refusal it
-// printed, without the `legion start: ` the command prefixes it with.
+// refuse runs the real `legion config check` over the file and answers the one refusal it
+// printed, without the `legion config check: ` the command prefixes it with.
 func (f refusalFile) refuse(t *testing.T) string {
 	t.Helper()
 	config := f.write(t)
 	var out, errb bytes.Buffer
-	code := run(context.Background(), []string{"legion", "start", "--check-config", "--config", config}, &out, &errb)
-	const prefix = "legion start: "
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+	const prefix = "legion config check: "
 	says := errb.String()
 	if code != 1 || out.Len() != 0 || !strings.HasPrefix(says, prefix) || !strings.HasSuffix(says, "\n") {
-		t.Fatalf("legion start --check-config = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
+		t.Fatalf("legion config check = %d, stdout %q, stderr %q; want 1, nothing, and one refusal", code, out.String(), says)
 	}
 	return strings.TrimSuffix(strings.TrimPrefix(says, prefix), "\n")
 }

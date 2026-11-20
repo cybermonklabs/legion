@@ -13,7 +13,7 @@
  * every listener call goes over HTTP to the listener `envoy.url` names in the `ENVOY_CONFIG_FILE`
  * the driver writes (`smoke-role-takeover.sh`'s recording proxy, the stack's own listener in
  * `nats-callout-sessions.sh`). One process is one client instance, which is what the listener's
- * rule turns on (R5, R6 of dispatch://INFRA-404/spec).
+ * rule turns on (R5, R6 of the role takeover's spec).
  *
  * Its input ending is the host going away: the extension's `session_shutdown` runs (it deregisters
  * the session and drains NATS), bounded at 10 s, and the process exits, writing its notices.

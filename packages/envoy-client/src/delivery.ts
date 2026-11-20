@@ -5,7 +5,6 @@ import {
   AskEditedEventPayloadSchema as AskEditedPayloadSchema,
   AskFollowerEventPayloadSchema as AskFollowerPayloadSchema,
   AskEventPayloadSchema as AskPayloadSchema,
-  agentSubject,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
   DELIVERY_DUPLICATE_WINDOW_MS,
@@ -24,9 +23,12 @@ import {
   EXPECTS_REPLY_VALUES,
   type ExpectsReply,
   IssueEventPayloadSchema as IssuePayloadSchema,
+  legacyAgentSubject,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  type SessionAnswerRelation,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
+  topicForms,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
@@ -37,6 +39,7 @@ import { DispatchClient } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
+import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 const KNOWN_SOURCES: Readonly<Record<string, unknown>> = EnvelopeSchema.shape.source.enum;
 const FOREIGN_SESSION_ID = /\b01a0[0-9a-f]{4}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}\b/g;
@@ -542,14 +545,19 @@ export function carriedItem(
   return { resource, id, issueKey: event.issue_key };
 }
 
+/** Whether an event payload is a stand-in: the bus refused the event and the outbox published it
+ *  with its long fields dropped, except the few it keeps whole (`payload_omitted`, whose doc in
+ *  `@legion/contracts` names them). */
+function payloadWasOmitted(payload: unknown): boolean {
+  return isObject(payload) && payload["payload_omitted"] === true;
+}
+
 /** Whether an event payload says the body on it is not the item's body whole: the first part of
  *  it (`CarriedBodyPayload.body_truncated` in `@legion/contracts`), or none of it, because the
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (
-    isObject(payload) && (payload["body_truncated"] === true || payload["payload_omitted"] === true)
-  );
+  return (isObject(payload) && payload["body_truncated"] === true) || payloadWasOmitted(payload);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -562,10 +570,9 @@ function wholeItemRoute(item: CarriedItem): string {
  *  carries the body whole. */
 function carriedBodyNote(event: DispatchEvent): string | undefined {
   if (!bodyWasCut(event.payload)) return undefined;
-  const what =
-    isObject(event.payload) && event.payload["payload_omitted"] === true
-      ? "this event carries no body: it was too large for the bus"
-      : "the body is its first part only";
+  const what = payloadWasOmitted(event.payload)
+    ? "this event carries no body: it was too large for the bus"
+    : "the body is its first part only";
   const item = carriedItem(event);
   return item === undefined ? what : `${what}; read it whole with ${wholeItemRoute(item)}`;
 }
@@ -720,6 +727,54 @@ function dispatchCommentReplyWith(
   };
 }
 
+/**
+ * Whether the session reading a reply in an ask's thread (a `comment.created` with an `ask_id`)
+ * owns the ask: asked it or follows it, as the payload's `ask_sessions` says. Every copy of the
+ * event carries the same bytes, whatever brought it to this session, so the reader decides. The
+ * outbox's stand-in for an event the bus refused (`payload_omitted`) keeps the list whole,
+ * whatever its size, so a stand-in decides the same way. Undefined for a comment in no ask's
+ * thread, and for a payload that carries no list: a Dispatch older than the field wrote it, its
+ * stand-ins among them, or a resend replayed an event stored before it, and the card says what it
+ * said before the field.
+ */
+function ownsRepliedAsk(
+  comment: CommentPayload | undefined,
+  sessionID: string
+): boolean | undefined {
+  if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
+  return comment.ask_sessions?.includes(sessionID);
+}
+
+/**
+ * What a reply in an ask's thread is to the session reading it, by the rule Dispatch's answers
+ * read names the same reply by (`scan` in
+ * packages/envoy/internal/dispatch/sessionanswers/sessionanswers.go), from the same facts: a
+ * reply on its own ask for a session that owns the ask, which outranks a mention; else a mention,
+ * when the frame is the delivery a mention sent this session; else what the comment is: a reply
+ * to another comment, a comment on a document (written on a project document, anchored in one,
+ * or on no issue), or a comment on an issue.
+ */
+function repliedAskRelation(
+  event: DispatchEvent,
+  comment: CommentPayload,
+  owns: boolean,
+  mentioned: boolean
+): SessionAnswerRelation {
+  if (owns) return "replied_on_your_ask";
+  if (mentioned) return "mentioned_you";
+  if (comment.reply_to !== undefined && comment.reply_to !== null) {
+    return "replied_in_a_comment_thread";
+  }
+  if (
+    (comment.artifact_id !== undefined && comment.artifact_id !== null) ||
+    comment.anchor?.artifact_id !== undefined ||
+    event.issue_key === null
+  ) {
+    return "commented_on_a_document";
+  }
+  return "commented_on_an_issue";
+}
+
 // A decision's events are a conversation between an agent and a human, and the agent has the
 // ask (it wrote it, or a reference names it), so the frame carries what moved — never the ask
 // row again. `question` is the head only: enough to recognise the ask, the full text is one
@@ -750,7 +805,8 @@ function askResolutionText(
 
 function dispatchCompact(
   event: DispatchEvent,
-  comment: CommentPayload | undefined
+  comment: CommentPayload | undefined,
+  ownsAsk: boolean | undefined
 ): CompactDispatch | undefined {
   if (event.type === "artifact.human_edited") {
     // A person's edit names its document, versions and editors in the card; its diff follows the
@@ -763,14 +819,17 @@ function dispatchCompact(
     if (comment?.ask_id === undefined || comment.ask_id === null) return undefined;
     const question = dispatchAskQuestion(comment);
     // `state` tells a clarification on an open ask from discussion after the answer;
-    // `waiting_on` says whose move it is now.
+    // `waiting_on` says whose move it is now, which is a move for the ask's own sessions alone
+    // (`ownsRepliedAsk`): a session the reply reached for another reason is shown no turn.
     return {
       askId: comment.ask_id,
       record: {
         ...(question === undefined ? {} : { question }),
         reply: comment.body ?? "",
         ...(comment.ask_state === undefined ? {} : { state: comment.ask_state }),
-        ...(comment.ask_waiting_on === undefined ? {} : { waiting_on: comment.ask_waiting_on }),
+        ...(comment.ask_waiting_on === undefined || ownsAsk === false
+          ? {}
+          : { waiting_on: comment.ask_waiting_on }),
       },
     };
   }
@@ -1062,9 +1121,10 @@ export function renderInbound(
   let bodyNote: string | undefined;
   let cutItem: CarriedItem | undefined;
   let inReplyTo = envelope.in_reply_to;
-  // On an ask event the payload is the ask itself, whose author is another follower's
-  // session when this session merely replied; naming it is not a spoof to flag.
-  let askAuthor: string | undefined;
+  // The sessions the event's own payload names, which no spoof check flags: on an ask event the
+  // ask's author, another follower's session when this session merely replied; on a reply in an
+  // ask's thread the sessions that own the ask (`ask_sessions`), which every copy carries.
+  let payloadSessions: readonly string[] = [];
   // Text that follows the card's TOON block: a person's edit's diff as a fenced `diff` block.
   let trailer = "";
   const dispatchRendered = envelope.source === "dispatch" && envelope.payload !== undefined;
@@ -1138,11 +1198,13 @@ export function renderInbound(
             ? CommentPayloadSchema.safeParse(frame.event.payload)
             : undefined;
         const commentPayload = comment?.success === true ? comment.data : undefined;
-        const compact = dispatchCompact(frame.event, commentPayload);
+        const ownsAsk = ownsRepliedAsk(commentPayload, sessionID);
+        const compact = dispatchCompact(frame.event, commentPayload, ownsAsk);
+        payloadSessions = commentPayload?.ask_sessions ?? [];
         if (frame.event.type.startsWith("ask.")) {
           const asked = AskAuthorPayloadSchema.safeParse(frame.event.payload);
           if (asked.success && asked.data.author.kind === "session") {
-            askAuthor = asked.data.author.id;
+            payloadSessions = [asked.data.author.id];
           }
         }
         if (inReplyTo !== undefined) {
@@ -1195,6 +1257,20 @@ export function renderInbound(
             };
           }
         }
+        // A reply in an ask's thread says what it is to this session, in the words the session's
+        // answers list gives it, and carries the command that answers the ask only for a session
+        // asked to answer: one that owns the ask, and one a mention named. Any other session the
+        // reply reached (by the issue's route or claim, a credit on its document, a
+        // subscription) is told why it has the reply, and given no command that answers the ask
+        // as though it were its own.
+        const mentioned = delivery !== undefined;
+        const relation =
+          ownsAsk === undefined || commentPayload === undefined
+            ? undefined
+            : sessionAnswerRelationPhrase(
+                repliedAskRelation(frame.event, commentPayload, ownsAsk, mentioned)
+              );
+        if (ownsAsk === false && !mentioned) dispatchReply = undefined;
         // `owner` is the issue key, or `PROJECT / slug` for a document (the artifact id when
         // no document topic names it); nothing else in the block restates where the event is.
         // A compact ask record names its ask exactly once: through `re:` when the envelope is
@@ -1212,6 +1288,7 @@ export function renderInbound(
           owner: dispatchOwner(frame.event, topic),
           type: frame.event.type,
           actor: frame.event.actor,
+          ...(relation === undefined ? {} : { relation }),
           ...(compactRecord ?? { payload: dispatchPayloadForReader(frame.event, sessionID) }),
         };
         dispatchActor = frame.event.actor;
@@ -1266,7 +1343,7 @@ export function renderInbound(
       if (
         match[0] !== envelope.source_session &&
         match[0] !== sessionID &&
-        match[0] !== askAuthor
+        !payloadSessions.includes(match[0])
       ) {
         foreignSession = match[0];
         break;
@@ -1294,7 +1371,12 @@ export function renderInbound(
       ...(dispatchIssue === undefined ? [] : [dispatchIssue]),
     ].join(", ") || undefined;
   const rendered = {
-    ...(envelope.topic === agentSubject(sessionID) ? { to: `you (${sessionID})` } : {}),
+    // The session's inbox in either form, the session alone or under a project, names it the
+    // recipient: every form of such a topic holds the old one (`topicForms`), no other session's.
+    ...(envelope.topic !== undefined &&
+    topicForms(envelope.topic).includes(legacyAgentSubject(sessionID))
+      ? { to: `you (${sessionID})` }
+      : {}),
     from: senderLabel(envelope),
     at: inboundTimestamp(envelope.issued_at),
     id: envelope.event_id ?? "unknown",

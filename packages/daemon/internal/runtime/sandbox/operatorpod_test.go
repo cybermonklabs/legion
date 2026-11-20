@@ -143,6 +143,9 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			{Name: "share", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: SandboxName("legion-acme-acme-7-architect") + "-" + issueVolume}}},
 		}}, want: "runtime.kubernetes.pod.volumes[0].persistent_volume_claim.name legion-acme-acme-7-issue is a claim Legion makes for an issue's, a tree's or a repository cache's own volume: name a claim of your own"},
 		{name: "a mount at a path Legion mounts", pod: mountAt("/var/run/legion/launcher"), want: overlaps("/var/run/legion/launcher", "/var/run/legion/launcher", false)},
+		// This release refuses it: role-init binds the pod's test server log there.
+		{name: "a mount at the test server log's path", pod: mountAt("/var/run/legion/testpg.log"),
+			want: overlaps("/var/run/legion/testpg.log", "/var/run/legion/testpg.log", false)},
 		{name: "a mount under a path Legion mounts", pod: mountAt("/legion/operator"), want: overlaps("/legion/operator", "/legion", false)},
 		{name: "a mount above a path Legion mounts", pod: mountAt("/var/run/legion"), want: overlaps("/var/run/legion", "/var/run/legion/agent-secrets", false)},
 		{name: "a mount at the root", pod: mountAt("/"), want: overlaps("/", "/home/legion/.config", false)},
@@ -216,7 +219,7 @@ func TestCheckPodRefusesWhatCollidesWithLegionsOwn(t *testing.T) {
 			want: `runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to "ftp://dispatch.example.org", which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore)
+			err := CheckPod(tc.pod, tc.keys, testOptions().Tools, []string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("CheckPod = %v, want no refusal", err)
@@ -243,7 +246,7 @@ func TestCheckPodHoldsDispatchPublicURLToTheAgentsRule(t *testing.T) {
 	}
 	check := func(value string) error {
 		return CheckPod(Pod{Env: map[string]string{"DISPATCH_PUBLIC_URL": value}}, nil, testOptions().Tools,
-			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore)
+			[]string{"ENVOY_TOKEN", "NATS_NKEY_SEED"}, []string{"NATS_NKEY_SEED"}, postgresStore, false)
 	}
 	for _, value := range fixture.Valid {
 		if err := check(value); err != nil {
@@ -291,7 +294,7 @@ func TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn(t *testing.T) {
 	}
 }
 
-// imageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
+// ImageEnv is exactly what the worker image's final stage sets with ENV: a variable the image adds
 // and the list lacks is one an operator could override unrefused; one the list keeps that the
 // image dropped is refused for nothing.
 func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
@@ -335,7 +338,7 @@ func TestImageEnvIsWhatTheWorkerImageSets(t *testing.T) {
 		}
 	}
 	slices.Sort(set)
-	if len(set) == 0 || !slices.Equal(set, imageEnv) {
-		t.Errorf("the worker image's final stage sets %v, and imageEnv is %v", set, imageEnv)
+	if len(set) == 0 || !slices.Equal(set, ImageEnv) {
+		t.Errorf("the worker image's final stage sets %v, and ImageEnv is %v", set, ImageEnv)
 	}
 }

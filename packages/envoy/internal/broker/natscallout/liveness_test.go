@@ -65,16 +65,38 @@ func TestTheLivenessHandlerFailsWhileTheCalloutLoopIsStalled(t *testing.T) {
 	})
 }
 
-// Close ends the heartbeat before it returns, so nothing of a closed replica reads the settings a
-// later test changes: the heartbeat reads livenessTick as it starts, and maxWaiting and maxRefusing
-// when it reports a drop (reportDropped). A heartbeat that Close only signalled, and did not wait
-// for, is still running, or ended unseen, when the next test writes those; the race detector reads
-// that as a data race, which is what this test fails with, under -race only, without the wait.
+// Close ends the heartbeat before it returns, so nothing of a closed replica runs on after it: a
+// heartbeat that Close only signalled is still running, or ended unseen, when the next test starts.
 func TestCloseEndsTheHeartbeatBeforeItReturns(t *testing.T) {
 	keys := testnats.NewCalloutKeys(t)
 	url := testnats.StartWithCallout(t, keys)
 	service := startService(t, url, keys, Deps{}, Decide)
 	service.Close()
-	withLiveness(t, 20*time.Millisecond, time.Second)
-	withWaitingBound(t, 3)
+	select {
+	case <-service.beaten:
+	default:
+		t.Fatal("Close returned with the heartbeat still running")
+	}
+}
+
+// A running replica reads the liveness settings and the two bounds as it starts and never again
+// (start), so a test that changes or restores them while a replica's heartbeat ticks, its delivery
+// goroutine delivers and its liveness is read races with nothing. Here they are written while all
+// three run. Under -race a replica that read the package's variables from those goroutines fails
+// this test with a data race; a plain build cannot see one.
+func TestARunningReplicaReadsNoSettingATestChanges(t *testing.T) {
+	withLiveness(t, 10*time.Millisecond, time.Second)
+	keys := testnats.NewCalloutKeys(t)
+	url := testnats.StartWithCallout(t, keys)
+	a := newSession(t, "ses_a", 15*time.Minute)
+	service := startService(t, url, keys, Deps{Introspect: introspector(a)}, Decide)
+	time.Sleep(50 * time.Millisecond)
+	withLiveness(t, 20*time.Millisecond, 2*time.Second)
+	withWaitingBound(t, 5)
+	withRefusingBound(t, 5)
+	nc, err := connectSession(t, url, a, nil)
+	require.NoError(t, err, "the session was not admitted")
+	nc.Close()
+	time.Sleep(50 * time.Millisecond)
+	require.Equal(t, http.StatusOK, livenessStatus(service))
 }

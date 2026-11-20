@@ -174,12 +174,19 @@ func TestRefusals(t *testing.T) {
 	foreign.answer.ClientID = "some-other-client"
 	unbounded := newSession(t, "ses_unbounded", 15*time.Minute)
 	unbounded.answer.ExpiresAt = 0
+	// A read-only token, the one Dispatch alone serves (brokertoken.Options.ServesReadOnly), is no
+	// session's credential to the auth service, which reads every answer with that switch off
+	// (brokertoken.SessionCaller): the project scope none beside the one scope read, a service,
+	// and no person and no project.
+	readOnly := newSession(t, "ses_reader", 15*time.Minute)
+	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
+	readOnly.answer.ProjectScope, readOnly.answer.Scope = brokertoken.ProjectScopeNone, brokertoken.ScopeRead
 	tokens := map[string]platformToken{
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
 	}
-	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded), ServiceToken: serviceTokens(tokens)}
+	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
 		return oauthwire.Introspection{}, errors.New("dial tcp: connection refused")
 	}}
@@ -210,13 +217,14 @@ func TestRefusals(t *testing.T) {
 		{"a token that is not live", deps, nil, expired.request(t, "nonce"), labelTokenNotLive, "token not live"},
 		{"a proof of another key", deps, nil, otherKey.request(t, "nonce"), labelKeyMismatch, "key mismatch"},
 		{"a live token that is no session's credential", deps, nil, foreign.request(t, "nonce"), labelNotASession, "token is no session's credential"},
+		{"a read-only token", deps, nil, readOnly.request(t, "nonce"), labelNotASession, "token is no session's credential"},
 		{"a proof that is no base64url", deps, nil, badSig, labelProofInvalid, "proof invalid: jws"},
 		{"a token that names no expiry", deps, nil, unbounded.request(t, "nonce"), labelNoExpiry, "token names no expiry"},
 		{"a session id that is not one subject token", deps, nil, dotted.request(t, "nonce"), labelBadSessionID, "session id is not one subject token"},
 		{"a broker that does not answer", unreachable, nil, a.request(t, "nonce"), labelBrokerUnreachable, "broker unreachable"},
-		{"a budget spent in the token's introspection", cancelled, spent, a.request(t, "nonce"), labelBudget, "decision exceeded its " + decideBudget.String() + " budget at the token's introspection"},
+		{"a budget spent in the token's introspection", cancelled, spent, a.request(t, "nonce"), labelBudget, "decision exceeded its budget at the token's introspection"},
 		{"a service token that does not verify", deps, nil, serviceRequest("forged"), labelServiceToken, "service token not verified"},
-		{"a budget spent in the service token's verification", cancelled, spent, serviceRequest("held-token"), labelBudget, "decision exceeded its " + decideBudget.String() + " budget at the service token's verification"},
+		{"a budget spent in the service token's verification", cancelled, spent, serviceRequest("held-token"), labelBudget, "decision exceeded its budget at the service token's verification"},
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
@@ -339,6 +347,9 @@ func TestAGrantNamingASystemSubjectIsRefused(t *testing.T) {
 	}{
 		{"a subscribe to the authorization subject", []string{"_INBOX.>", "$SYS.REQ.USER.AUTH"}, "grant names a system subject: $SYS.REQ.USER.AUTH"},
 		{"a subscribe to every system subject", []string{"_INBOX.>", "$SYS.>"}, "grant names a system subject: $SYS.>"},
+		// nats-server reads the entry as > in the auth service's queue group, splitting at the tab
+		// (strings.Fields, server/client.go splitSubjectQueue).
+		{"every subject in the auth service's queue group, after a tab", []string{"_INBOX.>", ">\tenvoy-auth"}, "grant names a system subject: >\tenvoy-auth"},
 		{"control: the same grant without one", []string{"_INBOX.>"}, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {

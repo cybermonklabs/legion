@@ -37,7 +37,7 @@ func consumerResumeRegistration(sessionID, epoch, streamID string, seq uint64) s
 func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStoredWhileItWasAway(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_resume_after_deregister"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
 
@@ -51,6 +51,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 	requireFrames(t, standIn.collect(t, len(acked), 5*time.Second), acked...)
 	awaitAcked(t, rig.consumers, sessionID, wrote)
 
+	awaitSessionConsumerStored(t, rig.harness.client.Conn, sessionID)
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	var away []contracts.Envelope
@@ -71,7 +72,7 @@ func TestSessionConsumerResumePointAfterADeregistrationDeliversOnlyWhatWasStored
 func TestSessionConsumerResumePointBelowTheStreamsFirstSequenceIsAnsweredAGap(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_resume_gap"
-	agent := contracts.AgentSubject(sessionID)
+	agent := contracts.LegacyAgentSubject(sessionID)
 	gone := rig.store(t, agent)
 	kept := rig.store(t, agent)
 	if err := rig.harness.client.JS().PurgeStream(bus.Stream, &natsgo.StreamPurgeRequest{Sequence: kept}); err != nil {
@@ -102,7 +103,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 	const sessionID = "ses_resume_consumer_start"
 	// Another session's message, so the consumer's start is above the stream's first sequence
 	// and a floor of consumer_start - 1 names a message of the stream.
-	rig.store(t, contracts.AgentSubject("ses_resume_bystander"))
+	rig.store(t, contracts.LegacyAgentSubject("ses_resume_bystander"))
 	standIn := startSessionStandIn(t, rig.url, sessionID, answerDone)
 
 	first := rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
@@ -123,7 +124,7 @@ func TestSessionConsumerStartTheAnswerCarriesIsWhereASessionThatReceivedNothingC
 	// The delete runs after the answer, and this row is about what the registration below finds
 	// once it has run: the consumer gone and its floor on the resume lane.
 	rig.awaitNoConsumer(t, sessionID)
-	away, awaySeq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	away, awaySeq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	rig.subscribe(t, consumerResumeRegistration(sessionID, "epoch-2", rig.streamID(t), first.Delivery.ConsumerStart-1))
 
 	if start := rig.startSeq(t, sessionID); start != first.Delivery.ConsumerStart {
@@ -160,7 +161,7 @@ func TestASessionWhosePluginSendsNoResumePointLosesNothingToTheDelete(t *testing
 	rig.deregister(t, sessionID, "")
 	rig.awaitNoConsumer(t, sessionID)
 	onTopic, topicSeq := rig.storeEvent(t, followed)
-	toSession, sessionSeq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	toSession, sessionSeq := rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 
 	// The old plugin's registration: a consumer, and no resume point of any kind.
 	rig.subscribe(t, consumerRegistration(sessionID, "epoch-2", followed))

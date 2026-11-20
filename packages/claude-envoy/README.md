@@ -37,7 +37,7 @@ message from Dispatch's Agents page as that person's own turn.
   `.opencode/envoy.json`, which is not read, is one `envoy: <file> is not read: mkdir -p … && mv …`
   line while the checkout has no `.envoy/envoy.json`. The `dispatch` command reads the file
   `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set. A subagent's Bash can lack what the
-  hook writes there (anthropics/claude-code#46696); its `dispatch` command, finding no
+  hook writes there (Claude Code issue 46696); its `dispatch` command, finding no
   `DISPATCH_HOST`, then takes host `claude` from the `CLAUDE_CODE_CHILD_SESSION=1` Claude Code sets
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
   `dist/session-hook.js dispatch-first` puts the `dispatch-first` skill into the context of every
@@ -174,7 +174,29 @@ message from Dispatch's Agents page as that person's own turn.
   and with the bearer a command resolves: `envoySettings` over the envoy.json
   `envoyConfigPath("command")` chooses (the `ENVOY_CONFIG_FILE` the `open-asks` hook hands the
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
-  section. With Envoy off it sends nothing and exits 1, saying why.
+  section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
+  own send (`createEnvoyClient().send`), the transport every other client uses: one idempotency key
+  on every attempt, so the listener stores the message at most once; an attempt with no answer or a
+  5xx sent again under that key; and the listener's URL named only as `urlForText` names it, never
+  its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
+  `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit on each session's sending
+  counts its messages. A send the listener stored without this machine's credential (a listener
+  that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and
+  writes one line to stderr naming why it went without the credential, and where the refusal is
+  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived is not a
+  failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the command that sends it again
+  under that key, which the listener drops as a repeat if the first copy arrived: `cd <dir> &&
+  [ENVOY_CONFIG_FILE=<file>] [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…] [ENVOY_SESSION_ID=…] bun <the
+  envoy-send.ts it ran> --idempotency-key <key> <target> <message>`, which carries what chose the
+  listener so it goes there from any shell (`ENVOY_CONFIG_FILE` where an envoy.json was read, the
+  others where set), each word quoted so bash and zsh read it alike. Where that command would
+  hold a secret this process withholds (the message names one, say), a printed copy would send a
+  different message under the same key, and where its `ENVOY_URL` is not a plain http(s) URL (one
+  with user info of any length, say) the URL is never printed; either way only the key is printed,
+  with how to resend the original. A resend under a key exits 75 on any failure, since the send
+  before it may have arrived. Any other refusal, one for the sender's rate among them, prints the
+  listener's own sentence after `Claude Envoy send failed: `, exits 1 and is not sent again; so
+  does a listener that refused the connection or whose name did not resolve.
 
 ## What a delivered line carries
 
@@ -200,6 +222,9 @@ The server exposes the shared Envoy messaging contract, every tool of `envoyTool
 `envoy_*` tools, `envoy_inbox` and `envoy_role_get` among them, and `slack_post`, a reply in a Slack
 thread. It exposes no Dispatch tool: a `dispatch_*` call is an unknown
 tool.
+A tool that fails answers a tool result with `isError: true` whose text is the error, so the model
+reads the listener's own sentence for a refused send or publish, a refusal for the sender's rate
+among them. An unknown tool, and a call before the server has started, answer a JSON-RPC error.
 
 ## Dispatch
 
@@ -216,6 +241,87 @@ below on every call.
 Dispatch asks remain on native Dispatch.
 An Envoy delivery is one-way ingress, not a remote
 human approval surface.
+
+## Codex CLI
+
+The Codex CLI plugin is a package of its own, `@sjawhar/codex-envoy`, built from
+this package's source and released with it at the same version. One package cannot be both:
+Codex's plugin validator refuses a manifest that names its hooks file, so Codex's hooks sit at
+`hooks/hooks.json`, where Claude Code reads its own, and an npm install takes a package's root.
+Codex reads the repository's `.agents/plugins/marketplace.json`, which names that package:
+
+```bash
+codex plugin marketplace add cybermonklabs/legion
+codex plugin add codex-envoy@legion-plugins
+```
+
+`bun scripts/build.ts --codex-out <dir>` builds it from this tree into a directory outside the
+repository: `codex/`'s manifests, hooks and README, this package's skills and a fresh `dist/`.
+A skill that sets `disable-model-invocation: true`, which Codex's validator refuses, is shipped
+with Codex's own form of it, an `agents/openai.yaml` whose `policy.allow_implicit_invocation`
+is `false`: the skill stays out of the model's context until a person names it as `$<skill>`.
+
+Start `codex` as usual and trust the plugin's hooks when Codex asks (it asks again after an update
+that changes them; an untrusted hook does not run). The session reads the same envoy.json as every
+other session on the machine: the file `ENVOY_CONFIG_FILE` names, else
+`${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`. Under the Codex home (`CODEX_HOME`, else
+`~/.codex`) the plugin reads the session's transcript, writes only to the state directory Codex
+gives each plugin (`plugins/data/`), and adds to Codex's message queue through `codex queue`;
+it never touches Codex's configuration.
+Measured on Codex CLI 0.154.0.
+
+Which sessions get Envoy depends on how Codex runs them.
+A session in a `codex` process of its own (the terminal on 0.154.0, `codex exec`) registers with
+Envoy and gets everything below.
+Codex's shared app server runs several sessions in one process: `codex agents` (with or without `--no-daemon`), a plain `codex` that joins a running app server, and on 0.170.0 every terminal session, which runs in a background `codex app-server --managed-daemon`.
+The plugin cannot tell those sessions' Envoy traffic apart, so there it registers none of them:
+they get no Envoy messages and do not show on the Agents page, and the hook tells the model so.
+Everything else still runs there: the `dispatch` tool, as the session that calls it, and the
+`SessionStart` hooks (the open-asks summary, the dispatch-first skill and the answers list).
+A fork (`/side`, `/btw`) is never registered: its session's registration stays where it was.
+Neither is an ephemeral session (`codex exec --ephemeral`), which no message could reach.
+
+- `codex/.codex-plugin/plugin.json` names the skills and one MCP server,
+  `bun ./dist/envoy-channel.js --host codex`, run in the plugin's own directory (`"cwd": "./"`;
+  Codex expands no `${PLUGIN_ROOT}` in a server's arguments). Codex hands a plugin's server only
+  `HOME`, `PATH` and a few more, so `env_vars` names the ones the server reads.
+- The session appears on the Agents page at its first prompt, not when the terminal opens: Codex
+  gives the MCP server no session id, and its `SessionStart` hook, which runs at the first prompt
+  and again after `/new`, records the id under the `codex` process both are children of
+  (`hooks/codex-hook.ts`, `src/codex/codex-session-record.ts`). Codex starts one MCP server per
+  thread, so a `/new` or a fork starts another; one server per `codex` process owns the session
+  (`src/codex/codex-owner.ts`) and the others stand by, serving only their thread's `dispatch`
+  calls. After `/new`, the owner moves the registration to the new session at its first prompt.
+  Until then, a message to the old session can still be queued into it, since Codex runs the old
+  thread's `SessionEnd` hook only when it unloads that thread: `thread_unload_delay` (60 s by
+  default, and configurable) after the thread is idle with no subscriber, and after it has
+  stopped that thread's servers. Until every server started before the new thread's has exited,
+  the new thread's own Envoy tools (`envoy_send` and the rest) answer that another server serves
+  the session; messages to it arrive meanwhile, and its `dispatch` tool works.
+  A fork or an ephemeral session (`codex exec --ephemeral`) keeps no transcript and is never
+  registered, since Codex refuses `codex queue` for an ephemeral thread.
+- The `dispatch` tool acts as the thread whose turn called it, which Codex names on every tool
+  call (`_meta.threadId`), and runs in the directory that thread's newest turn ran in.
+- A message reaches an idle session through `codex queue`, which Codex takes as a new turn a few
+  seconds later. One that arrives during a turn waits in the plugin's inbox, and the
+  `PostToolUse` hook (`hooks/codex-tool-hook.ts`) hands it to the model in the turn's next
+  request; one no tool call took is queued when the turn ends (`src/codex/codex-delivery.ts`).
+  A person's Send or Aside is accepted on Dispatch and arrives as their own words; a `/` message
+  is answered that it was not run.
+- A BTW is answered by a separate `codex app-server` that forks the session's conversation
+  ephemerally with plugins and hooks off, a read-only sandbox and no approvals
+  (`src/codex/codex-cli.ts`); the session's own conversation is left as it was.
+- The live view reads the session's transcript file into the frames the Agents page draws
+  (`src/codex/codex-transcript.ts`, `src/codex/codex-agent-stream.ts`).
+- Agents reach Dispatch through the server's `dispatch` tool, which takes the command's words as
+  `args` and its standard input as `stdin` and runs `dist/dispatch.js` as the session: Codex puts no
+  plugin command on the shell's `PATH`, and its default sandbox keeps shell commands off the
+  network. The manifest pre-approves that one tool, since Codex asks before every call of a
+  plugin's tool; the Envoy tools are asked about as usual. The `dispatch` command itself takes host
+  `codex` from `CODEX_THREAD_ID`, for a shell that can reach Dispatch.
+
+`tests/codex-real.test.ts` runs the real binary (`LEGION_TEST_CODEX=<path to codex>`) against a
+stand-in model; it skips without one, and nothing in CI installs Codex.
 
 ## Skills
 
@@ -541,7 +647,8 @@ in the session's Dispatch state directory carries the same name. Its negative co
 first case again against the committed `dist/envoy-channel.js` of `BASE_REV` (default
 `0306bcbe16df-`, the last revision without the fallback), which registers the folder name instead.
 It needs `bun`, `curl`, `jq`, `go` and `nats-server`
-(`go install github.com/nats-io/nats-server/v2@v2.11.4`), and no Claude authentication: the two
+(`go install github.com/nats-io/nats-server/v2@v2.15.1`, the hub's version: the listener refuses a
+nats-server below v2.11.12, v2.12.4 or v2.14.0), and no Claude authentication: the two
 hook payloads are written by the script, and that the field arrives at all rests on Claude Code's
 documentation. Claude Code is not installed in an issue pod's image, though it runs there from
 `bunx --package @anthropic-ai/claude-code@<version> claude`, as

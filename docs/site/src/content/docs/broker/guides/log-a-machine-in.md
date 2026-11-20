@@ -18,7 +18,13 @@ machine-code page, and `agent-secrets machine login` reaches no device authoriza
 which is not mounted at all. On such a machine a person runs `agent-secrets login` instead, which
 signs them in through Google and needs nobody to approve a code
 ([Concepts](/legion/broker/concepts/#sessions-and-enrollment)); the machine itself trades its own
-identity token and needs no login of this kind at all.
+identity token and needs no login of this kind at all. It needs no setting for that either, once
+the broker names its Google exchange audience in `GET /v1/settings` (only where
+`BROKER_VM_SERVICES` lists a machine): `agent-secrets NAME -- command` and
+`agent-secrets login` find a Compute Engine VM's metadata server or an
+`external_account` credential file by themselves, with nothing set but `AGENT_SECRETS_URL`, which
+a unit or a cron job may read from `~/.config/agent-secrets/config`
+([where a command takes its identity](/legion/broker/concepts/#where-a-command-takes-its-identity)).
 
 ## 1. Install and start the helper
 
@@ -56,11 +62,15 @@ The unit is written by then, so a later run without the flag changes nothing: on
 end, or to restart it anyway, re-run with `--restart-with-sessions`, which restarts the running
 helper whether or not the unit changed. A
 helper with no sessions refuses new ones from the moment `install` checks until it restarts, so
-none starts in between. A running helper from a release before that refusal (`drain`) cannot
-hold new sessions off, so `install` never restarts it on its own: it lists its sessions and
-prints `not restarted: the running agent-secrets-helper predates drain, …`. Re-run with
-`--restart-with-sessions` at a quiet moment. If the restart itself fails, `install` lets the
-helper take sessions again and exits with systemd's error.
+none starts in between; if no restart comes within a minute, the helper takes sessions again by
+itself and logs `drain ended by itself`. A running helper from a release before that refusal
+(`drain`) cannot hold new sessions off, so `install` never restarts it on its own: it lists its
+sessions and prints `not restarted: the running agent-secrets-helper predates drain, …`. Re-run
+with `--restart-with-sessions` at a quiet moment. If the restart fails, takes more than 30
+seconds, or leaves the unit's main process the same, `install` lets the helper take sessions again
+and exits with an error that says which; while systemd still holds a job for the unit, as after a
+restart that took too long, it leaves the helper draining until that restart lands or the minute
+passes, and says so.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an
@@ -172,10 +182,13 @@ says why when the machine needs it:
 ```console
 $ agent-secrets machine login-status
 none
-agent-secrets machine login-status: no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login
+agent-secrets machine login-status: no machine login since the helper started, and none kept on this machine; run: agent-secrets machine login, and have a human approve it
 ```
 
-A login nobody approves [expires](/legion/broker/concepts/#machine-login); start a new one. When
+A login nobody approves [expires](/legion/broker/concepts/#machine-login); start a new one. The
+expired login stays in the approver's Dispatch Inbox, marked **Expired**, until they click
+**Dismiss**, and its code on the machine-login page shows its facts with no **Approve** or
+**Deny**. When
 the credential reaches its expiry, the broker refuses it, or the broker refuses its refresh (as it
 does once the login is revoked), the helper drops it and logs why at ERROR, and `login-status`
 prints `expired` with that reason. A refused refresh also deletes the machine file, so the next

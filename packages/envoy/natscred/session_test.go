@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -76,7 +77,7 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 		brokerURL, trades := stubBroker(t, 15*time.Minute)
 		identity := filepath.Join(t.TempDir(), "token")
 		require.NoError(t, os.WriteFile(identity, []byte("pod-token"), 0o600))
-		client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokerURL, Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
+		client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(brokerURL), Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
 		require.NoError(t, err)
 		option, _ := natscred.Session(client)
 		nc, err := connect(t, rig.url, option)
@@ -114,8 +115,8 @@ func TestConnectionProofVerifiesWithBrokertoken(t *testing.T) {
 			nats.UserJWT(func() (string, error) { return natscred.PlaceholderJWT, nil }, sign),
 			nats.TokenHandler(func() string { token, _ := current(context.Background()); return token }))
 		require.ErrorIs(t, err, nats.ErrAuthorization)
-		require.Eventually(t, func() bool { return strings.Contains(rig.log.String(), `reason="proof invalid: ath"`) },
-			5*time.Second, 50*time.Millisecond, "the service did not refuse the rotated token for its proof's 'ath':\n%s", rig.log.String())
+		require.Eventually(t, func() bool { return rig.refused(t, "proof_invalid") >= 1 },
+			5*time.Second, 50*time.Millisecond, "the service did not refuse the rotated token for its proof:\n%s", rig.log.String())
 	})
 }
 
@@ -154,11 +155,7 @@ func TestSessionKeeperReconnectsOnEachTokenAfterTheFirst(t *testing.T) {
 	presented := &brokerclient.Token{AccessToken: "presented-not-a-secret", Expiry: time.Now().Add(15 * time.Minute)}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	kept := make(chan struct{})
-	go func() {
-		defer close(kept)
-		natscred.SessionKeeper(run, renewal, presented).Keep(ctx, nc)
-	}()
+	kept := keepUntilEnded(ctx, natscred.SessionKeeper(run, renewal, presented), nc)
 	land := func(token string) {
 		t.Helper()
 		select {
@@ -212,7 +209,7 @@ func TestSessionKeeperMovesOffAPresentedTokenThatLapsesFirst(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			brokerURL, trades := stubBroker(t, row.presented)
-			client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokerURL, Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
+			client, err := brokerclient.New(brokerclient.Config{BrokerURL: brokeraddr.New(brokerURL), Key: key, Subject: brokerclient.NewProjectedToken(identity), Session: "ses_a"})
 			require.NoError(t, err)
 			option, keeper := natscred.Session(client)
 			var reconnected atomic.Int64
@@ -221,11 +218,7 @@ func TestSessionKeeperMovesOffAPresentedTokenThatLapsesFirst(t *testing.T) {
 			require.NoError(t, err, "the session's credential was refused:\n%s", rig.log.String())
 			defer nc.Close()
 			ctx, cancel := context.WithCancel(t.Context())
-			kept := make(chan struct{})
-			go func() {
-				defer close(kept)
-				keeper.Keep(ctx, nc)
-			}()
+			kept := keepUntilEnded(ctx, keeper, nc)
 			defer func() {
 				cancel()
 				<-kept

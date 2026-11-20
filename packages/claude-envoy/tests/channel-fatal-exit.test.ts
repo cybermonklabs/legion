@@ -5,10 +5,15 @@
 import { afterEach, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import type { Subprocess } from "bun"
-import { modSocketPath } from "../hooks/mod-protocol"
+import { resolveModSocketPath } from "../hooks/mod-protocol"
+
+/** Where each session's home is made. Its mod socket is `<home>/claude-envoy/ce-<hash>.sock`, and
+ *  that whole path has 100 bytes to fit in (`MOD_SOCKET_PATH_MAX_BYTES`): under `tmpdir()` a
+ *  46-byte `TMPDIR` (a dev box's `/mnt/scratch/...`; a Legion pod's is longer) leaves none, so the
+ *  home goes under `/tmp`, whatever `TMPDIR` is (the class of dispatch://INFRA-4085). */
+const SOCKET_ROOT = "/tmp"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -114,7 +119,7 @@ interface Started {
  *  NATS servers (none: inbound off), its stdin held open as a live parent holds it, and sends the
  *  MCP initialize handshake. */
 async function startServer(natsUrls: readonly string[]): Promise<Started> {
-  const home = await mkdtemp(join(tmpdir(), "claude-envoy-fatal-"))
+  const home = await mkdtemp(join(SOCKET_ROOT, "claude-envoy-fatal-"))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
   const configDirectory = join(home, "claude-config")
   await mkdir(configDirectory)
@@ -167,8 +172,10 @@ async function startServer(natsUrls: readonly string[]): Promise<Started> {
   )
   server.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`)
   server.stdin.flush()
-  const socketPath = modSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
-  if (socketPath === undefined) throw new Error("the session names no mod socket")
+  const socket = resolveModSocketPath(sessionID, { XDG_RUNTIME_DIR: home })
+  if (socket.path === undefined)
+    throw new Error(`the session names no mod socket: ${socket.refusal}`)
+  const socketPath = socket.path
   return { server, socketPath, stderr: () => stderr }
 }
 

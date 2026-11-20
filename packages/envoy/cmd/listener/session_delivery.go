@@ -17,12 +17,15 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// deliveryModeConsumer is the one mode a registration is answered (deliveryAnswer.Mode): the
-// listener holds the session's consumer, filtered on the session's agent subject and its stored
-// followed topics, and relays it on the session's relay subject. A registration the listener
-// cannot give a consumer is refused (deliveryRefusal), since no other path reaches a session.
+// deliveryModeConsumer is the one mode a registration is answered
+// (listenerwire.DeliveryAnswer.Mode): the listener holds the session's consumer, filtered on the
+// session's agent subject and its stored followed topics, and relays it on the session's relay
+// subject. A registration the listener cannot give a consumer is refused (deliveryRefusal), since
+// no other path reaches a session.
 const deliveryModeConsumer = "consumer"
 
 // The reasons a registration is refused for want of a session consumer (deliveryRefusal.Reason),
@@ -72,27 +75,6 @@ const noGrantBackoff = 10 * time.Minute
 // what is left of the HTTP stop's budget.
 const sessionConsumerDrain = 2 * time.Second
 
-// deliveryAnswer is the delivery field of a registration's answer (subscribeResponse.Delivery).
-// Every registration this listener answers at all carries one: the session's consumer is held and
-// relayed, which is the only way a message reaches a session.
-type deliveryAnswer struct {
-	Mode string `json:"mode"`
-	// Subject is the session's relay subject (bus.DeliverSubject).
-	Subject string `json:"subject,omitempty"`
-	// StreamID is the stream's identity (bus.StreamIDMetadataKey): the one a relay frame carries
-	// and the plugin's resume point names.
-	StreamID string `json:"stream_id,omitempty"`
-	// Gap is true when this registration created the consumer at a start below the stream's first
-	// sequence: messages it would have delivered are gone.
-	Gap *bool `json:"gap,omitempty"`
-	// ConsumerStart is the stream sequence the session's consumer starts at, which the plugin
-	// keeps as the floor of its resume point: a session that has received nothing holds no point
-	// of its own, and with this floor it still asks to resume from where its consumer began
-	// rather than from the stream's end, where every message stored while it was away would be
-	// lost to it.
-	ConsumerStart uint64 `json:"consumer_start,omitempty"`
-}
-
 // deliveryRefusal is the answer to a registration the listener cannot give a session consumer.
 // The registration is refused before anything is written, so it leaves no interest row and no
 // session entry behind (subscribeHandler): a session nothing delivers to is not registered.
@@ -116,7 +98,7 @@ type deliveryRefusal struct {
 // sessionDeliveryOutcome is what sessionDelivery.register did for one registration.
 type sessionDeliveryOutcome struct {
 	// answer is the registration answer's delivery field, nil when the answer carries none.
-	answer *deliveryAnswer
+	answer *listenerwire.DeliveryAnswer
 	// epoch is the plugin's epoch, recorded on the entry when the session is relayed.
 	epoch string
 	// consumerStart is the stream sequence the session's consumer starts at, recorded on the entry
@@ -549,7 +531,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -591,7 +573,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 // filter and its row. The lock (sessionLocks) is no re-entrant one, so the pass takes it once
 // and the caller releases it once, on every path out of the pass. A registration refused before
 // the lock was taken returns noUnlock, so the caller releases what it was given either way.
-func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
+func (m *sessionDelivery) register(ctx context.Context, body listenerwire.SubscribeRequest, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	if m != nil && m.beforeRegister != nil {
 		m.beforeRegister()
 	}
@@ -607,10 +589,11 @@ func (m *sessionDelivery) register(ctx context.Context, body subscribeBody, topi
 func noUnlock() {}
 
 // clientNamed names the client a registration came from, for the refusal above: its plugin
-// package and build when it sent them (subscribeBody.Plugin, PluginVersion), and otherwise that it
-// named none, which every build before those fields is. An operator reading the refusal needs the
-// build to replace, and a session whose client names nothing at all is itself the finding.
-func clientNamed(body subscribeBody) string {
+// package and build when it sent them (listenerwire.SubscribeRequest.Plugin, PluginVersion), and
+// otherwise that it named none, which every build before those fields is. An operator reading the
+// refusal needs the build to replace, and a session whose client names nothing at all is itself
+// the finding.
+func clientNamed(body listenerwire.SubscribeRequest) string {
 	switch {
 	case body.Plugin != "" && body.PluginVersion != "":
 		return body.Plugin + " " + body.PluginVersion
@@ -631,7 +614,7 @@ func clientNamed(body subscribeBody) string {
 // registers again once it has one. Every other client - an older pi-envoy, another plugin, or one
 // naming no version or no package at all - is told the build to replace, since an operator reading
 // this refusal in the session's own transcript has nothing else to go on.
-func noConsumerRemedy(body subscribeBody) string {
+func noConsumerRemedy(body listenerwire.SubscribeRequest) string {
 	named := clientNamed(body)
 	if body.Plugin == consumerPluginPackage && versionAtLeast(body.PluginVersion, consumerPluginMinimumVersion) {
 		return named + " asks for a consumer only while its relay subject is open, so this session holds none; it registers again at its next heartbeat, with a consumer once that subject is open"
@@ -700,7 +683,7 @@ func versionPart(version string, i int) (int, bool) {
 // It returns the session's lock held over that filter, which the caller releases (register); a
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
 // was sent says the filter may be on the consumer (deliveryRefusal.filtered).
-func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
+func (m *sessionDelivery) consumerFor(ctx context.Context, body listenerwire.SubscribeRequest, topics []string) (sessionDeliveryOutcome, *deliveryRefusal, func()) {
 	if body.Delivery == nil || !body.Delivery.Consumer {
 		// A registration with no delivery field asks for nothing this listener delivers, so it is
 		// told so rather than left registered and silent, with what to do about it
@@ -761,7 +744,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 	// (registerPass): a session lock held by nobody would stop every later call for that
 	// session, this listener's relay restarts among them.
 	return sessionDeliveryOutcome{
-		answer: &deliveryAnswer{
+		answer: &listenerwire.DeliveryAnswer{
 			Mode:          deliveryModeConsumer,
 			Subject:       bus.DeliverSubject(body.SessionID),
 			StreamID:      streamID,
@@ -1011,11 +994,23 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // the session gets no consumer at all, and no message can reach such a subject anyway.
 func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
-	filter = append(filter, contracts.AgentSubject(sessionID))
+	filter = append(filter, contracts.LegacyAgentSubject(sessionID))
 	for _, topic := range topics {
 		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}
+	return filter
+}
+
+// storedRowFilter is sessionConsumerFilter of topics, sessionID's interest row as read from
+// registry, and counts each topic of the filter that is in the old form of its name
+// (store.Registry.CountStoredLegacyTopics): a stored row read into a filter is a reader of the old
+// form for as long as the row holds one. Every read of a stored row into a filter comes through
+// here (registeredTarget, storedFilterStep, sessionRelays.storedFilter); a registration's own plan
+// does not, since the subscribe route counted its old forms as it took them.
+func (m *sessionDelivery) storedRowFilter(registry *store.Registry, sessionID string, topics []string) []string {
+	filter := m.sessionConsumerFilter(sessionID, topics)
+	registry.CountStoredLegacyTopics(sessionID, filter)
 	return filter
 }

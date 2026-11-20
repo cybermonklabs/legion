@@ -8,6 +8,7 @@ package airlockproxy
 import (
 	"cmp"
 	"context"
+	"errors"
 	"maps"
 	"net"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/net/http/httpguts"
@@ -23,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 // mintAgainBefore is how close to its expiry a minted value may come before the proxy reads the
@@ -203,13 +206,33 @@ func (s *Server) DropName(name string) {
 // serveBound answers one request on a connection the proxy decrypted: the whole of what the
 // airlock does to a request, in the order the refusals have to run in. The grant is read again
 // for each of them, so that what a connection may carry is what the grant holds now and not
-// what it held when the CONNECT was answered.
+// what it held when the CONNECT was answered. An HTTP/2 connection carries many requests at
+// once, each a stream with an authority of its own, and each stream is one call of this
+// function: decided, swapped and forwarded to the CONNECT target as an HTTP/1.1 request is.
 func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	info, ok := r.Context().Value(connKey{}).(connInfo)
 	if !ok || info.target == "" {
 		// The connection was not registered, which only a drain racing a hand-over leaves.
 		// Nothing is forwarded: this request has no CONNECT target to check its Host against.
 		fail(w, http.StatusInternalServerError, codeTargetLost, "this connection's CONNECT target was lost, so nothing can be decided about this request")
+		return
+	}
+	// A request for another protocol on this connection: what crosses after its answer is no
+	// request the proxy reads, so a decision made for it would let the value ride every byte
+	// after it. Refused before the grant is read, since no grant carries one. A CONNECT asks the
+	// service for a tunnel, in HTTP/1.1 and HTTP/2 alike; HTTP/2's extended CONNECT, which
+	// carries :protocol, is reset by net/http's server unless GODEBUG=http2xconnect=1 turns it on,
+	// and is a CONNECT here when it does. An upgrade to h2c asks the service to speak HTTP/2 in
+	// the clear on this connection; net/http's HTTP/2 server answers any Upgrade header 400
+	// itself, so this is HTTP/1.1's. The decision has no wire format (the Lean model's Request has
+	// none), so these two are the proxy's, as the upgrade, the AWS signature and the Azure
+	// exchange are.
+	switch {
+	case r.Method == http.MethodConnect:
+		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing a CONNECT inside a connection the proxy decrypted: it would open a tunnel to the service whose bytes the proxy does not read")
+		return
+	case httpguts.HeaderValuesContainsToken(r.Header["Upgrade"], "h2c"):
+		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeProtocolSwitch, "refusing an upgrade to h2c: it would carry HTTP/2 in the clear past the requests the proxy reads")
 		return
 	}
 	// The grant behind this connection's password, read again for this request. A grant that
@@ -231,8 +254,12 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Everything below reads the grant this request was decided for: the names it still
-	// carries, the placeholders behind them, and the ids its line logs.
+	// carries, the placeholders behind them, and the ids its line logs. Every dial made for it -
+	// an Azure exchange's as well as the call's own - runs under that grant too (withCaller), so
+	// its line names the caller the request's own line names, and not the one the CONNECT read,
+	// which a grant that moved since no longer is.
 	info.grant = connection
+	r = r.WithContext(withCaller(r.Context(), connection))
 	request := &airlock.Request{
 		ConnectHost: info.host,
 		// The port the CONNECT named, which is 443 for every connection the proxy decrypts
@@ -243,9 +270,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// The three names the decision compares are ASCII lower-cased, as the entry's hosts
 		// are: host names are case-insensitive and the model compares them exactly, so a
 		// client that wrote "API.example.com" in one of the three is not a mismatch. The fold
-		// is ASCII-only for the reason airlock.ASCIILower gives.
-		SNI:        airlock.ASCIILower(sniOf(r)),
-		HostHeader: airlock.ASCIILower(hostHeaderOf(r.Host)),
+		// is fold.ASCII, ASCII-only for the reason the airlock package gives.
+		SNI:        fold.ASCII(sniOf(r)),
+		HostHeader: fold.ASCII(hostHeaderOf(r.Host)),
 		Method:     r.Method,
 		Path:       r.URL.Path,
 		Headers:    headersOf(r.Header),
@@ -269,7 +296,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeNoBoundName, "no name of this grant is bound to "+info.host)
 		return
 	}
-	chosen := choosePair(candidates, info.grant, request)
+	chosen, holdsPlaceholder := choosePair(candidates, info.grant, request)
 	// The entry's kind is what the value behind this name is: "" a string a header carries,
 	// which the swap below puts there; "aws" a key pair the call itself has to be signed with
 	// (aws.go); "azure" a federated token that has to be exchanged at a token endpoint for an
@@ -279,8 +306,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	kind := chosen.kind
 	if s.noKind {
 		// Options.NoKind: the entry's kind is read as none, so an azure or aws entry takes
-		// the plain header swap below. It is the negative control of the check those two
-		// kinds belong to, and is refused on a production start.
+		// the plain header swap below, and the federated token's refusal below holds as it does
+		// under every kind. It is the negative control of the check those two kinds belong to,
+		// and is refused on a production start.
 		kind = ""
 	}
 	exchange := kind == airlock.KindAzure && isTokenRequest(r)
@@ -289,6 +317,20 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// so what it is handled for is the federated slot whatever choosePair read of its
 		// headers. The exchange below checks the form itself.
 		chosen.slot = requests.SlotAzureFederated
+	} else if holdsPlaceholder && chosen.slot == requests.SlotAzureFederated {
+		// The federated token leaves the broker inside an exchange at the token authority and
+		// nowhere else (exchangeToken, azureBound): Entra takes it as the assertion of every
+		// application federated with the broker, so the header swap below would hand the host
+		// this request goes to - the authority or any other host the entry binds - the
+		// assertion of each of them. The refusal follows the slot rather than the entry's kind:
+		// an azure-login name's value fills this slot whatever the kind of the entry that binds
+		// it (requests.airlockSplitOf reads the policy kind first), so under an entry of no kind
+		// or of another, where no exchange is made, it is the same token. A request that
+		// carries no placeholder of the grant is still handled for this slot while the grant
+		// holds no access slot, and goes on with nothing swapped into it: az reads the tenant's
+		// OpenID configuration that way before its first token request.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeFederatedSwap, "refusing to swap "+chosen.name+"'s federated token into a request that is no token request: that token leaves the broker only in an exchange at the token authority")
+		return
 	}
 	placeholder := info.grant.Names[chosen.name].Slots[chosen.slot]
 	values, err := s.valuesFor(r.Context(), info.grant.GrantID)
@@ -306,10 +348,16 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no value for "+chosen.name)
 		return
 	}
+	if !slotReleased(secret, chosen.slot) {
+		// The grant holds a placeholder for a slot the broker's read of this name no longer
+		// fills: a github-app whose installation on that owner has gone since the release.
+		// Refused rather than forwarded with the placeholder in it, which would read as the
+		// service's own refusal.
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, noSlotValue(chosen))
+		return
+	}
 	value, held := secret.Slots[chosen.slot]
-	switch {
-	case held:
-	case isAzureAccessSlot(chosen.slot):
+	if !held {
 		// An access token of an exchange some pod made: the broker holds no value for such a
 		// slot, and this pod either holds the token already or exchanges for itself to get it.
 		value, err = s.azureAccess(r.Context(), info, chosen, secret)
@@ -317,13 +365,6 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeAccessToken, err.Error())
 			return
 		}
-	default:
-		// The grant holds a placeholder for a slot the broker's read of this name no longer
-		// fills: a github-app whose installation on that owner has gone since the release.
-		// Refused rather than forwarded with the placeholder in it, which would read as the
-		// service's own refusal.
-		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no "+chosen.slot+" value for "+chosen.name)
-		return
 	}
 
 	grant := airlock.Grant{Secret: chosen.name, Placeholder: placeholder}
@@ -342,8 +383,9 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// The one request the proxy answers itself: the broker makes the exchange with the
-		// real federated token and hands the command a placeholder access token.
-		s.exchangeToken(w, info, r, chosen, value)
+		// real federated token and hands the command a placeholder access token, as the
+		// application and in the tenant the name's own document names and no other.
+		s.exchangeToken(w, info, r, chosen, secret)
 		return
 	}
 
@@ -393,12 +435,49 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	header.Del("Proxy-Authorization")
 	header.Del("Proxy-Connection")
 
+	id := answerOf(w).ID()
+	// Every call the proxy carries is held to its grant for as long as it runs, as a request on
+	// this connection is held to it when it starts. A call can run for as long as its service
+	// answers - a gRPC call whose answers stream, a server-sent event stream, a long poll, an
+	// upload - and no request is read on it again, so a watcher reads the grant for it every
+	// watch interval (watchCarried) and ends it once the grant stops carrying it. carried is
+	// the call's own context: the watcher cancels it with why, which ends the call at the
+	// service, and ServeHTTP's return cancels it too, which stops the watcher.
+	carried, cut := context.WithCancelCause(r.Context())
+	defer cut(nil)
+	// What ReverseProxy is handed: this request with the swap's headers and that context.
+	// ReverseProxy drops the hop-by-hop headers of what it is handed - the Connection header
+	// and every header it names, Keep-Alive, Te, Upgrade and the rest - before it builds what
+	// leaves, and sets back the ones an upgrade or trailers need, so the swap's headers go to it
+	// as the request's own rather than over what it built: a Connection header the command sent
+	// would otherwise reach the service, and fail every call to one that speaks HTTP/2.
+	out := r.WithContext(carried)
+	out.Header = header
 	served := &statusWriter{ResponseWriter: w}
+	// The command's side of the call, which the watcher ends too: the cancel above ends the
+	// call at the service, and neither the command's upload nor a write of the service's answer
+	// to the command is ended by it (commandSide).
+	toCommand := &commandSide{w: served}
+	defer toCommand.finish()
+	end, message := func(why *cutCall) { cut(why); toCommand.stop() }, cutMessage
+	if decrypted, ok := r.Context().Value(decryptedKey{}).(net.Conn); ok && upgrading(r) {
+		// An upgrade is the one request whose connection outlives it. ReverseProxy joins the
+		// two connections inside the call below and copies bytes until one end closes, so it is
+		// the connection the watcher ends, the command's side first (cutJoined).
+		end, message = func(*cutCall) { cutJoined(info.cut, decrypted) }, joinMessage
+	}
+	go s.watchCarried(carried, info, r, chosen, id, message, end)
+
+	upstreamFailed := s.badGateway(info.host, r.URL.Path)
+	// refusedByCut is whether the watcher ended the call before its service answered, which
+	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
+	refusedByCut := false
 	proxy := &httputil.ReverseProxy{
 		Transport: s.upstream,
 		// -1: every write is flushed as it arrives, so a streamed answer - a long poll, a
 		// server-sent event stream, a large download - reaches the command as the service
-		// sends it rather than in buffers.
+		// sends it rather than in buffers. An answer with no body is the one exception
+		// (statusWriter.whole).
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = &url.URL{
@@ -409,30 +488,132 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 				RawQuery: rawQuery,
 			}
 			pr.Out.Host = hostHeaderOf(info.target)
-			pr.Out.Header = header
+			// ReverseProxy drops the command's own Forwarded and X-Forwarded-* headers before
+			// Rewrite runs, for a proxy that writes its own; this one writes none and changes
+			// no header the entry does not name, so they go on as the command sent them, and
+			// as an AWS signature covered them - all but one the command's Connection header
+			// names, which belongs to its connection to the proxy as every header named there
+			// does, and which ReverseProxy dropped for that reason.
+			for _, name := range forwardedHeaders {
+				values, sent := pr.In.Header[name]
+				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {
+					pr.Out.Header[name] = values
+				}
+			}
 		},
-		// No ModifyResponse. The answer is streamed back as it came: nothing of it is read,
-		// buffered, decompressed or changed, because this design changes no answer from an API
-		// service - what it guards is what leaves, not what comes back.
-		ErrorHandler: s.badGateway(info.host, r.URL.Path),
-	}
-	id := answerOf(w).ID()
-	if decrypted, ok := r.Context().Value(decryptedKey{}).(net.Conn); ok && upgrading(r) {
-		// An upgrade is the one request whose connection outlives it. ReverseProxy joins the
-		// two connections inside the call below and copies bytes until one end closes, so no
-		// request is read on this one again and the read at the top of this function never
-		// runs for it. A watcher reads the grant for it instead, for as long as the join
-		// lasts, which is as long as ServeHTTP has not returned.
-		watching, stop := context.WithCancel(r.Context())
-		defer stop()
-		go s.watchJoined(watching, decrypted, info, r, chosen, id)
+		// The one thing read of an answer is whether it has a body at all (statusWriter.whole).
+		// It is streamed back as it came otherwise: nothing of it is read, buffered,
+		// decompressed or changed, because this design changes no answer from an API service -
+		// what it guards is what leaves, not what comes back.
+		ModifyResponse: func(answer *http.Response) error {
+			if !toCommand.start() {
+				// The watcher ended the call between the service's answer and here, so
+				// nothing of that answer has reached the command: it is refused as one the
+				// service had not answered (ErrorHandler).
+				return context.Cause(carried)
+			}
+			served.whole.Store(answer.ContentLength == 0)
+			return nil
+		},
+		ErrorHandler: func(w http.ResponseWriter, sent *http.Request, err error) {
+			var why *cutCall
+			if !errors.As(context.Cause(sent.Context()), &why) {
+				upstreamFailed(w, sent, err)
+				return
+			}
+			// The watcher ended this call before its service's answer reached the command, so
+			// the answer is the refusal every call of this grant now gets, rather than a 502
+			// that would read as a service out of reach. Its record is the call's one line, as
+			// every refusal's is.
+			refusedByCut = true
+			s.refuse(w, r, info.callFor(chosen), why.status, why.code, why.why)
+		},
 	}
 	// The service's answer, which the proxy carries and does not write: counted served whatever
-	// its status, unless the service could not be reached (badGateway).
+	// its status, unless the service could not be reached (badGateway) or the watcher ended the
+	// call before it answered (refuse).
 	answerOf(w).carry()
-	proxy.ServeHTTP(served, r)
+	proxy.ServeHTTP(served, out)
+	if refusedByCut {
+		return
+	}
 	s.log.Info(callMessage, s.callFields(id, info.callFor(chosen), r, served.status, "")...)
 }
+
+// commandSide is the command's side of one carried call, which the call's watcher ends as well
+// as the service's. Cancelling the call's context does not end it, for two reasons:
+//
+//   - The command's upload. The transport sends the reset that ends the call at the service only
+//     once it has closed the request body it was copying from the command, and an HTTP/1.1
+//     request body's Close reads on from the command, for up to 256 KiB, until the body ends:
+//     an upload the command is still sending holds that Close, and so the service's read of it,
+//     for as long as the command likes. So the watcher's end sets a read deadline in the past on
+//     the command's side, whatever the call has reached: on HTTP/1.1 every read of the
+//     command's connection fails at once, which lets the Close return and closes the connection
+//     once the call has been answered; on an HTTP/2 stream net/http ends that stream's request
+//     body alone. A read deadline stops no write, so the refusal the call gets before its
+//     service has answered (ErrorHandler) still reaches the command.
+//   - The service's answer. A write of it that is waiting for the command to read goes on
+//     waiting: an HTTP/2 stream whose receive window the client keeps at zero holds the handler
+//     in that write for as long as the client likes, and hands the client the answer's bytes when
+//     it opens the window. So once the answer has begun reaching the command, the watcher's end
+//     sets a write deadline in the past too: on an HTTP/2 stream net/http resets that stream at
+//     once (RST_STREAM) and leaves the connection's other streams alone, and on an HTTP/1.1
+//     connection, which carries this call alone, the write fails and the connection closes.
+//     Before the answer has begun it sets none, so that refusal can be written.
+//
+// The watcher runs on a goroutine of its own, so the steps are taken under one lock, and nothing
+// is set once serveBound has returned and the writer is net/http's again.
+type commandSide struct {
+	w       http.ResponseWriter
+	mu      sync.Mutex
+	started bool // the service's answer has begun reaching the command (start)
+	ended   bool // the watcher has ended the call (stop)
+	done    bool // serveBound has returned (finish)
+}
+
+// pastDeadline is the deadline that ends a read or a write at once: any instant before now.
+var pastDeadline = time.Unix(1, 0)
+
+// start marks the service's answer as about to be written to the command, and answers false
+// where the watcher has already ended the call, whose answer must then not be written.
+func (c *commandSide) start() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ended {
+		return false
+	}
+	c.started = true
+	return true
+}
+
+// stop ends the command's side of the call: its upload, and the service's answer where that has
+// begun reaching it.
+func (c *commandSide) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ended = true
+	if c.done {
+		return
+	}
+	controller := http.NewResponseController(c.w)
+	_ = controller.SetReadDeadline(pastDeadline)
+	if c.started {
+		_ = controller.SetWriteDeadline(pastDeadline)
+	}
+}
+
+// finish marks serveBound as returned, after which stop leaves the writer alone.
+func (c *commandSide) finish() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.done = true
+}
+
+// forwardedHeaders are the forwarding headers httputil.ReverseProxy drops from a request before
+// Rewrite runs, which serveBound sets back as the command sent them, each that the command's
+// Connection header does not name.
+var forwardedHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"}
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the
 // Upgrade token and an Upgrade header naming a protocol, which is how net/http and
@@ -446,12 +627,34 @@ func upgrading(r *http.Request) bool {
 // says why the join ended rather than how the call did.
 const joinMessage = "airlock proxy: a joined connection its grant no longer carries"
 
-// watchJoined closes a joined connection once the grant behind it stops carrying it, and it is
-// the whole of what holds such a connection to its grant: after the 101 the two connections are
-// one, no request is read on them again, and the idle limit bounds nothing on a socket a service
-// pings. So the read every other request makes for itself runs here instead, on watchInterval,
-// until the caller's cancel ends it.
-func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connInfo, r *http.Request, chosen pair, id string) {
+// cutMessage is the message of the line the end of any other carried call its grant stopped
+// carrying logs: a streamed answer, a long poll, a gRPC call whose answers stream. It says why the
+// call was ended, as joinMessage does for a joined connection. A call cut before its service
+// answered is refused after it (serveBound's ErrorHandler), and its refusal record is its call's
+// one line; one cut while its answer streams logs this line alone, since ReverseProxy aborts the
+// handler that was copying it.
+const cutMessage = "airlock proxy: a carried call its grant no longer carries"
+
+// cutCall is why the grant behind a carried call stopped carrying it: the status, the code and
+// the words every later call of that grant is refused with. The watcher cancels the call's
+// context with it, which is how serveBound's ErrorHandler tells a call the watcher ended from a
+// service that could not be reached.
+type cutCall struct {
+	status int
+	code   string
+	why    string
+}
+
+func (c *cutCall) Error() string { return c.why }
+
+// watchCarried ends a carried call once the grant behind it stops carrying it, and it is the
+// whole of what holds such a call to its grant once it has started: no request is read on it
+// again, and the idle limit bounds nothing on a call whose service keeps sending. So the read
+// every request makes for itself runs here instead, on the watch interval, until the call's own
+// context ends, which ServeHTTP's return does. A call shorter than one interval is read no
+// second time. message is the line the end logs and end is how the call is ended: the cancel of
+// its context, or the cut of a joined connection.
+func (s *Server) watchCarried(ctx context.Context, info connInfo, r *http.Request, chosen pair, id, message string, end func(*cutCall)) {
 	ticker := time.NewTicker(s.watch)
 	defer ticker.Stop()
 	for {
@@ -460,14 +663,14 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 			return
 		case <-ticker.C:
 		}
-		status, why := s.joinRefusal(ctx, info, chosen.name)
-		if why == "" {
+		why := s.carryRefusal(ctx, info, chosen)
+		if why == nil {
 			continue
 		}
-		s.log.Info(joinMessage, s.callFields(id, info.callFor(chosen), r, status, why)...)
-		// The cut ends the copy in both directions, so the ServeHTTP this watcher was
-		// started for returns and the cancel there stops this goroutine.
-		cutJoined(info.cut, decrypted)
+		s.log.Info(message, s.callFields(id, info.callFor(chosen), r, why.status, why.why)...)
+		// The end stops the call in both directions, so the ServeHTTP this watcher was
+		// started for returns, and its cancel would stop this goroutine.
+		end(why)
 		return
 	}
 }
@@ -491,55 +694,76 @@ func cutJoined(cut *cutConn, c net.Conn) {
 	_ = c.Close()
 }
 
-// joinRefusal is why the grant behind a joined connection no longer carries it, and "" while it
-// does: the grant's own expiry, the connection read's refusals, and the name this upgrade was
-// decided for going out of the grant, which is how a name an operator withholds reaches a socket
-// that reads no request again. The second read is the one every other request makes for the
-// values it is handled for (valuesFor): it answers from what this pod holds unless the live
-// policy version has moved, which is a pointer read, so it costs a joined socket nothing on the
-// common path and reads the grant again exactly when a policy change could have ended it - a
-// retag, a raised tier, a narrowed requesters list - which the connection read never sees. Any
-// error of either read that is no refusal of this grant leaves the connection alone, with the
-// error logged where grantRefusal logs one: a read that failed says nothing about the grant, and
-// a database failover must cut no WebSocket the airlock carries.
-func (s *Server) joinRefusal(ctx context.Context, info connInfo, name string) (int, string) {
+// carryRefusal is why the grant behind a carried call no longer carries it, and nil while it
+// does: the grant's own expiry, the connection read's refusals, the name the call was decided for
+// going out of the grant, which is how a name an operator withholds reaches a call that reads no
+// request again, and the slot it was decided for no longer released (slotReleased), the rule a
+// new call of that slot is refused by - a github-app installation gone since the release. The
+// second read is the one every other request makes for the values it is handled for (valuesFor):
+// it answers from what this pod holds unless the live policy version has moved or the name has
+// been reread, which is a pointer read, so it costs a carried call nothing on the common path and
+// reads the grant again exactly when a policy change could have ended it - a retag, a raised tier,
+// a narrowed requesters list - which the connection read never sees. Any error of either read
+// that is no refusal of this grant leaves the call alone, with the error logged where
+// grantRefusal logs one: a read that failed says nothing about the grant, and a database failover
+// must cut no WebSocket and no stream the airlock carries.
+func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
-		return http.StatusProxyAuthRequired, "this grant expired while this connection was joined to the service"
+		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
 	}
 	grant, err := s.grants.AirlockConnection(ctx, info.password)
 	if err != nil {
-		return s.joinRead("connection", err)
+		return s.carryRead("connection", err)
 	}
-	if _, carried := grant.Names[name]; !carried {
-		return http.StatusForbidden, name + " is no longer a name of this grant"
+	if _, carried := grant.Names[chosen.name]; !carried {
+		return &cutCall{http.StatusForbidden, codeNoBoundName, chosen.name + " is no longer a name of this grant"}
 	}
 	values, err := s.valuesFor(ctx, grant.GrantID)
 	if err != nil {
-		return s.joinRead("values", err)
+		return s.carryRead("values", err)
 	}
-	if _, carried := values[name]; !carried {
-		return http.StatusForbidden, name + " is no longer a name of this grant"
+	secret, carried := values[chosen.name]
+	if !carried {
+		return &cutCall{http.StatusForbidden, codeNoValue, chosen.name + " is no longer a name of this grant"}
 	}
-	return 0, ""
+	if !slotReleased(secret, chosen.slot) {
+		return &cutCall{http.StatusForbidden, codeNoValue, noSlotValue(chosen)}
+	}
+	return nil
 }
 
-// joinRead is what one read of joinRefusal's answers for the join: a refusal of this grant
-// closes the connection, in the status and words every other call of that grant is refused with,
-// and anything else is a read that did not happen, which grantRefusal has logged and which
-// closes nothing.
+// slotReleased is whether the broker's read of a name still fills the slot a call is handled
+// for, the one rule serveBound refuses a new call by and carryRefusal ends a carried one by: a
+// slot it holds a value for, or an azure access slot, whose token no broker read holds and the
+// proxy holds or exchanges for itself (azureAccess).
+func slotReleased(secret requests.AirlockSecret, slot string) bool {
+	_, held := secret.Slots[slot]
+	return held || isAzureAccessSlot(slot)
+}
+
+// noSlotValue is the words a call is refused or ended with when the broker no longer releases the
+// slot it is handled for.
+func noSlotValue(chosen pair) string {
+	return "the broker released no " + chosen.slot + " value for " + chosen.name
+}
+
+// carryRead is what one read of carryRefusal's answers for the call: a refusal of this grant
+// ends it, in the status, code and words every other call of that grant is refused with, and
+// anything else is a read that did not happen, which grantRefusal has logged and which ends
+// nothing.
 //
 // What tells the two apart is grantRefusal's own answer and not the error, because the two do
 // not always agree: a mint whose upstream could not be asked reaches here as an ErrMintFailed,
 // which is a refusal of the requests package, and grantRefusal answers it 503 all the same,
-// since nothing of it says the grant has ended. Reading the error here would close a WebSocket
-// a github-app, google-login or azure-login name still carries every time its upstream has a
-// bad minute.
-func (s *Server) joinRead(read string, err error) (int, string) {
-	status, _, why := s.grantRefusal(read, err)
+// since nothing of it says the grant has ended. Reading the error here would end a WebSocket or
+// a stream a github-app, google-login or azure-login name still carries every time its upstream
+// has a bad minute.
+func (s *Server) carryRead(read string, err error) *cutCall {
+	status, code, why := s.grantRefusal(read, err)
 	if status == http.StatusProxyAuthRequired || status == http.StatusForbidden {
-		return status, why
+		return &cutCall{status, code, why}
 	}
-	return 0, ""
+	return nil
 }
 
 // callMessage is the message of the one line a call to a bound host logs that the airlock carried
@@ -593,11 +817,12 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // name the call was handled for as its secrets, once one was chosen, listed and counted by the API
 // port's rule (answer.SecretNames) - and beside them the host, the reason and the path before the
 // caller's correlation id, and the issue the grant was given for and the slot after it. Never the
-// placeholder and never the value, as callFields: the reason is the broker's own words, which name
-// neither. The method, the host and the path are the caller's, and a reason may quote the host
-// (serveConnect's target that is no host and port, and checkedAddresses' name that does not
-// resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the line
-// (answer.ClipFields).
+// value: no field is read from a header the swap puts one in, nor from the body. The method, the
+// host, the path and the correlation id (X-Correlation-Id) are the caller's own text, and a reason
+// may quote the host (serveConnect's target that is no host and port, and checkedAddresses' name
+// that does not resolve): RefusalLine.Fields cuts each of them, as it cuts every text field of the
+// line (answer.ClipFields), and the line is written through maskedHandler, which writes each
+// placeholder such text holds as placeholderMark, since a cut is no redaction.
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
 	line := answer.RefusalLine{ID: id, Status: status, Code: code, Method: r.Method,
 		CallerClass: answer.CallerAirlock, Caller: callerOf(c.grant), Correlation: answer.CorrelationID(r)}
@@ -620,12 +845,13 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 }
 
 // callFields is what one call to a bound host logs when it was carried or failed, and what the
-// end of a joined connection logs (watchJoined): its answer id, who made it, which secret it was
-// handled for, where it went, and how it ended. Never the placeholder and never the value - the
-// airlock exists so that neither is ever written down, and a log line is the first place one
-// would leak. The reason is there for a call that was not carried alone, so a line reads as
-// allowed, or as not and why. Every text field is cut by answer.ClipFields, as the refusal line's
-// are, so whatever method and path the caller sent, the line stays one Cloud Logging entry.
+// end of a carried call its grant stopped carrying logs (watchCarried): its answer id, who made
+// it, which secret it was handled for, where it went, and how it ended. Never the placeholder and
+// never the value - the airlock exists so that neither is ever written down, and a log line is
+// the first place one would leak. The reason is there for a call that was not carried alone, so
+// a line reads as allowed, or as not and why. Every text field is cut by answer.ClipFields, as
+// the refusal line's are, so whatever method and path the caller sent, the line stays one Cloud
+// Logging entry.
 func (s *Server) callFields(id string, c call, r *http.Request, status int, reason string) []any {
 	fields := []any{
 		"answer_id", id,
@@ -705,6 +931,8 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 
 // choosePair is the one (name, slot) pair a request is handled for: the first candidate a header
 // of the request already carries the placeholder of, and otherwise the first candidate.
+// holdsPlaceholder is whether the request carries the placeholder of the pair answered, so the
+// caller tells the request that asks for that pair's value from the one that only fell to it.
 //
 // Why one pair at all. The decision and the swap are over one grant and one secret
 // (airlock.Grant), and the model that is proved is over that pair, so a request is decided for
@@ -719,7 +947,7 @@ func (s *Server) candidates(grant requests.AirlockConnection, host string, port 
 // candidate: the entry's hosts, method and path rules apply to it, and it is forwarded with
 // nothing swapped. That is what makes an entry's allow list a bound on the whole connection
 // rather than on the requests that happen to ask for a swap.
-func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) pair {
+func choosePair(candidates []pair, grant requests.AirlockConnection, request *airlock.Request) (chosen pair, holdsPlaceholder bool) {
 	for _, candidate := range candidates {
 		placeholder := grant.Names[candidate.name].Slots[candidate.slot]
 		if placeholder == "" {
@@ -727,11 +955,11 @@ func choosePair(candidates []pair, grant requests.AirlockConnection, request *ai
 		}
 		for _, header := range request.Headers {
 			if airlock.Carries(placeholder, header[1]) {
-				return candidate
+				return candidate, true
 			}
 		}
 	}
-	return candidates[0]
+	return candidates[0], false
 }
 
 // sniOf is the name the command asked for in its TLS handshake, "" for a client that sent none.
@@ -771,11 +999,29 @@ func headerOf(headers [][2]string) http.Header {
 }
 
 // statusWriter records the status the service answered, which the call's log line names. It
-// unwraps, so the flush that streams each write (FlushInterval -1) and every other
-// http.ResponseController call reach the real writer.
+// unwraps, so every http.ResponseController call but a flush reaches the real writer, and the
+// flush that streams each write (FlushInterval -1) reaches it through FlushError.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	// whole is whether the service's answer has no body (ModifyResponse). It is read by the
+	// flush ReverseProxy's own timer runs, on a goroutine of its own.
+	whole atomic.Bool
+}
+
+// FlushError flushes what has been written, except for an answer with no body, which net/http
+// writes whole once the call returns. ReverseProxy flushes the header of every answer it
+// streams on a timer of its own, which races the end of an answer with no body: when the timer
+// wins, the header goes out alone and the end of the stream after it. A gRPC service answers a
+// call that failed with such an answer ("Trailers-Only"), the status in that one header, and a
+// gRPC client reads a status that arrives in a header the stream does not end with as no status
+// at all: the call fails with "server closed the stream without sending trailers" and not with
+// the service's own status.
+func (w *statusWriter) FlushError() error {
+	if w.whole.Load() {
+		return nil
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *statusWriter) WriteHeader(status int) {

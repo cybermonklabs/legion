@@ -126,8 +126,10 @@ func TestKVReadIsReadOnly(t *testing.T) {
 }
 
 // NamesSystemSubject finds an entry that reaches a system subject, the auth service's own
-// authorization subject among them, in either list and with or without a queue group; and it finds
-// none in any grant this package returns.
+// authorization subject among them, in either list and with or without a queue group, whatever
+// whitespace stands before the queue group: nats-server splits an entry with strings.Fields
+// (server/client.go, splitSubjectQueue), so a tab or a no-break space separates it as a space
+// does. And it finds none in any grant this package returns.
 func TestNamesSystemSubject(t *testing.T) {
 	for _, entry := range []string{
 		"$SYS.REQ.USER.AUTH",
@@ -136,6 +138,9 @@ func TestNamesSystemSubject(t *testing.T) {
 		"*.REQ.USER.AUTH",
 		"*.>",
 		"$SYS.REQ.USER.AUTH envoy-auth",
+		">\tenvoy-auth",
+		"$SYS.REQ.USER.AUTH\tenvoy-auth",
+		">\u00a0envoy-auth",
 	} {
 		for _, p := range []natsgrant.Permissions{
 			{Publish: []string{"_INBOX.>", entry}},

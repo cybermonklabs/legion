@@ -43,6 +43,25 @@ export function hasErrnoCode(error: unknown, code: string): boolean {
   return error instanceof Error && "code" in error && error.code === code;
 }
 
+/** The codes a fetch fails with when nothing took its connection: Bun 1.4 answers a refused
+ *  connection `ECONNREFUSED`, and a name that does not resolve `ENOTFOUND` or `EAI_AGAIN` with the
+ *  syscall `getaddrinfo` (measured on Bun 1.4.4). A reset after the request was written
+ *  (`ECONNRESET`) or a timeout is none of these. */
+const NOT_CONNECTED = new Set(["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH"]);
+
+/**
+ * Whether a fetch's failure says its request reached no server at all: nothing took the
+ * connection, or the name did not resolve. Such a request did nothing, so a write it carried cannot
+ * have landed; any other failure of a request that went out (a reset after the server read it)
+ * may have followed a write the server ran. The Envoy client (`transport.ts`) and the Dispatch
+ * client (`dispatch-http.ts`) both read a failure through this.
+ */
+export function reachedNothing(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const { code, syscall } = error as { code?: unknown; syscall?: unknown };
+  return syscall === "getaddrinfo" || (typeof code === "string" && NOT_CONNECTED.has(code));
+}
+
 /**
  * An error whose message its writer composed from nothing a NATS server setting holds, so a log
  * prints it whole (`natsFailureReason`, below), where it prints only the code of nats.js's and

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchConfigResolution, dispatchSettings } from "../dispatch-config";
 import { type EnvoyConfig, readEnvoyConfig } from "../envoy-config";
@@ -37,6 +38,13 @@ function errorOf(config: EnvoyConfig): string {
 
 const tempDir = temporaryDirectories("envoy-settings");
 
+/** The listener's bearer ENVOY_TOKEN hands a session. */
+const ENVIRONMENT_TOKEN = fixtureSecret("envoy");
+/** The listener's bearer an envoy.json's `envoy.token` names. */
+const FILE_TOKEN = fixtureSecret("file");
+/** The listener's bearer an ENVOY_TOKEN_FILE holds. */
+const POINTER_TOKEN = fixtureSecret("pointer");
+
 /** The configuration read from a file holding `contents`, with no checkout file beside it. */
 function configFrom(contents: unknown) {
   const file = path.join(tempDir(), "envoy.json");
@@ -54,7 +62,7 @@ const listener = {
   enabled: true,
   url: "http://listener.internal.example:9020/",
   natsUrls: ["nats://nats.internal.example:4222"],
-  token: "file-token",
+  token: FILE_TOKEN,
   natsSeed: "SUFILESEED",
 };
 
@@ -64,7 +72,7 @@ describe("envoySettings", () => {
     expect(envoyAsToken(envoySettings({}, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
-      token: "file-token",
+      token: FILE_TOKEN,
       inbound: {
         natsUrls: ["nats://nats.internal.example:4222"],
         natsServersSetting: `envoy.natsUrls in ${config.path}`,
@@ -88,7 +96,7 @@ describe("envoySettings", () => {
           {
             ENVOY_URL: "http://other-listener.internal.example:9020/",
             ENVOY_NATS_URL: "nats://one.internal.example:4222, nats://two.internal.example:4222",
-            ENVOY_TOKEN: "environment-token",
+            ENVOY_TOKEN: ENVIRONMENT_TOKEN,
             NATS_NKEY_SEED: " SUENVSEED ",
             ENVOY_HEARTBEAT_MS: "10",
           },
@@ -98,7 +106,7 @@ describe("envoySettings", () => {
     ).toEqual({
       enabled: true,
       url: "http://other-listener.internal.example:9020",
-      token: "environment-token",
+      token: ENVIRONMENT_TOKEN,
       inbound: {
         natsUrls: ["nats://one.internal.example:4222", "nats://two.internal.example:4222"],
         natsServersSetting: "ENVOY_NATS_URL",
@@ -110,11 +118,11 @@ describe("envoySettings", () => {
       passDeadlineRaisedFrom: undefined,
     });
 
-    const tokenFile = secretFile("  pointer-token\n");
+    const tokenFile = secretFile(`  ${POINTER_TOKEN}\n`);
     const seedFile = secretFile("\nSUPOINTERSEED\n");
     const pointers = envoySettings(
       {
-        ENVOY_TOKEN: "environment-token",
+        ENVOY_TOKEN: ENVIRONMENT_TOKEN,
         ENVOY_TOKEN_FILE: tokenFile,
         NATS_NKEY_SEED: "SUENVSEED",
         NATS_NKEY_SEED_FILE: seedFile,
@@ -123,7 +131,7 @@ describe("envoySettings", () => {
     );
     expect(envoyAsToken(pointers)).toMatchObject({
       enabled: true,
-      token: "pointer-token",
+      token: POINTER_TOKEN,
       inbound: {
         natsCredential: {
           kind: "seed",
@@ -266,7 +274,7 @@ describe("envoySettings", () => {
         {
           ENVOY_URL: "http://listener.internal.example:9020",
           ENVOY_NATS_URL: "nats://nats.internal.example:4222",
-          ENVOY_TOKEN: "environment-token",
+          ENVOY_TOKEN: ENVIRONMENT_TOKEN,
         },
         config
       )
@@ -360,7 +368,13 @@ describe("envoySettings", () => {
 
   test("a plain ENVOY_TOKEN with whitespace inside is refused without echoing it", () => {
     const config = configFrom({ envoy: listener });
-    expect(envoySettings({ ENVOY_TOKEN: "S3CRET\nnotes" }, config)).toEqual({
+    const settings = envoySettings(
+      {
+        ENVOY_TOKEN: "S3CRET\nnotes", // fixture-secret: bearerSource refuses its newline (sendable) before any holdSecret
+      },
+      config
+    );
+    expect(settings).toEqual({
       enabled: false,
       notice: null,
       error: "ENVOY_TOKEN holds whitespace or a control character",
@@ -382,7 +396,7 @@ describe("envoySettings", () => {
     const home = tempDir();
     const ran = path.join(home, "ran");
     const notEnabled = configFrom({
-      envoy: { url: "http://listener.internal.example:9020", token: "file-token" },
+      envoy: { url: "http://listener.internal.example:9020", token: FILE_TOKEN },
     });
     expect(
       envoyAsToken(
@@ -391,7 +405,7 @@ describe("envoySettings", () => {
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
-      token: "file-token",
+      token: FILE_TOKEN,
     });
     const noServers = configFrom({ envoy: { enabled: true, natsSeed: `!touch ${ran}; echo SU` } });
     expect(envoySettings({ PATH: process.env.PATH }, noServers)).toMatchObject({
@@ -417,7 +431,7 @@ describe("envoySettings", () => {
       expect(envoyAsToken(envoySettings(env, config, { nats: false }))).toEqual({
         enabled: true,
         url: "http://listener.internal.example:9020",
-        token: "file-token",
+        token: FILE_TOKEN,
         inbound: { off: "this session opens no NATS connection" },
         heartbeatMs: 90_000,
         tmuxPlaceCacheMs: 30_000,
@@ -433,9 +447,10 @@ describe("envoySettings", () => {
     const dir = tempDir();
     const missing = path.join(dir, "missing");
     const blank = secretFile(" \n");
+    const plainToken = fixtureSecret("envoy");
     const cases: [Record<string, string>, string][] = [
       [
-        { ENVOY_TOKEN_FILE: missing, ENVOY_TOKEN: "plain-token" },
+        { ENVOY_TOKEN_FILE: missing, ENVOY_TOKEN: plainToken },
         "ENVOY_TOKEN_FILE names a file that could not be read (ENOENT)",
       ],
       [{ ENVOY_TOKEN_FILE: blank }, "ENVOY_TOKEN_FILE names a file that is empty"],
@@ -445,7 +460,7 @@ describe("envoySettings", () => {
       expect(settings).toMatchObject({ enabled: false, notice: null });
       if (settings.enabled) throw new Error(`accepted ${JSON.stringify(env)}`);
       expect(settings.error).toContain(message);
-      expect(settings.error).not.toContain("plain-token");
+      expect(settings.error).not.toContain(plainToken);
       expect(settings.error).not.toContain(dir);
     }
   });
@@ -464,7 +479,7 @@ describe("envoySettings", () => {
       expect(envoyAsToken(settings)).toMatchObject({
         enabled: true,
         url: "http://listener.internal.example:9020",
-        token: "file-token",
+        token: FILE_TOKEN,
       });
       if (!settings.enabled || !("off" in settings.inbound)) {
         throw new Error(`refused ${JSON.stringify(env)}, or took its seed`);
@@ -486,7 +501,7 @@ describe("envoySettings", () => {
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020/v1",
-      token: "file-token",
+      token: FILE_TOKEN,
     });
     // An origin is scheme, host and port: each differs from the file's listener on its own.
     for (const url of [
@@ -499,7 +514,7 @@ describe("envoySettings", () => {
   });
 
   test("a file's token with no listener of its own goes only to the default listener", () => {
-    const bare = configFrom({ envoy: { enabled: true, token: "file-token" } });
+    const bare = configFrom({ envoy: { enabled: true, token: FILE_TOKEN } });
     expect(envoySettings({ ENVOY_URL: "http://other.internal.example:9020" }, bare)).toEqual({
       enabled: false,
       notice: null,
@@ -509,7 +524,7 @@ describe("envoySettings", () => {
       envoyAsToken(envoySettings({ ENVOY_URL: "http://127.0.0.1:9020/v1" }, bare))
     ).toMatchObject({
       enabled: true,
-      token: "file-token",
+      token: FILE_TOKEN,
     });
   });
 });
@@ -549,7 +564,7 @@ describe("the NATS seed in envoy.json", () => {
       envoy: {
         enabled: true,
         url: "http://listener.internal.example:9020",
-        token: "file-token",
+        token: FILE_TOKEN,
         natsUrls: fileServers,
         natsSeed: `!echo run >> ${runs}; echo SUSEED`,
       },
@@ -561,7 +576,7 @@ describe("the NATS seed in envoy.json", () => {
     expect(envoyAsToken(envoySettings(other, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
-      token: "file-token",
+      token: FILE_TOKEN,
       inbound: {
         off: `ENVOY_NATS_URL names other servers than ${config.path}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`,
       },
@@ -650,11 +665,12 @@ describe("the NATS seed in envoy.json", () => {
   });
 
   test("a checkout's servers are not read, and a seed in the variables goes with the pane's servers", () => {
+    const userToken = fixtureSecret("user");
     const user = path.join(tempDir(), "envoy.json");
     writeFileSync(
       user,
       JSON.stringify({
-        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: "user-token" },
+        dispatch: { enabled: true, serverUrl: "https://dispatch.example", token: userToken },
         envoy: { enabled: true, natsUrls: fileServers },
       })
     );
@@ -676,7 +692,7 @@ describe("the NATS seed in envoy.json", () => {
     expect(dispatchAsToken(dispatchSettings(env, config))).toEqual({
       enabled: true,
       url: "https://dispatch.example",
-      token: "user-token",
+      token: userToken,
     });
   });
 });

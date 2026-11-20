@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -287,8 +288,8 @@ func createDaemonNotificationStream(t *testing.T, js jetstream.JetStream) jetstr
 
 func startDaemonGrantServer(t *testing.T, image string, grant natsgrant.Permissions) (string, *nats.Conn, jetstream.JetStream, *tcnats.NATSContainer, string) {
 	t.Helper()
-	daemonSeed, daemonPublic := testnats.User(t)
-	adminSeed, adminPublic := testnats.User(t)
+	daemonSeed, daemonPublic := testnkeys.User(t)
+	adminSeed, adminPublic := testnkeys.User(t)
 	// The server's configuration reads JSON, but not Go's HTML escaping of '>' as \u003e.
 	var permissions strings.Builder
 	encoder := json.NewEncoder(&permissions)

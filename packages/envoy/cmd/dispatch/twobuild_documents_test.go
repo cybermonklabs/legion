@@ -593,12 +593,18 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	reader.process.call(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer",
 		`{"selected":["First"],"expected_edited_at":null}`, http.StatusOK)
 
+	// The carried approval is in the approver's name, and its whole actor crosses the builds, the
+	// proven flag included: neither build may lose the mark when it carries the other's review.
+	// Every release from legion-envoy-v30.44.0 on stores model.Actor.Proven (main's #4281), and
+	// no pair the harness makes holds a build older than that: dispatch-two-builds pairs this tree
+	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
+	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
 		if len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
-			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin}) {
+			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true}) {
 			t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, reviews[0].Version)
 			return
 		}

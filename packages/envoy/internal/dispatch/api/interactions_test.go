@@ -365,7 +365,7 @@ func TestListIssueAsksFiltersByState(t *testing.T) {
 }
 
 func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
-	// The seeded spec's settlement would lock the issue row this test holds; keep it
+	// The seeded spec's settlement would take the issue's owner lock this test holds; keep it
 	// out of the lock queue so the counted waiter is the answer handler.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	issue := createInteractionIssue(t, handler, "TEST", "Answer lock order", "A spec")
@@ -384,9 +384,8 @@ func TestAnswerAskLocksIssueBeforeAskRow(t *testing.T) {
 		t.Fatalf("begin edit transaction: %v", err)
 	}
 	defer func() { _ = edit.Rollback(context.Background()) }()
-	var lockedKey string
-	if err := edit.QueryRow(context.Background(), `select key from issues where key = $1 for update`, issue.Key).Scan(&lockedKey); err != nil {
-		t.Fatalf("lock issue for edit: %v", err)
+	if err := store.LockOwner(context.Background(), edit, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock for edit: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -422,12 +421,12 @@ func TestClosedIssueAsksCannotBeAnsweredOrShown(t *testing.T) {
 	}
 	// The close withdrew the ask; an answer on the closed issue is still refused, and leaves the
 	// close's record as it was.
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{}, "alice")
 	if answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("answer ask on closed issue: status=%d body=%s", answer.Code, answer.Body.String())
 	}
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	inbox := dispatchRequest(t, handler, http.MethodGet, "/api/v1/inbox?project=TEST", nil, "alice")
 	if inbox.Code != http.StatusOK || strings.Contains(inbox.Body.String(), ask.ID) {
 		t.Fatalf("closed issue ask appeared in inbox: status=%d body=%s", inbox.Code, inbox.Body.String())
@@ -1064,7 +1063,7 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 		commentEvent.Deliveries == nil || len(commentEvent.Mentions) != 0 || len(commentEvent.Deliveries) != 0 ||
 		commentEvent.ArtifactName != "spec.md" || commentEvent.ProjectKey != "TEST" ||
 		commentEvent.ArtifactSlug != "spec" ||
-		commentEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice"}) ||
+		commentEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) ||
 		commentEvent.Event.Notify || commentEvent.Event.CreatedAt.IsZero() || commentEvent.Event.Seq == 0 ||
 		acceptedSuggestionSeq == 0 || commentEvent.Event.Seq >= acceptedSuggestionSeq {
 		t.Fatalf("comment.anchor_refreshed payload = %#v, want full orphaned earlier-comment payload", commentEvent)
@@ -1085,7 +1084,7 @@ func TestSuggestionAcceptEmitsAnchorRefreshEventsForChangedOpenRows(t *testing.T
 		askEvent.AnchorArtifact.Project != "TEST" || askEvent.AnchorArtifact.Slug != "spec" ||
 		askEvent.AnchorArtifact.Name != "spec.md" || !askEvent.AnchorArtifact.Primary ||
 		askEvent.OpenedEventID == nil || !askEvent.CreatedAt.Equal(ask.CreatedAt) ||
-		askEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice"}) || askEvent.Event.Notify ||
+		askEvent.Event.Actor != (model.Actor{Kind: "user", ID: "alice", Proven: true}) || askEvent.Event.Notify ||
 		askEvent.Event.CreatedAt.IsZero() || askEvent.Event.Seq == 0 || askEvent.Event.Seq >= acceptedSuggestionSeq ||
 		askEvent.Event.Seq == commentEvent.Event.Seq {
 		t.Fatalf("ask.anchor_refreshed payload = %#v, want full orphaned ask payload", askEvent)
@@ -1351,7 +1350,7 @@ func TestSuggestionAcceptClearsPendingAuthorBeforeNextVersion(t *testing.T) {
 func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.T) {
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
@@ -1373,7 +1372,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	if err := tx.QueryRow(ctx, `select coalesce(max(number), 0) + 1 from artifact_versions where artifact_id = $1`, issue.PrimaryArtifactID).Scan(&nextNumber); err != nil {
 		t.Fatalf("read next upload version number: %v", err)
 	}
-	uploadVersion, err := writeDocumentVersion(ctx, tx, issue.PrimaryArtifactID, nextNumber, uploaded, []model.Actor{alice}, nil, ledger.RenderStampOf(issue.PrimaryArtifactID, uploaded))
+	uploadVersion, err := ledger.QueueVersion(ctx, issue.PrimaryArtifactID, uploaded, []model.Actor{alice}, nil)
 	if err != nil {
 		t.Fatalf("write the upload version: %v", err)
 	}
@@ -1394,7 +1393,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 // edit or kept it. An upload that changes nothing clears nothing (LEGION-503).
 func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 	session := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	alice := model.Actor{Kind: "user", ID: "alice"}
+	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	for _, test := range []struct {
 		name        string
 		replacement string
@@ -1589,8 +1588,9 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 		t.Fatalf("begin issue blocker: %v", err)
 	}
 	defer blocker.Rollback(context.Background())
-	if _, err := blocker.Exec(context.Background(), `select 1 from issues where key = $1 for update`, issue.Key); err != nil {
-		t.Fatalf("lock issue: %v", err)
+	// The blocker closes the issue as a PATCH does, under the issue's owner lock.
+	if err := store.LockOwner(context.Background(), blocker, store.IssueOwner(issue.Key)); err != nil {
+		t.Fatalf("take the issue's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -1967,7 +1967,7 @@ func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 		"question": "Later ask", "actor": sessionActor(),
 	}))
 	// The close withdrew the open ask; its answer is refused with the rest.
-	requireWithdrawn(t, handler, issue.Key, askID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, askID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	assertClosed("ask answer", dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{}, "alice"))
 	assertClosed("ask resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
 		"kind": "retracted", "reason": "Later retraction.", "actor": sessionActor(),
@@ -2582,13 +2582,13 @@ func TestResolveAskRejectsInvalidInputAndClosedIssues(t *testing.T) {
 		t.Fatalf("close issue: status=%d body=%s", response.Code, response.Body.String())
 	}
 	// The close withdrew the ask, and its record stays the close's.
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 	if response := sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/resolve", map[string]any{
 		"kind": "resolved", "reason": "Found the answer.", "actor": sessionActor(),
 	}); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("resolve ask on closed issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice"})
+	requireWithdrawn(t, handler, issue.Key, ask.ID, model.Actor{Kind: "user", ID: "alice", Proven: true})
 }
 
 func TestInboxGroupsAsksWaitingOnTheirAskerAfterThoseNeedingAHuman(t *testing.T) {

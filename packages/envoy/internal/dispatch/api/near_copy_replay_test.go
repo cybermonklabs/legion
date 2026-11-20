@@ -213,8 +213,8 @@ type nearCopyScore struct {
 	took           time.Duration
 }
 
-// nearCopyGateBound is the bound the replay runs the gate under. Production's is 500 ms
-// (duplicateGateTimeout), which this replay must not be held to: it measures what the gate
+// nearCopyGateBound is the bound the replay runs the gate under. Production's is
+// duplicateGateTimeout, which this replay must not be held to: it measures what the gate
 // costs, and a read cut off at the bound measures nothing. The gate prices the words a cold
 // project's statistics do not hold rather than probing for them (priceUnknownTerms), so no
 // early create pays for probes, but the replay's own walk writes the project as it reads it,
@@ -384,7 +384,7 @@ func measureNearCopyGate(
 			lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 			started = time.Now()
 			rows, err := database.Pool.Query(ctx, duplicateScoreQuery,
-				corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions)
+				corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title)
 			if err != nil {
 				t.Fatalf("score for %s: %v", name, err)
 			}
@@ -420,7 +420,7 @@ func measureNearCopyGate(
 	}
 	lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 	plan, err := database.Pool.Query(ctx, "explain (analyze, buffers) "+duplicateScoreQuery,
-		corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions)
+		corpus.project, lexemes, weights, []string{}, duplicateNudgeScore, duplicateHeadlineOptions, title)
 	if err != nil {
 		t.Fatalf("explain the scoring statement: %v", err)
 	}
@@ -670,7 +670,9 @@ func reportNearCopyReplay(
 		"contributes is dropped; the picker keeps at most %d terms, spends at most %d document frequency, "+
 		"and drops a term in more than a tenth of the project or under %d items; a text left with fewer "+
 		"than %d terms, or holding no more lexemes than that, is scored by no share at all - it refuses "+
-		"only an open issue whose title and spec hold the same lexemes, which the report counts at 1.000. "+
+		"only an open issue whose title and spec hold the same lexemes, which the report counts at 1.000; "+
+		"the scoring statement leaves out a candidate when both titles name issue keys and the new title "+
+		"names neither the candidate's key nor any key its title names (duplicateNamesAnotherIssue). "+
 		"A change to any of those invalidates this calibration.",
 		relatedTermLimit, relatedMatchBudget, relatedCommonFloor, duplicateMinTerms)
 

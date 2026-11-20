@@ -10,6 +10,7 @@ import { afterAll, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { METADATA_HOST_VAR, metadataIdentity } from "../metadata-identity";
 import { projectedToken } from "../projected-token";
@@ -56,16 +57,22 @@ function stubMetadata(token: string): { host: string; asked: MetadataRequest[] }
   return { host: `127.0.0.1:${server.port}`, asked };
 }
 
+/** The machine's identity token the stand-in metadata server answers: random, as a real one is,
+ *  since the process holds it (`@legion/contracts/held-secrets`). */
+const MACHINE_IDENTITY_TOKEN = fixtureSecret("machine");
+
 test("a projected token is read from its file at every read, trimmed", async () => {
-  const path = await tokenFile("first.projected.token\n");
+  const first = fixtureSecret("first");
+  const second = fixtureSecret("second");
+  const path = await tokenFile(`${first}\n`);
   const source = projectedToken(path, "AGENT_SECRETS_MACHINE_TOKEN_FILE");
   expect(await source.read()).toEqual({
-    token: "first.projected.token",
+    token: first,
     tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES,
   });
   // The kubelet rewrites the file in place, so a renewal must see the new token.
-  await writeFile(path, "second.projected.token\n");
-  expect((await source.read()).token).toBe("second.projected.token");
+  await writeFile(path, `${second}\n`);
+  expect((await source.read()).token).toBe(second);
   expect(source.describe()).toBe(
     "the projected service-account token AGENT_SECRETS_MACHINE_TOKEN_FILE names"
   );
@@ -98,12 +105,12 @@ test("a token pasted into the token file's variable is named in no error", async
 });
 
 test("a machine's identity token is asked for with format=full, the audience and the header", async () => {
-  const metadata = stubMetadata("machine.identity.token");
+  const metadata = stubMetadata(MACHINE_IDENTITY_TOKEN);
   const source = metadataIdentity("example-audience", {
     [METADATA_HOST_VAR]: metadata.host,
   } as NodeJS.ProcessEnv);
   expect(await source.read()).toEqual({
-    token: "machine.identity.token",
+    token: MACHINE_IDENTITY_TOKEN,
     tokenType: SUBJECT_TOKEN_TYPE_GOOGLE,
   });
   expect(metadata.asked).toEqual([
@@ -165,7 +172,7 @@ test("no proxy variable can take the identity token", async () => {
     },
   });
   servers.push(proxy);
-  const metadata = stubMetadata("machine.identity.token");
+  const metadata = stubMetadata(MACHINE_IDENTITY_TOKEN);
   const proxyUrl = `http://127.0.0.1:${proxy.port}`;
   const source = metadataIdentity("example-audience", {
     [METADATA_HOST_VAR]: metadata.host,
@@ -185,7 +192,7 @@ test("no proxy variable can take the identity token", async () => {
   process.env.ALL_PROXY = proxyUrl;
   process.env.NODE_USE_ENV_PROXY = "1";
   try {
-    expect((await source.read()).token).toBe("machine.identity.token");
+    expect((await source.read()).token).toBe(MACHINE_IDENTITY_TOKEN);
   } finally {
     for (const name of [
       "HTTP_PROXY",

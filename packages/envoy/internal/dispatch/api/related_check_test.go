@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -163,6 +164,72 @@ func meaningServer(t *testing.T, embedder *fakeEmbedder) (http.Handler, *store.S
 	return handler, database, directServer(deps)
 }
 
+// binaryDeadlineMargin is what binaryDeadlineGuard leaves of the test binary's deadline for the
+// failed case's cleanups - releasing a held read, closing its servers and dropping its database
+// - and for the binary's own end: the margin throughputWait leaves for the socket rig's.
+const binaryDeadlineMargin = 30 * time.Second
+
+// binaryDeadlineGuard fires binaryDeadlineMargin before the test binary's deadline, and never
+// when the binary runs without one (-timeout 0). A case that waits on something only the code
+// under test ends - the related-item check's answer, a leg's read - selects on it, so code that
+// never ends the wait fails that case by name, and leaves the binary's timeout to the package's
+// later tests. It bounds no measurement: it fires only where the wait would otherwise last as
+// long as the binary. A deadline that leaves no more than the margin to begin with fails at once,
+// by name, as throughputWait's does.
+func binaryDeadlineGuard(t *testing.T) <-chan time.Time {
+	t.Helper()
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		return nil
+	}
+	left := time.Until(deadline) - binaryDeadlineMargin
+	if left <= 0 {
+		t.Fatalf("the test binary's deadline leaves %s, not more than binaryDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout",
+			time.Until(deadline).Round(time.Millisecond), binaryDeadlineMargin)
+	}
+	timer := time.NewTimer(left)
+	t.Cleanup(func() { timer.Stop() })
+	return timer.C
+}
+
+// answeredBeforeTheBinaryDeadline runs run on a goroutine of its own and answers what it answers,
+// failing the case by name when it has not answered by binaryDeadlineGuard. run must not call t's
+// FailNow family, which only the case's own goroutine may.
+func answeredBeforeTheBinaryDeadline[T any](t *testing.T, what string, run func() T) T {
+	t.Helper()
+	guard := binaryDeadlineGuard(t)
+	answered := make(chan T, 1)
+	go func() { answered <- run() }()
+	select {
+	case answer := <-answered:
+		return answer
+	case <-guard:
+		t.Fatalf("%s had not answered %s before the test binary's deadline: nothing ended what it waits on", what, binaryDeadlineMargin)
+		var none T
+		return none
+	}
+}
+
+// deadlineEmbedder is fakeEmbedder recording the deadline of each call's context: what bounds the
+// check's embedding, which is the meaning deadline (embedQuery's own bound is no earlier).
+type deadlineEmbedder struct {
+	*fakeEmbedder
+	deadlines chan time.Time
+}
+
+func newDeadlineEmbedder(embedder *fakeEmbedder) *deadlineEmbedder {
+	return &deadlineEmbedder{fakeEmbedder: embedder, deadlines: make(chan time.Time, 16)}
+}
+
+func (e *deadlineEmbedder) Embed(ctx context.Context, texts []string, inputType embed.InputType) ([][]float32, error) {
+	deadline, _ := ctx.Deadline()
+	select {
+	case e.deadlines <- deadline:
+	default:
+	}
+	return e.fakeEmbedder.Embed(ctx, texts, inputType)
+}
+
 // An item whose meaning matches and which holds none of the text's words is found by the meaning
 // search, and the result says it searched by meaning and keywords.
 func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) {
@@ -301,14 +368,27 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 
 // An embedder slower than the meaning allowance costs the check three seconds, not five: it
 // answers its keyword search's result then, saying meaning search did not answer in time.
+//
+// The check's own allowance is an hour here (server.suggestionTimeout), so it answers only
+// because the meaning allowance ended its meaning search, never because its own allowance ran
+// out: a check that waited for that fails by name before the binary's deadline. The case starts
+// the check at a moment it reads, and the embedder records its context's deadline, so that the
+// meaning search ran to the meaning allowance from the check's start is a value the case
+// compares rather than a time it measures.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
 	embedder := &fakeEmbedder{delay: time.Minute}
 	handler, _, srv := meaningServer(t, embedder)
 	createSuggestionProject(t, handler, "MSLOW")
 	key := createSearchIssue(t, handler, "MSLOW", "Nightly backups overrun their window", "")
+	recorded := newDeadlineEmbedder(embedder)
+	srv.deps.Embedder = recorded
+	srv.suggestionTimeout = time.Hour
 
 	started := time.Now()
-	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"})
+	suggestions := answeredBeforeTheBinaryDeadline(t, "the check", func() *model.Suggestions {
+		answer, _ := srv.runRelatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"}, started)
+		return answer
+	})
 	elapsed := time.Since(started)
 	if suggestions.Outcome != "found" || suggestions.Search != "keywords_only" ||
 		suggestions.SearchNote != "meaning search did not answer within 3s" {
@@ -317,8 +397,19 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
 		t.Fatalf("related = %+v, want %s from the keyword search", suggestions.Related, key)
 	}
-	if elapsed < 3*time.Second || elapsed >= 4*time.Second {
-		t.Fatalf("the check took %s, want it to answer when the 3s meaning allowance ended", elapsed)
+	if elapsed < relatedMeaningAllowance {
+		t.Fatalf("the check answered in %s, before the %s meaning allowance ended", elapsed, relatedMeaningAllowance)
+	}
+	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
+	var deadline time.Time
+	select {
+	case deadline = <-recorded.deadlines:
+	case <-binaryDeadlineGuard(t):
+		t.Fatalf("the check's meaning stage had not called the embedder %s before the test binary's deadline", binaryDeadlineMargin)
+	}
+	if want := started.Add(relatedMeaningAllowance); !deadline.Equal(want) {
+		t.Fatalf("the embedding ran to %v, want %v, the %s meaning allowance from the check's start: the meaning search is not bounded by the meaning allowance",
+			deadline, want, relatedMeaningAllowance)
 	}
 }
 
@@ -754,9 +845,11 @@ func TestRelatedCheckBoundsBlankTextIsNotMade(t *testing.T) {
 // The check is stopped by its own allowance, which the near-copy gate does not share: the gate
 // runs before the write under a bound of its own, the check after it. A lock would stop both,
 // since the gate prices the text's words through the check's own picker, and that case is the
-// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList).
+// third state of R3's record (TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList). The gate's
+// bound here is the case's (nearCopyVerdictBound), so the title matches are the gate's verdict
+// and not the machine's having answered inside production's 500 ms.
 func TestCreateIssueForceNamesTitleMatchesWhenTheSearchFails(t *testing.T) {
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
+	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{duplicateBound: nearCopyVerdictBound(t)})
 	createSuggestionProject(t, handler, "FORCE")
 	const title = "Archive search drops rows past offset fifty"
 	existing := createSuggestionIssue(t, handler, map[string]any{"project": "FORCE", "title": title})

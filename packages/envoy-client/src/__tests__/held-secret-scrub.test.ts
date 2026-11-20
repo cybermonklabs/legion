@@ -47,8 +47,14 @@ describe("a server that echoes what it was sent", () => {
   )("the listener's refusal echoing the bearer (%s) prints none of it", async (part) => {
     const token = secret("env_");
     const shown = part === "whole" ? token : token.slice(4, 18);
+    // The listener's own refusal, its error JSON, whose text the message prints as the listener
+    // wrote it; a body that is not its error JSON is named through the excerpt, which redacts the
+    // bearer before the scrub sees it (transport.test.ts).
     const fetchImpl = (async () =>
-      new Response(`no session holds ${shown}`, { status: 404 })) as unknown as typeof fetch;
+      Response.json(
+        { error: `no session holds ${shown}` },
+        { status: 404 }
+      )) as unknown as typeof fetch;
     const client = createEnvoyClient({
       baseUrl: "http://listener.test",
       fetch: fetchImpl,
@@ -63,6 +69,40 @@ describe("a server that echoes what it was sent", () => {
     expect(line).not.toContain(shown);
   });
 
+  // An Envoy URL with user info and no credential: Bun's own fetch sends the user info as
+  // `Authorization: Basic <base64 of user:password>`, and a listener at the wrong URL echoes the
+  // header it got. The client holds the URL's user info, so the line prints neither.
+  test("a listener echoing the Basic header Bun built from the URL's user info prints none of it", async () => {
+    const pw = `pw-${randomBytes(12).toString("hex")}`;
+    const listener = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: (request) =>
+        new Response(`you sent ${request.headers.get("authorization") ?? "nothing"}`, {
+          status: 401,
+        }),
+    });
+    try {
+      const client = createEnvoyClient({
+        baseUrl: `http://operator:${pw}@127.0.0.1:${listener.port}`,
+        // The runtime's own fetch, which builds the Basic header from the URL.
+        fetch: ((input: string | URL | Request, init?: RequestInit) =>
+          fetch(input, init)) as unknown as Parameters<typeof createEnvoyClient>[0]["fetch"],
+        retry: false,
+      });
+      const line = await client.getInterest("ses_scrub").then(
+        () => "",
+        (error: unknown) => messageFor(error)
+      );
+      const basic = btoa(`operator:${pw}`);
+      expect(line).toContain("you sent Basic <withheld>");
+      expect(line).not.toContain(basic.slice(0, 12));
+      expect(line).not.toContain(pw);
+    } finally {
+      listener.stop(true);
+    }
+  });
+
   test.each(
     echoes(secret("eyJ"))
   )("the broker's refusal echoing the subject token (%s) prints none of it", async (part) => {
@@ -75,7 +115,7 @@ describe("a server that echoes what it was sent", () => {
         Response.json(
           {
             error: "invalid_request",
-            error_description: `The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed. The subject token was refused: ${shown} is not this broker's audience.`,
+            error_description: `The request is missing a required parameter, includes an invalid parameter value, includes a parameter more than once, or is otherwise malformed. The subject token was refused: the subject token was not minted for ${shown}, which is the audience this broker accepts from https://kubernetes.default.svc.`,
           },
           { status: 400 }
         ),
@@ -94,7 +134,7 @@ describe("a server that echoes what it was sent", () => {
         (error: unknown) => error
       );
       for (const line of [tradeFailureReason(failure), messageFor(failure)]) {
-        expect(line).toContain("The subject token was refused: <withheld>");
+        expect(line).toContain("the subject token was not minted for <withheld>");
         expect(line).not.toContain(shown);
       }
     } finally {

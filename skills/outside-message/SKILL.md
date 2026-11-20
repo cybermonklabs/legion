@@ -6,8 +6,6 @@ description: "Use before any text reaches a person outside the company: a commen
 # A message to someone outside the company
 
 The operator approves every message that leaves the company, and four steps come before you ask.
-The rules below are the operator's own, from the answers that set them; this skill is where they
-are written down.
 
 ## The exclusions
 
@@ -19,8 +17,7 @@ answer names such a project, and your stream's brief is where that answer reache
 answer for the project in front of you, there is no exclusion.
 
 **A pull request to a project that has already enrolled**, with its description and its comments to
-that project's maintainers. The operator does not want to be asked for approval every time for an
-enrolled project, and ceremony around a pull request must not stop the work. The four steps still
+that project's maintainers.  The four steps still
 apply. The approval ask does not. The work does not wait for the pull request either: prepare and
 sign the changes locally, and send them when the work they belong to ends.
 
@@ -54,8 +51,7 @@ reputation for low-quality or careless submissions.
    do: a reader of the same model as the writer is the weaker check, though no measurement here
    separates the two.
 
-**Step 4 ends with a list of what it removed, and that list goes in the ask.** An instruction alone
-does not make the cut happen, so the list is what proves it did: three lines naming what came out,
+**Step 4 ends with a list of what it removed, and that list goes in the ask.** The list is what proves the cut happened: three lines naming what came out,
 or the sentence "the reviewer removed nothing", which is itself an answer.
 
 **The text the operator approves is the text the reviewer cut, byte for byte.** Any edit after the
@@ -74,8 +70,7 @@ cover how the text reads.
 ## Then the ask
 
 **Put the full message text in the ask itself.** Not a link to a document holding it, not a summary
-of it, not "the draft is at …". The operator has to open another document to read the message in
-almost every one of these asks, and cannot judge the message from the ask.
+of it, not "the draft is at …". A link makes the operator open another document, and the operator cannot judge the message from the ask.
 
 An ask for an outside message has, in this order:
 

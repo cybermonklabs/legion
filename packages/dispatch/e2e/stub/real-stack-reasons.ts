@@ -106,13 +106,15 @@ export const realStackReasons: Record<string, string> = {
   "create-issue-decision-claim.e2e.ts":
     "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
+  "credential-expired.e2e.ts":
+    "a Dismiss is a write the server relays to the broker, and the reload after it reads the list the broker kept; an expired machine login's record is the one the broker answers for its typed code",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
   "deep-links.e2e.ts": "document landings need the live room and server-settled anchored marks",
   "delivery-groups.e2e.ts": "grouping and the window's counts are the server's aggregation",
   "delivery-live.e2e.ts": "`sql` writes delivered as live frames",
   "delivery-queued.e2e.ts":
-    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; the refusal of an unknown session is the server's",
+    "a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish",
   "delivery.e2e.ts":
     "facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows",
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
@@ -168,6 +170,10 @@ export const realStackReasons: Record<string, string> = {
   "inbox-view.e2e.ts": "a priority write must arrive live",
   "inbox.e2e.ts":
     "writes a reply and re-reads the thread; live event feed; lands in the document's live room",
+  "issue-page-look.e2e.ts":
+    "its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in",
+  "issue-page-switch.e2e.ts":
+    "the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold",
   "issues-table.e2e.ts":
     "every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload",
   "issue.e2e.ts":
@@ -193,6 +199,8 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "legion.e2e.ts":
+    "the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
   "live.e2e.ts": "live delivery of writes made after the page loaded",
   "machine-login.e2e.ts": "device grants decided on the real broker",
@@ -255,6 +263,8 @@ export const realStackReasons: Record<string, string> = {
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "steps.e2e.ts":
+    "the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first",
   "stored-text-reading.e2e.ts":
     "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "task-items.e2e.ts": "asserts inside the live document editor",

@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // storeSessionHeartbeat registers sessionID with the heartbeat the test chose, by writing its
@@ -60,7 +61,7 @@ func newStaleHolderRig(t *testing.T, role, holder string, since time.Duration) s
 		t.Fatalf("claim the role: %v", err)
 	}
 	forwards := make(chan *natsgo.Msg, 4)
-	received, err := harness.client.Conn.Subscribe(contracts.AgentSubject(holder), func(message *natsgo.Msg) {
+	received, err := harness.client.Conn.Subscribe(contracts.LegacyAgentSubject(holder), func(message *natsgo.Msg) {
 		select {
 		case forwards <- message:
 		default:
@@ -131,7 +132,7 @@ func TestCoreRoleDeliverySkipsAHolderThatStoppedHeartbeating(t *testing.T) {
 		holder = "ses_role_heartbeat"
 	)
 	roleTopic := contracts.RoleTopicPrefix + role
-	holderSubject := contracts.AgentSubject(holder)
+	holderSubject := contracts.LegacyAgentSubject(holder)
 	for _, tc := range []struct {
 		name          string
 		since         time.Duration
@@ -204,7 +205,7 @@ func TestAPublishWithKeepFalseToAnUnclaimedRoleIsRefusedAndKeepsNothing(t *testi
 	if refusal.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to an unclaimed role: status %d, body %s; want 404", refusal.Code, refusal.Body.String())
 	}
-	var answer roleHolderError
+	var answer listenerwire.RoleRefusal
 	if err := json.Unmarshal(refusal.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the refusal %s: %v", refusal.Body.String(), err)
 	}

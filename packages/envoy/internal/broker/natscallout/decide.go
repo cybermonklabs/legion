@@ -24,7 +24,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
-	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -39,16 +38,12 @@ type Deps struct {
 	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
-	// Exchange is the projects the broker's own exchange list gives account, and false for an
-	// account no entry lists (exchange.Set.ProjectsForAccount). Nil, with Access, holds no
-	// service to its projects, and refuses every entry that is not an all-projects one.
-	Exchange func(account string) ([]string, bool)
-	// Access is Dispatch's answer about one project (projectaccess).
-	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
-	// Log records each refusal with the connection's host, never its credential. Nil logs
-	// nothing.
+	// Log is where the service's reporter writes the refusals, failed answers and drops it
+	// counted: a line for each kind at most once a minute and one more as the replica closes, each
+	// key with its first event's detail, which for a refusal names the connection's host, and never
+	// a credential (reportWhileRunning). Nil logs nothing.
 	Log *slog.Logger
 	// Metrics is the registry the service's decisions are counted on (NewMetrics); nil counts
 	// nothing.
@@ -65,9 +60,8 @@ func (d Deps) now() time.Time {
 // Request is what the server asks about one connection, read from its authorization request.
 type Request struct {
 	// UserNkey is the user key the server made for this connection, which the answer's user
-	// must name; ServerID is the server, which the answer's audience must name; ServerXKey is
-	// the server's curve key, when it sealed the request.
-	UserNkey, ServerID, ServerXKey string
+	// must name; ServerID is the server, which the answer's audience must name.
+	UserNkey, ServerID string
 	// Nonce is the nonce the server sent this connection, which a session's proof signs.
 	Nonce string
 	// Token and Sig are the CONNECT's token and signature fields: a session's access token
@@ -98,12 +92,12 @@ const (
 	credentialNone    = "none"
 )
 
-// Refusal is a connection the service refuses. Reason is the one line the server is answered with
-// and the broker logs, and names nothing of the credential. Label is the decision counter's reason
-// label, one fixed word per kind of refusal, so a reworded Reason changes no series. Cause, when a
-// step on the broker's side failed, is why: it is logged as a field of its own and never answered.
-// The credential the connection presented is the request's own (credentialKind), which the answer
-// reads where it logs and counts.
+// Refusal is a connection the service refuses. Reason is the one line the server is answered with,
+// and names nothing of the credential. Label is the decision counter's reason label, one fixed
+// word per kind of refusal, so a reworded Reason changes no series. Cause, when a step on the
+// broker's side failed, is why: it is never answered, and the reporter's line carries it in the
+// label's first detail (answer). The credential the connection presented is the request's own
+// (credentialKind), which the answer reads where it counts.
 type Refusal struct {
 	Label, Reason string
 	Cause         error
@@ -115,7 +109,7 @@ func refuse(label, reason string) *Refusal {
 	return &Refusal{Label: label, Reason: reason}
 }
 
-// because records cause as r's Cause, for the log line.
+// because records cause as r's Cause, for the reporter's line.
 func (r *Refusal) because(cause error) *Refusal {
 	r.Cause = cause
 	return r
@@ -283,7 +277,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
 	}
-	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry))
+	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {
 		return Decision{}, err
 	}

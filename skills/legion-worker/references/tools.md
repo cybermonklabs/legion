@@ -12,9 +12,12 @@ An issue pod runs no heavy build and no whole test suite. The pod's six roles sh
 limit. Near that limit the launcher's memory guard, where the deployment runs it (it is on by
 default), stops, with SIGKILL, the largest process that is neither Legion's own nor an agent's own,
 which in practice is a command an agent ran: a build, a test binary, a Python or JavaScript kernel.
-It then tells that process's role why, in a message on the role's topic. The command fails and the
-turn goes on. A command that fills the memory faster than the guard can stop it still takes the pod
-past its limit, and that ends every role's turn, not only yours.
+It then tells that process's role why, in a message on the role's topic. In a pod that runs in a
+microVM, the pod's own kernel stops such a command in place of the guard where each of the pod's
+requests equals its limit, and the role is told the same way; in a pod that requests less, it can
+stop an agent instead. The command fails and the turn goes on. In a gVisor pod, a command that
+fills the memory faster than the guard can stop it still takes the pod past its limit, and that
+ends every role's turn, not only yours.
 
 In the pod you compile the packages your change touches, run by name the tests you added or
 changed (`go test -run '<TestName>' ./internal/<package>/`, or `bun test` with their files), build
@@ -46,9 +49,7 @@ heavy run goes where your deployment's instructions say.
   names and migrate it, `packages/envoy/internal/dispatch/store` (`openTestStore`, in its
   `store_test.go`), `packages/envoy/internal/dispatch/delivery` (`deliveryTestPool`, which also
   deletes every delivery table's rows) and `packages/envoy/internal/dispatch/redeliver`
-  (`redeliverTestLeases`). In an empty database of its own, one run of the broker's left 24 tables
-  on 2026-11-06, and one whole run of the Dispatch store's left 104 on 2026-11-07, a count that
-  grows with Dispatch's migrations.
+  (`redeliverTestLeases`).
 - Anything that migrates into the database its DSN names, rather than making one per test, needs
   a database of your own, because a sibling role writing the same one collides with you: the
   Dispatch browser suite's `DATABASE_URL`, which resets what it is given, and the stage scripts'
@@ -67,8 +68,22 @@ heavy run goes where your deployment's instructions say.
   server is the roles container's launcher's job — it runs `legion-testpg ensure` before any role
   starts and again every 15 seconds — so wait about that interval and try again. Never start a
   server of your own beside it, and never reach for another DSN. Still refused after that wait:
-  report it, with the error you got and the port you used, as a fault of the pod rather than of
-  your change.
+  report it, with the error you got, the port you used and the server's log lines from the minute
+  it failed (next bullet), as a fault of the pod rather than of your change.
+- The server's log is the read-only file `$LEGION_TEST_PG_LOG` names
+  (`tail -n 200 "$LEGION_TEST_PG_LOG"`). For every connect the server takes, the process it starts
+  for it writes a `connection received: host=127.0.0.1 port=<client port>` line, then
+  `connection ready` with the setup and fork times, and a `disconnection` line at the end. A
+  connect that failed with lines of its own failed in the server, and the log says why; one the
+  server could not start a process for leaves `could not fork new process for connection`
+  instead. A connect with neither line at the time it failed never reached the server: a burst of
+  more connects at once than the server's listen queue (about 940) is dropped before the server
+  sees it, and libpq reports such a connect as `server closed the connection unexpectedly` or
+  waits until its own timeout. Open the connections in smaller steps, or retry them. Your login
+  holds `pg_monitor`, so `pg_stat_activity` also shows the detail of connections under the other
+  logins of the server, such as the ones a suite creates. `LEGION_TEST_PG_LOG` unset: a server
+  you started yourself (next bullet) logs to `$LEGION_TESTPG_DIR/server.log`; with the DSN your
+  pod set and no such variable, your pod's image predates the log, so report without it.
 - `LEGION_TEST_PG_DSN` unset: your deployment has not turned the pod's server on, so no launcher
   is starting one and nothing will appear while you wait. With `legion-testpg` on `PATH`, start
   one yourself on the issue's volume: the directory it defaults to is a 1 MiB filesystem your
@@ -95,9 +110,7 @@ database, any server whose other clients your role cannot stop. Your pod's own t
   connection on a shared server for a read.
 - Keep the read-only setting inside one transaction, never on the connection for its whole life. A
   read-only setting made for the whole session stays on the backend after the connection goes back
-  to the pool. The next client of that pool gets it, and that client's writes fail. On 2026-11-05
-  one such read left the setting on a pooled backend, and 1,432 session writes failed over 16
-  minutes.
+  to the pool. The next client of that pool gets it, and that client's writes fail.
 
 These three forms do it. Each one holds the transaction read-only, so a write inside it is
 refused, and each one drops that state when the transaction ends.
@@ -145,8 +158,7 @@ carries the pod's own PostgreSQL server (the section above).
   `DATABASE_URL` stands in for `docker`,
   and `psql` was the one a role had no way to supply — so a role can run the local stack as a
   running build, and the specs of that suite its change touches, by file.
-- `redis-cli` — no repository of the project speaks Redis today; it is carried anyway, at about a
-  megabyte, because a second image roll costs more than a megabyte.
+- `redis-cli` — a Redis client, for work that reaches a Redis server.
 - `sqlite3` — a repository's own SQLite fixture or database has no other way to open from a shell,
   and Oh My Pi's own profile databases (`~/.omp/profiles/legion/agent/agent.db`, `models.db`,
   `history.db`) are SQLite too. Your session is not one of them: it is `results.jsonl`,
@@ -169,8 +181,6 @@ after the change that added them; `command -v unzip yq` says whether yours has t
   program — kislyuk's Python wrapper over `jq`, 3.4.3 in trixie — so an expression written for one
   does not run on the other, and a recipe you found may be written for the other one.
 
-`model-gateway/apply_test.sh` of theorem-labs/agent-infra calls both.
-
 ## Why a tool the image lacks is an image change, not an install
 
 Your role runs as an unprivileged user with no writable system prefix: `/usr/local/bin` and `/opt`
@@ -184,8 +194,8 @@ E: Could not open lock file /var/lib/dpkg/lock-frontend - open (13: Permission d
 ```
 
 So that writable `$HOME`, and the issue's disk, are where an install for yourself would go, and on
-the mechanics the answer is not a flat no: `redis-cli`, `sqlite3` and `dig` did run from an
-extraction prefix under `$HOME` with `LD_LIBRARY_PATH` set, and `psql` did not — Debian's
+the mechanics the answer is not a flat no: an extraction prefix under `$HOME`, with
+`LD_LIBRARY_PATH` set, can run some clients but not `psql` — Debian's
 `/usr/bin/psql` is a Perl wrapper that loads `PgCommon.pm` through Perl's own search path, which no
 extraction prefix is on. What rules such an attempt out is not the unpacking: it is the test of
 `skill://legion-worker/references/withheld-capability.md#the-test-where-it-lands-and-what-it-leaves-resolving`,
@@ -211,17 +221,17 @@ install anything the image does not carry.
   command you run are named separately, because they are usually different names.
   `uvx --from httpie@3.2.4 http --version` prints `3.2.4`. Where the project's own name *is* its
   command's — checked once, never assumed — the short `uvx <name>@<version>` runs it:
-  `uvx ruff@0.14.0 --version` prints `ruff 0.14.0`, in 1.7 s with the uv cache empty and 0.15 s
-  warm. A version that does not exist fails closed, exit 1, naming it: `uvx ruff@99.99.99
+  `uvx ruff@0.14.0 --version` prints `ruff 0.14.0`. A version that does not exist fails closed,
+  exit 1, naming it: `uvx ruff@99.99.99
   --version` prints `error: No solution found when resolving tool dependencies`, with `cause:
   Because there is no version of ruff==99.99.99 …`.
 - `bunx --package <name>@<version> <binary>`, for an npm tool, naming the package and the binary
   separately because they differ. `bunx --package @biomejs/biome@2.6.3 biome --version` prints
-  `Version: 2.6.3`, in 0.3 s with bun's cache warm; `bunx --package @biomejs/biome@99.99.99 biome
+  `Version: 2.6.3`; `bunx --package @biomejs/biome@99.99.99 biome
   --version` fails closed, exit 1, with `error: No version matching "99.99.99" found for specifier
   "@biomejs/biome" (but package exists)`.
 - `go run <module>@<version>`, for a Go tool. `go run github.com/nats-io/natscli/nats@v0.1.5
-  --version` prints `v0.1.5`, in 7.2 s with the module cache warm and 103 s on a cold module cache
+  --version` prints `v0.1.5`; a cold module cache makes the first run much slower than a warm one
   — budget for the cold one the first time an issue runs a Go tool. `go run
   github.com/nats-io/natscli/nats@v99.99.99 --version` fails closed, exit 1, with
   `go: github.com/nats-io/natscli/nats@v99.99.99: invalid version: unknown revision nats/v99.99.99`.
@@ -238,7 +248,7 @@ Installed 1 package in 12ms
 6.0.2
 ```
 
-That whole run is 0.597 s wall, the install included. `--no-project` keeps it off whatever
+`--no-project` keeps it off whatever
 `pyproject.toml` happens to sit above your working directory, so it behaves the same wherever you
 type it, and `--with` takes a requirement specifier (`==<version>`), not a runner coordinate
 (`@<version>`). It is on the sanctioned side for the same reason a `uvx` run is: it fills
@@ -370,8 +380,8 @@ A tool that is neither in the image nor reachable through one of the three runne
 change: a pull request against cybermonklabs/legion that carries the same name through every site that
 spells it out, and those sites are not all held by a test.
 
-Do not work from a list of those sites. This page has carried one twice and it was wrong both
-times, so take them from the repository instead: grep for a client the image already carries,
+Do not work from a list of those sites. A list goes stale, so take them from the repository
+instead: grep for a client the image already carries,
 under both of its names — the command and the Debian package that provides it are spelled
 differently, and different sites spell each — and carry the new name through everything the two
 find.
@@ -419,13 +429,13 @@ the five priced options with their measurements, and what the clients cost the i
 
 ## Before you measure Oh My Pi's binary
 
-Read Oh My Pi's source first, from the fork (`sjawhar/oh-my-pi`) at the tag `.omp-pin` names, not
-from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin` reads
-`github:sjawhar/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text, so find it
-rather than type it:
+Read Oh My Pi's source first, from the fork (`cybermonklabs/oh-my-pi`) at the tag `.omp-pin` names,
+not from upstream's version tag: the fork's release carries code upstream's does not. `.omp-pin`
+reads `github:cybermonklabs/oh-my-pi@<version>`, and the git tag adds a `v` in front of that text,
+so find it rather than type it:
 
 ```text
-$ git ls-remote --tags https://github.com/sjawhar/oh-my-pi.git 'v<version>'
+$ git ls-remote --tags https://github.com/cybermonklabs/oh-my-pi.git 'v<version>'
 ```
 
 Search that source by the name of a construct or a setting, never by its value: one value is
@@ -453,24 +463,20 @@ something to count.
 
 - **Read the summary your work wrote, never the Job's phase.** A Kubernetes Job that reports
   `Succeeded` says its container exited 0, and nothing more: read the artefact your work was to
-  produce, or the log line that proves it ran, before you believe any result. A lane measured
-  this on 2026-11-01: two pods running a native toolchain died with `Error: Stack overflow.` after 23
-  seconds, and their Job still reported `Succeeded`, because the process they ran (`rocq repl`)
-  exits 0 when a command inside it fails. The toolchain is incidental; any interpreter, driver or
-  wrapper that swallows an inner failure gives the same clean phase over a silent no-result, and
-  a lane that trusts the phase records it as a run that worked.
+  produce, or the log line that proves it ran, before you believe any result. Any interpreter,
+  driver or wrapper that exits 0 when a command inside it fails leaves the Job `Succeeded` over a
+  silent no-result, and a watcher that trusts the phase records it as a run that worked.
 
   Two habits make that phase true. Detect the failure in the text your tool prints and exit
   non-zero yourself, rather than passing the wrapper's exit code on. And write a verdict that
-  matters to durable storage as it is produced, not at the end: a node can vanish within a minute
-  of a pod ending, so an unpersisted log is gone even when nothing killed anything, and a
-  terminating pod's grace period can be as short as 25 seconds, which is no time to flush.
+  matters to durable storage as it is produced, not at the end: a node can vanish soon after a
+  pod ends, so an unpersisted log is gone even when nothing killed anything, and a
+  terminating pod's grace period can be too short to flush.
 
-  **The phase lies in the other direction too, and that one is worse.** A lane measured a Job
-  reporting `Running` for 23 minutes while its pod count was **zero**: the quota was full, every
-  pod create was refused (`exceeded quota … requested: requests.cpu=16, used: 198, limited:
-  200`), and the controller kept retrying. A watcher reading the phase would have called that
-  build running all night. **The phase is a request; the pod list is the result.** If you watch
+  **The phase lies in the other direction too, and that one is worse.** A Job can report
+  `Running` while its pod count is **zero**: when the quota is full, every pod create is refused
+  (`exceeded quota …`) and the controller keeps retrying, so a watcher that reads the phase calls
+  that build running. **The phase is a request; the pod list is the result.** If you watch
   a Job, watch `kubectl get pods -l batch.kubernetes.io/job-name=<job>`, or watch the marker
   your own work writes — never the phase alone.
 - **gVisor.** Every pod runs under gVisor, which does not give a test every interface the Linux
@@ -478,14 +484,12 @@ something to count.
   and `internal/broker/helper` fail: the helper identifies its peer with `SO_PEERPIDFD`, which
   gVisor answers `protocol not available` (`PEER_UNIDENTIFIED` in the test output). The
   terminal-prompt tests of `cmd/agent-secrets` also need terminal job-control ioctls
-  (`inappropriate ioctl for device`), and the `SigCgt` line of `/proc/<pid>/status`, which the
-  pods' gVisor lacked on 2026-10-28; upstream gVisor added that line on 2026-09-24, so a node on a
-  later release may have it. A timing test can fail too: `internal/dispatch/pmdoc`'s linearity
+  (`inappropriate ioctl for device`), and the `SigCgt` line of `/proc/<pid>/status`, which older
+  gVisor releases lack. A timing test can fail too: `internal/dispatch/pmdoc`'s linearity
   tests time a call by the process's CPU time, which gVisor counts in 10 ms ticks, so a call under
   10 ms can measure 0 s and the test reports `+Inf times`.
-- **`O_DIRECTORY|O_NOFOLLOW` follows a directory link under gVisor.** A lane measured this on
-  2026-11-01, in a pod under gVisor (`uname` 4.19.0-gvisor) against the same probe on an ordinary
-  kernel, on two filesystems. Almost everything matches: `O_RDONLY|O_NOFOLLOW` on a symlink to a
+- **`O_DIRECTORY|O_NOFOLLOW` follows a directory link under gVisor.** Almost everything matches
+  an ordinary kernel: `O_RDONLY|O_NOFOLLOW` on a symlink to a
   file refuses `ELOOP`, `O_CREAT|O_EXCL|O_NOFOLLOW` on one refuses `EEXIST`, `O_PATH|O_NOFOLLOW`
   opens the link itself, and the controls (a regular file, a real directory, a free name) succeed
   on both. One call differs: `openat(dirfd, <a link to a directory>,
@@ -494,7 +498,7 @@ something to count.
   with `O_DIRECTORY|O_NOFOLLOW` is defeated there while every leaf check still passes, and its
   tests stay green on a developer's kernel. Dropping `O_DIRECTORY` changes it, because
   `openat(dirfd, <a link to a directory>, O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)` refuses
-  `ELOOP` under gVisor too, measured on 2026-11-08 and relied on by `openSessionFileBeneath` in
+  `ELOOP` under gVisor too, relied on by `openSessionFileBeneath` in
   `packages/daemon/cmd/legion/sessions.go`, so what the sandbox follows is the `O_DIRECTORY`
   combination and not `O_NOFOLLOW` itself. A whole block of such tests failing in a pod is that
   one property of the environment, not one defect per test. The fix shape holds on both kernels:
@@ -502,11 +506,10 @@ something to count.
   `O_PATH|O_NOFOLLOW|O_CLOEXEC`, which opens the entry itself on both kernels, and reads the
   kind from fstat of that handle. The repository's own instance is `mountPointBeneath` in
   `packages/daemon/internal/launcher/roleinit_linux.go`. `openat2` is not the alternative
-  there: a lane measured it returning `ENOSYS` under gVisor for every flag combination it
-  tried, so the handle rule above is the portable check rather than a fallback. The question
+  there: gVisor can return `ENOSYS` for it, so the handle rule above is the portable check
+  rather than a fallback. The question
   is not which tool to use but whether anything you run calls `openat2`, which you can read off
-  the binary (two builds of one tool reporting an identical `--version` differed here, and only
-  the package version and the checksum told them apart):
+  the binary (two builds that report the same `--version` can differ here):
 
   ```sh
   b=$(readlink -f "$(command -v <tool>)")
@@ -520,10 +523,8 @@ something to count.
   clean result. **An undefined `openat2` symbol proves the binary calls it. Its absence proves
   nothing**, so the check is a positive test only: a caller can reach the syscall through
   `syscall(SYS_openat2, …)`, which leaves `syscall` in the table and never `openat2`, and a libc
-  that exports no `openat2` wrapper produces the symbol for no binary at all — measured on a
-  glibc 2.39 host, where no binary in `/usr/bin` carries it and `tar` shows 227 undefined
-  symbols, `openat2` zero and `syscall` one. To establish that a binary is safe rather than
-  suspect, trace it.
+  that exports no `openat2` wrapper produces the symbol for no binary at all. To establish that
+  a binary is safe rather than suspect, trace it.
 - **Set the stack with `ulimit -s`, then read both limits back.** The check, not the number,
   is the durable part. 131072 is the number for an ordinary job; name a larger one when a tool
   you run polices its own limit and demands it:
@@ -539,7 +540,7 @@ something to count.
 
   The soft limit must equal what you asked for, and the hard limit must be finite and no lower.
   `unlimited` is refused by name, because it reports `unlimited` and gives 8 MiB.
-  Three things in that setter each answer a measured failure, and a simpler form breaks one of
+  Three things in that setter each answer a failure, and a simpler form breaks one of
   them. **The soft limit is set first**, because lowering the hard limit below a soft
   `unlimited` is `EINVAL` — `ulimit -H -s 131072` from that state fails with `cannot modify
   limit: Invalid argument`, and chained with `&&` the soft set never runs, so the process keeps
@@ -550,33 +551,26 @@ something to count.
   already finite, that test is false, and a bare `&&` list whose test fails is a non-zero exit
   status. `set -e` does not abort there, so the script runs to the end and does all of its work
   — and if that line is the last one in the file, the script exits 1 with everything correct.
-  Measured: as a last line, `exit=1`; with `|| true`, `exit=0`; and with any command after it,
+  As a last line, `exit=1`; with `|| true`, `exit=0`; and with any command after it,
   `exit=0` either way, which is why it is easy to test and find nothing. And the
   **fallback** covers a want above the current hard limit, where the soft set fails first.
-  Measured from three starting states: `unlimited/unlimited` and `8192/unlimited` both end at
+  From three starting states: `unlimited/unlimited` and `8192/unlimited` both end at
   `131072/131072`, and `131072/1048576` ends at `131072/1048576` with the higher hard limit
-  kept. Do not reduce it to a single `ulimit -s <n>`: that set both limits in a fresh shell
-  here and left the hard limit `unlimited` in a long-lived one, same binary and same starting
-  pair, cause unknown — which is why the read-back is the rule and the setter is not.
+  kept. Do not reduce it to a single `ulimit -s <n>`: whether it also sets the hard limit
+  differs from shell to shell, which is why the read-back is the rule and the setter is not.
   The ceiling is 128 MiB whichever finite value you choose —
   gVisor maps the whole stack at exec and caps it at `maxStackSize = 128 << 20` in `MapStack`
   (`pkg/sentry/mm/syscalls.go`), with `RLIM_INFINITY` falling back to the 8 MiB default — and a
   larger soft limit costs rather than buys, since glibc sizes a default thread stack from it and
-  a tool that creates a thread pool can fail to allocate one. A lane measured both on 2026-11-01
-  in pods under gVisor (4.19.0-gvisor), with a C probe and a second probe in another language:
-  under `unlimited` the fault came at 7 MiB and 524,150 frames; at 131072 (KiB) both probes
-  faulted at 127 MiB and 8,388,470 frames. The same probes on an ordinary kernel track the
-  setting as expected, so this is the sandbox and not the probes.
+  a tool that creates a thread pool can fail to allocate one.
 - **Compare durations within one pod, never across pods.** A gVisor sandbox runs syscall-heavy
-  work 2.2 to 3.8 times slower than the same work outside it, and a pod lands on whatever node
+  work several times slower than the same work outside it, and a pod lands on whatever node
   the autoscaler provisions, so two pods are two machines, two sets of neighbours and two
-  moments. Three parts, all measured: within one pod, comparable — run both arms there, as two
+  moments. Three parts: within one pod, comparable — run both arms there, as two
   containers on one node started together, and a difference between them is a difference between
   the arms; across pods, not comparable; across platforms, not until something measures the gap.
   Label every figure taken there a gVisor figure. That factor is the cost of syscalls and no
-  budget for a whole job: a lane measured two real builds of the same work faster in a pod than
-  on a virtual machine (1,014 s against 1,546 s, and 620 s against 1,117 s), with system time
-  roughly doubled and user time lower, so compute-bound work can run as fast or faster there.
+  budget for a whole job: compute-bound work can run as fast or faster there.
 - **No Docker.** The image carries no container runtime, so a test that starts one through
   testcontainers panics `rootless Docker not found`: in `packages/envoy`, the tests that use
   `internal/tests3` (`internal/dispatch/files`, which `DISPATCH_TEST_NO_CONTAINERS=1` skips) and
@@ -599,10 +593,7 @@ something to count.
   streams, and each would see the other's connections as a leak.
   Pick ports no sibling role holds, and keep the store directory off your home. In your own
   work, run the NATS-backed tests your change touches by name (`go test -run`), as the first
-  section says. Measured here, as proof of the route and not as a run to repeat:
-  `go run …@v2.15.1 --version` prints `nats-server: v2.15.1`, and with the two variables set
-  `go test -count=1 -timeout 40m ./internal/workflow/` runs whole in the pod, with no docker
-  panic.
+  section says.
 - **The rest, by package**, for a named run the pod does make. A Postgres unpacked from Debian
   packages (the harness under **The worked case** of `withheld-capability.md`) has only the
   `C`, `C.utf8` and `POSIX` locales, so its default collation is byte order, and

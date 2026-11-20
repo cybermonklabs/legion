@@ -66,8 +66,9 @@ func WithLogger(log *slog.Logger) Option {
 }
 
 // Open opens the registry's bucket on conn, creating it when it does not exist: file storage, no
-// TTL, one value per key, the replicas WithReplicas names.
-func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
+// TTL, one value per key, the replicas WithReplicas names. ctx bounds the open's waits on the
+// cluster (bus.EnsureKeyValue).
+func Open(ctx context.Context, conn *nats.Conn, opts ...Option) (*Store, error) {
 	o := options{replicas: 1, now: time.Now, log: slog.Default()}
 	for _, opt := range opts {
 		opt(&o)
@@ -76,7 +77,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &nats.KeyValueConfig{
+	if _, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bus.LegionAgentBucket,
 		History:  1,
 		Replicas: o.replicas,
@@ -84,7 +85,7 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 	}); err != nil {
 		return nil, fmt.Errorf("open legion agent KV bucket: %w", err)
 	}
-	kv, err := openHandle(conn)
+	kv, err := openHandle(ctx, conn)
 	if err != nil {
 		return nil, err
 	}
@@ -96,12 +97,12 @@ func Open(conn *nats.Conn, opts ...Option) (*Store, error) {
 // jetstream handle instead, which this MaxWait does not reach, so what bounds its consumer create
 // and its wait for the next key is the read's own context, and ReadTimeout as the scan's idle
 // bound (list).
-func openHandle(conn *nats.Conn) (bus.KeyValue, error) {
+func openHandle(ctx context.Context, conn *nats.Conn) (bus.KeyValue, error) {
 	js, err := conn.JetStream(nats.MaxWait(ReadTimeout))
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open legion agent registry JetStream: %w", err)
 	}
-	kv, err := bus.OpenKeyValue(conn, js, bus.LegionAgentBucket)
+	kv, err := bus.OpenKeyValue(ctx, conn, js, bus.LegionAgentBucket)
 	if err != nil {
 		return bus.KeyValue{}, fmt.Errorf("open legion agent KV bucket: %w", err)
 	}
@@ -109,10 +110,10 @@ func openHandle(conn *nats.Conn) (bus.KeyValue, error) {
 }
 
 // Reopen moves the store to conn. The listener's reconnect hook calls it, so after the bus replaces
-// a closed connection the registry reads and writes on the new one. A failure leaves the store on
-// the connection it had.
-func (s *Store) Reopen(conn *nats.Conn) error {
-	kv, err := openHandle(conn)
+// a closed connection the registry reads and writes on the new one; its requests are made under
+// ctx, the hook's run. A failure leaves the store on the connection it had.
+func (s *Store) Reopen(ctx context.Context, conn *nats.Conn) error {
+	kv, err := openHandle(ctx, conn)
 	if err != nil {
 		return err
 	}

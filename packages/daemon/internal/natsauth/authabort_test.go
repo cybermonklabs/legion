@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // Connect presents only an nkey seed or no credential: none the NATS auth service decides
@@ -18,9 +19,9 @@ import (
 // gains one, the connection that presents it sets the option and this test keeps the seed's path
 // as it is.
 func TestADaemonSeedRefusedTwiceCloses(t *testing.T) {
-	_, allowed := testnats.User(t)
+	_, allowed := testnkeys.User(t)
 	url := testnats.StartNkeyAuthorized(t, allowed)
-	stranger := testnats.UserSeed(t)
+	stranger := testnkeys.UserSeed(t)
 	closed := make(chan struct{})
 	conn, err := natsauth.Connect([]string{url}, stranger, "authabort-test",
 		nats.RetryOnFailedConnect(true), natsauth.ReconnectForever(), nats.ReconnectWait(50*time.Millisecond),

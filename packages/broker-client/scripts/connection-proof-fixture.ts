@@ -17,7 +17,7 @@ import { writeFile } from "node:fs/promises";
 import { calculateJwkThumbprint } from "jose";
 import { newDpopKey } from "../src/dpop";
 
-const token = "example-access-token-of-ses_a";
+const token = "example-access-token-of-ses_a"; // fixture-secret: a committed proof vector's token, which the Go and TS proof checks read from connection-proof-ts.json; no client is handed it
 const nonce = "example-server-nonce";
 const key = await newDpopKey();
 const segments = key.connectionProof({ accessToken: token, nonce }).split(".");

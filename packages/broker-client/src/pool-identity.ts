@@ -5,6 +5,7 @@
 // (`packages/envoy/internal/brokerclient/pool.go`), and asks the two services Go asks with the
 // bodies Go sends, so a deployment that names a pool gets one identity from either client.
 
+import { holdUrlUserinfo } from "@legion/contracts/held-secrets";
 import { errorClass, requestForText, urlForText } from "@legion/contracts/log-text";
 import { messageOf } from "./error-text";
 import type { SubjectToken, TokenSource } from "./source";
@@ -152,8 +153,10 @@ function googleErrorCode(text: string): string {
  * (`errorClass`), and no error keeps another as its cause.
  */
 export function poolIdentity(options: PoolIdentityOptions): TokenSource {
-  const securityTokenService =
-    options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL;
+  const securityTokenService = holdUrlUserinfo(
+    options.securityTokenServiceUrl ?? DEFAULT_SECURITY_TOKEN_SERVICE_URL
+  );
+  holdUrlUserinfo(options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL);
   const iamCredentials = (options.iamCredentialsUrl ?? DEFAULT_IAM_CREDENTIALS_URL).replace(
     /\/$/,
     ""
@@ -170,7 +173,9 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
    * (`googleErrorCode`), never the body, which a service, or anything at its URL, can fill with
    * the token it was sent; a 2xx answer that is not JSON is
    * named without its text, since that text could be a token; and a request that got no answer is
-   * named by its error's class, since the runtime's message can repeat the host it was handed.
+   * named by its error's class, since the runtime's message can repeat the host it was handed. No
+   * redirect is followed: Google's services answer none, and a 307 or 308 would send the body, a
+   * token in it, on to another origin, so a redirect is a non-2xx answer like any other.
    */
   const call = async (
     endpoint: string,
@@ -193,6 +198,7 @@ export function poolIdentity(options: PoolIdentityOptions): TokenSource {
         },
         body: JSON.stringify(body),
         signal: AbortSignal.any(signals),
+        redirect: "manual",
       });
       text = await answerText(answer);
     } catch (error) {

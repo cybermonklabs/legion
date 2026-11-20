@@ -60,14 +60,15 @@ const (
 func drainRoot(i int) string  { return fmt.Sprintf("LEGION-%d", 1000+i) }
 func drainChild(i int) string { return fmt.Sprintf("LEGION-%d", 2000+i) }
 
-// drainRepositories serves acme/widgets at main, as the daemon's mapping would.
+// drainRepositories records an issue on acme/widgets at main, as the daemon would once GitHub
+// answers for it; a repository nothing has read GitHub for is answered as unread.
 type drainRepositories struct{}
 
 func (drainRepositories) ResolveRepository(resolved string) (workflow.Resolution, error) {
 	if resolved == drainRepo {
 		return workflow.Resolution{Repo: drainRepo, DefaultBranch: "main", GitHubRepo: drainRepo}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + drainProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
 }
 
 // transactions counts the transactions a pool's connections begin.
@@ -146,7 +147,15 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 		}
 		last = ack.Sequence
 	}
-	if waiting := githubWaiting(t, consumers); waiting != uint64(len(backlog)) {
+	// A publish's ack says the stream stored the message; the server counts it into a consumer's
+	// pending afterwards, in a goroutine of its own (nats-server's signalConsumersLoop, which
+	// processStreamSignal's npc++ runs under), so a read right after the last ack can trail it by
+	// a message: CI read 5049 of 5050 once. The count must reach the backlog, not be read once.
+	var waiting uint64
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+		waiting = githubWaiting(t, consumers)
+		return waiting == uint64(len(backlog))
+	}) {
 		t.Fatalf("the GitHub consumer has %d messages waiting before it runs, want the backlog's %d", waiting, len(backlog))
 	}
 

@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -287,6 +288,18 @@ func (p *dispatchProcess) releaseLiveWritePause(t *testing.T, artifactID string,
 	return released.Parked
 }
 
+// pollBehindHorizon asks condition every horizontest.Poll until it holds, for as long as the
+// process's event horizon keeps saying it is held back (horizontest.Watch over its stall
+// warnings, reading the holder itself when they fall silent), and fails the test naming what,
+// with the process's output, when the horizon's account ends the wait first. Work behind the
+// horizon, such as an event the process's relay publishes, is as late as the longest transaction
+// open anywhere on the instance, which no fixed deadline bounds.
+func (p *dispatchProcess) pollBehindHorizon(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	horizontest.NewWatch(t, p.stallWarnings(), p.database, horizontest.Dialed(p.databaseURL)).
+		Poll(t, what, horizontest.Poll, p.Output.String, condition)
+}
+
 // ───── the live feed carries the other process's events ─────────────────────
 
 // A dashboard tab is open on one process and the work happens on the other: the event of an issue
@@ -302,21 +315,23 @@ func TestALiveStreamOnOneProcessCarriesTheOtherProcessesEvent(t *testing.T) {
 	events := pair.a.openEventFeed(t)
 	key, _ := pair.b.createIssueIn(t, project, "Created on the other process", "spec")
 
-	deadline := time.After(30 * time.Second)
-	for {
-		select {
-		case event, open := <-events:
-			if !open {
-				t.Fatalf("the feed A held closed before B's event arrived:\n%s", pair.a.Output.String())
+	// A's relay publishes B's event once A's event horizon has passed it, so the wait is A's
+	// horizon's.
+	pair.a.pollBehindHorizon(t, "the issue B created, on the feed A holds", func() bool {
+		for {
+			select {
+			case event, open := <-events:
+				if !open {
+					t.Fatalf("the feed A held closed before B's event arrived:\n%s", pair.a.Output.String())
+				}
+				if event.eventType == "issue.created" && strings.Contains(event.data, `"`+key+`"`) {
+					return true
+				}
+			default:
+				return false
 			}
-			if event.eventType == "issue.created" && strings.Contains(event.data, `"`+key+`"`) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("the feed A held never carried the issue B created (%s):\nA:\n%s\nB:\n%s",
-				key, pair.a.Output.String(), pair.b.Output.String())
 		}
-	}
+	})
 }
 
 // ───── test sessions ────────────────────────────────────────────────────────
@@ -347,12 +362,12 @@ func newSessionRig(t *testing.T, natsURL string) *sessionRig {
 	t.Helper()
 	conn := testnats.Connect(t, natsURL)
 	t.Cleanup(conn.Close)
-	roles, err := envoystore.Open(conn)
+	roles, err := envoystore.Open(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(roles.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn)
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -719,7 +734,7 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 	head := streamHead(t, js)
 
 	forwards := make(chan contracts.Envelope, 256)
-	holderSub, err := conn.Subscribe(contracts.AgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
+	holderSub, err := conn.Subscribe(contracts.LegacyAgentSubject(outboxRoleHolder), func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err == nil && strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 			forwards <- item
@@ -1203,8 +1218,8 @@ func newOutboxScene(t *testing.T, pair *dispatchPair, issues, roleIssues, replyI
 	}
 	scene.watcher = newTestSession(t, rig, "ses_"+name+"_watcher", families...)
 	holder, author := "ses_"+name+"_holder", "ses_"+name+"_author"
-	scene.holder = newTestSession(t, rig, holder, contracts.AgentSubject(holder))
-	scene.author = newTestSession(t, rig, author, contracts.AgentSubject(author))
+	scene.holder = newTestSession(t, rig, holder, contracts.LegacyAgentSubject(holder))
+	scene.author = newTestSession(t, rig, author, contracts.LegacyAgentSubject(author))
 	rig.registerHolder(t, scene.role, holder)
 	for index, key := range scene.issues {
 		switch {
@@ -2235,7 +2250,7 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the holder's connection drops", func(t *testing.T) {
 		role := "drop-" + name
-		holder := newTestSession(t, rig, "ses_"+name+"_dropping", contracts.AgentSubject("ses_"+name+"_dropping"))
+		holder := newTestSession(t, rig, "ses_"+name+"_dropping", contracts.LegacyAgentSubject("ses_"+name+"_dropping"))
 		rig.registerHolder(t, role, holder.id)
 		key := routedIssue(t, role)
 		first := writeComment(t, key, "Event N.")
@@ -2252,8 +2267,8 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the role moves to another session", func(t *testing.T) {
 		role := "move-" + name
-		leaving := newTestSession(t, rig, "ses_"+name+"_leaving", contracts.AgentSubject("ses_"+name+"_leaving"))
-		arriving := newTestSession(t, rig, "ses_"+name+"_arriving", contracts.AgentSubject("ses_"+name+"_arriving"))
+		leaving := newTestSession(t, rig, "ses_"+name+"_leaving", contracts.LegacyAgentSubject("ses_"+name+"_leaving"))
+		arriving := newTestSession(t, rig, "ses_"+name+"_arriving", contracts.LegacyAgentSubject("ses_"+name+"_arriving"))
 		rig.registerHolder(t, role, leaving.id)
 		rig.registerSession(t, arriving.id)
 		key := routedIssue(t, role)
@@ -2273,8 +2288,8 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 
 	t.Run("the role moves while a forward of it is unacknowledged", func(t *testing.T) {
 		role := "unacknowledged-" + name
-		leaving := newTestSession(t, rig, "ses_"+name+"_stranded", contracts.AgentSubject("ses_"+name+"_stranded"))
-		arriving := newTestSession(t, rig, "ses_"+name+"_taking", contracts.AgentSubject("ses_"+name+"_taking"))
+		leaving := newTestSession(t, rig, "ses_"+name+"_stranded", contracts.LegacyAgentSubject("ses_"+name+"_stranded"))
+		arriving := newTestSession(t, rig, "ses_"+name+"_taking", contracts.LegacyAgentSubject("ses_"+name+"_taking"))
 		rig.registerHolder(t, role, leaving.id)
 		rig.registerSession(t, arriving.id)
 		key := routedIssue(t, role)
@@ -2322,13 +2337,13 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 		if frames := framesOfComment(arriving, first); frames != 1 {
 			t.Errorf("the session the role moved to was handed the event %d times, want the one forward that was made once it held the role", frames)
 		}
-		if copies := storedCopiesOf(t, js, head, contracts.AgentSubject(arriving.id), event); copies != 1 {
+		if copies := storedCopiesOf(t, js, head, contracts.LegacyAgentSubject(arriving.id), event); copies != 1 {
 			t.Errorf("the stream holds %d copies of event %s on %s, want the one the new holder's consumer delivers",
-				copies, event, contracts.AgentSubject(arriving.id))
+				copies, event, contracts.LegacyAgentSubject(arriving.id))
 		}
-		if copies := storedCopiesOf(t, js, head, contracts.AgentSubject(leaving.id), event); copies != 0 {
+		if copies := storedCopiesOf(t, js, head, contracts.LegacyAgentSubject(leaving.id), event); copies != 0 {
 			t.Errorf("the stream holds %d copies of event %s on %s, want none: the session the role left is delivered what its consumer holds, and nothing of this event is its to read",
-				copies, event, contracts.AgentSubject(leaving.id))
+				copies, event, contracts.LegacyAgentSubject(leaving.id))
 		}
 	})
 }
@@ -2390,7 +2405,7 @@ func narrowAgentCapture(t *testing.T, js natsgo.JetStreamContext, holders ...str
 		return subject == contracts.AgentTopicPrefix+">"
 	})
 	for _, holder := range holders {
-		narrowed.Subjects = append(narrowed.Subjects, contracts.AgentSubject(holder))
+		narrowed.Subjects = append(narrowed.Subjects, contracts.LegacyAgentSubject(holder))
 	}
 	update := func(config *natsgo.StreamConfig, what string) {
 		if _, err := js.UpdateStream(config); err != nil {
@@ -7414,10 +7429,12 @@ const quickTakeoverWindow = time.Second
 // "service starting" - on every route, then on the send alone while the outgoing listener still
 // answers the registry read - then does not yet hold the session, for a few seconds. A direct
 // message and a mention sent then wait it out under the attempt each holds and reach the session
-// once it answers: attempt 1 sent, one receipt, one send. A session the listener never knows still
-// reads failed, "no live session", once the take-over window has passed. And a process killed
-// while it waits leaves its attempts pending under the claim it renewed last, which the other
-// process's delivery sweep sends.
+// once it answers: attempt 1 sent, one receipt, one send. A message to a session the listener
+// never knows waits the take-over window out as well, and is then queued rather than failed "no
+// live session": since R5 (dispatch://INFRA-3740), Dispatch queues it on that session's own
+// subject, so a released Legion role that comes back under the id reads it from its consumer.
+// And a process killed while it waits leaves its attempts pending under the claim it renewed
+// last, which the other process's delivery sweep sends.
 func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 	t.Run("sent during the take-over", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
@@ -7446,13 +7463,25 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 
 	t.Run("sent to a session the listener never knows", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
-		// This subtest waits out the take-over window and nothing else, so its processes run it
-		// at quickTakeoverWindow (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW) in place of the twelve
-		// seconds a deployment runs: what it is about is that the send settles failed once the
-		// window has passed, not how long the window is.
+		// Since R5 (dispatch://INFRA-3740), Dispatch queues a targeted message to a session no
+		// store of the listener holds on that session's own subject, so a released Legion role
+		// that comes back under the id reads it from its consumer, rather than failing it "no live
+		// session". It still waits the take-over window out first: during a take-over the
+		// successor answers "no live session" for a session it does not hold yet. This subtest
+		// waits that window out and nothing else, so its processes run it at quickTakeoverWindow
+		// (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW) in place of the twelve seconds a deployment
+		// runs: what it is about is that the send settles queued once the window has passed, not
+		// how long the window is.
 		env := listener.processEnv()
 		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = quickTakeoverWindow.String()
 		pair := startPair(t, env)
+		conn := testnats.Connect(t, pair.nats)
+		t.Cleanup(conn.Close)
+		js, err := conn.JetStream()
+		if err != nil {
+			t.Fatalf("JetStream context: %v", err)
+		}
+		head := streamHead(t, js)
 		started := time.Now()
 		var message model.Message
 		if err := json.Unmarshal(pair.a.call(t, http.MethodPost, "/api/v1/agents/never-known/messages",
@@ -7460,20 +7489,34 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 			t.Fatalf("decode the message: %v", err)
 		}
 		took := time.Since(started)
-		if len(message.Deliveries) != 1 || message.Deliveries[0].State != "failed" ||
-			message.Deliveries[0].Error == nil || *message.Deliveries[0].Error != "no live session never-known" {
-			t.Fatalf("deliveries = %#v, want attempt 1 failed with %q", message.Deliveries, "no live session never-known")
+		if len(message.Deliveries) != 1 || message.Deliveries[0].Attempt != 1 || message.Deliveries[0].State != "queued" ||
+			message.Deliveries[0].EnvelopeID == nil || message.Deliveries[0].Error != nil ||
+			message.Deliveries[0].SessionID != "never-known" {
+			t.Fatalf("deliveries = %#v, want attempt 1 queued for never-known, naming its envelope and no error",
+				message.Deliveries)
 		}
 		if took > 15*time.Second {
 			t.Fatalf("the send to a session the listener never knows answered %v after it was made, want within 15s: "+
-				"it waits out the %v take-over window and settles failed", took, quickTakeoverWindow)
+				"it waits out the %v take-over window and settles queued", took, quickTakeoverWindow)
 		}
 		gone := messageDelivery("the message to nobody", message.ID+":steer")
-		if states := gone.attempts(t, pair.database); !slices.Equal(states, []string{"1:failed"}) {
-			t.Fatalf("%s reads %v, want attempt 1 alone, failed", gone.what, states)
+		if states := gone.attempts(t, pair.database); !slices.Equal(states, []string{"1:queued"}) {
+			t.Fatalf("%s reads %v, want attempt 1 alone, queued", gone.what, states)
 		}
 		if receipts := gone.receipts(t, pair.database); receipts != 1 {
 			t.Fatalf("%s: attempt 1 has %d delivery receipts, want one", gone.what, receipts)
+		}
+		subject := contracts.LegacyAgentSubject("never-known")
+		var held []string
+		for _, stored := range readStreamMessagesFrom(t, js, head) {
+			if stored.subject == subject {
+				held = append(held, stored.item.EventID+" under "+stored.item.DedupeKey)
+			}
+		}
+		want := *message.Deliveries[0].EnvelopeID + " under " +
+			contracts.AgentSendDedupeKey("never-known", message.ID+":steer")
+		if !slices.Equal(held, []string{want}) {
+			t.Fatalf("the stream holds %q on %s, want the one envelope attempt 1 names, %q", held, subject, want)
 		}
 	})
 
@@ -7566,7 +7609,7 @@ func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duratio
 		t.Fatalf("JetStream: %v", err)
 	}
 	// One copy, as the single test NATS server holds and the runs under test open.
-	state, err := redeliver.OpenState(nc, js, 1)
+	state, err := redeliver.OpenState(t.Context(), nc, js, 1)
 	if err != nil {
 		t.Fatalf("open the redelivery bucket: %v", err)
 	}

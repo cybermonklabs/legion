@@ -193,7 +193,7 @@ func New(c Config, store *oauthstore.Store) (*Provider, error) {
 	// built. Its sign-in domain is empty, which admits no person at all: a set nobody built
 	// lists no machine either, so there is no box a person could have signed in on.
 	if c.Exchange.Policy == nil {
-		policy, err := exchange.NewSet(nil, nil, nil, "")
+		policy, err := exchange.NewSet(nil, nil, nil, nil, "")
 		if err != nil {
 			return nil, fmt.Errorf("oauth: the empty exchange policy: %w", err)
 		}
@@ -490,21 +490,24 @@ func (p *Provider) writeRevocationError(ctx context.Context, w http.ResponseWrit
 }
 
 // RegisterPodSession records that the pod podUID of the service account account may exchange
-// under the session name session, and answers when that registration runs out
-// (oauthstore.PodSessionRetention from now, extended by every later write). It is what
+// under the session name session, bound to the key whose thumbprint is jkt when jkt is set, as
+// the registrar's write of the given generation, and answers the registration as it stands after
+// this write, with whether the write set it and the key it replaced
+// (oauthstore.Store.RegisterPodSession): a write naming no key keeps the one a live row names,
+// and a write of a lower generation than the row's changes nothing. It is what
 // POST /v1/oauth/exchange/pod-sessions does once it has verified the pod's own token, and the
 // only way a row the exchange's gate reads is written.
 //
 // The policy decides what may be registered, in the same words the exchange refuses a pod with
 // (exchange.Set.Registration): a token bound to no pod, an account no entry lists and an entry
-// that fixes a session are each refused, the last because the name such an entry writes under is
-// the configuration's and its pods need no registration at all. A caller maps those sentinels
+// that fixes a session are each refused, the last because the name such an entry's tokens carry
+// is the configuration's and its pods need no registration at all. A caller maps those sentinels
 // onto its own refusals; anything else is the store's.
-func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session string) (time.Time, error) {
+func (p *Provider) RegisterPodSession(ctx context.Context, account, podUID, session, jkt string, generation int64) (oauthstore.PodSessionRegistration, error) {
 	if err := p.exchange.Policy.Registration(account, podUID, session); err != nil {
-		return time.Time{}, err
+		return oauthstore.PodSessionRegistration{}, err
 	}
-	return p.store.RegisterPodSession(ctx, podUID, session)
+	return p.store.RegisterPodSession(ctx, podUID, session, jkt, generation)
 }
 
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.

@@ -82,6 +82,7 @@ type Runtime struct {
 	probeRun                       string
 	volumeSize                     resource.Quantity
 	scheduling                     Scheduling
+	sandboxConfig                  SandboxConfig
 	resources                      PodResources
 	streamURL, daemonURL, envoyURL string
 	dispatchURL, dispatchToken     string
@@ -103,7 +104,6 @@ type Runtime struct {
 	controllerSlackChannels []string
 	agent                   []string
 	setup                   []string
-	skills                  ghrepo.Repository
 	testPostgres            bool
 	bootTimeout             time.Duration
 	registrationIntervals   int
@@ -127,15 +127,17 @@ type Runtime struct {
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
 	memoryGuard *shimwire.LauncherMemoryGuard
-	// podShapes is the configuration each kind of pod is built from now (podShape), by kind,
-	// encoded once here. Every input of a shape — the image, the kind's reservation, the
-	// operator's volumes and mounts and the disk — is set at construction and never written
-	// again, so the pod template that records a shape (podTemplate) and the sweep that compares a
-	// stored one against it (PodDrift, once per claim of the deployment per tick) read a string
-	// rather than marshalling that configuration again.
-	podShapes map[podKind]string
-	// cacheConfig is how each repository's cache is made, mapped the repositories the project's
-	// mapping names now (Options.RepositoryCache, Options.Mapped), and cacheDial opens every
+	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
+	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
+	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
+	// disk and the microvm block — is set at construction and never written again, so the pod
+	// template that records a shape (podTemplate) and the sweep that compares a stored one against
+	// it (PodDrift, once per claim of the deployment per tick) read a string rather than
+	// marshalling that configuration again.
+	podShapes map[podShapeKey]string
+	// cacheConfig is how each repository's cache is made, over the repositories the project works
+	// now — the mapping's and those of its live issue records (Options.RepositoryCache,
+	// Options.Mapped) — and cacheDial opens every
 	// connection the health read makes (net.Dialer's own; a test routes the Service's name itself).
 	cacheConfig RepositoryCache
 	mapped      func() []ghrepo.Repository
@@ -165,6 +167,12 @@ type Runtime struct {
 	watch map[claim.Token]runtime.Locator
 	// observer is the running Observe, nil when none runs.
 	observer *observer
+	// sessions is, by claim, the session the latest Claude Code launch of it started or resumed
+	// under and the incarnation it started as (LaunchSession), kept only when agentSecrets names
+	// an exchange audience (nameSession): written once that launch's start is sent, and dropped
+	// with the watch's record when the process is let go or the claim's next launch begins
+	// (forget, forgetIf). Memory only; a restarted daemon answers none.
+	sessions map[claim.Token]launchedSession
 	// podTurns serializes the relaunches, issue suspension, release and orphan deletion of one pod,
 	// keyed by its Sandbox's name (lockPod). Nothing serializes the pods of one tree against each
 	// other: each issue's pod provisions its own clone on its own volume.
@@ -252,7 +260,7 @@ func checkSupervision(opts Options) error {
 	case opts.Conns == nil:
 		return refuse("no connection directory")
 	case opts.Mapped == nil:
-		return refuse("no repository mapping for the repository caches")
+		return refuse("no repository set for the repository caches")
 	}
 	if err := opts.RepositoryCache.check(); err != nil {
 		return refuse("%v", err)
@@ -285,6 +293,11 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("image %q is not pinned by digest (…@sha256:…)", opts.Image)
 	case opts.StorageClass == "":
 		return refuse("no storage class for the issue volume (the cluster has no default class to fall back on)")
+	case opts.Sandbox.AnyMicroVM() && (opts.Sandbox.MicroVM == nil || opts.Sandbox.MicroVM.ComputeClass == ""):
+		return refuse("no compute class for the issue pods that run in a microVM (sandbox type %q, canary issues %v): the ComputeClass whose nodes run them",
+			opts.Sandbox.Type, opts.Sandbox.CanaryIssues)
+	case opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.StorageClass == "":
+		return refuse("no storage class for the disks of the issue pods that run in a microVM (the cluster has no default class to fall back on)")
 	case opts.IssueVolume.Sign() <= 0:
 		return refuse("no issue volume size: %s is not a positive quantity", opts.IssueVolume.String())
 	// An issue pod's disk is the pod's own ephemeral volume, created with the pod and deleted with
@@ -331,6 +344,13 @@ func configureProber(opts Options) (*Runtime, error) {
 		}
 	}
 	if a := opts.AgentSecrets; a != nil {
+		// The Workload Identity pool is the audience of the token a microVM pod's launcher
+		// exchanges for a Google one (workloadIdentityVolumes); empty, no pod carries that token.
+		// While an issue pod runs in a microVM the switch above has refused a nil MicroVM.
+		var workloadPool string
+		if opts.Sandbox.AnyMicroVM() && opts.Sandbox.MicroVM.Metadata != nil {
+			workloadPool = opts.Sandbox.MicroVM.Metadata.WorkloadPool
+		}
 		switch {
 		case a.URL == "":
 			return refuse("agent secrets: no broker URL")
@@ -338,9 +358,16 @@ func configureProber(opts Options) (*Runtime, error) {
 			return refuse("agent secrets: no token audience")
 		case a.TokenExpiry < 10*time.Minute || a.TokenExpiry > time.Hour:
 			return refuse("agent secrets: token expiry %s is not between %s and %s (the API server's floor and the cluster's admission cap)", a.TokenExpiry, 10*time.Minute, time.Hour)
+		case a.ExchangeAudience == a.Audience:
+			return refuse("agent secrets: the exchange audience is the enrollment's own, %q; the cluster projects one volume per audience", a.Audience)
+		case workloadPool != "" && a.Audience == workloadPool:
+			return refuse("agent secrets: the enrollment's audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
+		case workloadPool != "" && a.ExchangeAudience == workloadPool:
+			return refuse("agent secrets: the exchange audience is the Workload Identity pool's, %q, which the metadata endpoint's token holds; the cluster projects one volume per audience", workloadPool)
 		}
 	}
-	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore); err != nil {
+	if err := CheckPod(opts.Pod, opts.ProviderKeys, opts.Tools, opts.LaunchSecrets, opts.ProvidersSecrets, opts.SessionStore,
+		opts.AgentSecrets != nil && opts.AgentSecrets.ExchangeAudience != ""); err != nil {
 		return refuse("%v", err)
 	}
 	for _, name := range opts.ProvidersSecrets {
@@ -367,7 +394,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	}
 	r := &Runtime{
 		namespace: opts.Namespace, project: opts.Project, image: opts.Image, storageClass: opts.StorageClass,
-		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, resources: opts.Resources,
+		volumeSize: opts.IssueVolume, scheduling: opts.Scheduling, sandboxConfig: opts.Sandbox, resources: opts.Resources,
 		streamURL: opts.StreamURL, daemonURL: opts.DaemonURL, envoyURL: opts.EnvoyURL, dispatchURL: opts.DispatchURL,
 		dispatchToken: opts.DispatchToken, natsURLs: opts.NATSURLs, tools: opts.Tools, agentSecrets: opts.AgentSecrets,
 		pod: opts.Pod, roleConfigFiles: opts.RoleConfigFiles, experimentVariants: opts.ExperimentVariants,
@@ -378,11 +405,12 @@ func configureProber(opts Options) (*Runtime, error) {
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
 		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
-		testPostgres: opts.TestPostgres, skills: opts.SkillsRepository, memoryGuard: opts.MemoryGuard,
+		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
 		gitHubDirs: opts.GitHubDirs,
 		store:      opts.Store, conns: opts.Conns, now: opts.Now, log: opts.Log,
 		changed: make(chan struct{}), watch: map[claim.Token]runtime.Locator{}, podTurns: map[string]chan struct{}{}, stranded: map[string]string{},
+		sessions:    map[claim.Token]launchedSession{},
 		cacheConfig: opts.RepositoryCache, mapped: opts.Mapped,
 		cacheDial: (&net.Dialer{}).DialContext, occupiedCaches: map[string]bool{}, cacheBearers: map[string]string{},
 	}
@@ -400,8 +428,9 @@ func configureProber(opts Options) (*Runtime, error) {
 	// not carry or record, so they are built once the runtime's log is settled.
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
-	// and none is written again, so each kind's shape is encoded here and only read afterwards.
-	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
+	// and none is written again, so each kind's shape in each sandbox is encoded here and only
+	// read afterwards.
+	r.podShapes = podShapes(r)
 	return r, nil
 }
 

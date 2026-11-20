@@ -9,7 +9,7 @@ name: CI job test
 #
 # What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
 # changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
-# scripts/sessions-import-pods.sh), and the Bun suites of scripts/. The daemon's Go tests, which
+# scripts/priorities-seed-check.sh), and the Bun suites of scripts/. The daemon's Go tests, which
 # this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's; the session
 # message-wait suite, the one step here that needed a database, is
 # .github/workflows/ci-job-sessions-script.yaml's, and no step of this job needs one now; and
@@ -218,12 +218,6 @@ on:
         description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
         type: string
         required: true
-      sessions_import_pods_test:
-        description: >-
-          ci.yaml's needs.changes.outputs.sessions_import_pods_test:
-          scripts/sessions-import-pods.test.sh and what it tests.
-        type: string
-        required: true
       priorities_seed_check_test:
         description: >-
           ci.yaml's needs.changes.outputs.priorities_seed_check_test:
@@ -256,7 +250,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
     # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
@@ -488,10 +482,6 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
 
-      - name: Test the session import pods script (a stand-in kubectl)
-        if: inputs.changes-result != 'success' || inputs.sessions_import_pods_test == 'true'
-        run: bash scripts/sessions-import-pods.test.sh
-
       - name: Test the priorities seed check (a stand-in Dispatch)
         if: inputs.changes-result != 'success' || inputs.priorities_seed_check_test == 'true'
         run: bash scripts/priorities-seed-check.test.sh
@@ -563,8 +553,9 @@ jobs:
         run: .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, whose own run
-      # compiles the three Go modules it covers and is run by hand rather than by any job.
+      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
+      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
+      # modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

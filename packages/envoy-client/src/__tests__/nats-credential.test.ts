@@ -1,126 +1,70 @@
 // packages/envoy-client/src/__tests__/nats-credential.test.ts
 //
-// A session's NATS credential: which one `envoySettings` resolves (a seed, the session's broker
-// token, or none, and none by default whatever the machine's broker route says), what the broker
-// token's authenticator puts on a CONNECT, how the keeper moves the connection to a renewed token
-// before the old one lapses, and, on a real nats-server behind the real auth service, that a
-// connection whose token lapsed while the broker was away is admitted again once a token is live.
+// A session's broker NATS credential on the wire: what its authenticator puts on a CONNECT, that
+// it is the token and key the session's HTTP calls present, that nats.js is told never to give up
+// over a refused one, how the keeper moves the connection to a renewed token before the old one
+// lapses, and, on a real nats-server behind the real auth service, that a connection whose token
+// lapsed while the broker was away is admitted again once a token is live, that a revoked token
+// is dropped and the connection comes back, that a session switch subscribes the new session only
+// once the connection is admitted as it, and that a hub with no auth service fails the dial naming
+// it; and which credential `envoySettings` resolves for a session: a seed, the session's broker
+// token, or none, and the reason inbound messages are off where the settings conflict or leave a
+// gap. The keeper and the follow against a stand-in connection are
+// nats-credential-keeper.test.ts's; how long its trades wait, and `renew` and
+// `followNatsCredential`'s deadlines, are nats-credential-deadlines.test.ts's.
 
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
-import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { RETRY_FIRST_WAIT_MS, RETRY_MAX_WAIT_MS } from "@legion/broker-client/token-client";
 import type { Subprocess } from "bun";
 import { connect, Events, type NatsConnection } from "nats";
 import {
   awaitReady,
   buildGoBinaries,
   envoyStackEnabled,
-  freePorts,
   stopProcess,
   useEnvoyStackDirectory,
 } from "../../test/envoy-stack";
-import { brokerCredential, forgetBrokerClients } from "../broker-credential";
+import { brokerCredential } from "../broker-credential";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
 import { natsConnectionOptions } from "../nats-connection";
 import {
-  type BrokerNatsCredential,
   brokerNatsCredential,
   followNatsCredential,
   keepNatsCredential,
   type NatsCredential,
+  TRADE_DEADLINE_MS,
 } from "../nats-credential";
+import { natsBrokerStandIns } from "./broker-stand-ins";
 
-afterEach(forgetBrokerClients);
-
-const servers: { stop: (closeActive?: boolean) => void }[] = [];
-afterEach(() => {
-  for (const server of servers.splice(0)) server.stop(true);
-});
-
-const tempDir = temporaryDirectories("nats-credential");
-
-/** One token the stub broker minted: what it handed out, the session and key it was traded
- *  for, and when it lapses. */
-interface Minted {
-  readonly value: string;
-  readonly session: string;
-  readonly jkt: string;
-  readonly expiresAt: number;
-}
+const { podEnvironment, stubBroker, tempDir } = natsBrokerStandIns("nats-credential");
 
 /**
- * A secrets broker: its token exchange mints a token good for `seconds`, numbering each one and
- * binding it to the key the trade's DPoP proof embeds, and its introspection route answers each
- * token it minted live until it lapses, as a session's (`ProjectScopePerson`). While `down` is
- * set the exchange answers 503, as a broker that is away.
+ * The proof a CONNECT's signature field carries, verified with the key its own header embeds:
+ * nats.js sends what the authenticator answered, and the auth service reads it base64url-encoded,
+ * as nats.go sends one. Throws when the signature does not verify.
  */
-function stubBroker(seconds: number) {
-  const minted: Minted[] = [];
-  const state = { down: false, minted };
-  const server = Bun.serve({
-    port: 0,
-    hostname: "127.0.0.1",
-    fetch: async (request) => {
-      const form = new URLSearchParams(await request.text());
-      if (new URL(request.url).pathname === "/v1/oauth/introspect") {
-        const held = minted.find((one) => one.value === form.get("token"));
-        if (held === undefined || held.expiresAt <= Date.now())
-          return Response.json({ active: false });
-        return Response.json({
-          active: true,
-          session: held.session,
-          person: "ada@example.com",
-          client_id: "dispatch-token-exchange",
-          project_scope: "person",
-          jkt: held.jkt,
-          exp: Math.floor(held.expiresAt / 1000),
-        });
-      }
-      if (state.down) return new Response("the broker is away", { status: 503 });
-      const header = JSON.parse(
-        Buffer.from((request.headers.get("DPoP") ?? "").split(".")[0] ?? "", "base64url").toString()
-      ) as { readonly jwk: JsonWebKey };
-      const value = `session-access-${minted.length + 1}`;
-      minted.push({
-        value,
-        session: form.get("session") ?? "",
-        jkt: await thumbprintOf(header.jwk),
-        expiresAt: Date.now() + seconds * 1000,
-      });
-      return Response.json({
-        access_token: value,
-        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-        token_type: "DPoP",
-        expires_in: seconds,
-      });
-    },
-  });
-  servers.push(server);
-  return { url: `http://127.0.0.1:${server.port}`, state };
-}
-
-/** A pod's projected token file. */
-function projectedFile(): string {
-  const file = path.join(tempDir(), "token");
-  writeFileSync(file, "projected.service.account.token\n");
-  return file;
-}
-
-/** The environment of a pod that has an identity to trade at `brokerUrl` and holds no NATS seed: a
- *  broker-capable environment, whatever its hub runs. */
-function podEnvironment(brokerUrl: string): EnvoyEnvironment {
-  return {
-    HOME: tempDir(),
-    ENVOY_NATS_URL: "nats://nats.internal.example:4222",
-    AGENT_SECRETS_URL: brokerUrl,
-    AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
-    AGENT_SECRETS_MACHINE_TOKEN_FILE: projectedFile(),
-  };
+function verifiedProof(sig: string): {
+  readonly header: { readonly typ: string; readonly alg: string; readonly jwk: JsonWebKey };
+  readonly claims: Record<string, unknown>;
+} {
+  const [header = "", claims = "", signature = ""] = Buffer.from(sig, "base64url")
+    .toString("utf8")
+    .split(".");
+  const decoded = (part: string) => JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+  const read = { header: decoded(header), claims: decoded(claims) };
+  const key = createPublicKey({ key: read.header.jwk, format: "jwk" });
+  const signed = Buffer.from(`${header}.${claims}`);
+  const raw = Buffer.from(signature, "base64url");
+  if (!verify("sha256", signed, { key, dsaEncoding: "ieee-p1363" }, raw)) {
+    throw new Error("the connection proof's signature does not verify with its own key");
+  }
+  return read;
 }
 
 /** The credential `envoySettings` resolves for `env` and an envoy.json holding `file` (none
@@ -283,30 +227,40 @@ describe("which credential a session connects to NATS with", () => {
       off: "this session opens no NATS connection",
     });
   });
-});
 
-/**
- * The proof a CONNECT's signature field carries, verified with the key its own header embeds:
- * nats.js sends what the authenticator answered, and the auth service reads it base64url-encoded,
- * as nats.go sends one. Throws when the signature does not verify.
- */
-function verifiedProof(sig: string): {
-  readonly header: { readonly typ: string; readonly alg: string; readonly jwk: JsonWebKey };
-  readonly claims: Record<string, unknown>;
-} {
-  const [header = "", claims = "", signature = ""] = Buffer.from(sig, "base64url")
-    .toString("utf8")
-    .split(".");
-  const decoded = (part: string) => JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
-  const read = { header: decoded(header), claims: decoded(claims) };
-  const key = createPublicKey({ key: read.header.jwk, format: "jwk" });
-  const signed = Buffer.from(`${header}.${claims}`);
-  const raw = Buffer.from(signature, "base64url");
-  if (!verify("sha256", signed, { key, dsaEncoding: "ieee-p1363" }, raw)) {
-    throw new Error("the connection proof's signature does not verify with its own key");
-  }
-  return read;
-}
+  test("NATS_AUTH=broker for a caller that names no session resolves inbound off naming it", () => {
+    // A trade under no session is answered the machine's token, under AGENT_SECRETS_SESSION, or
+    // the signed-in person's: neither is the session the connection delivers to (the review of
+    // 2fa6fbf7cf, h4).
+    const env = { ...podEnvironment("http://broker.test"), NATS_AUTH: "broker" };
+    const config = readEnvoyConfig(path.join(tempDir(), "envoy.json"), env, { cwd: tempDir() });
+    const settings = envoySettings(env, config, {});
+    // The reason is typed too (`noSessionNamed`), for a caller with a remedy of its own
+    // (`operatorNatsSeed`), which branches on it rather than on the text. Every other reason
+    // stays untyped: the rows above hold each one with `toEqual({ off })`.
+    expect(settings.enabled && settings.inbound).toEqual({
+      off: "NATS_AUTH is broker, but this process names no session for its NATS connection's token",
+      noSessionNamed: true,
+    });
+  });
+
+  test("a broker token whose session name reads none trades nothing and says so", async () => {
+    const broker = stubBroker(600);
+    let session = "";
+    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
+    const refusal =
+      "NATS_AUTH is broker, but this process names no session for its NATS connection's token";
+    await expect(credential.ready({ waitForReady: true })).rejects.toThrow(refusal);
+    await expect(credential.renew()).rejects.toThrow(refusal);
+    expect(credential.authenticator("nonce-1")).toBeUndefined();
+    await Bun.sleep(50);
+    expect(broker.state.trades).toBe(0);
+    // The control: once the name reads a session, its token is traded.
+    session = "ses_named";
+    await credential.ready();
+    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_named"]);
+  });
+});
 
 describe("the broker token's authenticator", () => {
   test("authenticator signs the server's nonce", async () => {
@@ -347,76 +301,6 @@ describe("the broker token's authenticator", () => {
   });
 });
 
-describe("ready", () => {
-  test("a broker that never answers the trade fails it, named, at the deadline", async () => {
-    // A broker that takes the request and never answers: with no deadline a start waited on it in
-    // silence (64 s and counting, at 579d9b45f6), where a hub that never answers fails at nats.js's
-    // own dial timeout, naming it.
-    const server = Bun.serve({
-      port: 0,
-      hostname: "127.0.0.1",
-      fetch: () => new Promise<Response>(() => undefined),
-    });
-    servers.push(server);
-    const credential = brokerNatsCredential(
-      podEnvironment(`http://127.0.0.1:${server.port}`),
-      "ses_hung",
-      "NATS_AUTH",
-      300
-    );
-    const started = Date.now();
-    const outcome = await credential.ready().then(
-      () => "ready",
-      (error: unknown) => (error instanceof Error ? error.message : String(error))
-    );
-    expect(outcome).toBe(
-      "NATS_AUTH is broker, but the secrets broker did not answer the trade for the session's token within 0.3 s"
-    );
-    expect(Date.now() - started).toBeLessThan(5_000);
-  }, 15_000);
-});
-
-describe("renew", () => {
-  test("a switch while a renewal is in flight takes the new session's token", async () => {
-    // A trade reads the session's name as it starts, so the keeper's renewal of the session
-    // before can be in flight when the host switches. The switch's renewal must not be handed
-    // that one: the connection would come back as the session before, and the new session's
-    // subscribes be refused. Two-second tokens, so each renewal is a real trade.
-    const broker = stubBroker(2);
-    let session = "ses_before";
-    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
-    await credential.ready();
-    credential.authenticator("nonce-1");
-    const keeperRenewal = credential.renew();
-    session = "ses_after";
-    await credential.renew();
-    await keeperRenewal;
-    expect(credential.needsReconnect()).toBe(true);
-    const auth = credential.authenticator("nonce-2") as { auth_token: string };
-    const presented = broker.state.minted.find((one) => one.value === auth.auth_token);
-    expect(presented?.session).toBe("ses_after");
-  });
-
-  test("a CONNECT with no live token presents nothing, trades, and presents the token next", async () => {
-    // No ready(), renew() or keeper: the authenticator's own trade is what the next reconnect
-    // presents, so a connection whose token lapsed comes back on its own.
-    const broker = stubBroker(600);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_self");
-    expect(credential.authenticator("nonce-1")).toBeUndefined();
-    const traded = () => broker.state.minted.length > 0;
-    const deadline = Date.now() + 5_000;
-    while (!traded() && Date.now() < deadline) await Bun.sleep(20);
-    // The trade has landed once the authenticator presents its token.
-    let auth: { auth_token?: string } | undefined;
-    while (auth === undefined && Date.now() < deadline) {
-      auth = credential.authenticator("nonce-2") as { auth_token?: string } | undefined;
-      if (auth === undefined) await Bun.sleep(20);
-    }
-    expect(auth?.auth_token).toBe(broker.state.minted[0]?.value ?? "no token minted");
-    expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_self"]);
-  });
-});
-
 describe("one token per session for HTTP and NATS", () => {
   test("the NATS credential presents the token and key the listener calls present", async () => {
     const broker = stubBroker(600);
@@ -438,142 +322,6 @@ describe("one token per session for HTTP and NATS", () => {
     );
   });
 });
-
-describe("followNatsCredential", () => {
-  /** A connection whose reconnect asks the authenticator again and reports the statuses the
-   *  caller pushes, and which the caller closes. */
-  function controlledConnection(credential: BrokerNatsCredential) {
-    const pushed: { type: string }[] = [];
-    let wake = () => {};
-    let stopped = false;
-    const ended = Promise.withResolvers<void>();
-    const statuses = {
-      stop: () => {
-        stopped = true;
-        wake();
-      },
-      async *[Symbol.asyncIterator]() {
-        while (!stopped) {
-          const next = pushed.shift();
-          if (next !== undefined) {
-            yield next;
-            continue;
-          }
-          await new Promise<void>((resolve) => {
-            wake = resolve;
-          });
-        }
-      },
-    };
-    return {
-      push: (type: string) => {
-        pushed.push({ type });
-        wake();
-      },
-      close: () => ended.resolve(),
-      stoppedReader: () => stopped,
-      connection: {
-        reconnect: async () => {
-          credential.authenticator("nonce-again");
-        },
-        status: () => statuses,
-        closed: () => ended.promise,
-      } as unknown as Parameters<typeof followNatsCredential>[0],
-    };
-  }
-
-  async function switched(): Promise<BrokerNatsCredential> {
-    const broker = stubBroker(600);
-    let session = "ses_from";
-    const credential = brokerNatsCredential(podEnvironment(broker.url), () => session);
-    await credential.ready();
-    credential.authenticator("nonce-1");
-    session = "ses_to";
-    return credential;
-  }
-
-  test("a connection that closes before it is back rejects at once, and stops its reader", async () => {
-    const credential = await switched();
-    const rig = controlledConnection(credential);
-    const following = followNatsCredential(rig.connection, credential);
-    // A status that is not the reconnect ends nothing.
-    rig.push("disconnect");
-    await Bun.sleep(50);
-    rig.close();
-    await expect(following).rejects.toThrow(
-      "the NATS connection closed before it came back as the new session"
-    );
-    expect(rig.stoppedReader()).toBe(true);
-  });
-
-  test("a connection that never comes back rejects after 15 s, and stops its reader", async () => {
-    const credential = await switched();
-    const rig = controlledConnection(credential);
-    await expect(followNatsCredential(rig.connection, credential)).rejects.toThrow(
-      "the NATS connection did not come back as the new session within 15 s"
-    );
-    expect(rig.stoppedReader()).toBe(true);
-  }, 30_000);
-
-  test("a reconnect returns once its CONNECT presented the new session's token", async () => {
-    const credential = await switched();
-    const rig = controlledConnection(credential);
-    const following = followNatsCredential(rig.connection, credential);
-    await Bun.sleep(50);
-    rig.push("reconnect");
-    await following;
-    expect(credential.needsReconnect()).toBe(false);
-    expect(rig.stoppedReader()).toBe(true);
-  });
-
-  test("a redial already in flight with the old token is followed by another reconnect", async () => {
-    // The connection is redialling when the switch comes: nats.js's reconnect() does nothing
-    // while it is not connected, and the redial's CONNECT presented the old token, so its
-    // reconnect leaves the move undone. The follow asks again, and the next CONNECT presents the
-    // new session's token.
-    const credential = await switched();
-    const rig = controlledConnection(credential);
-    const asked: string[] = [];
-    (rig.connection as { reconnect: () => Promise<void> }).reconnect = async () => {
-      if (asked.push("reconnect") === 1) return;
-      credential.authenticator("nonce-again");
-      rig.push("reconnect");
-    };
-    const following = followNatsCredential(rig.connection, credential);
-    await Bun.sleep(50);
-    // The in-flight redial comes back, admitted as the old session.
-    rig.push("reconnect");
-    const started = Date.now();
-    await following;
-    expect(Date.now() - started).toBeLessThan(2_000);
-    expect(asked).toEqual(["reconnect", "reconnect"]);
-    expect(credential.needsReconnect()).toBe(false);
-    expect(rig.stoppedReader()).toBe(true);
-  }, 30_000);
-});
-
-/** A connection as the keeper sees it: each reconnect is a new CONNECT, which asks the
- *  credential's authenticator again, as nats.js does. */
-function fakeConnection(onConnect: () => void) {
-  let closed = false;
-  const ended = Promise.withResolvers<undefined>();
-  const reconnects: number[] = [];
-  return {
-    reconnects,
-    connection: {
-      reconnect: async () => {
-        reconnects.push(Date.now());
-        onConnect();
-      },
-      isClosed: () => closed,
-      closed: () => ended.promise,
-    },
-    close: () => {
-      closed = true;
-      ended.resolve(undefined);
-    },
-  };
-}
 
 describe("natsConnectionOptions with the broker token", () => {
   test("never gives up over a refused credential", async () => {
@@ -608,96 +356,6 @@ describe("natsConnectionOptions with the broker token", () => {
   });
 });
 
-// These run on the wall clock, with two-second tokens: the keeper's timer and the token client's
-// expiry both read real time, and each renewal is a real HTTP trade at the stub broker, so a fake
-// clock would drive one half of the exchange and not the other.
-describe("keepNatsCredential", () => {
-  test("keepNatsCredential renews and reconnects before expiry", async () => {
-    const broker = stubBroker(2);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
-    await credential.ready();
-    const first = credential.authenticator("nonce-1") as { auth_token: string };
-    const lapses = credential.expiresAt().getTime();
-    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
-    const warnings: string[] = [];
-    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
-    try {
-      const deadline = Date.now() + 5_000;
-      while (fake.reconnects.length === 0 && Date.now() < deadline) await Bun.sleep(50);
-      expect(fake.reconnects.length).toBeGreaterThan(0);
-      // Moved to the next token before the one the connection presented lapsed.
-      expect(fake.reconnects[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
-      const next = credential.authenticator("nonce-3") as { auth_token: string };
-      expect(next.auth_token).not.toBe(first.auth_token);
-      expect(broker.state.minted.length).toBeGreaterThanOrEqual(2);
-      expect(warnings).toEqual([]);
-    } finally {
-      stop();
-    }
-    // Stopped, it trades and reconnects no more.
-    const reconnected = fake.reconnects.length;
-    const traded = broker.state.minted.length;
-    await Bun.sleep(1_500);
-    expect(fake.reconnects.length).toBe(reconnected);
-    expect(broker.state.minted.length).toBe(traded);
-  }, 15_000);
-
-  test("a token that lives one second is renewed before it lapses", async () => {
-    // The broker allows one-second tokens (BROKER_ACCESS_TOKEN_SECONDS=1): no floor on the wait
-    // may push the renewal past the token's own expiry.
-    const broker = stubBroker(1);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
-    await credential.ready();
-    credential.authenticator("nonce-1");
-    const lapses = credential.expiresAt().getTime();
-    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
-    const stop = keepNatsCredential(fake.connection, credential, () => {});
-    try {
-      const deadline = Date.now() + 3_000;
-      while (fake.reconnects.length === 0 && Date.now() < deadline) await Bun.sleep(10);
-      expect(fake.reconnects[0] ?? Number.POSITIVE_INFINITY).toBeLessThan(lapses);
-    } finally {
-      stop();
-    }
-  }, 10_000);
-
-  test("a renewal that lands no new token is warned about, never naming the token", async () => {
-    // The token client answers the token in hand through a transient exchange failure, so the
-    // connection keeps it, and the session is told its renewals are not landing.
-    const broker = stubBroker(2);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
-    await credential.ready();
-    credential.authenticator("nonce-1");
-    broker.state.down = true;
-    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
-    const warnings: string[] = [];
-    const stop = keepNatsCredential(fake.connection, credential, (text) => warnings.push(text));
-    try {
-      const deadline = Date.now() + 5_000;
-      while (warnings.length === 0 && Date.now() < deadline) await Bun.sleep(50);
-      expect(warnings.length).toBeGreaterThan(0);
-      expect(warnings.join("\n")).toContain("landed no new token");
-      expect(warnings.join("\n")).not.toContain("session-access-");
-      expect(fake.reconnects).toEqual([]);
-    } finally {
-      stop();
-    }
-  }, 10_000);
-
-  test("a closed connection ends the keeper", async () => {
-    const broker = stubBroker(2);
-    const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_a");
-    await credential.ready();
-    credential.authenticator("nonce-1");
-    const fake = fakeConnection(() => credential.authenticator("nonce-again"));
-    keepNatsCredential(fake.connection, credential, () => {});
-    fake.close();
-    await Bun.sleep(1_500);
-    expect(fake.reconnects).toEqual([]);
-    expect(broker.state.minted.length).toBe(1);
-  }, 15_000);
-});
-
 const stackDirectory = useEnvoyStackDirectory();
 
 /** A natsd behind the real auth service, which asks `brokerUrl`'s introspection route about each
@@ -715,6 +373,27 @@ interface CalloutHub {
   stop(): Promise<void>;
 }
 
+/** The ports natsd bound, read from its log; undefined until it has logged both. natsd is started
+ *  with `-p -1 -m -1`, so the kernel picks each port as natsd binds it: a port chosen beforehand
+ *  and let go can be taken by another process before natsd binds it, and natsd then exits with
+ *  "address already in use" (seen on this repository's dev box under load). */
+function natsdPorts(
+  log: string
+): { readonly natsPort: number; readonly monitorPort: number } | undefined {
+  const text = readFileSync(log, "utf8");
+  const client = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(text);
+  const monitor = /Starting http monitor on 127\.0\.0\.1:(\d+)/.exec(text);
+  if (client === null || monitor === null) return undefined;
+  return { natsPort: Number(client[1]), monitorPort: Number(monitor[1]) };
+}
+
+/** Whether the natsd that logs to `log` has bound its ports and answers its health check. */
+async function natsdHealthy(log: string): Promise<boolean> {
+  const ports = natsdPorts(log);
+  if (ports === undefined) return false;
+  return (await fetch(`http://127.0.0.1:${ports.monitorPort}/healthz`)).ok;
+}
+
 /** Starts a {@link CalloutHub} in its own directory under the stack directory, from the binaries
  *  the describe's `beforeAll` built. */
 async function startCalloutHub(name: string, brokerUrl: string): Promise<CalloutHub> {
@@ -722,7 +401,6 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
   const bin = path.join(stackDirectory, "bin");
   const keys = path.join(work, "callout-keys");
   mkdirSync(keys, { recursive: true });
-  const [natsPort, monitorPort] = await freePorts(2);
   const { PATH = "" } = process.env;
   const budget = { timeoutMs: 60_000, tailLines: 10 };
   const processes: Subprocess[] = [];
@@ -735,18 +413,17 @@ async function startCalloutHub(name: string, brokerUrl: string): Promise<Callout
     const natsd = Bun.spawn(
       [
         path.join(bin, "natsd"),
-        ...["-p", String(natsPort), "-m", String(monitorPort)],
+        ...["-p", "-1", "-m", "-1"],
         ...["-store_dir", path.join(work, "nats-store"), "-callout-keys", keys],
       ],
       { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
     );
     closeSync(natsOut);
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, budget, async () => {
-      const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
-      return answer.ok;
-    });
-    const natsUrl = `nats://127.0.0.1:${natsPort}`;
+    await awaitReady("natsd", natsd, natsLog, budget, () => natsdHealthy(natsLog));
+    const ports = natsdPorts(natsLog);
+    if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
+    const natsUrl = `nats://127.0.0.1:${ports.natsPort}`;
     const calloutLog = path.join(work, "calloutd.log");
     const calloutOut = openSync(calloutLog, "a");
     const calloutd = Bun.spawn(
@@ -859,15 +536,109 @@ describe.skipIf(!envoyStackEnabled)(
             ].join("\n")
           );
         expect(opened.isClosed()).toBe(false);
+        // The keeper warns once its renewal fails, and natsd refuses once the token lapses on the
+        // server's clock: two clocks, so no order between the two is promised. The keeper's first
+        // renewal comes halfway to the token's expiry (`renewDelay`), and waits for its trade at
+        // most TRADE_DEADLINE_MS before it warns (`keepNatsCredential`'s tick), so the warning is
+        // promised within that bound of the broker going away, not by natsd's second refusal.
+        const warnedBy = Date.now() + TRADE_DEADLINE_MS + 2_000;
+        while (warnings.length === 0 && Date.now() < warnedBy) await Bun.sleep(100);
         expect(warnings.length).toBeGreaterThan(0);
-        expect(warnings.join("\n")).not.toContain("session-access-");
+        for (const one of broker.state.minted) {
+          expect(warnings.join("\n")).not.toContain(one.value);
+        }
 
-        // The broker is back: a token is traded and the connection is admitted again.
+        // The broker is back: a token is traded and the connection is admitted again. It mints
+        // tokens of a session's usual life again, so the keeper does not renew within the row:
+        // with 3-second tokens it renews about every 1.5 s and reconnects to present each new
+        // token, and the round trip below raced that reconnect (NatsError DISCONNECT).
         const back = Date.now();
+        // How long the connection may take to come back, from the token client's schedule: only a
+        // token landing starts it over (`BrokerTokenClient.#run`), so the next trade is due at most
+        // RETRY_FIRST_WAIT_MS doubled once for each trade that failed while the broker was away,
+        // capped at RETRY_MAX_WAIT_MS, after the last of them. The connection then presents the
+        // token it took at its next reconnect but one (the authenticator's renewal lands it for the
+        // next CONNECT), each after `reconnectTimeWait` (2 s, nats-connection.ts), and 5 s more for
+        // the handshake on a loaded machine.
+        const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
+        const nextTradeMs = Math.min(
+          RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
+          RETRY_MAX_WAIT_MS
+        );
+        const backBy = back + nextTradeMs + 2 * 2_000 + 5_000;
+        broker.state.seconds = 900;
         broker.state.down = false;
-        while (!reconnected.some((at) => at > back) && Date.now() < back + 20_000)
-          await Bun.sleep(100);
+        while (!reconnected.some((at) => at > back) && Date.now() < backBy) await Bun.sleep(100);
         expect(reconnected.some((at) => at > back)).toBe(true);
+        expect(opened.isClosed()).toBe(false);
+        expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
+      } finally {
+        stopKeeping();
+        await connection?.close().catch(() => {});
+        await hub.stop();
+      }
+    }, 180_000);
+
+    test("a token revoked before it lapses is dropped at the second refusal, and the connection comes back", async () => {
+      // The broker revokes the session's token: the auth service, which asks it about each
+      // token, refuses every CONNECT that presents it, and nats.js redials every 2 s. Tokens
+      // live ten minutes, so only the keeper's drop gets the connection a token it admits.
+      const broker = stubBroker(600);
+      const hub = await startCalloutHub("revoked", broker.url);
+      let connection: NatsConnection | undefined;
+      let stopKeeping = () => {};
+      const started = Date.now();
+      const trace: string[] = [];
+      const note = (what: string) => trace.push(`${Date.now() - started} ms: ${what}`);
+      try {
+        const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_revoked");
+        await credential.ready();
+        const opened = await connect(
+          natsConnectionOptions({
+            servers: [hub.natsUrl],
+            name: "nats-credential-revoked",
+            credential: { kind: "broker", broker: credential },
+          })
+        );
+        connection = opened;
+        const reconnected: number[] = [];
+        void (async () => {
+          for await (const status of opened.status()) {
+            note(`status ${status.type} ${JSON.stringify(status.data)}`);
+            if (status.type === Events.Reconnect) reconnected.push(Date.now());
+          }
+        })();
+        const warnings: string[] = [];
+        stopKeeping = keepNatsCredential(opened, credential, (text) => {
+          note(`keeper: ${text}`);
+          warnings.push(text);
+        });
+        await opened.flush();
+
+        note("the broker revokes the token, and the connection redials");
+        const revoked = broker.state.minted[0]?.value ?? "";
+        broker.state.revoked.add(revoked);
+        const at = Date.now();
+        await opened.reconnect();
+        // Two refusals 2 s apart, the trade, and the redial after it, with 10 s for the
+        // handshakes on a loaded machine.
+        const backBy = at + 3 * 2_000 + 10_000;
+        while (!reconnected.some((when) => when > at) && Date.now() < backBy) await Bun.sleep(100);
+        if (!reconnected.some((when) => when > at))
+          throw new Error(
+            [
+              `the connection did not come back within ${(backBy - at) / 1000} s of the revoke; natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
+              "the client, by milliseconds since the row began:",
+              ...trace,
+              hub.logs(),
+            ].join("\n")
+          );
+        expect(hub.refusals()).toBeGreaterThanOrEqual(2);
+        expect(broker.state.minted.length).toBe(2);
+        expect(warnings.join("\n")).toContain(
+          "refused the connection's live broker token (AUTHORIZATION_VIOLATION)"
+        );
+        for (const one of broker.state.minted) expect(warnings.join("\n")).not.toContain(one.value);
         expect(opened.isClosed()).toBe(false);
         expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
       } finally {
@@ -925,35 +696,29 @@ describe.skipIf(!envoyStackEnabled)(
       const broker = stubBroker(600);
       const work = path.join(stackDirectory, "no-auth");
       mkdirSync(work, { recursive: true });
-      const [natsPort, monitorPort] = await freePorts(2);
       const natsLog = path.join(work, "natsd.log");
       const natsOut = openSync(natsLog, "a");
       const { PATH = "" } = process.env;
       const natsd = Bun.spawn(
         [
           path.join(stackDirectory, "bin", "natsd"),
-          ...["-p", String(natsPort), "-m", String(monitorPort)],
+          ...["-p", "-1", "-m", "-1"],
           ...["-store_dir", path.join(work, "nats-store")],
         ],
         { env: { PATH, HOME: work }, stdout: natsOut, stderr: natsOut }
       );
       closeSync(natsOut);
       try {
-        await awaitReady(
-          "natsd",
-          natsd,
-          natsLog,
-          { timeoutMs: 60_000, tailLines: 10 },
-          async () => {
-            const answer = await fetch(`http://127.0.0.1:${monitorPort}/healthz`);
-            return answer.ok;
-          }
+        await awaitReady("natsd", natsd, natsLog, { timeoutMs: 60_000, tailLines: 10 }, () =>
+          natsdHealthy(natsLog)
         );
+        const ports = natsdPorts(natsLog);
+        if (ports === undefined) throw new Error(`natsd named no port in ${natsLog}`);
         const credential = brokerNatsCredential(podEnvironment(broker.url), "ses_no_auth");
         await credential.ready();
         const dialled = connect(
           natsConnectionOptions({
-            servers: [`nats://127.0.0.1:${natsPort}`],
+            servers: [`nats://127.0.0.1:${ports.natsPort}`],
             name: "nats-credential-no-auth",
             credential: { kind: "broker", broker: credential },
           })

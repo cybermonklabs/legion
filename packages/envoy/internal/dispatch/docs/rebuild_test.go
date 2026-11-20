@@ -580,6 +580,9 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 	artifactID := createDocument(t, database, "# First")
 	taskA, _ := newTestServiceInstance(t, database)
 	taskB, _ := newTestServiceInstance(t, storetest.SecondProcess(t, database))
+	// Task A's holds query waits for task B's answer for roomWait, not production's roomQueryWait,
+	// as the process pair's do (newSeededProcessPair): the refusal is what this test reads.
+	taskA.roomQueries.wait = roomWait(t)
 	seedServiceText(t, taskA, artifactID, "before\n")
 	runRoomSync(t, newRoomSync(taskA))
 	runRoomSync(t, newRoomSync(taskB))
@@ -601,9 +604,9 @@ func TestARebuildIsRefusedWhileAnotherProcessHoldsTheRoom(t *testing.T) {
 }
 
 // Two rebuilds of one document on two processes that each loaded the same history that cannot
-// load: both wait on the issue's row (lockArtifactOwner) until the test lets them go, so each
-// validated the old history before either replaces it. Exactly one replaces it; the other finds
-// the head moved under the document's lock (RebuildTx) and is refused as live, rather than
+// load: both wait on the issue's owner lock (lockArtifactOwner) until the test lets them go, so
+// each validated the old history before either replaces it. Exactly one replaces it; the other
+// finds the head moved under the document's lock (RebuildTx) and is refused as live, rather than
 // replacing the history the first had just rebuilt. That refusal names the saved version a
 // rebuild discards every edit after and tells the caller to stop and ask a person, rather than
 // to rebuild again.
@@ -620,13 +623,11 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	ctx := context.Background()
 	gate, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the issue's lock: %v", err)
+		t.Fatalf("begin the owner-locked transaction: %v", err)
 	}
 	defer gate.Rollback(ctx)
-	if _, err := gate.Exec(ctx, `
-		select 1 from issues where key = (select issue_key from artifacts where id = $1) for update
-	`, artifactID); err != nil {
-		t.Fatalf("lock the document's issue: %v", err)
+	if _, _, err := lockArtifactOwner(ctx, gate, artifactID); err != nil {
+		t.Fatalf("lock the document's owner: %v", err)
 	}
 	results := make(chan error, 2)
 	for _, service := range []*Service{taskA, taskB} {
@@ -638,10 +639,10 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 		}()
 	}
 	if waiting := storetest.WaitForLockWaiters(t, gate, 2, roomWait(t)); waiting < 2 {
-		t.Fatalf("%d of the two rebuilds reached the issue's row", waiting)
+		t.Fatalf("%d of the two rebuilds reached the issue's owner lock", waiting)
 	}
 	if err := gate.Rollback(ctx); err != nil {
-		t.Fatalf("release the issue's row: %v", err)
+		t.Fatalf("release the issue's owner lock: %v", err)
 	}
 	var succeeded int
 	var refusals []error

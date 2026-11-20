@@ -5,11 +5,11 @@
 // user info whole and printed the rest of nats.js's text, both rows failed: the line held the
 // password. The line now prints the error's code alone (natsFailureReason).
 import { describe, expect, test } from "bun:test";
-import { randomBytes } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { connect } from "nats";
 import { bridgeConfigFromEnvironment, bridgeFailureLine } from "./envoy-bridge";
 
-const sixDigits = () => String(100000 + (randomBytes(4).readUInt32BE() % 900000));
+const sixDigits = () => String(randomInt(100000, 1000000));
 
 async function realError(server: string): Promise<unknown> {
   try {

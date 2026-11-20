@@ -90,6 +90,8 @@ func (c *serviceCredential) token() string {
 // serviceProbeCutoff before the presented token lapses it stops trying for that token, and waits
 // for the reconnect nats.go makes when the server drops the connection at expiry.
 func (c *serviceCredential) Keep(ctx context.Context, nc *nats.Conn) {
+	ctx, stop := untilClosed(ctx, nc)
+	defer stop()
 	for {
 		presented := c.token()
 		expiry, err := expiryOf(presented)
@@ -158,8 +160,8 @@ func (c *serviceCredential) admitLater(ctx context.Context, nc *nats.Conn, prese
 //
 // Everything else is nats.go's default, so the probe presents no other credential, never
 // reconnects, and has no callbacks: nc's ConnectedCB starts a Keeper beside the connection it
-// makes and its ClosedCB stops one (internal/bus, keepAlongside), and its handlers would report
-// the probe's connect and close as nc's own.
+// makes (internal/bus, keepAlongside), and its handlers would report the probe's connect and close
+// as nc's own.
 func probe(nc *nats.Conn, token string) error {
 	from := &nc.Opts
 	opts := nats.GetDefaultOptions()

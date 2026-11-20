@@ -117,10 +117,8 @@
 # cannot take: a run ended by SIGKILL, which no process can trap, leaves its two databases on the
 # server for someone to drop by hand, as does any other signal this script does not trap.
 #
-# With --callout the hub runs behind the NATS auth service (internal/broker/natscallout), in two
-# brokers, and the banner exports what scripts/callout-check.sh reads to prove it: all of that is
-# scripts/lib/dev-stack-callout.sh, which this script sources with the option and only then, and
-# whose header says what it adds. Without --callout natsd admits every client, as it always has.
+# With --callout the hub runs behind the NATS auth service, in two brokers, which
+# scripts/callout-check.sh drives; scripts/lib/callout-stack.sh's header says what that adds.
 #
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh    # a Legion pod: the variable is already set
 #   LEGION_TEST_PG_DSN=... bash scripts/dev-stack.sh \  # a Legion pod, with the binaries
@@ -133,6 +131,19 @@
 # python3, and nothing else from the machine: no credential, no private hostname, no production
 # service.
 set -euo pipefail
+
+# refuse_old_bash MAJOR MINOR VERSION: exits 2, in one line naming the bash this script needs and
+# VERSION, where MAJOR.MINOR is older than 5.1. The wait at the end (`wait -n -p`, which names the
+# process that stopped) is bash 5.1's: an older bash refuses -p there, and the loop around it never
+# sees a process stop and spins at once forever. So the first command hands it this bash's own
+# version, before anything is created or started; scripts/dev-stack.test.sh runs it with others.
+refuse_old_bash() {
+  if (($1 < 5 || ($1 == 5 && $2 < 1))); then
+    echo "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $3" >&2
+    exit 2
+  fi
+}
+refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -158,9 +169,9 @@ Dispatch with NATS service tokens rather than no credential.
 EOF
 }
 
+CALLOUT=false
 DATABASE_URL_OPTION=""
 BINARIES_OPTION=""
-CALLOUT=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --database-url)
@@ -173,6 +184,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --database-url=*)
       DATABASE_URL_OPTION="${1#--database-url=}"
+      shift
+      ;;
+    --callout)
+      CALLOUT=true
       shift
       ;;
     --binaries)
@@ -189,10 +204,6 @@ while [ "$#" -gt 0 ]; do
         echo "dev-stack: --binaries needs the directory that holds the stack's binaries" >&2
         exit 2
       fi
-      shift
-      ;;
-    --callout)
-      CALLOUT=true
       shift
       ;;
     --help | -h)
@@ -309,9 +320,6 @@ LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
-# The listener's ENVOY_MACHINE_ID, which names its durable and its queue group; with --callout,
-# BROKER_NATS_SERVICES lists the listener under it too.
-LISTENER_MACHINE_ID="dev-stack-$RUN_SUFFIX"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -376,32 +384,15 @@ BOX2_METADATA_LOG="$LOG_DIR/dev-metadata-box-two.log"
 BOX2_HELPER_LOG="$LOG_DIR/agent-secrets-helper-box-two.log"
 BOX2_SESSION="dev-stack-box-two"
 
-# --- What --callout adds (scripts/lib/dev-stack-callout.sh): arguments for the issuer and natsd,
-# variables for every broker, the listener and Dispatch, a step once natsd is up and one once the
-# first broker is, and the banner's lines. Without the option each is empty and each step does
-# nothing, so the run is the stack it always was; with it the lib, sourced here, replaces them. ---
-callout_issuer_args=() callout_natsd_args=() callout_broker_env=() callout_listener_env=() callout_dispatch_env=()
-callout_exports=""
-callout_after_natsd() { :; }
-callout_after_first_broker() { :; }
-if [ "$CALLOUT" = true ]; then
-  # shellcheck source-path=SCRIPTDIR source=lib/dev-stack-callout.sh
-  . "$SCRIPT_DIR/lib/dev-stack-callout.sh"
-fi
-
 BROKER_DB="dev_stack_broker_${RUN_SUFFIX}"
 DISPATCH_DB="dev_stack_dispatch_${RUN_SUFFIX}"
 BROKER_DATABASE_URL="${POSTGRES_SERVER}/${BROKER_DB}${POSTGRES_QUERY}"
 DISPATCH_DATABASE_URL="${POSTGRES_SERVER}/${DISPATCH_DB}${POSTGRES_QUERY}"
-# Every broker's own URL caps its pool as production caps it: theorem-labs/agent-infra's
-# broker/main.go sets brokerPoolMaxConns = 10, which broker/deployment.go puts on the deployment's
-# BROKER_DATABASE_URL as pool_max_conns, a parameter the broker's pgxpool.ParseConfig honours.
-# Without it pgx sizes each pool by the machine's CPUs, and on a box with many of them a flood of
-# connections through the auth service opens more Postgres connections than a dev server allows.
-# psql and Dispatch both refuse the parameter, so the brokers alone are given this URL.
-broker_pool_separator="?"
-[ -z "$POSTGRES_QUERY" ] || broker_pool_separator="&"
-BROKER_POOL_DATABASE_URL="${BROKER_DATABASE_URL}${broker_pool_separator}pool_max_conns=10"
+# The listener's machine id, every broker's database URL, and what --callout adds are
+# scripts/lib/callout-stack.sh's. It names paths in the work directory and reads the URLs above,
+# so it is sourced here, on every run.
+# shellcheck source-path=SCRIPTDIR source=lib/callout-stack.sh
+. "$SCRIPT_DIR/lib/callout-stack.sh"
 
 admin_psql() { psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -q "$@"; }
 
@@ -595,7 +586,6 @@ DISPATCH_URL="http://127.0.0.1:${DISPATCH_PORT}"
 (umask 077 && od -An -N32 -tx1 /dev/urandom | tr -d ' \n' >"$MACHINE_SECRET_FILE")
 echo "dev-stack: starting dev-oidc-issuer..." >&2
 : >"$ISSUER_LOG"
-# With --callout the issuer also writes the listener's and Dispatch's NATS tokens.
 env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$BROKER_AUDIENCE=$API_ACCOUNT=$ACCOUNT_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$LISTENER_ACCOUNT=$LISTENER_TOKEN_FILE" \
@@ -667,8 +657,8 @@ cat >"$FAKE_SECRETS_FILE" <<EOF
 EOF
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
-# start_broker starts one broker logging to $1 and sets started_pid. Every broker of a run is the
-# same process on the same database, as two replicas of one deployment are.
+# start_broker starts one broker logging to $1 and sets started_pid: every broker of a run, as
+# every replica of one deployment, is the same binary and settings on the same database.
 started_pid=""
 start_broker() {
   : >"$1"
@@ -709,18 +699,21 @@ await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broke
 BROKER_URL="http://$awaited"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
-# With --callout the second replica, and both answering the hub.
 callout_after_first_broker
 
 # --- This stack's pod, registered for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so what keeps two pods of one account
 # apart is this row, which a deployment's daemon writes as it starts a pod; here the registrar
 # account stands in for that daemon, and the body carries the pod's own broker-audience token.
-# Without it the exchange is refused invalid_grant, naming the session. ---
+# Without it the exchange is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the shell
+# writes before curl starts, so no pipeline's status can hide curl's, and the header from a file
+# curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "$BROKER_URL/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-stack: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi

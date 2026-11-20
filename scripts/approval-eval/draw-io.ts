@@ -3,7 +3,7 @@ import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
 import { CorpusError, listOf, recordOf, stringOf } from "./corpus-io";
 import type { ExcludedCase, SliceTargets, UndrawableKind } from "./draw";
-import type { IssueFacts } from "./never-decide";
+import type { IssueFacts, NeverDecideSource } from "./never-decide";
 import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
 
 /**
@@ -71,6 +71,14 @@ export interface DrawRule {
   inputTokens: number;
   outputTokens: number;
   /**
+   * How many of the rule's answers each model gave, by the model each answer says served it:
+   * `the issue's facts` for the kind that takes no call, `none` for an answer naming no model.
+   * A draw written before draws recorded it has none.
+   */
+  servedModels?: Record<string, number>;
+  /** One line per case the rule read: where its answer came from and the model that served it. */
+  answers?: { caseId: string; source: NeverDecideSource; servedModel: string | null }[];
+  /**
    * What was done to the text the rule was handed, and the bound under which that stops
    * holding. A reader of this draw meets the rule's answers in `excluded.held` and may take
    * them for judgements made over checked text; the answers alone say nothing of what was done
@@ -96,6 +104,23 @@ export interface DrawExcluded {
     byKind: Record<UndrawableKind, number>;
     cases: ExcludedCase[];
   };
+}
+
+/**
+ * One tree item 6 leaves eligible, as a draw under a registered read records it: every case of
+ * the corpus in it, and whether its drawable cases went to report. A draw under a registered read
+ * puts every eligible tree in report whole, whatever report's targets, since item 8 lets only
+ * never-decide and the run's own (c) and (d) narrow the final test. The claim's measure is read
+ * over these trees, and a tree in no slice counts there too: every case of it was held by the
+ * never-decide rule or left out, so the reviewer decided nothing in it.
+ */
+export interface FinalTestTree {
+  /** The tree's group key, as `trees.ts` makes it. */
+  group: string;
+  /** Report, where its drawable cases went, and null where it had no drawable case. */
+  slice: "report" | null;
+  /** Every case of the corpus in the tree, held and left-out ones included, sorted. */
+  cases: string[];
 }
 
 /**
@@ -133,14 +158,16 @@ export interface FinalTestDraw {
    * 5-grams at or above `threshold`, with the groups each case was in before the join.
    */
   nearDuplicates: { threshold: number; joins: NearDuplicateJoin[] };
+  /** Every tree item 6 leaves eligible, in the order of its group key. */
+  trees: FinalTestTree[];
 }
 
 /**
  * What a reader of a draw is handed: the facts `readDraw` read out of the bytes and checked,
  * and nothing it did not check.
  *
- * `draw.json` holds the whole of `DrawRecord` below, and a reader of one needs three of its
- * facts. Those three are checked where the file is read, so the type says what the bytes hold
+ * `draw.json` holds the whole of `DrawRecord` below, and a reader of one needs four of its
+ * facts. Those four are checked where the file is read, so the type says what the bytes hold
  * rather than what a draw of the current shape would have written, and a fact a draw does not
  * carry - one of an earlier shape, or one holding something that is no such fact - is absent
  * here rather than read a second time by every caller.
@@ -160,6 +187,11 @@ export interface DrawFacts {
    * that record carries are provenance no reader of a draw reads, and are not read here.
    */
   roots?: ReadonlyArray<{ key: string } & IssueFacts>;
+  /**
+   * The eligible trees of a draw under a registered read, as `finalTest.trees` records them. A
+   * draw that read no reserve, or one made before the trees were recorded, carries none.
+   */
+  finalTestTrees?: readonly FinalTestTree[];
 }
 
 /** What one draw recorded of itself, which is what `draw.json` holds. */
@@ -342,6 +374,61 @@ function rootsAt(value: unknown, path: string): Array<{ key: string } & IssueFac
 }
 
 /**
+ * The eligible trees a draw under a registered read recorded, and none where it recorded no
+ * final test or recorded one before the trees were. A tree that names no group, a group named
+ * twice, a slice that is none of the four, a case that is no string, or a case named twice, is
+ * the file being no draw: the claim's measure counts trees, so a tree read wrongly is a count
+ * read wrongly, and one tree written as two would count twice.
+ */
+function finalTestTreesAt(value: unknown, path: string): FinalTestTree[] | null {
+  if (value === undefined || value === null) return null;
+  const record = recordOf(value);
+  if (record === null) throw new CorpusError(`${path} holds a finalTest that is no record`);
+  const held = record.trees;
+  if (held === undefined) return null;
+  if (!Array.isArray(held)) throw new CorpusError(`${path} holds finalTest trees that are no list`);
+  const groups = new Set<string>();
+  const seen = new Map<string, string>();
+  return held.map((entry, at) => {
+    const tree = recordOf(entry);
+    const group = tree === null ? null : stringOf(tree.group);
+    if (tree === null || group === null || group === "") {
+      throw new CorpusError(`${path} finalTest tree ${at + 1} names no group`);
+    }
+    if (groups.has(group)) throw new CorpusError(`${path} names the finalTest tree ${group} twice`);
+    groups.add(group);
+    // A tree with no drawable case is written with a slice of null, so a missing slice is no
+    // tree a draw wrote, not a tree in no slice; and a draw under a registered read puts every
+    // eligible tree in report, so a tree in another slice is no such draw either.
+    const slice = tree.slice;
+    if (slice !== null && slice !== "report") {
+      throw new CorpusError(
+        `${path} finalTest tree ${group} names no slice, or another than report, where a draw ` +
+          "under a registered read puts every eligible tree"
+      );
+    }
+    if (!Array.isArray(tree.cases)) {
+      throw new CorpusError(`${path} finalTest tree ${group} holds no list of cases`);
+    }
+    const cases = tree.cases.map((one) => {
+      const caseId = stringOf(one);
+      if (caseId === null) {
+        throw new CorpusError(`${path} finalTest tree ${group} names a case that is no string`);
+      }
+      const other = seen.get(caseId);
+      if (other !== undefined) {
+        throw new CorpusError(
+          `${path} names the case ${caseId} in the trees ${other} and ${group}`
+        );
+      }
+      seen.set(caseId, group);
+      return caseId;
+    });
+    return { group, slice, cases };
+  });
+}
+
+/**
  * The draw at `path`, and null where there is none there.
  *
  * One policy for every reader: a directory holding no `draw.json` carries no draw, and a
@@ -379,6 +466,8 @@ export async function readDraw(path: string): Promise<DrawFacts | null> {
   if (groupKey !== null && groupKey !== "") facts.groupKey = groupKey;
   const roots = record.backlogLegionRoots;
   if (roots !== undefined && roots !== null) facts.roots = rootsAt(roots, path);
+  const trees = finalTestTreesAt(record.finalTest, path);
+  if (trees !== null) facts.finalTestTrees = trees;
   return facts;
 }
 

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natscred"
@@ -112,4 +113,66 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	testwait.Eventually(t, "the connection back up", nc.IsConnected)
 	require.Never(t, func() bool { return count(later) > 2 || nc.Stats().Reconnects > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
 	require.Equal(t, 1, count(first))
+}
+
+// natscredGoroutines is how many goroutines run natscred's code, a keeper or the watcher of its
+// connection's close, and how many of those are a service's keeper (serviceCredential.Keep).
+func natscredGoroutines() (all, keepers int) {
+	for _, trace := range goroutinetest.Traces() {
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
+			all++
+		}
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
+			keepers++
+		}
+	}
+	return all, keepers
+}
+
+// requireNoNatscredGoroutine waits up to five seconds for no natscred goroutine to run, and fails
+// naming how many still do, and how many of those are service keepers, when.
+func requireNoNatscredGoroutine(t *testing.T, when string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for all, keepers := natscredGoroutines(); all != 0; all, keepers = natscredGoroutines() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, want none", all, keepers, when)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A replacement connection the client discards leaves no keeper running. The discard closes the
+// connection with its ClosedCB cleared, so that its close starts no recovery
+// (ensureConnWithContext), and a keeper that only that callback stopped ran on beside the closed
+// connection until its token's renewal, most of an hour later. The test first dials one
+// connection presenting a service token and sees its keeper, so the count can see one, then runs
+// the client of TestAClosedConnectionIsReplacedOnceAndCloseLeavesNoneOpen on that token until a
+// replacement is discarded and the client closed, and requires every natscred goroutine gone. The
+// control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left.
+func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
+	unsetNkeyEnvironment(t)
+	requireNoNatscredGoroutine(t, "before the test, left by an earlier one")
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte(unsignedToken(time.Now().Add(50*time.Minute))), 0o600))
+	environment := map[string]string{bus.ServiceTokenFileEnvVar: tokenFile, bus.AllowRemoteEnvVar: "1"}
+	lookup := func(name string) (string, bool) {
+		value, ok := environment[name]
+		return value, ok
+	}
+
+	_, url := testnats.Start(t)
+	nc, err := bus.Dial("keeper-count", []string{url}, lookup)
+	require.NoError(t, err)
+	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the live connection's keeper", func() bool {
+		_, keepers := natscredGoroutines()
+		return keepers == 1
+	})
+	nc.Close()
+	requireNoNatscredGoroutine(t, "after that connection closed")
+
+	closedConnectionIsReplacedOnce(t, func(string) []bus.ConnectOption {
+		return []bus.ConnectOption{bus.WithEnvironment(lookup)}
+	})
+	requireNoNatscredGoroutine(t, "after the discard and the client's Close")
 }

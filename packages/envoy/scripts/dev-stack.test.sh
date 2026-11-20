@@ -50,7 +50,9 @@
 # on its keeper's socket, each old process gone, its log kept, and the stack up; and the controls
 # that (l)'s same-port checks can fail, each stopping the whole stack and naming both ports: (m) a
 # natsd that comes back on another client port, (n) one that comes back on its client port and
-# another monitor port, and (o) a listener that comes back on another port than its keeper's.
+# another monitor port, and (o) a listener that comes back on another port than its keeper's; and
+# (p) a bash older than 5.1 (4.4, 5.0) is refused with exit 2 and one line naming the bash it needs
+# and the one it is, while 5.1 and 5.3 are taken, by the gate the driver runs at its top.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -1102,5 +1104,39 @@ restarted_pids+=("$(sed -n 's/^fake listener: pid=\([0-9]*\) .*/\1/p' "${work_di
 assert_everything_stopped 'the run whose listener moves'
 assert_databases_dropped 'the run whose listener moves' "$psql_calls1" "$run_suffix"
 printf 'PASS: a listener that came back at another address than %s stopped the stack, naming both\n' "$listener_url"
+
+# (p) The bash the driver needs: its last wait (`wait -n -p`) is bash 5.1's, and under an older
+# bash the loop around it spins forever, so the driver's first command refuses one
+# (`refuse_old_bash`, handed this bash's own BASH_VERSINFO). No older bash is on a runner, so the
+# gate is read out of the driver and run under this test's bash with each version's numbers: 4.4
+# and 5.0 are refused with exit 2 and the one line, 5.1 and 5.3 taken with nothing printed. And
+# the call stands before the driver's first other command and its one `wait -n -p`.
+gate="$(sed -n '/^refuse_old_bash() {$/,/^}$/p' "$driver")"
+[[ -n "$gate" ]] || fail "dev-stack.sh defines no refuse_old_bash() at the start of a line"
+gate_out="${temporary_dir}/bash-gate.out"
+for gate_case in "4 4 4.4.23(1)-release refused" "5 0 5.0.18(1)-release refused" \
+  "5 1 5.1.16(1)-release taken" "5 3 5.3.0(1)-release taken"; do
+  read -r major minor version verdict <<<"$gate_case"
+  gate_status=0
+  (eval "$gate" && refuse_old_bash "$major" "$minor" "$version") >"$gate_out" 2>&1 || gate_status=$?
+  if [[ "$verdict" == refused ]]; then
+    [[ "$gate_status" -eq 2 ]] || fail "bash $version: the gate exited $gate_status, not 2"
+    [[ "$(<"$gate_out")" == "dev-stack: needs bash 5.1 or newer (for wait -n -p), and this is bash $version" ]] ||
+      fail "bash $version: the gate printed $(<"$gate_out"), not the one line naming 5.1 and $version"
+  else
+    [[ "$gate_status" -eq 0 && ! -s "$gate_out" ]] ||
+      fail "bash $version: the gate exited $gate_status and printed '$(<"$gate_out")', not 0 and nothing"
+  fi
+done
+# shellcheck disable=SC2016 # the call as the driver writes it, its expansions unexpanded
+gate_call='refuse_old_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"'
+call_line="$(grep -n -x -F -- "$gate_call" "$driver" | head -n1 | cut -d: -f1 || true)"
+first_command_line="$(grep -n -E '^SCRIPT_DIR=' "$driver" | head -n1 | cut -d: -f1 || true)"
+wait_line="$(grep -n -E '^[[:space:]]*wait -n -p ' "$driver" | head -n1 | cut -d: -f1 || true)"
+[[ -n "$call_line" && -n "$first_command_line" && -n "$wait_line" ]] ||
+  fail "dev-stack.sh lacks the gate's call ($call_line), SCRIPT_DIR= ($first_command_line) or its wait -n -p ($wait_line)"
+((call_line < first_command_line && call_line < wait_line)) ||
+  fail "dev-stack.sh calls its bash gate at line $call_line, after its first command ($first_command_line) or its wait -n -p ($wait_line)"
+printf 'PASS: bash 4.4 and 5.0 are refused with exit 2 and one line naming 5.1, 5.1 and 5.3 are taken, and the gate runs before the first command\n'
 
 printf 'ALL PASS: dev-stack.test.sh\n'

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +115,33 @@ func TestNATSCalloutSettings(t *testing.T) {
 				if strings.Contains(err.Error(), seed) {
 					t.Fatalf("the refusal prints a seed: %v", err)
 				}
+			}
+		})
+	}
+	// A hub URL that carries user info is refused at load, by its place in the list and never its
+	// text: the service connects as the user its seed names, so user info is a credential it does
+	// not use, and the broker writes the URLs into its start line and the service's connect error.
+	// nats.go dials an entry with no scheme as nats://<entry> (nats.go, parseServerURL), so such an
+	// entry is read the same way, and an entry that does not parse as a URL, whose parse error
+	// would quote it whole, is refused too. Each URL is built from a random secret of this run, so
+	// no credential-shaped URL is written in the source, and the refusal must hold none of it.
+	secret := rand.Text()
+	userAndPassword := (&url.URL{Scheme: "nats", User: url.UserPassword("svc", secret), Host: "hub-b:4222"}).String()
+	for _, row := range []struct{ name, urls, names string }{
+		{"a user and password", "nats://hub-a:4222, " + userAndPassword, "BROKER_NATS_URLS entry 2"},
+		{"a token as the user", (&url.URL{Scheme: "nats", User: url.User(secret), Host: "hub-a:4222"}).String(), "BROKER_NATS_URLS entry 1"},
+		{"user info with no scheme", strings.TrimPrefix(userAndPassword, "nats://"), "BROKER_NATS_URLS entry 1"},
+		{"no URL at all", strings.Replace(userAndPassword, secret, secret+"%zz", 1), "BROKER_NATS_URLS entry 1"},
+	} {
+		t.Run("a hub URL with "+row.name, func(t *testing.T) {
+			e := full()
+			e["BROKER_NATS_URLS"] = row.urls
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), row.names) {
+				t.Fatalf("want a refusal naming %s, got %v", row.names, err)
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("the refusal prints the URL's user info: %v", err)
 			}
 		})
 	}

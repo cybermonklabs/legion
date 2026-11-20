@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -177,6 +177,23 @@ func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 	return answer
 }
 
+// readOnlyToken is the answer a token a read entry minted gets (BROKER_EXCHANGE_READ_ACCOUNTS):
+// the one scope read, the project scope none, the entry's service and the session it fixes, and
+// no person and no project. It is the answer the broker's own test holds an exchanged read token
+// to (internal/broker/oauth, TestAReadEntrysPodExchangesForATokenThatOnlyReads).
+func readOnlyToken(jkt string, life time.Duration) brokertoken.Introspection {
+	return brokertoken.Introspection{
+		Active:       true,
+		Session:      "ses_reader",
+		Service:      "example-reader",
+		ProjectScope: brokertoken.ProjectScopeNone,
+		Scope:        brokertoken.ScopeRead,
+		ExpiresAt:    time.Now().Add(life).Unix(),
+		ClientID:     brokertoken.ExchangeClientID,
+		Thumbprint:   jkt,
+	}
+}
+
 // TestATokenThatIsNoSessionsCredentialIsRefused: a live, DPoP-bound token the broker issued for
 // something other than acting as a session names no session to record writes as, so it is
 // refused with an outcome of its own rather than handed back as a Caller for whoever mounts
@@ -184,9 +201,9 @@ func serviceToken(jkt string, life time.Duration) brokertoken.Introspection {
 // exchange issued that names neither a person nor a service, one that names a session and a
 // person but comes from
 // another client, and the six whose project scope or list this package cannot read — an answer
-// carrying no scope, one carrying a word it does not know, a named scope with no project and no
-// person, a named scope with two projects, and a list no exchange could have minted. Those are
-// refused rather than read as a token that names no project, which would hand
+// carrying no project scope at all, one carrying a word it does not know, a named scope with no
+// project and no person, a named scope with two projects, and a list no exchange could have
+// minted. Those are refused rather than read as a token that names no project, which would hand
 // their caller every project the person may write; the one naming a project under no scope would
 // otherwise be the louder of the two, since the project beside the scope is then read under
 // nothing at all. The proof-checked Verify and the answer-only Live refuse every one, so an open
@@ -388,6 +405,106 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 	live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
 	if err != nil || !reflect.DeepEqual(live, want) {
 		t.Fatalf("Live = %+v, %v; want %+v", live, err, want)
+	}
+}
+
+// TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne: a read-only token — the project scope
+// none beside the one scope read, a service, and no person and no projects — is a session's
+// credential only to a verifier whose service asked for it (Options.ServesReadOnly), and is
+// ErrNotASession to every other, as a build before the switch refused it. The verifier that
+// serves one answers its Caller marked read-only, so that service's own gate reads the mark and
+// nothing else.
+//
+// The rule is exact, and the switch widens it by nothing: none in any other shape (no scope, a
+// second word beside read, a person, a project in its list, no service) and the word read beside
+// the project scope named or person are refused by both verifiers. The negative control is a
+// named token carrying a scope that is not read, which both accept unmarked, so each refusal
+// above is the word read's or the shape's and never the scope member's being set at all. Each row
+// goes through Verify and through Live, so an open connection's heartbeat is held to the same
+// rule as the request that opened it. SessionCaller, the NATS auth service's reading of an answer,
+// serves no read-only token: it answers each row as the verifier without the switch does.
+func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
+	caller := newSigner(t)
+	readOnly := readOnlyToken(caller.jkt, time.Hour)
+	readOnlyCaller := brokertoken.Caller{Session: "ses_reader", Service: "example-reader", ProjectScope: brokertoken.ProjectScopeNone, ReadOnly: true}
+
+	noScope := readOnlyToken(caller.jkt, time.Hour)
+	noScope.Scope = ""
+	readAndMachine := readOnlyToken(caller.jkt, time.Hour)
+	readAndMachine.Scope = "read machine"
+	withPerson := readOnlyToken(caller.jkt, time.Hour)
+	withPerson.Person = "sjawhar"
+	withProject := readOnlyToken(caller.jkt, time.Hour)
+	withProject.Projects = []string{"INFRA"}
+	noService := readOnlyToken(caller.jkt, time.Hour)
+	noService.Service = ""
+	namedRead := liveToken(caller.jkt, time.Hour)
+	namedRead.Scope = brokertoken.ScopeRead
+	personRead := liveToken(caller.jkt, time.Hour)
+	personRead.ProjectScope, personRead.Projects = brokertoken.ProjectScopePerson, nil
+	personRead.Scope = "dispatch.write read"
+	named := liveToken(caller.jkt, time.Hour)
+	namedCaller := brokertoken.Caller{Session: "ses_a1b2c3", Person: "sjawhar", Projects: []string{"INFRA"}, ProjectScope: brokertoken.ProjectScopeNamed}
+
+	rows := []struct {
+		name   string
+		answer brokertoken.Introspection
+		// without and with are the Caller each verifier answers: the zero Caller is a refusal,
+		// which is ErrNotASession for every row here.
+		without brokertoken.Caller
+		with    brokertoken.Caller
+	}{
+		{name: "the read-only token", answer: readOnly, with: readOnlyCaller},
+		{name: "none with no scope", answer: noScope},
+		{name: "none with a second scope beside read", answer: readAndMachine},
+		{name: "none naming a person", answer: withPerson},
+		{name: "none naming a project", answer: withProject},
+		{name: "none naming no service", answer: noService},
+		{name: "read beside the named scope", answer: namedRead},
+		{name: "read among other scopes beside the person scope", answer: personRead},
+		{name: "the named scope carrying another scope", answer: named, without: namedCaller, with: namedCaller},
+	}
+	for _, serves := range []bool{false, true} {
+		rig := newRig(t, func(options *brokertoken.Options) { options.ServesReadOnly = serves })
+		verifier := "without the switch"
+		if serves {
+			verifier = "with the switch"
+		}
+		for _, row := range rows {
+			t.Run(verifier+"/"+row.name, func(t *testing.T) {
+				token := "a-token-of-" + strings.ReplaceAll(row.name, " ", "-")
+				rig.broker.Says(token, row.answer)
+				want := row.without
+				if serves {
+					want = row.with
+				}
+				var wantErr error
+				if reflect.DeepEqual(want, brokertoken.Caller{}) {
+					wantErr = brokertoken.ErrNotASession
+				}
+
+				decided, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(decided, want) {
+					t.Fatalf("Verify = %+v, %v; want %+v, %v", decided, err, want, wantErr)
+				}
+				live, err := rig.verifier.Live(t.Context(), caller.at(resourcePath, token))
+				if !errors.Is(err, wantErr) || !reflect.DeepEqual(live, want) {
+					t.Fatalf("Live = %+v, %v; want %+v, %v", live, err, want, wantErr)
+				}
+			})
+		}
+	}
+	for _, row := range rows {
+		t.Run("SessionCaller/"+row.name, func(t *testing.T) {
+			var wantErr error
+			if reflect.DeepEqual(row.without, brokertoken.Caller{}) {
+				wantErr = brokertoken.ErrNotASession
+			}
+			got, err := brokertoken.SessionCaller(row.answer)
+			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
+				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
 	}
 }
 
@@ -655,9 +772,8 @@ func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 // TestABrokerThatCannotBeReachedIsTheUnreachableOutcome: a caller whose broker is away must be
 // asked to come back, not told its token is refused, or it would discard a token that is live.
 func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
-	away := httptest.NewServer(http.NotFoundHandler())
-	url := away.URL
-	away.Close()
+	// A broker at a port the test holds and nothing listens on.
+	url := "http://" + testport.Refused(t)
 	rig := newRig(t, func(o *brokertoken.Options) { o.BrokerURL = url })
 	caller := newSigner(t)
 

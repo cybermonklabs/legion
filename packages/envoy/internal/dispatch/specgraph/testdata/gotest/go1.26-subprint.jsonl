@@ -1,0 +1,23 @@
+{"Time":"2026-11-16T17:37:36.743737187Z","Action":"start","Package":"example.com/acme/gotest/subprint"}
+{"Time":"2026-11-16T17:37:36.77629232Z","Action":"run","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails"}
+{"Time":"2026-11-16T17:37:36.776346829Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails","Output":"=== RUN   TestParentFails\n"}
+{"Time":"2026-11-16T17:37:36.776396963Z","Action":"run","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails/prints"}
+{"Time":"2026-11-16T17:37:36.776399253Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails/prints","Output":"=== RUN   TestParentFails/prints\n"}
+{"Time":"2026-11-16T17:37:36.77640199Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails/prints","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T17:37:36.776411566Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails/prints","Output":"--- PASS: TestParentFails/prints (0.00s)\n"}
+{"Time":"2026-11-16T17:37:36.776413276Z","Action":"pass","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails/prints","Elapsed":0}
+{"Time":"2026-11-16T17:37:36.776418078Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails","Output":"    subprint_test.go:12: the parent fails for real\n"}
+{"Time":"2026-11-16T17:37:36.776421053Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails","Output":"--- FAIL: TestParentFails (0.00s)\n"}
+{"Time":"2026-11-16T17:37:36.776425095Z","Action":"fail","Package":"example.com/acme/gotest/subprint","Test":"TestParentFails","Elapsed":0}
+{"Time":"2026-11-16T17:37:36.776426855Z","Action":"run","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses"}
+{"Time":"2026-11-16T17:37:36.776428179Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses","Output":"=== RUN   TestParentPasses\n"}
+{"Time":"2026-11-16T17:37:36.776429845Z","Action":"run","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses/prints"}
+{"Time":"2026-11-16T17:37:36.776431075Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses/prints","Output":"=== RUN   TestParentPasses/prints\n"}
+{"Time":"2026-11-16T17:37:36.776432578Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses/prints","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T17:37:36.776434258Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses/prints","Output":"--- PASS: TestParentPasses/prints (0.00s)\n"}
+{"Time":"2026-11-16T17:37:36.776438296Z","Action":"pass","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses/prints","Elapsed":0}
+{"Time":"2026-11-16T17:37:36.776439921Z","Action":"output","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses","Output":"--- PASS: TestParentPasses (0.00s)\n"}
+{"Time":"2026-11-16T17:37:36.776441354Z","Action":"pass","Package":"example.com/acme/gotest/subprint","Test":"TestParentPasses","Elapsed":0}
+{"Time":"2026-11-16T17:37:36.776442677Z","Action":"output","Package":"example.com/acme/gotest/subprint","Output":"FAIL\n"}
+{"Time":"2026-11-16T17:37:36.778774304Z","Action":"output","Package":"example.com/acme/gotest/subprint","Output":"FAIL\texample.com/acme/gotest/subprint\t0.026s\n"}
+{"Time":"2026-11-16T17:37:36.778824643Z","Action":"fail","Package":"example.com/acme/gotest/subprint","Elapsed":0.035}

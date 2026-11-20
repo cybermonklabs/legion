@@ -281,7 +281,7 @@
     },
     {
       "name": "the broker's token endpoint is out of bucket",
-      "about": "The first of the three refusals a later trade may be answered differently: the endpoint spends a bucket per source address, and a bucket refills. A client with nothing live in hand still fails the call, and says what the broker said; a client holding a live token keeps writing with it instead (expect.permanent is false).",
+      "about": "The first of the five refusals a later trade may be answered differently: the endpoint spends a bucket per source address, and a bucket refills. A client with nothing live in hand still fails the call, and says what the broker said; a client holding a live token keeps writing with it instead (expect.permanent is false).",
       "subject": {
         "kind": "kubernetes-projected-file",
         "token": "projected.service.account.token",
@@ -310,6 +310,39 @@
         "outcome": "refuse",
         "permanent": false,
         "error_contains": "too many token requests; try again later"
+      }
+    },
+    {
+      "name": "the broker has no registration for this pod's session yet",
+      "about": "A pod trades under a session name its deployment registers for it, and its trade can reach the broker before that registration does: its daemon registers at the claim, a session's watch at the pod's creation, and either can be down for minutes. The broker refuses it invalid_grant with an error_description beginning pod_session_not_registered:, a refusal of the broker's state that a later trade cures, so neither client reads it as final (expect.permanent is false). A pod's trade sends no projects field: its entry decides its project. The Go client's Token answers the refusal and its Run trades again; the TypeScript client's token() trades again until its caller stops waiting, and then answers it.",
+      "subject": {
+        "kind": "kubernetes-projected-file",
+        "token": "projected.service.account.token",
+        "token_type": "urn:envoy:params:oauth:token-type:kubernetes-service-account"
+      },
+      "session": "example-worker-session",
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:envoy:params:oauth:token-type:kubernetes-service-account",
+        "session": "${session}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 400,
+        "body": {
+          "error": "invalid_grant",
+          "error_description": "pod_session_not_registered: No registration says this pod may write under the session name 'example-worker-session'. A pod writes under a session name its deployment registered for it."
+        }
+      },
+      "expect": {
+        "outcome": "refuse",
+        "permanent": false,
+        "error_contains": "pod_session_not_registered: No registration says this pod may write under the session name 'example-worker-session'."
       }
     },
     {
@@ -343,6 +376,46 @@
         "outcome": "refuse",
         "permanent": false,
         "error_contains": "the proof's iat is outside the broker's skew window"
+      }
+    },
+    {
+      "name": "Dispatch holds the person a sign-in names",
+      "about": "The broker answers membership_held to a trade that names a person whom Dispatch holds until they sign in again: Google refused their Dispatch sign-in, or no refresh has confirmed them for 24 hours. A hold revokes nothing, and the person's next Dispatch sign-in, or the next refresh that confirms them, ends it, so it is not a refusal a client stops on (expect.permanent is false): each client keeps the identity it trades, a person's sign-in on the machine included, and trades again, and the first trade after the release is served with no new sign-in, machine login or approval.",
+      "subject": {
+        "kind": "person-device-sign-in",
+        "token": "person.google.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:person-google-identity"
+      },
+      "actor": {
+        "kind": "google-metadata",
+        "token": "google.machine.identity.token",
+        "token_type": "urn:envoy:params:oauth:token-type:machine-google-identity"
+      },
+      "session": "ada-box-1",
+      "form": {
+        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+        "client_id": "dispatch-token-exchange",
+        "subject_token": "${subject_token}",
+        "subject_token_type": "urn:envoy:params:oauth:token-type:person-google-identity",
+        "actor_token": "${actor_token}",
+        "actor_token_type": "urn:envoy:params:oauth:token-type:machine-google-identity",
+        "session": "${session}"
+      },
+      "proof": {
+        "header": { "typ": "dpop+jwt", "alg": "ES256", "jwk": "${public_jwk}" },
+        "claims": { "jti": "${jti}", "htm": "POST", "htu": "${token_endpoint}", "iat": "${iat}" }
+      },
+      "answer": {
+        "status": 400,
+        "body": {
+          "error": "membership_held",
+          "error_description": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
+        }
+      },
+      "expect": {
+        "outcome": "refuse",
+        "permanent": false,
+        "error_contains": "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
       }
     },
     {

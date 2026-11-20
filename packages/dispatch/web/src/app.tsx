@@ -108,7 +108,7 @@ import {
 } from "./theme/classes";
 
 const IssuePage = lazy(() =>
-  import("./features/issue/IssuePage").then((module) => ({ default: module.IssuePage }))
+  import("./features/issue-page/IssuePage").then((module) => ({ default: module.IssuePage }))
 );
 
 const ProjectPage = lazy(() =>
@@ -192,7 +192,7 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+      {/* `overflow-hidden`: the ten labels are wider than a narrow window and this row neither
           wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
           never scrolls the page sideways. */}
       <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">

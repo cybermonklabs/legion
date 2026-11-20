@@ -2,12 +2,14 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/store"
 )
 
 // SweepRecoveredMessage is logged, at INFO, by Tick for one of its sweeps on the first run of that
@@ -40,7 +42,7 @@ const (
 var sweeps = [...]struct{ name, failed string }{
 	sweepLapsedEnrollments:      {"lapsed-enrollments", "broker sweeper: end lapsed enrollments"},
 	sweepDormantEnrollments:     {"dormant-enrollments", "broker sweeper: end dormant enrollments"},
-	sweepPendingRequests:        {"pending-requests", "broker sweeper: expire pending requests"},
+	sweepPendingRequests:        {"pending-requests", "broker sweeper: expire or deny pending requests"},
 	sweepPendingMachineLogins:   {"pending-machine-logins", "broker sweeper: expire pending machine logins"},
 	sweepSpentOAuthState:        {"spent-oauth-state", "broker sweeper: delete spent OAuth state"},
 	sweepExpiredBrowserSessions: {"expired-browser-sessions", "broker sweeper: delete expired browser sessions"},
@@ -50,7 +52,9 @@ var sweeps = [...]struct{ name, failed string }{
 // Sweeper is the one thing that ends what no human decides: every tick it ends the enrollments
 // whose lease lapsed (revoking their grants and cancelling their pending requests), ends the
 // dormant enrollments whose carry window passed, expires overdue
-// pending agent_secret requests (waking each one's owner) and overdue pending machine logins,
+// pending agent_secret requests (waking each one's owner), denies on a broker with
+// BROKER_SIGNIN=off each pending one a broker with sign-in on left or leaves
+// (Machine.denyUndecidable), expires overdue pending machine logins,
 // deletes spent OAuth state (oauthstore.Store.Sweep), deletes expired browser sessions, and
 // deletes the airlock placeholders of grants that have ended — all
 // read fresh from Postgres, never from memory, so a restart resumes exactly where the rows are. A
@@ -103,7 +107,7 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	for _, e := range ended {
 		slog.Info("broker sweeper: ended an enrollment whose lease lapsed", "enrollment_id", e.ID, "kind", e.Kind,
 			"runtime_id", e.RuntimeID, "slot", e.Slot, "lease_expired_at", e.LeaseExpires,
-			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant)
+			"grants_revoked", e.GrantsRevoked, "requests_cancelled", e.RequestsCancelled, "left_dormant", e.Dormant, "handed_to", e.HandedTo)
 	}
 	s.settle(ctx, sweepLapsedEnrollments, err)
 	carried, err := s.Enrollments.EndCarried(ctx, s.SessionCarry)
@@ -114,11 +118,21 @@ func (s *Sweeper) Tick(ctx context.Context) {
 	}
 	s.settle(ctx, sweepDormantEnrollments, err)
 	now := time.Now()
+	// The pending-requests sweep: the overdue expire, and on a broker with BROKER_SIGNIN=off the
+	// denial of every request a broker with sign-in on left or leaves pending
+	// (Machine.denyUndecidable), each one's session woken once with the state it reached.
+	// One sweep, so a failure of either is one run of failures.
 	expired, err := s.Machine.expirePending(ctx, now)
-	s.settle(ctx, sweepPendingRequests, err)
-	for _, r := range expired {
-		if s.Wake != nil {
-			s.Wake(ctx, r.EnrollmentID, r.ID, "expired")
+	denied, deniedErr := s.Machine.denyUndecidable(ctx, now)
+	s.settle(ctx, sweepPendingRequests, errors.Join(err, deniedErr))
+	for _, ended := range []struct {
+		requests []store.EndedRequest
+		state    string
+	}{{expired, "expired"}, {denied, "denied"}} {
+		for _, r := range ended.requests {
+			if s.Wake != nil {
+				s.Wake(ctx, r.EnrollmentID, r.ID, ended.state)
+			}
 		}
 	}
 	s.settle(ctx, sweepPendingMachineLogins, s.MachineLogins.ExpirePending(ctx, now))

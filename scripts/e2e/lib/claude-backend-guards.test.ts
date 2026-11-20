@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -29,6 +29,8 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep"].map((name) => [name, hostTool(name)] as const));
 const skip = skipWithout("bash", "sleep");
+// Only the unreadable-environment case needs an interpreter.
+const withoutPython = skipWithout("python3");
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -61,7 +63,7 @@ beforeAll(() => {
 // that child is running EXE (its /proc/<pid>/exe), not merely once it exists: a forked child carries
 // its parent's command line until it execs, and a guard asked about it then answers for the parent.
 // Every process either names is killed when BODY ends.
-function run(body: string) {
+function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 ${guards}
 work=$WORK claude_bin=$CLAUDE port_dispatch=1 port_listener=2 port_nats=3 state=/rig
@@ -93,7 +95,7 @@ await_child() {
 `;
   const result = Bun.spawnSync(["bash", "-c", `${prelude}\n${body}`], {
     cwd,
-    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir },
+    env: { PATH: process.env.PATH ?? "", WORK: work, CLAUDE: claude, SCRATCH: dir, ...vars },
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -213,19 +215,27 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test(
+  test.skipIf(withoutPython)(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
       // owned by root, so its own user can no longer read its environment. The stand-in writes its
       // ready file only once prctl succeeded and PR_GET_DUMPABLE reads 0, and keeps its stderr; the
       // run asserts it is still running, not a zombie, on both sides of the check.
-      // The interpreter is the one python3 names itself (sys.executable), not what PATH names:
-      // a version manager's shim (mise, pyenv) finds no version under env -i and exits.
-      const r = run(`
+      // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
+      // environment and passed as data, not the first python3 on PATH: under `env -i` a version
+      // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
+      const python = resolved.stdout.toString().trim();
+      if (resolved.exitCode !== 0 || !isAbsolute(python)) {
+        throw new Error(
+          `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
+        );
+      }
+      const r = run(
+        `
 ready=$scratch/ready err=$scratch/stderr
-python=$(python3 -c 'import sys; print(sys.executable)')
-env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$python" -c '
+env -i ${rig.join(" ")} CLAUDE_CODE_OAUTH_TOKEN=dummy "$PYTHON" -c '
 import ctypes, os, sys, time
 libc = ctypes.CDLL(None, use_errno=True)
 if libc.prctl(4, 0, 0, 0, 0) != 0:
@@ -251,7 +261,9 @@ echo "before: $(state "$pid")"
 if { : <"/proc/$pid/environ"; } 2>/dev/null; then echo "environ: readable"; else echo "environ: unreadable"; fi
 ${check}
 echo "after: $(state "$pid")"
-printf 'stderr: [%s]\\n' "$(cat "$err")"`);
+printf 'stderr: [%s]\\n' "$(cat "$err")"`,
+        { PYTHON: python }
+      );
       expect(r.err).toBe("");
       const lines = r.out.trim().split("\n");
       expect(lines[0]).toBe("fixture: not dumpable");

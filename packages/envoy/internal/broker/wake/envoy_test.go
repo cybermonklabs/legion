@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // accountTokens is the broker's account token as Notify reads it: each read answers the next of
@@ -53,7 +55,8 @@ func (h capturingHandler) WithGroup(string) slog.Handler { return h }
 // the listener admits the account it names, so the broker shares no bearer with anyone.
 func TestNotifyPresentsTheAccountToken(t *testing.T) {
 	var gotMethod, gotPath, gotAuth string
-	var gotBody sendBody
+	// The body is read as the listener's send route reads it.
+	var gotBody listenerwire.SendRequest
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
@@ -88,9 +91,15 @@ func TestNotifyPresentsTheAccountToken(t *testing.T) {
 	if gotBody.Source != "envoy" {
 		t.Fatalf("source: got %q, want %q (contracts.Envelope.Validate's enum has no agent-secrets entry)", gotBody.Source, "envoy")
 	}
+	if gotBody.Message != "secret request approved" {
+		t.Fatalf("message: got %q, want %q", gotBody.Message, "secret request approved")
+	}
 
+	if gotBody.Payload == nil {
+		t.Fatal("the send carried no payload")
+	}
 	var payload secretRequestPayload
-	if err := json.Unmarshal([]byte(gotBody.Payload), &payload); err != nil {
+	if err := json.Unmarshal([]byte(*gotBody.Payload), &payload); err != nil {
 		t.Fatalf("payload is not JSON-encoded text: %v", err)
 	}
 	if payload.Type != "secret-request" {
@@ -142,15 +151,11 @@ func TestNotifySwallowsNotFoundAndLogsIt(t *testing.T) {
 }
 
 func TestNotifySwallowsUnreachableServerAndLogsIt(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	}))
-	srv.Close() // guarantees connection failure below
-
 	var records []slog.Record
 	logtest.SetDefault(t, capturingHandler{records: &records})
 
-	e := Envoy{URL: srv.URL, Account: staticAccount("tok"), HTTP: srv.Client()}
+	// A port the test holds and nothing listens on: the connection fails.
+	e := Envoy{URL: "http://" + testport.Refused(t), Account: staticAccount("tok"), HTTP: &http.Client{}}
 	e.Notify(context.Background(), "sess-123", "req-456", "approved")
 
 	if len(records) == 0 {

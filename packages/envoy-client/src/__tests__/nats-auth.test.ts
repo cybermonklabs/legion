@@ -112,6 +112,9 @@ describe("natsAuthOptions", () => {
       renew: async () => {},
       expiresAt: () => new Date(0),
       needsReconnect: () => false,
+      drop: () => {},
+      tokenGeneration: () => 0,
+      tokenSession: () => undefined,
       authenticator: (nonce?: string) => {
         asked.push(nonce);
         return { auth_token: presented, sig: "the-proof" };

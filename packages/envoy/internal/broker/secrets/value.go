@@ -10,17 +10,17 @@ import (
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
-// The kinds ParseValue reads, as policy.Kinds names them. This package cannot import policy, which
-// imports it, so it names them again here; policy's own test holds every entry of policy.Kinds to
+// The types ParseValue reads, as policy.Types names them. This package cannot import policy, which
+// imports it, so it names them again here; policy's own test holds every entry of policy.Types to
 // a value ParseValue decodes, so the two lists cannot drift apart.
 const (
-	kindGitHubApp            = "github-app"
-	kindGoogleLogin          = "google-login"
-	kindGoogleServiceAccount = "google-service-account"
-	kindAzureLogin           = "azure-login"
+	typeGitHubApp            = "github-app"
+	typeGoogleLogin          = "google-login"
+	typeGoogleServiceAccount = "google-service-account"
+	typeAzureLogin           = "azure-login"
 )
 
-// Value is a kind secret's stored value as ParseValue decodes it: the field of the kind it was
+// Value is a type secret's stored value as ParseValue decodes it: the field of the type it was
 // decoded as holds its fields, and every other field is zero.
 type Value struct {
 	GitHubApp            GitHubAppValue
@@ -58,7 +58,7 @@ type AzureLoginValue struct {
 }
 
 // githubAppSecret, googleLoginSecret, googleServiceAccountSecret and azureLoginSecret are the
-// JSON objects each kind stores, as ParseValue decodes them.
+// JSON objects each type stores, as ParseValue decodes them.
 type (
 	githubAppSecret struct {
 		AppID      string `json:"app_id"`
@@ -79,8 +79,8 @@ type (
 	}
 )
 
-// ParseValue is the one reader of a kind secret's stored value: it decodes value as kind stores
-// it and refuses every value that kind's minter cannot mint from. The four minters call it
+// ParseValue is the one reader of a type secret's stored value: it decodes value as type stores
+// it and refuses every value that type's minter cannot mint from. The four minters call it
 // before anything else they do with the value, and agent-secrets calls it before it writes one,
 // so a value one refuses the other refuses too, in the same words.
 //
@@ -92,25 +92,25 @@ type (
 //     ValidServiceAccountEmail accepts.
 //   - azure-login: a JSON object naming a tenant_id and a client_id that are not white space alone.
 //
-// Any other kind is refused. Every error wraps ErrMintStoredValue and never holds a byte of the
+// Any other type is refused. Every error wraps ErrMintStoredValue and never holds a byte of the
 // value: encoding/json's syntax errors quote the byte they stopped at, so no decode's own error
 // is wrapped.
-func ParseValue(kind, value string) (Value, error) {
-	switch kind {
-	case kindGitHubApp:
+func ParseValue(secretType, value string) (Value, error) {
+	switch secretType {
+	case typeGitHubApp:
 		parsed, err := parseGitHubApp(value)
 		return Value{GitHubApp: parsed}, err
-	case kindGoogleLogin:
+	case typeGoogleLogin:
 		parsed, err := parseGoogleLogin(value)
 		return Value{GoogleLogin: parsed}, err
-	case kindGoogleServiceAccount:
+	case typeGoogleServiceAccount:
 		parsed, err := parseGoogleServiceAccount(value)
 		return Value{GoogleServiceAccount: parsed}, err
-	case kindAzureLogin:
+	case typeAzureLogin:
 		parsed, err := parseAzureLogin(value)
 		return Value{AzureLogin: parsed}, err
 	default:
-		return Value{}, fmt.Errorf("%w: %q is no kind a minter reads", ErrMintStoredValue, kind)
+		return Value{}, fmt.Errorf("%w: %q is no type a minter reads", ErrMintStoredValue, secretType)
 	}
 }
 

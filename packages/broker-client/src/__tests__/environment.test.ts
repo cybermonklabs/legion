@@ -5,6 +5,7 @@
 import { expect, test } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   BROKER_URL_VAR,
@@ -133,7 +134,7 @@ test("a machine's client this factory builds asks the broker for no launcher cre
     fetch: async (request) => {
       forms.push(new URLSearchParams(await request.text()));
       return Response.json({
-        access_token: "broker-access-token",
+        access_token: fixtureSecret("broker"),
         issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
         token_type: "DPoP",
         expires_in: 600,
@@ -142,7 +143,7 @@ test("a machine's client this factory builds asks the broker for no launcher cre
   });
   try {
     const file = join(makeDirectory(), "token");
-    await writeFile(file, "projected.service.account.token\n");
+    await writeFile(file, `${fixtureSecret("proj")}\n`);
     const made = await brokerTokenClient({
       [BROKER_URL_VAR]: `http://127.0.0.1:${broker.port}`,
       [IDENTITY_VAR]: "kubernetes",

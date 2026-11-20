@@ -201,8 +201,36 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
     const download = page.waitForEvent("download");
     await page.getByRole("link", { name: "Download version 1" }).click();
     await download;
+    // On Firefox a navigation to another document with no download follows the download
+    // navigation, and the page can record it after the download reaches this process.
+    if (testInfo.project.name === "firefox-download-navigation") {
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const eventWindow = window as Window & { seenNavigations?: NavigationEventTrace[] };
+            const trace = eventWindow.seenNavigations ?? [];
+            const downloadAt = trace.findIndex(
+              (event) =>
+                event.type === "navigate" && event.download !== null && event.download !== undefined
+            );
+            return (
+              downloadAt >= 0 &&
+              trace.some(
+                (event, index) =>
+                  index > downloadAt &&
+                  event.type === "navigate" &&
+                  event.download === null &&
+                  event.sameDocument === false
+              )
+            );
+          })
+        )
+        .toBe(true);
+    }
     // The browser announced the download as a navigation to another document: the case the
-    // guard has to tell apart from a page being left.
+    // guard has to tell apart from a page being left. The page records that navigation when it
+    // starts, before the download reaches this process, and on Firefox the poll above waited for
+    // the follow-on navigation too, so the one read holds both.
     const events = await page.evaluate<NavigationEventTrace[] | undefined>(() => {
       const eventWindow = window as Window & { seenNavigations?: NavigationEventTrace[] };
       return eventWindow.seenNavigations;

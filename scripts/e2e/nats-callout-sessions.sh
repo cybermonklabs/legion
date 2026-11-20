@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/e2e/nats-callout-sessions.sh — the live proof of dispatch://INFRA-840's r-kinds and
+# scripts/e2e/nats-callout-sessions.sh — the live proof of the NATS auth service's r-kinds and
 # r-refusal with sessions (its verification's checks c-callout-kinds-plugins, the default mode,
 # and c-callout-kinds, --real-hosts): an Oh My Pi session and
 # a Claude Code session, each connecting to the hub with its own broker token (NATS_AUTH=broker),
@@ -345,13 +345,21 @@ else
   claude_session=$(cat /proc/sys/kernel/random/uuid)
 fi
 # A session trades only under a name its pod is registered for: the registrar stands in for the
-# daemon that writes that row as it starts a pod.
+# daemon that writes that row as it starts a pod. Both tokens reach curl by file, never in an argv,
+# which /proc shows every user: the registrar's bearer as a 0600 header file (`-H @file`, as
+# lib/model-endpoint.sh sends the model key), and the pod token read by jq itself (`--rawfile`)
+# into a 0600 body file (`--data-binary @file`), both in a directory of this call's own under the
+# run's scratch directory and removed before it returns.
 register_session() {
-  local session=$1 code
+  local session=$1 code sent
+  sent=$(mktemp -d "$work/register.XXXXXX")
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$(<"$DEV_STACK_REGISTRAR_TOKEN_FILE")" >"$sent/header")
+  (umask 077 && jq -cn --rawfile p "$DEV_STACK_POD_TOKEN_FILE" --arg s "$session" \
+    '{pod_token: ($p | sub("\n+$"; "")), session: $s}' >"$sent/body")
   code=$(curl -sS --max-time 20 -o "$evidence/answers/register-$session.json" -w '%{http_code}' \
     -X POST "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions" \
-    -H "Authorization: Bearer $(cat "$DEV_STACK_REGISTRAR_TOKEN_FILE")" -H 'Content-Type: application/json' \
-    -d "$(jq -cn --arg p "$(cat "$DEV_STACK_POD_TOKEN_FILE")" --arg s "$session" '{pod_token: $p, session: $s}')") || code=unreachable
+    -H "@$sent/header" -H 'Content-Type: application/json' --data-binary "@$sent/body") || code=unreachable
+  rm -rf -- "$sent"
   [ "$code" = 200 ] || [ "$code" = 201 ] || [ "$code" = 204 ] ||
     refuse "registering the pod for $session answered $code: $(head -c 300 "$evidence/answers/register-$session.json")"
 }

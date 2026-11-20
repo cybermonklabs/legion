@@ -12,16 +12,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
-// operatorSpendAttributes is the live deployment's own OTEL_RESOURCE_ATTRIBUTES, as an operator
-// sets it in `runtime.tmux.pane_env`: the project, the lane, the credential the gateway bills and
-// the person who owns the spend. The tests of the composition start from this value, so what they
-// read is the shape an operator writes rather than one invented here.
-const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@theorem.dev"
+// operatorSpendAttributes is the live deployment's OTEL_RESOURCE_ATTRIBUTES, with a placeholder
+// person, as an operator sets it in `runtime.tmux.pane_env`: the project, the lane, the credential
+// the gateway bills and the person who owns the spend. The tests of the composition start from
+// this value, so what they read is the shape an operator writes rather than one invented here.
+const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infra,theorem.credential=gateway,theorem.person=sami@example.com"
 
 // Every pane carries the operator's own spend attributes with its own issue and role written
 // after them (runtime.SpendResourceAttributes, panePairs), so a pane's attributes name the issue
 // it serves. The controller serves no issue, so it carries the role alone: an empty legion.issue
-// on every controller pane would split a spend report by nothing.
+// on every controller pane would split a spend report by nothing. A pane of a unit drawn into
+// experiment arms names them after its role, in the spec's order, since a pane reads every arm's
+// overlays off the host the boot gate checked.
 //
 // The assertion reads every pair of the name and its whole value, so a pane told nothing is told
 // from a pane told the empty value, and a pane told the name twice is told from one told it once.
@@ -34,14 +36,17 @@ const operatorSpendAttributes = "theorem.project=legion,theorem.lane=legion-infr
 // after the daemon's — the order the operator's own pairs are told in — fails here.
 func TestEveryPaneCarriesTheOperatorsSpendAttributesWithItsOwnIssueAndRole(t *testing.T) {
 	tree := testSpec()
+	inArms := testSpec()
+	inArms.Variants = []runtime.Variant{{Experiment: "memory", Name: "none"}, {Experiment: "alpha", Name: "on"}}
 	controller := controllerSpec(t, "omp")
 	controller.Env = nil
 	for name, tc := range map[string]struct {
 		spec runtime.SpawnSpec
 		want string
 	}{
-		"a tree pane":       {tree, operatorSpendAttributes + ",legion.issue=LEGION-43,legion.role=tester"},
-		"a controller pane": {controller, operatorSpendAttributes + ",legion.role=controller"},
+		"a tree pane":             {tree, operatorSpendAttributes + ",legion.issue=LEGION-43,legion.role=tester"},
+		"a tree pane in two arms": {inArms, operatorSpendAttributes + ",legion.issue=LEGION-43,legion.role=tester,legion.arms=memory%3Anone%2Calpha%3Aon"},
+		"a controller pane":       {controller, operatorSpendAttributes + ",legion.role=controller"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := PaneInputs{

@@ -1,0 +1,20 @@
+# proxy-cut-leaves-command-open: a grant's end cancels the carried call's context and ends the
+# command's upload, and leaves a write of the service's answer that waits for the command to
+# read - an HTTP/2 stream whose window the client keeps shut - waiting, so the client gets the
+# answer's bytes when it opens the window.
+# must fail: TestAGrantCutResetsAFlowControlledH2StreamAndLeavesItsSiblings
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/broker/airlockproxy/bound.go
++++ b/packages/envoy/internal/broker/airlockproxy/bound.go
+@@ -578,9 +578,7 @@
+ 	}
+ 	controller := http.NewResponseController(c.w)
+ 	_ = controller.SetReadDeadline(pastDeadline)
+-	if c.started {
+-		_ = controller.SetWriteDeadline(pastDeadline)
+-	}
++	// MUTANT: no write deadline, so a write of the answer waiting on the command waits on.
+ }
+ 
+ // finish marks serveBound as returned, after which stop leaves the writer alone.

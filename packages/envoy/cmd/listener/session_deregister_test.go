@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // deregister sends DELETE /v1/sessions/<sessionID><query> through the rig's routes and returns
@@ -123,11 +124,11 @@ func TestDeregistrationOfAnotherInstanceKeepsTheSessionConsumer(t *testing.T) {
 
 	recorder := rig.deregister(t, sessionID, "?client_instance_id="+leaving)
 
-	var answer deleteSessionResponse
+	var answer listenerwire.DeleteSessionResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
-	if answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
+	if answer.Deleted == nil || *answer.Deleted || answer.Reason != "the registration belongs to another client instance" {
 		t.Fatalf("the answer is %+v, want the registration kept for another client instance", answer)
 	}
 	if entry := rig.entry(t, sessionID); entry.Delivery != session.DeliveryConsumer {
@@ -155,7 +156,7 @@ func TestADeletedSessionsConsumerIsNotBroughtBackByTheRelaysRetry(t *testing.T) 
 	// A message nothing answers: the relay sends its frame, pauses for want of a receipt, and
 	// restarts the consumer at its ack floor again and again, each restart deleting the consumer
 	// and creating it at that floor. That is the retry the delete must outlast.
-	rig.storeEvent(t, contracts.AgentSubject(sessionID))
+	rig.storeEvent(t, contracts.LegacyAgentSubject(sessionID))
 	rig.awaitPending(t, sessionID, 0)
 
 	rig.deregister(t, sessionID, "")

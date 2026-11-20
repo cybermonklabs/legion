@@ -13,6 +13,10 @@
       "types": "./src/environment.ts",
       "bun": "./src/environment.ts"
     },
+    "./error-text": {
+      "types": "./src/error-text.ts",
+      "bun": "./src/error-text.ts"
+    },
     "./metadata-identity": {
       "types": "./src/metadata-identity.ts",
       "bun": "./src/metadata-identity.ts"
@@ -29,6 +33,10 @@
       "types": "./src/projected-token.ts",
       "bun": "./src/projected-token.ts"
     },
+    "./refusal-text": {
+      "types": "./src/refusal-text.ts",
+      "bun": "./src/refusal-text.ts"
+    },
     "./signins": {
       "types": "./src/signins.ts",
       "bun": "./src/signins.ts"
@@ -44,6 +52,10 @@
     "./token-client": {
       "types": "./src/token-client.ts",
       "bun": "./src/token-client.ts"
+    },
+    "./token-errors": {
+      "types": "./src/token-errors.ts",
+      "bun": "./src/token-errors.ts"
     },
     "./wire": {
       "types": "./src/wire.ts",

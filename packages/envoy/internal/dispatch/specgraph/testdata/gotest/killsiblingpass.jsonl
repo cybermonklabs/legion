@@ -1,0 +1,50 @@
+{"Time":"2026-11-16T18:41:00.217098557Z","Action":"start","Package":"example.com/acme/gotest/killsiblingpass"}
+{"Time":"2026-11-16T18:41:00.238612683Z","Action":"run","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps"}
+{"Time":"2026-11-16T18:41:00.23878791Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps","Output":"=== RUN   TestSleeps\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238921294Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps","Output":"=== PAUSE TestSleeps\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238930896Z","Action":"pause","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps"}
+{"Time":"2026-11-16T18:41:00.238935683Z","Action":"run","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter"}
+{"Time":"2026-11-16T18:41:00.238938429Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"=== RUN   TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238941681Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"=== PAUSE TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238944376Z","Action":"pause","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter"}
+{"Time":"2026-11-16T18:41:00.238950723Z","Action":"cont","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps"}
+{"Time":"2026-11-16T18:41:00.238952593Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps","Output":"=== CONT  TestSleeps\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238954585Z","Action":"cont","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter"}
+{"Time":"2026-11-16T18:41:00.238956312Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"=== CONT  TestPrinter\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238961562Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps","Output":"--- PASS: TestSleeps (0.10s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:00.238970046Z","Action":"pass","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestSleeps","Elapsed":0.1}
+{"Time":"2026-11-16T18:41:00.238985474Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"--- PASS: TestPrinter (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:01.242052152Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"panic: test timed out after 1s\n"}
+{"Time":"2026-11-16T18:41:01.242115301Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\trunning tests:\n"}
+{"Time":"2026-11-16T18:41:01.242119278Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\t\tTestSleeps (1s)\n"}
+{"Time":"2026-11-16T18:41:01.242122361Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\n"}
+{"Time":"2026-11-16T18:41:01.242125623Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"goroutine 321 [running]:\n"}
+{"Time":"2026-11-16T18:41:01.242127659Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.(*M).startAlarm.func1()\n"}
+{"Time":"2026-11-16T18:41:01.242135883Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2961 +0x34a\n"}
+{"Time":"2026-11-16T18:41:01.242138593Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"created by time.goFunc\n"}
+{"Time":"2026-11-16T18:41:01.242140335Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttime/sleep.go:182 +0x2d\n"}
+{"Time":"2026-11-16T18:41:01.242142135Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\n"}
+{"Time":"2026-11-16T18:41:01.242156463Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"goroutine 1 [chan receive]:\n"}
+{"Time":"2026-11-16T18:41:01.242159671Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.tRunner.func1()\n"}
+{"Time":"2026-11-16T18:41:01.242162455Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2144 +0x425\n"}
+{"Time":"2026-11-16T18:41:01.242165003Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.tRunner(0x2b44c46c4008, 0x2b44c4490bc8)\n"}
+{"Time":"2026-11-16T18:41:01.242171825Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2201 +0x123\n"}
+{"Time":"2026-11-16T18:41:01.2421746Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.runTests({0x55a450, 0x17}, {0x55f153, 0x27}, 0x2b44c3fb00c0, {0x6ef970, 0x2, 0x2}, {0xc2b6f16f4e35f983, 0x3b9e8f1d, ...})\n"}
+{"Time":"2026-11-16T18:41:01.242180441Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2742 +0x510\n"}
+{"Time":"2026-11-16T18:41:01.242185407Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.(*M).Run(0x2b44c4698140)\n"}
+{"Time":"2026-11-16T18:41:01.242187747Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2602 +0x6af\n"}
+{"Time":"2026-11-16T18:41:01.24219479Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"main.main()\n"}
+{"Time":"2026-11-16T18:41:01.24219707Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\t_testmain.go:48 +0x9b\n"}
+{"Time":"2026-11-16T18:41:01.24219903Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\n"}
+{"Time":"2026-11-16T18:41:01.242201129Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"goroutine 306 [sleep]:\n"}
+{"Time":"2026-11-16T18:41:01.242203175Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"time.Sleep(0x12a05f200)\n"}
+{"Time":"2026-11-16T18:41:01.242204806Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\truntime/time.go:368 +0x165\n"}
+{"Time":"2026-11-16T18:41:01.242206626Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"example.com/acme/gotest/killsiblingpass.TestSleeps(0x2b44c46c4248?)\n"}
+{"Time":"2026-11-16T18:41:01.24220989Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\texample.com/acme/gotest/killsiblingpass/killsiblingpass_test.go:18 +0x2e\n"}
+{"Time":"2026-11-16T18:41:01.242212019Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"testing.tRunner(0x2b44c46c4248, 0x6d40b0)\n"}
+{"Time":"2026-11-16T18:41:01.242214349Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2195 +0xea\n"}
+{"Time":"2026-11-16T18:41:01.24221669Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"created by testing.(*T).Run in goroutine 1\n"}
+{"Time":"2026-11-16T18:41:01.242219383Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Output":"\ttesting/testing.go:2260 +0x4d4\n"}
+{"Time":"2026-11-16T18:41:01.253126284Z","Action":"pass","Package":"example.com/acme/gotest/killsiblingpass","Test":"TestPrinter","Elapsed":0}
+{"Time":"2026-11-16T18:41:01.253171925Z","Action":"output","Package":"example.com/acme/gotest/killsiblingpass","Output":"FAIL\texample.com/acme/gotest/killsiblingpass\t1.033s\n","OutputType":"frame"}
+{"Time":"2026-11-16T18:41:01.253187399Z","Action":"fail","Package":"example.com/acme/gotest/killsiblingpass","Elapsed":1.036}

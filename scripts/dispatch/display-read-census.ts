@@ -84,6 +84,7 @@ import { dirname, join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { parseArgs } from "node:util";
 import type { ActiveDispatchConfig } from "../../packages/envoy-client/src/dispatch-config";
+import { DISPATCH_TOOL_DEADLINE_MS } from "../../packages/envoy-client/src/dispatch-http";
 import {
   sessionConfigFile,
   sessionDispatchSettings,
@@ -336,7 +337,7 @@ export function artifactVersions(artifacts: readonly ApiArtifact[]): VersionRef[
 // --- reading production ---------------------------------------------------------------------
 
 /** A token bucket: `rate` requests a second over the whole run, however many run at once. */
-class Rate {
+export class Rate {
   private next = 0;
   private readonly gap: number;
 
@@ -369,7 +370,13 @@ interface Spend {
   requests: number;
 }
 
-async function get<T>(config: DispatchConfig, path: string, rate: Rate, spend: Spend): Promise<T> {
+/** One read of Dispatch, as JSON: a 5xx or a failed connection tried again, a 4xx answered. */
+export async function get<T>(
+  config: DispatchConfig,
+  path: string,
+  rate: Rate,
+  spend: Spend
+): Promise<T> {
   let last = "";
   for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
     await rate.take();
@@ -377,8 +384,13 @@ async function get<T>(config: DispatchConfig, path: string, rate: Rate, spend: S
     try {
       const url = `${config.url}${path}`;
       // Presented afresh for each attempt, as DispatchClient does: a broker credential proves this
-      // process's key per request, and a stale proof is what a retry would otherwise re-send.
-      const response = await fetch(url, { headers: await config.credential.headers("GET", url) });
+      // process's key per request, and a stale proof is what a retry would otherwise re-send. One
+      // deadline bounds both, the one DispatchClient puts on each of its own requests.
+      const deadline = AbortSignal.timeout(DISPATCH_TOOL_DEADLINE_MS);
+      const response = await fetch(url, {
+        headers: await config.credential.headers("GET", url, undefined, deadline),
+        signal: deadline,
+      });
       if (response.ok) return (await response.json()) as T;
       const body = (await response.text()).slice(0, 200);
       if (response.status < 500) throw new HttpError(response.status, `${response.status} ${body}`);

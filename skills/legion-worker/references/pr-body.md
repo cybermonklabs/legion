@@ -30,8 +30,8 @@ later phase keeps it current rather than replacing it:
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
-**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha>:
-<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`)
+**Thermo:** `simplify-settled-diff` once at <head-sha>: <0 applied | applied → new head <sha>>; defects reported: <none | <n>, fixed in <sha>>; thermonuclear pair at the reviewed head <sha> over <the whole change | <last-reviewed-sha>..<sha>>:
+<verdict>. (on a docs-only PR the simplify half and the defects are recorded as on any other diff, and the pair half reads `thermonuclear pair: not run (docs-only)`) (in a later round whose difference touches no runtime code, the pair half reads `thermonuclear pair at the reviewed head <sha>: not run (<last-reviewed-sha>..<sha> touches no runtime code)`, and the pair half of the last round the pair ran in stays beside it)
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
@@ -57,8 +57,9 @@ to it (below). Then it pushes and completes. It never waits for, watches or poll
 allows, and they read no check; `skill://legion-worker`, *Every role pushes its own commits*,
 gives them).
 Under the Go daemon a check that settles red on the head moves the issue nowhere: the daemon names
-every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's
-architect, the worker of the issue's current phase and the implementer, and judges none of them.
+every check GitHub reported, with the conclusion GitHub gave it, in one message to the architect
+that owns the issue, the worker of the issue's current phase and the implementer, and judges none
+of them.
 That message is the implementer's to act on while it still works the issue: a red that failed on
 its own is re-run once (`gh run rerun <run-id> --failed`), woken by the pull request's checks
 event (`skill://envoy`, *Wait for CI or a merge*: subscribe, then end the turn) and never by a
@@ -112,7 +113,7 @@ of these flags takes text and refuses a bare `-`. Text from a file or from stdin
 stdin (`-`). The command prints the pull request body's line for it, and that line goes into the
 body unchanged.
 The surface is **production-like** — the repository's real-process test harness and fixtures, a
-sandbox repository, a real browser, a devN stack, staging, or a local stack with real migrations,
+sandbox repository, a real browser, a development stack, staging, or a local stack with real migrations,
 one that has the resource the change touches — and `--run` or `--observed` carries a **link** to
 that run, screenshot or e2e; human review does not replace user-facing verification, and a green
 unit suite is not it. A unit or integration test is a regression lock, never a check's result,
@@ -212,7 +213,7 @@ and decides there, the only gate on such an issue.
   marked `after_merge`, recorded after the merge on a look of the production check by the role
   the project's `production_check` names — the tester, unless the setting is `off`, where the
   close opens no check and nothing records it — unless the implementer can execute it against a
-  devN stack before then; if no surface can reach it, the
+  development stack before then; if no surface can reach it, the
   tester names that missing surface as the blocker instead of passing the phase. Environment or
   secret-scrub evidence (e.g. "`LEGION_*`/`DISPATCH_*`/`ENVOY_*` unset") is recorded once, in
   its `test` handoff, and only when a check calls for it — never
@@ -240,8 +241,12 @@ and decides there, the only gate on such an issue.
   defect it reports is fixed outside the pass with the results recorded again, never dropped as
   out of scope; the `Thermo` line's `defects reported` half names how many and the commit that
   fixed them, so a head that moved for a reported defect is not recorded as `0 applied` alone.
-  The reviewer's pair runs at the head each round reviews, when the diff touches runtime code.
-  Record both in the `Thermo` line.
+  The reviewer's pair runs at the head each round reviews, over the diff that round reads (the
+  whole change, or the difference from the commit the round's task names as
+  `Last reviewed commit:`), when that diff touches runtime code. Record both in the `Thermo` line,
+  the pair half with the range the pair read. When a later round's pair reads only a range, the
+  pair half of each earlier round stays in the line beside the new one, because a range is read
+  on top of the round that read the code up to its start.
 - **No deferrals** is the body's rule (*PR body, review, and the merge gate* in
   `skill://legion-worker`): a wording nit, and any clear fix in a file this pull request touches,
   is made in the running round: a later round costs a CI pass and another review. A requirement on the `Not proven / risk:` line is unmet, not declared away, unless only

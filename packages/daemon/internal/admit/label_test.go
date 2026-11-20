@@ -165,7 +165,8 @@ func TestOnlyAnIssueCarryingTheLegionLabelIsAdmitted(t *testing.T) {
 	assertEffects(t, pool, []effect{
 		{kind: record.OutboxKindDispatchStatus, issue: "LEGION-1", payload: record.OrdinaryStatusWrite("in_progress", "todo", "")},
 		{kind: record.OutboxKindIssueBranch, issue: "LEGION-1", payload: record.IssueBranch{Generation: 1}},
-		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1}},
+		{kind: record.OutboxKindSupervise, issue: "LEGION-1", payload: record.SuperviseRequest{Op: "start", Tree: "LEGION-1", Role: claim.RoleArchitect, Generation: 1,
+			Task: architectStart(t, pool, admission, "LEGION-1", ""), Entry: 1}},
 	})
 }
 
@@ -278,9 +279,13 @@ func TestReconcileQueuesAPersonsLabelOnAnUnrecordedRootInTriage(t *testing.T) {
 		// idle true: caught up whatever the target, so every summary applies now, as the listing of
 		// a daemon booted after the person's label — its consumer positioned past that event — does.
 		scoped, committed := intake.WithCommitHooks(context.Background())
+		scoped, settle := intake.OpenSettlers(scoped, admission)
 		inTx(t, pool, func(tx pgx.Tx) {
 			if err := admission.Reconcile(scoped, tx, listed, 2, intake.DispatchConsumerPosition{AckFloorStream: 2, Idle: true}); err != nil {
 				t.Fatalf("Reconcile: %v", err)
+			}
+			if err := settle(scoped, tx); err != nil {
+				t.Fatalf("settle the reconcile: %v", err)
 			}
 		})
 		committed()

@@ -5,6 +5,7 @@
 // wrong URL that echoes what it was sent inside a text the extension prints as guidance. A text
 // that holds no held secret reaches the host as it was.
 import { scrub, scrubError } from "@legion/contracts/held-secrets";
+import type { PiApi, ToolResult } from "@legion/pi-shared/pi-types";
 
 /** `value` with its strings scrubbed: a string, or the strings of a plain object or array one
  *  level down (a logger's fields). Anything else is passed on as it is. */
@@ -47,6 +48,15 @@ export function scrubbedLogger<T extends object>(logger: T): T {
   return scrubbingMethods(logger, LOG_METHODS);
 }
 
+/** The process's console, scrubbing every text and error it is handed; Bun's console writes past
+ *  any stream wrapper, so the extension's own console prints go through this. */
+export const scrubbedConsole: Pick<Console, "warn" | "error" | "log" | "info"> = {
+  warn: (...args: unknown[]) => console.warn(...args.map(scrubbedArgument)),
+  error: (...args: unknown[]) => console.error(...args.map(scrubbedArgument)),
+  log: (...args: unknown[]) => console.log(...args.map(scrubbedArgument)),
+  info: (...args: unknown[]) => console.info(...args.map(scrubbedArgument)),
+};
+
 /** One scrubbing view per host context, so a context the extension keeps is one object. */
 const VIEWS = new WeakMap<object, object>();
 
@@ -68,53 +78,42 @@ export function scrubbedContext<T>(context: T): T {
   return view;
 }
 
-/** A tool's answer with the text of each content part scrubbed. */
-function scrubbedToolResult(result: unknown): unknown {
-  if (typeof result !== "object" || result === null || !("content" in result)) return result;
-  const { content } = result as { content?: unknown };
-  if (!Array.isArray(content)) return result;
+/** A tool's answer with the text of each text part scrubbed. */
+function scrubbedToolResult(result: ToolResult): ToolResult {
   return {
     ...result,
-    content: content.map((part: unknown) =>
-      typeof part === "object" && part !== null && "text" in part && typeof part.text === "string"
-        ? { ...part, text: scrub(part.text) }
-        : part
+    content: result.content.map((part) =>
+      part.type === "text" ? { ...part, text: scrub(part.text) } : part
     ),
   };
 }
 
 /**
  * The host API `pi`, whose event handlers are handed a context that scrubs its notices, and whose
- * tools answer and throw scrubbed text. Everything else is the host's own, and its type is too.
+ * tools answer and throw scrubbed text, each tool's `execute` handed a scrubbing context in
+ * place of its own. Everything else is the host's own.
  */
-export function scrubbedHost<T extends object>(pi: T): T {
+export function scrubbedHost(pi: PiApi): PiApi {
+  const on: PiApi["on"] = (event, handler) =>
+    pi.on(event, (hostEvent, context) => handler(hostEvent, scrubbedContext(context)));
+  const registerTool: PiApi["registerTool"] = (tool) =>
+    pi.registerTool({
+      ...tool,
+      execute: async (id, parameters, signal, onUpdate, context) => {
+        try {
+          return scrubbedToolResult(
+            await tool.execute(id, parameters, signal, onUpdate, scrubbedContext(context))
+          );
+        } catch (error) {
+          throw scrubError(error);
+        }
+      },
+    });
   return new Proxy(pi, {
     get(object, key) {
+      if (key === "on") return on;
+      if (key === "registerTool") return registerTool;
       const value = Reflect.get(object, key, object) as unknown;
-      if (key === "on" && typeof value === "function") {
-        return (event: string, handler: (...args: unknown[]) => unknown) =>
-          value.call(object, event, (...args: unknown[]) =>
-            handler(...args.map((arg, at) => (at === 1 ? scrubbedContext(arg) : arg)))
-          );
-      }
-      if (key === "registerTool" && typeof value === "function") {
-        return (tool: { execute?: (...args: unknown[]) => unknown }) => {
-          const execute = tool.execute;
-          if (typeof execute !== "function") return value.call(object, tool);
-          return value.call(object, {
-            ...tool,
-            execute: async (...args: unknown[]) => {
-              const last = args.length - 1;
-              const scoped = args.map((arg, at) => (at === last ? scrubbedContext(arg) : arg));
-              try {
-                return scrubbedToolResult(await execute.apply(tool, scoped));
-              } catch (error) {
-                throw scrubError(error);
-              }
-            },
-          });
-        };
-      }
       return typeof value === "function" ? value.bind(object) : value;
     },
   });

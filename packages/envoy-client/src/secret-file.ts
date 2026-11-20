@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readErrorCode } from "@legion/broker-client/error-text";
 import { holdSecret } from "@legion/contracts/held-secrets";
 
 /** Whether `value` can go in a header as one bearer: no whitespace and no control character. A
@@ -6,10 +7,6 @@ import { holdSecret } from "@legion/contracts/held-secrets";
 export function sendable(value: string): boolean {
   return !/[\s\p{Cc}]/u.test(value);
 }
-
-/** A read error's code as the runtime sets it (`ENOENT`, `EACCES`): one word, never its text,
- *  which repeats the path it was handed. */
-const READ_ERROR_CODE = /^[A-Z][A-Z0-9_]{0,31}$/;
 
 /** Reads the secret a `<VARIABLE>_FILE` pointer names: the file's contents, trimmed. The Legion
  * daemon hands every pane secret over this way (a 0600 file under its state directory) instead of
@@ -24,9 +21,7 @@ export function readSecretFile(variable: string, filePath: string): string {
   try {
     contents = readFileSync(filePath, "utf8");
   } catch (error) {
-    const { code } = error as { code?: unknown };
-    const why = typeof code === "string" && READ_ERROR_CODE.test(code) ? code : "an error";
-    throw new Error(`${variable} names a file that could not be read (${why})`);
+    throw new Error(`${variable} names a file that could not be read (${readErrorCode(error)})`);
   }
   const value = contents.trim();
   if (value.length === 0) throw new Error(`${variable} names a file that is empty`);

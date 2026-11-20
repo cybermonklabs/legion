@@ -13,8 +13,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/fileowner"
 )
 
 // MachineFile is the machine login the helper keeps across restarts: the machine key the login's
@@ -82,8 +83,8 @@ func LoadMachineFile(path string) (*MachineFile, error) {
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return nil, fmt.Errorf("machine file %s is mode %04o, which lets others read the machine's key; run: chmod 600 %s", path, perm, path)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return nil, fmt.Errorf("machine file %s is owned by uid %d, not this user (uid %d); remove it, or run the helper as its owner, and chmod 600 it", path, st.Uid, os.Getuid())
+	if uid, ok := fileowner.Of(info); ok && uid != os.Getuid() {
+		return nil, fmt.Errorf("machine file %s is owned by uid %d, not this user (uid %d); remove it, or run the helper as its owner, and chmod 600 it", path, uid, os.Getuid())
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	var raw machineFileJSON

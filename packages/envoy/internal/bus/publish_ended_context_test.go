@@ -37,7 +37,7 @@ func TestAPublishWithAnEndedContextSendsNothing(t *testing.T) {
 	}{
 		{"a role lane", contracts.RoleTopicPrefix + "ended-context", true},
 		{"an uncaptured topic", "notifications.lxspec.ended-context", true},
-		{"a topic the stream captures", contracts.AgentSubject("ses_ended_context"), false},
+		{"a topic the stream captures", contracts.LegacyAgentSubject("ses_ended_context"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			uri := testnats.URL(t)

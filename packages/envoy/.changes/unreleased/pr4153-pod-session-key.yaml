@@ -1,0 +1,23 @@
+kind: Changed
+body: |-
+  A pod's session registration can be bound to the key its own role proves, and ordered by its
+  registrar's generation. `POST /v1/oauth/exchange/pod-sessions` takes an optional `thumbprint`,
+  the RFC 7638 thumbprint of that key (43 base64url characters, else `400 THUMBPRINT_INVALID`), and
+  an optional `generation` (0 when absent, `400 GENERATION_INVALID` when negative), and answers the
+  registration as stored, its key and generation included when set, so a registrar that sends
+  neither is answered as before. The exchange then admits a pod's trade
+  for that session only with a DPoP proof of that key, and refuses one proved with another
+  `invalid_grant`, naming the session, so a role of an issue pod holding the pod's exchange token
+  cannot trade for a sibling role's session. A write that names no key keeps the one a live
+  registration names, and a write of a lower generation than the registration's changes nothing,
+  so an old incarnation's late write cannot put its key back. A registration that names neither
+  stays the pod's, as before. The broker logs a trade refused for another key at WARN, naming the
+  pod, the session and both keys; logs each registration with the thumbprint and generation sent
+  beside those stored and the key it replaced; and logs a write the generation rule refused at
+  WARN, apart from the writes it applied. Migration 0032 (`0032_oauth_pod_sessions_binding`) adds
+  both columns (`oauth_pod_sessions.jkt`, `oauth_pod_sessions.generation`). Rolling the broker
+  back past it drops the binding and makes the older route refuse both fields, so unset
+  `exchange_audience` in every Legion daemon first.
+time: 2026-11-16T17:14:22Z
+custom:
+    Issue: pr4153

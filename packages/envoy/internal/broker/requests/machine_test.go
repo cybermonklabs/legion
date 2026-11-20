@@ -486,6 +486,55 @@ func TestCreateServesASecretCreatedAfterTheLastReload(t *testing.T) {
 	}
 }
 
+// TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands pins what a request meets while
+// `agent-secrets secret create` waits for the person to type the value of a secret it has made but
+// not filled (policy.ReasonPendingValue): the name is refused policy.ErrPendingValue (400
+// PENDING_VALUE), a refusal of its own that says the secret exists and waits for its first value,
+// never UNKNOWN_SECRET, which an agent takes as final; with no request, no record and no judge
+// call, so no approver is asked to approve a secret that holds nothing. Once the value lands, the
+// same name is served: the next request goes to its owner for approval, as any human-tier
+// secret's does, and is never handed to the model judge, since no rules entry gives the key a
+// judge; the grant that approval mints releases the value.
+func TestCreateRefusesASecretPendingItsFirstValueUntilTheValueLands(t *testing.T) {
+	m, enr, key, approver := newFixture(t)
+	ctx := context.Background()
+	var judged []PendingRequest
+	m.Judge = func(p PendingRequest) { judged = append(judged, p) }
+	created := time.Now()
+	waiting := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "")
+	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.CreatedAt = &created
+	fixtureStore(m).Put(waiting)
+
+	_, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if !errors.Is(err, policy.ErrPendingValue) || errors.Is(err, policy.ErrUnknownSecret) || !strings.Contains(err.Error(), "TYPED_KEY") {
+		t.Fatalf("Create(TYPED_KEY) while it waits for its value = %v; want policy.ErrPendingValue naming TYPED_KEY, not ErrUnknownSecret", err)
+	}
+	if pending, waits := m.Policy.Get().Pending[policytest.ID("TYPED_KEY")]; !waits {
+		t.Fatalf("the policy holds TYPED_KEY as %+v; want it waiting for its value (pending-value), the reason the request was refused", pending)
+	}
+	var requests, records int
+	if err := m.Store.Pool.QueryRow(ctx, `select (select count(*) from requests where enrollment_id=$1), (select count(*) from credential_requests)`, enr).Scan(&requests, &records); err != nil || requests != 0 || records != 0 || len(judged) != 0 {
+		t.Fatalf("after the refusal: %d requests, %d records, %d judge calls, %v; want none of each, no approver asked", requests, records, len(judged), err)
+	}
+
+	filled := policytest.Secret("TYPED_KEY", fixtureOperator, policy.TierHuman, "typed-v1")
+	filled.CreatedAt = &created
+	fixtureStore(m).Put(filled)
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "TYPED_KEY"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil || req.Approver == nil || *req.Approver != approver || len(judged) != 0 {
+		t.Fatalf("Create(TYPED_KEY) once its value landed = %+v, %v, %d judge calls; want pending on %s's approval, never handed to the judge", req, err, len(judged), approver)
+	}
+	decision, err := m.ApplyDecision(ctx, *req.RecordID, true, approver)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("approve: %+v, %v; want a grant", decision, err)
+	}
+	release, err := m.Values(ctx, decision.GrantID, enr, nil, ReleaseCall{})
+	if err != nil || release.Values["TYPED_KEY"] != "typed-v1" {
+		t.Fatalf("Values = %+v, %v; want TYPED_KEY released as typed-v1", release.Values, err)
+	}
+}
+
 // TestMissRereadsAreBoundedPerEnrollment pins the miss path's bound: a session inventing names
 // costs at most its enrollment's burst of DescribeSecret calls, and a miss past it is refused
 // without one.
@@ -1151,7 +1200,10 @@ func TestRevokingARevokedGrantWritesNoSecondAuditRow(t *testing.T) {
 // agent-tier and human-tier secret, and a service's secret. A request that needs approval writes a
 // record naming the
 // approver and reaches that approver's pending list: another person's session or a pod asking for
-// a person's agent-tier secret is an approval request to its owner. The service's pod is a pod
+// a person's agent-tier secret is an approval request to its owner. A shared human-tier secret's
+// record names anyone and reaches the pending list of the person responsible for the session that
+// asked, its operator, or of everyone for a pod whose claim names no issue (responsible_test.go
+// pins who that person is). The service's pod is a pod
 // with no operator to every secret but the service's own, which it alone gets at once.
 func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 	const otherOperator = "bob@example.com"
@@ -1208,9 +1260,12 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 			}
 			listedFor := want.approver
 			if listedFor == record.AnyoneApprover {
-				listedFor = "carol@example.com"
+				listedFor = map[string]string{
+					"owner's session": fixtureOperator, "another person's session": otherOperator,
+					"pod": "carol@example.com", "the service's pod": "carol@example.com",
+				}[who]
 			}
-			pending, err := m.PendingForApprover(ctx, listedFor)
+			pending, err := m.PendingForApprover(ctx, listedFor, PendingStates{})
 			if err != nil || !slices.ContainsFunc(pending, func(p PendingSummary) bool { return p.RecordID == *req.RecordID }) {
 				t.Errorf("%s asking for %s: %s's pending list %+v, %v; want the record listed", who, name, listedFor, pending, err)
 			}
@@ -1219,9 +1274,10 @@ func TestEveryRequesterIsDecidedByOwnerAndTier(t *testing.T) {
 }
 
 // TestAnyoneDecidesASharedHumanTierRequest pins the approver record.AnyoneApprover: a request for a
-// shared human-tier secret reaches every person's pending list, any person's login decides it and
-// is recorded as the decider, the sentinel itself, in any casing, and a blank login decide nothing,
-// approve or deny, and the grant releases its value because its chain verifies under that approver.
+// shared human-tier secret reaches the pending list of its session's operator alone, yet any
+// person's login decides it and is recorded as the decider, the sentinel itself, in any casing,
+// and a blank login decide nothing, approve or deny, and the grant releases its value because its
+// chain verifies under that approver.
 func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()
@@ -1229,10 +1285,12 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err != nil || req.State != "pending" || req.RecordID == nil {
 		t.Fatalf("Create = %+v, %v, want pending with a record", req, err)
 	}
-	for _, person := range []string{"bob@example.com", "carol@example.com", fixtureOperator} {
-		pending, err := m.PendingForApprover(ctx, person)
-		if err != nil || len(pending) != 1 || pending[0].RecordID != *req.RecordID {
-			t.Fatalf("PendingForApprover(%s) = %+v, %v, want the shared record", person, pending, err)
+	if pending, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{}); err != nil || len(pending) != 1 || pending[0].RecordID != *req.RecordID {
+		t.Fatalf("PendingForApprover(%s) = %+v, %v, want the shared record its session asked for", fixtureOperator, pending, err)
+	}
+	for _, person := range []string{"bob@example.com", "carol@example.com"} {
+		if pending, err := m.PendingForApprover(ctx, person, PendingStates{}); err != nil || len(pending) != 0 {
+			t.Fatalf("PendingForApprover(%s) = %+v, %v, want nothing: the record is its session's operator's to be asked", person, pending, err)
 		}
 	}
 	for _, approve := range []bool{true, false} {
@@ -1258,8 +1316,8 @@ func TestAnyoneDecidesASharedHumanTierRequest(t *testing.T) {
 	if err != nil || len(grants) != 1 || grants[0].GrantID != dec.GrantID || grants[0].Approver != "bob@example.com" {
 		t.Fatalf("GrantsForApprover(bob) = %+v, %v, want the grant bob approved", grants, err)
 	}
-	if pending, err := m.PendingForApprover(ctx, "carol@example.com"); err != nil || len(pending) != 0 {
-		t.Fatalf("PendingForApprover(carol) after bob decided = %+v, %v, want nothing", pending, err)
+	if pending, err := m.PendingForApprover(ctx, fixtureOperator, PendingStates{}); err != nil || len(pending) != 0 {
+		t.Fatalf("PendingForApprover(%s) after bob decided = %+v, %v, want nothing", fixtureOperator, pending, err)
 	}
 }
 

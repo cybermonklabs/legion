@@ -6,16 +6,17 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type IssuerAnswer, signedIn, stubIssuer } from "../../test/sign-ins";
 import { personIdentity } from "../person-identity";
 import { SIGNIN_COMMAND, type SignInFlow } from "../signins";
-import { isFinalRefusal, SignInEndedError } from "../token-client";
+import { isFinalRefusal, SignInEndedError } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_PERSON } from "../wire";
 import { refusalOf } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = "example-device-client-not-a-secret";
+const CLIENT_SECRET = fixtureSecret("client");
 
 const stops: (() => void)[] = [];
 afterEach(() => {
@@ -72,7 +73,7 @@ test("each read refreshes once, with the client in the form, and answers the per
 
 test("an answer with no ID token is an error", async () => {
   const issuer = await issuerFor(() => ({
-    body: { access_token: "issuer-access-not-a-secret", token_type: "Bearer", expires_in: 3600 },
+    body: { access_token: fixtureSecret("issuer"), token_type: "Bearer", expires_in: 3600 },
   }));
   const source = personIdentity(await signedIn(PERSON), flowAt(issuer.url));
   const refusal = await refusalOf(() => source.read());
@@ -127,7 +128,7 @@ test("an issuer's refusal prints its status and code, never the text that echoes
 // configured, its user info included.
 test("an issuer with user info is named by its variable alone, in its text and its cause", async () => {
   const issuer = await issuerFor();
-  const password = `canary-pw-${crypto.randomUUID()}`;
+  const password = fixtureSecret("pw");
   const withUser = issuer.url.replace("http://", `http://operator:${password}@`);
   const refusal = await refusalOf(async () =>
     personIdentity(await signedIn(PERSON), flowAt(withUser)).read()

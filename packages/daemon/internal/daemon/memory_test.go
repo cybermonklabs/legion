@@ -140,9 +140,9 @@ func memorySpecs(t *testing.T, instructions string) specs {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	return specs{
-		stateDir: t.TempDir(), project: "test", prompts: composer, repositories: noRepositoriesView,
+		stateDir: t.TempDir(), project: "test", prompts: composer, appOwners: noAppOwners,
 		instructions: "/state/deployment-instructions.md",
-		variants: func(_ context.Context, tree, _ string) (experiment.Arms, error) {
+		variants: func(_ context.Context, tree, _ string, _ claim.Role) (experiment.Arms, error) {
 			if tree != "LEGION-1" {
 				return experiment.Arms{}, nil
 			}
@@ -245,7 +245,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 	}
 
 	refused := memorySpecs(t, "/state/memory-instructions.md")
-	refused.variants = func(context.Context, string, string) (experiment.Arms, error) {
+	refused.variants = func(context.Context, string, string, claim.Role) (experiment.Arms, error) {
 		return experiment.Arms{}, errors.New("the store is down")
 	}
 	token, err := claim.NewToken("test", "LEGION-2", claim.RoleTester)
