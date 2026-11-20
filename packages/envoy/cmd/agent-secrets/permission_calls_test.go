@@ -7,6 +7,10 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -106,5 +110,79 @@ func TestEachCallsRefusalNamesItsPermission(t *testing.T) {
 				t.Fatalf("the refusal %q names %s, which no call needs; want %q", words, row.permission, permissionNotNamed)
 			}
 		})
+	}
+}
+
+// TestEveryCallTheFormsMakeHasItsPermissions ties each call the forms make to the permissions it
+// needs: every method of secretsAPI and stsAPI, and every method the package's code calls on the
+// Secret Manager client (a `.client.<Method>(` in a non-test file), is an entry of
+// awsCallPermissions or gcpCallPermissions, and those entries are exactly callPermissions'
+// rows, which TestEachCallsRefusalNamesItsPermission checks a refusal of. So a call a later
+// change adds fails here until its permissions are listed and a row checks them. Control: the
+// walks found the calls they read (a count of zero is a walk that read nothing, and fails).
+func TestEveryCallTheFormsMakeHasItsPermissions(t *testing.T) {
+	awsCalls := 0
+	for _, api := range []reflect.Type{reflect.TypeFor[secretsAPI](), reflect.TypeFor[stsAPI]()} {
+		for i := range api.NumMethod() {
+			awsCalls++
+			if name := api.Method(i).Name; len(awsCallPermissions[name]) == 0 {
+				t.Errorf("%s.%s has no entry in awsCallPermissions", api.Name(), name)
+			}
+		}
+	}
+	called := regexp.MustCompile(`\.client\.([A-Z][A-Za-z]*)\(`)
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcpCalls := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range called.FindAllSubmatch(src, -1) {
+			if name := string(m[1]); name != "Close" {
+				gcpCalls++
+				if _, ok := gcpCallPermissions[name]; !ok {
+					t.Errorf("%s calls the Secret Manager client's %s, which has no entry in gcpCallPermissions", file, name)
+				}
+			}
+		}
+	}
+	if awsCalls == 0 || gcpCalls == 0 {
+		t.Fatalf("control: the walks found %d AWS and %d Secret Manager calls, so a walk read nothing", awsCalls, gcpCalls)
+	}
+	listed := map[callPermission]bool{}
+	for _, row := range callPermissions {
+		listed[row] = true
+	}
+	inCode := map[callPermission]bool{}
+	for call, needs := range awsCallPermissions {
+		store := "aws"
+		if strings.HasPrefix(needs[0], "sts:") {
+			store = "sts"
+		}
+		for _, permission := range needs {
+			inCode[callPermission{store, call, permission}] = true
+		}
+	}
+	for call, needs := range gcpCallPermissions {
+		for _, permission := range needs {
+			inCode[callPermission{"gcp", call, permission}] = true
+		}
+	}
+	for row := range inCode {
+		if !listed[row] {
+			t.Errorf("%v is in the code's lists, but no row of callPermissions checks it", row)
+		}
+	}
+	for row := range listed {
+		if !inCode[row] {
+			t.Errorf("%v is a row of callPermissions, but the code's lists do not hold it", row)
+		}
 	}
 }

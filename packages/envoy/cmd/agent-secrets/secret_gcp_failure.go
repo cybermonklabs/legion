@@ -126,14 +126,29 @@ func (e *storeRefusal) GRPCStatus() *status.Status { return e.status }
 // '<service>.<resource>.<verb>' denied", dotted words of letters.
 var gcpPermission = regexp.MustCompile(`Permission '([a-z]{1,64}(?:\.[a-zA-Z]{1,64}){1,8})' denied`)
 
-// gcpPermissions are the IAM permissions a message names by name (gcpMissingPermission): the ones
-// the forms' calls need - Secret Manager's, and the agent-secrets key's Cloud KMS ones - and no other.
-var gcpPermissions = map[string]bool{
-	"secretmanager.secrets.list": true, "secretmanager.secrets.get": true, "secretmanager.secrets.create": true,
-	"secretmanager.secrets.update": true, "secretmanager.secrets.delete": true, "secretmanager.versions.access": true,
-	"secretmanager.versions.add": true, "secretmanager.versions.get": true, "secretmanager.versions.list": true,
-	"cloudkms.cryptoKeyVersions.useToEncrypt": true, "cloudkms.cryptoKeyVersions.useToDecrypt": true,
+// gcpCallPermissions are the IAM permissions each Secret Manager call this client's forms make
+// needs, by the call's method: every method the forms call on the Secret Manager client. An
+// AddSecretVersion and an AccessSecretVersion also use the agent-secrets key, through Secret
+// Manager's own service agent, not the caller: its refusal names that agent's missing Cloud KMS
+// permission, which the key's grant gives. TestIamPermissions needs no permission: it answers which
+// of the ones it names the caller holds. TestEveryCallTheFormsMakeHasItsPermissions holds that every
+// method the forms call is here.
+var gcpCallPermissions = map[string][]string{
+	"ListSecrets":         {"secretmanager.secrets.list"},
+	"GetSecret":           {"secretmanager.secrets.get"},
+	"CreateSecret":        {"secretmanager.secrets.create"},
+	"UpdateSecret":        {"secretmanager.secrets.update"},
+	"DeleteSecret":        {"secretmanager.secrets.delete"},
+	"AddSecretVersion":    {"secretmanager.versions.add", "cloudkms.cryptoKeyVersions.useToEncrypt"},
+	"AccessSecretVersion": {"secretmanager.versions.access", "cloudkms.cryptoKeyVersions.useToDecrypt"},
+	"GetSecretVersion":    {"secretmanager.versions.get"},
+	"ListSecretVersions":  {"secretmanager.versions.list"},
+	"TestIamPermissions":  nil,
 }
+
+// gcpPermissions are the IAM permissions a message names by name (gcpMissingPermission): every one
+// some call of gcpCallPermissions needs, and no other.
+var gcpPermissions = permissionsOf(gcpCallPermissions)
 
 // gcpMissingPermission is the IAM permission message, Google's own text, says is denied, where it
 // names one in Google's shape (gcpPermission), else "": the permission where it is one this

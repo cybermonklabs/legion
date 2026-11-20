@@ -209,18 +209,43 @@ func awsAPIWords(err error) (string, bool) {
 // dashes, the action a word that starts with a capital letter, as every IAM action does.
 var awsPermission = regexp.MustCompile(`[Nn]ot authorized to perform:? ([a-z0-9-]{1,64}:[A-Z][A-Za-z0-9]{0,127})(?:[\s.,;)]|$)`)
 
-// awsPermissions are the IAM actions a message names by name (awsMissingPermission): the ones the
-// forms' calls need - Secrets Manager's; the agent-secrets key's kms:GenerateDataKey and
-// kms:Decrypt, which Secrets Manager takes on the caller's behalf to write and read a value
-// (Secrets Manager's "Secret encryption and decryption"); and STS's, the sign-in's own calls
-// among them: AssumeRole for a profile's role_arn and AssumeRoleWithWebIdentity for a web
-// identity token file - and no other.
-var awsPermissions = map[string]bool{
-	"secretsmanager:ListSecrets": true, "secretsmanager:DescribeSecret": true, "secretsmanager:GetSecretValue": true,
-	"secretsmanager:CreateSecret": true, "secretsmanager:PutSecretValue": true, "secretsmanager:TagResource": true,
-	"secretsmanager:UntagResource": true, "secretsmanager:DeleteSecret": true, "secretsmanager:RestoreSecret": true,
-	"kms:Decrypt": true, "kms:GenerateDataKey": true,
-	"sts:GetCallerIdentity": true, "sts:AssumeRole": true, "sts:AssumeRoleWithWebIdentity": true,
+// awsCallPermissions are the IAM actions each AWS call this client's forms make needs, by the
+// call's operation name: every method of secretsAPI and stsAPI, and the two STS calls the SDK makes
+// itself to sign in, AssumeRole for a profile's role_arn and AssumeRoleWithWebIdentity for a web
+// identity token file. A Secrets Manager call that writes a value needs the agent-secrets key's
+// kms:GenerateDataKey, and one that reads it kms:Decrypt, which Secrets Manager takes on the
+// caller's behalf: a create checks both on the key it is given, and a PutSecretValue that repeats
+// a version's value decrypts it to compare (Secrets Manager's "Secret encryption and decryption").
+// A create tags the secret it makes, so it needs secretsmanager:TagResource too.
+// TestEveryCallTheFormsMakeHasItsPermissions holds that every method of secretsAPI and stsAPI is here.
+var awsCallPermissions = map[string][]string{
+	"ListSecrets":               {"secretsmanager:ListSecrets"},
+	"DescribeSecret":            {"secretsmanager:DescribeSecret"},
+	"GetSecretValue":            {"secretsmanager:GetSecretValue", "kms:Decrypt"},
+	"CreateSecret":              {"secretsmanager:CreateSecret", "secretsmanager:TagResource", "kms:GenerateDataKey", "kms:Decrypt"},
+	"PutSecretValue":            {"secretsmanager:PutSecretValue", "kms:GenerateDataKey", "kms:Decrypt"},
+	"TagResource":               {"secretsmanager:TagResource"},
+	"UntagResource":             {"secretsmanager:UntagResource"},
+	"DeleteSecret":              {"secretsmanager:DeleteSecret"},
+	"RestoreSecret":             {"secretsmanager:RestoreSecret"},
+	"GetCallerIdentity":         {"sts:GetCallerIdentity"},
+	"AssumeRole":                {"sts:AssumeRole"},
+	"AssumeRoleWithWebIdentity": {"sts:AssumeRoleWithWebIdentity"},
+}
+
+// awsPermissions are the IAM actions a message names by name (awsMissingPermission): every one
+// some call of awsCallPermissions needs, and no other.
+var awsPermissions = permissionsOf(awsCallPermissions)
+
+// permissionsOf is every permission some call of calls needs.
+func permissionsOf(calls map[string][]string) map[string]bool {
+	all := map[string]bool{}
+	for _, needs := range calls {
+		for _, permission := range needs {
+			all[permission] = true
+		}
+	}
+	return all
 }
 
 // permissionNotNamed is what a store's refusal prints in place of a permission its message names
