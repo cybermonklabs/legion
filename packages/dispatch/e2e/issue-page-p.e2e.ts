@@ -3035,6 +3035,11 @@ test("a change request sent from the header leaves the focus in the header", asy
 // the chip of the document the reader approved, not to another control of the header. The
 // review's write is held open with a route so the row can read the focus while Approve refuses
 // a press.
+// SLOW(>=2s): 2,093 ms in one of three one-worker runs (Job e2e-rows-9whgn at 4d06932a), and 1,548
+// to 1,657 ms in three (Job e2e-rows-2chx9 at 2e3f0319): one load after an approval request, the
+// review's post held by a route while Approve is pressed by Enter and the focus is read after two
+// frames, then the post let go and polled until Dispatch records the approval, and two frames
+// before the focus is read again.
 test("Approve by Enter on the header's chip leaves the focus on the approved chip", async ({
   browser,
 }) => {
@@ -3195,6 +3200,11 @@ test("a change request sent after the header's actions went leaves the focus on 
 // the focus on Approve while its write is out: the row reads that it is there, so the press
 // reaches Approve's own guard and not another control. The focus is read in the header in the
 // gap, and again once the reads go on and the header draws neither action.
+// SLOW(>=2s): 2,000 ms in one of three one-worker runs (Job e2e-rows-9whgn at 4d06932a), and 1,403
+// to 1,983 ms in three (Job e2e-rows-2chx9 at 2e3f0319): one load after an approval request, the
+// issue's and the document's reads held by a route while the review is posted and answered, the
+// reads polled until the page makes one, two presses by Enter each followed by two frames, and the
+// reads let go and the redraw waited on.
 test("Approve pressed again by Enter before its approval is drawn sends no second review", async ({
   browser,
 }) => {
