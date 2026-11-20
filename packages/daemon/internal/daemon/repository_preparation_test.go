@@ -32,16 +32,23 @@ const (
 )
 
 // preparationRig is repositoryRig with a GitHub that names strangerRepo beside the anchors'
-// acme/widgets and zeta/tools: no record names stranger/tools before a test records an issue on
-// it. Each of opts is applied to the runtime as repositoryRigWith applies it.
+// acme/widgets and zeta/tools (preparationGitHub): no record names stranger/tools before a test
+// records an issue on it. Each of opts is applied to the runtime as repositoryRigWith applies it.
 func preparationRig(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *repositoryDispatch, *installations, jetstream.Stream) {
+	t.Helper()
+	return repositoryRigWith(t, installs, append([]func(*workflowRuntime){preparationGitHub(t)}, opts...)...)
+}
+
+// preparationGitHub is preparationRig's GitHub, which names strangerRepo beside acme/widgets and
+// zeta/tools, as an option that has the runtime read default branches from it.
+func preparationGitHub(t *testing.T) func(*workflowRuntime) {
 	t.Helper()
 	github := newNamedGitHub(t, map[string]string{
 		"acme/widgets": "acme/widgets@main", "zeta/tools": "zeta/tools@main", strangerRepo: strangerNamed + "@trunk",
 	})
-	return repositoryRigWith(t, installs, append([]func(*workflowRuntime){func(w *workflowRuntime) {
+	return func(w *workflowRuntime) {
 		w.defaultBranches = newDefaultBranches(roleTokens{}, w.repositories, github.url, defaultBranchTTL, time.Now)
-	}}, opts...)...)
+	}
 }
 
 // handedOver is the Dispatch issue and the event of a root handed to Legion in todo on resolved.
@@ -694,13 +701,15 @@ func (i *bootCountedInstallations) InstalledUnder(ctx context.Context, role appa
 func TestTheBootsListingAsksGitHubNothingForARepositoryNoRecordNamesAndItsRecoveryAdmitsIt(t *testing.T) {
 	ctx := context.Background()
 	installs := &bootCountedInstallations{installations: &installations{}}
-	w, client, _, _ := preparationRig(t, installs.installations, func(w *workflowRuntime) { w.installs = installs })
+	w, client, _, _, _ := bootingRepositoryRig(t, installs.installations, preparationGitHub(t), func(w *workflowRuntime) { w.installs = installs })
 	w.bootID = "new-repository-listing-boot"
 	const handed, persons, loose = "LEGION-981", "LEGION-982", "loose/notes"
 	client.show(issue(handed, strangerRepo, "todo", true, "", 1), issue(persons, loose, "todo", false, "", 1))
 	if err := w.reconcile(context.WithValue(ctx, bootReconcile{}, true)); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
+	// The boot is over: the refresher starts, as workflow.run starts it after the boot probes.
+	startRefresher(t, w)
 	if reads := installs.atBoot.Load(); reads != 0 {
 		t.Fatalf("the boot's listing made %d installation reads, want none: it runs inside the boot's bounded reconcile", reads)
 	}

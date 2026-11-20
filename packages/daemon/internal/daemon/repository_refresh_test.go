@@ -70,6 +70,16 @@ func repositoryRigWith(t *testing.T, installs *installations, opts ...func(*work
 // repositories: recorded on, a role App answered not installed, or a read that did not answer.
 func repositoryRigJS(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *repositoryDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
 	t.Helper()
+	w, client, installs, stream, js := bootingRepositoryRig(t, installs, opts...)
+	startRefresher(t, w)
+	return w, client, installs, stream, js
+}
+
+// bootingRepositoryRig is repositoryRigJS before its refresher starts: the runtime as the boot
+// leaves it once the consumers are open, for a test that runs the boot's own steps first, as the
+// daemon runs its boot probes before workflow.run starts the refresher. startRefresher starts it.
+func bootingRepositoryRig(t *testing.T, installs *installations, opts ...func(*workflowRuntime)) (*workflowRuntime, *repositoryDispatch, *installations, jetstream.Stream, jetstream.JetStream) {
+	t.Helper()
 	ctx := context.Background()
 	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)
@@ -123,14 +133,20 @@ func repositoryRigJS(t *testing.T, installs *installations, opts ...func(*workfl
 		AckWait: time.Second, NakDelay: 10 * time.Millisecond, PrepareRepository: w.prepareRepository}); err != nil {
 		t.Fatal(err)
 	}
-	running, stop := context.WithCancel(ctx)
+	return w, client, installs, stream, js
+}
+
+// startRefresher starts w's refresher (refreshRepositories) until the test ends, and returns once
+// its first job has kept GitHub's answer for both anchors' repositories.
+func startRefresher(t *testing.T, w *workflowRuntime) {
+	t.Helper()
+	running, stop := context.WithCancel(context.Background())
 	refreshed := make(chan struct{})
 	go func() { w.refreshRepositories(running); close(refreshed) }()
 	t.Cleanup(func() { stop(); <-refreshed })
 	testwait.Eventually(t, "the refresher's first job keeping GitHub's answer for acme/widgets and zeta/tools", func() bool {
 		return prepared(w, "acme/widgets") && prepared(w, "zeta/tools")
 	})
-	return w, client, installs, stream, js
 }
 
 // prepared is whether a preparation of repo has kept GitHub's answer for it: recorded on, a role

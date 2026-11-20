@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -150,6 +151,68 @@ func TestAMissingGitHubConsumerStartsAtItsLastAppliedPosition(t *testing.T) {
 				t.Errorf("stored stream_seq = %d, want the last applied message's, %d", seq, info.State.LastSeq)
 			}
 		})
+	}
+}
+
+// The stream's target can be read on several goroutines at once, beside a SetRepositories that
+// creates the missing GitHub consumer at its stored position: each read of the stream's info,
+// DispatchTarget's and createConsumer's, goes through a handle of its own. nats.go's Info writes
+// the cached info of the handle it is called on under no lock, so reads on the one handle the
+// consumers share raced (the race detector's find in the daemon's boot-listing test); under
+// -race, which CI's daemon job runs, this test fails on any such read.
+func TestDispatchTargetsReadAtOnceBesideAConsumerCreatedAtItsPositionShareNoStreamHandle(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	js, stream := testJetStream(t)
+	logs := &lockedBuffer{}
+	spec := consumerSpec(logs)
+	github := githubConsumerName(spec.Project)
+	last := publish(t, js, "notifications.github.sjawhar.legion.pr.1", pullRequestOpenedEnvelope(t, 1))
+	// A position stored for the GitHub consumer, so each creation of it reads the stream's info.
+	if _, err := pool.Exec(ctx, `insert into consumer_positions (consumer, stream_seq, stream_time) values ($1, $2, $3)`,
+		github, int64(last.Sequence), time.Now()); err != nil {
+		t.Fatalf("store the GitHub consumer's position: %v", err)
+	}
+	consumers, err := OpenConsumers(ctx, js, pool, spec)
+	if err != nil {
+		t.Fatalf("OpenConsumers: %v", err)
+	}
+
+	const reads, creations = 50, 10
+	var group errgroup.Group
+	for range 2 {
+		group.Go(func() error {
+			for range reads {
+				target, err := consumers.DispatchTarget(ctx)
+				if err != nil {
+					return fmt.Errorf("DispatchTarget: %w", err)
+				}
+				if target != int64(last.Sequence) {
+					return fmt.Errorf("DispatchTarget = %d, want the stream's last sequence, %d", target, last.Sequence)
+				}
+			}
+			return nil
+		})
+	}
+	group.Go(func() error {
+		for range creations {
+			if err := stream.DeleteConsumer(ctx, github); err != nil {
+				return fmt.Errorf("delete the GitHub consumer: %w", err)
+			}
+			if err := consumers.SetRepositories(ctx, capturedRepositories); err != nil {
+				return fmt.Errorf("SetRepositories: %w", err)
+			}
+		}
+		return nil
+	})
+	if err := group.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	// The control: OpenConsumers and every SetRepositories created the GitHub consumer at its
+	// stored position, the path that reads the stream's info.
+	if created := strings.Count(logs.String(), "created at the last message it applied"); created != creations+1 {
+		t.Fatalf("the GitHub consumer was created at its stored position %d times, want %d: once by OpenConsumers and once by each SetRepositories; logs:\n%s",
+			created, creations+1, logs)
 	}
 }
 
