@@ -8210,3 +8210,72 @@ func TestMemoryGuardGoesOnAfterAKillWhoseReadsCameAfterTheGrowersStepped(t *test
 			kills, strings.Join(h.log.all(), "\n"))
 	}
 }
+
+// A process that rewrites its own arguments after a kill, as setproctitle or a Node process.title
+// does, and holds the same memory throughout, has not grown since the kill: the guard does not
+// end it for growth it did not make (INFRA-3531 R1; c-choice of verification version 37: "it ends
+// the next in that order at the next reading, only while a process it may end has grown since the
+// previous kill", and "where the reading has not fallen when the wait has passed and no process it
+// may end grows ... it ends nothing more for that rise"). Pid 300, python3 grow.py, grows through
+// the band and the reading at the mark ends it. Pid 301, python3 worker.py, holds 600 MiB and
+// never grows; after the kill it rewrites its arguments to python3 worker.py --state=busy, with
+// the same executable. The three readings after the kill stay above the kill's reading, and
+// nothing grows: the guard ends no second process. At 0028eb7d it ended none; at 28732f65 it
+// ends pid 301 as rule=grew-since-kill, measuring the 600 MiB it always held from nothing.
+func TestMemoryGuardTakesNoGrowthSinceAKillFromAProcessThatRewritesItsArguments(t *testing.T) {
+	pod := newFakePod(t)
+	grower := fakeProcess{pid: 300, ppid: 100, start: 5000, args: []string{"python3", "grow.py"}, anon: 300 * mib}
+	worker := fakeProcess{pid: 301, ppid: 100, start: 5100, args: []string{"python3", "worker.py"}, anon: 600 * mib}
+	pod.add(agent(2*gib), grower, worker)
+	pod.setAnon(3100 * mib)
+	h := newHarness(t, pod, protect("tester", 100))
+	h.signal.onKill = exitFreeing(pod, 0)
+	h.run()
+	for _, r := range []uint64{3200, 3300, 3400} {
+		pod.resize(&grower, grower.anon+20*mib)
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	pod.resize(&grower, grower.anon+20*mib)
+	pod.setAnon(3500 * mib)
+	h.tick()
+	h.requireKilled(300)
+	worker.args = []string{"python3", "worker.py", "--state=busy"}
+	pod.add(worker)
+	for _, r := range []uint64{3520, 3530, 3540} {
+		pod.setAnon(r * mib)
+		h.tick()
+	}
+	h.requireKilled(300)
+}
+
+// A panic in the guard's loop turns the guard off for good there: one off line names the panic,
+// and the guard asks for no next reading, so it reads the pod's memory no more and Run returns at
+// its context's end alone (INFRA-3531 R1; the launcher's PID 1 serves on with the guard off). Pid
+// 200, python3 grow.py of 3000 MiB, is the one process the guard may end; the reading at 3600 MiB
+// is at the mark, and the guard's read of pid 200's smaps there panics.
+func TestMemoryGuardAsksForNoReadingAfterAPanicInItsLoop(t *testing.T) {
+	pod := newFakePod(t)
+	pod.add(fakeProcess{pid: 200, ppid: 1, args: []string{"python3", "grow.py"}, anon: 3000 * mib})
+	pod.setAnon(1000 * mib)
+	h := newHarness(t, pod, nil)
+	var readings atomic.Int32
+	h.g.observe = func(time.Time, uint64, uint64) { readings.Add(1) }
+	h.run()
+	h.g.smapsRead = func(int) { panic("a test's smaps read panics") }
+	pod.setAnon(3600 * mib)
+	w := h.pending
+	w.fire <- h.clock.advance(w.d)
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), time.Millisecond, func() bool { return len(h.log.with("off ")) > 0 }) {
+		t.Fatalf("the guard wrote no off line after the panic in its loop; the log:\n%s", strings.Join(h.log.all(), "\n"))
+	}
+	seen := readings.Load()
+	h.stop()
+	if len(h.clock.waits) != 0 {
+		t.Fatalf("the guard waited for another reading after the panic in its loop")
+	}
+	if got := readings.Load(); got != seen {
+		t.Fatalf("the guard took %d readings after the panic in its loop, want none", got-seen)
+	}
+	h.requireKilled()
+}
