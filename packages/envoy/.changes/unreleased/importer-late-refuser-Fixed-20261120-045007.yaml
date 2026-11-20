@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  Callers of one architecture source's sync that all refused a sync whose branch-head lookup came
+  before their call now share one next sync, however late each asks again: a caller that asks
+  again after that next sync has ended takes its answer. Before, such a caller started a sync of
+  its own, so each late caller made one more set of GitHub calls, a head lookup at least.
+time: 2026-11-20T04:50:07Z
+custom:
+    Issue: importer-late-refuser

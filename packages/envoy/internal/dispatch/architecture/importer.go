@@ -113,6 +113,19 @@ type Importer struct {
 	// lockProjectSources (`order by id for update`) and judges heldElsewhere
 	// inside that lock.
 	syncs singleflight.Group
+	// ended is the newest flight of each source to have ended, on syncs' keys:
+	// what a caller that refused an older flight takes when it began after the
+	// caller's call (sharedFlight).
+	ended endedFlights
+
+	// afterFlightTaken runs in Sync once a caller holds the flight it waits
+	// on, joined or started, and afterSyncRefusal once it has refused a flight
+	// whose head lookup came before its call, before it looks again. Nothing in
+	// production sets either; the package's test of late refusers waits on the
+	// first rather than sleeping for its callers to join, and holds a refuser
+	// on the second.
+	afterFlightTaken func()
+	afterSyncRefusal func()
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -243,7 +256,10 @@ func (i *Importer) SyncProject(ctx context.Context, project string) ([]SyncResul
 // does not serve it, though — the caller stamps the moment it asked and takes
 // an answer only from a flight that issued its head lookup no earlier, so a
 // person who pushes and then asks for a Refresh is never told the pre-push
-// commit with a fresh last_sync_at.
+// commit with a fresh last_sync_at. A caller that refused a flight and looks
+// again after the next one has ended takes that one's answer rather than
+// starting a third (sharedFlight), so the callers that refused one flight make
+// one more set of GitHub calls between them, however late each looks again.
 func (i *Importer) Sync(ctx context.Context, project, repo string) (model.ArchitectureSource, error) {
 	// A caller that has already hung up, and an importer whose process is
 	// stopping, start no flight: the work would outlive both of them.
@@ -259,7 +275,10 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 	calledAt := time.Now()
 	key := project + "\x00" + repo
 	for {
-		answered := i.syncs.DoChan(key, func() (any, error) { return i.flight(ctx, project, repo) })
+		answered := i.syncs.DoChan(key, func() (any, error) { return i.sharedFlight(ctx, key, project, repo, calledAt) })
+		if i.afterFlightTaken != nil {
+			i.afterFlightTaken()
+		}
 		select {
 		case <-ctx.Done():
 			return model.ArchitectureSource{}, ctx.Err()
@@ -271,10 +290,17 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 				return flight.source, result.Err
 			}
 			// That flight looked the head up before this caller existed, so
-			// its row may predate a push the caller already knows about: join
+			// its row may predate a push the caller already knows about: take
 			// the next one. This is the last round, because singleflight
-			// deletes the key before it sends a result, so the flight joined
-			// or created now necessarily began after calledAt.
+			// deletes the key before it sends a result, and the flight
+			// records itself as its source's newest ended one before that:
+			// the flight joined or created now necessarily began after
+			// calledAt, and one created now answers with the newest flight
+			// to have ended since, when there is one, rather than asking
+			// GitHub again.
+			if i.afterSyncRefusal != nil {
+				i.afterSyncRefusal()
+			}
 		}
 	}
 }

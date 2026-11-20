@@ -1,7 +1,7 @@
 // flight.go holds the shared sync the callers of one architecture source join: the counter Close
-// waits on, what a flight hands every caller that joined it, and the flight itself — the contexts
-// it runs on and its errSuperseded retry chain. The Importer type, Sync and Close stay in
-// importer.go: they are the type's own surface.
+// waits on, what a flight hands every caller that joined it, the newest flight of each source to
+// have ended, and the flight itself — the contexts it runs on and its errSuperseded retry chain.
+// The Importer type, Sync and Close stay in importer.go: they are the type's own surface.
 
 package architecture
 
@@ -72,8 +72,10 @@ func (c *syncCount) stop() {
 
 // syncFlight is one shared sync of one source: what the flight hands every
 // caller that joined it, beside the flight's error. Every write to it happens
-// in the flight's goroutine before the result is sent and every read after
-// that receive, so the channel orders them: no mutex is needed, and -race is
+// in the flight's goroutine before the result is sent, and before the flight
+// records itself as its source's newest ended flight (endedFlights), and every
+// read after that receive or that record's read, so the channel and the
+// record's mutex order them: the flight itself needs no mutex, and -race is
 // quiet.
 type syncFlight struct {
 	// startedAt is when the flight began, its very first act, so that even a
@@ -94,6 +96,58 @@ func (f *syncFlight) servedAt() time.Time {
 		return f.startedAt
 	}
 	return f.headAt
+}
+
+// endedFlights holds the newest flight of each source to have ended, with its
+// error, by the key Sync shares flights on. One flight of a key runs at a time
+// (singleflight), and each records itself here before singleflight drops its
+// key and sends its answer, so the newest flight of a source is always either
+// the one in flight or the one recorded here: a caller that looks for one
+// finds it, however late it looks. Its zero value is ready.
+type endedFlights struct {
+	mu     sync.Mutex
+	newest map[string]endedFlight
+}
+
+// endedFlight is one flight that has ended and the error it ended with.
+type endedFlight struct {
+	flight *syncFlight
+	err    error
+}
+
+// fresh is key's newest ended flight, and whether there is one whose head
+// lookup came no earlier than calledAt.
+func (e *endedFlights) fresh(key string, calledAt time.Time) (endedFlight, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ended, ok := e.newest[key]
+	return ended, ok && !ended.flight.servedAt().Before(calledAt)
+}
+
+// record stores flight, which ended with err, as key's newest ended flight.
+func (e *endedFlights) record(key string, flight *syncFlight, err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.newest == nil {
+		e.newest = map[string]endedFlight{}
+	}
+	e.newest[key] = endedFlight{flight: flight, err: err}
+}
+
+// sharedFlight is what a flight of key, started by a caller of Sync that asked
+// at calledAt, runs: the newest flight of the source to have ended, when its
+// head lookup came no earlier than calledAt, and otherwise a flight of its own,
+// which it records as the newest once it ends. So a caller that refused a
+// flight older than its call and looks again after the next one has ended takes
+// that one's answer, as it would have had it joined it, and makes no GitHub
+// call of its own.
+func (i *Importer) sharedFlight(ctx context.Context, key, project, repo string, calledAt time.Time) (*syncFlight, error) {
+	if ended, ok := i.ended.fresh(key, calledAt); ok {
+		return ended.flight, ended.err
+	}
+	flight, err := i.flight(ctx, project, repo)
+	i.ended.record(key, flight, err)
+	return flight, err
 }
 
 // flight is the shared sync singleflight runs for one source: one set of
