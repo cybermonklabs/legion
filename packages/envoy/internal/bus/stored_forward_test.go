@@ -122,7 +122,7 @@ func TestAWindowRequestRefusesAForwardWithoutAMsgID(t *testing.T) {
 		PayloadSummary: "a request with no Nats-Msg-Id",
 	}
 	select {
-	case err := <-client.WindowUntil(nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second}):
+	case err := <-client.WindowUntil(t.Context(), nil).Request(subject, item, bus.RequestOptions{Timeout: 2 * time.Second}):
 		if !errors.Is(err, bus.ErrNoForwardMsgID) || !errors.Is(err, bus.ErrRefused) {
 			t.Fatalf("an unnamed request answered %v, want ErrNoForwardMsgID and ErrRefused", err)
 		}

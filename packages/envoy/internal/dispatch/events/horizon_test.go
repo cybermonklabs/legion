@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The xmax hole, scripted with the counterexample the package documentation names. T2 took
@@ -1116,9 +1116,9 @@ func TestWriterFloorIgnoresATransactionInAnotherDatabase(t *testing.T) {
 	defer cancel()
 	horizon := NewHorizon(database.Pool)
 
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	config, err := pgx.ParseConfig(testdb.DispatchURL(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
+		t.Fatalf("parse %s: %v", testdb.DispatchURLEnv, err)
 	}
 	config.Database = "postgres"
 	conn, err := pgx.ConnectConfig(ctx, config)

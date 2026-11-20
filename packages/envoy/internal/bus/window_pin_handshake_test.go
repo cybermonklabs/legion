@@ -60,7 +60,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("control: the client did not hear of its reconnect within 30 s of the hold's release")
 		}
-		w := client.WindowUntil(nil).(*window)
+		w := client.WindowUntil(t.Context(), nil).(*window)
 		for send := range 2 {
 			if err := w.pinToSend(); err != nil {
 				t.Fatalf("control: send %d of a new window, once the client heard of its reconnect, answered %v, want nil", send+1, err)
@@ -70,7 +70,7 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 
 	t.Run("pinned before the hold", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
-		w := client.WindowUntil(nil).(*window)
+		w := client.WindowUntil(t.Context(), nil).(*window)
 		if err := w.pinToSend(); err != nil {
 			t.Fatalf("control: the window's first send could not pin the connection before the hold: %v", err)
 		}
@@ -87,12 +87,12 @@ func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 
 	t.Run("first send during the hold", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
-		if err := client.WindowUntil(nil).(*window).pinToSend(); err != nil {
+		if err := client.WindowUntil(t.Context(), nil).(*window).pinToSend(); err != nil {
 			t.Fatalf("control: a window could not pin the connection before the hold: %v", err)
 		}
 		conn := client.Connection()
 		hold.HoldReconnect(t, conn)
-		w := client.WindowUntil(nil).(*window)
+		w := client.WindowUntil(t.Context(), nil).(*window)
 		var waits atomic.Int64
 		count := func() { waits.Add(1) }
 		w.connectionWaitEntered.Store(&count)
@@ -172,7 +172,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	before := conn.Stats().Reconnects
-	old := client.WindowUntil(nil).(*window)
+	old := client.WindowUntil(t.Context(), nil).(*window)
 	if err := old.pinToSend(); err != nil {
 		t.Fatalf("control: the old window's first send, before the drop, answered %v, want nil", err)
 	}
@@ -227,7 +227,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	if err := old.pinToSend(); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("the old window's send on the reconnected connection, before the client heard of the reconnect, answered %v, want ErrUnavailable", err)
 	}
-	w := client.WindowUntil(nil).(*window)
+	w := client.WindowUntil(t.Context(), nil).(*window)
 	if err := w.pinToSend(); err != nil {
 		t.Fatalf("control: the new window's first send, after nats.go had reconnected, answered %v, want nil", err)
 	}
@@ -243,7 +243,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 	if err := old.pinToSend(); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("the old window's send on the reconnected connection, once the client heard of the reconnect, answered %v, want ErrUnavailable", err)
 	}
-	if err := client.WindowUntil(nil).(*window).pinToSend(); err != nil {
+	if err := client.WindowUntil(t.Context(), nil).(*window).pinToSend(); err != nil {
 		t.Errorf("control: a window pinned once the client heard of the reconnect answered %v, want nil", err)
 	}
 }
@@ -261,7 +261,7 @@ func TestAWindowPinnedBeforeTheClientHearsOfAReconnectKeepsIt(t *testing.T) {
 // dropped.
 func TestAWindowDoesNotTakeAHeldWriteForALostConnection(t *testing.T) {
 	client, hold := heldHandshakeClient(t)
-	w := client.WindowUntil(nil).(*window)
+	w := client.WindowUntil(t.Context(), nil).(*window)
 	if err := w.pinToSend(); err != nil {
 		t.Fatalf("control: the window's first send could not pin the connection: %v", err)
 	}

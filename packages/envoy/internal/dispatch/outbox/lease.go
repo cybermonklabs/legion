@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -24,12 +26,77 @@ const (
 	// eventsChannel is the channel migration 0107's trigger notifies once per statement that
 	// inserts events, whichever process committed it.
 	eventsChannel = "dispatch_events"
+	// takeOverWithin is level one's promise for the outbox: whatever stopped the publisher - a
+	// kill, a freeze, a cut from the database or from NATS - a standby becomes the publisher
+	// (publish stores its hold, so Publishing turns true) within six seconds of it. The hold's TTL
+	// (publisherHoldOptions) and the NATS loss grace are each derived from it, so each path to a
+	// take-over sums to it.
+	takeOverWithin = 6 * time.Second
+	// lapseToServe is the part of takeOverWithin left after the row of a holder that stopped
+	// renewing lapses: a kill or a freeze at the moment of a renewal leaves a row that lapses
+	// publisherHoldOptions.TTL later. In this second a standby takes the hold - it arms a timer to
+	// the lapse on the database's clock and takes the hold when it fires (duty's
+	// TestHoldTakesOverWithinASecondAfterTheLapse) - ends the replaced holder's sessions within
+	// what the take left of it less firstBatchShare, and starts its first batch in that share
+	// (tryHold).
+	lapseToServe = time.Second
+	// firstBatchShare is the part of lapseToServe a take-over that replaced a lapsed row keeps for
+	// its first batch, out of what the ending of the replaced holder's sessions may spend (tryHold):
+	// the sum of the bounds of what runs between the ending and the take-over's first send -
+	// serve's read of its client's status before the first scan, bounded at statusReadBound, and
+	// the first scan's reads before that send, left at least firstBatchReadBound. So an ending that
+	// answers just before its deadline, or is cut there, leaves the first send to begin within
+	// takeOverWithin of the stop, or those reads to be cut at the take-over's budget and the
+	// take-over to be logged late.
+	firstBatchShare = statusReadBound + firstBatchReadBound
+	// firstBatchReadBound is the least the take-over's first scan leaves its reads before the
+	// take-over's first send (Deps.firstReads): each batch's claim of events (readRows), the lookups
+	// of their destinations (resolveDestinations) and the reads of their roles' holders
+	// (resolveRoleHolders). They run until the take-over's budget (tryHold, Outbox.firstReadsBy),
+	// which leaves them at least this much after an ending that ran to its deadline and a status
+	// read that took its bound, and more after an ending that answered sooner, so a cut there is one
+	// past which the first send would begin late anyway. When no batch has had those reads answered
+	// by the budget, the scan logs the take-over late and reads again at once with no bound (scan);
+	// a role holder whose read the cut ended is backed off as any failed read of one is. Once one
+	// batch has had them answered, no read of the scan is cut.
+	//
+	// The value is about six times the slowest such read measured: the reads of a full batch
+	// (batchSize events of each of the outbox throughput test's three loads, 600 reads on
+	// production's outbox pool and role readers, against a test PostgreSQL 18) took at most 42 ms,
+	// the first read on a fresh pool, and 3.7 to 4.8 ms at the median, on 2026-11-20 on a shared
+	// 288-CPU development machine at a load of 500 to 600.
+	firstBatchReadBound = 250 * time.Millisecond
 	// natsLossGrace is how long the holder's NATS connection may stay down before the holder gives
-	// the hold up, so that a process whose NATS works can publish instead.
-	natsLossGrace = 3 * time.Second
-	// probeTimeout bounds the flush that tells a connection that is gone or silent from one whose
-	// server still answers, after a batch's sends failed for the connection (scanBatch).
-	probeTimeout = 2 * time.Second
+	// the hold up, so that a process whose NATS works can publish instead. It is what
+	// takeOverWithin leaves once a connection that went silent has been found lost, which only
+	// the client's own pings do, bus.SilentCutFoundWithin (3 s) into the silence at the latest;
+	// once the two status reads that open and close the grace have each had statusReadBound; and
+	// once the hand-over after the release has had releaseToServe: 6 - 3 - 0.5 - 0.5 = 2 s. A
+	// grace of 3 s passes on a connection whose silence is found early, and at the latest finding
+	// it reaches 3 + 3 + 0.25 = 6.25 s before the release has even begun.
+	natsLossGrace = takeOverWithin - bus.SilentCutFoundWithin - 2*statusReadBound - releaseToServe
+	// releaseToServe is the part of takeOverWithin a NATS loss leaves for the hand-over once the
+	// holder gives the hold up for it: the release statement, the notification that wakes a
+	// standby (duty.HoldReleasedChannel) and the standby's take, which replaces no row and so ends
+	// no session. Each is one statement or one notification, milliseconds on a healthy database.
+	releaseToServe = 500 * time.Millisecond
+	// statusReadBound bounds each of the holder's reads of its client's connection status
+	// (bus.ConnectedWithin). nats.go holds a connection's lock across each reconnect attempt's dial
+	// and handshake, up to the client's connect timeout (5 s), and a status read waits on that
+	// lock: an unbounded read at the grace's end answered only when the attempt failed, which
+	// handed a silent connection's hold over 8 to 9 s into the silence. A read that does not
+	// answer within the bound is a client in the middle of a reconnect, and so not connected. It is
+	// bus's bound of every such read (bus.ConnectionReadBound), whose note gives the healthy reads
+	// it was measured against.
+	statusReadBound = bus.ConnectionReadBound
+	// probeTimeout bounds the probe that tells a connection that is gone or silent from one whose
+	// server still answers, after a batch's sends failed for the connection (scanBatch), and is the
+	// one wait a batch makes for a connection it does not have: its sends wait for none
+	// (bus.Client.WindowUntil), so a batch begun while its client reconnects ends for NATS lost
+	// within it, and a reconnect slower than it ends the batch and gives the hold up where a send
+	// used to wait for the reconnect. It is natsLossGrace: a batch whose sends fail once the
+	// client found its connection lost takes the place of the grace in the six seconds.
+	probeTimeout = natsLossGrace
 	// holdRetry is how long a standby waits to try the hold again after the database failed to
 	// answer the take or the read of the current hold's lapse, or after a probe of its own NATS
 	// connection went unanswered (answering).
@@ -39,13 +106,26 @@ const (
 	// acknowledgement, which may never come, so one batch at a time would hold every other
 	// owner's events back for that whole wait. Four lets a wake and a released owner start work
 	// while a batch waits, and keeps the statements of the batches in flight, which run one at a
-	// time (lanes), from queueing deeply on the outbox pool's two connections.
+	// time (lanes), from queueing deeply on the one connection of the outbox's pool they share.
 	concurrentBatches = 4
 )
 
-// publisherHoldOptions are the publisher hold's parameters: it lasts 6 s on the database's clock
-// after each renewal, is renewed every 1 s, and reports itself lost 2 s before it lapses, so a
-// process that is killed is replaced by a standby within 6 s of its last renewal.
+// publisherHoldOptions are the publisher hold's parameters: it lasts 5 s on the database's clock
+// after each renewal, is renewed every 1 s, and reports itself lost 1 s before it lapses. A
+// process that is killed at the moment of a renewal leaves a row that lapses 5 s later, and a
+// standby takes the hold within lapseToServe of the lapse, so a standby becomes the publisher
+// within takeOverWithin of a kill
+// (TestAStandbyTakesAKilledPublishersHoldWithinSixSecondsOfTheKill): TTL is what takeOverWithin
+// leaves once lapseToServe is taken out of it.
+//
+// TTL is 5 s, not 6 s, and Margin 1 s, not 2 s, so that a take-over meets those 6 s while the
+// window a renewal has, TTL - Margin, stays the 4 s measured below. What that costs: Margin is
+// how long a holder whose renewal is late has stopped publishing before its row lapses and a
+// standby may take the hold. A lost holder now stops 1 s, not 2 s, before its row lapses, so a
+// send it made just before its deadline has 1 s, not 2 s, to reach NATS before a standby may
+// publish beside it. A renewal the database begins later than a kill moves the row's lapse, and
+// the take-over with it, later by as much; one begun more than lapseToServe after the kill puts
+// the take-over past takeOverWithin, and nothing a standby reads tells it when the kill came.
 //
 // Renew is 1 s, not 2 s, because the window a renewal has is TTL - Margin, 4 s from the last
 // confirmed renewal, and each renewal's own wait for an answer is bounded at Renew. At 2 s the
@@ -60,9 +140,9 @@ const (
 // confirmed renewal of 0 to one Renew in four steps): at Renew 2 s the hold survives a stall of
 // 1.75 s from every offset and 3.25 s from the best one; at Renew 1 s, 2.75 s from every offset
 // and 3.5 s from the best one. It costs one renewal statement a second per process instead of one
-// every two seconds, on the outbox's own two-connection pool, and, during a stall, one connection
-// of that pool per renewal abandoned at its timeout: pgx cancels a statement by setting a deadline
-// on its connection, which fails the read in flight and closes it (its default
+// every two seconds, on the outbox's own pool (store.Pool.Outbox), and, during a stall, one
+// connection of that pool per renewal abandoned at its timeout: pgx cancels a statement by
+// setting a deadline on its connection, which fails the read in flight and closes it (its default
 // BuildContextWatcherHandler, which nothing here overrides), so a 3 s stall now costs up to three
 // re-dials there instead of one. That is cheap against the take-over the shorter timeout buys
 // back.
@@ -73,7 +153,7 @@ const (
 // standby out until its release deletes the row, or for Margin after the deadline when that
 // release cannot reach the database first. That gap is the product's, and the two-process row
 // holds it to the take-over bound rather than to nothing.
-var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
+var publisherHoldOptions = duty.HoldOptions{TTL: takeOverWithin - lapseToServe, Renew: time.Second, Margin: time.Second}
 
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
@@ -97,7 +177,10 @@ const (
 type Outbox struct {
 	deps Deps
 	// instance names this process in the hold's row and in every log line about the hold and its
-	// batches; token is the hold's token, the host and process id.
+	// batches: Deps.Instance, which cmd/dispatch makes the identity every database session of the
+	// process carries at the end of its application_name (store.Pool.Identity), so a standby that
+	// takes the hold over from this process can end those sessions (endReplacedSessions). token is
+	// the hold's token, the host and process id.
 	instance uuid.UUID
 	token    string
 	// wake is the holder's one-slot wake channel: every source of a scan (signal) sends to it
@@ -135,15 +218,36 @@ type Outbox struct {
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
 	probeBeforeHold bool
+	// unended is the holder whose lapsed row this process's take replaced and whose sessions
+	// tryHold did not end by the ending's deadline, uuid.Nil when there is none: publish ends them
+	// beside its first scan, which that ending holds none of (endLateSessions). Only Run's
+	// goroutine reads and writes it.
+	unended uuid.UUID
+	// firstReadsBy is the take-over's budget, at which the next scan cuts its reads before the
+	// take-over's first send unless one batch of it has had them answered (Deps.firstReads):
+	// tryHold sets it when it ended the replaced holder's sessions by the ending's deadline, and
+	// scan takes and clears it, so only the take-over's first scan is bounded, and only when the
+	// take-over is not late already. Only Run's goroutine reads and writes it.
+	firstReadsBy time.Time
 }
 
-// New returns an outbox for deps, with an instance id of its own. Run starts it. It makes the
-// record of the fallback copies its passes find held behind an earlier event (heldCopies) and
-// registers that record's gauges on deps.Metrics when it is set.
+// New returns an outbox for deps, holding the publisher hold under the identity of its store's pool
+// (store.Pool.Identity), the one every database session of the process names. Run starts it. It
+// makes the record of the fallback copies its passes find held behind an earlier event
+// (heldCopies) and registers that record's gauges on deps.Metrics when it is set.
+//
+// It panics on a store whose pool names no identity: an outbox there would hold the publisher hold
+// under an identity none of its sessions carries, and a standby taking the hold over from it would
+// end none of them (endReplacedSessions). store.Open names one; so does a pool opened from a copy
+// of an opened store's configuration (store.NewPool).
 func New(deps Deps) *Outbox {
 	host, err := os.Hostname()
 	if err != nil {
 		host = "unknown-host"
+	}
+	instance := deps.Store.Pool.Identity()
+	if instance == uuid.Nil {
+		panic("outbox.New: the store's pool names no process identity (store.Pool.Identity), so a standby that took the publisher hold over could end none of this process's sessions")
 	}
 	if deps.held == nil {
 		deps.held = newHeldCopies()
@@ -151,7 +255,7 @@ func New(deps Deps) *Outbox {
 	deps.held.register(deps.Metrics)
 	return &Outbox{
 		deps:        deps,
-		instance:    uuid.New(),
+		instance:    instance,
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
@@ -306,7 +410,7 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 		var lapsed <-chan time.Time
 		if o.deps.Publisher.Connected() {
 			wait := holdRetry
-			if o.answering() {
+			if o.answering(ctx) {
 				var hold *duty.Hold
 				hold, wait = o.tryHold(ctx)
 				if hold != nil {
@@ -332,14 +436,15 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 
 // answering reports whether this process's NATS connection answers: always, unless the process
 // gave the publisher hold up for NATS lost (probeBeforeHold) and no probe of its connection has
-// been answered since, in which case it probes the connection now. A connection that went silent
-// still reports itself connected, so without the probe the process would take back at once the
-// hold it gave up for that very connection, ahead of a standby whose NATS works.
-func (o *Outbox) answering() bool {
+// been answered since, in which case it probes the connection now, within probeTimeout and while
+// ctx lasts. A connection that went silent still reports itself connected, so without the probe
+// the process would take back at once the hold it gave up for that very connection, ahead of a
+// standby whose NATS works.
+func (o *Outbox) answering(ctx context.Context) bool {
 	if !o.probeBeforeHold {
 		return true
 	}
-	if err := o.deps.Publisher.WindowUntil(nil).Probe(probeTimeout); err != nil {
+	if err := o.deps.Publisher.WindowUntil(ctx, nil).Probe(probeTimeout); err != nil {
 		return false
 	}
 	o.probeBeforeHold = false
@@ -349,12 +454,53 @@ func (o *Outbox) answering() bool {
 // tryHold takes the publisher hold, or returns how long until the current holder's hold lapses on
 // the database's clock: zero when it already has (it was released or lapsed between the two
 // statements), and holdRetry when the database did not answer.
+//
+// A take that replaced another holder's lapsed row ends that holder's database sessions
+// (endReplacedSessions) before it returns, and so before this process stores the hold and
+// publishes. The take-over's budget is lapseToServe after the row's lapse, on this process's
+// clock, read no later than the real lapse (duty.Hold.ReplacedLapse). A holder that stopped at
+// the moment of a renewal is the latest stop that row's lapse allows, so a first batch that
+// starts by the budget starts within takeOverWithin of the stop, whenever it came. The ending's
+// deadline is the budget less firstBatchShare, which the first scan keeps for its status read and
+// its reads before the first send, and the ending is given no more. When the take came at or
+// after that deadline, or the ending did not answer by it, or failed, the take stands and the
+// take-over is late: tryHold logs the late take-over by name with its cause and returns at once,
+// so the process publishes right after the ending's deadline rather than after any further wait,
+// and publish ends the sessions beside its first scan (unended).
+//
+// A stop that ends the ending is no late take-over: tryHold logs that the take-over stopped
+// before publishing, releases the hold and returns none, so the process never publishes under it
+// (releaseUntaken).
 func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
 	options.Token = o.token
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
+		if previous, replaced := hold.Replaced(); replaced {
+			budget := hold.ReplacedLapse().Add(lapseToServe)
+			deadline := budget.Add(-firstBatchShare)
+			cause := lateCauseTakeAfterDeadline
+			if time.Now().Before(deadline) {
+				switch err := o.endReplacedSessions(ctx, hold, previous, deadline); {
+				case err == nil:
+					o.firstReadsBy = budget
+					return hold, 0
+				case errors.Is(err, context.DeadlineExceeded):
+					cause = lateCauseEndingTimedOut
+				default:
+					cause = lateCauseEndingFailed
+				}
+			}
+			if ctx.Err() != nil {
+				o.releaseUntaken(ctx, hold, previous)
+				return nil, 0
+			}
+			o.unended = previous
+			slog.Warn(lateTakeOverLine, "instance", o.instance, "previous", previous, "cause", cause,
+				"budget", budget.Format(time.RFC3339Nano), "deadline", deadline.Format(time.RFC3339Nano),
+				"past_deadline", time.Since(deadline).Round(time.Millisecond).String())
+		}
 		return hold, 0
 	}
 	var remaining time.Duration
@@ -379,6 +525,16 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // lost when a record found the hold another's with the loss deadline still ahead, and the release
 // is what stops that hold's renewal before the next take starts another. Its delete and notify are
 // guarded on this holder, so a hold another process has taken is left alone.
+//
+// The store of hold is the moment this process becomes the publisher, the moment takeOverWithin
+// is counted to, and serve's first scan follows it at once. It comes after tryHold has ended the
+// sessions of the holder this take replaced, or given up on them at the ending's deadline and
+// logged the take-over late. Sessions it gave up on (unended) are ended here once more, under
+// recordTimeout as a record is, on a goroutine of their own beside the first scan, which their
+// ending holds none of (endLateSessions). That ending lasts no longer than this turn as holder:
+// publish cuts it once serve returns, with why serve returned (turnEndCause), and waits for it
+// before the release, so an ending of the previous holder's sessions is never in flight once
+// this process has given the hold up and the previous holder may take it back.
 //
 // The line that ends the turn is written before the release, and carries two bounds on the moment
 // this process stopped publishing, stopped and stopped_by. The order matters to a reader of the
@@ -451,7 +607,18 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
+	turn, endTurn := context.WithCancelCause(ctx)
+	defer endTurn(nil)
+	var endings sync.WaitGroup
+	if previous := o.unended; previous != uuid.Nil {
+		o.unended = uuid.Nil
+		// A mark of its own (store.ForConcurrentWorker): the batches' statements mark ctx's, and
+		// this ending must neither be refused under theirs nor refuse theirs under its own.
+		ending := store.ForConcurrentWorker(turn)
+		endings.Go(func() { o.endLateSessions(ending, hold, previous) })
+	}
 	end := o.serve(ctx, hold)
+	endTurn(turnEndCause(end))
 	returned := time.Now()
 	o.hold.Store(nil)
 	cleared := time.Now()
@@ -472,6 +639,9 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 			"reason", string(end), "stopped", stopped.Format(time.RFC3339Nano),
 			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
 	}
+	// The late ending, cut above, before the release: once the row is gone the previous holder
+	// may take the hold back, and its new sessions are no stopped process's.
+	endings.Wait()
 	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 	defer cancel()
 	if err := hold.Release(release); err != nil {
@@ -497,13 +667,15 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // stopped: ctx ended, the hold was lost or its deadline had passed when a scan was to start a
 // batch or write a send of one, or NATS was lost - down for natsLossGrace without a break and
 // still down when the grace ends, or a batch's sends failed for the connection and a probe of
-// that connection failed too.
+// that connection failed too. Each read of the client's status is bounded (statusReadBound), so a
+// reconnect attempt holding nats.go's lock of the connection neither holds the grace's end past
+// its time nor keeps a wake meanwhile from reaching the grace.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
 	due := true
 	for {
-		if !o.deps.Publisher.Connected() {
+		if !bus.ConnectedWithin(o.deps.Publisher, statusReadBound) {
 			if disconnected == nil {
 				disconnected = time.NewTimer(natsLossGrace)
 				disconnectedFor = disconnected.C
@@ -559,7 +731,7 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 			// queued before it, so ConnectionChanged has not closed although the client is
 			// connected again: the client's own status decides, and a connected one serves on and
 			// scans, as the reconnect's wake would have it do.
-			if !o.deps.Publisher.Connected() {
+			if !bus.ConnectedWithin(o.deps.Publisher, statusReadBound) {
 				return natsLost
 			}
 			disconnected, disconnectedFor = nil, nil
@@ -602,10 +774,25 @@ type scanEnd struct {
 func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
+	budget := o.firstReadsBy
+	o.firstReadsBy = time.Time{}
 	// The batches' own context: a hard stop ends the ones still running at once, while ctx, which
 	// is the process's, still tells a stop from an end of this scan's own making.
 	batches, endBatches := context.WithCancel(ctx)
 	defer endBatches()
+	if !budget.IsZero() {
+		// A take-over's first scan: the first send of the take-over is the one takeOverWithin is
+		// about, so the reads its batches make before their first send are cut at the take-over's
+		// budget (Deps.firstReads), unless one batch has had those reads answered by then
+		// (Deps.firstReadsDone). Whichever batch that is - the first the scan started, or one a
+		// wake started beside it that read first - the take-over's first send can begin by the
+		// budget, and no read of the scan is cut after it.
+		firstReads, cut := context.WithCancelCause(batches)
+		defer cut(nil)
+		timer := time.AfterFunc(time.Until(budget), func() { cut(errReadsBound) })
+		defer timer.Stop()
+		deps.firstReads, deps.firstReadsDone = firstReads, func() { timer.Stop() }
+	}
 	done := make(chan ranBatch, concurrentBatches)
 	var end scanEnd
 	inflight, due, stop, missed := 0, true, false, false
@@ -657,8 +844,19 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 				// A batch this scan ended, or the process's stop ended, reports that end and not
 				// a failure of its own.
 				if batches.Err() == nil {
-					slog.Error("dispatch outbox: scan", "instance", o.instance, "error", ran.err)
-					end.failed = true
+					if errors.Is(ran.err, errReadsBound) {
+						// No batch of the take-over's first scan had its reads before its first
+						// send answered by the take-over's budget, and this one wrote nothing: the
+						// take-over is late, by name, and the scan returns due, so serve scans
+						// again at once with no bound.
+						slog.Warn(lateTakeOverLine, "instance", o.instance, "cause", lateCauseFirstReads,
+							"budget", budget.Format(time.RFC3339Nano), "past_budget", time.Since(budget).Round(time.Millisecond).String(),
+							"error", ran.err)
+						due = true
+					} else {
+						slog.Error("dispatch outbox: scan", "instance", o.instance, "error", ran.err)
+						end.failed = true
+					}
 				}
 				stop = true
 				endBatches()
@@ -701,14 +899,14 @@ type lanes struct {
 	// owners it read are one act and two batches can never take one owner.
 	mu       sync.Mutex
 	inFlight map[string]struct{}
-	// statements is the outbox pool's one statement at a time. The pool has two connections, one
-	// of them the publisher hold's renewal, so a renewal would queue behind two batches running a
-	// statement each. It is held around a statement, the drain of its rows included, around the
-	// sequence of statements one lookup read makes (loadLookups), and around the transaction a
-	// settle of an abandoned mention makes (mentionComment.settleAbandoned), which waits on the
-	// comment owner's lock - every use of the pool a batch makes, since the batches of one scan
-	// share one mark of its one-connection-per-caller rule (store.ErrNestedAcquire) - and never
-	// across a send.
+	// statements is the outbox pool's one statement at a time. The pool's other connections are
+	// the publisher hold's renewal's and a late take-over's ending's (store's outboxPoolSize), so
+	// a renewal would queue behind batches running a statement each. It is held around a
+	// statement, the drain of its rows included, around the sequence of statements one lookup
+	// read makes (loadLookups), and around the transaction a settle of an abandoned mention makes
+	// (mentionComment.settleAbandoned), which waits on the comment owner's lock - every use of the
+	// pool a batch makes, since the batches of one scan share one mark of its
+	// one-connection-per-caller rule (store.ErrNestedAcquire) - and never across a send.
 	statements sync.Mutex
 	// wake is the scan's wake (Outbox.signal), given when an owner is released, so its next events
 	// and the owners a full batch left behind are read at once.

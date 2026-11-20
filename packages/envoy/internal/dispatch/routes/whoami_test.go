@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // The tests that read GET /auth/whoami's event_head off a real event log open a database of their
@@ -422,9 +423,9 @@ func appendOutOfOrder(t *testing.T, database *store.Store, first, second string)
 // test ends; release returns once it has.
 func holdClusterTransactionID(t *testing.T, hold time.Duration) (release func()) {
 	t.Helper()
-	config, err := pgx.ParseConfig(os.Getenv(storetest.DatabaseURLEnv))
+	config, err := pgx.ParseConfig(testdb.DispatchURL(t))
 	if err != nil {
-		t.Fatalf("parse %s: %v", storetest.DatabaseURLEnv, err)
+		t.Fatalf("parse %s: %v", testdb.DispatchURLEnv, err)
 	}
 	config.Database = "postgres"
 	conn, err := pgx.ConnectConfig(t.Context(), config)

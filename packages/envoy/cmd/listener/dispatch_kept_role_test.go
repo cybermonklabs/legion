@@ -313,8 +313,8 @@ type keptUnderAClaim struct {
 	claim func()
 }
 
-func (p *keptUnderAClaim) WindowUntil(deadline func() time.Time) bus.Sender {
-	return keptUnderAClaimWindow{Sender: p.Client.WindowUntil(deadline), publisher: p}
+func (p *keptUnderAClaim) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return keptUnderAClaimWindow{Sender: p.Client.WindowUntil(ctx, deadline), publisher: p}
 }
 
 type keptUnderAClaimWindow struct {

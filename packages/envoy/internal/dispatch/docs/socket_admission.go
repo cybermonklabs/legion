@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // admissionRendering is what a document socket's admission check made of the state it read: the
@@ -181,6 +182,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			identity.WriteError(w, err)
 			return
 		}
+		if store.SessionEnded(err) {
+			writeSessionEnded(w)
+			return
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -195,6 +200,10 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)
 	if err != nil {
+		if store.SessionEnded(err) {
+			writeSessionEnded(w)
+			return
+		}
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	}
@@ -490,4 +499,14 @@ func (s *Service) requestActor(r *http.Request) (model.Actor, error) {
 	}
 	accesslog.Note(r.Context(), accesslog.KindUser, login)
 	return model.Actor{Kind: "user", ID: login, Proven: true}, nil
+}
+
+// writeSessionEnded answers a socket request whose database session was ended under it - by the
+// standby that took the publisher hold over from this process, an operator or a database
+// shutdown (store.SessionEnded) - as the API answers one: 503 with store.SessionEndedCode, the
+// message and Retry-After: 1, before the upgrade, so the browser connects again rather than
+// taking the person's sign-in for refused.
+func writeSessionEnded(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, store.SessionEndedCode+": "+store.SessionEndedMessage, http.StatusServiceUnavailable)
 }

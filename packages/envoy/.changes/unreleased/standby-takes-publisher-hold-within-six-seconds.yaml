@@ -1,0 +1,55 @@
+kind: Fixed
+body: |-
+  A standby Dispatch process now becomes the publisher within six seconds of a kill, a freeze or
+  a loss of NATS of the process that published: it logs that it took the publisher hold and
+  starts its first batch of events within 6 s of the stop, and after a kill or a freeze it takes
+  the hold itself within 6 s on the database's clock. A kill or a freeze at the moment of a
+  renewal of the publisher hold was followed by a take-over six seconds or more later before. A
+  NATS connection that went silent while the publisher had nothing to send was taken over eight
+  to nine seconds into the silence.
+  The publisher hold `dispatch-outbox` lasts 5 s after each renewal instead of 6 s, and a holder
+  reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s from
+  the last confirmed one. A holder gives the hold up after 2 s without NATS instead of 3 s, the
+  time the six seconds leave once a silent connection is found lost (up to 3 s into the silence),
+  and its reads of its NATS client's state no longer wait out a reconnect attempt, which holds the
+  client for up to five seconds through a silent cut. A batch of events that begins while the
+  holder's NATS client reconnects, through a cut or a silent connection, no longer waits for the
+  reconnect: its sends wait for no connection, and its one wait is the 2 s probe of the connection,
+  so the batch ends for NATS lost 2.0 to 2.1 s after its start through a cut connection, and 2.25
+  to 2.3 s through a silent one, where one bounded read of the connection's status adds 250 ms,
+  and the holder then gives the hold up; before, the batch took 6.0 to 6.1 s.
+  Dispatch's `/healthz` no longer waits out a reconnect attempt either, so it answers through a
+  silent cut of NATS, and nor does an envoy-listener's `/healthz` for its role lane's client. A
+  standby that takes the hold over from a process that stopped renewing without releasing it now
+  ends every database session of that process before it begins to publish, within what the six
+  seconds leave after the old row lapsed (1 s) less the half second it keeps for its first batch:
+  the status read, bounded to 250 ms, and the reads before its first send, which run until the
+  take-over is due and so always have at least the other 250 ms. So a write a frozen process had
+  begun no longer holds that issue's other writes until the freeze ends. When the take comes after
+  that, or the ending does not answer within it or fails, or no first batch has its reads answered
+  by the time the take-over is due, the standby logs `late take-over of the publisher hold` at WARN
+  with its `cause`,
+  begins to publish at once, and ends those sessions once more beside its first batch, which
+  waits for none of it. That second ending logs its end, stops as soon as the standby no longer
+  holds the hold, and is never made under a hold that is no longer its own. A standby stopped
+  while it ends those sessions logs that the take-over stopped, and releases the hold. The
+  outbox's pool has three connections instead of two, so its hold's renewal never waits behind
+  that second ending: a Dispatch process opens up to 114 connections to Postgres, from 113
+  (`store.ConnectionsPerProcess`), `infra/gcp`'s `dispatchConnectionsPerPod` is 114 to match, and
+  the pod test server `legion-testpg` allows 479, from 475. Every connection a Dispatch process
+  opens names the process's identity, minted at boot, at the end of its `application_name` (for
+  example `dispatch <identity>` for the shared pool, or the `DATABASE_URL`'s own
+  `application_name`, with each byte that is not printable ASCII written as `\xNN` as Postgres
+  shows it, followed by it). A request to the API or the document socket whose session was ended
+  answers `503 DATABASE_SESSION_ENDED` with `Retry-After: 1`; the other routes that read the
+  database (`/auth/callback`, `/auth/whoami`, `/auth/logout` and the GitHub proxy) answer it
+  `500`, and the dashboard's asset route `502`. The first such answer has every pool of the
+  process drop the connections it holds, so its later requests dial afresh. The cost: a holder
+  whose renewal is late stops publishing 1 s, not 2 s, before a standby may take the hold, a NATS
+  outage of 2 to 3 s now hands the hold to the other process, a reconnect slower than the 2 s
+  probe ends the batch that met it and gives the hold up where a send waited for the reconnect
+  before, a slow holder whose row lapses loses the requests its database sessions were serving
+  and the first statement that meets one of its idle connections, a renewal the database begins
+  more than 1 s after a kill still puts the take-over past six seconds, and a database that
+  answers neither ending leaves the frozen process's transactions holding their locks until it
+  runs again or Postgres ends its connection.

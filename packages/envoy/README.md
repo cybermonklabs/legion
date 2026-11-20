@@ -98,10 +98,13 @@ one (`internal/bus` and `internal/contracts` among them): after a change to one 
 vet `infra/` too (`infra/README.md`, "Changing the module").
 
 The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
-`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
-`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
-prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
-skip.
+`BROKER_TEST_DATABASE_URL` (the secrets broker). Without `DISPATCH_TEST_DATABASE_URL`,
+Dispatch's Postgres-backed tests skip, and `go test` still prints `ok`, unless `CI` is true
+or `GITHUB_ACTIONS` is `true`: there each of them fails, naming the variable to set
+(`testdb.DispatchURL`). A shell that sets `CI=true` for its own tools fails them too, until it
+names a database or unsets `CI`. Without `BROKER_TEST_DATABASE_URL` the secrets broker's
+tests skip. `scripts/dev-postgres.sh` starts a pgvector Postgres and prints its URL, and
+`scripts/database-skips.sh` (`scripts/README.md`) fails a run on any skip.
 
 Build tags hold the slow and live suites, which `go test ./...` does not build: among them
 `natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),

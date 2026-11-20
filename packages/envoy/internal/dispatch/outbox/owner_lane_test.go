@@ -257,7 +257,7 @@ func (p *answeringTopics) PublishAsync(item contracts.Envelope) <-chan error {
 	return answered(p.Publish(item))
 }
 
-func (p *answeringTopics) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *answeringTopics) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

@@ -86,7 +86,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 	refused := func(round int, holder string, item contracts.Envelope, opts RequestOptions) {
 		t.Helper()
 		fill(round)
-		err := answer(client.WindowUntil(nil).Request(holder, item, opts))
+		err := answer(client.WindowUntil(t.Context(), nil).Request(holder, item, opts))
 		if !errors.Is(err, ErrStreamFull) || errors.Is(err, ErrNotAcknowledged) {
 			t.Fatalf("round %d: a forward into the full stream = %v, want ErrStreamFull and no ErrNotAcknowledged", round, err)
 		}
@@ -102,7 +102,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 	item := forward("stored")
 	opts := RequestOptions{MsgID: ForwardMsgID(item.DedupeKey, holder), Timeout: 2 * time.Second}
 	refused(1, holder, item, opts)
-	if err := answer(client.WindowUntil(nil).Request(holder, item, opts)); err != nil {
+	if err := answer(client.WindowUntil(t.Context(), nil).Request(holder, item, opts)); err != nil {
 		t.Fatalf("the forward retried once the stream had room = %v, want nil", err)
 	}
 	if n := held(holder); n != 1 {
@@ -111,7 +111,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 
 	// The same forward sent again is stored once: the stream answers under the id from the copy it
 	// already holds and stores no second one.
-	if err := answer(client.WindowUntil(nil).Request(holder, item, opts)); err != nil {
+	if err := answer(client.WindowUntil(t.Context(), nil).Request(holder, item, opts)); err != nil {
 		t.Fatalf("the forward sent again once the stream held it = %v, want nil", err)
 	}
 	if n := held(holder); n != 1 {
@@ -121,7 +121,7 @@ func TestAForwardRequestTheFullClusterStreamRefusedIsStoredOnceTheStreamHasRoom(
 	fencedHolder := contracts.LegacyAgentSubject("ses_forward_fenced")
 	fenced := forward("fenced")
 	fencedOpts := RequestOptions{MsgID: ForwardMsgID(fenced.DedupeKey, fencedHolder), Timeout: 5 * time.Second}
-	fencedWindow := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
+	fencedWindow := client.WindowUntil(t.Context(), func() time.Time { return time.Now().Add(-time.Second) })
 	if err := answer(fencedWindow.Request(fencedHolder, fenced, fencedOpts)); !errors.Is(err, ErrWindowDeadline) {
 		t.Fatalf("a forward through a window whose deadline has passed = %v, want ErrWindowDeadline", err)
 	}

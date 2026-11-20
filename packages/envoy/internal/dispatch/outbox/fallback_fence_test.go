@@ -37,7 +37,7 @@ func (p *deadlinePassingOnTopic) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
-func (p *deadlinePassingOnTopic) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *deadlinePassingOnTopic) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

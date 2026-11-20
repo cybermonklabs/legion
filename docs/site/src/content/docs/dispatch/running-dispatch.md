@@ -573,7 +573,7 @@ A second server also costs connections, and Postgres counts them per server. Eac
 to 64 connections for requests, up to 22 for the work it runs once across the servers and the
 delivery intakes' holds, up to 8 for saving what people type in documents, up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
-display trees, one for the health check, two for publishing
+display trees, one for the health check, three for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
 and one for its entry in the list of running servers, which it renews every five seconds. It also
 holds up to five more open for as long as it runs. Four of them wait on Postgres notifications:
@@ -583,7 +583,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 113
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 114
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs
@@ -595,12 +595,25 @@ What a reader sees while two servers are serving:
   under that document's lock, edits made at the same time merge rather than overwrite, and the
   stored history holds all of them.
 - Notifications are published by one server at a time, so a second server does not reorder an
-  issue's notifications. When the publishing server stops, is killed or loses its connection to
-  NATS, the other takes over within ten seconds; the health check's `outbox_publisher` says which
-  server publishes. A publishing server whose NATS goes silent without the connection dropping,
-  while it has nothing to send, is found out only by its next send, which waits five seconds for
-  NATS to answer and then two for a probe of the connection: the other server then takes over
-  within ten seconds of the next notification, not of the moment NATS went silent.
+  issue's notifications. When the publishing server stops, is killed, freezes or loses its
+  connection to NATS, the other, while its own NATS works, becomes the publisher within six
+  seconds. The health check's `outbox_publisher` says which server publishes. A publishing server
+  whose NATS goes silent without the connection dropping is found out by its client's own pings
+  within three seconds, whether or not it has anything to send, and gives the publishing up two
+  seconds later.
+- A server that takes over from a publishing server that froze ends that server's database
+  sessions before it begins to publish, within those six seconds, so a write the frozen server
+  had begun no longer holds back the other server's writes of the same issue. When the database
+  does not answer that in time, the server logs `late take-over of the publisher hold` with its
+  cause, begins to publish at once and tries once more, for up to five seconds, while it
+  publishes. If that try fails too, it logs that it did not end them, and nothing ends them
+  after that: the frozen server's open transactions keep their locks until it runs again or
+  Postgres ends its connection. If the frozen server runs again, a request it was serving,
+  through the API or a document's socket, answers `503 DATABASE_SESSION_ENDED`, to be made
+  again, and the server stands by; its sign-in, `/auth/whoami`, logout and GitHub requests
+  answer `500` then, and a dashboard file it reads from the database answers `502`. A server
+  that does not publish and freezes in the middle of a write still holds back the writes of that
+  issue until Postgres ends its connection.
 - Two people on one document see each other's typing, cursors and presence, whichever server each
   one is on. Each server tells the others through Postgres, so this works while the message bus
   is down. A read never returns text older than what is stored. An agent's edit sees what a

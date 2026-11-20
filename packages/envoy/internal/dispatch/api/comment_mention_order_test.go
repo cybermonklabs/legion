@@ -75,7 +75,7 @@ func (v *sessionView) Connected() bool { return true }
 
 func (v *sessionView) ConnectionChanged() <-chan struct{} { return nil }
 
-func (v *sessionView) WindowUntil(func() time.Time) bus.Sender { return v }
+func (v *sessionView) WindowUntil(context.Context, func() time.Time) bus.Sender { return v }
 
 func (v *sessionView) Request(_ string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
 	return v.PublishAsync(item)

@@ -53,7 +53,7 @@ type recorder struct {
 	topics map[string][]string
 }
 
-func (r *recorder) WindowUntil(func() time.Time) bus.Sender { return r }
+func (r *recorder) WindowUntil(context.Context, func() time.Time) bus.Sender { return r }
 
 func (r *recorder) Connected() bool { return true }
 

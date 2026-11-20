@@ -938,14 +938,24 @@ What the two processes share, and what each keeps to itself:
   `/healthz` says which (`outbox_publisher`).
   A holder that stops sends nothing more, records what NATS already answered, releases the rest of each batch in flight and then the hold, which wakes the standby at once;
   a graceful stop waits for that before it closes the database pool, up to `outboxStopBudget` after its shutdown starts.
-  One that is killed is replaced once its hold lapses, six seconds after its last renewal;
-  one whose NATS stays down for three seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too.
+  One that is killed or frozen is replaced once its hold lapses, five seconds after its last renewal, so within six seconds of the kill or the freeze;
+  one whose NATS stays down for two seconds, or whose failed sends meet a connection that does not answer a probe, releases the hold too, and a connection that goes silent is found down by the client's pings two to three seconds in, so the other process takes over within six seconds of the silence.
+
+- The process that takes over a lapsed row ends every database session of the process the row names (`pg_terminate_backend`, logged one line per session) before it begins to publish, within what the six seconds leave after the row lapsed (one second) less the half second it keeps for its first batch (`firstBatchShare`: the status read, bounded to 250 ms, and the reads before the first send, which run until the take-over is due and so always have at least the other 250 ms), so a transaction a frozen process held open, and the issue locks it held, end with the take rather than with the freeze;
+  when the take comes after that, or the ending does not answer within it or fails, or no batch of the first scan has its reads answered by the time the take-over is due (the next scan then reads again with no cut), the process logs `late take-over of the publisher hold` at WARN with its `cause`, begins to publish at once, and ends those sessions once more beside its first batch, for up to five seconds, which the batch does not wait for;
+  that second ending logs its end by name, is cut once the process stops holding the hold (lost, given up for NATS or stopped) and is never made under a hold no longer its own, and when it fails too nothing ends those sessions again, so the frozen process's transactions keep their locks until it runs again or Postgres ends its connection:
+  each process names one identity, minted at boot, at the end of every one of its connections' `application_name` (`<pool name> <identity>`, the pool name being `DATABASE_URL`'s `application_name` or `dispatch` for the shared pool), and holds the publisher hold under that identity, so the row names the sessions to end and no other process's;
+  a process that was only slow and runs on answers a request, to the API or the document socket, whose session was ended `503 DATABASE_SESSION_ENDED` with `Retry-After: 1`, and stands by; the first of its connections that finds its session ended has every pool of the process drop the connections it holds, so its later requests run on connections dialled afresh rather than each meeting one more ended session.
+  The other routes that read the database (`/auth/callback`, `/auth/whoami`, `/auth/logout` and the GitHub proxy) answer such a request `500`, the dashboard's asset route answers a file it reads from the database `502`, and the next request runs on a fresh connection.
+  A process stopped while it ends the old sessions, before it publishes, logs that the take-over stopped and releases the hold, with no late take-over logged.
+  A process that does not hold the publisher hold and freezes in the middle of a write still holds that issue's lock until Postgres ends its connection.
   One that finds its hold lost releases it as well, which stops its renewal and deletes the row only while the row still names it.
-  One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses two seconds later when that release cannot reach the database first;
+  One that is alive but whose renewal is not confirmed within four seconds of the last one that was stops publishing at that moment, and no standby may take the name while its row stands: until its release, right after the line that ends the turn, deletes the row, or until the row lapses one second later when that release cannot reach the database first;
   the line that ends the turn carries `stopped` and `stopped_by`, the moment it stopped bounded from below and from above rather than dated by the moment the line was written, and one value, the hold's deadline, whenever the turn ended there;
   the line that begins it (`took the publisher hold`) carries `started`, read before the process began publishing.
-  A holder sends nothing once its hold's deadline has passed, a send already waiting for a connection included (`bus.Client.WindowUntil`), so one that freezes and resumes publishes nothing beside the new holder.
-  Each owner's events (an issue's, a document's or a project's) keep their order per destination:
+  A holder sends nothing once its hold's deadline has passed, and a send waits for no connection (`bus.Client.WindowUntil`), nor for a read of the connection's status that a reconnect attempt holds, so one that freezes and resumes publishes nothing beside the new holder, and a batch begun while the client reconnects, through a cut or a silent connection, ends for NATS loss within the 2 s probe of its connection and one bounded read of its status (250 ms).
+
+- Each owner's events (an issue's, a document's or a project's) keep their order per destination:
   an event goes to a session's subject, or to the owner's topic family, only after every earlier unpublished event of its owner bound there has reached it.
   The owner's topic family comes first beside that, because a session that follows the topic and is also sent the owner's events on its own subject takes both in stream order:
   no later event of the owner goes to any session's subject while an earlier one's topic send has not reached the topic family.
@@ -956,7 +966,7 @@ What the two processes share, and what each keeps to itself:
   The holder runs up to four side by side, each reading only owners no other batch holds in flight, so an event waiting out the five-second wait for the stream's acknowledgement of a role forward holds back its own owner's later events and nothing else;
   every other owner's events are read, sent and recorded beside it.
   An owner is settled, recorded and given back as soon as its own sends are answered rather than at its batch's end, so its next events follow at once.
-  The batches run one statement at a time on the outbox's two connections, so the hold's renewal never waits behind them.
+  The batches run one statement at a time on the outbox's three connections, beside the hold's renewal and, after a late take-over, the ending of the previous holder's sessions, each on a connection of its own, so the renewal never waits behind them.
 
 - Each event reaches each receiver once, delivered at least once.
   A holder that dies between NATS's acknowledgement and the write that records it leaves the batch to be sent again by the next holder:
@@ -1211,23 +1221,23 @@ During the roll that releases this behaviour, processes of the earlier build beh
 Every change this build writes still notifies `dispatch_doc_changed`, which the earlier build reads, and an issue that the earlier build closes still closes this build's rooms through the trigger.
 
 **Each process holds its own connections, so a second process doubles them.**
-Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 2 + 2 + 1 + 5 = 113 connections to Postgres (`store.ConnectionsPerProcess`):
+Every pool's size is fixed in code (`internal/dispatch/store/pool.go`), and a serving process opens at most 64 + 22 + 8 + 4 + 2 + 2 + 1 + 3 + 2 + 1 + 5 = 114 connections to Postgres (`store.ConnectionsPerProcess`):
 
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Shared (`sharedPoolSize`) | 64 | Requests, settlements, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions). |
 | Leases (`store.LeasePoolSize`) | 22 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`) and the delivery intakes' holds (`duty.Hold`), the Legion sampler's read of each project's daemon, the embeddings `project_key` fill and the display tree fill among them, one per caller that can be inside a lease or a hold statement at once (`store.LeaseCallers`). |
-| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
-| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
-| Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
+| Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name` `dispatch-room-appends <identity>`. |
+| Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name` `dispatch-rooms <identity>`. |
+| Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name` `dispatch-compaction <identity>`. |
 | Display tree fill (`textTreePoolSize`) | 2 | The background fill's own reads and writes (`Pool.TextTrees`, `texttreefill`): a pass reads its next batch of texts only once the batch before it is stored, and stores a batch with at most two readings in flight, so two is every connection it can use. |
 | Health (`healthPoolSize`) | 1 | The `/healthz` probe. |
-| Outbox (`outboxPoolSize`) | 2 | The events outbox's scan and, beside it, the renewal of its publisher hold (`duty.Hold`). |
+| Outbox (`outboxPoolSize`) | 3 | The events outbox's scan, the renewal of its publisher hold (`duty.Hold`) beside it, and, after a late take-over, the ending of the previous holder's sessions beside the first scan. |
 | Horizon (`horizonPoolSize`) | 2 | The event log's safe horizon (`events.Horizon`): its observations, its marks and the reads beside them, its stall diagnosis and its persist write. |
 | Registry (`registryPoolSize`) | 1 | Held for the life of the process: the heartbeat that stamps its row in the registry of live server processes every 5 seconds (`processes.Register`). |
 | Listeners (`listenerConnections`) | 5 | What the process may hold at once, each on a connection of its own: the events outbox's `LISTEN` on `dispatch_events` and `dispatch_duty_holds`, the shared listener hub the document rooms' room sync and the woken background loops wait on, and the document rooms' NOTIFY sender, each held for the life of the process, and the delivery hub's and the event stream relay's, each held only while something subscribes to them. |
 
-Two processes at their ceiling hold 226, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
+Two processes at their ceiling hold 228, past a default Postgres's `max_connections` of 100, so size the database's limit for both, with whatever else uses that database counted in, before the second process starts.
 
 **A connection is closed after its next response once it is 60 seconds old** (`maxConnAge`, `cmd/dispatch/conn_age.go`):
 the server stamps each connection's accept time and answers the first request it reads at that age or later with `Connection: close`, and a request carrying an `Upgrade` header, a websocket handshake, keeps its connection.
@@ -3858,7 +3868,7 @@ Each item below names a path with its method and identity, then its purpose.
   it fails while the database is unreachable, so a liveness probe on it would restart every server process during a database failover.
   Every other field is reported and never decides `ok` or the status, and a deploy check that needs one asserts it itself (`nats: true`, `files: true`, `signin: true`):
   `nats`, whether the server's publisher is connected to NATS (`null` with `DISPATCH_NATS_DISABLED=1`), so a bus outage is `200` with `nats: false` while the process serves and its outbox waits for the bus;
-  the client pings every second and declares a connection lost at two pings outstanding, so a silently cut bus reads `false` within two to three seconds;
+  the client pings every second and declares a connection lost at two pings outstanding, so a silently cut bus reads `false` within two to three seconds, and the probe reads the client within a quarter of a second, so one in the middle of a reconnect attempt reads `false` rather than holding the probe;
   `files`, whether the file store's bucket answers its two-second probe (S3:
   `HeadBucket`; Cloud Storage: a metadata read of a key no upload writes, which a missing object answers healthy) where `DISPATCH_FILE_STORE_BUCKET` is set (`null` when it is not), so a bucket outage fails uploads and downloads and nothing else;
   `signin` and `service_tokens`, whether the sign-in issuer's and the service-account token issuer's discovery documents have been read (`false` before, `null` where that issuer is not configured).

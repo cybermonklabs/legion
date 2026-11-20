@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=479`
+  rather than 475: one Dispatch process may now open 114 connections, one more for its events
+  outbox, so the Dispatch test suite needs four processes of 114 and 20 connections for its own
+  clients (`testlimits.ServerConnections` in `packages/envoy/internal/dispatch/testlimits`), and
+  the three slots Postgres reserves for superusers. `testlimits_test.go` fails when the script's
+  number and the constant differ.

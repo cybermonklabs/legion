@@ -4,8 +4,9 @@
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// own; UntilDeadline has no bound but the test binary's deadline; Holds answers rather than
+// fails, for a caller whose failure text is its own; and Bounded is the clamp alone, for a wait
+// that holds the rest itself.
 package testwait
 
 import (
@@ -48,6 +49,28 @@ func WithinPolling(t *testing.T, bound, poll time.Duration, what string, conditi
 		return
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// UntilDeadline waits for condition, at the caller's own pace, for as long as the test binary's
+// own deadline leaves less margin, the time the test still needs after the wait for its cleanup;
+// at that point it fails the test with what it waited for. It is the wait for a fact that must come
+// but whose timing the test does not measure: a fixed bound fails such a wait on a loaded machine
+// while the fact is still on its way. A binary run with no deadline (-timeout 0) waits until
+// condition holds.
+func UntilDeadline(t *testing.T, margin, poll time.Duration, what string, condition func() bool) {
+	t.Helper()
+	testDeadline, ok := t.Deadline()
+	if !ok {
+		for !condition() {
+			time.Sleep(poll)
+		}
+		return
+	}
+	if waitUntil(testDeadline.Add(-margin), poll, condition) {
+		return
+	}
+	t.Fatalf("timed out waiting for %s: the test binary's deadline, %s, less %s for cleanup, came first",
+		what, testDeadline.UTC().Format(time.RFC3339Nano), margin)
 }
 
 // Holds reports whether condition held before bound passed, and fails nothing itself: a caller

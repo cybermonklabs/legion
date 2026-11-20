@@ -15,20 +15,19 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
-// publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): its wait
-// for a connection, a JetStream send's acknowledgement (the stream context's PublishAsyncTimeout),
-// and a Request's answer when its options set no timeout of their own. Publish takes publishBound
-// instead.
+// publishAcknowledgementTimeout bounds each send of a publish window (Client.WindowUntil): a
+// JetStream send's acknowledgement (the stream context's PublishAsyncTimeout), and a Request's
+// answer when its options set no timeout of their own. Publish takes publishBound instead.
 const publishAcknowledgementTimeout = 5 * time.Second
 
 // ErrUnavailable is wrapped by the outcome of a window's send that NATS did not take because of
-// the connection rather than the envelope: the client had no connection within the publish window,
-// the window's connection had been lost or had reconnected since its first send (so the window
-// sent nothing), or the connection was lost or reconnected after the envelope was sent and before
-// NATS answered it, so whether it landed is unknown. NATS giving no answer on a connection that
-// stayed current is ErrNotAcknowledged instead. Sending it again is safe: a JetStream publish and
-// a Request under a MsgId are stored once by the stream, and the receiver of a Request drops a
-// repeat by its dedupe key.
+// the connection rather than the envelope: the client had no connection when the window's first
+// send was made, the window's connection had been lost or had reconnected since its first send (so
+// the window sent nothing), or the connection was lost or reconnected after the envelope was sent
+// and before NATS answered it, so whether it landed is unknown. NATS giving no answer on a
+// connection that stayed current is ErrNotAcknowledged instead. Sending it again is safe: a
+// JetStream publish and a Request under a MsgId are stored once by the stream, and the receiver of
+// a Request drops a repeat by its dedupe key.
 var ErrUnavailable = errors.New("NATS is unreachable")
 
 // ErrNotAcknowledged is wrapped by the outcome of a window's send that NATS gave no
@@ -56,10 +55,10 @@ var ErrNotAcknowledged = errors.New("NATS did not acknowledge the publish")
 var ErrNotCaptured = errors.New("the stream does not capture the topic")
 
 // ErrWindowDeadline is the outcome of a send of a window with a deadline (Client.WindowUntil) that
-// would write at or past it: the deadline had passed when the send began, while its first send
-// waited for a connection, or by the moment it would write. The stream holds nothing of such a
-// send, which is answered before anything is sent. It is neither ErrUnavailable nor ErrRefused:
-// the window's owner may no longer send at all, whatever the connection does.
+// would write at or past it: the deadline had passed when the send began or by the moment it would
+// write. The stream holds nothing of such a send, which is answered before anything is sent. It is
+// neither ErrUnavailable nor ErrRefused: the window's owner may no longer send at all, whatever the
+// connection does.
 var ErrWindowDeadline = errors.New("the window's deadline has passed")
 
 // Sender sends envelopes without waiting for NATS's answers (Client.WindowUntil).
@@ -81,8 +80,9 @@ type Sender interface {
 	// that captures subject acknowledged the copy it stored, or why it did not. No receiver
 	// answers a request (window.Request).
 	Request(subject string, item contracts.Envelope, opts RequestOptions) <-chan error
-	// Probe flushes the sender's connection within timeout: nil once the server answered on a
-	// connection that is still current, and otherwise an error wrapping ErrUnavailable.
+	// Probe flushes the sender's connection within timeout, waiting up to timeout for one when the
+	// sender has none yet: nil once the server answered on a connection that is still current, and
+	// otherwise an error wrapping ErrUnavailable, or the sender's context's end when that came first.
 	Probe(timeout time.Duration) error
 }
 
@@ -100,12 +100,20 @@ type RequestOptions struct {
 }
 
 // WindowUntil returns a Sender whose sends all go out on one connection, or not at all. Its first
-// send waits, within publishAcknowledgementTimeout, for the client to have a connection, and pins
-// the window to it. Every later send checks that connection first and answers ErrUnavailable at
-// once, without sending, once it has been lost or has reconnected since (window.current), so a
-// window does not go on sending across a connection it saw fail. That check reads no state of
-// nats.go's and waits for no lock nats.go holds, which a reconnect's handshake and a write to a slow
-// socket hold: it reads whether nats.go has reported the connection's life over (connLife).
+// send pins the window to the client's connection without waiting for one: a send made while the
+// client has none - a reconnect under way, a first connection not yet made - answers ErrUnavailable
+// at once, and a caller that would wait for the connection to come back asks Probe, which waits up
+// to the timeout it is given. Every later send checks that connection first and answers
+// ErrUnavailable at once, without sending, once it has been lost or has reconnected since
+// (window.current), so a window does not go on sending across a connection it saw fail. That check
+// reads no state of nats.go's and waits for no lock nats.go holds, which a reconnect's handshake
+// and a write to a slow socket hold: it reads whether nats.go has reported the connection's life
+// over (connLife).
+//
+// ctx is the caller's, and every wait the window makes for a connection (Probe's) ends when ctx
+// does, answering ctx's end, which wraps no ErrUnavailable: a caller that has given up on the
+// window's sends (a batch the outbox ended) is not held by a wait it no longer needs. A send
+// waits for no connection, so no send is held either.
 //
 // A window keeps no order of its own between its sends. Its answers come back in whatever order
 // the server and the stream give them, and a JetStream publish NATS did not acknowledge may still
@@ -135,17 +143,18 @@ type RequestOptions struct {
 // call from several goroutines at once.
 //
 // The window's sends never write at or past deadline, read again at each check so a deadline that
-// moves on (a hold's renewal) is the one in force. A send checks it before anything else, its first
-// send waits for a connection no later than it, and every send checks it again once pinned, the
-// last act before the write; a send that finds it passed at any of these answers ErrWindowDeadline,
-// in the channel when the send returns, and sends nothing. A nil deadline is none. A Probe sends no
-// envelope and does not check it.
-func (c *Client) WindowUntil(deadline func() time.Time) Sender {
-	return &window{client: c, deadline: deadline}
+// moves on (a hold's renewal) is the one in force. A send checks it before anything else and again
+// once pinned, the last act before the write; a send that finds it passed at either answers
+// ErrWindowDeadline, in the channel when the send returns, and sends nothing. A nil deadline is
+// none. A Probe sends no envelope and does not check it.
+func (c *Client) WindowUntil(ctx context.Context, deadline func() time.Time) Sender {
+	return &window{client: c, ctx: ctx, deadline: deadline}
 }
 
 type window struct {
 	client *Client
+	// ctx is the caller's: it ends every wait of the window's for a connection (pin).
+	ctx context.Context
 	// deadline, when not nil, is the moment the window's sends stop writing (WindowUntil).
 	deadline func() time.Time
 
@@ -215,15 +224,17 @@ func (w *window) send(subject string, item contracts.Envelope, msgID string) (fu
 	return w.sendJetStream(subject, msgID, data)
 }
 
-// pin pins the window to the client's connection at its first send, waiting up to wait for the
-// client to have one, and at every later one answers ErrUnavailable once that connection is no
-// longer current (current).
+// pin pins the window to the client's connection at its first send or Probe, waiting up to wait
+// for the client to have one, and no longer than the window's ctx lasts; at every later one it
+// answers ErrUnavailable once that connection is no longer current (current). A wait that ctx
+// ended answers ctx's end alone, so the caller reads it as its own stop, not as NATS lost.
 //
 // It holds pinning only to read and to set the pin. The first send's wait for a connection, and its
-// reads of the connection, are made with it released and end at wait whatever nats.go is doing
-// (Bounded): nats.go holds its connection lock through a reconnect's dial and handshake.
-// The check of a pinned connection waits for no lock nats.go holds
-// (current), so no send of the window waits for a handshake, nor behind another send that does.
+// reads of the connection, are made with it released and end at wait plus the bound pinFirst gives
+// those reads, whatever nats.go is doing (Bounded): nats.go holds its
+// connection lock through a reconnect's dial and handshake. The check of a pinned connection waits
+// for no lock nats.go holds (current), so no send of the window waits for a handshake, nor behind
+// another send that does.
 func (w *window) pin(wait time.Duration) error {
 	w.pinning.Lock()
 	pinned := w.life != nil
@@ -239,14 +250,22 @@ func (w *window) pin(wait time.Duration) error {
 	return nil
 }
 
-// pinFirst waits up to wait for the client to have a connection, with pinning released, and pins
-// the window to its current life (connLife), unless another send pinned it first. It takes that
-// life before it reads connected; a report of its end after either read closes the channel and the
-// loop tries the connection again. The reconnect count records a life only while that same channel
-// is still current and unpinned.
+// pinFirst waits up to wait, and no longer than the window's ctx lasts, for the client to have a
+// connection, with pinning released, and pins the window to its current life (connLife), unless
+// another send pinned it first. It takes that life before it reads connected; a report of its end
+// after either read closes the channel and the loop tries the connection again. The reconnect
+// count records a life only while that same channel is still current and unpinned.
+//
+// The whole pin is bounded at wait plus two ConnectionReadBound (Bounded): one for
+// ensureConnWithContext's read of the connection's status, once the wait is spent, and one for the
+// pin's own reads of it, each of which waits on nats.go's lock as that read does. A send pins with
+// no wait (pinToSend), so it pins a client connected now, within that bound, and answers
+// ErrUnavailable for one that is not.
 func (w *window) pinFirst(wait time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), wait)
+	waiting, cancel := context.WithTimeout(w.ctx, wait)
 	defer cancel()
+	ctx, cancelBound := context.WithTimeout(w.ctx, wait+2*ConnectionReadBound)
+	defer cancelBound()
 	type connection struct {
 		conn *nats.Conn
 		js   nats.JetStreamContext
@@ -257,7 +276,7 @@ func (w *window) pinFirst(wait time.Duration) error {
 	}
 	got, _, err := Bounded(ctx, func() (connection, error) {
 		for {
-			if err := w.client.ensureConnWithContext(ctx); err != nil {
+			if err := w.client.ensureConnWithContext(waiting); err != nil {
 				return connection{}, err
 			}
 			w.client.mu.Lock()
@@ -283,7 +302,10 @@ func (w *window) pinFirst(wait time.Duration) error {
 		}
 	})
 	if err != nil {
-		return fmt.Errorf("bus: %w: %w", ErrUnavailable, err)
+		if w.ctx.Err() != nil {
+			return fmt.Errorf("bus: the window's caller stopped waiting for a connection: %w", context.Cause(w.ctx))
+		}
+		return fmt.Errorf("bus: %w: no connection within %s: %w", ErrUnavailable, wait, err)
 	}
 	w.pinning.Lock()
 	defer w.pinning.Unlock()
@@ -302,19 +324,14 @@ func (w *window) expired() error {
 	return nil
 }
 
-// pinToSend pins the window for a send (pin), within publishAcknowledgementTimeout and no later
-// than the window's deadline, and answers ErrWindowDeadline when the deadline has passed before
-// the pin, during its wait for a connection, or by its end, which is the last check before the
-// send writes.
+// pinToSend pins the window for a send (pin) with no wait for a connection, and answers
+// ErrWindowDeadline when the deadline has passed before the pin or by its end, which is the last
+// check before the send writes.
 func (w *window) pinToSend() error {
-	if w.deadline == nil {
-		return w.pin(publishAcknowledgementTimeout)
+	if err := w.expired(); err != nil {
+		return err
 	}
-	remaining := time.Until(w.deadline())
-	if remaining <= 0 {
-		return fmt.Errorf("bus: %w", ErrWindowDeadline)
-	}
-	pinned := w.pin(min(publishAcknowledgementTimeout, remaining))
+	pinned := w.pin(0)
 	if err := w.expired(); err != nil {
 		return err
 	}
@@ -628,11 +645,12 @@ func acknowledgement(reply *nats.Msg) (replyAck, bool) {
 	return ack, true
 }
 
-// Probe pins the window to the client's connection when nothing has yet, waiting up to timeout
-// for one, and flushes that connection within timeout. A flush that fails or runs out of time, and
-// a connection lost or reconnected since the window pinned it, answer an error wrapping
-// ErrUnavailable. After a window whose sends NATS did not acknowledge, it tells a connection that
-// is gone or silent from one whose server still answers.
+// Probe pins the window to the client's connection when nothing has yet, waiting up to timeout,
+// and no longer than the window's ctx lasts, for one, and flushes that connection within timeout.
+// A flush that fails or runs out of time, and a connection lost or reconnected since the window
+// pinned it, answer an error wrapping ErrUnavailable; a wait ctx ended answers ctx's end. After a
+// window whose sends NATS did not acknowledge, or found no connection, it tells a connection that
+// is gone or silent from one whose server still answers, or comes back within timeout.
 func (w *window) Probe(timeout time.Duration) error {
 	if err := w.pin(timeout); err != nil {
 		return err

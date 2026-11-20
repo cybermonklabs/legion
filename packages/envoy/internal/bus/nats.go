@@ -808,11 +808,92 @@ func (c *Client) JS() nats.JetStreamContext {
 	return c.js
 }
 
-// Connected reports whether the client currently has a live NATS connection.
+// Connected reports whether the client currently has a live NATS connection. It takes the
+// connection under c.mu and reads its status after letting c.mu go: the read waits on nats.go's own
+// lock of the connection, which nats.go holds for the whole of each reconnect attempt, its dial
+// and its handshake, up to connectTimeout, and a read waiting there with c.mu held would hold up
+// every other user of c.mu with it, this client's connection callbacks (connectionChanged) and so
+// nats.go's callback goroutine among them.
 func (c *Client) Connected() bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.Conn != nil && c.Conn.Status() == nats.CONNECTED
+	conn := c.Conn
+	c.mu.Unlock()
+	return conn != nil && conn.Status() == nats.CONNECTED
+}
+
+// ConnectedWithin is client.Connected(), or false when that read has not answered within bound.
+// A read of a connection's status waits on nats.go's lock of that connection, which a reconnect
+// attempt holds across its dial and its handshake, up to connectTimeout, so once a silent cut is
+// found (WithSilentCutDetection) each attempt through the same dead path is such a wait, and an
+// unbounded read answers only when the attempt has failed. A reader that has to decide on time -
+// the holder of Dispatch's publisher hold timing its loss of NATS, a health probe - reads through
+// this, and a client in the middle of a reconnect reads as not connected, which it is. The read it
+// starts is left to end on its own, when nats.go lets the lock go.
+func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) bool {
+	answer := make(chan bool, 1)
+	go func() { answer <- client.Connected() }()
+	timer := time.NewTimer(bound)
+	defer timer.Stop()
+	select {
+	case connected := <-answer:
+		return connected
+	case <-timer.C:
+		return false
+	}
+}
+
+// ConnectionReadBound bounds each read of a connection's status that ensureConnWithContext makes
+// before it decides (readConnection), a window's first pin among its callers (window.pinFirst, which
+// gives its own reads one bound more); a pinned window's later checks read nothing of nats.go's
+// (window.current). It is also the bound every caller of ConnectedWithin gives its read: the holder
+// of Dispatch's publisher hold, Dispatch's /healthz and an envoy-listener's /healthz for its role
+// lane. nats.go reads the status under its lock of the connection, and holds that
+// lock across two waits a read then sits behind: each reconnect attempt's dial and handshake, up to
+// connectTimeout, and each write of its buffered output to the socket (nats.go's flusher), which
+// takes microseconds while the socket accepts the bytes and lasts as long as the write does when it
+// does not, bounded only by nats.go's flusher timeout of a minute. A 16 MiB burst through a link of
+// 64 KiB/s held it 19 s under nats.go v1.53.1, whose flusher holds the lock as v1.55.0's does, while
+// the connection stayed CONNECTED and never reconnected. So a read that has not answered within
+// this bound is "not read", and says only that one of the two holds the lock: the connection is
+// being reconnected, or a write to it is stuck. Either way a send made now would wait as long, so a
+// window's first pin takes the connection as not connected: its send answers ErrUnavailable at once
+// and a probe waits out its own timeout, rather than either waiting on the lock. On a link that is
+// only slow, that refuses a first send whose connection is still up.
+//
+// The value sits between the two reads it tells apart. A healthy read through ConnectedWithin (its
+// goroutine, channel and timer included), with another goroutine publishing through the same
+// client beside it, took at most 18.9 ms in 20,000 reads, and its direct read at most 0.13 ms,
+// measured on 2026-11-20 on a shared 288-CPU development machine at a load of 500 to 600: the
+// bound is about 13 times the slowest. A reconnect attempt holds the lock up to connectTimeout
+// (5 s), twenty times the bound.
+const ConnectionReadBound = 250 * time.Millisecond
+
+// connectionState is what readConnection reads of a connection: its status and how often it has
+// reconnected.
+type connectionState struct {
+	status     nats.Status
+	reconnects uint64
+}
+
+// connected reports what nats.Conn.IsConnected does: connected, or draining.
+func (s connectionState) connected() bool {
+	return s.status == nats.CONNECTED || s.status == nats.DRAINING_SUBS || s.status == nats.DRAINING_PUBS
+}
+
+// readConnection reads conn's status and reconnect count within ConnectionReadBound, and answers
+// false when the read has not answered by then. The read it starts is left to end on its own,
+// when nats.go lets the lock go.
+func readConnection(conn *nats.Conn) (connectionState, bool) {
+	answer := make(chan connectionState, 1)
+	go func() { answer <- connectionState{status: conn.Status(), reconnects: conn.Stats().Reconnects} }()
+	timer := time.NewTimer(ConnectionReadBound)
+	defer timer.Stop()
+	select {
+	case state := <-answer:
+		return state, true
+	case <-timer.C:
+		return connectionState{}, false
+	}
 }
 
 // Connection is the client's connection now, read under its lock. A KV handle opened outside this
@@ -1578,6 +1659,10 @@ const reconnectRecheck = time.Second
 // close before then, so a caller waits for that first connection as for a reconnect, and nothing
 // here dials beside nats.go before it; a connection dialled later to replace a closed one is an
 // ordinary one, connected before it is installed.
+//
+// Each read of the connection's status is bounded (readConnection): a read a reconnect attempt
+// holds is a connection being reconnected, which is waited for as one, so the wait ends with ctx
+// within one ConnectionReadBound rather than when the attempt lets nats.go's lock go.
 func (c *Client) ensureConnWithContext(ctx context.Context) error {
 	for {
 		c.mu.Lock()
@@ -1586,15 +1671,20 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 		// lands between the read and the wait below closes the channel the wait is on.
 		changed := c.connChangedLocked()
 		c.mu.Unlock()
+		var state connectionState
+		read := false
+		if conn != nil {
+			state, read = readConnection(conn)
+		}
 		// A live connection serves even a stopped client: deliveries still in their handlers during
 		// Drain publish their forwards and exceptions through it.
-		if conn != nil && (conn.IsConnected() || conn.IsDraining()) {
+		if read && state.connected() {
 			return nil
 		}
 		if c.stopped() {
 			return errStopped
 		}
-		if conn != nil && !conn.IsClosed() {
+		if conn != nil && (!read || state.status != nats.CLOSED) {
 			c.reconnectWaits.Add(1)
 			if c.reconnectWaitTick != nil {
 				c.reconnectWaitTick()

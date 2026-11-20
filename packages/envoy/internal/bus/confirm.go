@@ -91,6 +91,16 @@ type connState struct {
 // observe reads the last error, then whether the connection is connected, then its reconnect
 // count, in that order, so that a reconnect's clearing of the last error is always seen with one of
 // the other two (confirmPublished).
+//
+// Its reads are not bounded as readConnection's are, and they can wait: each takes nats.go's lock
+// of the connection, which a reconnect attempt holds up to connectTimeout and a write of the
+// connection's buffered output holds as long as the socket write lasts (ConnectionReadBound). A
+// bound here would not bound the send it serves, because the publish that follows it takes the
+// same lock with no bound of its own (nats.go's publish), and a publish cannot be given one: one
+// left running past a bound goes out after its caller was told it did not. The bounded reads made
+// before the send (the window's pin, ensureConnWithContext) are what tell a connection being
+// reconnected; an attempt or a stuck write that takes the lock after them holds this read and the
+// publish until it lets go.
 func observe(conn *nats.Conn) connState {
 	lastError := conn.LastError()
 	connected := conn.IsConnected()

@@ -16,9 +16,10 @@
 // a few hundred bytes of log; Postgres forces a checkpoint before and after the copy.
 //
 // The harness changes no Postgres setting: fsync, full_page_writes and max_wal_size belong to the
-// whole server DatabaseURLEnv names, which can hold other databases (the one
+// whole server testdb.DispatchURLEnv names, which can hold other databases (the one
 // packages/envoy/scripts/dev-postgres.sh runs holds the local Dispatch's), and a change to them
-// outlives the run.
+// outlives the run. That variable's database path is ignored: the admin connection uses the
+// postgres database, and every test gets a database of its own.
 //
 // A test's database is dropped in the background once the test ends, and Main waits for the
 // drops. Dropping a database forces a checkpoint and waits for it, and every package testing
@@ -42,11 +43,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
-
-// DatabaseURLEnv names the Postgres server the tests run against. Its database path is ignored:
-// the admin connection uses the postgres database, and every test gets a database of its own.
-const DatabaseURLEnv = "DISPATCH_TEST_DATABASE_URL"
 
 var shared struct {
 	// main is set by Run before the package's tests run; Open refuses to run without it, since
@@ -66,8 +64,8 @@ var shared struct {
 // (migrateWithThisTree).
 const openKey = "this tree's runner (storetest.Open)"
 
-// Open returns a store on a new database carrying every migration, dropped after t ends. It skips
-// t when DISPATCH_TEST_DATABASE_URL is unset.
+// Open returns a store on a new database carrying every migration, dropped after t ends. Without
+// DISPATCH_TEST_DATABASE_URL it skips t, or fails it in a CI run (testdb.DispatchURL).
 func Open(t testing.TB) *store.Store {
 	t.Helper()
 	return OpenFrom(t, openKey, migrateWithThisTree)
@@ -86,17 +84,14 @@ func migrateWithThisTree(databaseURL string) error {
 }
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
-// unset, and opens the admin pool, once. It makes no template: each is made by the first test that
-// asks for it (OpenFrom).
+// unset (or fails it in a CI run, testdb.DispatchURL), and opens the admin pool, once. It makes no
+// template: each is made by the first test that asks for it (OpenFrom).
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
-	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
-		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
-	}
+	raw := testdb.DispatchURL(t)
 	shared.once.Do(func() { shared.err = openAdmin(raw) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
@@ -299,7 +294,7 @@ func dropDatabase(name string) {
 func openAdmin(raw string) error {
 	server, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
+		return fmt.Errorf("parse %s: %w", testdb.DispatchURLEnv, err)
 	}
 	shared.server = *server
 	ctx := context.Background()

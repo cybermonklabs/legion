@@ -67,11 +67,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // --- the corpus ---
@@ -625,10 +626,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set")
-	}
+	url := testdb.DispatchURL(t)
 	ctx := context.Background()
 	settings := [2]string{"on", "off"}
 	var conns [2]*pgconn.PgConn

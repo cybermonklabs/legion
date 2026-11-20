@@ -33,6 +33,10 @@ type Proxy struct {
 	// gate is nil while the proxy moves bytes, and open from Freeze until Restore: every read
 	// and every write of a relayed connection waits for it to close.
 	gate chan struct{}
+	// freezeAfter, while set (FreezeAfterServer), is the text whose next write to a client
+	// freezes the proxy, and frozenAt where the moment of that freeze is sent.
+	freezeAfter []byte
+	frozenAt    chan time.Time
 	// serverGate is nil while server replies move, and open from FreezeServerReplies until Restore.
 	// It holds only server-to-client reads and writes.
 	serverGate chan struct{}
@@ -111,6 +115,32 @@ func (p *Proxy) Freeze() {
 	if p.gate == nil {
 		p.gate = make(chan struct{})
 	}
+}
+
+// FreezeAfterServer freezes the proxy (Freeze) right after it has written to a client the next
+// chunk from the server that holds text, and sends the moment it froze on the channel it returns.
+// With text "PONG\r\n" a client's silence begins just after a ping of its own was answered, which
+// is the latest moment its own pings find the silence after (bus.SilentCutFoundWithin).
+func (p *Proxy) FreezeAfterServer(text string) <-chan time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.freezeAfter = []byte(text)
+	p.frozenAt = make(chan time.Time, 1)
+	return p.frozenAt
+}
+
+// wrote freezes the proxy when data, written to a client, holds the text FreezeAfterServer armed.
+func (p *Proxy) wrote(data []byte) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.freezeAfter == nil || !bytes.Contains(data, p.freezeAfter) {
+		return
+	}
+	p.freezeAfter = nil
+	if p.gate == nil {
+		p.gate = make(chan struct{})
+	}
+	p.frozenAt <- time.Now()
 }
 
 // FreezeServerReplies stops server replies while client writes still reach the server. Restore
@@ -235,6 +265,9 @@ func (p *Proxy) relay(dst, src net.Conn, serverToClient bool) {
 		if _, err := dst.Write(c.data); err != nil {
 			// The reader ends once src is closed below.
 			break
+		}
+		if serverToClient {
+			p.wrote(c.data)
 		}
 	}
 	_ = src.Close()

@@ -491,11 +491,15 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
+	// The process's identity (store.Pool.Identity), which every database session of it carries at
+	// the end of its application_name, is its room-sync process id and its publisher hold's
+	// holder too, so a standby that takes the hold over from this process ends every one of them.
 	documentService := newDocumentService(boot, docs.Deps{
 		Store:     database,
 		Events:    broker,
 		Identity:  requestIdentity,
 		ServerURL: serverURL,
+		ProcessID: database.Pool.Identity().String(),
 	})
 	publishRoomFigures(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
@@ -2083,7 +2087,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // that failed with the bus would take every server process out of service at once for an outage
 // each of them can serve through. The client declares a cut connection lost within seconds even
 // when no packet comes back to say so (bus.WithSilentCutDetection), so the field follows the bus
-// that closely. A check that needs the bus asserts `nats: true` itself, as the e2e scripts do.
+// that closely. The read is bounded (healthNATSRead): through a silent cut every reconnect attempt
+// holds nats.go's lock of the connection for up to the client's connect timeout, and an unbounded
+// read left the probe unanswered past the probers' deadlines for as long. A check that needs the
+// bus asserts `nats: true` itself, as the e2e scripts do.
 //
 // Where a file store is configured, `files` reports whether its bucket answered, and likewise
 // never decides `ok`: a bucket outage, a slow HeadBucket or a grant someone changed would
@@ -2172,7 +2179,7 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		}
 		var natsOK *bool
 		if natsClient != nil {
-			connected := natsClient.Connected()
+			connected := bus.ConnectedWithin(natsClient, healthNATSRead)
 			natsOK = &connected
 		}
 		var signInOK, serviceTokensOK *bool
@@ -2212,6 +2219,13 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 		})
 	}
 }
+
+// healthNATSRead bounds /healthz's read of the publisher's connection status (bus.ConnectedWithin,
+// healthzHandler's `nats`). A client in the middle of a reconnect reads as not connected, which it
+// is, so the bound costs the field nothing and keeps the probe inside its probers' deadlines. It is
+// bus's bound of every such read (bus.ConnectionReadBound), whose note gives the healthy reads it
+// was measured against.
+const healthNATSRead = bus.ConnectionReadBound
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it
 // is when the setting is unset. Such a setting is refused without DISPATCH_TEST_HOOKS=1, and so

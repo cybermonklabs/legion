@@ -38,7 +38,7 @@ func (p *countingPublisher) Publish(item contracts.Envelope) error {
 	return p.fail
 }
 
-func (p *countingPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *countingPublisher) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

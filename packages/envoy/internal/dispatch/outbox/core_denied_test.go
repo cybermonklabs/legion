@@ -386,7 +386,7 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 // batch's second send is on the wire: both denials, answered at publishAcknowledgementTimeout
 // (5 s, bus/async.go), then come back to a hold whose margin ran out during the very wait it
 // opened, which is what a renewal landing late leaves behind in production (publisherHoldOptions,
-// 6 s less a 2 s margin). The batch records what those sends came to all the same - the hold
+// 5 s less a 1 s margin). The batch records what those sends came to all the same - the hold
 // covers the window it opened, and the record's guard on the database's clock is what keeps two
 // holders apart (recordBatch) - so the event is backed off once and each destination is counted
 // once. Left unrecorded, the batch would be read and sent again by the next scan and each
@@ -482,8 +482,8 @@ func (h *holdPassingDuringAcknowledgement) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
-func (h *holdPassingDuringAcknowledgement) WindowUntil(deadline func() time.Time) bus.Sender {
-	return passingWindow{Sender: h.Client.WindowUntil(deadline), hold: h}
+func (h *holdPassingDuringAcknowledgement) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return passingWindow{Sender: h.Client.WindowUntil(ctx, deadline), hold: h}
 }
 
 // passingWindow is the hold's window: each send goes out through the client's own window, and the

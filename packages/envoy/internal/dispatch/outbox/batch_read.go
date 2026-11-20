@@ -172,14 +172,16 @@ func readBatch(ctx context.Context, deps Deps) (pending []pendingEvent, stopped,
 }
 
 // readRows is readBatch's statement, run with no other batch's statement beside it (lanes), and
-// its rows drained before it gives the gate back: an open cursor holds one of the outbox pool's
-// two connections.
+// its rows drained before it gives the gate back: an open cursor holds the connection of the
+// outbox's pool the batches share.
 func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pendingEvent, stopped bool, err error) {
 	deps.lanes.lock()
 	defer deps.lanes.unlock()
-	rows, err := deps.Store.Pool.Query(ctx, readBatchSQL, batchSize, inFlight)
+	reads, endReads := deps.reads(ctx)
+	defer endReads()
+	rows, err := deps.Store.Pool.Query(reads, readBatchSQL, batchSize, inFlight)
 	if err != nil {
-		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
+		return nil, false, fmt.Errorf("read the outbox's batch: %w", boundedRead(ctx, reads, err))
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -250,7 +252,7 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 	// idempotent, so the deferred one above still stands.
 	rows.Close()
 	if err := rows.Err(); err != nil && !stopped {
-		return nil, false, fmt.Errorf("read the outbox's batch: %w", err)
+		return nil, false, fmt.Errorf("read the outbox's batch: %w", boundedRead(ctx, reads, err))
 	}
 	return pending, stopped, nil
 }

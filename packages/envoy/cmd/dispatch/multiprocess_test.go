@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -43,6 +44,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
@@ -56,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/duty/dutytest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -836,13 +839,41 @@ func drainEnvelopes(t *testing.T, from <-chan contracts.Envelope, quiet time.Dur
 // ───── the outbox's publisher across two processes ──────────────────────────
 
 const (
-	// takeOverWithin bounds a take-over: from the moment the publisher is killed, cut off NATS or
-	// frozen, the other process takes the publisher hold, publishes its first batch and a session
-	// takes a comment written since, each within it.
+	// takeOverWithin bounds these rows' waits for a publisher - the first one of a pair, the
+	// stretch without one that TestOneProcessPublishesTheOutboxAtATime allows - and their waits
+	// for a line a take-over writes, twice it at most. It times no take-over against the
+	// requirement: every row holds the start of publishing to standbyTakesWithin, and what the
+	// new publisher does after it to firstBatchWithin.
 	takeOverWithin = 10 * time.Second
+	// standbyTakesWithin is the requirement: whatever stopped the publisher - a kill, a freeze, a
+	// cut from NATS - a standby becomes the publisher within six seconds of it. Every row that
+	// writes while the hold moves holds to it the start of the standby's first batch, the moment
+	// it begins to publish: the batch starts right after the standby stores the hold and logs its
+	// took line, which come after its take and, when the take replaced a lapsed row, after it
+	// ended the stopped process's sessions or gave up on them at the take-over's budget
+	// (outbox's tryHold and publish). The kill, freeze and slow rows also hold to it the take of
+	// the hold itself, on the database's clock. After a kill or a freeze the hold lapses 5 s
+	// after the publisher's last renewal (outbox.publisherHoldOptions) and the other process
+	// takes it and ends the stopped process's sessions within the next second; after a loss of
+	// NATS, found at most 3 s in when the connection goes silent (bus.SilentCutFoundWithin), the
+	// publisher gives the hold up 2 s later (the outbox's natsLossGrace) and the other process
+	// takes it at once.
+	standbyTakesWithin = 6 * time.Second
+	// firstBatchWithin bounds what the new publisher's first batch does once it has started,
+	// counted from the same stop: the batch's line, which it logs as it ends, and a session taking
+	// a comment written since the stop, each within it. It is the sum of the bounds of what may
+	// run in between, each from the outbox: the six seconds to the batch's start
+	// (standbyTakesWithin); a role forward of the batch, which waits up to roleForwardAckTimeout
+	// (5 s) for the stream's acknowledgement; and the batch's record, under recordTimeout (5 s).
+	// The batch's other sends have no bound of their own beyond these, and take milliseconds.
+	firstBatchWithin = standbyTakesWithin + 5*time.Second + 5*time.Second
 	// outboxDeliveryWithin bounds the wait for what a row wrote to reach every session it is
 	// addressed to.
 	outboxDeliveryWithin = 60 * time.Second
+	// holdRenewEvery is how often the publisher renews the publisher hold
+	// (outbox.publisherHoldOptions' Renew): the frozen-publisher row stops it at a random moment
+	// of one such cycle.
+	holdRenewEvery = time.Second
 	// frozenFor is how long the frozen-publisher row holds the publisher stopped.
 	frozenFor = 10 * time.Second
 	// resumedQuiet is how long the frozen-publisher row watches the sessions once the resumed
@@ -1026,7 +1057,9 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 		// (dispatch://INFRA-1568, job 42346322118). A binary that stops writing one of them is a
 		// regression, and it is caught here rather than left to turn into a /healthz
 		// disagreement whose reader has to work out where it came from.
-		line.started = moment("started", line.message == tookHold)
+		// A sent batch line dates the batch's start too, the moment the rows hold a take-over to
+		// (requireTakeOver), so it must carry it as well.
+		line.started = moment("started", line.message == tookHold || line.message == sentBatch)
 		line.stopped = moment("stopped", ends)
 		line.stoppedBy = moment("stopped_by", ends)
 		lines = append(lines, line)
@@ -1439,32 +1472,98 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since; and requires each within
-// takeOverWithin of since, the moment what happened to the publisher before p.
+// batch, and for a session to take a comment written since since. It requires p's first batch to
+// have started within standbyTakesWithin of since: the batch's start is the moment p begins to
+// publish, and the line's started, plus the millisecond slog's text handler truncates it to, is at
+// or after it. It requires the batch's line and the comment each within firstBatchWithin of since.
+// Every row that writes while the hold moves holds a take-over to this one rule.
 func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since, 2*takeOverWithin)
-	batch := p.waitForOutboxLine(t, sentBatch, took.at, 2*takeOverWithin)
+	batch := p.waitForOutboxLine(t, sentBatch, took.at, firstBatchWithin)
 	var arrived time.Time
-	waitUntil(t, 2*takeOverWithin, "a session taking a comment written after "+what, func() bool {
+	waitUntil(t, firstBatchWithin, "a session taking a comment written after "+what, func() bool {
 		var ok bool
 		arrived, ok = s.firstArrivalSince(since)
 		return ok
 	})
-	t.Logf("after %s, the other process took the publisher hold in %v and logged its first batch in %v, and a session took a comment written since in %v",
-		what, took.at.Sub(since).Round(time.Millisecond), batch.at.Sub(since).Round(time.Millisecond), arrived.Sub(since).Round(time.Millisecond))
+	t.Logf("after %s, the other process took the publisher hold in %v, started its first batch in %v and logged it in %v, and a session took a comment written since in %v",
+		what, took.at.Sub(since).Round(time.Millisecond), batch.started.Sub(since).Round(time.Millisecond),
+		batch.at.Sub(since).Round(time.Millisecond), arrived.Sub(since).Round(time.Millisecond))
 	for _, step := range []struct {
-		what string
-		at   time.Time
+		what   string
+		at     time.Time
+		within time.Duration
 	}{
-		{"the other process took the publisher hold", took.at},
-		{"the other process logged its first batch", batch.at},
-		{"a session took a comment written since", arrived},
+		{"the other process started its first batch", batch.started.Add(time.Millisecond), standbyTakesWithin},
+		{"the other process logged its first batch", batch.at, firstBatchWithin},
+		{"a session took a comment written since", arrived, firstBatchWithin},
 	} {
-		if after := step.at.Sub(since); after > takeOverWithin {
-			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, takeOverWithin)
+		if after := step.at.Sub(since); after > step.within {
+			t.Errorf("%s %v after %s, past the %v bound", step.what, after.Round(time.Millisecond), what, step.within)
 		}
 	}
+}
+
+// holdWrites is the record of the publisher hold's writes on a pair's database
+// (dutytest.Writes): the outbox package's killed-holder test reads the same record.
+type holdWrites struct {
+	*dutytest.Writes
+	database *store.Store
+}
+
+// recordHoldWrites records the publisher hold's writes on the pair's database until the test
+// ends, read through a connection of the test's own.
+func recordHoldWrites(t *testing.T, pair *dispatchPair) *holdWrites {
+	t.Helper()
+	listen := func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, pair.databaseURL(t)) }
+	return &holdWrites{Writes: dutytest.Record(t, pair.database.Pool, listen, "dispatch-outbox"), database: pair.database}
+}
+
+// holder is the instance that holds the publisher hold now, as its row names it, and requires it
+// to be p's, the instance p's took lines name.
+func (w *holdWrites) holder(t *testing.T, p *dispatchProcess) uuid.UUID {
+	t.Helper()
+	var holder uuid.UUID
+	if err := w.database.Pool.QueryRow(context.Background(),
+		`select holder from duty_holds where name = 'dispatch-outbox'`).Scan(&holder); err != nil {
+		t.Fatalf("read the publisher hold's holder: %v", err)
+	}
+	took := p.waitForOutboxLine(t, tookHold, time.Time{}, takeOverWithin)
+	if took.instance != holder.String() {
+		t.Fatalf("the publisher hold names %s, and the publisher's took line %s", holder, took.instance)
+	}
+	return holder
+}
+
+// waitForRenewal returns once a renewal of holder's row committed after this call began has been
+// read (dutytest.Writes.WaitForRenewal): one committed before the call, however late it is read,
+// is not one.
+func (w *holdWrites) waitForRenewal(t *testing.T, holder uuid.UUID) {
+	t.Helper()
+	w.WaitForRenewal(t, holder, takeOverWithin)
+}
+
+// signalAfterRenewal sends p sig after after a renewal of holder's row (waitForRenewal), and
+// returns when the signal was sent, on this process's clock, and a read of the database's clock
+// made after it. A renewal leaves the row lapsing a whole TTL after it, so an after of 0 is the
+// worst moment a holder can be killed or stopped.
+func (w *holdWrites) signalAfterRenewal(t *testing.T, p *dispatchProcess, holder uuid.UUID, sig syscall.Signal, after time.Duration) (signaled, signaledBy time.Time) {
+	t.Helper()
+	w.waitForRenewal(t, holder)
+	time.Sleep(after)
+	signaled = p.signal(t, sig)
+	return signaled, w.Now(t)
+}
+
+// requireTakeWithin waits for another holder to take the publisher hold from holder, and requires
+// the take within bound of holder's last renewal begun by signaledBy, on the database's clock: the
+// renewal at the start of its statement, which is before the signal, and the take at the first
+// moment it could be seen committed, so the reading is at or above the time from the signal to
+// the take (dutytest.Take.Reading).
+func (w *holdWrites) requireTakeWithin(t *testing.T, holder uuid.UUID, signaledBy time.Time, what string, bound time.Duration) {
+	t.Helper()
+	w.RequireTakeWithin(t, holder, signaledBy, what, bound, 2*takeOverWithin)
 }
 
 // requireRunning fails the test for each process of the pair that has exited.
@@ -1578,8 +1677,9 @@ func startOutboxPair(t *testing.T) *dispatchPair {
 // 100 ms on both and against each process's own outbox lines:
 //
 //   - never two publishers, at any sample and over the periods the lines show;
-//   - no stretch without a publisher longer than takeOverWithin, the bound the kill and NATS rows
-//     hold a take-over to;
+//   - no stretch without a publisher longer than takeOverWithin, the outbox's first take-over
+//     promise, which this row holds a hold renewed late to (the kill, freeze and NATS rows hold
+//     the start of publishing after a stop to standbyTakesWithin);
 //   - the run ends with exactly one publisher, waited for up to takeOverWithin after the last
 //     sample rather than demanded of that sample, and that wait counted into a stretch with no
 //     publisher that the last sample was still inside rather than granted on top of it, which is
@@ -1854,22 +1954,29 @@ func TestEachSessionTakesEachEventOnceAndInOrderAcrossTwoProcesses(t *testing.T)
 		len(addressed[scene.watcher]), len(addressed[scene.holder]), len(addressed[scene.author]))
 }
 
-// The publisher is killed while comments are written through the other process at 4 a second: the
-// other process takes the publisher hold, logs its first batch, and a session takes a comment
-// written after the kill, each within 10 s of it, and every session still takes each comment once
-// and in order across the hand-over.
-func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
+// The publisher is killed at the moment one of its renewals of the publisher hold commits, while
+// comments are written through the other process at 4 a second: the other process takes the
+// publisher hold within 6 s of the kill on the database's clock, and becomes the publisher within
+// 6 s of it on this process's (requireTakeOver); it logs its first batch and a session takes a
+// comment written after the kill, each within firstBatchWithin of it, and every session still
+// takes each comment once and in order across the hand-over. A kill at a renewal is the worst one:
+// the row that renewal left lapses a whole TTL after it, where a kill at a random moment of the
+// renewal cycle finds up to a Renew of that TTL already spent.
+func TestAKilledPublisherIsReplacedWithin6Seconds(t *testing.T) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
 	survivor := pair.other(publisher)
+	writes := recordHoldWrites(t, pair)
+	holder := writes.holder(t, publisher)
 	stop := scene.writeAtRate(t, 4, survivor)
 	defer stop()
 	waitUntil(t, outboxDeliveryWithin, "the publisher publishing the first comments", func() bool { return scene.deliveredCount() >= 4 })
 
-	killed := publisher.signal(t, syscall.SIGKILL)
+	killed, killedBy := writes.signalAfterRenewal(t, publisher, holder, syscall.SIGKILL, 0)
 	publisher.WaitExit(t, "SIGKILL")
 	scene.requireTakeOver(t, survivor, killed, "the publisher was killed")
+	writes.requireTakeWithin(t, holder, killedBy, "the kill", standbyTakesWithin)
 	written := scene.writtenCount()
 	waitUntil(t, outboxDeliveryWithin, "eight more comments written", func() bool { return scene.writtenCount() >= written+8 })
 	stop()
@@ -2100,13 +2207,17 @@ func (tap *natsTap) hasSent(text string) bool {
 	return bytes.Contains(tap.sent, []byte(text))
 }
 
-// The publisher loses NATS while comments are written through both processes at 4 a second, and
-// the other process, whose NATS works, takes the publisher hold, logs its first batch and has a
-// comment written since reach a session, each within 10 s. First its proxy cuts it off, which
-// closes its connection; then, with the roles swapped, the new publisher's proxy freezes, which
-// leaves its connection open and silent. Either way the publisher releases the hold for NATS lost,
-// and every session takes each comment once and in order.
-func TestAPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T) {
+// The publisher loses NATS, and the other process, whose NATS works, becomes the publisher within
+// 6 s and logs its first batch and has a comment written since reach a session within
+// firstBatchWithin. First, while comments are written through both processes at 4 a second, its
+// proxy cuts it off, which closes its connection; then, with the roles swapped, the new
+// publisher's proxy freezes, which leaves its connection open and silent; then, with the roles
+// swapped again, the publisher's proxy freezes while nothing is written, so no send of its own
+// finds the silence and only its client's pings do (bus.WithSilentCutDetection). Each time the
+// publisher releases the hold for NATS lost, and every session takes each comment once and in
+// order. While its idle connection is silent the publisher's /healthz still answers every read,
+// inside the health client's own timeout.
+func TestAPublisherCutFromNATSHandsOverWithin6Seconds(t *testing.T) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	t.Run("cut", func(t *testing.T) {
@@ -2120,19 +2231,95 @@ func TestAPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T) {
 	}
 	t.Run("silent cut", func(t *testing.T) {
 		publisher, _ := waitForPublisher(t, pair, takeOverWithin)
-		standby := pair.other(publisher)
-		waitUntil(t, 30*time.Second, "the standby reconnecting to NATS", func() bool {
-			report, err := standby.readHealthReport()
-			return err == nil && report.NATS != nil && *report.NATS
-		})
+		waitForNATS(t, pair.other(publisher))
 		proxy := pair.proxy(publisher)
 		defer proxy.Restore()
 		scene.handOver(t, publisher, "its NATS connection went silent", proxy.Freeze)
 	})
+	if t.Failed() {
+		return
+	}
+	t.Run("silent cut while idle", func(t *testing.T) {
+		publisher, _ := waitForPublisher(t, pair, takeOverWithin)
+		standby := pair.other(publisher)
+		waitForNATS(t, standby)
+		// Idle: everything written so far has reached its sessions, and nothing more is written
+		// until the hold has moved.
+		scene.waitDelivered(t)
+		proxy := pair.proxy(publisher)
+		defer proxy.Restore()
+		health := watchHealthReads(publisher)
+		frozen := time.Now()
+		proxy.Freeze()
+		took := standby.waitForOutboxLine(t, tookHold, frozen, 2*takeOverWithin)
+		released := publisher.waitForOutboxLine(t, releasedHold, frozen, 2*takeOverWithin)
+		reads, unanswered, slowest := health()
+		t.Logf("after its idle NATS connection went silent, the publisher released the hold in %v and the other process took it in %v; the publisher's /healthz answered %d of %d reads meanwhile, the slowest in %v",
+			released.at.Sub(frozen).Round(time.Millisecond), took.at.Sub(frozen).Round(time.Millisecond), reads-unanswered, reads, slowest.Round(time.Millisecond))
+		// Nothing is written while the hold moves, so no batch dates the start of publishing
+		// here. The other process takes a hold the publisher released, which replaces no row and
+		// so ends no session, and its took line, written as it stores the hold, is that start.
+		if after := took.at.Add(time.Millisecond).Sub(frozen); after > standbyTakesWithin {
+			t.Errorf("the other process became the publisher %v after the idle publisher's NATS connection went silent, past the %v bound", after.Round(time.Millisecond), standbyTakesWithin)
+		}
+		if released.reason != "NATS lost" {
+			t.Errorf("the publisher released the hold for %q after its idle NATS connection went silent, want NATS lost: %s", released.reason, released.text)
+		}
+		if unanswered != 0 {
+			t.Errorf("the publisher's /healthz left %d of %d reads unanswered within %v while its NATS connection was silent", unanswered, reads, healthClient.Timeout)
+		}
+		stop := scene.writeAtRate(t, 4, pair.a, pair.b)
+		defer stop()
+		written := scene.writtenCount()
+		waitUntil(t, outboxDeliveryWithin, "eight comments written after the hand-over", func() bool { return scene.writtenCount() >= written+8 })
+		stop()
+		scene.waitDelivered(t)
+		scene.requireOnceAndInOrder(t)
+	})
+}
+
+// waitForNATS waits for p's /healthz to report its NATS connected.
+func waitForNATS(t *testing.T, p *dispatchProcess) {
+	t.Helper()
+	waitUntil(t, 30*time.Second, "the standby connected to NATS", func() bool {
+		report, err := p.readHealthReport()
+		return err == nil && report.NATS != nil && *report.NATS
+	})
+}
+
+// watchHealthReads reads p's /healthz every 100 ms until the returned function is called, which
+// stops the reads and answers how many there were, how many went unanswered within the health
+// client's timeout, and the longest one took.
+func watchHealthReads(p *dispatchProcess) func() (reads, unanswered int, slowest time.Duration) {
+	var count, failed int
+	var longest time.Duration
+	done, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		for {
+			select {
+			case <-done:
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+			issued := time.Now()
+			_, err := p.readHealthReport()
+			longest = max(longest, time.Since(issued))
+			count++
+			if err != nil {
+				failed++
+			}
+		}
+	}()
+	return func() (int, int, time.Duration) {
+		close(done)
+		<-stopped
+		return count, failed, longest
+	}
 }
 
 // handOver writes comments at 4 a second through both processes and, once they flow, runs cut on
-// the publisher's NATS. It requires the other process to take over within takeOverWithin
+// the publisher's NATS. It requires the other process to take the hold within standbyTakesWithin
 // (requireTakeOver), the publisher to release the hold for NATS lost, and every session to take
 // each comment once and in order.
 func (s *outboxScene) handOver(t *testing.T, publisher *dispatchProcess, what string, cut func()) {
@@ -2157,16 +2344,60 @@ func (s *outboxScene) handOver(t *testing.T, publisher *dispatchProcess, what st
 }
 
 // The publisher is stopped (SIGSTOP) for 10 s while comments are written through the other
-// process, which takes the publisher hold and publishes them. Once they are all delivered, the
-// stopped process is continued: its hold's deadline passed while it was stopped, so it logs that it
-// lost the hold and sends nothing - no session receives anything after it resumes, it logs no batch
-// started after it was stopped, and it neither takes the hold again nor releases a hold that is no
-// longer its own.
+// process, which takes the publisher hold within 6 s on the database's clock, becomes the
+// publisher within 6 s on this process's, and publishes them. Once they are all delivered, the
+// stopped process is continued: its hold's deadline passed while it was stopped, so it logs that
+// it lost the hold and sends nothing - no session receives anything after it resumes, it logs no
+// batch started after it was stopped, and it neither takes the hold again nor releases a hold
+// that is no longer its own.
+//
+// It is stopped at three moments: the moment one of its renewals of the publisher hold commits,
+// which leaves the hold lapsing a whole TTL later; a random moment of the renewal cycle after one;
+// and inside a transaction of its own that holds the owner lock of the issue the other process
+// writes next (stopInsideATransaction), which leaves that lock with a process that sends nothing
+// to its connection until the other process, taking the hold over, ends the stopped process's
+// database sessions (outbox's endReplacedSessions).
 func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		stop frozenStop
+	}{
+		{"at a renewal", func(t *testing.T, _ *outboxScene, writes *holdWrites, publisher *dispatchProcess, holder uuid.UUID) frozenStopped {
+			stopped, stoppedBy := writes.signalAfterRenewal(t, publisher, holder, syscall.SIGSTOP, 0)
+			return frozenStopped{at: stopped, atBy: stoppedBy}
+		}},
+		{"at a random moment", func(t *testing.T, _ *outboxScene, writes *holdWrites, publisher *dispatchProcess, holder uuid.UUID) frozenStopped {
+			after := rand.N(holdRenewEvery)
+			stopped, stoppedBy := writes.signalAfterRenewal(t, publisher, holder, syscall.SIGSTOP, after)
+			t.Logf("stopped the publisher %v after a renewal of its hold was committed", after.Round(time.Millisecond))
+			return frozenStopped{at: stopped, atBy: stoppedBy}
+		}},
+		{"inside a transaction", stopInsideATransaction},
+	} {
+		t.Run(row.name, func(t *testing.T) { frozenPublisherRow(t, row.stop) })
+	}
+}
+
+// frozenStop stops the frozen-publisher row's publisher at one moment.
+type frozenStop func(t *testing.T, scene *outboxScene, writes *holdWrites, publisher *dispatchProcess, holder uuid.UUID) frozenStopped
+
+// frozenStopped is when a frozenStop stopped the publisher: at, on this process's clock, and atBy,
+// a read of the database's clock made after it. tookOver, when set, runs once the other process
+// has taken over and before the publisher is continued, and resumed once it has been.
+type frozenStopped struct {
+	at, atBy          time.Time
+	tookOver, resumed func(t *testing.T)
+}
+
+// frozenPublisherRow is TestAFrozenPublisherSendsNothingWhenItResumes with the publisher stopped
+// by stop.
+func frozenPublisherRow(t *testing.T, stop frozenStop) {
 	pair := startOutboxPair(t)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
 	standby := pair.other(publisher)
+	writes := recordHoldWrites(t, pair)
+	holder := writes.holder(t, publisher)
 	for index := range 4 {
 		if err := scene.write(standby, scene.issues[index%len(scene.issues)], fmt.Sprintf("Before the stop %d.", index)); err != nil {
 			t.Fatalf("write a comment: %v", err)
@@ -2175,17 +2406,25 @@ func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
 	// The publisher is idle when it is stopped: everything written so far has reached its sessions.
 	scene.waitDelivered(t)
 
-	stopped := publisher.signal(t, syscall.SIGSTOP)
-	stop := scene.writeAtRate(t, 4, standby)
-	defer stop()
+	frozen := stop(t, scene, writes, publisher, holder)
+	stopped := frozen.at
+	writing := scene.writeAtRate(t, 4, standby)
+	defer writing()
 	scene.requireTakeOver(t, standby, stopped, "the publisher was stopped")
+	writes.requireTakeWithin(t, holder, frozen.atBy, "the stop", standbyTakesWithin)
+	if frozen.tookOver != nil {
+		frozen.tookOver(t)
+	}
 	time.Sleep(time.Until(stopped.Add(frozenFor)))
-	stop()
+	writing()
 	scene.waitDelivered(t)
 
 	resumed := publisher.signal(t, syscall.SIGCONT)
 	lost := publisher.waitForOutboxLine(t, lostHold, resumed, takeOverWithin)
 	t.Logf("the resumed process logged that it lost the hold %v after it resumed", lost.at.Sub(resumed).Round(time.Millisecond))
+	if frozen.resumed != nil {
+		frozen.resumed(t)
+	}
 	time.Sleep(resumedQuiet)
 
 	for session, frames := range scene.framesSince(resumed) {
@@ -2209,6 +2448,443 @@ func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
 		}
 	}
 	scene.requireOnceAndInOrder(t)
+}
+
+// stopInsideATransaction stops the publisher inside a comment write of its own, after the
+// statement that takes the owner lock of the scene's first issue - the issue the other process
+// writes next (writeAtRate) - and before its commit. A transaction of the test's own holds the
+// comments table in share mode, the comment is written through the publisher, and once that
+// write's backend holds the issue's owner lock and waits behind the table, the publisher is
+// stopped and the table let go: the backend runs the rest of the statements the write had sent
+// and waits, idle in its transaction, on a client that sends nothing more. What Postgres reads of
+// that backend then - its state, its last statement and its locks - is logged, and so is the
+// other process's write of the issue that waits behind it. A watcher reads the backend from the
+// moment of the stop, every 20 ms, until it is gone, and tookOver requires it gone, and its lock
+// with it, within standbyTakesWithin of the stop, since every write of the issue through the other
+// process waits on that lock: the other process ends it as it takes the hold over, before it
+// becomes the publisher. resumed requires the publisher's write, once it ran again, to answer 503
+// DATABASE_SESSION_ENDED (requireSessionEnded).
+func stopInsideATransaction(t *testing.T, scene *outboxScene, writes *holdWrites, publisher *dispatchProcess, holder uuid.UUID) frozenStopped {
+	t.Helper()
+	ctx := context.Background()
+	pool := scene.pair.database.Pool
+	issue := scene.issues[0]
+	ownerKey := store.IssueOwner(issue).LockKey()
+	// A renewal of the hold recorded before the stop, which requireTakeWithin reads the take from:
+	// a publisher that took the hold only just before is otherwise stopped before its first one.
+	writes.waitForRenewal(t, holder)
+	held := holdAWriteInItsTransaction(t, scene, publisher, issue, "Written inside the stopped transaction.")
+	defer held.letGo()
+	writer, written := held.writer, held.written
+	stopped, stoppedBy := publisher.signal(t, syscall.SIGSTOP), time.Time{}
+	if err := pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&stoppedBy); err != nil {
+		t.Fatalf("read the database's clock after the signal: %v", err)
+	}
+	held.letGo()
+	// The watcher: seen is the last moment the backend was read live, the moment that read was
+	// issued, and gone the moment the first read that found it gone answered, each read issued
+	// from the stop on, so neither waits on the rest of the row. The backend ended between the two:
+	// after seen, since the read that found it live ran after it was issued, and by gone, since the
+	// read that found it gone ran before it answered. gone is the bound tookOver holds to the six
+	// seconds, so a read that waited for a connection or for the database cannot date the end
+	// earlier than it was seen.
+	type backendEnd struct {
+		// goneIssued is when the read that found the backend gone was issued: the moment a
+		// watcher that dated the end by the read's issue would hold to the bound, logged beside
+		// gone so a reader sees how much earlier that was.
+		seen, gone, goneIssued time.Time
+		err                    error
+	}
+	ending := make(chan backendEnd, 1)
+	go func() {
+		end := backendEnd{seen: stopped}
+		for deadline := stopped.Add(2 * takeOverWithin); ; time.Sleep(20 * time.Millisecond) {
+			issued := time.Now()
+			var live bool
+			if err := pool.QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, writer).Scan(&live); err != nil {
+				end.err = err
+				break
+			}
+			if !live {
+				end.gone, end.goneIssued = time.Now(), issued
+				break
+			}
+			end.seen = issued
+			if issued.After(deadline) {
+				break
+			}
+		}
+		ending <- end
+	}()
+	t.Cleanup(func() { <-ending })
+	// The backend runs what the write had sent and then waits on its client. On a loaded machine
+	// that can take longer than the other process's take-over, which ends the backend: then it is
+	// read gone before it is read waiting, and the last reading before that is logged instead.
+	var reading, last backendReading
+	waitUntil(t, takeOverWithin, "the stopped publisher's transaction waiting on its client, or its session ended", func() bool {
+		var err error
+		if reading, err = readBackend(pool, writer, ownerKey); err != nil {
+			t.Fatalf("read the stopped publisher's backend %d: %v", writer, err)
+		}
+		if reading.state != "gone" {
+			last = reading
+		}
+		return reading.state == "idle in transaction" || reading.state == "gone"
+	})
+	readAt := time.Now()
+	if reading.state == "gone" {
+		t.Logf("the stopped publisher's backend %d was ended %v after the stop before it was read waiting on its client; it was last read as: %s", writer, readAt.Sub(stopped).Round(time.Millisecond), last)
+	} else {
+		t.Logf("the stopped publisher's backend %d, %v after the stop: %s", writer, readAt.Sub(stopped).Round(time.Millisecond), reading)
+		if !reading.ownerLock {
+			t.Fatalf("the stopped publisher's backend %d does not hold %s: %s", writer, ownerKey, reading)
+		}
+	}
+	// The other process's next write is on the issue: read it, and the backend it waits behind,
+	// while it waits.
+	waited := make(chan struct{})
+	t.Cleanup(func() { <-waited })
+	go func() {
+		defer close(waited)
+		for deadline := stopped.Add(standbyTakesWithin); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			var waiter int32
+			if pool.QueryRow(ctx, `select pid from pg_stat_activity where $1::integer = any(pg_blocking_pids(pid)) limit 1`, writer).Scan(&waiter) != nil {
+				continue
+			}
+			waiting, err := readBackend(pool, waiter, ownerKey)
+			holding, holdErr := readBackend(pool, writer, ownerKey)
+			t.Logf("%v after the stop, backend %d waits behind the stopped publisher's backend %d: %s (%v); backend %d: %s (%v)",
+				time.Since(stopped).Round(time.Millisecond), waiter, writer, waiting, err, writer, holding, holdErr)
+			return
+		}
+		t.Logf("no backend waited behind the stopped publisher's backend %d within %v of the stop", writer, standbyTakesWithin)
+	}()
+	return frozenStopped{
+		at: stopped, atBy: stoppedBy,
+		tookOver: func(t *testing.T) {
+			t.Helper()
+			end := <-ending
+			ending <- end
+			if end.err != nil {
+				t.Fatalf("read the stopped publisher's backend: %v", end.err)
+			}
+			if end.gone.IsZero() {
+				holding, err := readBackend(pool, writer, ownerKey)
+				t.Fatalf("the stopped publisher's backend %d still holds %s %v after the stop: %s (%v)", writer, ownerKey, end.seen.Sub(stopped).Round(time.Millisecond), holding, err)
+			}
+			t.Logf("the stopped publisher's backend %d, and %s with it, ended %v to %v after the stop (the read that found it gone was issued %v after the stop)", writer, ownerKey,
+				end.seen.Sub(stopped).Round(time.Millisecond), end.gone.Sub(stopped).Round(time.Millisecond), end.goneIssued.Sub(stopped).Round(time.Millisecond))
+			if after := end.gone.Sub(stopped); after > standbyTakesWithin {
+				t.Errorf("the stopped publisher's backend held %s until %v after the stop, past the %v bound: every write of %s through the other process waited on it", ownerKey, after.Round(time.Millisecond), standbyTakesWithin, issue)
+			}
+		},
+		resumed: func(t *testing.T) {
+			t.Helper()
+			select {
+			case err := <-written:
+				t.Logf("the comment the publisher was writing when it was stopped answered %v once it resumed", err)
+				requireSessionEnded(t, err, "the comment the publisher was writing when it was stopped")
+			case <-time.After(takeOverWithin):
+				t.Fatalf("the comment the publisher was writing when it was stopped had no answer %v after it resumed", takeOverWithin)
+			}
+		},
+	}
+}
+
+// requireSessionEnded requires err to be the answer of a request whose database session the
+// other process ended under it when it took the publisher hold over: 503 DATABASE_SESSION_ENDED,
+// a named answer the caller can act on rather than an unnamed 500.
+func requireSessionEnded(t *testing.T, err error, what string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), "status 503") || !strings.Contains(err.Error(), `"DATABASE_SESSION_ENDED"`) {
+		t.Errorf("%s answered %v, want 503 DATABASE_SESSION_ENDED: its session was ended when the other process took the publisher hold over", what, err)
+	}
+}
+
+// heldWrite is a comment write a process makes inside its own transaction, held there by the
+// comments table in share mode (holdAWriteInItsTransaction): writer is its backend, which holds
+// the issue's owner lock while it waits behind the table; written answers the write once it
+// ends; letGo lets the table go, once.
+type heldWrite struct {
+	writer  int32
+	written <-chan error
+	letGo   func()
+}
+
+// holdAWriteInItsTransaction writes a comment of body on issue through p and holds it inside its
+// transaction, after the statement that takes the issue's owner lock and before the insert of the
+// comment: a transaction of the test's own holds the comments table in share mode until letGo. It
+// returns once the write's backend holds the owner lock and waits behind that table.
+func holdAWriteInItsTransaction(t *testing.T, scene *outboxScene, p *dispatchProcess, issue, body string) heldWrite {
+	t.Helper()
+	ctx := context.Background()
+	pool := scene.pair.database.Pool
+	ownerKey := store.IssueOwner(issue).LockKey()
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds the comments table: %v", err)
+	}
+	letGo := sync.OnceFunc(func() {
+		if err := gate.Rollback(ctx); err != nil {
+			t.Errorf("let the comments table go: %v", err)
+		}
+	})
+	t.Cleanup(letGo)
+	var gatePID int32
+	if err := gate.QueryRow(ctx, `select pg_backend_pid()`).Scan(&gatePID); err != nil {
+		t.Fatalf("read the gate's backend: %v", err)
+	}
+	if _, err := gate.Exec(ctx, `lock table comments in share mode`); err != nil {
+		t.Fatalf("hold the comments table: %v", err)
+	}
+	written := make(chan error, 1)
+	go func() { written <- scene.write(p, issue, body) }()
+	var writer int32
+	waitUntil(t, takeOverWithin, "the comment write holding "+ownerKey+" and waiting behind the comments table", func() bool {
+		return pool.QueryRow(ctx, `
+			select a.pid from pg_stat_activity a join pg_locks l on l.pid = a.pid
+			where $1::integer = any(pg_blocking_pids(a.pid))
+			  and l.locktype = 'advisory' and l.granted and l.classid::bigint = $2 and l.objsubid = 2
+			  and l.objid::bigint = (hashtext($3)::bigint + 4294967296) % 4294967296
+			limit 1
+		`, gatePID, store.OwnerLockNamespace, ownerKey).Scan(&writer) == nil
+	})
+	return heldWrite{writer: writer, written: written, letGo: letGo}
+}
+
+// endedSessionLine is the line the outbox logs for each database session of the publisher hold's
+// previous holder it ends as it takes the hold over (outbox's endReplacedSessions).
+const endedSessionLine = "ended a database session of the publisher hold's previous holder"
+
+// endedSessions is the process ids of the sessions of previous that p logged it ended
+// (endedSessionLine).
+func (p *dispatchProcess) endedSessions(t *testing.T, previous string) map[int32]string {
+	t.Helper()
+	ended := map[int32]string{}
+	for _, line := range p.outboxLines(t) {
+		if line.message != endedSessionLine || !strings.Contains(line.text, "previous="+previous) {
+			continue
+		}
+		match := regexp.MustCompile(` pid=(\d+) `).FindStringSubmatch(line.text + " ")
+		if match == nil {
+			t.Fatalf("the line %q names no pid", line.text)
+		}
+		pid, err := strconv.ParseInt(match[1], 10, 32)
+		if err != nil {
+			t.Fatalf("read the pid of the line %q: %v", line.text, err)
+		}
+		ended[int32(pid)] = line.text
+	}
+	return ended
+}
+
+// plantedSession is a session of no Dispatch process, on the pair's database, named name.
+type plantedSession struct {
+	name string
+	conn *pgx.Conn
+	pid  int32
+}
+
+// plantSessions opens two sessions on the pair's database that a standby ending identity's
+// sessions must leave alone: one named for another process, a uuid of its own at the end, and one
+// whose name holds identity with one more character after it, so it shares every byte of
+// identity's name but its end.
+func plantSessions(t *testing.T, pair *dispatchPair, identity string) []plantedSession {
+	t.Helper()
+	ctx := context.Background()
+	var planted []plantedSession
+	for _, name := range []string{"dispatch-planted " + uuid.NewString(), "dispatch-planted " + identity + "0"} {
+		config, err := pgx.ParseConfig(pair.databaseURL(t))
+		if err != nil {
+			t.Fatalf("read the pair's database URL: %v", err)
+		}
+		config.RuntimeParams["application_name"] = name
+		conn, err := pgx.ConnectConfig(ctx, config)
+		if err != nil {
+			t.Fatalf("open the planted session %q: %v", name, err)
+		}
+		t.Cleanup(func() { _ = conn.Close(context.Background()) })
+		var pid int32
+		if err := conn.QueryRow(ctx, `select pg_backend_pid()`).Scan(&pid); err != nil {
+			t.Fatalf("read the planted session's backend: %v", err)
+		}
+		planted = append(planted, plantedSession{name: name, conn: conn, pid: pid})
+	}
+	return planted
+}
+
+// requirePlantedSessionsLive fails the test for each planted session that no longer answers, or
+// that p logged it ended.
+func requirePlantedSessionsLive(t *testing.T, planted []plantedSession, ended map[int32]string) {
+	t.Helper()
+	for _, session := range planted {
+		var one int
+		if err := session.conn.QueryRow(context.Background(), `select 1`).Scan(&one); err != nil {
+			t.Errorf("the planted session %q (backend %d) no longer answers: %v", session.name, session.pid, err)
+		}
+		if line, ok := ended[session.pid]; ok {
+			t.Errorf("the planted session %q (backend %d) was ended: %s", session.name, session.pid, line)
+		}
+	}
+}
+
+// slowHolderKey is the advisory key the slow-publisher row holds to hold back the publisher's
+// writes of duty_holds.
+const slowHolderKey = int64(4815162347)
+
+// A publisher whose writes of the publisher hold the database holds back - a process that still
+// runs, but whose renewals do not get through - loses the hold, and the other process takes it
+// within 6 s on the database's clock. The slow process cannot release the hold either, so its row
+// lapses, and the other process, replacing it, ends every database session of the slow process
+// (outbox's endReplacedSessions) and no other: a comment the slow process was writing inside its
+// transaction at that moment answers 503 DATABASE_SESSION_ENDED, and two sessions this test
+// opened - one named for another process, one whose name holds the slow process's identity and
+// one character more - still answer. Once the database lets its writes through again the slow
+// process stands by: a comment written through it is stored, its /healthz reads outbox_publisher
+// false, it takes the hold no sooner than the other process stops, and when the other process is
+// killed it takes the hold within 6 s of the kill.
+//
+// The publisher's writes are held by a statement trigger on duty_holds, which has each update or
+// delete sent by a session whose application_name ends with the publisher's identity wait for a
+// shared hold of slowHolderKey, which the test holds exclusively: before the statement reaches a
+// row, so the row itself stays free for the other process's take.
+func TestASlowPublisherLosesTheHoldAnswersItsWriteInFlightNamedAndStandsBy(t *testing.T) {
+	pair := startOutboxPair(t)
+	scene := newOutboxScene(t, pair, 3, 1, 1)
+	publisher, _ := waitForPublisher(t, pair, takeOverWithin)
+	standby := pair.other(publisher)
+	writes := recordHoldWrites(t, pair)
+	holder := writes.holder(t, publisher)
+	ctx := context.Background()
+	pool := pair.database.Pool
+	for index := range 4 {
+		if err := scene.write(standby, scene.issues[index%len(scene.issues)], fmt.Sprintf("Before the slow stretch %d.", index)); err != nil {
+			t.Fatalf("write a comment: %v", err)
+		}
+	}
+	scene.waitDelivered(t)
+	planted := plantSessions(t, pair, holder.String())
+
+	if _, err := pool.Exec(ctx, fmt.Sprintf(`
+		create function test_hold_slow_publisher() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock_shared(%d);
+			return null;
+		end $$;
+		create trigger test_hold_slow_publisher before update or delete on duty_holds for each statement
+			when (right(current_setting('application_name'), 36) = '%s') execute function test_hold_slow_publisher();
+	`, slowHolderKey, holder)); err != nil {
+		t.Fatalf("hold the publisher's writes of the publisher hold: %v", err)
+	}
+	slow, err := pgx.Connect(ctx, pair.databaseURL(t))
+	if err != nil {
+		t.Fatalf("connect the session that holds the publisher back: %v", err)
+	}
+	t.Cleanup(func() { _ = slow.Close(context.Background()) })
+
+	held := holdAWriteInItsTransaction(t, scene, publisher, scene.issues[0], "Written while the publisher is slow.")
+	writes.waitForRenewal(t, holder)
+	if _, err := slow.Exec(ctx, `select pg_advisory_lock($1)`, slowHolderKey); err != nil {
+		t.Fatalf("hold the publisher's writes back: %v", err)
+	}
+	slowed := time.Now()
+	var slowedBy time.Time
+	if err := pool.QueryRow(ctx, `select clock_timestamp()`).Scan(&slowedBy); err != nil {
+		t.Fatalf("read the database's clock after the publisher was slowed: %v", err)
+	}
+
+	lost := publisher.waitForOutboxLine(t, lostHold, slowed, takeOverWithin)
+	t.Logf("the slow publisher logged that it lost the hold %v after its writes were held", lost.at.Sub(slowed).Round(time.Millisecond))
+	writes.requireTakeWithin(t, holder, slowedBy, "the publisher's writes were held", standbyTakesWithin)
+	select {
+	case err := <-held.written:
+		t.Logf("the comment the slow publisher was writing answered %v", err)
+		requireSessionEnded(t, err, "the comment the slow publisher was writing")
+	case <-time.After(takeOverWithin):
+		t.Fatalf("the comment the slow publisher was writing had no answer %v after the other process took the hold", takeOverWithin)
+	}
+	// The write's answer can reach this test before the other process's lines about the sessions it
+	// ended reach its output, since it logs them once the whole statement has answered: wait for
+	// the line naming the write's backend, then read them all.
+	var ended map[int32]string
+	waitUntil(t, takeOverWithin, fmt.Sprintf("the other process logging the end of the slow publisher's write's backend %d", held.writer), func() bool {
+		ended = standby.endedSessions(t, holder.String())
+		_, ok := ended[held.writer]
+		return ok
+	})
+	t.Logf("the other process ended %d sessions of the slow publisher", len(ended))
+	requirePlantedSessionsLive(t, planted, ended)
+
+	// The database lets the slow process's writes through again.
+	if _, err := slow.Exec(ctx, `select pg_advisory_unlock($1)`, slowHolderKey); err != nil {
+		t.Fatalf("let the publisher's writes through: %v", err)
+	}
+	held.letGo()
+	if _, err := pool.Exec(ctx, `drop trigger test_hold_slow_publisher on duty_holds`); err != nil {
+		t.Fatalf("drop the trigger that held the publisher back: %v", err)
+	}
+	if err := scene.write(publisher, scene.issues[1], "Written through the slow process once it caught up."); err != nil {
+		t.Errorf("a comment written through the slow process once its writes got through: %v", err)
+	}
+	scene.waitDelivered(t)
+	for process, want := range map[*dispatchProcess]bool{publisher: false, standby: true} {
+		report, err := process.readHealthReport()
+		if err != nil || report.publishing() != want {
+			t.Errorf("process %s's /healthz reads %v (%v), want outbox_publisher %v", pair.name(process), report, err, want)
+		}
+	}
+
+	taker := writes.holder(t, standby)
+	killed, killedBy := writes.signalAfterRenewal(t, standby, taker, syscall.SIGKILL, 0)
+	standby.WaitExit(t, "SIGKILL")
+	for _, line := range publisher.outboxLines(t) {
+		if line.message == tookHold && line.at.After(slowed) && line.at.Before(killed.Truncate(time.Millisecond)) {
+			t.Errorf("the slow process took the publisher hold while the other process still held it: %s", line.text)
+		}
+	}
+	writing := scene.writeAtRate(t, 4, publisher)
+	defer writing()
+	scene.requireTakeOver(t, publisher, killed, "the other process was killed")
+	writes.requireTakeWithin(t, taker, killedBy, "the kill", standbyTakesWithin)
+	writing()
+	scene.waitDelivered(t)
+	scene.requireOnceAndInOrder(t)
+}
+
+// backendReading is what Postgres reads of one backend: its state, what it waits on, its last
+// statement, the locks it holds or waits for, and whether it holds one owner's lock.
+type backendReading struct {
+	state, wait, query string
+	locks              []string
+	ownerLock          bool
+}
+
+func (r backendReading) String() string {
+	return fmt.Sprintf("state %q, waiting on %q, last statement %q, locks %v", r.state, r.wait, r.query, r.locks)
+}
+
+// readBackend reads backend pid from pg_stat_activity and pg_locks, and whether it holds the
+// advisory lock of the owner whose lock key is ownerKey (store.LockOwner's). A backend that has
+// left pg_stat_activity reads as state "gone".
+func readBackend(pool *store.Pool, pid int32, ownerKey string) (backendReading, error) {
+	var r backendReading
+	err := pool.QueryRow(context.Background(), `
+		select coalesce(a.state, ''), coalesce(a.wait_event_type || ':' || a.wait_event, ''),
+		       left(regexp_replace(coalesce(a.query, ''), '\s+', ' ', 'g'), 200),
+		       coalesce(array_agg(l.locktype || ' ' || coalesce(l.relation::regclass::text, l.classid || '/' || l.objid || '/' || l.objsubid, '')
+		                          || ' ' || l.mode || case when l.granted then '' else ' (waiting)' end
+		                          order by l.locktype, l.mode, l.relation::regclass::text) filter (where l.pid is not null), '{}'),
+		       coalesce(bool_or(l.locktype = 'advisory' and l.granted and l.classid::bigint = $2 and l.objsubid = 2
+		                        and l.objid::bigint = (hashtext($3)::bigint + 4294967296) % 4294967296), false)
+		from pg_stat_activity a
+		left join pg_locks l on l.pid = a.pid and l.locktype in ('advisory', 'relation', 'tuple', 'transactionid')
+		where a.pid = $1
+		group by a.state, a.wait_event_type, a.wait_event, a.query
+	`, pid, store.OwnerLockNamespace, ownerKey).Scan(&r.state, &r.wait, &r.query, &r.locks, &r.ownerLock)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return backendReading{state: "gone"}, nil
+	}
+	return r, err
 }
 
 // A role's events reach the role's holder once and in order, and a role that moves sends the

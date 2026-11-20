@@ -29,7 +29,7 @@ type heldPublisher struct {
 	answers []chan error
 }
 
-func (p *heldPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *heldPublisher) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

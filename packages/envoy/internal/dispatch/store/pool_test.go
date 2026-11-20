@@ -370,8 +370,8 @@ func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 	if err := conn.QueryRow(ctx, "select current_setting('application_name')").Scan(&name); err != nil {
 		t.Fatalf("read the room-appends connection's application name: %v", err)
 	}
-	if name != roomAppendsApplicationName {
-		t.Fatalf("room-appends connection's application_name = %q, want %q", name, roomAppendsApplicationName)
+	if want := roomAppendsApplicationName + " " + database.Pool.Identity().String(); name != want {
+		t.Fatalf("room-appends connection's application_name = %q, want %q", name, want)
 	}
 	if got := database.Pool.Stat().AcquireCount(); got != sharedAcquires {
 		t.Fatalf("a room-appends connection took %d connections of the shared pool, want none", got-sharedAcquires)
@@ -393,8 +393,8 @@ func TestRoomAppendsIsAPoolOfItsOwnThatUseCounts(t *testing.T) {
 	if err := rooms.QueryRow(ctx, "select current_setting('application_name')").Scan(&name); err != nil {
 		t.Fatalf("read the rooms connection's application name: %v", err)
 	}
-	if name != roomsApplicationName {
-		t.Fatalf("rooms connection's application_name = %q, want %q", name, roomsApplicationName)
+	if want := roomsApplicationName + " " + database.Pool.Identity().String(); name != want {
+		t.Fatalf("rooms connection's application_name = %q, want %q", name, want)
 	}
 }
 

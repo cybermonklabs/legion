@@ -120,8 +120,8 @@ type sendClock struct {
 	first chan struct{}
 }
 
-func (c *sendClock) WindowUntil(deadline func() time.Time) bus.Sender {
-	return sendClockSender{Sender: c.Client.WindowUntil(deadline), clock: c}
+func (c *sendClock) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return sendClockSender{Sender: c.Client.WindowUntil(ctx, deadline), clock: c}
 }
 
 type sendClockSender struct {

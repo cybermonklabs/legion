@@ -367,8 +367,8 @@ type outstandingSends struct {
 }
 
 // WindowUntil wraps the real window, so every send of it is counted.
-func (c *outstandingSends) WindowUntil(deadline func() time.Time) bus.Sender {
-	return outstandingWindow{Sender: c.Publisher.WindowUntil(deadline), sends: c}
+func (c *outstandingSends) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return outstandingWindow{Sender: c.Publisher.WindowUntil(ctx, deadline), sends: c}
 }
 
 // began counts one more send outstanding and keeps the peak.

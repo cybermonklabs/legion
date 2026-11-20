@@ -1074,7 +1074,7 @@ type failingPublisher struct {
 	failures int
 }
 
-func (p *failingPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p *failingPublisher) WindowUntil(context.Context, func() time.Time) bus.Sender { return p }
 
 func (p *failingPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 	p.mu.Lock()
@@ -1402,7 +1402,7 @@ type takeoverPublisher struct {
 	takeOver func()
 }
 
-func (p *takeoverPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p *takeoverPublisher) WindowUntil(context.Context, func() time.Time) bus.Sender { return p }
 
 func (p *takeoverPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 	if item.Topic != p.topic {

@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -156,6 +157,10 @@ func logRefusal() {
 // so no caller can reach past the refusal.
 type Pool struct {
 	pool *pgxpool.Pool
+	// identity is the server process's identity (process_identity.go), which every connection of
+	// this pool and of the separate pools opened from it names at the end of its
+	// application_name; uuid.Nil for a pool NewPool wrapped whose connections name none.
+	identity uuid.UUID
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
 	// caller that loses the race is told the pool is closed rather than opening one nothing
 	// will ever close.
@@ -179,9 +184,13 @@ type Pool struct {
 	healthClosed bool
 }
 
-// NewPool wraps an open pgx pool.
+// NewPool wraps an open pgx pool. Its identity (Identity) is the one its connections name at the
+// end of their application_name (identityNamedBy): a pool opened from a copy of an opened store's
+// configuration, as a test's traced or reopened pool is, names that store's process, and one whose
+// connections name no identity has none (uuid.Nil). The identity is read from the name, never
+// given, so a pool's identity is always the one its sessions carry.
 func NewPool(pool *pgxpool.Pool) *Pool {
-	return &Pool{pool: pool}
+	return &Pool{pool: pool, identity: identityNamedBy(pool.Config().ConnConfig.RuntimeParams["application_name"])}
 }
 
 // sharedPoolSize bounds the shared pool, deliberately and in code. pgx's default,
@@ -431,10 +440,10 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // writes on the compaction pool (Pool.Compaction).
 //
 // The Legion sampler is one of those callers, and one connection is what it costs the instance: a
-// serving process opens at most 113 rather than the 112 it would without it
+// serving process opens at most 114 rather than the 113 it would without it
 // (ConnectionsPerProcess), and the default tier's 500 connections less PostgreSQL's 3 reserved
-// slots still admit four app pods holding connections at once (452 of 497) and still refuse five
-// (565), exactly as they do at 112 (448 and 560), so it moves no replica boundary. A deployment on
+// slots still admit four app pods holding connections at once (456 of 497) and still refuse five
+// (570), exactly as they do at 113 (452 and 565), so it moves no replica boundary. A deployment on
 // another tier reads SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
@@ -536,12 +545,15 @@ func (c *LeaseCallers) Complete() error {
 }
 
 // outboxPoolSize bounds the pool the events outbox reads and records events through, and takes
-// and renews its publisher hold on (duty.Hold). The outbox's scan is one goroutine that runs one
-// statement at a time and closes each cursor before its next statement, and the hold's renewal
-// runs beside it on a goroutine of its own, so two connections are every connection it can use: a
-// renewal never waits behind a batch's statement, which may take up to the five seconds a batch's
-// record is allowed, five times the hold's one second between renewals.
-const outboxPoolSize = 2
+// and renews its publisher hold on (duty.Hold). Three users take a connection of it at once, each
+// one statement at a time, so three connections are every connection it can use: the outbox's
+// scan, one goroutine whose batches run one statement at a time and close each cursor before
+// their next (lanes); the hold's renewal, on a goroutine of its own; and, after a late take-over,
+// the ending of the previous holder's sessions that runs beside the first scan
+// (outbox.endLateSessions). So a renewal never waits behind a batch's statement or that ending,
+// each of which may take up to the five seconds a batch's record is allowed, five times the hold's
+// one second between renewals.
+const outboxPoolSize = 3
 
 // registryPoolSize bounds the pool the registry of live server processes stamps this process's row
 // through: processes.Register opens it from this pool's configuration with MaxConns 1, outside the
@@ -581,7 +593,7 @@ func (p *Pool) Outbox() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return &Pool{pool: opened, identity: p.identity}, nil
 }
 
 // compactionPoolSize bounds the pool a document's compaction reads and writes through. A
@@ -627,7 +639,7 @@ func (p *Pool) TextTrees() (*Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewPool(opened), nil
+	return &Pool{pool: opened, identity: p.identity}, nil
 }
 
 // horizonPoolSize bounds the pool the event log's safe horizon (events.Horizon) works through. The
@@ -656,13 +668,13 @@ func (p *Pool) Horizon() (*pgxpool.Pool, error) {
 // shared pool. It refuses from the moment Close begins (ErrPoolClosed). Each caller holds mu for
 // the whole check-and-open so two of them cannot open two pools, and one opened after Close would
 // be a pool nobody closes.
-func (p *Pool) separate(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+func (p *Pool) separate(field **pgxpool.Pool, size int32, name, separateName string) (*pgxpool.Pool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return nil, ErrPoolClosed
 	}
-	return p.openSeparateLocked(field, size, name, applicationName)
+	return p.openSeparateLocked(field, size, name, separateName)
 }
 
 // healthPool is separate for the health probe's pool, whose close rule is its own: it opens and
@@ -678,10 +690,11 @@ func (p *Pool) healthPool() (*pgxpool.Pool, error) {
 }
 
 // openSeparateLocked is the pool held at field, opened when there is none, sized at size and
-// copied from the shared pool's configuration. Its connections name themselves applicationName in
-// pg_stat_activity, or keep the shared pool's name when it is empty. Its caller holds mu and has
-// checked the pool is not closed for it.
-func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applicationName string) (*pgxpool.Pool, error) {
+// copied from the shared pool's configuration. Its connections name themselves separateName,
+// followed by the pool's identity (applicationName), in pg_stat_activity, or keep the shared
+// pool's name, which already ends with that identity, when separateName is empty. Its caller
+// holds mu and has checked the pool is not closed for it.
+func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, separateName string) (*pgxpool.Pool, error) {
 	if *field != nil {
 		return *field, nil
 	}
@@ -692,11 +705,11 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 	// pool - which pgxpool re-attempts, and puddle refuses as full, every health-check period.
 	config.MinConns = 0
 	config.MinIdleConns = 0
-	if applicationName != "" {
+	if separateName != "" {
 		if config.ConnConfig.RuntimeParams == nil {
 			config.ConnConfig.RuntimeParams = make(map[string]string)
 		}
-		config.ConnConfig.RuntimeParams["application_name"] = applicationName
+		config.ConnConfig.RuntimeParams["application_name"] = applicationName(separateName, p.identity)
 	}
 	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {

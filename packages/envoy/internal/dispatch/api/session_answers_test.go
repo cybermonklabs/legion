@@ -1108,7 +1108,7 @@ type refusingOutboxPublisher struct {
 	refusedPast int
 }
 
-func (p *refusingOutboxPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p *refusingOutboxPublisher) WindowUntil(context.Context, func() time.Time) bus.Sender { return p }
 
 func (p *refusingOutboxPublisher) PublishAsync(item contracts.Envelope) <-chan error {
 	if len(item.Payload) <= p.refusedPast {

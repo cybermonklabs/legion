@@ -168,9 +168,10 @@ func newRoomSync(service *Service) *roomSync {
 	return &roomSync{service: service, awareness: service.awarenessRelay.received}
 }
 
-// ProcessID is this process's id among the envoy-dispatch processes on its database, minted once
-// when the service is built. cmd/dispatch names the process's listener connection with it, after
-// ListenerApplicationPrefix, which is what makes the process a member (roomSyncMembers).
+// ProcessID is this process's id among the envoy-dispatch processes on its database, set once
+// when the service is built (Deps.ProcessID). cmd/dispatch names the process's listener
+// connection with it, after ListenerApplicationPrefix, which is what makes the process a member
+// (roomSyncMembers).
 func (s *Service) ProcessID() string {
 	return s.processID
 }

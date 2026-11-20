@@ -150,11 +150,17 @@ func TestTheOwnerLockRowsDecideTheirCaseByThePreviousBuildsProtocol(t *testing.T
 }
 
 // The application_name each build's connections carry, so the test tells their backends apart in
-// pg_stat_activity.
+// pg_stat_activity. A build of this tree follows the name with its process's identity
+// (store.Pool.Identity), so a backend is matched by the name alone or the name and a space
+// (namedApplication).
 const (
 	previousApplication = "dispatch-previous-build"
 	currentApplication  = "dispatch-current-build"
 )
+
+// namedApplication is the condition a backend whose connection carries the application name $1
+// meets: the name alone, or followed by a space and the process's identity.
+const namedApplication = `(application_name = $1 or starts_with(application_name, $1 || ' '))`
 
 // previousRowLock is the statement the previous build's PATCH takes an issue's row with, first,
 // before it reads the issue (its api.lockIssueRows).
@@ -202,7 +208,7 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
-			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
+			where datname = current_database() and `+namedApplication+` and wait_event_type = 'Lock'`, application)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,7 +440,8 @@ func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, st
 	err := database.Pool.QueryRow(context.Background(), `
 		select activity.pid, activity.query
 		from pg_stat_activity activity join pg_locks lock on lock.pid = activity.pid
-		where activity.datname = current_database() and activity.application_name = $1
+		where activity.datname = current_database()
+		  and (activity.application_name = $1 or starts_with(activity.application_name, $1 || ' '))
 		  and lock.locktype = 'advisory' and not lock.granted and lock.mode = 'ExclusiveLock'
 		  and lock.classid::bigint = $2 and lock.objid::bigint = $3 and lock.objsubid = 2
 		  and $4::integer = any(pg_blocking_pids(activity.pid))`,
@@ -465,7 +472,8 @@ func pauseLabelWrites(t *testing.T, database *store.Store, application string) p
 		end;
 		$$`,
 		fmt.Sprintf(`create trigger dispatch_test_hold_labels before update of labels on issues for each statement
-			when (current_setting('application_name') = '%s') execute function dispatch_test_hold_labels('%d')`, application, holdLabels),
+			when (current_setting('application_name') = '%[1]s' or starts_with(current_setting('application_name'), '%[1]s '))
+			execute function dispatch_test_hold_labels('%[2]d')`, application, holdLabels),
 	} {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
 			t.Fatalf("hold the label writes of %s: %v", application, err)

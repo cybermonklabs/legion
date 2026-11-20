@@ -1,6 +1,7 @@
 package bus_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -75,7 +76,7 @@ func answerOf(t *testing.T, outcome <-chan error, within time.Duration) error {
 // runs out of time though a subscriber of that subject answered it at once.
 func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	_, url, client := requestClient(t)
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	stored := contracts.LegacyAgentSubject("ses_request_stored")
 	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: 2 * time.Second}), 5*time.Second); err != nil {
@@ -99,7 +100,7 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 	_, _, client := requestClient(t)
 
 	started := time.Now()
-	err := answerOf(t, client.WindowUntil(nil).Request("notifications.role.request-nobody", forwardEnvelope("nobody"), bus.RequestOptions{MsgID: bus.ForwardMsgID("nobody", "notifications.role.request-nobody"), Timeout: timeout}), 5*time.Second)
+	err := answerOf(t, client.WindowUntil(t.Context(), nil).Request("notifications.role.request-nobody", forwardEnvelope("nobody"), bus.RequestOptions{MsgID: bus.ForwardMsgID("nobody", "notifications.role.request-nobody"), Timeout: timeout}), 5*time.Second)
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrUnavailable) {
 		t.Fatalf("an unanswered Request returned %v, want ErrNotAcknowledged, not ErrUnavailable", err)
@@ -118,7 +119,7 @@ func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
 // unaffected.
 func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	server, _, client := requestClient(t)
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
 		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 300 * time.Millisecond}), 5*time.Second)
@@ -147,7 +148,7 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 // to another subject is a copy of its own there.
 func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	_, _, client := requestClient(t)
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 	item := forwardEnvelope("once")
 	holder := contracts.LegacyAgentSubject("ses_request_once")
 	other := contracts.LegacyAgentSubject("ses_request_other")
@@ -192,7 +193,7 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 	}))
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	pending := window.Request("notifications.role.request-lost", forwardEnvelope("lost"), bus.RequestOptions{MsgID: bus.ForwardMsgID("lost", "notifications.role.request-lost"), Timeout: 30 * time.Second})
 	server.Stop(t)
@@ -214,7 +215,7 @@ func TestARequestWhoseConnectionIsLostAnswersUnavailable(t *testing.T) {
 func TestARequestToASubjectNATSRefusesIsRefusedAtOnce(t *testing.T) {
 	_, _, client := requestClient(t)
 	select {
-	case err := <-client.WindowUntil(nil).Request("notifications.agent..bad", forwardEnvelope("bad"), bus.RequestOptions{MsgID: bus.ForwardMsgID("bad", "notifications.agent..bad")}):
+	case err := <-client.WindowUntil(t.Context(), nil).Request("notifications.agent..bad", forwardEnvelope("bad"), bus.RequestOptions{MsgID: bus.ForwardMsgID("bad", "notifications.agent..bad")}):
 		if !errors.Is(err, bus.ErrRefused) {
 			t.Fatalf("a Request to an invalid subject answered %v, want ErrRefused", err)
 		}
@@ -245,7 +246,7 @@ func TestARequestAFullStreamRefusesIsAnsweredByThatRefusalAtOnce(t *testing.T) {
 	holder := contracts.LegacyAgentSubject("ses_request_full")
 	item := forwardEnvelope("full")
 	started := time.Now()
-	err := answerOf(t, client.WindowUntil(nil).Request(holder, item,
+	err := answerOf(t, client.WindowUntil(t.Context(), nil).Request(holder, item,
 		bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: timeout}), 30*time.Second)
 	elapsed := time.Since(started)
 	if !errors.Is(err, bus.ErrStreamFull) || errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrRefused) {
@@ -263,7 +264,7 @@ func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
 	const senders = 20
 	_, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_request_many")
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	var wg sync.WaitGroup
 	failures := make(chan error, 2*senders)
@@ -294,7 +295,7 @@ func TestManyRequestsInFlightOnOneWindowEachTakeTheirOwnAnswer(t *testing.T) {
 // silent server), and ErrUnavailable once the connection is lost.
 func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	server, _, client := requestClient(t)
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	if err := window.Probe(time.Second); err != nil {
 		t.Fatalf("a Probe of a live connection returned %v, want nil", err)
@@ -323,11 +324,42 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	}
 }
 
-// A window with a deadline (WindowUntil) writes nothing at or past it. Its first send, made while
-// the client has no connection, waits for one only until the deadline, 200 ms on, and answers
-// ErrWindowDeadline then, though the connection comes back later and the window's wait for a
-// connection is otherwise 5 s: the stream holds nothing it sent once the client is connected again.
-// A window pinned to a live connection answers a send past its deadline the same way, at once.
+// A window's one wait for a connection, its Probe's, ends when the caller's context does, and
+// answers that end rather than ErrUnavailable, which would read as NATS lost: the client here
+// reconnects to a server that stays down, the Probe is given 30 s, and the context ends 100 ms in.
+func TestAWindowsWaitForAConnectionEndsWithItsCallersContext(t *testing.T) {
+	server, _, client := requestClient(t)
+	server.Stop(t)
+	waitUntil := time.Now().Add(5 * time.Second)
+	for client.Connected() {
+		if time.Now().After(waitUntil) {
+			t.Fatal("the client still reads connected 5s after its server stopped")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	const probeWait = 30 * time.Second
+	ctx, cancel := context.WithCancel(t.Context())
+	window := client.WindowUntil(ctx, nil)
+	stop := time.AfterFunc(100*time.Millisecond, cancel)
+	defer stop.Stop()
+	started := time.Now()
+	err := window.Probe(probeWait)
+	elapsed := time.Since(started)
+	if !errors.Is(err, context.Canceled) || errors.Is(err, bus.ErrUnavailable) {
+		t.Fatalf("a Probe whose caller's context ended while it waited for a connection answered %v after %s, want the context's end and not ErrUnavailable",
+			err, elapsed.Round(time.Millisecond))
+	}
+	if elapsed >= probeWait {
+		t.Fatalf("the Probe answered %s after it began, its whole %s, though its caller's context ended 100ms in", elapsed.Round(time.Millisecond), probeWait)
+	}
+}
+
+// A window with a deadline (WindowUntil) writes nothing at or past it, and its sends wait for no
+// connection: a first send made while the client has none answers ErrUnavailable at once, before
+// the deadline 2 s on, and a Request past the deadline answers ErrWindowDeadline; the stream holds
+// nothing of either once the client is connected again. A window pinned to a live connection
+// answers a send past its deadline the same way, at once.
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	server, _, client := requestClient(t)
 	subject := contracts.LegacyAgentSubject("ses_window_deadline")
@@ -341,30 +373,26 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	}
 
 	started := time.Now()
-	deadline := started.Add(200 * time.Millisecond)
-	window := client.WindowUntil(func() time.Time { return deadline })
-	restarted := make(chan struct{})
-	go func() {
-		defer close(restarted)
-		time.Sleep(100 * time.Millisecond)
-		server.Start(t)
-	}()
+	deadline := started.Add(2 * time.Second)
+	window := client.WindowUntil(t.Context(), func() time.Time { return deadline })
 	item := forwardEnvelope("deadline")
 	item.Topic = subject
 	err := answerOf(t, window.PublishAsync(item), 10*time.Second)
-	elapsed := time.Since(started)
-	if !errors.Is(err, bus.ErrWindowDeadline) || errors.Is(err, bus.ErrUnavailable) {
-		t.Fatalf("a send whose wait for a connection met the window's deadline answered %v, want ErrWindowDeadline and not ErrUnavailable", err)
+	answered := time.Now()
+	if !errors.Is(err, bus.ErrUnavailable) || errors.Is(err, bus.ErrWindowDeadline) {
+		t.Fatalf("a send made while the client had no connection answered %v, want ErrUnavailable and not ErrWindowDeadline", err)
 	}
-	if elapsed > 700*time.Millisecond {
-		t.Fatalf("the send answered %s after it began, want about the 200ms to its deadline", elapsed)
+	if !answered.Before(deadline) {
+		t.Fatalf("the send made while the client had no connection answered %s after it began, at or past its deadline 2s on: it waited for a connection",
+			answered.Sub(started).Round(time.Millisecond))
 	}
+	time.Sleep(time.Until(deadline))
 	err = answerOf(t, window.Request(subject, forwardEnvelope("deadline-request"), bus.RequestOptions{MsgID: bus.ForwardMsgID("deadline-request", subject), Timeout: time.Second}), time.Second)
 	if !errors.Is(err, bus.ErrWindowDeadline) {
 		t.Fatalf("a Request past the window's deadline answered %v, want ErrWindowDeadline", err)
 	}
 
-	<-restarted
+	server.Start(t)
 	waitUntil = time.Now().Add(10 * time.Second)
 	for !client.Connected() {
 		if time.Now().After(waitUntil) {
@@ -379,11 +407,11 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 		t.Fatalf("read the stream: %v", err)
 	}
 	if got := info.State.Subjects[subject]; got != 0 {
-		t.Fatalf("the stream holds %d messages the window sent past its deadline, want none", got)
+		t.Fatalf("the stream holds %d messages the window sent without a connection or past its deadline, want none", got)
 	}
 
 	pinned := time.Now().Add(time.Hour)
-	live := client.WindowUntil(func() time.Time { return pinned })
+	live := client.WindowUntil(t.Context(), func() time.Time { return pinned })
 	if err := answerOf(t, live.PublishAsync(item), 5*time.Second); err != nil {
 		t.Fatalf("a send before the window's deadline answered %v, want nil", err)
 	}

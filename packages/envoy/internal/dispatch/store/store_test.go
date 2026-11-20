@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -26,13 +25,11 @@ import (
 	"github.com/sjawhar/envoy/migrationid"
 )
 
+// testDatabaseURL is the server the store's own tests run on (testdb.DispatchURL: a skip without
+// it, and a failure naming it in a CI run). The store cannot reach storetest, which imports it.
 func testDatabaseURL(t *testing.T) string {
 	t.Helper()
-	databaseURL := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run Postgres store tests")
-	}
-	return databaseURL
+	return testdb.DispatchURL(t)
 }
 
 func openTestStore(t *testing.T) *Store {

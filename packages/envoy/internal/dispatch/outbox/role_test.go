@@ -2685,7 +2685,7 @@ type unconfirmedForwardSender struct{ publishOnly }
 
 func (unconfirmedForwardSender) Publish(contracts.Envelope) error { return nil }
 
-func (p unconfirmedForwardSender) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p unconfirmedForwardSender) WindowUntil(context.Context, func() time.Time) bus.Sender { return p }
 
 func (unconfirmedForwardSender) PublishAsync(contracts.Envelope) <-chan error { return answered(nil) }
 

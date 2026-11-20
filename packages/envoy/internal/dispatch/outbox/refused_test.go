@@ -1,6 +1,7 @@
 package outbox
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,7 +39,7 @@ func (p *refusingPublisher) Publish(item contracts.Envelope) error {
 	return nil
 }
 
-func (p *refusingPublisher) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *refusingPublisher) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 

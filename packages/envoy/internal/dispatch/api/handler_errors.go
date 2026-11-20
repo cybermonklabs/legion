@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -24,6 +25,7 @@ const (
 	codeDocNewerContent       = "DOC_NEWER_CONTENT"
 	codeDocServiceUnavailable = "DOC_SERVICE_UNAVAILABLE"
 	codeDocumentUnloadable    = "DOCUMENT_UNLOADABLE"
+	codeDatabaseSessionEnded  = store.SessionEndedCode
 	codeInternal              = "INTERNAL"
 )
 
@@ -273,6 +275,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, "NOT_FOUND", http.StatusNotFound, "not found")
+		return
+	}
+	// A session ended under the request (SQLSTATE 57P01): by the standby that took the publisher
+	// hold over from this process when this process's row of it lapsed (outbox's
+	// endReplacedSessions), by an operator, or by a database shutdown. It is no fault of this
+	// request or of this server's code, and it rolled back what that session had not committed.
+	// The line names the answer's code and logs nothing taken from err: the statement's error can
+	// carry what the request sent, and every such error is the same 57P01.
+	if store.SessionEnded(err) {
+		w.Header().Set("Retry-After", "1")
+		writeError(w, codeDatabaseSessionEnded, http.StatusServiceUnavailable, store.SessionEndedMessage)
+		slog.Warn("dispatch: API request's database session was ended", "code", codeDatabaseSessionEnded)
 		return
 	}
 	writeError(w, codeInternal, http.StatusInternalServerError, "internal server error")

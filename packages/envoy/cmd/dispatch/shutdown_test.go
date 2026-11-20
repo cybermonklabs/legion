@@ -524,7 +524,7 @@ func (p *stallingPublisher) Connected() bool { return true }
 
 func (p *stallingPublisher) ConnectionChanged() <-chan struct{} { return nil }
 
-func (p *stallingPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p *stallingPublisher) WindowUntil(context.Context, func() time.Time) bus.Sender { return p }
 
 func (p *stallingPublisher) PublishAsync(contracts.Envelope) <-chan error {
 	p.once.Do(func() { close(p.entered) })

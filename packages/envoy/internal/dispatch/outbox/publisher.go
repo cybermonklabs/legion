@@ -64,8 +64,9 @@ type Publisher interface {
 	// WindowUntil starts one batch's sends: each is sent without waiting for NATS's answer, all on
 	// one connection or not at all, in no order of its own, and none written at or past deadline,
 	// which a send past it answers bus.ErrWindowDeadline (bus.Client.WindowUntil); sendChains keeps
-	// the order per owner and destination. A nil deadline is none.
-	WindowUntil(deadline func() time.Time) bus.Sender
+	// the order per owner and destination. A nil deadline is none. A send waits for no connection,
+	// and the window's Probe waits for one no longer than ctx, the batch's, lasts.
+	WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender
 	// Connected reports whether the client has a live connection now. A standby takes the
 	// publisher hold only while it does, and a holder whose client has not for natsLossGrace
 	// releases the hold.
@@ -80,7 +81,11 @@ type Deps struct {
 	// Store is what the outbox reads and records events through, and its pool is the one the
 	// publisher hold is taken and renewed on. cmd/dispatch gives it a store on a pool of its own
 	// (store.Pool.Outbox), so the requests queued on the shared pool never hold a publish or a
-	// renewal back.
+	// renewal back. Its pool's identity (store.Pool.Identity), which every database session of the
+	// process carries at the end of its application_name, is the identity the outbox holds the
+	// publisher hold under and names itself by in its log, so a standby that takes the hold over
+	// from this process can end those sessions (endReplacedSessions). New refuses a store whose
+	// pool names no identity.
 	Store     *store.Store
 	Publisher Publisher
 	// Broker wakes the outbox for every event this process commits.
@@ -136,6 +141,43 @@ type Deps struct {
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
 	// leaves none out of its read and takes no lock.
 	lanes *lanes
+	// firstReads, when set, is cut at the take-over's budget unless a batch of the take-over's
+	// first scan has had its reads before its first send answered by then - its claim of events
+	// (readRows), the lookups of their destinations (resolveDestinations) and the reads of their
+	// roles' holders (resolveRoleHolders) - and those reads of every batch of that scan end with it
+	// (reads). firstReadsDone is what a batch calls once those reads of its own have answered:
+	// the take-over's first send can begin, so it leaves firstReads uncut, and no read of the scan
+	// is cut after it, whichever batch it was. The outbox's scan sets both for the batches of a
+	// take-over's first scan and no other (Outbox.firstReadsBy).
+	firstReads     context.Context
+	firstReadsDone func()
+}
+
+// errReadsBound marks a batch whose reads the take-over's budget cut (Deps.firstReads,
+// boundedRead): no batch of the take-over's first scan had its reads before its first send
+// answered by that budget.
+var errReadsBound = errors.New("the batch's reads did not answer within their bound")
+
+// reads is ctx, cut too when d.firstReads is cut, when that is set, and ctx itself when it is not.
+func (d Deps) reads(ctx context.Context) (context.Context, context.CancelFunc) {
+	if d.firstReads == nil {
+		return ctx, func() {}
+	}
+	reads, cut := context.WithCancelCause(ctx)
+	stop := context.AfterFunc(d.firstReads, func() { cut(context.Cause(d.firstReads)) })
+	return reads, func() {
+		stop()
+		cut(nil)
+	}
+}
+
+// boundedRead is err, a read's under reads, marked errReadsBound when the take-over's budget cut
+// reads (Deps.firstReads) while ctx, the batch's, still runs.
+func boundedRead(ctx, reads context.Context, err error) error {
+	if err != nil && ctx.Err() == nil && errors.Is(context.Cause(reads), errReadsBound) {
+		return fmt.Errorf("%w: %w", errReadsBound, err)
+	}
+	return err
 }
 
 // forwardAckTimeout is the wait this outbox's role forwards give the stream's acknowledgement of
@@ -302,15 +344,21 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.release(owner)
 		}
 	}()
-	resolvedRoles, err := resolveDestinations(ctx, deps, events)
+	reads, endReads := deps.reads(ctx)
+	resolvedRoles, err := resolveDestinations(reads, deps, events)
 	if err != nil {
-		return batchResult{}, err
+		endReads()
+		return batchResult{}, boundedRead(ctx, reads, err)
 	}
-	resolveRoleHolders(ctx, deps, events, resolvedRoles)
+	resolveRoleHolders(reads, deps, events, resolvedRoles)
+	endReads()
+	if deps.firstReadsDone != nil {
+		deps.firstReadsDone()
+	}
 	chains := planChains(events)
 
 	changed := deps.Publisher.ConnectionChanged()
-	window := deps.Publisher.WindowUntil(hold.Deadline)
+	window := deps.Publisher.WindowUntil(ctx, hold.Deadline)
 	result.started = time.Now()
 	settled := map[string]struct{}{}
 	var recordErr error
@@ -453,7 +501,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		if connectionReplaced(changed) && deps.Publisher.Connected() {
 			slog.Info("dispatch outbox: the batch's connection was replaced, so the sends it failed are released for the resend on the new one")
 			releaseUnacknowledged = true
-		} else if err := window.Probe(probeTimeout); err != nil {
+		} else if err := window.Probe(probeTimeout); err != nil && !lostToContextEnd(ctx, err) {
 			slog.Error("dispatch outbox: the batch's sends failed and its connection does not answer", "error", err)
 			result.natsLost = true
 			releaseUnacknowledged = true

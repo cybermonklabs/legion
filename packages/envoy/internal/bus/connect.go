@@ -69,6 +69,13 @@ const (
 	silentCutMaxPingsOut  = 2
 )
 
+// SilentCutFoundWithin is the longest a connection of WithSilentCutDetection takes to declare
+// itself lost after its server stops answering: the silence can begin just after a PONG cleared
+// the count, and the first ping out then comes up to one interval later, the stale one
+// silentCutMaxPingsOut intervals after that. Dispatch's outbox derives the NATS loss grace of its
+// six-second take-over from it.
+const SilentCutFoundWithin = silentCutPingInterval * (silentCutMaxPingsOut + 1)
+
 // detectSilentCuts is the nats.Option WithSilentCutDetection adds to every connection of a client.
 func detectSilentCuts(o *nats.Options) error {
 	o.PingInterval = silentCutPingInterval

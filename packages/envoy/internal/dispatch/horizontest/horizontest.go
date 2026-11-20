@@ -104,8 +104,9 @@ const (
 	// postgres, beside 8 busy loops at four times nproc), in a pod on 2026-11-10, nproc 2,
 	// PostgreSQL 18.6: 202 samples caught a transaction holding a transaction id in a
 	// dispatch_test_* database, across 27 distinct backends, every one of them carrying no
-	// application_name - which is what Dispatch's own pools look like and what a test's own
-	// storetest pool looks like too, so the samples do not say whose the transactions were. The
+	// application_name - which is what Dispatch's own pools and a test's own storetest pool looked
+	// like then, so the samples do not say whose the transactions were. (Every connection of a
+	// store now names its process's identity, store.Pool.Identity.) The
 	// worst age was 1.449 s. Three times that is 4.35 s, so the bound is 5 s, rounded up to a
 	// whole second. That sampling rate means a transaction shorter than 100 ms can be missed
 	// entirely, which does not matter for a worst case: a hold too short to be sampled is far
@@ -205,9 +206,8 @@ func FromLine(line string) Warning {
 	return warning
 }
 
-// clientOf names a holder by its application_name and pid. A client that set no application_name,
-// which is what Dispatch's own connections look like, is said to have set none rather than printed
-// as a blank.
+// clientOf names a holder by its application_name and pid. A client that set no application_name
+// is said to have set none rather than printed as a blank.
 func clientOf(application, pid string) string {
 	if application == "" {
 		application = "(none set)"

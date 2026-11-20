@@ -1,10 +1,10 @@
 package storetest
 
 import (
+	"context"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -15,11 +15,17 @@ import (
 // publisher hold (duty.Hold), a lease one of them runs a duty under (duty.Exclusive), a row both
 // write - has to give each of them a pool of its own too. Two callers sharing a store share one
 // process's pool and its connection limit, which is not the deployment such a test is about.
-// It is Reopened with the configuration unchanged, the second process being the same deployment
-// twice.
+// It is store.Open of the connection string database was opened from, the second process being
+// the same deployment twice: a pool of the same shape, with an identity of its own
+// (store.Pool.Identity), so none of its sessions carries the first process's.
 func SecondProcess(t testing.TB, database *store.Store) *store.Store {
 	t.Helper()
-	return Reopened(t, database, func(*pgxpool.Config) {})
+	second, err := store.Open(context.Background(), database.Pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open a second process's store on the same database: %v", err)
+	}
+	t.Cleanup(second.Pool.Close)
+	return second
 }
 
 // TracedStore opens a store of its own on the database database is already on, closed after t

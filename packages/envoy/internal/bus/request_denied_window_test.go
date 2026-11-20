@@ -35,7 +35,7 @@ const deniedRequests = 8
 func TestEveryDeniedRequestOfOneWindowNamesItsOwnSubject(t *testing.T) {
 	const timeout = 3 * time.Second
 	client, _ := grantedClient(t)
-	window := client.WindowUntil(nil)
+	window := client.WindowUntil(t.Context(), nil)
 
 	type answered struct {
 		subject string

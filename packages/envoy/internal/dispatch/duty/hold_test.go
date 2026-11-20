@@ -441,3 +441,91 @@ func TestHoldRefusesOptionsNoRenewalCouldBeConfirmedUnder(t *testing.T) {
 		}
 	}
 }
+
+// A take reports the other holder whose lapsed row it replaced, and nothing when it inserted the
+// row or took back a row of its own: the holder a take replaced is a process that stopped renewing
+// without releasing, whose sessions the outbox's standby ends.
+func TestATakeReportsTheHolderWhoseLapsedRowItReplaced(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	lapse := func(holder uuid.UUID) {
+		t.Helper()
+		if _, err := database.Pool.Exec(ctx, `
+			insert into duty_holds (name, holder, token, expires_at) values ($1, $2, '', now() - interval '1 second')
+			on conflict (name) do update set holder = excluded.holder, expires_at = excluded.expires_at`, holdName, holder); err != nil {
+			t.Fatalf("leave a lapsed row of %s: %v", holder, err)
+		}
+	}
+	take := func(holder uuid.UUID) *duty.Hold {
+		t.Helper()
+		hold, err := duty.TryHold(ctx, database.Pool, holdName, holder, opts)
+		if err != nil || hold == nil {
+			t.Fatalf("take the hold for %s: hold %v, error %v", holder, hold, err)
+		}
+		if err := hold.Release(ctx); err != nil {
+			t.Fatalf("release the hold of %s: %v", holder, err)
+		}
+		return hold
+	}
+
+	if previous, replaced := take(uuid.New()).Replaced(); replaced || previous != uuid.Nil {
+		t.Errorf("a take that inserted the row replaced %s, want none", previous)
+	}
+	stopped, standby := uuid.New(), uuid.New()
+	lapse(stopped)
+	if previous, replaced := take(standby).Replaced(); !replaced || previous != stopped {
+		t.Errorf("a take of %s's lapsed row replaced %s (%v), want %s", stopped, previous, replaced, stopped)
+	}
+	lapse(standby)
+	if previous, replaced := take(standby).Replaced(); replaced {
+		t.Errorf("a take of its own lapsed row replaced %s, want none", previous)
+	}
+}
+
+// A take that queues behind a release of the lapsed row it would replace inserts the row afresh
+// and reports no holder replaced: the take locks the row before it reads which holder it names, so
+// it reads the release's outcome and not the row its statement's snapshot saw, and a holder that
+// did release is never taken for one that stopped.
+func TestATakeQueuedBehindAReleaseReportsNoHolderReplaced(t *testing.T) {
+	database := storetest.Open(t)
+	second := storetest.SecondProcess(t, database)
+	ctx := context.Background()
+	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second}
+	releasing := uuid.New()
+	if _, err := database.Pool.Exec(ctx, `insert into duty_holds (name, holder, token, expires_at) values ($1, $2, '', now() - interval '1 second')`,
+		holdName, releasing); err != nil {
+		t.Fatalf("leave a lapsed row: %v", err)
+	}
+	release, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = release.Rollback(ctx) }()
+	if _, err := release.Exec(ctx, `delete from duty_holds where name = $1 and holder = $2`, holdName, releasing); err != nil {
+		t.Fatalf("delete the row in the release's transaction: %v", err)
+	}
+	type taken struct {
+		hold *duty.Hold
+		err  error
+	}
+	took := make(chan taken, 1)
+	go func() {
+		hold, err := duty.TryHold(ctx, second.Pool, holdName, uuid.New(), opts)
+		took <- taken{hold, err}
+	}()
+	if waiting := storetest.WaitForLockWaiters(t, release, 1, 10*time.Second); waiting < 1 {
+		t.Fatalf("the take did not queue behind the release: %d waiters", waiting)
+	}
+	if err := release.Commit(ctx); err != nil {
+		t.Fatalf("commit the release: %v", err)
+	}
+	result := <-took
+	if result.err != nil || result.hold == nil {
+		t.Fatalf("the take behind the release: hold %v, error %v; want it taken", result.hold, result.err)
+	}
+	t.Cleanup(func() { _ = result.hold.Release(context.Background()) })
+	if previous, replaced := result.hold.Replaced(); replaced {
+		t.Errorf("the take behind a release replaced %s, want none: the row it found had been deleted", previous)
+	}
+}

@@ -72,7 +72,7 @@ func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStream
 	if err := client.Publish(published); !errors.Is(err, ErrStreamFull) {
 		t.Fatalf("a publish of the delivery into the full stream = %v, want ErrStreamFull", err)
 	}
-	if err := <-client.WindowUntil(nil).PublishAsync(sent); !errors.Is(err, ErrStreamFull) {
+	if err := <-client.WindowUntil(t.Context(), nil).PublishAsync(sent); !errors.Is(err, ErrStreamFull) {
 		t.Fatalf("a window's send of the delivery into the full stream = %v, want ErrStreamFull", err)
 	}
 
@@ -103,7 +103,7 @@ func TestARetryOfAGitHubDeliveryTheFullClusterStreamRefusedIsStoredOnceTheStream
 	retry := func(when string) (publishErr, sendErr error) {
 		t.Helper()
 		publishErr = client.Publish(published)
-		sendErr = <-client.WindowUntil(nil).PublishAsync(sent)
+		sendErr = <-client.WindowUntil(t.Context(), nil).PublishAsync(sent)
 		for _, answer := range []struct {
 			how  string
 			item contracts.Envelope
@@ -192,7 +192,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 		}
 	}
 	// The full stream refuses the envelope and stores nothing of it; a purge then leaves room.
-	if err := <-client.WindowUntil(nil).PublishAsync(item); !errors.Is(err, ErrStreamFull) {
+	if err := <-client.WindowUntil(t.Context(), nil).PublishAsync(item); !errors.Is(err, ErrStreamFull) {
 		t.Fatalf("a send into the full stream = %v, want ErrStreamFull", err)
 	}
 	if err := js.PurgeStream(Stream); err != nil {
@@ -208,7 +208,7 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 		return info.State.Subjects[item.Topic]
 	}
 
-	passed := client.WindowUntil(func() time.Time { return time.Now().Add(-time.Second) })
+	passed := client.WindowUntil(t.Context(), func() time.Time { return time.Now().Add(-time.Second) })
 	var err error
 	select {
 	case err = <-passed.PublishAsync(item):
@@ -222,13 +222,13 @@ func TestAWindowSendTheFullStreamRefusedIsStoredOnceAndAPassedDeadlineSendsNothi
 		t.Fatalf("the stream holds %d copies of the envelope the passed deadline fenced, want none", n)
 	}
 
-	if err := <-client.WindowUntil(func() time.Time { return time.Now().Add(time.Hour) }).PublishAsync(item); err != nil {
+	if err := <-client.WindowUntil(t.Context(), func() time.Time { return time.Now().Add(time.Hour) }).PublishAsync(item); err != nil {
 		t.Fatalf("the same send through a window whose deadline is ahead = %v, want it stored", err)
 	}
 	if n := copies(); n != 1 {
 		t.Fatalf("the send through a window whose deadline is ahead left %d copies, want 1", n)
 	}
-	if err := <-client.WindowUntil(nil).PublishAsync(item); err != nil {
+	if err := <-client.WindowUntil(t.Context(), nil).PublishAsync(item); err != nil {
 		t.Fatalf("the envelope sent again under its id = %v, want it answered from the stored copy", err)
 	}
 	if n := copies(); n != 1 {

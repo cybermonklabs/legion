@@ -280,7 +280,9 @@ func (p *recordingOutboxPublisher) Connected() bool { return true }
 
 func (p *recordingOutboxPublisher) ConnectionChanged() <-chan struct{} { return nil }
 
-func (p *recordingOutboxPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+func (p *recordingOutboxPublisher) WindowUntil(context.Context, func() time.Time) bus.Sender {
+	return p
+}
 
 func (p *recordingOutboxPublisher) Request(_ string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
 	return p.PublishAsync(item)

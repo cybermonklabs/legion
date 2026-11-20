@@ -72,8 +72,8 @@ type takenKeeps struct {
 	takers []func(publish func() <-chan error) <-chan error
 }
 
-func (p *takenKeeps) WindowUntil(deadline func() time.Time) bus.Sender {
-	return takenKeepsWindow{Sender: p.Client.WindowUntil(deadline), publisher: p}
+func (p *takenKeeps) WindowUntil(ctx context.Context, deadline func() time.Time) bus.Sender {
+	return takenKeepsWindow{Sender: p.Client.WindowUntil(ctx, deadline), publisher: p}
 }
 
 type takenKeepsWindow struct {
@@ -147,7 +147,7 @@ type keepRecorder struct {
 	kept []keptPublish
 }
 
-func (p *keepRecorder) WindowUntil(deadline func() time.Time) bus.Sender {
+func (p *keepRecorder) WindowUntil(_ context.Context, deadline func() time.Time) bus.Sender {
 	return deadlineWindow{Sender: p, deadline: deadline}
 }
 
@@ -173,10 +173,12 @@ func (p *keepRecorder) keeps() []keptPublish {
 // no resolution releases one (dispatch://INFRA-392).
 type roleClaimStub struct {
 	holder string
-	// lastSeen, when it is not zero, is the holder's last registration: a stub that names one
-	// answers that record, so the resolution judges the holder by its own state rather than by
-	// the absence of a record.
-	lastSeen int64
+	// lastSeenAgo, when it is not zero, is how long before each read the holder last registered:
+	// a stub that names one answers that record, so the resolution judges the holder by its own
+	// state rather than by the absence of a record. The record's time is read at each read, not
+	// once when the package loads, so a test binary that has run past the gone horizon before the
+	// test reads it still answers a holder inside the window the test names.
+	lastSeenAgo time.Duration
 }
 
 const retainedHolder = "ses_restored"
@@ -186,8 +188,8 @@ const retainedHolder = "ses_restored"
 // claim - nothing here releases one, and the listener's role-claim reaper is the one caller that
 // ever does - so nothing is kept for it either.
 var unresponsiveClaim = roleClaimStub{
-	holder:   retainedHolder,
-	lastSeen: time.Now().Add(-(session.LiveWindow + time.Minute)).UnixMilli(),
+	holder:      retainedHolder,
+	lastSeenAgo: session.LiveWindow + time.Minute,
 }
 
 // unclaimedRoles is the store in which no role is claimed.
@@ -198,10 +200,10 @@ func (s roleClaimStub) RoleClaim(context.Context, string) (envoystore.RoleClaim,
 }
 
 func (s roleClaimStub) Holder(context.Context, string) (session.SessionEntry, error) {
-	if s.lastSeen == 0 {
+	if s.lastSeenAgo == 0 {
 		return session.SessionEntry{}, natsgo.ErrKeyNotFound
 	}
-	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: s.lastSeen}, nil
+	return session.SessionEntry{MachineID: "test-machine", UpdatedAt: time.Now().Add(-s.lastSeenAgo).UnixMilli()}, nil
 }
 
 func (roleClaimStub) EntryState(entry session.SessionEntry) session.State {

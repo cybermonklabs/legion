@@ -95,6 +95,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// ProcessID is this process's id among the envoy-dispatch processes on its database
+	// (Service.ProcessID). cmd/dispatch passes the server process's identity
+	// (store.Pool.Identity), so the room-sync listener and sender connections, whose
+	// application_name ends with it, are among the sessions a standby that takes the publisher
+	// hold over from this process ends. Empty has New mint one: a test that runs two services on
+	// one store leaves it empty, so the two are two processes.
+	ProcessID string
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -511,10 +518,10 @@ type Service struct {
 	// notes its room there; noteStoredUpdates names them.
 	compactions *compactionQueue
 	// processID names this process to the other envoy-dispatch processes on its database: it is
-	// minted once, when the service is built at boot, and is what the room-sync listener's
-	// connection carries as its application_name (roomSyncMembers) and what this process stamps
-	// on what it sends them (room_sync.go), its default store's announcements included
-	// (PgVersioned.processID).
+	// set once, when the service is built at boot, from Deps.ProcessID (the server process's
+	// identity, in cmd/dispatch) or minted, and is what the room-sync listener's connection carries
+	// as its application_name (roomSyncMembers) and what this process stamps on what it sends them
+	// (room_sync.go), its default store's announcements included (PgVersioned.processID).
 	processID string
 	// roomSyncSender is this process's NOTIFY connection to those processes, opened at its first
 	// send and closed by Shutdown (roomSyncSender).
@@ -858,7 +865,10 @@ func New(deps Deps) *Service {
 	readBudget := readBudgetFor(debug.SetMemoryLimit(-1))
 	slog.Info("dispatch: document rooms' limits", "read_budget_bytes", readBudget,
 		"max_live_rooms", roomCap, "max_doc_connections", connectionCap)
-	processID := uuid.NewString()
+	processID := deps.ProcessID
+	if processID == "" {
+		processID = uuid.NewString()
+	}
 	persist := deps.Persistence
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)

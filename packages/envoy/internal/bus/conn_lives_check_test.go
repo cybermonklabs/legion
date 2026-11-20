@@ -20,7 +20,9 @@ import (
 //   - one missed report: a listener removed before one drop leaves the old life current until one
 //     check ends it; the windows it carried are refused and a fresh window pins;
 //   - a drop between the life and connected reads: the old life closes before the pin can record it,
-//     so the loop takes a fresh life after the reconnect; that fresh window survives two checks;
+//     so the loop takes a fresh life after the reconnect; that fresh window survives two checks. The
+//     pin is one that waits for a connection (as a Probe's does): a send's pin waits for none
+//     (pinToSend), so a send that meets the drop answers ErrUnavailable rather than the reconnect;
 //   - a clean reconnect: a reported drop ends the old life, and the post-reconnect window survives
 //     two checks.
 //
@@ -35,7 +37,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	t.Run("one missed report", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
-		old := client.WindowUntil(nil).(*window)
+		old := client.WindowUntil(t.Context(), nil).(*window)
 		if err := old.pinToSend(); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
@@ -51,7 +53,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	t.Run("a drop between life and connected reads", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
-		w := client.WindowUntil(nil).(*window)
+		w := client.WindowUntil(t.Context(), nil).(*window)
 		original := lifeOf(conn).current()
 		var once sync.Once
 		var held <-chan struct{}
@@ -76,7 +78,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 			w.pinCountRead.Store(nil)
 			hold.Release()
 		})
-		if err := w.pinToSend(); err != nil {
+		if err := w.pin(time.Minute); err != nil {
 			t.Fatalf("a window whose life read the drop before connected answered %v, want nil", err)
 		}
 		life := lifeOf(conn)
@@ -90,7 +92,7 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	t.Run("a clean reconnect", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
-		old := client.WindowUntil(nil).(*window)
+		old := client.WindowUntil(t.Context(), nil).(*window)
 		if err := old.pinToSend(); err != nil {
 			t.Fatalf("control: pin the old window: %v", err)
 		}
@@ -130,7 +132,7 @@ func requireStale(t *testing.T, w *window, what string) {
 
 func requireFresh(t *testing.T, client *Client, after string) {
 	t.Helper()
-	w := client.WindowUntil(nil).(*window)
+	w := client.WindowUntil(t.Context(), nil).(*window)
 	if err := w.pinToSend(); err != nil {
 		t.Errorf("a fresh window after %s answered %v, want nil", after, err)
 	}
@@ -170,7 +172,7 @@ func pinAfterReconnect(t *testing.T, client *Client, conn *nats.Conn, before uin
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	w := client.WindowUntil(nil).(*window)
+	w := client.WindowUntil(t.Context(), nil).(*window)
 	if err := w.pinToSend(); err != nil {
 		t.Fatalf("control: a window's first send after the reconnect answered %v, want nil", err)
 	}

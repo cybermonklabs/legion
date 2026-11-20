@@ -614,7 +614,7 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "subscription inactive"})
 			return
 		}
-		if d.roleLane != nil && (!d.roleLane.Connected() || !d.roleLane.CoreSubOK()) {
+		if d.roleLane != nil && (!bus.ConnectedWithin(d.roleLane, roleLaneStatusRead) || !d.roleLane.CoreSubOK()) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"status": "unhealthy", "error": "role lane subscription inactive"})
 			return
@@ -685,6 +685,14 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		_ = json.NewEncoder(w).Encode(response)
 	}
 }
+
+// roleLaneStatusRead bounds /healthz's read of the role lane client's connection status
+// (bus.ConnectedWithin). Through a silent cut each reconnect attempt holds nats.go's lock of the
+// connection across its dial and handshake, up to the client's connect timeout, and an unbounded
+// read held the probe that long; a client in the middle of an attempt reads as not connected,
+// which it is, so the probe answers that the role lane is down at once. It is bus's bound of every
+// such read (bus.ConnectionReadBound), whose note gives the healthy reads it was measured against.
+const roleLaneStatusRead = bus.ConnectionReadBound
 
 // roleClaimRepairHealth is the "role_claim_repair" field of a /healthz answer: the role claim
 // watcher's last whole read of the role bucket that completed, which repairs the copy every claim

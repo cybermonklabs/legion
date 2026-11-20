@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -101,14 +100,12 @@ func catalogOnlyFixture(rows int) string {
 
 // catalogOnlyDatabase connects to a database of the test's own, loaded with
 // catalogOnlyFixture(rows), on the server DISPATCH_TEST_DATABASE_URL names, and skips the test
-// when that variable is unset, as the store's tests do. It does not call testpg.URL, which starts
-// a container when the variable is unset. The database is dropped when the test ends.
+// when that variable is unset, or fails it in a CI run, as the store's tests do
+// (testdb.DispatchURL). It does not call testpg.URL, which starts a container when the variable
+// is unset. The database is dropped when the test ends.
 func catalogOnlyDatabase(t *testing.T, ctx context.Context, rows int) *pgx.Conn {
 	t.Helper()
-	raw := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if raw == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set to run the census's catalog tests")
-	}
+	raw := testdb.DispatchURL(t)
 	adminURL, err := url.Parse(raw)
 	if err != nil {
 		// url.Parse's own error quotes the URL, which carries a credential.
