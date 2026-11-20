@@ -18,13 +18,17 @@
 -- name this table and test fixtures that insert the row directly. The insert below copies the one
 -- row an earlier release may already hold. Each trigger replacement is in the roster writer's
 -- transaction, so a reader sees the preceding answer or the new answer, never a partly copied one.
+-- The projection's row references the roster's, so a delete of the stored roster takes the
+-- projection with it (on delete cascade), and Postgres refuses a truncate of route_roster alone
+-- (truncate ... cascade empties both): no session keeps a listener record the roster no longer
+-- holds.
 --
 -- This creates a new table and a trigger on route_roster. It neither rewrites route_roster nor
 -- refuses its rows. The release before this one keeps writing route_roster and the trigger keeps
 -- the projection current during a rolling deploy. The census answers 0, and rollback is an image
 -- rollback alone.
 create table route_roster_session_projects (
-    id boolean primary key default true check (id),
+    id boolean primary key default true check (id) references route_roster (id) on delete cascade,
     projects jsonb not null
 );
 
@@ -50,27 +54,6 @@ $$;
 create trigger route_roster_session_projects_sync
     after insert or update of sessions on route_roster
     for each row execute function sync_route_roster_session_projects();
-
--- A delete of the stored roster's row, and a truncate of the table, take the projection with them,
--- so no session keeps a listener record the roster no longer holds.
-create function clear_route_roster_session_projects() returns trigger language plpgsql as $$
-begin
-    if tg_op = 'TRUNCATE' then
-        delete from route_roster_session_projects;
-    else
-        delete from route_roster_session_projects where id = old.id;
-    end if;
-    return null;
-end
-$$;
-
-create trigger route_roster_session_projects_delete
-    after delete on route_roster
-    for each row execute function clear_route_roster_session_projects();
-
-create trigger route_roster_session_projects_truncate
-    after truncate on route_roster
-    for each statement execute function clear_route_roster_session_projects();
 
 -- session_clause_visible is access.SessionClause's decision for a session, by id ($1), a viewer
 -- in the shape of the visibility argument ($2) and whether session_projects_filled holds its row
