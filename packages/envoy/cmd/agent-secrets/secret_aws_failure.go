@@ -241,6 +241,7 @@ var awsCodes = func() map[string]bool {
 	codes := map[string]bool{}
 	for _, code := range append(slices.Clone(awsDefiniteRefusals),
 		"AccessDenied", "ExpiredToken", "InvalidIdentityToken", "IDPCommunicationError", "IDPRejectedClaim",
+		"ValidationError", "InvalidParameterValue", "MissingParameter",
 		"RegionDisabledException", "SignatureDoesNotMatch", "MalformedPolicyDocument", "PackedPolicyTooLarge",
 		"ThrottlingException", "Throttling", "TooManyRequestsException", "RequestLimitExceeded",
 		"KMSAccessDeniedException", "KMSDisabledException", "KMSInvalidStateException", "KMSNotFoundException",

@@ -358,6 +358,8 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
 		{"STS refuses with a code that is a made-up credential", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusingAs(t, user+"CodeEcho")) },
 			"read your AWS sign-in: AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"},
+		{"STS refuses a malformed role or session with ValidationError", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusingAs(t, "ValidationError")) },
+			"read your AWS sign-in: AWS refused it: ValidationError (AWS's message is not printed)"},
 		{"an sso_session sign-in whose refresh IAM Identity Center refuses", expiredSSOSession,
 			"read your AWS sign-in: the IAM Identity Center (SSO) session has expired or is invalid (IAM Identity Center answered InvalidGrantException): run `aws sso login` again"},
 		{"a web identity token file with no role to assume", func(t *testing.T) {
