@@ -165,6 +165,12 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1","leakCheckTag":"leak-check-v15","leakCheckInstalled":true}`,
 			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1", LeakCheckTag: "leak-check-v15", LeakCheckInstalled: true},
 		},
+		{
+			// A launcher that also takes the leak check's index of sandbox lines from the daemon.
+			"launcher_hello taking the leak check index",
+			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-sandbox","role":"tester","podUid":"pod-uid","launcherId":"launcher-id","leakCheckTag":"leak-check-v15","leakCheckInstalled":true,"leakCheckIndex":true}`,
+			LauncherHello{Token: "launcher-token", Sandbox: "legion-sandbox", Role: "tester", PodUID: "pod-uid", LauncherID: "launcher-id", LeakCheckTag: "leak-check-v15", LeakCheckInstalled: true, LeakCheckIndex: true},
+		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
 		{
 			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
@@ -240,6 +246,23 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			`{"type":"launcher_leak_check_result","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"ok":false,"error":"the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"}`,
 			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0,
 				Error: "the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"},
+		},
+		{
+			"launcher_leak_check_index",
+			`{"type":"launcher_leak_check_index","id":"leak-check-index-2c26b46b68ff","index":0,"count":1,"sha256":"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae","payload":"Zm9v"}`,
+			LauncherLeakCheckIndex{ID: "leak-check-index-2c26b46b68ff", Index: 0, Count: 1,
+				SHA256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", Payload: []byte("foo")},
+		},
+		{
+			"launcher_leak_check_index_result of an install",
+			`{"type":"launcher_leak_check_index_result","id":"leak-check-index-2c26b46b68ff","index":0,"ok":true,"installed":true}`,
+			LauncherLeakCheckIndexResult{ID: "leak-check-index-2c26b46b68ff", Index: 0, OK: true, Installed: true},
+		},
+		{
+			"refused launcher_leak_check_index_result",
+			`{"type":"launcher_leak_check_index_result","id":"leak-check-index-2c26b46b68ff","index":0,"ok":false,"error":"the leak check index could not be installed: its slices rebuild a body of another sha256"}`,
+			LauncherLeakCheckIndexResult{ID: "leak-check-index-2c26b46b68ff", Index: 0,
+				Error: "the leak check index could not be installed: its slices rebuild a body of another sha256"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

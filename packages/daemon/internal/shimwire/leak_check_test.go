@@ -2,6 +2,8 @@ package shimwire
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -13,14 +15,17 @@ import (
 var theLeakCheckHello = LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1"}
 
 // A launcher with no pin writes the hello it wrote before the leak check fields existed, to the
-// byte, so a daemon reads it as before; one with a pin carries the tag, and once it has installed
-// that tag says so, and both cross the wire whole.
+// byte, so a daemon reads it as before; one with a pin carries the tag, once it has installed
+// that tag says so, and once it takes the check's index says that too, and each crosses the wire
+// whole.
 func TestALauncherHelloRoundTripsWithAndWithoutTheLeakCheck(t *testing.T) {
 	const older = `{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1"}`
 	pinned := theLeakCheckHello
 	pinned.LeakCheckTag = "leak-check-v15"
 	installed := pinned
 	installed.LeakCheckInstalled = true
+	indexed := installed
+	indexed.LeakCheckIndex = true
 	for _, tc := range []struct {
 		name  string
 		frame LauncherHello
@@ -29,6 +34,7 @@ func TestALauncherHelloRoundTripsWithAndWithoutTheLeakCheck(t *testing.T) {
 		{"no pin", theLeakCheckHello, older},
 		{"a pin not installed", pinned, strings.TrimSuffix(older, "}") + `,"leakCheckTag":"leak-check-v15"}`},
 		{"a pin installed", installed, strings.TrimSuffix(older, "}") + `,"leakCheckTag":"leak-check-v15","leakCheckInstalled":true}`},
+		{"a pin installed and the index taken", indexed, strings.TrimSuffix(older, "}") + `,"leakCheckTag":"leak-check-v15","leakCheckInstalled":true,"leakCheckIndex":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			line, err := json.Marshal(tc.frame)
@@ -52,6 +58,38 @@ func TestALauncherHelloRoundTripsWithAndWithoutTheLeakCheck(t *testing.T) {
 	}
 }
 
+// A launcher that does not take the leak check's index writes the hello a launcher wrote before
+// the field existed, to the byte, whatever it says of the check itself, so a daemon of the older
+// release reads it as it read that hello.
+func TestALauncherHelloThatTakesNoIndexEncodesAsTheOlderHello(t *testing.T) {
+	unpinned := LauncherHello{Token: "launcher-token", Sandbox: "legion-sandbox", Role: "tester", PodUID: "pod-uid", LauncherID: "launcher-id"}
+	pinned := unpinned
+	pinned.LeakCheckTag = "leak-check-v15"
+	pinned.LeakCheckInstalled = true
+	for _, tc := range []struct {
+		name  string
+		frame LauncherHello
+		older string
+	}{
+		{"no pin", unpinned,
+			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-sandbox","role":"tester","podUid":"pod-uid","launcherId":"launcher-id"}`},
+		{"a pin installed", pinned,
+			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-sandbox","role":"tester","podUid":"pod-uid","launcherId":"launcher-id","leakCheckTag":"leak-check-v15","leakCheckInstalled":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := tc.frame
+			frame.LeakCheckIndex = false
+			line, err := json.Marshal(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(line) != tc.older {
+				t.Fatalf("a hello taking no index encoded as %s, want the older hello %s", line, tc.older)
+			}
+		})
+	}
+}
+
 // The hello refuses a leak check said to be installed under no tag, and takes a tag of any other
 // shape: that launcher still connects, and the daemon refuses the tag as the cause of the start
 // it cannot serve the check for, which a refused hello would have left it no connection to name.
@@ -70,7 +108,7 @@ func TestALauncherHelloRefusesAnInstallWithNoTagAndTakesAnOffShapeTag(t *testing
 
 // A launcher's hello at the largest its fields reach — the daemon's 64-hex token, a 63-character
 // sandbox name, the longest role, a pod UID, the launcher's 32-hex id — with a 64-character tag
-// installed fits the listener's pre-newline bound.
+// installed and the check's index taken fits the listener's pre-newline bound.
 func TestALauncherHelloWithALongLeakCheckTagFitsTheHelloBound(t *testing.T) {
 	tag := "leak-check-v1" + strings.Repeat("9", 64-len("leak-check-v1"))
 	if len(tag) != 64 || !ValidLeakCheckTag(tag) {
@@ -79,7 +117,7 @@ func TestALauncherHelloWithALongLeakCheckTagFitsTheHelloBound(t *testing.T) {
 	line, err := json.Marshal(LauncherHello{
 		Token: strings.Repeat("f", 64), Sandbox: strings.Repeat("s", 63), Role: "implementer",
 		PodUID: "0b9f7e51-0c6e-4d3e-9f11-3a4c8f5e2d10", LauncherID: strings.Repeat("a", 32),
-		LeakCheckTag: tag, LeakCheckInstalled: true,
+		LeakCheckTag: tag, LeakCheckInstalled: true, LeakCheckIndex: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -264,6 +302,169 @@ func TestSplitLeakCheckRefusesWhatTheLauncherWouldRefuse(t *testing.T) {
 	}
 	frames, err := SplitLeakCheck("leak-check-v15", make([]byte, MaxWorkspaceBundleBodyBytes))
 	if err != nil || len(frames) != MaxWorkspaceBundleBodyBytes/LauncherBundlePayloadBytes {
+		t.Fatalf("a body at the bound sliced into %d frames, %v", len(frames), err)
+	}
+	if err := frames[len(frames)-1].Validate(); err != nil {
+		t.Fatalf("the last slice of a body at the bound: %v", err)
+	}
+}
+
+// leakCheckIndexDigest is the sha256 of "foo", the payload the index frames under test carry.
+const leakCheckIndexDigest = "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+
+// Every form of an index slice the launcher could not place, or would hold more than the 16 MiB
+// an index may be for, is refused before the launcher keeps anything of it.
+func TestALauncherLeakCheckIndexRefusesItsMalformedForms(t *testing.T) {
+	good := LauncherLeakCheckIndex{
+		ID: "leak-check-index-2c26b46b68ff", Index: 1, Count: 2,
+		SHA256: leakCheckIndexDigest, Payload: []byte("foo"),
+	}
+	if err := good.Validate(); err != nil {
+		t.Fatalf("the good slice: %v", err)
+	}
+	// 16 MiB in slices of 256 KiB is 64 slices.
+	largest := good
+	largest.Count = 64
+	largest.Payload = make([]byte, 256<<10)
+	if err := largest.Validate(); err != nil {
+		t.Fatalf("a full slice of an index at the bound: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*LauncherLeakCheckIndex)
+		want   string
+	}{
+		{"no id", func(f *LauncherLeakCheckIndex) { f.ID = "" }, "no id"},
+		{"a count of none", func(f *LauncherLeakCheckIndex) { f.Count = 0 }, "count is 0"},
+		{"a negative count", func(f *LauncherLeakCheckIndex) { f.Count = -1 }, "count is -1"},
+		{"a count whose slices pass the index bound", func(f *LauncherLeakCheckIndex) { f.Count = 65 }, "could pass"},
+		{"a negative index", func(f *LauncherLeakCheckIndex) { f.Index = -1 }, "index -1 of 2"},
+		{"an index at the count", func(f *LauncherLeakCheckIndex) { f.Index = 2 }, "index 2 of 2"},
+		{"no payload", func(f *LauncherLeakCheckIndex) { f.Payload = nil }, "no payload"},
+		{"a payload over a slice", func(f *LauncherLeakCheckIndex) { f.Payload = make([]byte, 256<<10+1) }, "limit"},
+		{"no digest", func(f *LauncherLeakCheckIndex) { f.SHA256 = "" }, "sha256"},
+		{"an upper-case digest", func(f *LauncherLeakCheckIndex) { f.SHA256 = strings.ToUpper(good.SHA256) }, "sha256"},
+		{"a short digest", func(f *LauncherLeakCheckIndex) { f.SHA256 = good.SHA256[:63] }, "sha256"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := good
+			tc.change(&frame)
+			err := frame.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want ErrMalformedFrame naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The daemon acts on an index answer only when it names its slice and, for a refusal, the cause.
+func TestALauncherLeakCheckIndexResultRefusesWhatTheDaemonCouldNotActOn(t *testing.T) {
+	const id = "leak-check-index-2c26b46b68ff"
+	for _, good := range []LauncherLeakCheckIndexResult{
+		{ID: id, Index: 0, OK: true},
+		{ID: id, Index: 1, OK: true, Installed: true},
+		{ID: id, Index: 1, Error: "the leak check index could not be installed: its slices rebuild a body of another sha256"},
+	} {
+		if err := good.Validate(); err != nil {
+			t.Errorf("%+v: %v", good, err)
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		frame LauncherLeakCheckIndexResult
+		want  string
+	}{
+		{"no id", LauncherLeakCheckIndexResult{Index: 0, OK: true}, "no id"},
+		{"a negative index", LauncherLeakCheckIndexResult{ID: id, Index: -1, OK: true}, "index is -1"},
+		{"a refusal with no cause", LauncherLeakCheckIndexResult{ID: id, Index: 0}, "without a cause"},
+		{"a refused install", LauncherLeakCheckIndexResult{ID: id, Index: 0, Installed: true, Error: "x"}, "says it made"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.frame.Validate()
+			if !errors.Is(err, ErrMalformedFrame) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() = %v, want ErrMalformedFrame naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The launcher reads one frame per line, so the index is sliced under the frame limit: 300 KiB
+// crosses as a slice of 256 KiB and one of 44 KiB, each a valid frame of the one sequence named by
+// the digest, which joined back are the body the digest is of.
+func TestALeakCheckIndexSlicesIntoFramesAndJoinsBack(t *testing.T) {
+	body := bytes.Repeat([]byte("\x05\x00\x00\x00\x00\x00\x00\x01"), (300<<10)/8)
+	if len(body) != 300<<10 {
+		t.Fatalf("the body under test is %d bytes, want %d", len(body), 300<<10)
+	}
+	sum := sha256.Sum256(body)
+	digest := hex.EncodeToString(sum[:])
+	frames, err := SplitLeakCheckIndex(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != 2 || len(frames[0].Payload) != 256<<10 || len(frames[1].Payload) != 44<<10 {
+		t.Fatalf("a %d-byte body sliced into %d frames, want one of 256 KiB and one of 44 KiB", len(body), len(frames))
+	}
+	var joined []byte
+	for index, frame := range frames {
+		if err := frame.Validate(); err != nil {
+			t.Fatalf("slice %d: %v", index, err)
+		}
+		if frame.Index != index || frame.Count != 2 || frame.SHA256 != digest || frame.ID != "leak-check-index-"+digest[:12] {
+			t.Fatalf("slice %d is %d of %d under %q declaring %s", index, frame.Index, frame.Count, frame.ID, frame.SHA256)
+		}
+		line, err := json.Marshal(frame)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(line) >= MaxFrameBytes {
+			t.Fatalf("slice %d encodes to %d bytes, which the launcher's reader refuses", index, len(line))
+		}
+		decoded, err := Decode(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(decoded, frame) {
+			t.Fatalf("slice %d decoded to another frame", index)
+		}
+		joined = append(joined, decoded.(LauncherLeakCheckIndex).Payload...)
+	}
+	if !bytes.Equal(joined, body) {
+		t.Fatalf("the slices join back to %d bytes, not the %d-byte body", len(joined), len(body))
+	}
+	// The same index pushed again is the same sequence; another index is another.
+	again, err := SplitLeakCheckIndex(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := SplitLeakCheckIndex(append(bytes.Clone(body), 'x'))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].ID != frames[0].ID || other[0].ID == frames[0].ID {
+		t.Fatalf("the same index sliced to %q and another to %q, want only the first to repeat %q", again[0].ID, other[0].ID, frames[0].ID)
+	}
+}
+
+// An index sequence the launcher would refuse is not built: an empty body, and a body over the
+// 16 MiB an index may be. A body at the bound is 64 slices, the last of them valid.
+func TestSplitLeakCheckIndexRefusesAnEmptyBodyAndOneOverTheBound(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"no body", nil},
+		{"an empty body", []byte{}},
+		{"a body over the bound", make([]byte, 16<<20+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if frames, err := SplitLeakCheckIndex(tc.body); !errors.Is(err, ErrMalformedFrame) {
+				t.Fatalf("SplitLeakCheckIndex = %d frames, %v, want ErrMalformedFrame", len(frames), err)
+			}
+		})
+	}
+	frames, err := SplitLeakCheckIndex(make([]byte, 16<<20))
+	if err != nil || len(frames) != 64 {
 		t.Fatalf("a body at the bound sliced into %d frames, %v", len(frames), err)
 	}
 	if err := frames[len(frames)-1].Validate(); err != nil {

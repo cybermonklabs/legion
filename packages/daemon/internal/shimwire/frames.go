@@ -81,6 +81,12 @@ const (
 	// launcher answering each slice, the last with the outcome of its install.
 	TypeLauncherLeakCheck       = "launcher_leak_check"
 	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
+	// The leak check's index of sandbox lines travels the same way: the daemon pushes each new
+	// index, in slices under the frame limit, to a launcher whose hello says it takes one
+	// (LauncherHello.LeakCheckIndex), and the launcher answers each slice, the last with the
+	// outcome of its install.
+	TypeLauncherLeakCheckIndex       = "launcher_leak_check_index"
+	TypeLauncherLeakCheckIndexResult = "launcher_leak_check_index_result"
 )
 
 // SyntheticModel is the model Claude Code names on a message no model wrote, such as its own answer
@@ -184,6 +190,12 @@ type AgentSecretsTokenResult struct {
 // again; a launcher process that restarts says false and is pushed the check again. The hello
 // does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
 // daemon refuses that tag as the cause of the start it cannot serve the check for.
+//
+// LeakCheckIndex is the launcher taking the leak check's index of sandbox lines from the daemon
+// (LauncherLeakCheckIndex). A launcher built before that frame ends its connection on one, as on
+// any frame it does not model (internal/launcher's manager.serve), so this member is how a daemon
+// tells the two apart. It is left out when false, so a launcher that takes no index writes the
+// hello it wrote before the member existed.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -192,6 +204,7 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	LeakCheckIndex     bool   `json:"leakCheckIndex,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -949,6 +962,36 @@ type LauncherLeakCheckResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// LauncherLeakCheckIndex is one slice of the leak check's index of sandbox lines on its way to a
+// pod's launcher, which writes the index where the check in each role reads it, so no check in
+// the pod downloads it. The launcher has no rpc_chunk lane of its own, so the slicing is the
+// frame's, as LauncherLeakCheck's is: Payload is the Index-th LauncherBundlePayloadBytes of the
+// index (SplitLeakCheckIndex), Count how many slices there are, and SHA256 the digest of the index
+// the slices rebuild, which the launcher checks before it installs anything. ID names the
+// sequence, `leak-check-index-<first 12 hex of the digest>`, so the same index pushed again is the
+// same sequence. It names no tag of the check: the index is the one asset of the release that
+// holds it, which is no `leak-check-v*` tag.
+type LauncherLeakCheckIndex struct {
+	ID      string `json:"id"`
+	Index   int    `json:"index"`
+	Count   int    `json:"count"`
+	SHA256  string `json:"sha256"`
+	Payload []byte `json:"payload"`
+}
+
+// LauncherLeakCheckIndexResult answers one LauncherLeakCheckIndex. OK is the slice taken.
+// Installed is the launcher having put the whole, digest-checked index in place, which it answers
+// the last slice of the sequence with, or any slice of a sequence whose digest it has already
+// installed: the sequence is over and the daemon sends no more of it. A refusal carries Error, why
+// the index could not be installed.
+type LauncherLeakCheckIndexResult struct {
+	ID        string `json:"id"`
+	Index     int    `json:"index"`
+	OK        bool   `json:"ok"`
+	Installed bool   `json:"installed,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
 // the commit the working copy sat on, the heads the bundle carries and each local bookmark that
 // pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
@@ -1016,6 +1059,8 @@ func (LauncherMemoryKill) FrameType() string           { return TypeLauncherMemo
 func (LauncherVolumeReport) FrameType() string         { return TypeLauncherVolumeReport }
 func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
 func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
+func (LauncherLeakCheckIndex) FrameType() string       { return TypeLauncherLeakCheckIndex }
+func (LauncherLeakCheckIndexResult) FrameType() string { return TypeLauncherLeakCheckIndexResult }
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -1200,6 +1245,16 @@ func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
 func (f LauncherLeakCheckResult) MarshalJSON() ([]byte, error) {
 	type plain LauncherLeakCheckResult
 	return marshalFrame(TypeLauncherLeakCheckResult, plain(f))
+}
+
+func (f LauncherLeakCheckIndex) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheckIndex
+	return marshalFrame(TypeLauncherLeakCheckIndex, plain(f))
+}
+
+func (f LauncherLeakCheckIndexResult) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheckIndexResult
+	return marshalFrame(TypeLauncherLeakCheckIndexResult, plain(f))
 }
 
 // Validate refuses a hello the listener would refuse (worker-stream-listener.ts:140-148).
@@ -1401,6 +1456,80 @@ func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
 	return frames, nil
 }
 
+// MaxLeakCheckIndexBytes is the largest leak check index a launcher_leak_check_index sequence
+// carries. It is the wire's own refusal, as MaxWorkspaceBundleBodyBytes is: SplitLeakCheckIndex
+// builds no sequence of a larger index, and Validate refuses a slice whose count could pass it, so
+// a launcher's allocations for one sequence are under it.
+const MaxLeakCheckIndexBytes = 16 << 20
+
+// maxLeakCheckIndexSlices is the most slices a launcher_leak_check_index sequence may count
+// without the index they rebuild passing MaxLeakCheckIndexBytes.
+const maxLeakCheckIndexSlices = MaxLeakCheckIndexBytes / LauncherBundlePayloadBytes
+
+// Validate refuses an index slice the launcher could not place in its sequence, or one whose count
+// asks it to hold more than MaxLeakCheckIndexBytes.
+func (f LauncherLeakCheckIndex) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check_index carries no id", ErrMalformedFrame)
+	case f.Count <= 0:
+		return fmt.Errorf("%w: launcher_leak_check_index count is %d", ErrMalformedFrame, f.Count)
+	case f.Count > maxLeakCheckIndexSlices:
+		return fmt.Errorf("%w: launcher_leak_check_index count is %d, which could pass the %d bytes an index may be",
+			ErrMalformedFrame, f.Count, MaxLeakCheckIndexBytes)
+	case f.Index < 0 || f.Index >= f.Count:
+		return fmt.Errorf("%w: launcher_leak_check_index index %d of %d", ErrMalformedFrame, f.Index, f.Count)
+	case len(f.Payload) == 0:
+		return fmt.Errorf("%w: launcher_leak_check_index %d carries no payload", ErrMalformedFrame, f.Index)
+	case len(f.Payload) > LauncherBundlePayloadBytes:
+		return fmt.Errorf("%w: launcher_leak_check_index payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
+	case !digestShape.MatchString(f.SHA256):
+		return fmt.Errorf("%w: launcher_leak_check_index sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
+	}
+	return nil
+}
+
+// Validate refuses an index answer the daemon could not act on: one answering no sequence or no
+// slice of it, a refusal with no cause, or an install the launcher says it both made and refused.
+func (f LauncherLeakCheckIndexResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check_index_result carries no id", ErrMalformedFrame)
+	case f.Index < 0:
+		return fmt.Errorf("%w: launcher_leak_check_index_result index is %d", ErrMalformedFrame, f.Index)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: launcher_leak_check_index_result refuses without a cause", ErrMalformedFrame)
+	case !f.OK && f.Installed:
+		return fmt.Errorf("%w: launcher_leak_check_index_result refuses an install it says it made", ErrMalformedFrame)
+	}
+	return nil
+}
+
+// SplitLeakCheckIndex slices body, the leak check's index of sandbox lines, into the
+// launcher_leak_check_index sequence that carries it, every slice declaring the digest of the
+// whole index so the launcher can refuse one that did not arrive as it was sent. The sequence's id
+// is the digest's first 12 hex, so the same index pushed again is the same sequence and another
+// index is another one.
+func SplitLeakCheckIndex(body []byte) ([]LauncherLeakCheckIndex, error) {
+	switch {
+	case len(body) == 0:
+		return nil, fmt.Errorf("%w: a launcher_leak_check_index sequence carries no index", ErrMalformedFrame)
+	case len(body) > MaxLeakCheckIndexBytes:
+		return nil, fmt.Errorf("%w: a leak check index of %d bytes is over the %d a launcher_leak_check_index sequence carries",
+			ErrMalformedFrame, len(body), MaxLeakCheckIndexBytes)
+	}
+	digest := BundleDigest(body)
+	id := "leak-check-index-" + digest[:12]
+	count := (len(body) + LauncherBundlePayloadBytes - 1) / LauncherBundlePayloadBytes
+	frames := make([]LauncherLeakCheckIndex, 0, count)
+	for payload := range slices.Chunk(body, LauncherBundlePayloadBytes) {
+		frames = append(frames, LauncherLeakCheckIndex{
+			ID: id, Index: len(frames), Count: count, SHA256: digest, Payload: payload,
+		})
+	}
+	return frames, nil
+}
+
 // SplitWorkspaceBundle slices b, the work release saved, into the launcher_bundle sequence that
 // carries it, every slice declaring the release and the digest of the whole body so the launcher
 // can refuse one that did not arrive as it was sent. The sequence's id is name, the release and
@@ -1455,8 +1584,8 @@ func ParseWorkspaceBundle(body []byte) (WorkspaceBundle, error) {
 	return b, nil
 }
 
-// BundleDigest is the digest a launcher_bundle or launcher_leak_check sequence declares for the
-// body it carries.
+// BundleDigest is the digest a launcher_bundle, launcher_leak_check or launcher_leak_check_index
+// sequence declares for the body it carries.
 func BundleDigest(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
@@ -1756,6 +1885,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherLeakCheck](trimmed)
 	case TypeLauncherLeakCheckResult:
 		return decodeInto[LauncherLeakCheckResult](trimmed)
+	case TypeLauncherLeakCheckIndex:
+		return decodeInto[LauncherLeakCheckIndex](trimmed)
+	case TypeLauncherLeakCheckIndexResult:
+		return decodeInto[LauncherLeakCheckIndexResult](trimmed)
 	default:
 		return Raw{Type: head.Type, JSON: bytes.Clone(trimmed)}, nil
 	}

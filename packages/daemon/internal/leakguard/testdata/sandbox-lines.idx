@@ -1,0 +1,3 @@
+PUBLIC-LEAK-CHECK-INDEX 1
+{"built_at":"2026-11-20T09:47:01Z","canary":"public leak check index canary a83b15984a36e942395dbeeb03847a3f","entries":3,"format":1,"generic":{"go":"none","python":"3.12.3"},"min_bytes":40,"public_trees":[],"sandbox_files":[{"blob":"0000000000000000000000000000000000000000","path":"sandbox/index-fixture.txt"}],"sha256":"a207622a82fceb55f095e59bd8750d5c0b9c272c4fe2dc1780f7ff3f0f68ad1e"}
+²GñÔş–ÆQæÿQ‹¡»¦âóùÍ
