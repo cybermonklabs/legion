@@ -6,6 +6,7 @@ import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatc
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
+  type DispatchToolSpec,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
@@ -944,6 +945,40 @@ describe("dispatchToolSpecs", () => {
         `${tool} ${JSON.stringify(args)}`
       ).toEqual([refusal]);
     }
+  });
+
+  // Dispatch refuses a comment whose mentions name one target twice ("mentions must not repeat a
+  // target", validateCommentMentions in comment_create.go), and the field promises "none named
+  // twice", so the tool refuses such a call in those words before anything is sent. The server
+  // judges each target in turn, its form before whether an earlier target named it, and the tool
+  // names the rule the same call breaks first there. The rule the tool states names the repeat
+  // beside the count and the form.
+  test("dispatch_comment refuses a repeated mention target in Dispatch's words", () => {
+    const repeat = "mentions must not repeat a target";
+    const form = "mention target must be role:<name> or session:<id>";
+    const schema = schemaFor("dispatch_comment");
+    for (const [mentions, refusal] of [
+      [["role:architect", "role:architect"], repeat],
+      [["session:s1", "role:architect", "session:s1"], repeat],
+      [["role:architect", "role:architect", "user:alice"], repeat],
+      [["role:architect", "user:alice", "role:architect"], form],
+    ] as const) {
+      const result = schema.safeParse({ issue: "DSP-1", body: "Over to you.", mentions });
+      expect(result.success, JSON.stringify(mentions)).toBe(false);
+      expect(
+        result.error?.issues.map((issue) => issue.message),
+        JSON.stringify(mentions)
+      ).toEqual([refusal]);
+    }
+    expect(
+      schema.safeParse({
+        issue: "DSP-1",
+        body: "Over to you.",
+        mentions: ["role:architect", "session:architect"],
+      }).success
+    ).toBe(true);
+    const comment: DispatchToolSpec = specFor("dispatch_comment");
+    expect(comment.validation?.message).toContain(`and ${repeat}.`);
   });
 
   // The reason is the close's note, so the tool takes it in the same call, posts it before the

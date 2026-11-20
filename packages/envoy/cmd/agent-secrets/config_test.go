@@ -83,7 +83,7 @@ func TestAnEmptyVariableReadsTheConfigFile(t *testing.T) {
 
 func TestAnUnknownKeyInTheConfigFileIsAUsageError(t *testing.T) {
 	for name, line := range map[string]string{
-		"a key the file does not take": "AWS_PROFILE=theorem",
+		"a key the file does not take": "AWS_PROFILE=operator",
 		"a shell export":               "export AGENT_SECRETS_URL=https://secrets.example",
 		"no equals sign":               "AGENT_SECRETS_URL",
 	} {

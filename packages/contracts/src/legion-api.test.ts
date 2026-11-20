@@ -1751,7 +1751,7 @@ test("the state golden carries each issue's repository and the repositories it s
 // never absent from a state. `installed` left the status set at contract 25: it was codegraph's
 // until LEGION-629, and no row has carried it since. Each deployment row carries `source`
 // (contract 25): `configuration` (what legion.yaml alone decides) or `boot` (what boot measured),
-// or, on `repository-cache-room`, `caches` (contract 184), what the repository caches' last health
+// or, on `repository-cache-room`, `caches` (contract 193), what the repository caches' last health
 // reads said of their room: the golden's one cache ran out of room, so that row is open too. A
 // live row carries none.
 test("the state golden carries the deployment's capability report", () => {
@@ -1821,7 +1821,7 @@ test("the state golden carries the deployment's capability report", () => {
 });
 
 // `source` is a finite set, so the schema names its three words and no other: a state whose
-// capability row carries `caches`, as a daemon at contract 184 writes the repository caches' row,
+// capability row carries `caches`, as a daemon at contract 193 writes the repository caches' row,
 // parses, and a fourth word is refused with the whole state, as `caches` was before it joined the
 // enum.
 test("a capability row read from the repository caches carries source caches, and no other word parses", () => {

@@ -1015,7 +1015,7 @@ const legionAgentSecretsLoginView = z.object({
  * status since contract 21. `source` is, on a deployment row, `configuration` (what legion.yaml
  * alone decides) or `boot` (what boot measured), absent on every other row (contract 25), or, on
  * `repository-cache-room`, `caches`: what the repository caches' last health reads said of their
- * room (contract 184). A caller below 184 is served that row without `source`, since the enum it
+ * room (contract 193). A caller below 193 is served that row without `source`, since the enum it
  * was built with names two words. A gap is reported here, never refused (contract 16). */
 const legionCapabilityState = z.object({
   name: nonEmptyString,

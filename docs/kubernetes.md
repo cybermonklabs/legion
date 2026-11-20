@@ -4456,12 +4456,12 @@ capabilities.decided.<name>: "<reason>"` on a deployment row and `capability <na
 `legion state --json`: under `capabilities` every row as `{name, status, detail, decision?,
 configLine?, source?}`, `status` one of `present`, `unchecked`, `withheld`, `decided` or `open` (daemon API contract 16 added the list, contract 21 dropped `live` from it and contract 25 dropped `installed`, which nothing has emitted since LEGION-629;
 the image rows are `present` once the probe passed and `unchecked` before it or under tmux), `source` (`configuration` or `boot`, contract
-25, and `caches`, contract 184) on a deployment row alone — what legion.yaml alone decides, what boot measured, or what the repository caches' last health reads said of their room
+25, and `caches`, contract 193) on a deployment row alone — what legion.yaml alone decides, what boot measured, or what the repository caches' last health reads said of their room
 — never on a live row, and under each claim's `capabilities` (`issues.<KEY>.architect` and `issues.<KEY>.workers.<role>.claim`) that claim's latest report
 — `measuredAt`, `incarnation`, `ok` (the names its checks passed) and `open[{name, detail}]` — whatever process sent it;
 compare its `incarnation` with the claim's `locator.incarnation` to tell the running process's report from a predecessor's.
-A plugin from contract 25 to 183 accepts only `configuration` or `boot` as a `source`, and refuses the whole state for any other word.
-So a caller from a pod whose claims record a contract below 184 is served each row whose `source` is `caches` without its `source`, with every other field of the row (`withoutCachesSource` in `internal/api/server.go`).
+A plugin from contract 25 to 192 accepts only `configuration` or `boot` as a `source`, and refuses the whole state for any other word.
+So a caller from a pod whose claims record a contract below 193 is served each row whose `source` is `caches` without its `source`, with every other field of the row (`withoutCachesSource` in `internal/api/server.go`).
 The controller's `tick` notice, whose `openCapabilities` names the open rows, live rows beside the deployment gaps, so the day's report names each (`skills/legion-controller/SKILL.md`).
 And `legion config check`, which prints after its OK line the rows the file alone leaves open.
 Nothing refuses to start over a gap: a daemon that would not run its pods would itself keep workers from working, so a deployment gap is the operator's to close or to decide, by name and with the reason, and a live gap is the session's environment to fix.
@@ -7698,7 +7698,7 @@ each issue's pod (every role of it alike) and the image probe's.
   — but a mount there would still land on what that init container writes, so it is refused here rather than left to fail in a pod).
   `legion config check` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
-  the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
+  the operator sets the attributes their deployment's spend is billed under (`acme.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
   A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
