@@ -437,9 +437,9 @@ await() {
 # binds that address's port 443, where the proxy dials it (the header); what each installation
 # holds is DEV_BROKER_GITHUB_PERMISSIONS', one --installation-permissions per owner it names. ---
 STANDS_ARGS=(--dir "$STANDS_DIR"
-  --github-owner "$GITHUB_OWNER=$GITHUB_INSTALLATION"
-  --github-owner "$GITHUB_CASE_OWNER=$GITHUB_CASE_INSTALLATION"
-  --github-owner "$GITHUB_CASE_OTHER_OWNER=$GITHUB_CASE_OTHER_INSTALLATION"
+  --installation "$GITHUB_OWNER=$GITHUB_INSTALLATION"
+  --installation "$GITHUB_CASE_OWNER=$GITHUB_CASE_INSTALLATION"
+  --installation "$GITHUB_CASE_OTHER_OWNER=$GITHUB_CASE_OTHER_INSTALLATION"
   --host "github-tls=$GITHUB_PROXIED_HOST")
 if [ -n "${DEV_BROKER_PROXIED_GITHUB_IP:-}" ]; then
   STANDS_ARGS+=(--address "github-tls=$DEV_BROKER_PROXIED_GITHUB_IP:443")
