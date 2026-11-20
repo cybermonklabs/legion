@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -112,4 +113,58 @@ func copiesOf(held []storedEnvelope, eventID string) int {
 		}
 	}
 	return copies
+}
+
+// roleFrameTheWireRulesRefuse is a role message of role, as the role lane stores a forward to the
+// role's holder, whose envelope JSON reads (decodeRoleEnvelope) and the listener's wire rules refuse
+// (decodeStoredEnvelope): its urgency is present and empty (contracts.ValidateWire). It returns the
+// message's event id and its bytes, and fails t unless the role mark and both reads answer so.
+func roleFrameTheWireRulesRefuse(t testing.TB, role string) (string, []byte) {
+	t.Helper()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"wire-refused-"+id.New())
+	data := roleFrameWith(t, item, role, "urgency", `""`)
+	if err := decodeRoleEnvelope(data, &contracts.Envelope{}); err != nil {
+		t.Fatalf("JSON does not read the envelope %s: %v; want it read", data, err)
+	}
+	if err := decodeStoredEnvelope(data, &contracts.Envelope{}); err == nil {
+		t.Fatalf("the listener's wire rules take the envelope %s; want them to refuse it", data)
+	}
+	return item.EventID, data
+}
+
+// roleFrameNoEnvelopeReads is a role message of role, as the role lane stores a forward to the
+// role's holder, whose role mark reads (decodeRoleMark) and whose envelope JSON does not read
+// (decodeRoleEnvelope): its issued_at is a string where the envelope holds a number. It returns the
+// message's event id and its bytes, and fails t unless the role mark and the read answer so.
+func roleFrameNoEnvelopeReads(t testing.TB, role string) (string, []byte) {
+	t.Helper()
+	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, roleForwardDedupePrefix+"unreadable-"+id.New())
+	data := roleFrameWith(t, item, role, "issued_at", `"yesterday"`)
+	if err := decodeRoleEnvelope(data, &contracts.Envelope{}); err == nil {
+		t.Fatalf("JSON reads the envelope %s; want it refused", data)
+	}
+	return item.EventID, data
+}
+
+// roleFrameWith is item's JSON with field set to value, a raw JSON value, and fails t unless its
+// role mark names role (decodeRoleMark).
+func roleFrameWith(t testing.TB, item contracts.Envelope, role, field, value string) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields[field] = json.RawMessage(value)
+	data, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marked, _, ok := decodeRoleMark(data); !ok || marked != role {
+		t.Fatalf("the role mark of %s reads role %q (a role message: %t); want role %s", data, marked, ok, role)
+	}
+	return data
 }

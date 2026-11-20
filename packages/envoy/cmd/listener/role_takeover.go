@@ -592,15 +592,17 @@ func decodeRoleMark(data []byte) (string, roleOfMessage, bool) {
 }
 
 // takenRoleMessage decodes data and reports the envelope when it is a role message of role whose
-// whole envelope decodes (decodeStoredEnvelope). A message no read can decode is no role message,
-// as the walk ends a copy no read can decode.
+// envelope JSON reads (decodeRoleEnvelope), as the session relay and the kept lane's walk read it:
+// a message the wire rules or the envelope's own refuse is still copied for the role's next
+// holder. A message JSON does not read as an envelope is no role message to copy, as the walk ends
+// a copy JSON does not read.
 func takenRoleMessage(data []byte, role string) (contracts.Envelope, bool) {
 	of, _, ok := decodeRoleMark(data)
 	if !ok || of != role {
 		return contracts.Envelope{}, false
 	}
 	var item contracts.Envelope
-	if err := decodeStoredEnvelope(data, &item); err != nil {
+	if err := decodeRoleEnvelope(data, &item); err != nil {
 		return contracts.Envelope{}, false
 	}
 	return item, true
@@ -633,18 +635,19 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // (readRoleClaimHolder, within the role routes' bound on a claim read): a claim naming sessionID
 // leaves the frame to the relay, which sends it as it sends every frame, so a holder that
 // continues while it still holds its role receives its role messages, and its envelope is never
-// decoded here. A claim naming another session, or none, has the envelope decoded and the frame
+// decoded here. A claim naming another session, or none, has the envelope read by JSON alone
+// (decodeRoleEnvelope, the read a takeover pass and the kept lane's walk make) and the frame
 // copied to the role's kept lane (keepTakenRoleFrame) and only then acknowledged, with one line
 // naming the session, the role, the holder and the event, and a handover of the lane started
-// (runKeptRoleDrain), so the role's holder receives it and not this session. A frame whose
-// envelope does not decode (decodeStoredEnvelope) under such a claim reaches no session: it is not
-// this session's to receive, and a reader that applies fewer rules than the listener's decode
-// could act on a role message its session does not hold. It is acknowledged, logged once with the
-// session, the role, the holder, its stream sequence and the decode error, and counted
-// (envoy_role_kept_undecodable_total{path="relay"}), as the durable path ends a message it cannot
-// decode and the kept lane's walk ends a copy no read decodes. A claim read or a copy that failed
-// has the frame given back to the server with the delay its deliveries earn (relayNakDelayFor),
-// neither sent nor acknowledged, so it is copied or sent once they answer.
+// (runKeptRoleDrain), so the role's holder receives it and not this session. That holds for an
+// envelope the listener's wire rules or the envelope's own refuse: the walk forwards its copy, and
+// the holder's reader judges it. A frame whose envelope JSON does not read under such a claim
+// reaches no session: no path can copy or forward it, and it is not this session's to receive. It
+// is acknowledged, logged once with the session, the role, the holder, its stream sequence and the
+// decode error, and counted (envoy_role_kept_undecodable_total{path="relay"}), as the durable path
+// ends a message it cannot decode and the walk ends a copy JSON does not read. A claim read or a
+// copy that failed has the frame given back to the server with the delay its deliveries earn
+// (relayNakDelayFor), neither sent nor acknowledged, so it is copied or sent once they answer.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {
@@ -668,7 +671,7 @@ func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg
 		return false
 	}
 	var item contracts.Envelope
-	if err := decodeStoredEnvelope(msg.Data, &item); err != nil {
+	if err := decodeRoleEnvelope(msg.Data, &item); err != nil {
 		if ackErr := msg.Ack(); ackErr != nil {
 			m.logger.Warn("listener session relay could not acknowledge a role message that cannot be decoded",
 				slog.String("session_id", sessionID),

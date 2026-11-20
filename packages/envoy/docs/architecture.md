@@ -523,7 +523,10 @@ writes when it did, and counts that hour from then instead, since the holder rea
 until then. A pass writes the record when it changed it (a new sequence, a missed floor, the
 record finished) and otherwise only once its last write is fifteen minutes old, so a record nothing
 moves costs four writes an hour however many listeners sweep it, and never ages out while a pass
-needs it. A role message is one whose topic is the role's, or whose `role` field names it. The copy
+needs it. A role message is one whose topic is the role's, or whose `role` field names it. A pass
+reads its envelope by JSON alone (`decodeRoleEnvelope`), as the relay and the kept lane's walk do:
+a message the listener's wire rules or the envelope's own refuse is still copied, and one JSON does
+not read as an envelope is not. The copy
 is the envelope without the forward mark, with the message's event id and a dedupe key of its own
 in the minted form (32 hex digits of the SHA-256 of the message's key and the frame's stream
 sequence, after `publish.` when the message's key has it, as the publish route's keys do, and after
@@ -546,9 +549,11 @@ session. It reads the claim from the role bucket for each frame that is a role m
 claim names another session, or none, it copies the frame to the role's kept lane as a pass does,
 acknowledges it only once the stream stored the copy, and logs `listener session relay copied a
 role message to the role's kept lane` with the session, the role, the holder and the event id. A
-frame under such a claim whose envelope the listener does not decode reaches no session: the relay
-acknowledges it, logs `listener session relay ended a role message that cannot be decoded` with
-the session, the role, the holder, the stream sequence and the decode error, and counts it in
+frame under such a claim that the listener's wire rules or the envelope's own refuse is copied the
+same way, since the walk forwards its copy and the holder's reader judges it. A frame whose
+envelope JSON does not read reaches no session: the relay acknowledges it, logs `listener session
+relay ended a role message that cannot be decoded` with the session, the role, the holder, the
+stream sequence and the decode error, and counts it in
 `envoy_role_kept_undecodable_total{path="relay"}`. A
 claim read or a copy that failed gives the frame back with a delay, neither delivered nor
 acknowledged. A frame that is no role message costs the decode of its topic and role and nothing

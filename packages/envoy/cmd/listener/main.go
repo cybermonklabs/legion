@@ -1129,7 +1129,7 @@ func main() {
 	// role tokens, and each would be a series of its own for the process's life.
 	roleKeptExpired := met.NewCounter("envoy_role_kept_expired_total", "Kept role copies a walk dropped at the end of their hour, whether or not a session held the role, by who kept them (kept_by: listener or dispatch_outbox) and whether the hour had ended more than an hour before the drop with no walk's claim on the copy (stale)")
 	roleDeadLetters := met.NewCounter("envoy_role_dead_letters_total", "Dead letters sent to the sender session of a kept role copy a walk dropped, by result: stored, or refused for good and not sent again")
-	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Role messages ended because no read can decode them: kept copies a walk ended, and, by path relay, role messages a session relay ended for a session that does not hold the role")
+	roleKeptUndecodable := met.NewCounter("envoy_role_kept_undecodable_total", "Role messages ended because JSON does not read them as an envelope: kept copies a walk ended, and, by path relay, role messages a session relay ended for a session that does not hold the role")
 	deliveryDuration := met.NewHistogram("envoy_delivery_duration_seconds", "Duration of message delivery attempts", metrics.DefaultBuckets)
 	// The CI summary loop runs only beside the GitHub webhook route (Phase 6b2), so only a listener
 	// that mounts it carries the gauge the loop sets.

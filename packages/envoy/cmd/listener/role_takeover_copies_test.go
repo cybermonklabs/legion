@@ -502,7 +502,9 @@ func (rig *copiesRig) holdRoleLaneForward(t *testing.T, eventID string) copiesHe
 // the control rows - what B must not receive, what the holder's consumer still holds, what is
 // not copied and the dead letter that is not sent - pass there and with the change. Row 5 as the
 // verification writes it holds only controls; its case is the role message stored inside the
-// hour before the same takeover, which reaches B, so the row shows the pass ran.
+// hour before the same takeover, which reaches B, so the row shows the pass ran. Row 8 stores on
+// the holder's subject a role message the listener's wire rules refuse and one JSON does not read
+// as an envelope: the pass copies the first, which reaches B, and not the second.
 func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing.T) {
 	t.Run("1 an outright claim by a different session after the holder crashed inside its live window", func(t *testing.T) {
 		copiesUnreadRoleMessagesRow(t, false)
@@ -784,6 +786,37 @@ func TestADifferentSessionThatTakesARoleReceivesTheUnreadRoleMessages(t *testing
 				t.Errorf("no takeover pass read %s's consumer within %s of the claim, so none met the refused read", copiesHolder, copiesSignalBound)
 			}
 			copiesRequireEach(t, received, copiesTaker, unread...)
+		})
+	})
+
+	t.Run("8 a role message JSON reads and the wire rules refuse, and one JSON does not read, both unread by the holder", func(t *testing.T) {
+		rig := newCopiesRig(t)
+		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(copiesRole)})
+		holder := rig.startHolder(t, copiesHolder)
+		rig.claim(t, copiesHolder, copiesRole, false)
+		rig.crash(t, copiesHolder, holder)
+		// Stored once the holder's process stopped, as messages it never read: no process takes
+		// them, and its consumer holds both unacknowledged when the takeover's pass reads it.
+		refused, refusedData := roleFrameTheWireRulesRefuse(t, copiesRole)
+		unreadable, unreadableData := roleFrameNoEnvelopeReads(t, copiesRole)
+		for _, data := range [][]byte{refusedData, unreadableData} {
+			if _, err := rig.harness.client.JS().Publish(contracts.LegacyAgentSubject(copiesHolder), data); err != nil {
+				t.Fatalf("store a role message on %s's own subject: %v", copiesHolder, err)
+			}
+		}
+
+		taker := rig.startTaker(t, copiesTaker)
+		rig.claim(t, copiesTaker, copiesRole, false)
+		received := rig.watch(t, taker, copiesRole, refused)
+
+		t.Run("case: the role message the wire rules refuse reaches the new holder", func(t *testing.T) {
+			copiesRequireEach(t, received, copiesTaker, refused)
+		})
+		t.Run("control: the role message JSON does not read is not copied, and the new holder does not receive it", func(t *testing.T) {
+			copiesRequireNone(t, received, copiesTaker, unreadable)
+			if copies := rig.keptCopiesOf(t, copiesRole, unreadable); copies != 0 {
+				t.Errorf("role %s's kept lane holds %d copies of %s, whose envelope JSON does not read; want none", copiesRole, copies, unreadable)
+			}
 		})
 	})
 }
