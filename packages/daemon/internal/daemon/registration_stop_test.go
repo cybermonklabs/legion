@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -98,12 +98,12 @@ func (r *firedRenewals) fire() {
 // renewingRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as
 // newRegistrar wires it, renewing on the test's fired renewals.
 type renewingRegistrar struct {
-	client   *agentsecrets.Client
+	client   *cipher.Client
 	renewals *firedRenewals
 }
 
 func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
-	return r.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+	return r.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: r.renewals.after, Bound: s.Bound,
 	})
 }
@@ -187,7 +187,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		PluginContract: api.DaemonAPIVersion,
 		Secrets:        enrollsEveryPod{},
 		Registrar: renewingRegistrar{
-			client:   &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()},
+			client:   &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()},
 			renewals: renewals,
 		},
 		RefreshGate: supervise.NewRefreshGate(0),

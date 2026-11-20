@@ -54,7 +54,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -737,7 +737,7 @@ type liveRig struct {
 	// enrollments is the harness's own enrollment of each claim's running pod, as the daemon's
 	// machine holds it; grants and requests are what checkSecretsAutomaticGrant records for
 	// checkSecretsCrossPodNegative to attack.
-	secrets            *agentsecrets.Client
+	secrets            *cipher.Client
 	secretsBlockReason string
 	enrollments        map[claim.Token]liveEnrollment
 	grants             map[claim.Token]string
@@ -831,7 +831,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if agentSecretsBlockReason(env.agentSecretsURL, env.agentSecretsAutoSHA, env.agentSecretsBin, env.agentSecretsTokenFile) == "" {
 		// The run logs in as the daemon does, with the ServiceAccount token the script minted; no
 		// person approves it, and the client keeps logging in for as long as the run lasts.
-		client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
+		client := &cipher.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
 		if err := client.Start(r.ctx); err != nil {
 			r.secretsBlockReason = fmt.Sprintf("the token login was refused: %v", err)
 		} else {

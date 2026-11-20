@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"maps"
 	"net/url"
 	"slices"
@@ -132,6 +133,31 @@ type Settings struct {
 	// one default hook for a file that names no key. It carries no hook's words: see
 	// HookSettings.
 	Hooks []HookSettings `json:"hooks"`
+	// maxFixAttemptsShown is set on the copy the state route serves a caller below the contract
+	// that removed `max_fix_attempts` from this block (api's withMaxFixAttempts, below
+	// shaping.go's fixAttemptsContract). Such a reader types `max_fix_attempts` as a positive
+	// integer and refuses the whole body without the key (answers.go's typedSettings), and the
+	// stand-in is what it reads there. It is a flag of the block's own and the stand-in is a
+	// constant, as PullRequestView.fixAttemptsShown is.
+	maxFixAttemptsShown bool
+}
+
+// MarshalJSON writes the stand-in on the one body that carries it and leaves the key off every
+// other, as PullRequestView.MarshalJSON writes `fixAttempts`: the key is written by a pointer of
+// the outer value rather than by a field of the block, so no body this contract writes can carry
+// it.
+func (s Settings) MarshalJSON() ([]byte, error) {
+	type wire Settings
+	type standIn struct {
+		wire
+		MaxFixAttempts *int `json:"max_fix_attempts,omitempty"`
+	}
+	out := standIn{wire: wire(s)}
+	if s.maxFixAttemptsShown {
+		maxFixAttempts := maxFixAttemptsStandIn
+		out.MaxFixAttempts = &maxFixAttempts
+	}
+	return json.Marshal(out)
 }
 
 // RuntimeSettings is `runtime`: its name, the kubernetes block under that runtime alone, and the

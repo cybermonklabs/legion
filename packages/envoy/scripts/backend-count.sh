@@ -2,7 +2,7 @@
 # packages/envoy/scripts/backend-count.sh
 #
 # Counts, for each test it names, the runs that passed on each store backend: the test's own
-# `aws` and `gcp` subtests (onEachStore, cmd/agent-secrets/secret_kind_test.go), so a store or
+# `aws` and `gcp` subtests (onEachStore, cmd/cipher/secret_kind_test.go), so a store or
 # use change cannot pass on one backend alone. It takes the packages to run first, then `--`, then
 # the tests, and runs, from packages/envoy, only the named tests in only those packages:
 #
