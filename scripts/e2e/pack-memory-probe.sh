@@ -14,7 +14,7 @@
 #      settings, in c-pack-window-config's order, and the image's `jj --version`, which must print
 #      the release this checkout's worker.Dockerfile names (ARG JJ_TOOL, which the harness passes
 #      as PACK_MEMORY_JJ_TOOL_VERSION). R10's released jj is the image's own: the binary its jj
-#      wrapper runs, /usr/local/bin/jj.
+#      wrapper runs, /usr/local/bin/jj, so a later pin needs no change here.
 #   3. `legion workspace-init cache` in the background, `workspace-init fetch` from it, and
 #      `workspace-init provision`, which looks jj up on PATH once (cmd/legion/workspace_init.go,
 #      provisioningTools) and so runs every jj command of its own through the measuring jj this
@@ -29,8 +29,9 @@
 #      bare copy of the feed and a bare clone of git/git. A fetch whose pack is under 100 MiB
 #      marks its rows void.
 #   6. The copies of the provisioning root, repos/ and workspaces/ both: one for jj 0.45.1 (R3 to
-#      R5's control), one for jj 0.46.0 (R10's control), and one for the released jj at each
-#      JJ_PACK_MAPPED_LIMIT budget of R10, 64m, 256m, 512m and 1g. `df` and the original's `du -s`
+#      R5's control), one for R10's control (jj 0.46.0 as sami's 28c47103 released it), and one for
+#      the released jj at each JJ_PACK_MAPPED_LIMIT budget of R10, 64m, 256m, 512m and 1g. `df` and
+#      the original's `du -s`
 #      come first, and the run stops when the volume cannot hold every copy and one fresh root. A
 #      copy hardlinks the clone's objects/pack/* from the original, since git never writes a pack
 #      in place, and copies every other file with `cp -a`; then its workspace's .git is pointed at
@@ -51,7 +52,7 @@
 #      `jj --ignore-working-copy file list -r @-`, the STANDING read, describedArgs, adoptionArgs,
 #      `jj new`, `jj diff` after the same edits in two directories, and `jj --ignore-working-copy
 #      log -r '::@-' -- <walk file>`.
-#  10. R10's provisioning rows, for jj 0.46.0 and for each budget, each on a fresh root: a `git
+#  10. R10's provisioning rows, for R10's control and for each budget, each on a fresh root: a `git
 #      clone --no-checkout` of the feed, its packs hardlinked, then every jj command the measuring
 #      jj recorded for the original's provision, in its order and with its argv, run with that jj
 #      and budget. Each path of the original root in an argv is rewritten to the fresh root, and
@@ -59,10 +60,6 @@
 #      the clone is made) is named as the clone it becomes, which the fresh clone already is. The
 #      root is removed once its rows are read.
 #  11. R10's verdicts, each beside one summary RESULT line for its command and budget.
-#
-# R10's released rows take the released jj from the image itself, the binary behind its wrapper,
-# which is the release that carries the chunked mapping (`ARG JJ_TOOL` of worker.Dockerfile), so the
-# probe measures whatever release the image installs, with no input of its own.
 #
 # Every measured command runs under pack-memory-peak.py beside this file, which prints one
 # `RESULT {json}` line for it: label, argv, exit, wall seconds, GNU time's maximum resident set,
@@ -81,11 +78,11 @@
 # GNU time's figure less its largest sampled anonymous memory and other-file Rss, so a sample that
 # missed the pack cannot lower it. A released row holds when it exits 0, its pack figure is within
 # its budget plus one 8 MiB chunk for each object store plus 32 MiB, and its stdout equals the
-# 0.46.0 row's. The count of object stores is read from the 0.46.0 row of the same command: the
+# control row's. The count of object stores is read from the control row of the same command: the
 # most mappings one sample held of its largest pack file, since that build maps a pack whole once
-# for each store. A 0.46.0 row is a control: its pack figure must reach the pack's size, or its
+# for each store. A control row is a control: its pack figure must reach the pack's size, or its
 # line is VOID. Each R10 RESULT line carries `r10` in place of a label: the command, the copy, the
-# budget, whether its stdout equals the 0.46.0 row's, its largest sampled pack, other-file and
+# budget, whether its stdout equals the control row's, its largest sampled pack, other-file and
 # anonymous memory, GNU time's figure, its wall time, its pack figure, the store count and the
 # bound.
 #
@@ -155,7 +152,7 @@ declare -A budget_kib=([64m]=65536 [256m]=262144 [512m]=524288 [1g]=1048576)
 chunk_kib=8192
 slack_kib=32768
 # The copies of the provisioning root, each at $scratch/<copy>: jj 0.45.1's for R3 to R5, then
-# R10's, jj 0.46.0's and the released jj's at each budget, with the jj and the budget each runs
+# R10's, R10's control's and the released jj's at each budget, with the jj and the budget each runs
 # (copy_jj is filled once the binaries are read). R10's commands, by the names its labels and
 # verdicts take: the role's seven, then provisioning's three.
 r10_copies=(r10-control "${budgets[@]/#/r10-}")
@@ -491,7 +488,7 @@ r10_result() {
   echo "RESULT $line"
 }
 
-# r10_control <name> <label> <pack KiB> <pack figure>: a row of jj 0.46.0, R10's control. Its pack
+# r10_control <name> <label> <pack KiB> <pack figure>: a row of R10's control (r10-control). Its pack
 # figure must reach the pack's size, or its line is VOID; a control that never ran is a MISMATCH.
 r10_control() {
   local name=$1 label=$2 pack=$3 figure=$4 want
@@ -528,7 +525,7 @@ r10_bound() {
   elif ! whole "$figure"; then
     verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "a figure is missing"
   elif ! whole "$bound"; then
-    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the store count could not be read from the 0.46.0 row"
+    verdict "$name" fail "$(r10_figures "$label" "$figure")" "$want" "the store count could not be read from the control row"
   elif [ "$figure" -le "$bound" ]; then
     verdict "$name" pass "$(r10_figures "$label" "$figure")" "$want"
   else
@@ -537,7 +534,7 @@ r10_bound() {
 }
 
 # r10_output <name> <label> <control label> <same_output's status>: the released row's stdout is
-# the 0.46.0 row's.
+# the control row's.
 r10_output() {
   local name=$1 label=$2 control=$3 same=$4 want
   want="stdout the same bytes as $control's"
