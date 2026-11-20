@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // GiveUps is the replay and the discard of the project's give-ups, the messages its intake gave up
@@ -148,27 +149,19 @@ func (s *server) intakeDiscard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// giveUpController redeems the controller door's grant and answers who the record keeps as the
-// caller: the operator for a controller grant the operator's bearer minted (credential.Grant's
-// Operator), and `controller session <id>` for one the controller's registered session minted
-// (its Session). Every grant that is not a controller's — a phase worker's, an architect's — is
-// refused.
+// giveUpController answers who the record keeps as the caller of the controller door, whose grant
+// controllerActor redeems and refuses as it does the pause's: the operator for a controller grant
+// the operator's bearer minted, and `controller session <id>` for one the controller's registered
+// session minted.
 func (s *server) giveUpController(w http.ResponseWriter, r *http.Request, grantID string) (string, bool) {
-	if !requireFailureFields(w, field{"grantId", grantID}) {
-		return "", false
-	}
-	grant, ok := s.redeem(w, r, grantID)
+	by, ok := s.controllerActor(w, r, grantID, "a give-up's replay or discard requires a controller grant")
 	if !ok {
 		return "", false
 	}
-	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", "a give-up's replay or discard requires a controller grant")
-		return "", false
-	}
-	if grant.Operator {
+	if by.Kind == store.PauseByOperator {
 		return operatorCaller, true
 	}
-	return "controller session " + grant.Session, true
+	return "controller session " + by.Session, true
 }
 
 // replayGiveUps runs the replay of the give-ups selection names for caller and answers it, through

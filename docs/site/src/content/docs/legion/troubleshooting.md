@@ -1879,12 +1879,16 @@ notice comes once per handoff commit, from whichever read finds it first.
     reads), `workflow: a checks settlement was dropped: no pull request is recorded
     for it`, `workflow: a checks settlement stands for no head the record holds` (with
     `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
-    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
-    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
-    message` (an error with the `subject`) and dropped. A settlement delivered again after it
-    applied writes no line.
+    applied` (with `classification`, `stale` or `conflict`). The daemon gives up a settlement
+    envelope that it cannot decode at all, such as one whose source is not `github`, at its first
+    delivery ([A message the intake gave up](#a-message-the-intake-gave-up)). It keeps the message
+    in its database and writes the error line `intake: a message was given up`, with the reason
+    `undecodable` and the `subject`. The state counts the message in `intakeGiveUps`. While a
+    controller is registered, the `intake-gave-up` notice also counts it. A settlement delivered
+    again after it applied writes no line.
 
-  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  A published settlement with no new `CI settled` message, no drop line and no give-up line is one
+  of three things:
   - The daemon applied it, and the line it would tell is the line it already told for that head,
     so it tells nobody again. The earlier `CI settled` message of that head stands for it.
   - The daemon applied it on a tree that lingers after its root left the workflow, where the

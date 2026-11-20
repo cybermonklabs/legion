@@ -126,13 +126,13 @@ const projectPaused = "PROJECT_PAUSED"
 
 // projectPause is the controller's pause (decision 19): a controller grant, the controller
 // session's or one the operator's bearer minted, pauses the daemon's project, and the pause is the
-// operator's when the operator's bearer minted the grant (pauseActor).
+// operator's when the operator's bearer minted the grant (controllerActor).
 func (s *server) projectPause(w http.ResponseWriter, r *http.Request) {
 	var req ProjectPauseRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.pauseActor(w, r, req.GrantID, "a pause"); ok {
+	if by, ok := s.controllerActor(w, r, req.GrantID, "a pause of the project requires a controller grant"); ok {
 		s.pauseProject(w, r, by, req.Reason)
 	}
 }
@@ -141,10 +141,10 @@ func (s *server) projectPause(w http.ResponseWriter, r *http.Request) {
 // included.
 func (s *server) projectResume(w http.ResponseWriter, r *http.Request) {
 	var req ProjectResumeRequest
-	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}) {
+	if !s.readBody(w, r, &req, s.redeemIdentityCheck) {
 		return
 	}
-	if by, ok := s.pauseActor(w, r, req.GrantID, "a resume"); ok {
+	if by, ok := s.controllerActor(w, r, req.GrantID, "a resume of the project requires a controller grant"); ok {
 		s.resumeProject(w, r, by)
 	}
 }
@@ -168,16 +168,22 @@ func (s *server) operatorProjectResume(w http.ResponseWriter, r *http.Request) {
 	s.resumeProject(w, r, store.PauseActor{Kind: store.PauseByOperator})
 }
 
-// pauseActor redeems grantID for act and answers who acts through it: the controller, naming the
+// controllerActor redeems grantID and answers who acts through it: the controller, naming the
 // session that minted the grant, or the operator, whose bearer minted it (credential.Grant's
-// Session and Operator). A grant that is not a controller grant is refused CONTROLLER_REQUIRED.
-func (s *server) pauseActor(w http.ResponseWriter, r *http.Request, grantID, act string) (store.PauseActor, bool) {
+// Session and Operator). It refuses a request that names no grant MISSING_FIELD, and a grant that
+// is not a controller grant CONTROLLER_REQUIRED with refusal as the sentence. The pause, the
+// resume and the give-up routes all take their caller from it, so a later rule of what a
+// controller grant must be is written once and holds at each of them.
+func (s *server) controllerActor(w http.ResponseWriter, r *http.Request, grantID, refusal string) (store.PauseActor, bool) {
+	if !requireFailureFields(w, field{"grantId", grantID}) {
+		return store.PauseActor{}, false
+	}
 	grant, ok := s.redeem(w, r, grantID)
 	if !ok {
 		return store.PauseActor{}, false
 	}
 	if !grant.Controller {
-		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", act+" of the project requires a controller grant")
+		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", refusal)
 		return store.PauseActor{}, false
 	}
 	if grant.Operator {

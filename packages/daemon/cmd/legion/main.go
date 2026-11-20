@@ -20,6 +20,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -1470,8 +1471,9 @@ const plainStateGiveUps = 10
 // newest seq <seq>`, the newest sequence being what `legion intake replay` and `legion intake
 // discard` take as --through-seq to reach all of them; then the newest at most plainStateGiveUps,
 // `intake give-up <id> <consumer> <subject> seq <n> gave up <time> after <d> deliveries
-// (<reason>): <first line of the error>`, each id what --give-up takes. With none open the one
-// line says so.
+// (<reason>): <first line of the error>`, each id what --give-up takes. The subject and the error
+// are terminalText: the publisher wrote the subject, and the error can quote it. With none open
+// the one line says so.
 func intakeGiveUpLines(giveUps api.IntakeGiveUpsView) []string {
 	if len(giveUps.Consumers) == 0 {
 		return []string{"intake give-ups: none"}
@@ -1484,10 +1486,33 @@ func intakeGiveUpLines(giveUps api.IntakeGiveUpsView) []string {
 	for _, giveUp := range listed {
 		firstLine, _, _ := strings.Cut(giveUp.LastError, "\n")
 		lines = append(lines, fmt.Sprintf("intake give-up %d %s %s seq %d gave up %s after %d deliveries (%s): %s",
-			giveUp.ID, giveUp.Consumer, giveUp.Subject, giveUp.StreamSeq, giveUp.GaveUpAt.UTC().Format(time.RFC3339),
-			giveUp.Deliveries, giveUp.Reason, firstLine))
+			giveUp.ID, giveUp.Consumer, terminalText(giveUp.Subject), giveUp.StreamSeq, giveUp.GaveUpAt.UTC().Format(time.RFC3339),
+			giveUp.Deliveries, giveUp.Reason, terminalText(firstLine)))
 	}
 	return lines
+}
+
+// terminalText is text another party wrote, as a line of the operator's terminal shows it: each
+// character that does not print is written as its Go escape (`\x1b`, `\a`, `\u202e`), so an ESC
+// or a BEL in it cannot clear the screen, set the window title or reorder the line. Text that
+// prints is left as it is, so the line keeps the form the guides show. The state's text holds no
+// NUL and no byte that is not UTF-8 (storetext.Text), but it can still hold these characters.
+func terminalText(text string) string {
+	first := strings.IndexFunc(text, func(r rune) bool { return !unicode.IsPrint(r) })
+	if first < 0 {
+		return text
+	}
+	var shown strings.Builder
+	shown.WriteString(text[:first])
+	for _, r := range text[first:] {
+		if unicode.IsPrint(r) {
+			shown.WriteRune(r)
+			continue
+		}
+		quoted := strconv.QuoteRune(r)
+		shown.WriteString(quoted[1 : len(quoted)-1])
+	}
+	return shown.String()
 }
 
 // stateAddress is where a daemon answers: the configured bind and port, with --port overriding

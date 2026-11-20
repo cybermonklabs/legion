@@ -2632,6 +2632,48 @@ func TestPlainStateGivesTheOpenGiveUps(t *testing.T) {
 	})
 }
 
+// A give-up's subject is the publisher's text, which Envoy and NATS refuse only for whitespace,
+// and its error can quote that text. So plain `legion state` writes each character of the subject
+// and of the error that does not print as its Go escape: an ESC or a BEL in them reaches the
+// operator's terminal as text, and does not clear the screen or set the window title. The rest of
+// the line stays as the guides show it.
+func TestPlainStatePrintsNoControlCharacterOfAGiveUp(t *testing.T) {
+	giveUps, err := json.Marshal(api.IntakeGiveUpsView{
+		Consumers: []api.IntakeGiveUpCountView{{Name: "legion-go-LEGION-dispatch", Open: 1, NewestSeq: 48213}},
+		Newest: []api.IntakeGiveUpView{{
+			ID: 412, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.\x1b[2J.issue.updated",
+			StreamSeq: 48213, Deliveries: 1, GaveUpAt: time.Date(2026, 10, 3, 8, 55, 2, 0, time.UTC), Reason: "undecodable",
+			LastError: "issue name \x1b]0;x\x07 is in neither form\ngoroutine 7 [running]",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := `{"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[],"blocked":[]},"issues":{},"pendingStatusWrites":[],"intakeGiveUps":` + string(giveUps) + `}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	if i := bytes.IndexAny(out.Bytes(), "\x1b\x07"); i >= 0 {
+		t.Fatalf("legion state printed the byte %q of a give-up to the terminal, in %q", out.Bytes()[i], out.String())
+	}
+	want := `intake give-up 412 legion-go-LEGION-dispatch notifications.dispatch.issue.\x1b[2J.issue.updated seq 48213 ` +
+		`gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): issue name \x1b]0;x\a is in neither form` + "\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
+	}
+}
+
 // An operator reading plain `legion state` is told which issues Legion waits on a Dispatch issue
 // nobody has finished for (api.Admission.Blocked): each by issue and what it waits on, roots and
 // held children alike, and a started issue that gave its slot back for the wait, on one line
