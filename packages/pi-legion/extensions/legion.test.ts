@@ -4338,8 +4338,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
     expect(controller.sentUserMessages).toEqual([]);
-    // The controller's `legion` tool: `read_state` and `set_status`, registered at startup and
-    // answering only once the claim has registered the session.
+    // The controller's `legion` tool (the operations of `OPERATIONS.controller` in
+    // `src/tools.ts`), registered at startup and answering only once the claim has registered
+    // the session.
     expect(controller.tools.map((tool) => tool.name)).toContain("legion");
 
     expect(await runStartCommand(controller, controller.context("ses_controller"))).toEqual([]);

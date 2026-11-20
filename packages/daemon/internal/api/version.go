@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 170: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 182: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
 // `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
 // `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
@@ -2438,7 +2471,7 @@ package api
 // controller's pod runs the launcher's roles-dir form for its one role in place of the
 // single-role form (`--roles-dir` and `--role controller`, sandbox's
 // controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
-// launcher token from the controller's agent. A launcher built before 170 exits 2 on the unknown
+// launcher token from the controller's agent. A launcher built before 182 exits 2 on the unknown
 // flag in every pod the daemon creates with it, so the image probe, which holds the image's
 // pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
@@ -2447,14 +2480,14 @@ package api
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
 // launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
 // newSessionPeer). An older daemon also reads no fifth flag, and every relaunch of a claim
-// recorded at 170 installs its plugin pair and so keeps the pod whatever its image: each start is
+// recorded at 182 installs its plugin pair and so keeps the pod whatever its image: each start is
 // refused and charged as a launch failure, the controller's claim fails and its retries install
 // into the same pod until its Sandbox is deleted, and each issue claim fails and needs a retry
 // once its pod is replaced. So the member is turned off on this release first: restore the
 // account's grant to the pod's own principal, remove writer_audience and restart the daemon,
 // which reads the fifth flag as a moved session store and replaces each pod that carries it (an
 // issue pod by its update round, the controller's pod at its next launch); only once no launcher
-// command carries the flag is the daemon rolled back below 170 (docs/kubernetes.md, "Selecting
+// command carries the flag is the daemon rolled back below 182 (docs/kubernetes.md, "Selecting
 // the store"). A deployment that sets
 // no writer audience renders no fifth flag, and its launcher reads no `agentExecutable`, so its
 // pods carry the command they carried before. (The
@@ -2479,6 +2512,10 @@ package api
 // 180 (#4175) declared, and none 170, so this entry moved to 170, the lowest number above main's
 // 168 that no other open pull request declares. The forward merge of 2026-11-20 that brought in
 // 9e0f0b8e left main at 168, and a reading of every open pull request at that merge, which ended at
-// 2026-11-20T00:44:52Z, found 170 declared by no other, so this entry keeps 170. Read the base's
-// own number and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 170
+// 2026-11-20T00:44:52Z, found 170 declared by no other, so this entry kept 170. The forward merge
+// of 2026-11-20 that brought in c7e1cbd5 brought main's 178 (#4115's entry above). A reading of
+// every open pull request at that merge, which ended at 2026-11-20T01:02:32Z, found 179 (#4392 and
+// #4540), 180 (#4049 and #4175) and 181 (#4553) declared, so this entry moved to 182, the lowest
+// number above main's 178 that no other open pull request declares. Read the base's own number and
+// every open pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 182

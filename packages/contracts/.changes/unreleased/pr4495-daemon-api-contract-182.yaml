@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The daemon API contract fixture is 170, which tells a pod's `legion launcher` an optional
+  The daemon API contract fixture is 182, which tells a pod's `legion launcher` an optional
   `--session-writer-audience <audience>`, the audience of the token its session proxy signs in
   with, and gives each Oh My Pi start the agent's executable (`agentExecutable`). No shape of the
   API changed.
