@@ -3,9 +3,16 @@ package access
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished: session_projects places every
@@ -24,11 +31,12 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	database := seedAccess(t)
 	// ses_pub acted in PUB and its pair is recorded; ses_unrecorded acted in PRIV before the fill
 	// reached its event, so no row places it anywhere yet, and the listener lists it with a
-	// credential that names no project.
+	// credential that names no project ("projects":[]: a record with no projects key names no list,
+	// and passes no open viewer while a project is private, filled or not).
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects (session_id, project_key) values ('ses_pub', 'PUB');
 		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, '[{"session_id":"ses_unrecorded"}]', now(), now() + interval '1 hour');
+		values (true, '[{"session_id":"ses_unrecorded","projects":[]}]', now(), now() + interval '1 hour');
 	`); err != nil {
 		t.Fatalf("seed ses_pub's pair and ses_unrecorded's listener record: %v", err)
 	}
@@ -133,49 +141,49 @@ func TestTheFillMarkerIsReadOncePerStatement(t *testing.T) {
 }
 
 // planLoops explains sql, run with args, and answers how many of its plan's nodes scan relation and
-// how many loops they ran in all. A plan that scans relation nowhere fails the test, since a count
-// over it would measure nothing.
+// how many loops they ran in all, reading the plan through explaintest. A plan that scans relation
+// nowhere fails the test, since a count over it would measure nothing.
 func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scans, total int) {
 	t.Helper()
-	var plan []map[string]any
-	if err := q.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) `+sql, args...).Scan(&plan); err != nil {
+	var raw []byte
+	if err := q.QueryRow(context.Background(), `explain (analyze, costs off, timing off, format json) `+sql, args...).Scan(&raw); err != nil {
 		t.Fatalf("explain the read: %v", err)
 	}
-	var walk func(node map[string]any)
-	walk = func(node map[string]any) {
-		if node["Relation Name"] == relation {
+	for _, scan := range explaintest.Scans(t, explaintest.OnePlan(t, raw)) {
+		if scan.Relation == relation {
 			scans++
-			loops, _ := node["Actual Loops"].(float64)
-			total += int(loops)
-		}
-		children, _ := node["Plans"].([]any)
-		for _, child := range children {
-			if child, ok := child.(map[string]any); ok {
-				walk(child)
-			}
-		}
-	}
-	for _, root := range plan {
-		if node, ok := root["Plan"].(map[string]any); ok {
-			walk(node)
+			total += int(scan.Loops)
 		}
 	}
 	if scans == 0 {
+		var plan []map[string]any
+		_ = json.Unmarshal(raw, &plan)
 		encoded, _ := json.Marshal(plan)
 		t.Fatalf("the plan reads %s nowhere, so this measures nothing:\n%s", relation, encoded)
 	}
 	return scans, total
 }
 
-// TestTheListenerRecordUsesItsPrimaryKey: SessionClause reads the listener's stored projects
-// through listener_session_projects, whose body probes route_roster_session_projects by its
-// primary key. The migration's trigger wrote one object from a roster of fifty sessions; with
-// sequential scans disabled, the direct projection query takes its one key through one plan node
-// and one loop.
+// TestTheListenerRecordUsesItsPrimaryKey: SessionClause asks session_clause_visible about every row
+// its own SQL does not answer, and Postgres plans and runs that function's statement once a call,
+// never in the plan of the statement that binds the clause, so what a call reads is read as it
+// runs (sessionClauseCalls, auto_explain's plans of nested statements). For a read over fifty
+// sessions none of which has a pair, by an open viewer and by one that is not open, of a
+// deployment that holds a private project and has filled session_projects, the clause calls it
+// once a session, and each call reads route_roster_session_projects through its primary key,
+// keyed on id, in no node more than once. With no private project an open viewer's read calls it
+// not at all (R9). The function sets nothing for its calls (no SET clause, so no call saves and
+// restores a search_path): it names each table by its schema.
+//
+// Controls: drop route_roster_session_projects_pkey on the connection the read runs on, and each
+// call reads the projection by a sequential scan, which the test names as a search of no
+// route_roster_session_projects_pkey; take the open viewer's arm out of SessionClause's own SQL,
+// and the read with no private project makes fifty calls, which the test names.
 func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	ctx := context.Background()
 	database := seedAccess(t)
 	if _, err := database.Pool.Exec(ctx, `
+		insert into session_projects_filled default values;
 		insert into route_roster (answered, sessions, sent_at, expires_at)
 		select true, jsonb_agg(jsonb_build_object('session_id', 'ses_' || n, 'projects', jsonb_build_array(case when n % 2 = 0 then 'PUB' else 'PRIV' end))),
 			now(), now() + interval '1 hour'
@@ -183,16 +191,112 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the listener's record of fifty sessions: %v", err)
 	}
-	tx, err := database.Pool.Begin(ctx)
+	var settings []string
+	if err := database.Pool.QueryRow(ctx, `
+		select coalesce(proconfig, '{}') from pg_proc where proname = 'session_clause_visible'`).Scan(&settings); err != nil {
+		t.Fatalf("read session_clause_visible's settings: %v", err)
+	}
+	if len(settings) > 0 {
+		t.Errorf("session_clause_visible sets %v on each of its calls, want none: it names its tables by their schema", settings)
+	}
+	const projection = "route_roster_session_projects"
+	read := `select count(*) from generate_series(1, 50) as n where ` + SessionClause("'ses_' || n", "$1")
+	keys := explaintest.NewIndexKeys(database.Pool)
+	resolve := func(person string) model.Viewer {
+		t.Helper()
+		viewer, err := Resolve(ctx, database.Pool, cookie(person))
+		if err != nil {
+			t.Fatalf("%s: Resolve: %v", person, err)
+		}
+		return viewer
+	}
+	for _, person := range []string{alice, bob} {
+		viewer := resolve(person)
+		if !viewer.AnyPrivate {
+			t.Fatalf("%s resolves as %+v, want a deployment that holds a private project", person, viewer)
+		}
+		calls := sessionClauseCalls(t, database, read, viewerArg(t, viewer))
+		if len(calls) != 50 {
+			t.Errorf("%s's read over fifty sessions made %d calls of session_clause_visible, want one a session", person, len(calls))
+		}
+		for index, call := range calls {
+			subject := fmt.Sprintf("call %d of session_clause_visible for %s", index+1, person)
+			keys.RequireIndexKeyed(t, call, projection+"_pkey", subject, explaintest.CondRequired)
+			for _, scan := range explaintest.Scans(t, call) {
+				if scan.Relation == projection && scan.Loops > 1 {
+					t.Errorf("%s reads %s %v times in one node, want once:\n%s", subject, projection, scan.Loops, call)
+				}
+			}
+		}
+	}
+	if _, err := database.Pool.Exec(ctx, `update projects set visibility = 'public'`); err != nil {
+		t.Fatalf("make every project public: %v", err)
+	}
+	if viewer := resolve(alice); viewer.AnyPrivate || !viewer.Open {
+		t.Fatalf("alice resolves as %+v with every project public, want an open viewer of no private project", viewer)
+	} else if calls := sessionClauseCalls(t, database, read, viewerArg(t, viewer)); len(calls) != 0 {
+		t.Errorf("with no private project, alice's read over fifty sessions made %d calls of session_clause_visible, want none (R9)", len(calls))
+	}
+}
+
+// sessionClauseCalls runs sql with args on a connection of its own, with sequential scans off, on
+// which auto_explain sends the client, as a notice, the analyzed plan of every statement the
+// connection runs, those a function runs included, and answers the plan of each statement
+// session_clause_visible ran: each one whose query text reads route_roster_session_projects. A
+// connection that sent no plan of sql itself fails the test, since its silence about the calls
+// would then say nothing.
+func sessionClauseCalls(t *testing.T, database *store.Store, sql string, args ...any) []json.RawMessage {
+	t.Helper()
+	ctx := context.Background()
+	config := database.Pool.Config().ConnConfig.Copy()
+	var logged []string
+	config.OnNotice = func(_ *pgconn.PgConn, notice *pgconn.Notice) { logged = append(logged, notice.Message) }
+	connection, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
-		t.Fatalf("begin the indexed listener-record plan: %v", err)
+		t.Fatalf("open a connection for the plans: %v", err)
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local enable_seqscan = off`); err != nil {
-		t.Fatalf("prefer the listener-record index: %v", err)
+	defer connection.Close(ctx)
+	for _, setting := range []string{
+		`load 'auto_explain'`,
+		`set auto_explain.log_min_duration = 0`,
+		`set auto_explain.log_nested_statements = on`,
+		`set auto_explain.log_analyze = on`,
+		`set auto_explain.log_timing = off`,
+		`set auto_explain.log_format = json`,
+		`set auto_explain.log_level = notice`,
+		`set client_min_messages = notice`,
+		`set enable_seqscan = off`,
+	} {
+		if _, err := connection.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
 	}
-	if scans, total := planLoops(t, tx, "route_roster_session_projects",
-		`select projects from route_roster_session_projects where id = true`); scans != 1 || total != 1 {
-		t.Errorf("the listener-record lookup scans route_roster_session_projects in %d nodes, %d loops in all; want one index scan node and one loop", scans, total)
+	if _, err := connection.Exec(ctx, sql, args...); err != nil {
+		t.Fatalf("run the read: %v", err)
 	}
+	var calls []json.RawMessage
+	ranItself := false
+	for _, message := range logged {
+		start := strings.Index(message, "{")
+		if start < 0 {
+			continue
+		}
+		var entry struct {
+			Query string          `json:"Query Text"`
+			Plan  json.RawMessage `json:"Plan"`
+		}
+		if err := json.Unmarshal([]byte(message[start:]), &entry); err != nil {
+			t.Fatalf("read the plan auto_explain sent: %v\n%s", err, message)
+		}
+		switch {
+		case entry.Query == sql:
+			ranItself = true
+		case strings.Contains(entry.Query, "route_roster_session_projects"):
+			calls = append(calls, entry.Plan)
+		}
+	}
+	if !ranItself {
+		t.Fatalf("auto_explain sent no plan of the read itself, so the calls it names mean nothing: %q", logged)
+	}
+	return calls
 }

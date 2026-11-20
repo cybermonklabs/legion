@@ -121,11 +121,6 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
-	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
-	// subjects, the proof a private event waits on before it is published (the private-delivery
-	// hold). Nothing in this package reads it yet; cmd/dispatch sets it once a hub can prove it. A
-	// nil func holds nothing, which is safe while no project can be private.
-	PrivateHubsReady func() bool
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry

@@ -266,15 +266,22 @@ func (s *Service) accessChanged(ctx context.Context, _ string) {
 // revokes the rest (revokeUnless). It runs on each access change and after each LISTEN stands,
 // since a change notified while the hub had no connection reached nobody. A socket whose admission
 // read its room before this pass began and that is recorded only after the pass looked is read
-// again as it is recorded (recheckAdmission). A person whose read fails keeps their sockets until
-// the next pass, as a failed read of an issue leaves its rooms as they were (issueOpenChanged).
+// again as it is recorded (recheckAdmission). A person whose read fails has every socket of theirs
+// closed too, as recheckAdmission closes a socket whose read fails: the pass cannot show they still
+// read those rooms, and each reconnect's admission reads them again.
 func (s *Service) recheckAccess(ctx context.Context) {
+	// hidden is each socket whose person's read answered that they no longer read its room, and
+	// unread each socket whose person's read failed.
 	hidden := make(map[*schemaAdmission]bool)
+	unread := make(map[*schemaAdmission]bool)
 	for person, admissions := range s.schemaAdmissions.beginAccessCheck() {
 		readable, err := s.readableRooms(ctx, person, admissions)
 		if err != nil {
 			if ctx.Err() == nil {
-				slog.Error("dispatch: read which documents a person with an open document socket still reads", "sockets", len(admissions), "error", err)
+				slog.Warn("dispatch: read which documents a person with an open document socket still reads; their sockets close and the provider reconnects", "sockets", len(admissions), "error", err)
+			}
+			for _, admission := range admissions {
+				unread[admission] = true
 			}
 			continue
 		}
@@ -284,11 +291,13 @@ func (s *Service) recheckAccess(ctx context.Context) {
 			}
 		}
 	}
-	if len(hidden) == 0 {
+	if len(hidden) == 0 && len(unread) == 0 {
 		return
 	}
-	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] }, errAccessRevoked) {
-		slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
+	for _, admission := range s.schemaAdmissions.revokeUnless(func(admission *schemaAdmission) bool { return !hidden[admission] && !unread[admission] }, errAccessRevoked) {
+		if hidden[admission] {
+			slog.Info("dispatch: close a document socket whose person no longer reads its document; the provider reconnects", "room", admission.key.room)
+		}
 	}
 }
 
@@ -361,9 +370,10 @@ func (schemaRevoked) CloseCode() (int, string) {
 }
 
 // errAccessRevoked is the cause a socket's request context is cancelled with once its person may no
-// longer read its room (recheckAccess, schemaAdmissions.admit). ygo sends the peer the close frame
-// a revoked admission gets, on which the provider reconnects, and the reconnect's admission refuses
-// the room as a room no document holds (readIssue).
+// longer read its room, or a re-check of that person's access cannot read it (recheckAccess,
+// recheckAdmission). ygo sends the peer the close frame a revoked admission gets, on which the
+// provider reconnects, and the reconnect's admission refuses the room as a room no document holds
+// (readIssue) when the person no longer reads it.
 var errAccessRevoked error = accessRevoked{}
 
 // accessRevoked is that cause's type.

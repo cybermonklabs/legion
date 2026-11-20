@@ -240,6 +240,10 @@ mint_token() {
 # the same row agree on it.
 #   took_ms       how long a search took (GET /api/v1/search, /search/results)
 #   age_seconds   how old an open ask is (GET /api/v1/asks/open)
+#   oldest_lacking_seconds
+#                 how long the oldest item that lacks a current embedding has waited
+#                 (GET /api/v1/search/coverage), in whole seconds, so the twin's read a second
+#                 later answers one more
 #   keyword_ms, meaning_ms, total_ms
 #                 the timing summary {count, p50, p95, max, over_300ms} of the related-item checks
 #                 the run made (GET /api/v1/related-checks)
@@ -252,7 +256,7 @@ mint_token() {
 #                 (GET /api/v1/delivery/timeline, /measures)
 #   last_seen     a session's last heartbeat as the listener reports it, in epoch milliseconds
 #                 (GET /api/v1/agents); each server reads a fake listener of its own
-readonly durations='["took_ms","age_seconds"]'
+readonly durations='["took_ms","age_seconds","oldest_lacking_seconds"]'
 readonly timings='["keyword_ms","meaning_ms","total_ms"]'
 readonly window_starts='["since","from"]'
 readonly event_cursors='["since"]'

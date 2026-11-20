@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -402,16 +403,7 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
 		`+shippingRunJoin("$1", "$2", "$5")+`
-		where pr.repo = $1 and pr.merged_at < $3 and pr.merged_at >= coalesce((
-			select `+runCreatedAt+`
-			from delivery_runs r
-			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any($2)
-			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
-				and ($5::text is null or j.apply_step is distinct from $5 or j.apply_step_conclusion = 'success')
-				and j.completed_at < $3
-			order by `+runCreatedAt+` desc
-			limit 1
-		), '-infinity')
+		where pr.repo = $1 and pr.merged_at < $3 and pr.merged_at >= coalesce((`+lastShippedCreationSQL("$1", "$2", "$5", "$3")+`), '-infinity')
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 		limit $4
 	`, deployRepo, production.JobNames, at, maxPullRequestsPerWindow, production.ApplyStep)
@@ -436,24 +428,48 @@ func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo
 // FirstShippingApply states in Go (containment.go), which TestTheWaitingSQLAgreesWithTheShippingRule
 // keeps in step with it: a lateral join on the alias pr of delivery_pull_requests that finds, as
 // ship.run_id and ship.completed_at (both null while nothing has shipped it), the earliest-finishing
-// successful production job of a deploy run on main that GitHub created after pr's merge
-// (runCreatedAt), judged by Production.Conclusion. A run on another branch, or one stored before
-// head_branch was (null until the reconcile's backfill fills it), ships nothing. repo, jobNames and
-// applyStep are the placeholders of the query that embeds it, bound to the deploy repository,
-// Production.JobNames and Production.ApplyStep. ListPullRequestsWaitingAt and listUnrecordedShipped
-// (deployed.go) both embed it, so the timeline's waiting line and the issue.deployed event cannot
-// disagree on which run shipped a pull request.
+// shipping job (shippingJobSQL) of a deploy run on main that GitHub created after pr's merge
+// (runCreatedAt). A run on another branch, or one stored before head_branch was (null until the
+// reconcile's backfill fills it), ships nothing. repo, jobNames and applyStep are the placeholders
+// of the query that embeds it, bound to the deploy repository, Production.JobNames and
+// Production.ApplyStep. ListPullRequestsWaitingAt, listUnrecordedShipped (deployed.go) and
+// ReadRunShown embed it, so the timeline's waiting line, the issue.deployed event and a run's own
+// read cannot disagree on which run shipped a pull request.
 func shippingRunJoin(repo, jobNames, applyStep string) string {
 	return `left join lateral (
 			select r.run_id, j.completed_at
 			from delivery_runs r
-			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any(` + jobNames + `)
-			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
-				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')
+			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id
+			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and ` + shippingJobSQL(jobNames, applyStep) + `
 				and j.completed_at is not null and ` + runCreatedAt + ` > pr.merged_at
 			order by j.completed_at
 			limit 1
 		) ship on true`
+}
+
+// shippingJobSQL is whether the delivery_run_jobs row j can ship pull requests: a production job
+// (one of jobNames) whose conclusion, as Production.Conclusion judges it under applyStep, is
+// success. jobNames and applyStep are placeholders bound to Production.JobNames and
+// Production.ApplyStep. shippingRunJoin, lastShippedCreationSQL and ReadRunShown share it, so they
+// cannot judge a job apart.
+func shippingJobSQL(jobNames, applyStep string) string {
+	return `j.name = any(` + jobNames + `) and j.conclusion = 'success'
+				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')`
+}
+
+// lastShippedCreationSQL is a query of the latest creation (runCreatedAt) among repo's deploy runs
+// on main with a shipping job (shippingJobSQL) that finished before at, read through
+// delivery_runs_kind_created newest first, and of no row when none did: a pull request merged
+// before it had shipped by at, and one merged at or after it had not (shippingRunJoin), which is
+// the one bound ListPullRequestsWaitingAt and ReadRunShown read pull requests from.
+func lastShippedCreationSQL(repo, jobNames, applyStep, at string) string {
+	return `select ` + runCreatedAt + `
+			from delivery_runs r
+			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id
+			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and ` + shippingJobSQL(jobNames, applyStep) + `
+				and j.completed_at < ` + at + `
+			order by ` + runCreatedAt + ` desc
+			limit 1`
 }
 
 // DeletePullRequest removes a stored row: a provisional row written from an envelope alone
@@ -488,11 +504,14 @@ func MarkPullRequestUnfetchable(ctx context.Context, pool *store.Pool, repo stri
 }
 
 // pullRequestShownSQL is the timeline's rule for one pull request (api: readDeliveryRows) in SQL,
-// over the issues row issueAlias left joined on the pull request's issue_key: a pull request whose
-// issue the viewer bound at viewerParam sees (access.ProjectClause), and one that names no issue,
-// or a key no issue row holds, for an open viewer alone (access.OpenClause).
-func pullRequestShownSQL(issueAlias, viewerParam string) string {
-	return `case when ` + issueAlias + `.key is null then ` + access.OpenClause(viewerParam) +
+// over the delivery_pull_requests row prAlias names and the issues row issueAlias left joined on
+// its issue_key: a pull request whose issue the viewer bound at viewerParam sees
+// (access.ProjectClause), and one that names no issue, or a key no issue row holds, for an open
+// viewer alone (access.OpenClause), and only when its repository is not hidden from that viewer
+// (refs.RepositoryClause), so a pull request of a repository a project the viewer does not see
+// holds is never shown for naming no issue.
+func pullRequestShownSQL(prAlias, issueAlias, viewerParam string) string {
+	return `case when ` + issueAlias + `.key is null then (` + access.OpenClause(viewerParam) + ` and ` + refs.RepositoryClause(prAlias+`.repo`, viewerParam) + `)` +
 		` else ` + access.ProjectClause(issueAlias+`.project_key`, viewerParam) + ` end`
 }
 
@@ -505,7 +524,7 @@ func CountUnfetchablePullRequests(ctx context.Context, pool *store.Pool, viewer 
 	err := pool.QueryRow(ctx, `
 		select count(*) from delivery_pull_requests pr
 		left join issues i on i.key = pr.issue_key
-		where pr.unfetchable_at is not null and `+pullRequestShownSQL("i", "$1"), viewer).Scan(&count)
+		where pr.unfetchable_at is not null and `+pullRequestShownSQL("pr", "i", "$1"), viewer).Scan(&count)
 	return count, err
 }
 
@@ -519,7 +538,7 @@ func PullRequestNumbersShown(ctx context.Context, pool *store.Pool, repo string,
 		return shown, nil
 	}
 	rows, err := pool.Query(ctx, `
-		select pr.number, `+pullRequestShownSQL("i", "$3")+`
+		select pr.number, `+pullRequestShownSQL("pr", "i", "$3")+`
 		from delivery_pull_requests pr
 		left join issues i on i.key = pr.issue_key
 		where pr.repo = $1 and pr.number = any($2)
@@ -609,6 +628,52 @@ func ScanRun(row pgx.Row) (DeliveryRun, error) {
 		run.Conclusion = &c
 	}
 	return run, nil
+}
+
+// ReadRunShown reads repo's run runID (RunColumns, ScanRun) only when the viewer, the visibility
+// argument (refs.VisibilityArg), is shown it by the timeline's rule (api: readDeliveryRows), and
+// answers pgx.ErrNoRows otherwise, exactly as for an id no run holds, in the one statement both
+// make: whether the reader is shown the run is decided before anything else of it is read. A
+// PR-checks run is shown when its pull request, repo's row of its number, is (pullRequestShownSQL);
+// a deploy run that first shipped pull requests (shippingRunJoin) when one of them is; a PR-checks
+// run that names no number or one no row holds, a deploy run that shipped none and a run of any
+// other kind to an open viewer alone, and only when repo is not hidden from that viewer
+// (refs.RepositoryClause), as a pull request that names no issue is. A deploy run on main ships
+// only with a shipping job (shippingJobSQL), and the pull requests it first shipped are those
+// ListPullRequestsWaitingAt reads as of its first such job's finish whose shipping run it is, so
+// only those are read.
+func ReadRunShown(ctx context.Context, pool *store.Pool, repo string, runID int64, production Production, viewer any) (DeliveryRun, error) {
+	unnamed := `unnamed.shown`
+	return ScanRun(pool.QueryRow(ctx, `
+		select `+RunColumns+`
+		from delivery_runs asked
+		cross join lateral (
+			select min(j.completed_at) as shipped_at
+			from delivery_run_jobs j
+			where j.repo = asked.repo and j.run_id = asked.run_id and `+shippingJobSQL("$3", "$4")+` and j.completed_at is not null
+		) own
+		cross join lateral (
+			select `+access.OpenClause("$5")+` and `+refs.RepositoryClause("asked.repo", "$5")+` as shown
+		) unnamed
+		where asked.repo = $1 and asked.run_id = $2 and case
+			when asked.kind = 'pr_checks' then coalesce((
+				select `+pullRequestShownSQL("pr", "i", "$5")+`
+				from delivery_pull_requests pr
+				left join issues i on i.key = pr.issue_key
+				where pr.repo = asked.repo and pr.number = asked.pr_number
+			), `+unnamed+`)
+			when asked.kind = 'deploy' and asked.head_branch = 'main' and own.shipped_at is not null then coalesce((
+				select bool_or(`+pullRequestShownSQL("pr", "i", "$5")+`)
+				from delivery_pull_requests pr
+				`+shippingRunJoin("asked.repo", "$3", "$4")+`
+				left join issues i on i.key = pr.issue_key
+				where pr.repo = asked.repo and pr.merged_at < own.shipped_at
+					and pr.merged_at >= coalesce((`+lastShippedCreationSQL("asked.repo", "$3", "$4", "own.shipped_at")+`), '-infinity')
+					and ship.run_id = asked.run_id
+			), `+unnamed+`)
+			else `+unnamed+`
+		end
+	`, repo, runID, production.JobNames, production.ApplyStep, viewer))
 }
 
 // UpsertRun writes run, keyed on (repo, run_id). Like UpsertPullRequest, intake and reconcile

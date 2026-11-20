@@ -939,6 +939,36 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 	return responseBody, status, header, nil
 }
 
+// HeldLimit is the limit send would hold a request on scope under now, read with no request sent:
+// the shared limit in force on scope (Limits), and nil when none is, for a nil client, a client
+// without Limits or an empty scope. A limit that cannot be read is logged and read as none, since
+// send would then send the request. The GitHub proxy answers a repository its caller may not see
+// with it, as a repository the App is not installed on answers under the same limit, without
+// asking GitHub (githubapi.ProxyREST).
+func (c *Client) HeldLimit(ctx context.Context, scope string) *RateLimitError {
+	if c == nil {
+		return nil
+	}
+	held, err := c.heldLimit(ctx, scope)
+	if err != nil {
+		slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; it is read as none", "scope", scope, "error", err)
+	}
+	return held
+}
+
+// heldLimit is the limit in force on scope that send holds a request under: nil when none is, for
+// a client without Limits and for an empty scope, and an error when the shared limit cannot be read.
+func (c *Client) heldLimit(ctx context.Context, scope string) (*RateLimitError, error) {
+	if c.limits == nil || scope == "" {
+		return nil, nil
+	}
+	wait, recorded, err := c.limits.Wait(ctx, scope)
+	if err != nil || wait <= 0 {
+		return nil, err
+	}
+	return &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}, nil
+}
+
 // send is the one function that sends anything to GitHub, so it is where the shared limit on
 // scope is obeyed: while a limit is in force on it nothing is sent and a held *RateLimitError is
 // returned. A limit that cannot be read (the database failing) is logged and the request goes
@@ -955,16 +985,13 @@ func (c *Client) request(ctx context.Context, scope, method, target, authorizati
 // held limit (noted, though nothing was sent), a 5xx and a 401. A context with no attempt changes
 // nothing.
 func (c *Client) send(ctx context.Context, scope, method, target, authorization, accept, ifNoneMatch string, body io.Reader, limit int64) ([]byte, int, http.Header, error) {
-	if c.limits != nil && scope != "" {
-		wait, recorded, err := c.limits.Wait(ctx, scope)
-		switch {
-		case err != nil:
-			slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
-		case wait > 0:
-			held := &RateLimitError{Wait: wait, Scope: scope, Held: true, Recorded: recorded}
-			noteFailure(ctx, held)
-			return nil, 0, nil, held
-		}
+	held, err := c.heldLimit(ctx, scope)
+	if err != nil {
+		slog.Warn("dispatch githubapp: the shared GitHub rate limit was not read; the request is sent", "scope", scope, "error", err)
+	}
+	if held != nil {
+		noteFailure(ctx, held)
+		return nil, 0, nil, held
 	}
 	bounded, cancel := context.WithTimeout(ctx, RequestTimeout)
 	defer cancel()
