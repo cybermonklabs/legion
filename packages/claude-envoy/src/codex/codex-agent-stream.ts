@@ -49,6 +49,10 @@ export interface CodexAgentStreamOptions {
    * Claude Code live view's).
    */
   readonly admitted?: (session: string) => Promise<void>
+  /** Whether a viewer can take this session: false over the listener's relay socket, which
+   *  carries no agent stream, so the control subject is never taken and no frame goes out
+   *  (`AgentStreamOptions.liveView`, the Claude Code live view's). True by default. */
+  readonly liveView?: boolean
 }
 
 const encoder = new TextEncoder()
@@ -142,7 +146,7 @@ export function startCodexAgentStream(options: CodexAgentStreamOptions): CodexAg
   }
 
   function subscribe(): void {
-    if (stopped) return
+    if (stopped || options.liveView === false) return
     subscription?.unsubscribe()
     const taken = connection.subscribe(agentStreamControlSubject(session))
     subscription = taken

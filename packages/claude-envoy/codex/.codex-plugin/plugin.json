@@ -40,6 +40,7 @@
         "DISPATCH_URL",
         "ENVOY_CONFIG_FILE",
         "ENVOY_HEARTBEAT_MS",
+        "ENVOY_INBOUND",
         "ENVOY_MACHINE_ID",
         "ENVOY_NATS_URL",
         "ENVOY_SESSION_TITLE",

@@ -39,11 +39,13 @@ import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
+  type EnvoyInbound,
   heartbeatRetryDelayMs,
   REGISTRATION_SETTLE_MS,
   SHUTDOWN_SETTLE_MS,
 } from "@legion/envoy-client/envoy-settings"
 import { LoggableError, messageFor, natsFailureReason } from "@legion/envoy-client/errors"
+import { connectListenerRelay, ListenerRelay } from "@legion/envoy-client/listener-relay"
 import { machineID } from "@legion/envoy-client/machine"
 import {
   natsConnectionOptions,
@@ -780,6 +782,63 @@ export async function dialChannelNats(
   }
 }
 
+/** The channel server's inbound connection, over NATS or the listener's relay socket
+ *  (`dialChannelInbound`). */
+export interface ChannelInbound {
+  readonly connection: ChannelConnection
+  /** Stops the keeper of a NATS connection's broker token; nothing for the others. */
+  readonly stop: () => void
+  /** The move a `/clear` runs before the new id's relay subject opens, where the connection is
+   *  admitted as one session at a time: a NATS connection presenting the session's broker token
+   *  (`followNatsCredential`), and the relay socket, which is opened for one session. */
+  readonly followSession?: () => Promise<void>
+  /** Whether the session's live view takes its control subject on the connection: never over the
+   *  relay socket, which carries no agent stream (`AgentStreamOptions.liveView`). */
+  readonly liveView: boolean
+}
+
+/**
+ * Opens the session's inbound as its settings say (`EnvoyInbound`): NATS (`dialChannelNats`), or
+ * the listener at `listenerUrl`'s relay socket for the session `session` names now, with the
+ * session's broker credential (`connectListenerRelay`), answered once the first socket is open.
+ * The socket goes on opening for the server's life, saying on `warn` why an open failed; a token
+ * the broker refused is told to the session once it has one (`ListenerRelay.reportOutagesTo`).
+ * `signal` aborting (the process is stopping) ends either wait at once.
+ */
+export async function dialChannelInbound(
+  inbound: Exclude<EnvoyInbound, { readonly off: string }>,
+  listenerUrl: string,
+  session: () => string,
+  name: string,
+  warn: (text: string) => void,
+  dial: (options: ConnectionOptions) => Promise<NatsConnection> = connect,
+  signal?: AbortSignal,
+): Promise<ChannelInbound> {
+  if ("relaySetting" in inbound) {
+    const relay = await connectListenerRelay(
+      {
+        url: listenerUrl,
+        session,
+        credential: inbound.relayCredential,
+        // Until the session exists there is nobody to show a notice to: the start's own line
+        // says what it waits on.
+        outage: inboundUnavailable((why) =>
+          warn(`this session's relay socket has no token: ${why}`),
+        ),
+        log: warn,
+      },
+      signal,
+    )
+    return {
+      connection: relay,
+      stop: () => {},
+      followSession: () => relay.follow(),
+      liveView: false,
+    }
+  }
+  return { ...(await dialChannelNats(inbound, name, warn, dial, signal)), liveView: true }
+}
+
 /** How long the startup flush waits before asking again after a redial rejected it, and how often
  *  it looks whether the connection was closed for good meanwhile. */
 const REDIAL_FLUSH_RETRY_MS = 250
@@ -1289,6 +1348,9 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
       )
     })
   })
+  // A relay socket's refused trade is this session's outage too, told once with its
+  // registrations' (`ListenerRelay.reportOutagesTo`).
+  if (options.connection instanceof ListenerRelay) options.connection.reportOutagesTo(inboundOutage)
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined
@@ -2560,11 +2622,15 @@ export async function runEnvoyChannelServer(): Promise<void> {
       session = inboundOffChannelSession({ identity, stateDirectory, why: inbound.off })
     } else {
       starting =
-        inbound.natsCredential.kind === "broker"
-          ? "it waits for this session's broker token, and its stderr says what each trade came to"
-          : "it connects to NATS"
-      const dialled = await dialChannelNats(
+        "relaySetting" in inbound
+          ? "it opens the listener's relay socket for this session, and its stderr says why an open failed"
+          : inbound.natsCredential.kind === "broker"
+            ? "it waits for this session's broker token, and its stderr says what each trade came to"
+            : "it connects to NATS"
+      const dialled = await dialChannelInbound(
         inbound,
+        envoy.url,
+        currentSessionId,
         `claude-envoy-channel-${identity.id}`,
         (text) => process.stderr.write(`envoy-channel: ${text}\n`),
         connect,
@@ -2628,6 +2694,7 @@ export async function runEnvoyChannelServer(): Promise<void> {
         if (stopping) return
         agentStream = startAgentStream({
           connection: bus,
+          liveView: dialled.liveView,
           // Only a Claude-minted id follows `/clear`; the override names a fixed identity.
           followsSessionId: configuredValue(overrideSessionId) === undefined,
           ...(admission === undefined ? {} : { admitted: (id: string) => admission.admitted(id) }),
