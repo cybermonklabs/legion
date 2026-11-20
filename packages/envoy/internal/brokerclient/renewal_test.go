@@ -171,6 +171,40 @@ func TestATokenShorterThanRenewBeforeIsNotRenewedInALoop(t *testing.T) {
 	}
 }
 
+// TestTokenReusesAShortTokenUntilHalfwayThroughItsLife: Token reuses a token that lives less than
+// RenewBefore, such as the 270 seconds the broker gives a restricted member's machine login,
+// until halfway through what was left of its life when it landed, as Run renews one
+// (untilRenewal), rather than trading again at every call, which empties the broker's bucket.
+func TestTokenReusesAShortTokenUntilHalfwayThroughItsLife(t *testing.T) {
+	broker := newStubBroker(t, func(n int, _ url.Values) (int, map[string]any) {
+		return 200, map[string]any{"access_token": "token-" + strconv.Itoa(n), "token_type": "DPoP", "expires_in": 300}
+	})
+	now := time.Now()
+	client, err := New(Config{BrokerURL: broker.Address(), Key: testKey(t), Subject: projectedStub(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	first, err := client.Token(ctx)
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	now = now.Add(100 * time.Second)
+	if again, err := client.Token(ctx); err != nil || again.AccessToken != first.AccessToken {
+		t.Fatalf("Token 100 s into a token of 300 s = %v, %v; want the token in hand", again, err)
+	}
+	if trades := len(broker.Requests()); trades != 1 {
+		t.Fatalf("the broker saw %d trades by 100 s into a token of 300 s, want 1", trades)
+	}
+	now = now.Add(60 * time.Second)
+	if renewed, err := client.Token(ctx); err != nil || renewed.AccessToken == first.AccessToken {
+		t.Fatalf("Token 160 s into a token of 300 s = %v, %v; want a fresh token past the halfway mark", renewed, err)
+	}
+	if trades := len(broker.Requests()); trades != 2 {
+		t.Fatalf("the broker saw %d trades by 160 s into a token of 300 s, want 2", trades)
+	}
+}
+
 // TestADPoPRefusalKeepsTheRenewalLoopTrading: a proof the broker refuses for its own clock, or
 // for a nonce it wanted, is nothing a restart cures and everything the next trade may. A helper
 // started at boot, before NTP has corrected the host's clock, is refused `invalid_dpop_proof`
@@ -232,6 +266,11 @@ func TestARetriedTradeIsLoggedAsWhatHappened(t *testing.T) {
 		{name: "a proof with no nonce", status: 400, code: "use_dpop_nonce",
 			body: map[string]any{"error": "use_dpop_nonce", "error_description": "the broker wants a nonce in the proof"}},
 		{name: "a broker answering 503", status: 503, body: map[string]any{"error": "unavailable"}},
+		// The broker's answer to a machine login's trade while Dispatch cannot be asked what kind
+		// of member the login's approver is, as through a restart of Dispatch: no person acts, and
+		// the loop trades again on its schedule until Dispatch answers.
+		{name: "a broker that cannot ask Dispatch a member kind", status: 503, body: map[string]any{"error": "temporarily_unavailable",
+			"error_description": "Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again."}},
 		{name: "a broker answering nothing", down: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -1,0 +1,22 @@
+kind: Changed
+body: |-
+  Dispatch lets a restricted member decide one credential: at their browser, a machine login of
+  their own, which is how an outside person approves the device login of their own agents. The
+  machine-login page is theirs now, listing their own machine logins alone, and
+  `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve` and `.../{id}/deny` relay
+  their lookup or decision only for a login whose approver is them and which names no service.
+  `GET /api/v1/machine-logins` and `POST /api/v1/machine-logins/{id}/revoke` serve them too, at
+  their browser: the list answers their own machine logins and no service's, and the revoke ends
+  only one of those.
+  Every other record, a shared one included, and every decision through their personal token or a
+  broker token stays `403 RESTRICTED_MEMBER`, and the broker is asked to decide nothing. A broker
+  token of project scope `named` that records the credential a person made, the account it was
+  approved by or when it was made, is held to that account as a `person` token is; an operator
+  entry's, which records neither, is held to none, as before. Taking a restricted member off a
+  project's access list that names them now records that Dispatch owes the broker the revocation of
+  every machine login they approved, and Dispatch pays it after the removal commits, again until the
+  broker confirms (table `machine_login_revocations`, migration 20261120150130); the removal never
+  waits on the broker, and a removal from a list that does not name the person owes nothing.
+time: 2026-11-20T10:37:31Z
+custom:
+    Issue: restricted-agent-tokens-named

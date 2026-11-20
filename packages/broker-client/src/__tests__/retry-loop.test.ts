@@ -51,8 +51,21 @@ const SILENT_ATTEMPT_MS = 25;
 /** A caller that waits through the loop's retries, as the channel server's start does. */
 const READY = { waitForReady: true } as const;
 
+/** The broker's answer to a machine login's trade while Dispatch cannot be asked what kind of
+ *  member the login's approver is (`approverUnreachable`,
+ *  packages/envoy/internal/broker/oauth/exchange.go), as through a restart of Dispatch. */
+const APPROVER_UNREACHABLE =
+  "The authorization server is currently unable to handle the request due to a temporary overloading or maintenance of the server. Dispatch could not be asked what kind of member the machine login's approver is, so this broker cannot tell whether the token is held to one project; try again.";
+
 /** What the broker does with one trade. */
-type Answer = "granted" | "pending" | "503" | "refused" | "connect refused" | "silent";
+type Answer =
+  | "granted"
+  | "pending"
+  | "503"
+  | "dispatch away"
+  | "refused"
+  | "connect refused"
+  | "silent";
 
 /** The broker's answer, as the client's fetch returns or throws it. */
 async function respond(answer: Answer, signal: AbortSignal | null | undefined): Promise<Response> {
@@ -66,6 +79,11 @@ async function respond(answer: Answer, signal: AbortSignal | null | undefined): 
       );
     case "503":
       return new Response("the broker is away", { status: 503 });
+    case "dispatch away":
+      return Response.json(
+        { error: "temporarily_unavailable", error_description: APPROVER_UNREACHABLE },
+        { status: 503 }
+      );
     case "refused":
       return Response.json({ error: "invalid_client" }, { status: 401 });
     case "connect refused":
@@ -251,6 +269,23 @@ const ROWS: [string, Row][] = [
         expect(lines).toHaveLength(3);
         expect(lines[1]).toContain("HTTP 503");
         expect(lines[2]).toContain("once it was registered");
+      },
+    },
+  ],
+  [
+    "B3: the broker cannot ask Dispatch a member kind through a 57 s restart of Dispatch, then grants: traded again with no person's action, and the caller takes the token",
+    {
+      // Trades at 0, 15 and 45 s fall inside the restart (the longest measured, 57 s); the one
+      // at 105 s lands.
+      answer: (n) => (n <= 3 ? "dispatch away" : "granted"),
+      budget: 10,
+      drive: async ({ client, waits, lines, trades }) => {
+        const token = await client.token(new AbortController().signal, READY);
+        expect(token.accessToken).toStartWith("granted-");
+        expect(trades()).toBe(4);
+        expect(waits).toEqual([15_000, 30_000, 60_000]);
+        expect(lines).toHaveLength(3);
+        for (const line of lines) expect(line).toContain("HTTP 503");
       },
     },
   ],

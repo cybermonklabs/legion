@@ -5,7 +5,11 @@ body: |-
   restricted member. This is a breaking change: remove `signInOutside` from a program before it
   moves to this release. No Google sign-in admits an account outside the Workspace domain any
   more, so the Google client's consent screen stays Internal; a person from outside the company
-  signs in with a passkey instead. `outsideOrigin` is unchanged.
+  signs in with a passkey instead. Dispatch also serves no Google sign-in at
+  `DISPATCH_OUTSIDE_ORIGIN`, with `DISPATCH_SIGNIN_PASSKEY` on or off: `/auth/start` and
+  `/auth/callback` answer 404 there, so the Google client lists no callback of the outside origin.
+  `outsideOrigin` is otherwise unchanged; its host is still held to a public domain name under
+  sign-in, now as the relying party of the passkeys enrolled there.
 time: 2026-11-20T18:51:05Z
 custom:
     Issue: feat-passkeys-cutover

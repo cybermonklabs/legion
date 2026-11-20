@@ -1434,14 +1434,15 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 			}
 			_, err := served.brokerPersonAdmitted(ctx, caller)
 			wantAPIError(t, err, http.StatusUnauthorized, c.code, c.name+" at its admission, "+when)
-			minter := brokerMinter{address: &address, subject: served.brokerTokenSubject(caller), created: timeOrNull(c.created)}
+			subject, issuer := served.brokerTokenAccount(caller)
+			minter := brokerMinter{address: &address, subject: subject, issuer: issuer, created: timeOrNull(c.created)}
 			tx, err := rig.database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
 			var minted string
 			err = tx.QueryRow(ctx, mintAgentTokenSQL, person, "held", []byte("hash of "+c.name), "prefix00", []string{model.ScopePerson}, []string{},
-				nil, nil, nil, minter.address, minter.subject, true, minter.created, minter.foreign).
+				nil, nil, nil, minter.address, minter.subject, true, minter.created, minter.foreign, minter.issuer).
 				Scan(&minted, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
 			if !errors.Is(err, pgx.ErrNoRows) {
 				t.Errorf("a held mint by %s, %s, answered %v, want nothing inserted", c.name, when, err)

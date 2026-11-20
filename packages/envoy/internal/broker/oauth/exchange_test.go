@@ -1515,7 +1515,8 @@ func TestAPersonTradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 }
 
 // TestARestrictedMembersEmptyListIsRefused: a restricted member sees only the projects that name
-// them, so their trade names which; one naming none is refused, saying how to name them.
+// them, so their machine's trade names the one it works on; one naming none is refused, saying
+// how to name it (exchange.ErrRestrictedOneProject).
 func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
 	access := newFakeAccess()
 	access.kinds[person] = projectaccess.MemberRestricted
@@ -1523,7 +1524,7 @@ func TestARestrictedMembersEmptyListIsRefused(t *testing.T) {
 	key := newKey(t)
 	status, body := f.exchange(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
 	refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request",
-		person+" is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on.")
+		person+" is a restricted member, who sees only the projects that name them, and the trade asked for 0; set AGENT_SECRETS_PROJECTS to the one project this session works on.")
 }
 
 // TestAFullMembersEmptyListIsTaken: a full member's trade that names no project is answered as it
@@ -1551,20 +1552,24 @@ func TestAPersonWithNoDispatchRowIsTaken(t *testing.T) {
 	}
 }
 
-// TestAK3OutageMintsAnEmptyListAsToday: while Dispatch cannot be reached, a trade naming no
-// project is answered as it is today, and one naming a project is refused as a broker that cannot
-// check it — never minted unchecked — with a status a client asks again on.
-func TestAK3OutageMintsAnEmptyListAsToday(t *testing.T) {
+// TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt: while Dispatch cannot be reached, a machine
+// login's trade is refused, with a status a client asks again on, whatever it names: the broker
+// asks Dispatch what kind of member the login's approver is before it decides the token's scope,
+// and cannot tell a restricted member's machine from anyone else's without the answer, so it mints
+// no token acting as its person on a guess. The person here is one Dispatch holds no row for,
+// whose trade mints once Dispatch answers again.
+func TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt(t *testing.T) {
 	access := newFakeAccess()
 	access.down = true
 	f := newExchangeFixture(t, func(c *oauth.Config) { c.Exchange.Projects = access })
 	key := newKey(t)
 	machine := f.devBoxToken(t, key, person)
-	token := f.exchanged(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
-	f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, nil)
-
-	status, body := f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), "PRIV"), key)
-	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch")
+	for _, asked := range []string{"", "PRIV"} {
+		status, body := f.exchange(t, withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), asked), key)
+		refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked what kind of member")
+	}
+	access.set(func(a *fakeAccess) { a.down = false })
+	f.introspectsProjects(t, f.exchanged(t, exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key), oauthwire.ProjectScopePerson, nil)
 }
 
 // TestASignInTradeAsksNoMemberKind: a person's sign-in was verified against the deployment's own
@@ -1854,9 +1859,10 @@ func TestDispatchRefusingTheBrokersTokenRefusesTheTrade(t *testing.T) {
 }
 
 // TestAnUncheckedMintLogsItsEntry: while Dispatch cannot be reached, an operator entry's token
-// naming no project and a person's trade naming no project mint as they always have, and each such
-// mint logs one line naming what was minted unchecked: the entry's principal, or the person. An
-// entry's token naming a project is refused temporarily_unavailable instead, and logs no such line.
+// naming no project mints as it always has, and logs one line naming what was minted unchecked,
+// the entry's principal. An entry's token naming a project is refused temporarily_unavailable
+// instead, and logs no such line; so is a person's machine login's trade naming no project, which
+// waits on what kind of member Dispatch calls the person (TestAK3OutageRefusesAMachineTradeWhoeverApprovedIt).
 func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 	logs := capturedLog(t)
 	access := newFakeAccess()
@@ -1880,8 +1886,9 @@ func TestAnUncheckedMintLogsItsEntry(t *testing.T) {
 		t.Fatalf("the no-project entry's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), otherAccount, strings.Join(logs.lines(), "\n"))
 	}
 
-	f.exchanged(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
-	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 1 {
-		t.Fatalf("the person's unchecked mint logged %d lines naming %s, want 1:\n%s", len(got), person, strings.Join(logs.lines(), "\n"))
+	status, body = f.exchange(t, exchangeForm(f.devBoxToken(t, key, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), key)
+	refusedSaying(t, status, body, http.StatusServiceUnavailable, "temporarily_unavailable", "Dispatch could not be asked")
+	if got := logs.lines("unchecked", person, "ada-devbox"); len(got) != 0 {
+		t.Fatalf("the person's refused machine trade logged %d lines of an unchecked mint naming %s, want none:\n%s", len(got), person, strings.Join(got, "\n"))
 	}
 }

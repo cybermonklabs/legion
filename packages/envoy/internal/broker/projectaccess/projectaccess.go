@@ -442,15 +442,17 @@ const maxRecheckPasses = 3
 // clock is the time c reads, for Visible to age c's answers by the same clock that stamped them.
 func (c *Client) clock() time.Time { return c.now() }
 
-// ListAllowed is the one statement of the rule for a person's list, used by the exchange and by
-// an enrollment alike. A non-empty list must pass Visible. An empty list is refused with
+// ListAllowed is the rule for the list of a token an operator's exchange entry maps, which the
+// exchange checks it by (oauth's projectAccess); a person's own credential is held to Visible
+// instead, and a restricted member's machine login to exactly one project before it is asked
+// (exchange.Set.Machine). A non-empty list must pass Visible. An empty list is refused with
 // ErrListRequired when MemberKind answers MemberRestricted, and with ErrUnknownMemberKind when it
-// answers a kind that is none of the three; MemberFull and MemberNone answer nil, so a person
-// Dispatch has never seen mints and enrolls as today. A MemberKind failure that is
-// ErrBrokerRefused or ErrUnknownMemberKind is returned as it is, and no caller mints through
-// either. Any other MemberKind failure answers an error that is ErrUnchecked and wraps it: the
-// list is allowed, as it is today while Dispatch cannot be reached, and the caller that goes on
-// logs that it did so unchecked.
+// answers a kind that is none of the three; MemberFull and MemberNone answer nil, so an entry whose
+// person Dispatch has never seen mints as before. A MemberKind failure that is ErrBrokerRefused or
+// ErrUnknownMemberKind is returned as it is, and no caller mints through either. Any other
+// MemberKind failure answers an error that is ErrUnchecked and wraps it: the entry's empty list is
+// allowed while Dispatch cannot be reached, and the caller that goes on logs that it did so
+// unchecked.
 func ListAllowed(ctx context.Context, a Access, person string, projects []string) error {
 	if len(projects) > 0 {
 		return Visible(ctx, a, person, projects)

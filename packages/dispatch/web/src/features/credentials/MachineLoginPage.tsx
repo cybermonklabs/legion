@@ -3,6 +3,7 @@ import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage } from "../../api/client";
 import type { DecisionResponse, StateResponse } from "../../api/types";
+import { useRestrictedMember } from "../../hooks/useRestrictedMember";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   dangerText,
@@ -65,10 +66,13 @@ function MachineLoginDecision({
  * deadline passed before anybody decided it reads as expired, before the broker's sweep ends it
  * and after, and the broker refuses every decision of it: it shows that in one line, with no
  * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
- * their own machines' and every service's.
+ * their own machines' and every service's. A restricted member, who approves here the device
+ * login of their own agents, is answered their own machines' logins alone, and revokes only those
+ * (Dispatch holds them to their own), so their list says that (`ownOnly`).
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
+  const restricted = useRestrictedMember();
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
 
@@ -200,7 +204,7 @@ export function MachineLoginPage(): ReactNode {
           ) : null}
         </div>
       )}
-      <MachineLoginsSection />
+      <MachineLoginsSection ownOnly={restricted} />
     </section>
   );
 }

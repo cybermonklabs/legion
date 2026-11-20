@@ -30,6 +30,8 @@ const (
 	// outsiderEmail is an address outside the sign-in domain example.com that project PRIV's
 	// access list names directly.
 	outsiderEmail = "outsider@other.example"
+	// strangerEmail is an address outside the sign-in domain that no list names.
+	strangerEmail = "stranger@other.example"
 	// privOwner owns PRIV.
 	privOwner = "alice@example.com"
 )
@@ -74,10 +76,11 @@ func newOutsideSignIn(t *testing.T, overrides map[string]string) *outsideSignIn 
 }
 
 // router is the router main serves for boot over the server's one database, its sessions
-// included, as main's are (store.NewPgSessionStore).
+// included, as main's are (store.NewPgSessionStore), at the canonical origin every request of these
+// tests names (http://dispatch.test), the one a second origin is the second of.
 func (s *outsideSignIn) router(t *testing.T, boot bootConfig) http.Handler {
 	t.Helper()
-	return routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), People: s.people, Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool)})
+	return routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), People: s.people, Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool), ServerURL: "http://dispatch.test"})
 }
 
 // listOn names principal, of kind, on project key's access list as its owner does.
@@ -193,34 +196,45 @@ func requirePlainNoIdentity(t *testing.T, what string, recorder *httptest.Respon
 	}
 }
 
-// A Google sign-in of an address outside the domain is refused at both origins: the deployment
-// signs example.com's people in with Google at its canonical origin and at its outside origin, and
-// PRIV's access list names outsiderEmail directly. That account's Google sign-in, at either origin,
-// gets the 403 page saying it is not in the domain, no session cookie and no people row. The
-// control: alice, an account of example.com, signs in at both.
-func TestAGoogleSignInOfAnOutsideAddressIsRefusedAtBothOrigins(t *testing.T) {
+// TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff (R5): with DISPATCH_SIGNIN_PASSKEY
+// unset, a deployment that answers at an outside origin too serves Google's sign-in at its
+// canonical origin alone. At the outside origin GET /auth/start and GET /auth/callback answer 404,
+// as a path no route serves does. At the canonical origin the Google sign-in of outsiderEmail, whom
+// PRIV's access list names directly, gets the 403 page saying it is not in the domain, no session
+// cookie and no people row, and alice, an account of example.com, signs in.
+// TestTheOutsideOriginServesNoGoogleSignIn is the same row with passkey sign-in on.
+//
+// Control: serve the Google sign-in at the outside origin while passkey sign-in is off
+// (googleSignInHere refusing it only beside Passkeys), and the outside origin's /auth/start answers
+// 302 and the row fails.
+func TestTheOutsideOriginServesNoGoogleSignInWithPasskeysOff(t *testing.T) {
+	const canonical, outside = "https://dispatch.example.com", "https://dispatch-outside.example.com"
 	s := newOutsideSignIn(t, nil)
 	// The harness's deployment, answering at a second origin too: the origin's own settings are
 	// judged in TestOutsideSignInSettingsRefusals, and BuildAppContext needs the canonical one.
 	boot := s.boot
-	boot.OutsideOrigin = "https://dispatch-outside.example.com"
+	if boot.SignInPasskey {
+		t.Fatal("the harness's deployment signs people from outside in with a passkey; this row is the deployment that does not")
+	}
+	boot.OutsideOrigin = outside
 	handler := routerFor(t, boot, routes.AppContextOptions{
 		SignIn: signInFlow(boot), People: s.people, Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool),
-		ServerURL: "https://dispatch.example.com",
+		ServerURL: canonical,
 	})
-	for _, host := range []string{"dispatch.example.com", "dispatch-outside.example.com"} {
-		refused := codeFlowSignInAt(t, handler, s.pool, host, map[string]any{"sub": "google-outsider", "email": outsiderEmail, "email_verified": true})
-		if refused.Code != http.StatusForbidden || sessionCookieSet(refused) ||
-			!strings.Contains(refused.Body.String(), outsiderEmail+" is not in the domain that may use Dispatch") {
-			t.Errorf("the Google sign-in of %s at %s answered %d %s, want the 403 page saying it is not in the domain, with no session", outsiderEmail, host, refused.Code, refused.Body.String())
-		}
-		if kind := s.memberKind(t, outsiderEmail); kind != "" {
-			t.Errorf("the refused Google sign-in of %s at %s was recorded in people as %q, want no row", outsiderEmail, host, kind)
-		}
-		member := codeFlowSignInAt(t, handler, s.pool, host, map[string]any{"sub": "google-alice", "email": privOwner, "email_verified": true, "hd": "example.com"})
-		if member.Code != http.StatusFound || !sessionCookieSet(member) {
-			t.Errorf("the control, %s of example.com, at %s answered %d %s, want a signed-in redirect", privOwner, host, member.Code, member.Body.String())
-		}
+	for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
+		wantCode(t, "GET "+path+" at the outside origin", call(handler, outside, http.MethodGet, path, nil), http.StatusNotFound, "NOT_FOUND")
+	}
+	refused := codeFlowSignInAt(t, handler, s.pool, "dispatch.example.com", map[string]any{"sub": "google-outsider", "email": outsiderEmail, "email_verified": true})
+	if refused.Code != http.StatusForbidden || sessionCookieSet(refused) ||
+		!strings.Contains(refused.Body.String(), outsiderEmail+" is not in the domain that may use Dispatch") {
+		t.Errorf("the Google sign-in of %s at the canonical origin answered %d %s, want the 403 page saying it is not in the domain, with no session", outsiderEmail, refused.Code, refused.Body.String())
+	}
+	if kind := s.memberKind(t, outsiderEmail); kind != "" {
+		t.Errorf("the refused Google sign-in of %s was recorded in people as %q, want no row", outsiderEmail, kind)
+	}
+	member := codeFlowSignInAt(t, handler, s.pool, "dispatch.example.com", map[string]any{"sub": "google-alice", "email": privOwner, "email_verified": true, "hd": "example.com"})
+	if member.Code != http.StatusFound || !sessionCookieSet(member) {
+		t.Errorf("the control, %s of example.com, at the canonical origin answered %d %s, want a signed-in redirect", privOwner, member.Code, member.Body.String())
 	}
 }
 
@@ -430,11 +444,11 @@ func TestOutsideSignInOriginRuleIsTheComponents(t *testing.T) {
 	}
 }
 
-// googleHostRows are hosts of each kind weborigin.GoogleRedirectHost judges: names whose top-level
-// domain is in the public suffix list's ICANN section (one listed only as a wildcard rule, one
+// outsideHostRows are hosts of each kind weborigin.PasskeyHost judges: names whose top-level domain
+// is in the public suffix list's ICANN section (one listed only as a wildcard rule, one
 // internationalised, one under a private-section suffix), and an IP address, a single label and
 // top-level domains off the list, the reserved ones this package's other tests use among them.
-var googleHostRows = []string{
+var outsideHostRows = []string{
 	"dispatch-outside.example.com",
 	"outside.np",
 	"outside.xn--p1ai",
@@ -447,17 +461,17 @@ var googleHostRows = []string{
 }
 
 // Under Google sign-in, boot judges DISPATCH_OUTSIDE_ORIGIN's host by the component's own rule for
-// a host Google takes in an OAuth redirect URI, not a copy: it refuses exactly the hosts
-// weborigin.GoogleRedirectHost refuses, with that rule's reason under the setting's name, and
-// takes the rest. The dev OIDC issuer the browser suite puts in Google's place has no such rule,
-// so under it boot takes a host Google would refuse.
+// the host of a passkey's relying party, not a copy: it refuses exactly the hosts
+// weborigin.PasskeyHost refuses, with that rule's reason under the setting's name, and takes the
+// rest. The dev OIDC issuer the browser suite puts in Google's place has no such rule, so under it
+// boot takes a loopback host.
 func TestOutsideSignInOriginHostRuleIsTheComponents(t *testing.T) {
 	google := map[string]string{"DISPATCH_SIGNIN_ISSUER": "https://accounts.google.com", "DISPATCH_SIGNIN_GROUP": "", "DISPATCH_SIGNIN_DOMAIN": "example.com"}
 	refused := 0
-	for _, host := range googleHostRows {
+	for _, host := range outsideHostRows {
 		env := maps.Clone(google)
 		env["DISPATCH_OUTSIDE_ORIGIN"] = "https://" + host
-		ruleErr := weborigin.GoogleRedirectHost(host)
+		ruleErr := weborigin.PasskeyHost(host)
 		boot, bootErr := resolveBootConfig(envGetter(signInEnvironment(env)))
 		switch {
 		case ruleErr != nil:
@@ -469,8 +483,8 @@ func TestOutsideSignInOriginHostRuleIsTheComponents(t *testing.T) {
 			t.Errorf("DISPATCH_OUTSIDE_ORIGIN=https://%s under Google sign-in: boot %q, %v; want it taken", host, boot.OutsideOrigin, bootErr)
 		}
 	}
-	if refused == 0 || refused == len(googleHostRows) {
-		t.Fatalf("the rule refused %d of %d hosts, so the rows do not hold both a host it takes and one it refuses", refused, len(googleHostRows))
+	if refused == 0 || refused == len(outsideHostRows) {
+		t.Fatalf("the rule refused %d of %d hosts, so the rows do not hold both a host it takes and one it refuses", refused, len(outsideHostRows))
 	}
 	harness := maps.Clone(google)
 	maps.Copy(harness, map[string]string{

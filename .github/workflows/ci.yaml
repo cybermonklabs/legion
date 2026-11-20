@@ -4069,6 +4069,9 @@ jobs:
               - 'packages/envoy/internal/broker/policy/*'
               - 'packages/envoy/internal/broker/policy/policytest/*'
               - 'packages/envoy/internal/broker/projectaccess/*'
+              # The project-access stand-in the real-broker test of a restricted member's agent
+              # token serves the broker (restricted_agent_token_test.go).
+              - 'packages/envoy/internal/broker/projectaccess/projectaccesstest/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'

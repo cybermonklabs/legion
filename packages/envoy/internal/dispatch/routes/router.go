@@ -69,8 +69,9 @@ type AppContext struct {
 	DefaultProject string
 	ServerURL      string
 	// OutsideOrigin is the second origin the server answers at (DISPATCH_OUTSIDE_ORIGIN; empty for
-	// none): a request whose Host is its host is answered as that origin (publicOrigin), and
-	// /auth/whoami names it after ServerURL's.
+	// none): a request whose Host is its host is answered as that origin (publicOrigin), except
+	// /auth/start and /auth/callback, which answer 404 there (googleSignInHere), and /auth/whoami
+	// names it after ServerURL's.
 	OutsideOrigin string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain, beside them
@@ -80,6 +81,10 @@ type AppContext struct {
 	// /auth/callback answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
+	// Passkeys runs a restricted member's passkey ceremonies at OutsideOrigin (cmd/dispatch:
+	// DISPATCH_SIGNIN_PASSKEY=1); nil where passkey sign-in is off, which mounts none of them
+	// (routes/passkey.go).
+	Passkeys *identity.Passkeys
 	// InsecureCookie drops the Secure attribute from every cookie the router sets, for browsers
 	// reaching Dispatch over plain http (cmd/dispatch: DISPATCH_INSECURE_COOKIE).
 	InsecureCookie bool
@@ -125,6 +130,10 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
+	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API
+	// is handed their store and their rule's check of a Workspace address (api.DepsInput.Passkeys,
+	// WorkspaceAddress). See AppContext.Passkeys.
+	Passkeys *identity.Passkeys
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -251,6 +260,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		}
 		origins = []string{canonical.Scheme + "://" + canonical.Host, outsideOrigin}
 	}
+	if opts.Passkeys != nil && outsideOrigin == "" {
+		return nil, fmt.Errorf("BuildAppContext: Passkeys needs an OutsideOrigin, the only origin a passkey signs in at")
+	}
+	var passkeyStore *store.PgPasskeys
+	var workspaceAddress func(string) bool
+	if opts.Passkeys != nil {
+		passkeyStore, workspaceAddress = opts.Passkeys.Store(), opts.Passkeys.WorkspaceAddress
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -280,6 +297,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		SignInIssuer:           opts.SignInIssuer,
+		Passkeys:               passkeyStore,
+		WorkspaceAddress:       workspaceAddress,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -316,6 +335,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:  outsideOrigin,
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,
+		Passkeys:       opts.Passkeys,
 		InsecureCookie: opts.InsecureCookie,
 		devSignInHost:  devSignInHost,
 		origins:        origins,
@@ -396,9 +416,10 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	r.mountPasskeys(mux)
 	// The signed-in person's own login, member kind and the event log's head, which names no row.
 	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
 	// A repository's GitHub state, hidden where a project the person does not see owns the
@@ -418,9 +439,10 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 
 // ───── auth ─────────────────────────────────────────────────────────────────
 
-// authStart sends the browser to the issuer to sign in, to come back to the callback of the origin
-// the request came to (callbackURL). The sign-in in flight (its state, nonce, the page it returns
-// to and when it lapses) travels in the browser's dispatch_oauth_state cookie, signed under a key
+// authStart sends the browser to the issuer to sign in, to come back to the canonical origin's
+// callback (callbackURL), the only origin that serves Google's sign-in (googleSignInHere). The
+// sign-in in flight (its state, its nonce, the page it returns to and when it lapses) travels in
+// the browser's dispatch_oauth_state cookie, signed under a key
 // derived from the current signing key (signOAuthState), and no process keeps it: whichever process
 // holding that key the issuer's redirect reaches completes the sign-in. An issuer not yet
 // discovered is answered 503 SIGNIN_UNAVAILABLE, with no state cookie set.
@@ -439,7 +461,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusInternalServerError, "state")
 		return
 	}
-	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), state, nonce)
+	authURL, err := r.ctx.SignIn.AuthURL(req.Context(), callbackURL(r.ctx.ServerURL, req), state, nonce)
 	if err != nil {
 		// AuthURL fails only while the issuer is not discovered (oidc.ErrIssuerUnavailable).
 		slog.Warn("dispatch: sign-in not started: the sign-in issuer is not discovered", "error", err)
@@ -466,8 +488,7 @@ func (r *router) authStart(w http.ResponseWriter, req *http.Request) {
 // their pool username carries; under a domain, by the email of a Google account of the domain, and
 // the account's subject is recorded with the sign-in, which ends the address's sessions when
 // another account held it (auth.PeopleStore.SignInSubject). The callback URL the exchange names is
-// the one of the origin the request came to (callbackURL), the one authStart sent the issuer from
-// that origin.
+// the canonical origin's (callbackURL), the one authStart sent the issuer.
 //
 // The sign-in must be one this browser started: its state cookie verifies under a key of the set,
 // has not lapsed, and names the state the issuer returned in the URL. Nothing records that a
@@ -497,7 +518,7 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid or expired state — start over at /auth/start")
 		return
 	}
-	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, r.ctx.OutsideOrigin, req), code, pending.Nonce)
+	session, err := r.ctx.SignIn.Exchange(req.Context(), callbackURL(r.ctx.ServerURL, req), code, pending.Nonce)
 	if errors.Is(err, oidc.ErrIssuerUnavailable) {
 		slog.Warn("dispatch: sign-in code exchange failed: the sign-in issuer is not discovered", "error", err)
 		identity.WriteError(w, fmt.Errorf("%w: %w", identity.ErrSignInUnavailable, err))
@@ -615,7 +636,7 @@ type whoamiAnswer struct {
 // IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
 // member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
-	email, ok := r.login(w, req)
+	email, ok := r.loginSigningIn(w, req, r.whoamiSignIn(req))
 	if !ok {
 		return
 	}
@@ -694,9 +715,15 @@ var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2", "$1")
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.
 func (r *router) login(w http.ResponseWriter, req *http.Request) (string, bool) {
+	return r.loginSigningIn(w, req, "")
+}
+
+// loginSigningIn is login, whose 401 names signIn as the way req's origin signs a person in
+// (identity.WriteErrorSigningIn); "" names none.
+func (r *router) loginSigningIn(w http.ResponseWriter, req *http.Request, signIn string) (string, bool) {
 	login, err := r.ctx.Identity.Login(req)
 	if err != nil {
-		identity.WriteError(w, err)
+		identity.WriteErrorSigningIn(w, err, signIn)
 		return "", false
 	}
 	accesslog.Note(req.Context(), accesslog.KindUser, login)
@@ -1051,9 +1078,10 @@ func contentType(path string) string {
 
 // ───── helpers ──────────────────────────────────────────────────────────────
 
-// callbackURL is the sign-in callback of the origin the request came to (publicOrigin).
-func callbackURL(serverURL, outsideOrigin string, req *http.Request) string {
-	return publicOrigin(serverURL, outsideOrigin, req) + "/auth/callback"
+// callbackURL is the sign-in callback of the canonical origin (publicOrigin with no outside
+// origin), the only origin that serves Google's sign-in (googleSignInHere).
+func callbackURL(serverURL string, req *http.Request) string {
+	return publicOrigin(serverURL, "", req) + "/auth/callback"
 }
 
 // publicOrigin is the origin a request came to: outsideOrigin when it is set and the request's

@@ -51,9 +51,10 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  * refreshed too. A service logging in with its token logs in again under a new login, which
  * enrolls the pods it launches next; a pod already running stays without secrets until it is
  * replaced. Dispatch names the viewer as the person revoking, and the broker refuses anyone but the
- * approver of a person's machine login. Rendered on the machine-login page.
+ * approver of a person's machine login. Rendered on the machine-login page. A restricted member
+ * (`ownOnly`) is answered their own machines' logins alone, and no service's, so the list says that.
  */
-export function MachineLoginsSection(): ReactNode {
+export function MachineLoginsSection({ ownOnly = false }: { ownOnly?: boolean }): ReactNode {
   const queryClient = useQueryClient();
   const logins = useQuery({ ...machineLoginsQuery(), select: (data) => data.credentials ?? [] });
 
@@ -70,7 +71,11 @@ export function MachineLoginsSection(): ReactNode {
             : "Every agent session it started loses its secrets at once, and the machine needs a new login."
         }`
       }
-      description="Every machine logged in as you, and every service's login, which anyone signed in may revoke, while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets."
+      description={
+        ownOnly
+          ? "Every machine logged in as you, while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets."
+          : "Every machine logged in as you, and every service's login, which anyone signed in may revoke, while its login is unexpired or a session it started still runs: a session outlives its login's expiry. Revoking one ends it now: it starts no more sessions, and every session it started loses its secrets."
+      }
       empty="No live machine logins."
       heading="Machine logins"
       headingId="machine-logins-heading"

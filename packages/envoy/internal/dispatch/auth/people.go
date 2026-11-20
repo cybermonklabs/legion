@@ -23,14 +23,29 @@ var ErrAddressHeldByMember = errors.New("the address is a full member's, under a
 // measures it (the database's now() minus the time it recorded), never a server process's clock,
 // so every process judges a confirmation's age alike; it is zero when Confirmed is false. Subject
 // is the Google account (`sub`) that last signed in to the address with Google for a Workspace
-// domain; empty for an address no such sign-in recorded. Ending a sign-in keeps it, and keeps Kind,
-// the member kind the address's last sign-in or confirmation recorded.
+// domain; empty for an address no such sign-in recorded. Issuer is the issuer of Subject when it is
+// not the deployment's sign-in issuer (people.sub_issuer): Dispatch's outside origin for a
+// restricted member who signs in with a passkey, whose Subject is the random subject their first
+// enrollment made, whose row holds no refresh token, and whose Confirmed says whether their sign-in
+// stands; empty for every other row. Ending a sign-in keeps Subject and Issuer, and keeps Kind, the
+// member kind the address's last sign-in or confirmation recorded.
 type PersonMembership struct {
 	RefreshToken string
 	Confirmed    bool
 	ConfirmedAge time.Duration
 	Subject      string
+	Issuer       string
 	Kind         model.MemberKind
+}
+
+// SignInStands reports whether the membership holds a sign-in nothing has ended: a passkey's
+// (Issuer set) while it is confirmed, any other while it holds the issuer's refresh token, which
+// the hourly confirmation's end and a sign-out both forget.
+func (m PersonMembership) SignInStands() bool {
+	if m.Issuer != "" {
+		return m.Confirmed
+	}
+	return m.RefreshToken != ""
 }
 
 // PeopleStore persists the people who have signed in to Dispatch, keyed by lowercase email: the

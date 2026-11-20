@@ -121,12 +121,36 @@ type ExchangeSession struct {
 	// is what lets the machine enroll afterwards. Like Principal it is no claim of the token and
 	// is not stored.
 	Fleet string `json:"-"`
+
+	// AccessLifetime is the longest the access token this exchange issues may live
+	// (exchange.Claims.Lifetime): a restricted member's machine login's is held to
+	// exchange.RestrictedLifetime, and zero leaves every other token the provider's own lifetime.
+	// The library sets the issued token's expiry through SetExpiresAt below, before it stores the
+	// token or answers expires_in, so the row, the introspection's exp and the answer all carry
+	// the shorter expiry. Like Principal it is no claim of the token and is not stored.
+	AccessLifetime time.Duration `json:"-"`
 }
 
 // NewExchangeSession is an empty exchange session with its extra claims ready to be written, the
 // shape the provider's session factory hands every request.
 func NewExchangeSession() *ExchangeSession {
 	return &ExchangeSession{DefaultSession: &oauth2.DefaultSession{Extra: map[string]any{}}}
+}
+
+// SetExpiresAt sets the expiry of the token of kind key, as the embedded session does, except that
+// an access token's is held to AccessLifetime from now when that is set and the expiry asked for is
+// later: the library asks for its own lifetime, and a shorter one the exchange decided wins. It
+// never lengthens an expiry, so a token's lifetime is the lesser of the two.
+func (s *ExchangeSession) SetExpiresAt(key oauth2.TokenType, exp time.Time) {
+	if s.DefaultSession == nil {
+		s.DefaultSession = &oauth2.DefaultSession{}
+	}
+	if key == oauth2.AccessToken && s.AccessLifetime > 0 {
+		if latest := time.Now().UTC().Add(s.AccessLifetime); exp.After(latest) {
+			exp = latest
+		}
+	}
+	s.DefaultSession.SetExpiresAt(key, exp)
 }
 
 // SetSubjectToken records the subject token's verified claims.
@@ -173,11 +197,12 @@ func (s *ExchangeSession) Clone() oauth2.Session {
 		return nil
 	}
 	cloned := &ExchangeSession{
-		SubjectToken: maps.Clone(s.SubjectToken),
-		ActorToken:   maps.Clone(s.ActorToken),
-		Principal:    s.Principal,
-		Instance:     s.Instance,
-		Fleet:        s.Fleet,
+		SubjectToken:   maps.Clone(s.SubjectToken),
+		ActorToken:     maps.Clone(s.ActorToken),
+		Principal:      s.Principal,
+		Instance:       s.Instance,
+		Fleet:          s.Fleet,
+		AccessLifetime: s.AccessLifetime,
 	}
 	if s.DefaultSession != nil {
 		cloned.DefaultSession, _ = s.DefaultSession.Clone().(*oauth2.DefaultSession)

@@ -185,6 +185,16 @@ type Deps struct {
 	// sign-in records no account (a Cognito pool's group, cmd/dispatch's accountIssuer) or that
 	// signs nobody in.
 	SignInIssuer string
+	// Passkeys is the restricted members' passkeys and their owners' links (store.PgPasskeys),
+	// under the outside origin (Passkeys.Issuer), where passkey sign-in is on (cmd/dispatch:
+	// DISPATCH_SIGNIN_PASSKEY=1); nil where it is off. An owner makes a link and resets a person
+	// only where it is set (project_access.go), and a broker token whose account is a passkey's
+	// is held to it as one of the sign-in issuer's is (brokerTokenSubject).
+	Passkeys *store.PgPasskeys
+	// WorkspaceAddress reports whether an email is on a domain of the company's Workspace
+	// (identity.PasskeyRule.WorkspaceAddress), set with Passkeys: no link is made for such an
+	// address, and the owner's access answer lists none as invitable.
+	WorkspaceAddress func(email string) bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -323,6 +333,10 @@ type DepsInput struct {
 	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
 	// oidc.CanonicalIssuer does.
 	SignInIssuer string
+	// Passkeys is the passkey store where passkey sign-in is on; see Deps.Passkeys.
+	Passkeys *store.PgPasskeys
+	// WorkspaceAddress is set with Passkeys; see Deps.WorkspaceAddress.
+	WorkspaceAddress func(email string) bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -443,6 +457,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
 		SignInIssuer:           signInIssuer,
+		Passkeys:               input.Passkeys,
+		WorkspaceAddress:       input.WorkspaceAddress,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,
@@ -737,7 +753,7 @@ type queryer interface {
 // started the relay, or at once under the test hooks.
 func Register(mux *http.ServeMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeOwedBrokerCredentials, EventHead: s.personEventHead, EventHorizon: s.horizon}
+	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, RevokeBrokerCredentials: s.revokeBrokerDebts, EventHead: s.personEventHead, EventHorizon: s.horizon}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -749,11 +765,13 @@ type Background struct {
 	// process that died left owed is sent, once, under its own attempt number. The maintenance loop
 	// runs it (RunMaintenanceSweep).
 	ResumeDeliveries func(context.Context) error
-	// RevokeBrokerCredentials is one pass of the broker revocation loop
-	// (revokeOwedBrokerCredentials): the secrets broker is told of each Google account another
-	// account took an address from, and ends every credential that account holds there, and the
-	// revocation is settled once the broker confirms. It answers when the loop next needs a pass with
-	// no wake, the zero time for never. RunBrokerRevocations runs it.
+	// RevokeBrokerCredentials is one pass of the broker revocation loop (revokeBrokerDebts): the
+	// secrets broker is told of each Google account another account took an address from, and ends
+	// every credential that account holds there (revokeOwedBrokerCredentials), and of each
+	// restricted member a removal took off an access list, whose machine logins it revokes
+	// (revokeOwedMachineLogins); each revocation is settled once the broker confirms it. It answers
+	// when the loop next needs a pass with no wake, the zero time for never. RunBrokerRevocations
+	// runs it.
 	RevokeBrokerCredentials func(context.Context) time.Time
 	// EventHead is the event_head GET /auth/whoami answers the person whose cookie the request
 	// carries (personEventHead): an id at or below which every event is already final, which a page

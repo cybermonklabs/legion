@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -14,8 +15,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's access is who may see it and who changes that (internal/dispatch/access): its one
@@ -142,9 +145,11 @@ func (s *server) privateProjectProvisioned(key string) bool {
 }
 
 // getProjectAccess answers who may see project key and who changes that, as the caller reads it:
-// a project the caller does not see answers as a key no project holds.
+// a project the caller does not see answers as a key no project holds. The owner's browser session
+// gets the owner's passkey fields too where passkey sign-in is on (withOwnersPasskeys).
 func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.actingPerson(w, r); !ok {
+	caller, ok := s.actingPerson(w, r)
+	if !ok {
 		return
 	}
 	who, ok := s.readerOf(w, r)
@@ -159,6 +164,10 @@ func (s *server) getProjectAccess(w http.ResponseWriter, r *http.Request) {
 	answer, err := access.ReadProject(r.Context(), pool, r.PathValue("key"), refs.VisibilityArg(who))
 	if err != nil {
 		s.writeAccessError(w, err)
+		return
+	}
+	if answer, err = s.withOwnersPasskeys(r.Context(), pool, answer, caller); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
@@ -270,9 +279,249 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.AddPrincipal)
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list.
+// deleteProjectAccessPerson takes a person off the project's access list. A removal that took a
+// restricted member off it owes the broker the revocation of their machine logins, recorded in the
+// removal's transaction (recordMachineLoginRevocation) and paid after the commit; a removal that
+// left the list as it was owes nothing, so no project's owner ends the logins of a person another
+// project lists. Where passkey sign-in is on, the removal also ends, in its own transaction, the
+// person's unused links of this project and, once no list names them directly any more, a
+// restricted member's sign-in and passkeys (endUnlistedPasskeySignIn).
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
-	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.RemovePrincipal)
+	email := r.PathValue("email")
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		named, err := access.NamesPerson(ctx, tx, key, email)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		answer, event, err := access.RemovePrincipal(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if named {
+			if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+		}
+		if err := s.endUnlistedPasskeySignIn(ctx, tx, key, email); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		return answer, []model.Event{event}, nil
+	})
+}
+
+// recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
+// revocation of every machine login person approved for their own machines, when people records
+// person as a restricted member (store.RecordMachineLoginRevocation); a full member, a person with
+// no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
+// nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so
+// the write never waits on the broker: an owner removes a person while the broker is down, and the
+// person's cookie and personal tokens are refused from the commit on by Dispatch's own check of
+// the lists (restrictedOwnerAdmitted). A removal from an access list (deleteProjectAccessPerson)
+// records it; it is written to be the one record any other write that takes a restricted member
+// off a project makes in its own transaction.
+func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
+	person = model.CanonicalLogin(person)
+	if s.deps.AgentSecrets == nil || person == "" {
+		return nil
+	}
+	var kind string
+	if err := tx.QueryRow(ctx, `select coalesce((select member_kind from people where email = $1), '')`, person).Scan(&kind); err != nil {
+		return err
+	}
+	if kind != string(model.MemberRestricted) {
+		return nil
+	}
+	return store.RecordMachineLoginRevocation(ctx, tx, person)
+}
+
+// endUnlistedPasskeySignIn is a removal's end of a person's passkey sign-in, in its transaction tx,
+// where passkey sign-in is on (R5): it deletes the person's unused links of project key, and when
+// no project's owner is them and no list names them directly any more (access.Listed, read after
+// the removal in tx), and their row is no full member's, it ends their sign-in and deletes their
+// passkeys (store.EndPasskeySignInTx), so their cookie stops at its next use.
+func (s *server) endUnlistedPasskeySignIn(ctx context.Context, tx pgx.Tx, key, email string) error {
+	if s.deps.Passkeys == nil {
+		return nil
+	}
+	login := model.CanonicalLogin(email)
+	if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
+		return err
+	}
+	listed, err := access.Listed(ctx, tx, login)
+	if err != nil {
+		return err
+	}
+	if listed {
+		return nil
+	}
+	kind, err := access.MemberKind(ctx, tx, login)
+	if err != nil {
+		return err
+	}
+	if kind == model.MemberFull {
+		return nil
+	}
+	_, err = store.EndPasskeySignInTx(ctx, tx, login)
+	return err
+}
+
+// invitationAnswer is POST /api/v1/projects/{key}/access/people/{email}/invitations's answer: the
+// link the owner hands the person, the outside origin's enrollment page with the token in its
+// fragment, and when it lapses.
+type invitationAnswer struct {
+	URL       string    `json:"url"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// The refusals of the owner's link and Reset (createInvitation, resetProjectAccessPerson).
+var (
+	errPasskeySignInOff     = errors.New("this deployment signs nobody in with a passkey (DISPATCH_SIGNIN_PASSKEY is unset)")
+	errBrowserSessionNeeded = errors.New("only the owner's browser session makes a link or resets a person: no token does")
+	errPersonNotListed      = errors.New("the project's access list does not name this email directly: name the person on the list first")
+	errWorkspaceAddress     = errors.New("an address on a domain of the company's Workspace signs in with Google, never with a link")
+	errFullMember           = errors.New("a full member signs in with Google, never with a link")
+)
+
+// passkeyOwnerRefusal refuses an owner's passkey route (a link, a Reset) for its caller by, once
+// the owner's check passed: 409 PASSKEY_SIGNIN_OFF where passkey sign-in is off, and 403
+// BROWSER_SESSION_REQUIRED for a caller that is not a browser's session cookie (a personal token, a
+// broker token or the shared token never makes a link); nil otherwise.
+func (s *server) passkeyOwnerRefusal(by model.Actor) error {
+	if s.deps.Passkeys == nil {
+		return errPasskeySignInOff
+	}
+	if !atBrowserAs(by) {
+		return errBrowserSessionNeeded
+	}
+	return nil
+}
+
+// atBrowserAs reports whether actor, a person actingPerson resolved, is that person at a browser
+// (their sign-in proved them) rather than a credential acting for them: a personal token and a
+// broker token each name the agent that acted (model.Actor.Act), and a browser names none.
+func atBrowserAs(actor model.Actor) bool {
+	return actor.Act == nil
+}
+
+// namedPerson answers email's stored form when project key's list names it directly, read in tx:
+// 400 PROJECT_ACCESS_INPUT for a value that names nobody who could sign in, 409 PERSON_NOT_LISTED
+// for an email the list does not name as a person (a group that holds it never counts), and 409
+// FULL_MEMBER for a full member's address.
+func namedPerson(ctx context.Context, tx pgx.Tx, key, email string) (string, error) {
+	login, err := access.PersonPrincipal(email)
+	if err != nil {
+		return "", err
+	}
+	var named bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from project_access
+		where project_key = $1 and principal_kind = 'person' and principal = $2)`, key, login).Scan(&named); err != nil {
+		return "", fmt.Errorf("read whether project %s names the person: %w", key, err)
+	}
+	if !named {
+		return "", errPersonNotListed
+	}
+	kind, err := access.MemberKind(ctx, tx, login)
+	if err != nil {
+		return "", err
+	}
+	if kind == model.MemberFull {
+		return "", errFullMember
+	}
+	return login, nil
+}
+
+// createInvitation is POST /api/v1/projects/{key}/access/people/{email}/invitations: the project's
+// owner, in a browser session (passkeyOwnerCall), makes a single-use link for a person its list
+// names directly, at an address on no domain of the company's Workspace and of no full member
+// (namedPerson), which ends the person's earlier unused links of the project
+// (store.MakeInvitationTx). It answers 201 {url, expires_at}: the url is the outside origin's
+// enrollment page with 32 random bytes, base64url, in its fragment, which no server logs and no
+// browser sends as a Referer, and outside_invitations keeps only their hash. The answer is the
+// one time the link is shown, so an Idempotency-Key never keeps it (answerHoldsSecret): a repeat
+// under the key is 409 KEY_COMMITTED, never a second link.
+func (s *server) createInvitation(w http.ResponseWriter, r *http.Request) {
+	var answer invitationAnswer
+	if !s.inOwnerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) ([]model.Event, error) {
+		if err := s.passkeyOwnerRefusal(by); err != nil {
+			return nil, err
+		}
+		login, err := namedPerson(ctx, tx, key, r.PathValue("email"))
+		if err != nil {
+			return nil, err
+		}
+		if s.deps.WorkspaceAddress(login) {
+			return nil, errWorkspaceAddress
+		}
+		token, hash, err := identity.NewInvitationToken()
+		if err != nil {
+			return nil, err
+		}
+		expiresAt, err := store.MakeInvitationTx(ctx, tx, hash, login, key, by.ID)
+		if err != nil {
+			return nil, err
+		}
+		answer = invitationAnswer{URL: s.deps.Passkeys.Issuer() + "/enroll#" + token, ExpiresAt: expiresAt}
+		return nil, nil
+	}) {
+		return
+	}
+	WriteJSON(w, http.StatusCreated, answer)
+}
+
+// resetProjectAccessPerson is POST /api/v1/projects/{key}/access/people/{email}/reset: the
+// project's owner, in a browser session, ends the sign-in of a person its list names directly and
+// deletes their passkeys and their unused links of the project, and records that Dispatch owes the
+// secrets broker the revocation of the machine logins they approved (recordMachineLoginRevocation,
+// the record a removal from the list makes), all in one transaction, so the person signs in again
+// only with a new link and the device logins a hijacker approved end too (R5, R16). The person
+// stays on the list. A full member's address is 409 FULL_MEMBER. It answers the project's access,
+// as the list's writes do.
+func (s *server) resetProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		if err := s.passkeyOwnerRefusal(by); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		login, err := namedPerson(ctx, tx, key, r.PathValue("email"))
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if err := store.DeleteInvitationsTx(ctx, tx, key, login); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if _, err := store.EndPasskeySignInTx(ctx, tx, login); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if err := s.recordMachineLoginRevocation(ctx, tx, login); err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		answer, err := access.ReadProjectWritten(ctx, tx, key)
+		return answer, nil, err
+	})
+}
+
+// withOwnersPasskeys adds to answer, read in q, the owner's passkey fields (model.ProjectAccess's
+// Passkeys and Invitable) when passkey sign-in is on and the caller is the project's owner in a
+// browser session, the one caller who may make a link; every other answer carries neither.
+func (s *server) withOwnersPasskeys(ctx context.Context, q store.PasskeyReader, answer model.ProjectAccess, caller model.Actor) (model.ProjectAccess, error) {
+	if s.deps.Passkeys == nil || answer.Owner != caller.ID || !atBrowserAs(caller) {
+		return answer, nil
+	}
+	passkeys, err := store.EnrolledPasskeys(ctx, q, answer.People)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	full, err := store.FullMembers(ctx, q, answer.People)
+	if err != nil {
+		return model.ProjectAccess{}, err
+	}
+	invitable := []string{}
+	for _, person := range answer.People {
+		if !slices.Contains(full, person) && !s.deps.WorkspaceAddress(person) {
+			invitable = append(invitable, person)
+		}
+	}
+	answer.Passkeys, answer.Invitable = &passkeys, &invitable
+	return answer, nil
 }
 
 // putProjectAccessGroup names a group on the project's access list.
@@ -301,12 +550,31 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 	})
 }
 
-// ownerWrite runs one write of project {key}'s access for its owner: the caller acts as a person,
+// ownerWrite runs one write of project {key}'s access for its owner (inOwnerWrite) and answers the
+// project's access as the write left it, with the owner's passkey fields where they apply
+// (withOwnersPasskeys), read in the write's transaction.
+func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
+	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
+	var answer model.ProjectAccess
+	if !s.inOwnerWrite(w, r, group, func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) ([]model.Event, error) {
+		written, appended, err := write(ctx, tx, key, by, viewer)
+		if err != nil {
+			return nil, err
+		}
+		answer, err = s.withOwnersPasskeys(ctx, tx, written, by)
+		return appended, err
+	}) {
+		return
+	}
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// inOwnerWrite runs one write of project {key}'s access for its owner: the caller acts as a person,
 // and is the project's owner as projects.owner reads in the write's own transaction, under the
 // locks access.LockForAccessWrite takes in the one order every access write takes them (group,
 // the group the write names, or "" for none), so an owner change committed meanwhile is read
 // rather than raced and a delete of the group is ordered against the write. It publishes what the
-// write appended once it commits, and answers the project's access as the write left it. The
+// write appended once it commits, and reports whether it did; a refusal is answered here. The
 // write is handed the caller's viewer, read from the request's own credential (readerOf), which a
 // refusal it makes reads to name only what that credential sees (access.SetSlackChannels).
 //
@@ -315,48 +583,48 @@ func (s *server) principalWrite(w http.ResponseWriter, r *http.Request, kind, pr
 // sees the project, and so may read its access list, is then told it is not the owner, by the 403
 // PROJECT_OWNER_REQUIRED that names the owner; the other order would name a hidden project's owner
 // to anyone who guessed its key.
-func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string,
-	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, []model.Event, error)) {
+func (s *server) inOwnerWrite(w http.ResponseWriter, r *http.Request, group string,
+	write func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, viewer *model.Viewer) ([]model.Event, error)) bool {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
-		return
+		return false
 	}
 	key := r.PathValue("key")
 	who, ok := s.readerOf(w, r)
 	if !ok {
-		return
+		return false
 	}
 	if !viewerSees(who.Viewer, key) {
 		s.writeAccessError(w, fmt.Errorf("%w: %s", access.ErrProjectNotFound, key))
-		return
+		return false
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
-		return
+		return false
 	}
 	defer tx.Rollback(r.Context())
 	owner, err := access.LockForAccessWrite(r.Context(), tx, key, group)
 	if err != nil {
 		s.writeAccessError(w, err)
-		return
+		return false
 	}
 	if owner == nil || *owner != actor.ID {
 		writeError(w, "PROJECT_OWNER_REQUIRED", http.StatusForbidden,
 			"only the project's owner changes who may see it: ask its owner, "+ownerName(owner))
-		return
+		return false
 	}
-	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)
+	appended, err := write(r.Context(), tx, key, actor, who.Viewer)
 	if err != nil {
 		s.writeAccessError(w, err)
-		return
+		return false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
-		return
+		return false
 	}
 	s.publish(r.Context(), appended...)
-	WriteJSON(w, http.StatusOK, answer)
+	return true
 }
 
 // viewerSees reports whether viewer sees project; no viewer is the server's own read.
@@ -386,6 +654,11 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrPrincipalInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{access.ErrVisibilityInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{errPrivateProjectsUnavailable, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusConflict},
+		{errPasskeySignInOff, "PASSKEY_SIGNIN_OFF", http.StatusConflict},
+		{errBrowserSessionNeeded, "BROWSER_SESSION_REQUIRED", http.StatusForbidden},
+		{errPersonNotListed, "PERSON_NOT_LISTED", http.StatusConflict},
+		{errWorkspaceAddress, "WORKSPACE_ADDRESS", http.StatusBadRequest},
+		{errFullMember, "FULL_MEMBER", http.StatusConflict},
 		{errPrivateProjectNotProvisioned, "PRIVATE_PROJECT_NOT_PROVISIONED", http.StatusConflict},
 		{errPrivateProjectsIncomplete, "PRIVATE_PROJECTS_INCOMPLETE", http.StatusConflict},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},

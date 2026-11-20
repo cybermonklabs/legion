@@ -196,8 +196,10 @@ type DispatchArgs struct {
 	// app's NetworkPolicy admits an in-cluster one only through allowedNamespaces. It needs the
 	// tailnet inputs or publicOrigin: without either the component builds the sandbox, whose own
 	// origin is an in-cluster http:// address where browser sign-in is refused. With the sign-in
-	// inputs set its host must also be one weborigin.GoogleRedirectHost takes, since the Google
-	// client then lists its callback. Unset renders nothing.
+	// inputs set its host must also be one weborigin.PasskeyHost takes, a public domain name, since
+	// people from outside sign in there with a passkey whose relying party is that host; Dispatch
+	// serves no Google sign-in there, so the Google client lists no callback of it. Unset renders
+	// nothing.
 	OutsideOrigin string `pulumi:"outsideOrigin,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
@@ -1334,9 +1336,10 @@ func refuseDispatchSignInGroup(args *DispatchArgs, clause string) error {
 // owner names it in a refusal ("the front door's", "publicOrigin's"). It must be a web origin
 // weborigin.Parse takes, whose refusals it prefixes with the input's name; the component adds that
 // the origin is https, as Dispatch's own is, that its host is not ownHost, whose origin Dispatch
-// already is, and, with the sign-in inputs set, that its host is one weborigin.GoogleRedirectHost
-// takes, since the Google client must then list <outsideOrigin>/auth/callback; that function's
-// refusals it prefixes with "outsideOrigin's ".
+// already is, and, with the sign-in inputs set, that its host is one weborigin.PasskeyHost takes,
+// since people from outside sign in there with a passkey whose relying party is that host, a
+// registrable domain name and never an IP address (Dispatch serves no Google sign-in there); that
+// function's refusals it prefixes with "outsideOrigin's ".
 func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, signInOn bool) (string, error) {
 	if args.OutsideOrigin == "" {
 		return "", nil
@@ -1355,7 +1358,7 @@ func refuseDispatchOutsideOrigin(args *DispatchArgs, ownHost, owner string, sign
 	if !signInOn {
 		return origin.String(), nil
 	}
-	if err := weborigin.GoogleRedirectHost(host); err != nil {
+	if err := weborigin.PasskeyHost(host); err != nil {
 		return "", fmt.Errorf("outsideOrigin's %w", err)
 	}
 	return origin.String(), nil

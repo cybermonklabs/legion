@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Dispatch HTTP API document says what a restricted member may do on
+  `POST /api/v1/credential-requests/machine-lookup`, `.../{id}/approve` and `.../{id}/deny`: decide
+  a machine login of their own, at their browser alone.
+time: 2026-11-20T10:37:34Z
+custom:
+    Issue: restricted-agent-tokens-named

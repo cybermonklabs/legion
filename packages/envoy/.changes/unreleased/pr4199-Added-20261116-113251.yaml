@@ -9,7 +9,7 @@ body: |-
   nobody from outside or no project names its owner, with no hour to wait, and acts again once
   both hold; a full member's token is unchanged.
   `DISPATCH_OUTSIDE_ORIGIN` is a second origin Dispatch answers at, chosen by the request's
-  host: its sign-in comes back to `<origin>/auth/callback`, which the Google client must list, a
+  host: it serves no Google sign-in (`/auth/start` and `/auth/callback` answer 404 there), a
   browser write from it must carry that Origin, `GET /auth/whoami` names both origins as
   `origins`, and a dashboard link of either origin is a reference the dashboard opens on the
   origin the reader is on. A restricted member never takes the address of a member who has signed

@@ -5,14 +5,15 @@ import { conversationTurn } from "./reference-surfaces";
 import { type BrowserContext, expect, type Page, type Response, test } from "./test";
 
 /**
- * Google signs in only the people of the sign-in domain, at both of Dispatch's origins. Under
- * `DISPATCH_E2E_SIGNIN=google` (e2e/harness-signin.ts) each server signs people in with Google for
- * the Workspace domain `example.com`, with the dev OIDC issuer standing in for Google; it answers
- * at its canonical origin, `http://127.0.0.1:<port>`, and at a second one,
- * `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`). A personal Google account outside the
- * domain is refused at either origin even while a project's access list names it. The issuer signs
- * in nobody of its own: each sign-in below first queues its person, with the claims Google gives
- * that account, at the issuer's `/_dev/sign-in-as`.
+ * Google signs in only the people of the sign-in domain, and only at Dispatch's canonical origin.
+ * Under `DISPATCH_E2E_SIGNIN=google` (e2e/harness-signin.ts) each server signs people in with
+ * Google for the Workspace domain `example.com`, with the dev OIDC issuer standing in for Google;
+ * it answers at its canonical origin, `http://127.0.0.1:<port>`, and at a second one,
+ * `http://localhost:<port>` (`DISPATCH_OUTSIDE_ORIGIN`), with passkey sign-in off. A personal
+ * Google account outside the domain is refused at the canonical origin even while a project's
+ * access list names it, and the outside origin serves no Google sign-in at all: its `/auth/start`
+ * and `/auth/callback` answer 404. The issuer signs in nobody of its own: each sign-in below first
+ * queues its person, with the claims Google gives that account, at the issuer's `/_dev/sign-in-as`.
  */
 
 const canonical = baseUrl;
@@ -95,7 +96,7 @@ test.use({ signedIn: false });
 // One row whose steps run in order, rather than a row per step: e2e/test.ts empties the database
 // before every row, and each step reads what the steps before it wrote.
 test.describe("outside sign-in", () => {
-  test("a Google sign-in of an address outside the domain is refused at both origins, though an access list names it", async ({
+  test("a Google sign-in of an address outside the domain is refused though an access list names it, and the outside origin serves no Google sign-in", async ({
     browser,
     request,
   }) => {
@@ -141,32 +142,49 @@ test.describe("outside sign-in", () => {
           return { priv: privIssue.key, pub: pubIssue.key };
         });
 
-      for (const origin of [canonical, outside]) {
-        await test.step(`the outsider's Google sign-in at ${origin} is refused as not in the domain`, async () => {
-          const context = await browser.newContext();
-          outsiderContexts.push(context);
-          const page = await context.newPage();
-          // No hd: a personal Google account, outside every Workspace.
-          await queueSignIn(outsider);
-          const answered = await signInFromTheSignInPage(page, origin);
-          // The page first, so a sign-in that should have been refused fails quoting what it
-          // reached instead: the dashboard, signed in, where a status alone would say only 302.
-          await expect(
-            page.locator("body"),
-            `the page ${outsider} reached at ${origin} once /auth/callback answered ${answered.status()}`
-          ).toContainText(`${outsider} is not in the domain that may use Dispatch`);
-          expect(answered.status(), `/auth/callback for ${outsider} at ${origin}`).toBe(403);
-          expect((await context.cookies()).map((cookie) => cookie.name)).not.toContain(
-            sessionCookieName
-          );
-        });
-      }
+      await test.step(`the outsider's Google sign-in at ${canonical} is refused as not in the domain`, async () => {
+        const context = await browser.newContext();
+        outsiderContexts.push(context);
+        const page = await context.newPage();
+        // No hd: a personal Google account, outside every Workspace.
+        await queueSignIn(outsider);
+        const answered = await signInFromTheSignInPage(page, canonical);
+        // The page first, so a sign-in that should have been refused fails quoting what it
+        // reached instead: the dashboard, signed in, where a status alone would say only 302.
+        await expect(
+          page.locator("body"),
+          `the page ${outsider} reached at ${canonical} once /auth/callback answered ${answered.status()}`
+        ).toContainText(`${outsider} is not in the domain that may use Dispatch`);
+        expect(answered.status(), `/auth/callback for ${outsider} at ${canonical}`).toBe(403);
+        expect((await context.cookies()).map((cookie) => cookie.name)).not.toContain(
+          sessionCookieName
+        );
+      });
 
-      await test.step("alice signs in at the outside origin too, and a link she wrote at the canonical origin opens there", async () => {
+      await test.step(`${outside} serves no Google sign-in: its /auth/start and /auth/callback answer 404`, async () => {
+        for (const path of ["/auth/start", "/auth/callback?code=c&state=s"]) {
+          const answered = await request.get(`${outside}${path}`, { maxRedirects: 0 });
+          expect(answered.status(), `GET ${outside}${path}: ${await answered.text()}`).toBe(404);
+          expect(answered.headers()["set-cookie"], `GET ${outside}${path} sets no cookie`).toBe(
+            undefined
+          );
+        }
+      });
+
+      await test.step("alice's session at the outside origin opens a link she wrote at the canonical origin there", async () => {
+        // Nobody signs in with Google at the outside origin, so alice's session is carried there
+        // as a browser holding it would send it: the claim here is where a link leads on that
+        // origin's page, not how a person signs in to it.
+        const session = (await aliceContext.cookies(canonical)).find(
+          (cookie) => cookie.name === sessionCookieName
+        );
+        expect(session, "alice's session cookie at the canonical origin").toBeDefined();
+        await outsideAliceContext.addCookies([
+          { name: sessionCookieName, url: outside, value: session?.value ?? "" },
+        ]);
         const outsidePage = await outsideAliceContext.newPage();
-        await queueSignIn(alice, googleSignIn.domain);
-        await expectSignedIn(await signInFromTheSignInPage(outsidePage, outside), alice);
-        await expect(outsidePage).toHaveURL(`${outside}/`);
+        await outsidePage.goto(`${outside}/`);
+        await expect(outsidePage.getByText(`Signed in as ${alice}`)).toBeVisible();
         const comment = (await aliceWrites(
           aliceContext,
           "POST",

@@ -132,7 +132,7 @@ func TestACredentialRecordingNoAccountIsHeldToWhenTheAddressAccountWasRecorded(t
 		defer tx.Rollback(ctx)
 		var id string
 		err = tx.QueryRow(ctx, mintAgentTokenSQL, person, "minted", []byte("hash of a mint"), "prefix00", []string{model.ScopePerson}, []string{},
-			nil, nil, tokenID, minter.address, minter.subject, true, minter.created, minter.foreign).
+			nil, nil, tokenID, minter.address, minter.subject, true, minter.created, minter.foreign, minter.issuer).
 			Scan(&id, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
 		if err != nil {
 			return "", err

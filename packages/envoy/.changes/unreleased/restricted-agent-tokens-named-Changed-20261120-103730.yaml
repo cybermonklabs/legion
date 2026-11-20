@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  A restricted member's machine login is held to one project. Its trade asks Dispatch what kind of
+  member the login's approver is, and a restricted member's is minted project scope `named` with
+  exactly the one project the trade names (`AGENT_SECRETS_PROJECTS`), its token living the lesser
+  of 270 seconds and `BROKER_ACCESS_TOKEN_SECONDS`. Dispatch gives such a token neither the
+  `person` nor the `approve` scope, so an outside person's agents act in the one project they work
+  on and mint no personal token and decide no credential. A trade of theirs naming no project or
+  several is refused `invalid_request` naming the rule. While Dispatch cannot be asked, every
+  machine login's trade is refused `temporarily_unavailable`, a full member's naming no project
+  included, which a client trades again on; a broker with no project-access check
+  (`BROKER_PROJECT_ACCESS_URL` unset) mints every machine login as its person, as before, and says
+  so in its `project access check state=off` line.
+time: 2026-11-20T10:37:30Z
+custom:
+    Issue: restricted-agent-tokens-named

@@ -349,6 +349,8 @@ var postCalls = map[string]postCall{
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept":               noObject,
 	"POST /api/v1/agents/{session_id}/stream/_test/publish":                noObject,
 	"POST /api/v1/me/agent-tokens":                                         noObject,
+	"POST /api/v1/projects/{key}/access/people/{email}/invitations":        noObject,
+	"POST /api/v1/projects/{key}/access/people/{email}/reset":              noObject,
 	"POST /api/v1/me/inbox/read":                                           noObject,
 	"POST /api/v1/me/inbox/dismiss":                                        noObject,
 	"POST /api/v1/projects":                                                noObject,

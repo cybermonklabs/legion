@@ -161,7 +161,10 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // personsOwnAtTheBroker names end what is the caller's own at the secrets broker, so a restricted
 // member makes them as a full member does, and only a credential that lists projects, or whose
 // writes are held to a list, is refused them; the broker decides whose each grant or sign-in is, for
-// every caller alike. Every other row reaches its handler, whose loaders answer an object the
+// every caller alike. A restricted member at a browser also reaches the rows that decide, list or
+// end a machine login (restrictedOwnLoginRoutes), whose handlers hold that member to a login of
+// their own: never their personal token and never a broker token, so no agent of theirs decides or
+// ends a credential. Every other row reaches its handler, whose loaders answer an object the
 // viewer does not see as missing (the file comment), but for a broker token scoped to one project
 // while no project is private, whose write to an object outside its project is refused here as it
 // was before (writeOutsideTheBrokerProject).
@@ -171,6 +174,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 	}
 	deployment := route.Scope == scopeDeployment
 	theirOwn := personsOwnAtTheBroker[route.Method+" "+route.Pattern]
+	ownLogin := restrictedOwnLoginRoutes[route.Method+" "+route.Pattern]
 	resolve, addressed := s.projectResolverFor(route.Pattern)
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
@@ -181,7 +185,8 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		if deployment {
 			held := writesHeldTo(reader.Viewer, resolvedCredential(r.Context()))
 			ownWithNoList := theirOwn && len(reader.Viewer.Lists) == 0 && len(held) == 0
-			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList {
+			ownLoginAtBrowser := ownLogin && reader.Viewer.Restricted && atBrowser(r)
+			if (!reader.Viewer.Open || len(held) > 0) && !ownWithNoList && !ownLoginAtBrowser {
 				refuseDeploymentWrite(w, route, reader.Viewer.Restricted && !theirOwn, held)
 				return
 			}
@@ -228,6 +233,13 @@ func resolvedCredential(ctx context.Context) *model.Credential {
 		return nil
 	}
 	return resolved.actor.Credential
+}
+
+// atBrowser reports whether the caller withCallerResolved resolved is a person at a browser, whose
+// sign-in proved them, rather than any credential an agent holds.
+func atBrowser(r *http.Request) bool {
+	caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+	return ok && caller.err == nil && caller.human
 }
 
 // withCallerResolved is r with its caller resolved once (optionalActor) and kept in its context,

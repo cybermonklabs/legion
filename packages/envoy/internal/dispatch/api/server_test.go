@@ -92,6 +92,11 @@ type testServerOptions struct {
 	// database) is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False
 	// is the deployment that does not, whose server holds no such rule.
 	admitsRestricted bool
+	// passkeyIssuer is a deployment whose people from outside sign in with a passkey
+	// (DISPATCH_SIGNIN_PASSKEY=1) at this outside origin: Deps.Passkeys over the server's database,
+	// recording each passkey's subject under it, and the rule's check of a Workspace address
+	// (testOutsideRule's). Empty is the deployment with passkey sign-in off.
+	passkeyIssuer string
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -103,6 +108,11 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *brokertoken.Verifier
+	// agentSecretsURL and agentSecretsTokenFile are Deps' broker relay for the credential pages
+	// (DISPATCH_AGENT_SECRETS_URL and the file holding Dispatch's own account token at that
+	// broker); empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL       string
+	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -317,25 +327,29 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:   horizontest.StallWarning,
-		HorizonWarnEvery:    horizontest.StallWarning,
-		OIDC:                options.oidc,
-		OIDCAccounts:        options.oidcAccounts,
-		AccessAccounts:      options.accessAccounts,
-		SignInIssuer:        options.signInIssuer,
-		RestrictedAdmission: restrictedAdmissionOf(options.admitsRestricted, database.Pool),
-		PrivateProjects:     options.privateProjects,
-		BusProjects:         options.busProjects,
-		BrokerTokens:        brokerTokens,
-		AgentStream:         options.agentStream,
-		AgentPublisher:      agentPublisher,
-		Embedder:            options.embedder,
-		Answerer:            options.answerer,
-		Files:               options.files,
-		DashboardEntry:      options.dashboardEntry,
-		BuildCommit:         options.buildCommit,
-		OutboxPublishes:     options.outboxPublishes,
-		Metrics:             options.metrics,
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		OIDCAccounts:          options.oidcAccounts,
+		AccessAccounts:        options.accessAccounts,
+		SignInIssuer:          options.signInIssuer,
+		Passkeys:              passkeysOf(options.passkeyIssuer, database.Pool),
+		WorkspaceAddress:      workspaceAddressOf(options.passkeyIssuer, database.Pool),
+		RestrictedAdmission:   restrictedAdmissionOf(options.admitsRestricted, database.Pool),
+		PrivateProjects:       options.privateProjects,
+		BusProjects:           options.busProjects,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: options.agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -377,6 +391,24 @@ func restrictedAdmissionOf(admitsRestricted bool, pool *store.Pool) identity.Res
 		return nil
 	}
 	return testOutsideRule(pool)
+}
+
+// passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
+// issuer, the outside origin, over pool; nil for none.
+func passkeysOf(issuer string, pool *store.Pool) *store.PgPasskeys {
+	if issuer == "" {
+		return nil
+	}
+	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil), issuer)
+}
+
+// workspaceAddressOf is Deps.WorkspaceAddress beside passkeysOf: the passkey rule's check over
+// testOutsideRule; nil with passkey sign-in off.
+func workspaceAddressOf(issuer string, pool *store.Pool) func(string) bool {
+	if issuer == "" {
+		return nil
+	}
+	return identity.PasskeyRule{OutsideRule: testOutsideRule(pool)}.WorkspaceAddress
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A test that has already

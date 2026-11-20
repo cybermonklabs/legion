@@ -51,6 +51,10 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 `people`, `user_sessions` and `agent_tokens` (`20261118041916`), and `broker_revocations` (`20261118152422`), the last because it is what ends a replaced account's credentials at the secrets broker.
 The two guards that hold a stamp to the database's clock (`people.confirmed_at`, `broker_revocations.tried_at`) compare it with `greatest(now(), clock_timestamp())` (`20261118200651`), so a writer's own `now()` stamp passes after the clock steps backwards (`TestTheGuardsAcceptAWritersOwnStampAfterTheClockStepsBack`).
 Both run under a `search_path` of their own, `pg_catalog`, the schema the runner made the tables in, then `pg_temp` (`20261119021826`, built from `current_schema()` as it runs), so a session's own schema or temporary table cannot stand in for their clock or their tables (`TestTheClockGuardsRunUnderTheirOwnSearchPath`, `TestATemporaryTableNamedPeopleDoesNotShadowTheGuardsRead`).
+`people.sub_issuer` is the issuer of the account `people.sub` records: null for the deployment's sign-in issuer, and the outside origin for the subject a restricted member's first passkey enrollment makes (`PgPasskeys`, tables `outside_invitations`, `passkeys` and `passkey_ceremonies`).
+The same guard moves it only with `sub`, and refuses it on a row with no `sub` (`20261120165538`, which pins the replaced function's `search_path` again);
+a passkey's row holds no refresh token, so `people_sign_in_stands` holds a row of the sign-in issuer to the old pairing of refresh token and confirmation and a passkey's row to none.
+In the recovery below, `issuer` is the account's own: the sign-in issuer, or the outside origin for a passkey's account.
 The guard is against a statement written by hand, or a mistaken one.
 It refuses each transition no writer makes, so no such statement can make a credential act for an account that no longer holds its address.
 A statement that makes a writer's own transition without the rest of what that writer does passes, since no trigger can tell it from the writer's, and two such leave something to recover;

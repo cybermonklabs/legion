@@ -199,10 +199,10 @@ func TestDispatchPodWithoutOutsideInputsIsUnchanged(t *testing.T) {
 
 // outsideOrigin is refused by its own name before anything registers where the component cannot
 // serve it: in a sandbox, and as a second origin weborigin.Parse refuses, that is no https origin,
-// that is the front door's own, or whose host Google refuses in a redirect URI while browser
-// sign-in is on. An nkey seed in outsideOrigin is refused with every other plain input's
-// (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses it as it refuses every
-// input that configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
+// that is the front door's own, or whose host is no public domain name, which a passkey's relying
+// party must be, while browser sign-in is on. An nkey seed in outsideOrigin is refused with every
+// other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput), and clusterOnly refuses it as it
+// refuses every input that configures Dispatch (TestDispatchClusterOnlyRefusesEveryDispatchInput).
 func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 	// weborigin.Parse's own test holds its whole table; the rows here that expect notOrigin hold
 	// that the component asks it and prefixes its refusal with the input's name.
@@ -245,24 +245,24 @@ func TestDispatchRefusesOutsideInputsItCannotServe(t *testing.T) {
 			args: withOrigin("https://example-dispatch.example-tailnet.ts.net:8443"),
 			want: "outsideOrigin's host example-dispatch.example-tailnet.ts.net is the front door's: a second origin needs a host of its own",
 		},
-		// With the sign-in inputs set the Google client lists <outsideOrigin>/auth/callback, so a
-		// host Google refuses in a redirect URI is refused: a raw IP address, and a host with no
-		// top-level domain on the public suffix list (TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn
-		// holds them taken without sign-in).
+		// With the sign-in inputs set people from outside sign in at outsideOrigin with a passkey
+		// whose relying party is its host, so a host that is no public domain name is refused: a raw
+		// IP address, and a host with no top-level domain on the public suffix list
+		// (TestDispatchOutsideOriginTakesAnyHostWithoutBrowserSignIn holds them taken without sign-in).
 		{
 			name: "outsideOrigin an IP address with browser sign-in",
 			args: withOrigin("https://10.0.0.1"),
-			want: "outsideOrigin's host 10.0.0.1 is an IP address, which Google refuses as the host of an OAuth redirect URI, so browser sign-in at it could not complete: name the origin by a DNS name",
+			want: "outsideOrigin's host 10.0.0.1 is an IP address, which no passkey takes as its relying party, so passkey sign-in at it could not complete: name the origin by a DNS name",
 		},
 		{
 			name: "outsideOrigin a single label with browser sign-in",
 			args: withOrigin("https://dispatch"),
-			want: "outsideOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete",
+			want: "outsideOrigin's host dispatch is a single label, with no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
 		},
 		{
 			name: "outsideOrigin under a top-level domain off the public suffix list with browser sign-in",
 			args: withOrigin("https://dispatch-outside.example"),
-			want: "outsideOrigin's host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Google requires of an OAuth redirect URI's host, so browser sign-in at it could not complete",
+			want: "outsideOrigin's host dispatch-outside.example ends in example, no top-level domain on the public suffix list, which Dispatch requires of a passkey's relying party, so passkey sign-in at it could not complete",
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {

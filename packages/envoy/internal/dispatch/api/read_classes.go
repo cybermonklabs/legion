@@ -247,7 +247,10 @@ var readClasses = map[string]readEntry{
 //     every gate refuses one.
 //   - deployment besides: what the row reads belongs to the whole deployment and to no project a
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
-//     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row.
+//     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row. The one exception is
+//     a row of restrictedOwnLoginRoutes (the list of a member's machine logins), which a restricted
+//     member reads at their browser, its handler holding them to their own logins, and is refused
+//     through any token 403 RESTRICTED_MEMBER.
 //   - none, caller and testHook need neither, and the handler runs as it is.
 //
 // A server with no database, a test's, reads every caller as the closed viewer, which sees no
@@ -264,15 +267,23 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 	if !slices.ContainsFunc(route.Reads, readsForAViewer) {
 		return handler
 	}
+	ownLogin := restrictedOwnLoginRoutes[route.Method+" "+route.Pattern]
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
 		}
-		if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
-			writeError(w, refused.code, http.StatusForbidden, refused.message)
+		switch {
+		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted && !atBrowser(r):
+			restrictedOwnLoginRefusal(w, route.Method, route.Pattern)
 			return
+		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted:
+		default:
+			if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
+				writeError(w, refused.code, http.StatusForbidden, refused.message)
+				return
+			}
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}

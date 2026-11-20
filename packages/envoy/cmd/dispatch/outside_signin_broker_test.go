@@ -243,10 +243,12 @@ func (b *fakeBroker) serve(w http.ResponseWriter, r *http.Request) {
 // brokerRouter is the router main serves for s's boot with the secrets broker configured
 // (DISPATCH_AGENT_SECRETS_URL naming broker), its broker-token check built as main builds it
 // (brokerTokenVerifier) over s's database, its people store with the options main gives one for
-// that boot (peopleOptions), which s.people then is, and the database's own session store, as
-// routerWithSessions has it; it answers the API server's background work too, whose revocation
-// pass a test runs as the server's loop does. The broker records accounts under s's sign-in
-// issuer, the one Dispatch's approves name. Each approve it serves is timed to the broker's receipt
+// that boot (peopleOptions), which s.people then is, the database's own session store, as
+// routerWithSessions has it, and, with DISPATCH_SIGNIN_PASSKEY=1, the passkey ceremonies and their
+// hourly confirmation main builds (passkeySignIn), at the canonical origin brokerOrigin; it
+// answers the API server's background work too, whose revocation pass a test runs as the server's
+// loop does. The broker records accounts under s's sign-in issuer, the one Dispatch's approves
+// name, unless a credential names another. Each approve it serves is timed to the broker's receipt
 // of its relay (approvetimingtest).
 func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Handler, api.Background) {
 	t.Helper()
@@ -268,12 +270,18 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: s.people,
 		Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool), BrokerTokens: verifier,
 		Metrics: s.metrics, BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(s.metrics),
+		ServerURL: brokerOrigin,
 	}
 	rule, err := signInRule(boot, accessLister(built.Store))
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	passkeys, ceremonies, err := passkeySignIn(boot, s.people.PgPeopleStore, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	built.Passkeys = ceremonies
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, passkeys)
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 	if err != nil {
 		t.Fatalf("build the router: %v", err)

@@ -166,14 +166,15 @@ func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
 	})
 }
 
-// fakeBrokerRig is a fake broker recording the last request it served, answering canned
-// status/body pairs keyed by "METHOD path".
+// fakeBrokerRig is a fake broker recording the last request it served, and the "METHOD path" of
+// every request in order, answering canned status/body pairs keyed by "METHOD path".
 type fakeBrokerRig struct {
 	server        *httptest.Server
 	lastAuth      string
 	lastQuery     string
 	lastBody      string
 	calls         int
+	routes        []string
 	statusByRoute map[string]int
 	bodyByRoute   map[string]string
 }
@@ -188,6 +189,7 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 		body, _ := io.ReadAll(r.Body)
 		rig.lastBody = string(body)
 		key := r.Method + " " + r.URL.Path
+		rig.routes = append(rig.routes, key)
 		status, ok := rig.statusByRoute[key]
 		if !ok {
 			status = http.StatusOK

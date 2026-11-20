@@ -75,8 +75,8 @@ func TestAPersonalTokenOfAnAccountPeopleNoLongerRecordsActsOnNothing(t *testing.
 	standing := func(id string) (string, error) {
 		owner := carol
 		actor := model.Actor{Kind: "session", Owner: &owner, ID: carol, Act: &model.ActorAct{TokenID: id}}
-		subject, _, err := served.approverStanding(httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/x/approve", nil), actor)
-		return subject, err
+		account, _, err := served.approverStanding(httptest.NewRequest(http.MethodPost, "/api/v1/credential-requests/x/approve", nil), actor)
+		return account.subject, err
 	}
 	if _, err := standing(idA); err == nil {
 		t.Error("an approve's re-read of A's token once people records B stood, want it refused")
@@ -98,7 +98,7 @@ func TestAPersonalTokenOfAnAccountPeopleNoLongerRecordsActsOnNothing(t *testing.
 		defer tx.Rollback(ctx)
 		var minted string
 		return tx.QueryRow(ctx, mintAgentTokenSQL, carol, "minted under "+id, []byte("hash-"+id), "prefix00", []string{model.ScopePerson}, []string{},
-			nil, nil, id, nil, "", true, nil, false).Scan(&minted, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
+			nil, nil, id, nil, "", true, nil, false, "").Scan(&minted, new(string), new(string), new([]string), new([]string), new(any), new(any), new(any))
 	}
 	if err := mint(idA); !errors.Is(err, pgx.ErrNoRows) {
 		t.Errorf("the mint's re-check of A's token once people records B answered %v, want no row inserted", err)

@@ -1022,8 +1022,8 @@ front door's name is then Dispatch's origin; a second origin beside that one is 
 With it the component builds what the sandbox builds and requires `natsInCluster`, refuses
 `frontDoorReplicas` and `frontDoorPdbMinAvailable`, as the sandbox does, and takes the sign-in
 group and `outsideOrigin` as it takes them beside the front door; with the
-sign-in group its host must be one Google takes in a redirect URI, as `outsideOrigin`'s must, and
-the Google client lists `<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
+sign-in group its host must be one Google takes in a redirect URI, and the Google client lists
+`<publicOrigin>/auth/callback`. `allowedNamespaces` is optional there:
 the entrance forwards to the app's Service `<hostname>` on port 8766, or straight to the app's pods,
 labelled `app=<hostname>`, through a network endpoint group of that Service.
 
@@ -1093,12 +1093,12 @@ after `DISPATCH_SERVER_URL`, and nothing else. Whatever serves that origin and f
 app's Service on port 8766 is the deployment's to build, whatever way the people it serves come
 in by; if it runs in this cluster, name its namespace in `allowedNamespaces`, which admits that
 namespace's pods to port 8766 and nothing else. With `outsideOrigin` and the sign-in inputs set,
-the Google client `signInClientId` names must list the rendered `DISPATCH_OUTSIDE_ORIGIN`
-followed by `/auth/callback` as an authorized redirect URI, beside
-`https://<hostname>.<tailnetDnsName>/auth/callback`, so with them the component also refuses a
-host Google refuses there: a raw IP address, and one whose top-level domain is not on the public
-suffix list, a single label among them ([Redirect URI validation
-rules](https://developers.google.com/identity/protocols/oauth2/web-server)).
+people from outside sign in at it with a passkey, whose relying party is its host, a registrable
+domain name and never an IP address, so with them the component also refuses a raw IP address,
+and a host whose top-level domain is not on the public suffix list, a single label among them
+(`weborigin.PasskeyHost`). Dispatch serves no Google sign-in at the outside origin
+(`/auth/start` and `/auth/callback` answer 404 there), so the Google client `signInClientId`
+names lists no callback of it, only that of Dispatch's own origin, the front door's or `publicOrigin`.
 The input needs the tailnet group or `publicOrigin`, so the sandbox refuses it by name. Beside
 `publicOrigin` the second origin's host is not `publicOrigin`'s, as beside the front door it is
 not the front door's. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as

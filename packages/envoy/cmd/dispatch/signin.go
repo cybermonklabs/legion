@@ -47,6 +47,20 @@ func workspaceDomainALabel(entry string) (string, bool) {
 	return ascii, err == nil && entry == strings.ToLower(entry) && len(ascii) <= maxDomainLength && domainShape.MatchString(ascii)
 }
 
+// workspaceDomainALabels is domains, entries of DISPATCH_SIGNIN_WORKSPACE_DOMAINS
+// checkSignInSettings took, each as its A-label (workspaceDomainALabel), the form
+// identity.WorkspaceAddress takes them in; nil for none.
+func workspaceDomainALabels(domains []string) []string {
+	if len(domains) == 0 {
+		return nil
+	}
+	labels := make([]string, len(domains))
+	for index, domain := range domains {
+		labels[index], _ = workspaceDomainALabel(domain)
+	}
+	return labels
+}
+
 // iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
 // /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
 // balancer's backend service, an App Engine app or a Cloud Run service follows it.
@@ -62,14 +76,22 @@ func signInClientSettings(boot bootConfig) []struct{ name, value string } {
 	}
 }
 
-// signInSettings are all six sign-in settings, each with boot's value: the client's three, then
+// signInSettings are all seven sign-in settings, each with boot's value: the client's three, then
 // the group a Cognito sign-in pool admits and the Workspace domain Google admits, of which a
-// sign-in takes exactly one, and the Workspace's other domains, as written.
+// sign-in takes exactly one, the Workspace's other domains, as written, and the switch that signs
+// people outside the domain in with a passkey ("1" when on).
 func signInSettings(boot bootConfig) []struct{ name, value string } {
+	on := func(set bool) string {
+		if set {
+			return "1"
+		}
+		return ""
+	}
 	return append(signInClientSettings(boot),
 		struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup},
 		struct{ name, value string }{"DISPATCH_SIGNIN_DOMAIN", boot.SignInDomain},
 		struct{ name, value string }{"DISPATCH_SIGNIN_WORKSPACE_DOMAINS", strings.Join(boot.SignInWorkspaceDomains, ",")},
+		struct{ name, value string }{"DISPATCH_SIGNIN_PASSKEY", on(boot.SignInPasskey)},
 	)
 }
 
@@ -90,15 +112,17 @@ func signInSettingNames() string {
 // checkSignInSettings refuses the sign-in settings identityMode (DISPATCH_IDENTITY) cannot take.
 // Any of them beside header identity, which is only for tests and local harnesses, is refused
 // first. IAP identity takes DISPATCH_SIGNIN_DOMAIN alone (checkIAPSignInSettings). Then the first
-// of these refuses: the Workspace's other domains without the domain they are listed beside; a
+// of these refuses: passkey sign-in without a domain, or without an outside origin, the only origin
+// a passkey signs in at; the Workspace's other domains without the domain they are listed beside; a
 // group and a domain both set; some of the settings but not the issuer, client ID, client secret
 // and one of the group or domain; a domain under an issuer other than Google's, whose tokens carry
 // no `hd`, unless the test hooks put the dev OIDC issuer in Google's place
 // (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; an entry of the
 // Workspace's other domains that is empty or not a lowercase domain name IDNA lookup takes
 // (workspaceDomainALabel), named by its position; under Google's issuer, an outside origin whose
-// host Google refuses in an OAuth redirect URI, since the Google client must list
-// `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the rule gcp:Dispatch holds its
+// host is no public domain name, since people from outside sign in there with a passkey whose
+// relying party is that host, a registrable domain name and never an IP address, while the Google
+// client lists no outside callback (weborigin.PasskeyHost, the rule gcp:Dispatch holds its
 // outsideOrigin input to with sign-in on); a group under Google's issuer, whose tokens carry no
 // `cognito:groups`. A deployment with the issuer, client ID, client secret and group of a Cognito
 // pool reaches none of them.
@@ -114,6 +138,12 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if identityMode == "iap" {
 		return checkIAPSignInSettings(boot)
+	}
+	if boot.SignInPasskey && boot.SignInDomain == "" {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_SIGNIN_DOMAIN: it signs people outside the Workspace domain Dispatch signs people in for with Google in with a passkey, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_PASSKEY")
+	}
+	if boot.SignInPasskey && boot.OutsideOrigin == "" {
+		return errors.New("DISPATCH_SIGNIN_PASSKEY needs DISPATCH_OUTSIDE_ORIGIN: a person from outside signs in with a passkey at the outside origin alone, whose host is the passkey's relying party, so set DISPATCH_OUTSIDE_ORIGIN, or unset DISPATCH_SIGNIN_PASSKEY")
 	}
 	if len(boot.SignInWorkspaceDomains) > 0 && boot.SignInDomain == "" {
 		return errors.New("DISPATCH_SIGNIN_WORKSPACE_DOMAINS needs DISPATCH_SIGNIN_DOMAIN: it lists the other domains of the Workspace whose people sign in with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
@@ -156,7 +186,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 		if boot.OutsideOrigin != "" && boot.SignInIssuer == googleIssuer {
 			// parseOutsideOrigin stored the origin weborigin.Parse returned, so it parses.
 			outside, _ := url.Parse(boot.OutsideOrigin)
-			if err := weborigin.GoogleRedirectHost(outside.Hostname()); err != nil {
+			if err := weborigin.PasskeyHost(outside.Hostname()); err != nil {
 				return fmt.Errorf("DISPATCH_OUTSIDE_ORIGIN's %w", err)
 			}
 		}
@@ -170,7 +200,7 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 // checkIAPSignInSettings refuses the sign-in and origin settings IAP identity cannot take.
 // Identity-Aware Proxy signs people in at IAP's one origin, so Dispatch runs no sign-in of its own:
 // the issuer, client ID, client secret and group are refused, each by name, and so are the outside
-// origin and the Workspace's other domains, which only a rule admitting people from outside reads.
+// origin, passkey sign-in and the Workspace's other domains, which widen Dispatch's own sign-in.
 // DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS name, since it is who may use Dispatch: an
 // account whose assertion's hd is that domain.
 func checkIAPSignInSettings(boot bootConfig) error {
@@ -182,6 +212,9 @@ func checkIAPSignInSettings(boot bootConfig) error {
 	}
 	if boot.OutsideOrigin != "" {
 		refused = append(refused, "DISPATCH_OUTSIDE_ORIGIN")
+	}
+	if boot.SignInPasskey {
+		refused = append(refused, "DISPATCH_SIGNIN_PASSKEY")
 	}
 	if len(boot.SignInWorkspaceDomains) > 0 {
 		refused = append(refused, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
@@ -204,14 +237,27 @@ func checkDomainShape(domain string) error {
 	return nil
 }
 
-// signInRule is who boot's sign-in admits: the members of a Cognito pool's group, or the people of
-// a Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
-// them in to the load balancer in front of it. No Google sign-in admits an account outside the
-// domain. It is nil when boot configures neither a group nor a domain (header identity, dev
-// sign-in, or a cookie server with no DISPATCH_SIGNIN_* setting, which admits nobody at all),
-// matching signInFlow.
+// signInRule is who boot's sign-in admits: the members of a Cognito pool's group; the people of a
+// Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
+// them in to the load balancer in front of it; or, with DISPATCH_SIGNIN_PASSKEY=1 (which IAP
+// identity refuses), the domain's people with Google and, with a passkey, the people outside it
+// that lister says a project names directly, at an address on no domain the Workspace owns (the
+// domain and DISPATCH_SIGNIN_WORKSPACE_DOMAINS, each entry as its A-label: workspaceDomainALabels;
+// identity.PasskeyRule). No Google sign-in admits an account outside the domain. It is nil when
+// boot configures neither a group nor a domain (header identity, dev sign-in, or a cookie server
+// with no DISPATCH_SIGNIN_* setting, which admits nobody at all), matching signInFlow. Passkey
+// sign-in with no lister is refused, so no path builds a rule that cannot read the access lists.
 func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, error) {
 	switch {
+	case boot.SignInDomain != "" && boot.SignInPasskey:
+		if lister == nil {
+			return nil, errors.New("DISPATCH_SIGNIN_PASSKEY=1 reads the projects' access lists, and this server has no database to read them from")
+		}
+		return identity.PasskeyRule{OutsideRule: identity.OutsideRule{
+			DomainRule:       identity.DomainRule{Domain: boot.SignInDomain},
+			People:           lister,
+			WorkspaceDomains: workspaceDomainALabels(boot.SignInWorkspaceDomains),
+		}}, nil
 	case boot.SignInDomain != "":
 		return identity.DomainRule{Domain: boot.SignInDomain}, nil
 	case boot.SignInGroup != "":
@@ -221,9 +267,26 @@ func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, e
 	}
 }
 
-// accessLister is who a rule that admits restricted members asks whether some project names an
-// email directly, as its owner or on its access list as a person and never through a group:
-// access.Listed over database's pool. It is nil with no database.
+// passkeySignIn is boot's passkey sign-in under rule, with DISPATCH_SIGNIN_PASSKEY=1: the store of
+// the passkeys and the owners' links over people's database, recording each passkey's subject
+// under the outside origin, and the ceremonies of that origin, which admit a person as rule does.
+// Both are nil with the setting unset.
+func passkeySignIn(boot bootConfig, people *store.PgPeopleStore, rule identity.SignInRule) (*store.PgPasskeys, *identity.Passkeys, error) {
+	passkeyRule, ok := rule.(identity.PasskeyRule)
+	if !boot.SignInPasskey || !ok {
+		return nil, nil, nil
+	}
+	passkeys := store.NewPgPasskeys(people, oidc.CanonicalIssuer(boot.OutsideOrigin))
+	ceremonies, err := identity.NewPasskeys(boot.OutsideOrigin, passkeys, passkeyRule)
+	if err != nil {
+		return nil, nil, err
+	}
+	return passkeys, ceremonies, nil
+}
+
+// accessLister is who passkey sign-in asks whether some project names an email directly, as its
+// owner or on its access list as a person and never through a group: access.Listed over database's
+// pool. It is nil with no database.
 func accessLister(database *store.Store) identity.Lister {
 	if database == nil {
 		return nil
@@ -231,6 +294,20 @@ func accessLister(database *store.Store) identity.Lister {
 	return identity.ListerFunc(func(ctx context.Context, email string) (bool, error) {
 		return access.Listed(ctx, database.Pool, email)
 	})
+}
+
+// parseSignInSwitch reads the value of name, an on-or-off sign-in setting (DISPATCH_SIGNIN_PASSKEY):
+// "1" turns it on, unset or empty leaves it off, and any other value refuses startup, without
+// echoing it.
+func parseSignInSwitch(name, raw string) (bool, error) {
+	switch value := strings.TrimSpace(raw); value {
+	case "":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be 1 or unset; got a value of %d characters", name, utf8.RuneCountInString(value))
+	}
 }
 
 // parseOutsideOrigin reads DISPATCH_OUTSIDE_ORIGIN's value, raw: empty for none; else the origin
@@ -347,8 +424,10 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // would otherwise go on naming its person for its thirty days, signed by the deployment's own
 // DISPATCH_SIGNING_KEY and confirmed by nobody. Dev sign-in has no issuer either and keeps its
 // cookie: it mints that cookie itself. That case is read from boot, which says what the
-// deployment configured, and not from signIn.
-func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) identity.Identity {
+// deployment configured, and not from signIn. passkeys is the passkey store where passkey sign-in
+// is on (passkeySignIn), which confirms a passkey's sign-in hourly, and nil elsewhere, where a
+// passkey's cookie is refused at its next use.
+func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule, passkeys *store.PgPasskeys) identity.Identity {
 	if boot.IdentityHeader != "" {
 		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
 	}
@@ -365,6 +444,10 @@ func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people aut
 	cookieIdentity := identity.CookieIdentity{SigningKey: signingKey, Sessions: sessions}
 	if signIn != nil {
 		cookieIdentity.Membership = &identity.Membership{People: people, SignIn: signIn, Rule: rule}
+		// Set only when on: a nil *store.PgPasskeys in the interface field would read as a store.
+		if passkeys != nil {
+			cookieIdentity.Membership.Passkeys = passkeys
+		}
 	}
 	return cookieIdentity
 }

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The broker client reuses a token that lives less than its five-minute renewal window, such as a
+  restricted member's machine login's, until halfway through its life, as the Go client does,
+  rather than trading again at every Dispatch request and every reconnect, which would have spent
+  the broker's per-address bucket. A trade the broker answers `503 temporarily_unavailable`, as it
+  does while Dispatch cannot be asked a member kind, is traded again on the client's schedule with
+  no person's action.
+time: 2026-11-20T10:37:33Z
+custom:
+    Issue: restricted-agent-tokens-named

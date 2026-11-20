@@ -11,11 +11,12 @@ body: |-
   of the same origin is refused rather than rewritten, since Dispatch
   compares a browser's `Origin` with it as a string. It renders `DISPATCH_OUTSIDE_ORIGIN` on the
   app's container right after `DISPATCH_SERVER_URL`, and needs the tailnet inputs. With it unset
-  the component renders exactly what it rendered before. With `outsideOrigin` and sign-in on, the
-  Google client needs the rendered `DISPATCH_OUTSIDE_ORIGIN` followed by `/auth/callback` as a
-  redirect URI, so the component then also refuses a host Google refuses there: a raw IP address,
-  and one whose top-level domain is not on the public suffix list. The component does not build
-  what serves the second origin, and an `envoy-dispatch` that predates the setting ignores it.
+  the component renders exactly what it rendered before. With `outsideOrigin` and sign-in on, its
+  host is the relying party of the passkeys people from outside enroll there, a registrable domain
+  name, so the component then also refuses a raw IP address and a host whose top-level domain is
+  not on the public suffix list; the Google client lists no callback of the outside origin. The
+  component does not build what serves the second origin, and an `envoy-dispatch` that predates the
+  setting ignores it.
 time: 2026-11-16T02:01:26Z
 custom:
     Issue: pr4117

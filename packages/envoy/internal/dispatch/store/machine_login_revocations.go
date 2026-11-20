@@ -1,0 +1,120 @@
+package store
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// MachineLoginRevocations is the revocations of restricted members' machine logins Dispatch owes
+// the secrets broker (migration 20261120150130): a removal from an access list records one in its
+// own transaction (RecordMachineLoginRevocation), and the server's revocation loop claims it, pays it
+// by revoking every machine login the member approved for their own machines, and settles it once
+// the broker confirms every revoke.
+type MachineLoginRevocations struct {
+	pool *Pool
+}
+
+// NewMachineLoginRevocations returns the owed machine-login revocations held in pool's database.
+func NewMachineLoginRevocations(pool *Pool) *MachineLoginRevocations {
+	return &MachineLoginRevocations{pool: pool}
+}
+
+// OwedMachineLoginRevocation is one revocation owed: the address, as people.email holds it, and
+// the generation of it a claim read, which a settlement names.
+type OwedMachineLoginRevocation struct {
+	Email      string
+	Generation int64
+}
+
+// RecordMachineLoginRevocation records in tx that Dispatch owes the broker the revocation of every
+// machine login email approved: owed anew, under the next generation, when one is owed or paid
+// already, so a pass that read an earlier one never settles this one. Its commit wakes the
+// revocation loop (machine_login_revocations_notify).
+func RecordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, email string) error {
+	if _, err := tx.Exec(ctx, `
+		insert into machine_login_revocations (email) values (lower(btrim($1)))
+		on conflict (email) do update
+		set generation = machine_login_revocations.generation + 1, recorded_at = clock_timestamp(), done_at = null
+	`, email); err != nil {
+		return fmt.Errorf("record the revocation of %s's machine logins: %w", email, err)
+	}
+	return nil
+}
+
+// Claim takes up to limit owed revocations no pass claimed within retry, those never tried first,
+// then the longest untried, and stamps each tried now in the statement that picks them, so a pass of
+// another process woken by the same commit leaves them to this one. A row another transaction holds
+// (a removal recording it again) is skipped rather than waited for: its commit wakes a pass of its
+// own.
+func (m *MachineLoginRevocations) Claim(ctx context.Context, retry time.Duration, limit int) ([]OwedMachineLoginRevocation, error) {
+	rows, err := m.pool.Query(ctx, `
+		with picked as (
+			select r.email from machine_login_revocations r
+			where r.done_at is null and (r.tried_at is null or r.tried_at <= now() - make_interval(secs => $1))
+			order by r.tried_at is not null, r.tried_at, r.recorded_at
+			limit $2
+			for update of r skip locked
+		)
+		update machine_login_revocations r set tried_at = now()
+		from picked
+		where r.email = picked.email
+		returning r.email, r.generation
+	`, retry.Seconds(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("claim the owed machine-login revocations: %w", err)
+	}
+	owed, err := pgx.CollectRows(rows, pgx.RowToStructByPos[OwedMachineLoginRevocation])
+	if err != nil {
+		return nil, fmt.Errorf("claim the owed machine-login revocations: %w", err)
+	}
+	return owed, nil
+}
+
+// Settle records that the broker confirmed owed, and reports whether it did. It does only for the
+// generation the claim read: a removal recorded since the claim is left owed, for a later pass.
+func (m *MachineLoginRevocations) Settle(ctx context.Context, owed OwedMachineLoginRevocation) (bool, error) {
+	tag, err := m.pool.Exec(ctx, `
+		update machine_login_revocations set done_at = now()
+		where email = $1 and generation = $2 and done_at is null
+	`, owed.Email, owed.Generation)
+	if err != nil {
+		return false, fmt.Errorf("settle the revocation of %s's machine logins: %w", owed.Email, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// NextDue is how long until a claim with retry can take an owed revocation, on the database's
+// clock (the one Claim judges by), at or below zero for one it can take now; due is false when none
+// is owed.
+func (m *MachineLoginRevocations) NextDue(ctx context.Context, retry time.Duration) (wait time.Duration, due bool, err error) {
+	var micros *int64
+	if err := m.pool.QueryRow(ctx, `
+		select ceil(extract(epoch from min(coalesce(tried_at + make_interval(secs => $1), now())) - now()) * 1000000)::bigint
+		from machine_login_revocations where done_at is null
+	`, retry.Seconds()).Scan(&micros); err != nil {
+		return 0, false, fmt.Errorf("read when the next machine-login revocation is due: %w", err)
+	}
+	if micros == nil {
+		return 0, false, nil
+	}
+	return time.Duration(*micros) * time.Microsecond, true, nil
+}
+
+// Owing reports whether a revocation of email's machine logins is owed, and its generation: what a
+// test or an operator reads to tell a debt from a paid one.
+func (m *MachineLoginRevocations) Owing(ctx context.Context, email string) (owed bool, generation int64, err error) {
+	err = m.pool.QueryRow(ctx, `
+		select done_at is null, generation from machine_login_revocations where email = lower(btrim($1))
+	`, email).Scan(&owed, &generation)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0, nil
+	}
+	if err != nil {
+		return false, 0, fmt.Errorf("read the revocation of %s's machine logins: %w", email, err)
+	}
+	return owed, generation, nil
+}

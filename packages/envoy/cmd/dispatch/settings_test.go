@@ -213,8 +213,25 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	passkeys, ceremonies, err := passkeySignIn(boot, pgPeople(built.People), rule)
+	if err != nil {
+		return nil, err
+	}
+	built.Passkeys = ceremonies
+	built.Identity = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule, passkeys)
 	return routes.BuildAppContext(appContextOptions(boot, rule, built))
+}
+
+// pgPeople is the Postgres people store people is, or holds (testPeople), for the passkey store
+// main builds over the same one (passkeySignIn).
+func pgPeople(people auth.PeopleStore) *store.PgPeopleStore {
+	switch people := people.(type) {
+	case *store.PgPeopleStore:
+		return people
+	case testPeople:
+		return people.PgPeopleStore
+	}
+	return nil
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a

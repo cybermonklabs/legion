@@ -45,28 +45,30 @@ func newOriginRig(t *testing.T, rule identity.SignInRule, outside string) *signI
 	return rig
 }
 
-// A sign-in started on the outside origin's Host comes back to that origin's callback, and one
-// started on the canonical Host to the canonical callback; each asks Google for hd, the domain whose
-// people alone sign in with Google. With no outside origin, the canonical Host's redirect is byte
-// for byte today's.
-func TestOutsideSignInStartsAtTheOriginOfItsOwnHost(t *testing.T) {
+// Google's sign-in starts at the canonical origin alone: on the outside origin's Host, in any case,
+// GET /auth/start and GET /auth/callback answer the 404 a path no route serves answers, with no
+// state cookie, though this router has no passkey sign-in; on the canonical Host the start comes
+// back to the canonical callback and asks Google for hd, the domain whose people alone sign in with
+// Google. With no outside origin, the canonical Host's redirect is byte for byte today's.
+func TestGoogleSignInStartsAtTheCanonicalOriginAlone(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
-	for target, want := range map[string]string{
-		"http://outside.test/auth/start": outsideOrigin + "/auth/callback",
-		"http://OUTSIDE.test/auth/start": outsideOrigin + "/auth/callback",
-		"http://canon.test/auth/start":   canonicalOrigin + "/auth/callback",
-	} {
-		location, _ := rig.start(t, target)
-		if got := location.Query().Get("redirect_uri"); got != want {
-			t.Errorf("GET %s: redirect_uri %q, want %q", target, got, want)
+	for _, target := range []string{"http://outside.test/auth/start", "http://OUTSIDE.test/auth/start", "http://outside.test/auth/callback?code=c&state=s"} {
+		response := httptest.NewRecorder()
+		rig.handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, target, nil))
+		if response.Code != http.StatusNotFound || len(response.Result().Cookies()) != 0 {
+			t.Errorf("GET %s: %d %v %s, want the 404 of a path no route serves, with no cookie", target, response.Code, response.Header(), response.Body.String())
 		}
-		if got := location.Query().Get("hd"); got != rigDomain {
-			t.Errorf("GET %s: the issuer is asked for hd %q, want %q", target, got, rigDomain)
-		}
+	}
+	location, _ := rig.start(t, "http://canon.test/auth/start")
+	if got := location.Query().Get("redirect_uri"); got != canonicalOrigin+"/auth/callback" {
+		t.Errorf("GET http://canon.test/auth/start: redirect_uri %q, want %q", got, canonicalOrigin+"/auth/callback")
+	}
+	if got := location.Query().Get("hd"); got != rigDomain {
+		t.Errorf("GET http://canon.test/auth/start: the issuer is asked for hd %q, want %q", got, rigDomain)
 	}
 
 	off := newOriginRig(t, identity.DomainRule{Domain: rigDomain}, "")
-	location, _ := off.start(t, "http://canon.test/auth/start")
+	location, _ = off.start(t, "http://canon.test/auth/start")
 	query := location.Query()
 	want := off.issuer.URL() + "/authorize?access_type=offline&client_id=" + rigClientID + "&hd=" + rigDomain +
 		"&nonce=" + url.QueryEscape(query.Get("nonce")) + "&prompt=consent&redirect_uri=" + url.QueryEscape(canonicalOrigin+"/auth/callback") +
@@ -147,39 +149,23 @@ func TestOutsideSignInWhoamiAnswersBothOrigins(t *testing.T) {
 	}
 }
 
-// signInAt runs a whole Google sign-in through the rig's router at host, as the account claims
-// names: the start and the callback are both requests whose Host is host, so each comes back to
-// that origin's callback.
-func (r *signInRig) signInAt(t *testing.T, host string, claims map[string]any) *httptest.ResponseRecorder {
-	t.Helper()
-	r.issuer.SignInAs(claims)
-	authURL, stateCookie := r.start(t, "http://"+host+"/auth/start")
-	code, state := r.issuer.Authorize(t, authURL.String())
-	callback := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/callback?code="+url.QueryEscape(code)+"&state="+url.QueryEscape(state), nil)
-	callback.AddCookie(stateCookie)
-	response := httptest.NewRecorder()
-	r.handler.ServeHTTP(response, callback)
-	return response
-}
-
-// A Google sign-in of an address outside the domain is refused at both origins, whatever a list
-// names: under the rule that admits restricted members by their listing, with a list naming every
-// address, a verified Google account outside rigDomain gets the refusal page saying it is not in
-// the domain, no session cookie and no people row, at the canonical origin and at the outside
-// origin. The control: an account of rigDomain signs in at each.
-func TestAGoogleSignInOfAnOutsideAddressIsRefusedAtBothOrigins(t *testing.T) {
+// A Google sign-in of an address outside the domain is refused, whatever a list names: under the
+// rule that admits restricted members by their listing, with a list naming every address, a
+// verified Google account outside rigDomain gets the refusal page saying it is not in the domain, no
+// session cookie and no people row, at the canonical origin, the only one that serves Google's
+// sign-in (TestGoogleSignInStartsAtTheCanonicalOriginAlone). The control: an account of rigDomain
+// signs in there.
+func TestAGoogleSignInOfAnOutsideAddressIsRefused(t *testing.T) {
 	rig := newOriginRig(t, outsideRuleListingEveryone(), outsideOrigin)
-	for _, host := range []string{"canon.test", "outside.test"} {
-		refused := rig.signInAt(t, host, map[string]any{"sub": "outside-subject", "email": "Stranger@Other.example", "email_verified": true})
-		if refused.Code != http.StatusForbidden || sessionCookie(refused) != nil ||
-			!strings.Contains(refused.Body.String(), "stranger@other.example is not in the domain that may use Dispatch") {
-			t.Errorf("a Google sign-in of stranger@other.example at %s answered %d %s, want the 403 page saying it is not in the domain, with no session", host, refused.Code, refused.Body.String())
-		}
-		if person, found := rig.people.get("stranger@other.example"); found {
-			t.Errorf("the refused sign-in at %s recorded stranger@other.example as %+v, want no row", host, person)
-		}
-		if member := rig.signInAt(t, host, googleClaims("google-subject")); member.Code != http.StatusFound || sessionCookie(member) == nil {
-			t.Errorf("the control, an account of %s, at %s answered %d %s, want a signed-in redirect", rigDomain, host, member.Code, member.Body.String())
-		}
+	refused := rig.signIn(t, map[string]any{"sub": "outside-subject", "email": "Stranger@Other.example", "email_verified": true})
+	if refused.Code != http.StatusForbidden || sessionCookie(refused) != nil ||
+		!strings.Contains(refused.Body.String(), "stranger@other.example is not in the domain that may use Dispatch") {
+		t.Errorf("a Google sign-in of stranger@other.example answered %d %s, want the 403 page saying it is not in the domain, with no session", refused.Code, refused.Body.String())
+	}
+	if person, found := rig.people.get("stranger@other.example"); found {
+		t.Errorf("the refused sign-in recorded stranger@other.example as %+v, want no row", person)
+	}
+	if member := rig.signIn(t, googleClaims("google-subject")); member.Code != http.StatusFound || sessionCookie(member) == nil {
+		t.Errorf("the control, an account of %s, answered %d %s, want a signed-in redirect", rigDomain, member.Code, member.Body.String())
 	}
 }

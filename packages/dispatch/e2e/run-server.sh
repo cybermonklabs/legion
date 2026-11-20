@@ -428,8 +428,8 @@ done
 # against, the only Host the router serves under dev sign-in, the origin of the
 # sign-in's /auth/callback, and the Playwright config's baseURL. Under google
 # DISPATCH_OUTSIDE_ORIGIN is the second one, and a request whose Host is its host
-# is answered as that origin: its callback and the Origin its writes must carry
-# are that origin's. Dev sign-in also refuses a DATABASE_URL whose host is not
+# is answered as that origin: the Origin its writes must carry is that origin's,
+# and it serves no Google sign-in. Dev sign-in also refuses a DATABASE_URL whose host is not
 # loopback or a unix socket, and any DISPATCH_SIGNIN_* setting.
 app_pem="$(openssl genrsa 2048 2>/dev/null)"
 

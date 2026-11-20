@@ -179,7 +179,7 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	recordsAccounts := s.deps.SignInIssuer != ""
 	token, err := scanAgentToken(tx.QueryRow(r.Context(), mintAgentTokenSQL,
 		actor.ID, input.Name, hash[:], prefix, scopes, projects, cookieLogin, cookieGeneration, tokenID,
-		broker.address, broker.subject, recordsAccounts, broker.created, broker.foreign))
+		broker.address, broker.subject, recordsAccounts, broker.created, broker.foreign, broker.issuer))
 	if errors.Is(err, pgx.ErrNoRows) {
 		s.writeAuthenticationError(w, mintCallerGone(r.Context(), tx, tokenID, broker))
 		return
@@ -203,13 +203,13 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 // ended since its cookie was checked); $9 is a personal token caller's token id, refused once
 // revoked or once its account no longer holds the address (tokenAccountReplaced: people records
 // another account, or the token records none and was made before people recorded the address's);
-// $10, $11, $13 and $14 are a broker token caller's address, own account
-// (model.Credential.BrokerAdmittedSubject), the time its credential was made at the broker
-// (BrokerCredentialCreatedAt) and whether that account is of another issuer
+// $10, $11, $15, $13 and $14 are a broker token caller's address, own account and its issuer
+// (model.Credential's BrokerAdmittedSubject and BrokerAdmittedIssuer), the time its credential
+// was made at the broker (BrokerCredentialCreatedAt) and whether that account is of another issuer
 // (BrokerForeignAccount), refused once its account no longer holds the address
-// (brokerAccountReplaced), as its admission is. Each is null, and $14 false, for a caller of
-// another kind. $12 is whether the deployment's sign-in records accounts. The token records the
-// minting credential's account (credentialSubjectSQL).
+// (brokerAccountReplaced), as its admission is. Each is null, "" for the issuer, and $14 false,
+// for a caller of another kind. $12 is whether the deployment's sign-in records accounts. The
+// token records the minting credential's account (credentialSubjectSQL).
 var mintAgentTokenSQL = `
 	insert into agent_tokens (owner, name, token_hash, prefix, scopes, projects, subject)
 	select $1::text, $2::text, $3::bytea, $4::text, $5::text[], $6::text[], ` +
@@ -217,7 +217,7 @@ var mintAgentTokenSQL = `
 	where not exists (select 1 from user_sessions where login = $7::text and generation <> $8::bigint)
 	  and not exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
 		where agent_tokens.id = $9::uuid and (agent_tokens.revoked_at is not null or ` + tokenAccountReplaced("$12::boolean") + `))
-	  and not ` + brokerAccountReplaced("$10::text", "$11::text", "$14::boolean", "$13::timestamptz", "$12::boolean") + `
+	  and not ` + brokerAccountReplaced("$10::text", "$11::text", "$15::text", "$14::boolean", "$13::timestamptz", "$12::boolean") + `
 	returning id::text, name, prefix, scopes, projects, created_at, last_used_at, revoked_at
 `
 
@@ -273,13 +273,14 @@ func (s *server) mintCookie(r *http.Request, actor model.Actor) (*string, *int64
 }
 
 // brokerMinter is the broker token a mint's or a decision's caller presented, as its own
-// resolution read it: its address, its own account, when its credential was made at the broker,
-// and whether its account is of another issuer (model.Credential's BrokerAdmittedSubject,
-// BrokerCredentialCreatedAt and BrokerForeignAccount). Every field is nil, "" or false for a
-// caller that is no broker token.
+// resolution read it: its address, its own account and that account's issuer, when its credential
+// was made at the broker, and whether its account is of another issuer (model.Credential's
+// BrokerAdmittedSubject, BrokerAdmittedIssuer, BrokerCredentialCreatedAt and BrokerForeignAccount).
+// Every field is nil, "" or false for a caller that is no broker token.
 type brokerMinter struct {
 	address *string
 	subject string
+	issuer  string
 	created *time.Time
 	foreign bool
 }
@@ -298,6 +299,7 @@ func (s *server) mintBrokerCaller(r *http.Request, actor model.Actor) brokerMint
 	minter := brokerMinter{address: &actor.ID}
 	if caller, _, err := s.optionalActor(r); err == nil && caller.Credential != nil {
 		minter.subject = caller.Credential.BrokerAdmittedSubject
+		minter.issuer = caller.Credential.BrokerAdmittedIssuer
 		minter.created = timeOrNull(caller.Credential.BrokerCredentialCreatedAt)
 		minter.foreign = caller.Credential.BrokerForeignAccount
 	}

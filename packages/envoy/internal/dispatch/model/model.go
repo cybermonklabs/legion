@@ -79,17 +79,21 @@ type Credential struct {
 	// projects its person sees (internal/dispatch/access, the rule); what a list holds while no
 	// project is private is ListHoldsWhileNoPrivate's.
 	Projects []string
-	// BrokerAdmittedSubject is, for such a token, the Google account (`sub`) the token's own
-	// credential records at the broker (the introspection's account_subject: the person token that
-	// made its sign-in, or the account that approved its machine login), under Dispatch's sign-in
-	// issuer, and "" for a token recording none or an account of another issuer
-	// (api.brokerTokenSubject). The token was admitted only while people recorded that account, or
+	// BrokerAdmittedSubject is, for such a token, the account (`sub`) the token's own credential
+	// records at the broker (the introspection's account_subject: the person token that made its
+	// sign-in, or the account that approved its machine login), under an issuer people records
+	// accounts of (Dispatch's sign-in issuer, or the outside origin for a restricted member's
+	// passkey), and "" for a token recording none or an account of another issuer
+	// (api.brokerTokenAccount). The token was admitted only while people recorded that account, or
 	// none, for its person (api.brokerPersonAdmitted). An approve by the token names it as the
 	// approving account (api.approverStanding), refused once people records another account; a
 	// token recording none names the account people records when its credential was made at least
 	// the margin after people recorded it (api.credentialSubjectSQL), and none otherwise, so the
 	// login the broker mints records none and any later revocation of the address ends it.
 	BrokerAdmittedSubject string
+	// BrokerAdmittedIssuer is BrokerAdmittedSubject's issuer as people.sub_issuer spells it: "" for
+	// Dispatch's sign-in issuer, the outside origin for a passkey's account.
+	BrokerAdmittedIssuer string
 	// BrokerCredentialCreatedAt is, for such a token, when its credential was made at the broker,
 	// from the broker database's clock (the introspection's credential_created_at: its sign-in on a
 	// machine, or the machine login it was exchanged from), and the zero time for one minted before
@@ -97,10 +101,10 @@ type Credential struct {
 	// to it against the moment people recorded its person's account (api.brokerAccountReplaced),
 	// at its admission, its mints and its approves.
 	BrokerCredentialCreatedAt time.Time
-	// BrokerForeignAccount is, for such a token, whether its credential records an account of
-	// another issuer than Dispatch's sign-in issuer (api.brokerForeignAccount), which Dispatch
-	// cannot compare with the account it records: refused at its admission, its mints and its
-	// approves once people records an account for its person, whenever it was made.
+	// BrokerForeignAccount is, for such a token, whether its credential records an account of an
+	// issuer people records no account of (api.brokerForeignAccount), which Dispatch cannot compare
+	// with the account it records: refused at its admission, its mints and its approves once people
+	// records an account for its person, whenever it was made.
 	BrokerForeignAccount bool
 	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
@@ -435,6 +439,21 @@ type ProjectAccess struct {
 	// NotSignedIn are the people of People nobody has signed in as yet, sorted and never null: the
 	// rule admits each of them once they sign in.
 	NotSignedIn []string `json:"not_signed_in"`
+	// Passkeys is, in the owner's answer of a deployment whose people from outside sign in with a
+	// passkey (DISPATCH_SIGNIN_PASSKEY=1), when each passkey of a person People names was enrolled,
+	// sorted by email and then by that time, [] for none; absent from every other answer. The owner
+	// sees from it whether a link they made was used first by someone else (R5).
+	Passkeys *[]EnrolledPasskey `json:"passkeys,omitempty"`
+	// Invitable is, in that same answer alone, the people of People the owner can make a link for
+	// now (POST /api/v1/projects/{key}/access/people/{email}/invitations): each on no domain of the
+	// company's Workspace and with no full member's sign-in, sorted, [] for none.
+	Invitable *[]string `json:"invitable,omitempty"`
+}
+
+// EnrolledPasskey is when one passkey of a person was enrolled (ProjectAccess.Passkeys).
+type EnrolledPasskey struct {
+	Email      string    `json:"email"`
+	EnrolledAt time.Time `json:"enrolled_at"`
 }
 
 // AccessGroup is a named list of full members that an access list can name: its one owner, the

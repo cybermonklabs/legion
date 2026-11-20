@@ -194,6 +194,14 @@ const signInUnavailableMessage = "the sign-in issuer cannot be reached; try agai
 // in, and the first request after the issuer answers is served); and 500 IDENTITY_ERROR for
 // anything else.
 func WriteError(w http.ResponseWriter, err error) {
+	WriteErrorSigningIn(w, err, "")
+}
+
+// WriteErrorSigningIn is WriteError, with signIn, when not empty, added to a 401 NO_IDENTITY as
+// `sign_in`: how the page at the request's origin signs a person in, "passkey" at the outside
+// origin of a deployment whose people from outside sign in with a passkey (GET /auth/whoami), so
+// its sign-in page offers no Google sign-in that answers 404 there.
+func WriteErrorSigningIn(w http.ResponseWriter, err error, signIn string) {
 	status := http.StatusInternalServerError
 	body := map[string]string{"error": "identity resolution failed", "code": "IDENTITY_ERROR"}
 	var signedOut *SignedOut
@@ -207,6 +215,9 @@ func WriteError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrSignInUnavailable):
 		status = http.StatusServiceUnavailable
 		body = map[string]string{"error": signInUnavailableMessage, "code": "SIGNIN_UNAVAILABLE"}
+	}
+	if status == http.StatusUnauthorized && signIn != "" {
+		body["sign_in"] = signIn
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

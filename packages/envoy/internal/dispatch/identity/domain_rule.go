@@ -126,15 +126,15 @@ func (r DomainRule) SignedOutReason(ctx context.Context, people auth.PeopleStore
 }
 
 // endedRestricted reads email's row (auth.PeopleStore.Membership) and reports whether it is a
-// restricted member's whose sign-in no longer stands: the row holds no refresh token, which the
-// hourly confirmation's end and a sign-out both forget, and a sign-in by anyone since would have
-// written again.
+// restricted member's whose sign-in no longer stands (auth.PersonMembership.SignInStands): the row
+// holds no refresh token, or a passkey's row no confirmation, which the hourly confirmation's end
+// and a sign-out both forget, and a sign-in by anyone since would have written again.
 func endedRestricted(ctx context.Context, people auth.PeopleStore, email string) (bool, error) {
 	membership, found, err := people.Membership(ctx, email)
 	if err != nil {
 		return false, err
 	}
-	return found && membership.RefreshToken == "" && membership.Kind == model.MemberRestricted, nil
+	return found && !membership.SignInStands() && membership.Kind == model.MemberRestricted, nil
 }
 
 // ConfirmCookie reads the address's row (auth.PeopleStore.Membership) and refuses with

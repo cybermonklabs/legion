@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapi"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // browserWrites is every route the server mounts beside the API's table that serves a write, and
@@ -19,6 +20,12 @@ var browserWrites = map[string]string{
 	"POST /auth/logout": "the sign-out resolves its caller and refuses one it cannot, and a second run revokes nothing more",
 	githubapi.Prefix:    "the GitHub proxy answers every method but GET 405 and writes nothing",
 	"/":                 "the dashboard's files are read and never written",
+	// The passkey ceremonies of a person from outside, at the outside origin's page alone: each
+	// begin records a ceremony a finish takes once, and a finish repeated finds it taken.
+	"POST /auth/passkey/register/begin":  "a begin records only a ceremony that lapses, and a second begin is a second ceremony",
+	"POST /auth/passkey/register/finish": "a finish takes its ceremony once, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
+	"POST /auth/passkey/login/begin":     "a begin records only a ceremony that lapses, and a second begin is a second ceremony",
+	"POST /auth/passkey/login/finish":    "a finish takes its ceremony once, so a repeat is refused CEREMONY_EXPIRED and writes nothing",
 }
 
 // mounted is a ServeMux the server's own mounting code (mount) filled.
@@ -60,18 +67,27 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 	}
 }
 
-// newKeyedCensusContext is a router's context with header identity, no sign-in and the test hooks
-// on, as newTestRouter builds one: the hooks mount nine more write rows, so the census covers
-// every row any server mounts.
+// newKeyedCensusContext is a router's context with header identity, no sign-in, passkey sign-in
+// on and the test hooks on, as newTestRouter builds one: the hooks mount nine more write rows and
+// passkey sign-in its four ceremonies, so the census covers every row any server mounts.
 func newKeyedCensusContext(t *testing.T) *AppContext {
 	t.Helper()
 	people := newMemoryPeople()
+	const outside = "https://outside.dispatch.test"
+	passkeyStore := store.NewPgPasskeys(store.NewPgPeopleStore(nil, testSigningKey, nil), outside)
+	ceremonies, err := identity.NewPasskeys(outside, passkeyStore, identity.PasskeyRule{})
+	if err != nil {
+		t.Fatalf("build the passkey ceremonies: %v", err)
+	}
 	ctx, err := BuildAppContext(AppContextOptions{
 		SigningKey:       testSigningKey,
 		People:           people,
 		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
 		Lifetime:         t.Context(),
 		TestHooksEnabled: true,
+		ServerURL:        "http://dispatch.test",
+		OutsideOrigin:    outside,
+		Passkeys:         ceremonies,
 	})
 	if err != nil {
 		t.Fatalf("build context: %v", err)

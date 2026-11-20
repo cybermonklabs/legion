@@ -124,9 +124,12 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // workflow, a Google machine's account, each listed for the person) is held to no account and no
 // time: no person's credential made it, the operator's configuration names its person, and a pod
 // cannot sign in again, so a time would refuse it for as long as it lives once the person's account
-// is recorded, and every trade it makes in the margin after. The broker decides that scope for
-// those entries and for no person's own trade (exchange.Set's Pod, Workflow and Google; Person and
-// Machine decide the person scope), and such a token holds no scope, so it never mints or decides.
+// is recorded, and every trade it makes in the margin after. Such a token records neither an
+// account nor its credential's creation, and that is how it is told apart: a restricted member's
+// machine login trades for a named token too (exchange.Set.Machine, held to one project), but a
+// person's credential made it and its trade recorded that credential, so it is held to its account
+// as the person scope's is (personCredential). A named token holds no scope, so it never mints or
+// decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
 // replaced account holds records it or was made before the recording that replaced it, since
@@ -146,13 +149,14 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Caller) (brokerAdmission, error) {
 	var kind string
 	var replaced, named bool
-	admission := brokerAdmission{Subject: s.brokerTokenSubject(caller), Foreign: s.brokerForeignAccount(caller)}
-	held := s.deps.SignInIssuer != "" && caller.ProjectScope != brokertoken.ProjectScopeNamed
+	admission := brokerAdmission{Foreign: s.brokerForeignAccount(caller)}
+	admission.Subject, admission.Issuer = s.brokerTokenAccount(caller)
+	held := s.deps.SignInIssuer != "" && (caller.ProjectScope != brokertoken.ProjectScopeNamed || personCredential(caller))
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
-			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
+			`+brokerAccountReplaced("$1", "$2::text", "$6::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
 			`+brokerAccountNamed("$1", "$2::text")+`
-	`, model.CanonicalLogin(caller.Person), admission.Subject, timeOrNull(caller.CredentialCreatedAt), held, admission.Foreign).
+	`, model.CanonicalLogin(caller.Person), admission.Subject, timeOrNull(caller.CredentialCreatedAt), held, admission.Foreign, admission.Issuer).
 		Scan(&kind, &replaced, &named)
 	if err != nil {
 		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
@@ -167,6 +171,14 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 		return admission, nil
 	}
 	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+}
+
+// personCredential reports whether a broker token's trade recorded the person's credential that
+// made it: the account it records, or when that credential was made. A sign-in's and a machine
+// login's trade record both, or the creation alone for a credential no account approved; an
+// operator entry's records neither, since no person's credential made it.
+func personCredential(caller brokertoken.Caller) bool {
+	return caller.AccountSubject != "" || !caller.CredentialCreatedAt.IsZero()
 }
 
 // brokerCredentialMargin is how long after people recorded an address's Google account a broker
@@ -239,58 +251,84 @@ func errBrokerTokenRecordsNoAccount() error {
 		"this access token's credential records no Google account Dispatch can name, and Dispatch cannot tell it was made after it recorded the account that holds this address, so it acts for nobody; sign in again at the secrets broker, whose new credential records your account")
 }
 
-// brokerTokenSubject is the Google account (`sub`) a broker token's credential records, as an
-// account Dispatch can name: the broker's answer's account when its issuer is Dispatch's sign-in
-// issuer, the one every account people records is of. It is "" for a token recording none (a
-// sign-in or machine login made before the broker recorded accounts), for one whose account is of
-// another issuer (brokerForeignAccount), and for a Dispatch that signs nobody in.
-func (s *server) brokerTokenSubject(caller brokertoken.Caller) string {
-	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" || oidc.CanonicalIssuer(caller.AccountIssuer) != s.deps.SignInIssuer {
-		return ""
+// brokerTokenAccount is the account a broker token's credential records, as an account Dispatch can
+// name: the broker's answer's `sub` (subject) when its issuer is one whose accounts people records
+// (recordedIssuer: Dispatch's sign-in issuer, or the outside origin for a passkey's subject), with
+// that issuer as people.sub_issuer spells it (issuer: "" for the sign-in issuer). Both are "" for a
+// token recording none (a sign-in or machine login made before the broker recorded accounts), for
+// one whose account is of another issuer (brokerForeignAccount), and for a Dispatch that signs
+// nobody in.
+func (s *server) brokerTokenAccount(caller brokertoken.Caller) (subject, issuer string) {
+	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" {
+		return "", ""
 	}
-	return caller.AccountSubject
+	issuer, known := s.recordedIssuer(caller.AccountIssuer)
+	if !known {
+		return "", ""
+	}
+	return caller.AccountSubject, issuer
 }
 
-// brokerForeignAccount reports whether a broker token's credential records an account of another
-// issuer than Dispatch's sign-in issuer, on a deployment whose sign-in records accounts: an account
-// Dispatch cannot compare with the one it records for the person, which brokerAccountReplaced
-// refuses once it records one. The broker's own trades record its person token's issuer, Google's,
-// and its approvals the issuer Dispatch relays, so none is expected; the arm is what keeps one
+// recordedIssuer is issuer as people.sub_issuer spells it, and whether people records accounts of
+// it at all: "" for Dispatch's sign-in issuer, the outside origin itself where passkey sign-in is
+// on (Deps.Passkeys), and false for any other, each compared as oidc.CanonicalIssuer spells it.
+func (s *server) recordedIssuer(issuer string) (string, bool) {
+	switch canonical := oidc.CanonicalIssuer(issuer); {
+	case s.deps.SignInIssuer != "" && canonical == s.deps.SignInIssuer:
+		return "", true
+	case s.deps.Passkeys != nil && canonical == s.deps.Passkeys.Issuer():
+		return canonical, true
+	}
+	return "", false
+}
+
+// brokerForeignAccount reports whether a broker token's credential records an account of an issuer
+// whose accounts people records none of (recordedIssuer), on a deployment whose sign-in records
+// accounts: an account Dispatch cannot compare with the one it records for the person, which
+// brokerAccountReplaced refuses once it records one. The broker's own trades record its person
+// token's issuer, Google's, and its approvals the issuer Dispatch relays (the sign-in issuer's, or
+// the outside origin's for a passkey's account), so none is expected; the arm is what keeps one
 // from being held to a time instead.
 func (s *server) brokerForeignAccount(caller brokertoken.Caller) bool {
-	return caller.AccountSubject != "" && s.deps.SignInIssuer != "" && oidc.CanonicalIssuer(caller.AccountIssuer) != s.deps.SignInIssuer
+	if caller.AccountSubject == "" || s.deps.SignInIssuer == "" {
+		return false
+	}
+	_, known := s.recordedIssuer(caller.AccountIssuer)
+	return !known
 }
 
-// brokerAdmission is a broker token's person admitted (brokerPersonAdmitted): the Google account
-// (`sub`) the token's credential records, as an account Dispatch can name (brokerTokenSubject), ""
-// for none, whether it records an account of another issuer (brokerForeignAccount), and whether
-// the person is a restricted member, read in the same statement, which a live socket's heartbeat
-// compares (personRestricted).
+// brokerAdmission is a broker token's person admitted (brokerPersonAdmitted): the account the
+// token's credential records, as an account Dispatch can name (brokerTokenAccount), its `sub`
+// (Subject, "" for none) and its issuer as people.sub_issuer spells it (Issuer), whether it records
+// an account of another issuer (brokerForeignAccount), and whether the person is a restricted
+// member, read in the same statement, which a live socket's heartbeat compares (personRestricted).
 type brokerAdmission struct {
 	Subject    string
+	Issuer     string
 	Foreign    bool
 	Restricted bool
 }
 
 // brokerAccountReplaced is the predicate that a broker token's account no longer holds the person
-// address, over five SQL expressions the statement names: the address, the token's own account
-// (brokerTokenSubject, "" for none), whether that account is of another issuer
-// (brokerForeignAccount), when its credential was made (null for a time the broker did not
-// record) and whether the token is held to an account at all: the deployment's sign-in records
-// accounts, and, at an admission, the token is no operator entry's. With accounts held and people
-// recording one for the address, it holds for a token recording another account (the replaced
-// account's, or an account's that has not signed in since Google gave it the address), for one
-// recording an account of another issuer, and for one recording none whose credential was made
-// before people recorded the address's account or less than brokerCredentialMargin after it, or at
-// an unrecorded time. It is false for an address recording no account, and, for a token recording
-// none, with no recording time, so nothing is refused that predates the column. An admission reads
-// it (brokerPersonAdmitted), and so do the two reads a request makes again once its body has
-// arrived, a decision's (approverStanding) and a personal token's mint (mintAgentTokenSQL), so a
-// token admitted before another account's sign-in committed acts on nothing after it, however
-// long its client held the body back.
-func brokerAccountReplaced(address, subject, foreign, createdAt, held string) string {
+// address, over six SQL expressions the statement names: the address, the token's own account
+// (brokerTokenAccount: its `sub`, "" for none, and its issuer as people.sub_issuer spells it),
+// whether that account is of another issuer (brokerForeignAccount), when its credential was made
+// (null for a time the broker did not record) and whether the token is held to an account at all:
+// the deployment's sign-in records accounts, and, at an admission, the token is no operator entry's.
+// With accounts held and people recording one for the address, it holds for a token recording
+// another account (the replaced account's, an account's that has not signed in since Google gave
+// it the address, or the same `sub` of another issuer), for one recording an account of another
+// issuer, and for one recording none whose credential was made before people recorded the
+// address's account or less than brokerCredentialMargin after it, or at an unrecorded time. It is
+// false for an address recording no account, and, for a token recording none, with no recording
+// time, so nothing is refused that predates the column. An admission reads it
+// (brokerPersonAdmitted), and so do the two reads a request makes again once its body has arrived,
+// a decision's (approverStanding) and a personal token's mint (mintAgentTokenSQL), so a token
+// admitted before another account's sign-in committed acts on nothing after it, however long its
+// client held the body back.
+func brokerAccountReplaced(address, subject, issuer, foreign, createdAt, held string) string {
 	return "(" + held + " and exists (select 1 from people where email = " + address + " and sub is not null and (" +
-		foreign + " or (nullif(" + subject + ", '') is not null and sub <> " + subject + ")" +
+		foreign + " or (nullif(" + subject + ", '') is not null and (sub <> " + subject + " or coalesce(sub_issuer, '') <> " + issuer + "))" +
 		" or (nullif(" + subject + ", '') is null and sub_recorded_at is not null and (" + createdAt + " is null or " +
 		createdAt + " < sub_recorded_at + " + brokerCredentialMarginSQL + ")))))"
 }
@@ -451,7 +489,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		// request and no request body has to name it, and the actor is Proven. A read-only token
 		// is marked as one, which is all refuseReadOnlyToken reads.
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly,
-			BrokerAdmittedSubject: admission.Subject, BrokerCredentialCreatedAt: caller.CredentialCreatedAt,
+			BrokerAdmittedSubject: admission.Subject, BrokerAdmittedIssuer: admission.Issuer, BrokerCredentialCreatedAt: caller.CredentialCreatedAt,
 			BrokerForeignAccount: admission.Foreign},
 		Proven: true,
 	}
@@ -466,9 +504,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// A token's list is its credential's, which the one rule of what a caller sees reads
 	// (internal/dispatch/access), and what the list holds while the deployment holds no private
 	// project is what the token did before projects could be private (R9); once one is private,
-	// every list holds the token's reads and writes (R3). A token an operator's entry mapped to one
-	// project names that project, today's named-scope rule (brokertoken refuses a named token naming
-	// two): it held the token's writes, and still does, and no read (model.ListHoldsWrites). A token
+	// every list holds the token's reads and writes (R3). A token held to one project names that
+	// project, today's named-scope rule (brokertoken refuses a named token naming two): one an
+	// operator's entry mapped, and a restricted member's machine login's (the broker's
+	// exchange.Set.Machine); it held the token's writes, and still does, and no read
+	// (model.ListHoldsWrites), a restricted member's reads being held by their member kind. A token
 	// acting as its person carries the list its trade asked for (brokertoken.Caller.Projects), which
 	// held nothing, since a dev box session's person writes wherever they may
 	// (model.ListHoldsNothing). Every other token carries no list: a named token naming none (the

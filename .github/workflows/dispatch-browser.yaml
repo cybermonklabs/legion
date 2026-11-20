@@ -1280,8 +1280,9 @@ jobs:
       - name: Browser-test outside sign-in at a second origin
         # One server signs people in through the same issuer standing in for Google
         # (DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts), and answers at a second origin, and
-        # its one spec refuses a Google account outside the domain at both origins while an access
-        # list names it, and signs a member of the domain in at each. The steps before built the
+        # its one spec refuses a Google account outside the domain at the canonical origin while an
+        # access list names it, signs a member of the domain in there, and finds no Google sign-in
+        # at the second origin. The steps before built the
         # dashboard, the server and the issuer. Its Postgres is a third one the harness starts from
         # the same image: this job has no job-level DATABASE_URL, and a run of one stack given
         # neither a database nor an image starts its server with no database, which

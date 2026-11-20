@@ -226,79 +226,137 @@ func (s *PgPeopleStore) SignInSubject(ctx context.Context, email, subject, refre
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, addressLockSQL, email); err != nil {
-		return fmt.Errorf("record sign-in of %q: lock the address: %w", email, err)
-	}
-	inserted, err := tx.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email)
+	sealed := s.seal.seal(email, refreshToken)
+	recorded, err := s.signInAccountTx(ctx, tx, email, signInAccount{subject: subject}, &sealed, kind)
 	if err != nil {
-		return fmt.Errorf("record sign-in of %q: %w", email, err)
-	}
-	var stored, storedKind string
-	if err := tx.QueryRow(ctx, `select coalesce(sub, ''), member_kind from people where email = $1 for update`, email).Scan(&stored, &storedKind); err != nil {
-		return fmt.Errorf("read the subject the sign-in of %q replaces: %w", email, err)
-	}
-	existed := inserted.RowsAffected() == 0
-	if existed && takesAMembersAddress(kind, stored, storedKind, subject) {
-		return fmt.Errorf("record sign-in of %q: %w", email, auth.ErrAddressHeldByMember)
-	}
-	replaced := stored != "" && stored != subject
-	firstRecording := stored == "" && subject != ""
-	var tokensRevoked int64
-	var owed []string
-	switch {
-	case replaced:
-		tokens, err := tx.Exec(ctx, revokeAddressTokensSQL, email)
-		if err != nil {
-			return fmt.Errorf("revoke the personal tokens of %q, which another Google account signs in to now: %w", email, err)
-		}
-		tokensRevoked = tokens.RowsAffected()
-		owed = []string{stored}
-	case firstRecording:
-		if tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
-			return err
-		}
-	}
-	// Changing sub stamps people.sub_recorded_at from the database's own clock, the address's first
-	// recording included, and ends every session of the address (the triggers of migrations
-	// 20261117175133 and 20261118041916, which no statement can bypass): a credential recording no
-	// account made before it is refused as the person, and no cookie issued before it acts. A
-	// sign-in under the account the row already records leaves both.
-	if _, err := tx.Exec(ctx, `
-		update people
-		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4
-		where email = $1
-	`, email, s.seal.seal(email, refreshToken), subject, string(kind)); err != nil {
-		return fmt.Errorf("record sign-in of %q: %w", email, err)
-	}
-	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
-		return fmt.Errorf("record sign-in of %q: %w", email, err)
-	}
-	if len(owed) > 0 && s.brokerRevocationIssuer != "" {
-		if _, err := tx.Exec(ctx, settleReclaimedBrokerRevocationsSQL, email, s.brokerRevocationIssuer, subject); err != nil {
-			return fmt.Errorf("settle the broker revocations of %q owed for the Google account that takes it back: %w", email, err)
-		}
-		// Last, so the moment each records is as close to the commit as a statement can read it:
-		// the order a later replacement of the address is paid after.
-		for _, account := range owed {
-			if _, err := tx.Exec(ctx, recordBrokerRevocationSQL, email, s.brokerRevocationIssuer, account, subject); err != nil {
-				return fmt.Errorf("record the broker revocation of %q, which another Google account signs in to now: %w", email, err)
-			}
-		}
+		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("record sign-in of %q: %w", email, err)
 	}
+	recorded.log(email)
+	return nil
+}
+
+// signInAccount is the account a sign-in records for an address: issuer, the issuer of its `sub`
+// (people.sub_issuer), empty for the deployment's sign-in issuer (DISPATCH_SIGNIN_ISSUER, which
+// WithBrokerRevocations names) and the outside origin for a passkey's subject; and subject, the
+// account's `sub`, empty for none.
+type signInAccount struct {
+	issuer, subject string
+}
+
+// signInRecorded is what a sign-in's transaction did that the commit logs (signInAccountTx).
+type signInRecorded struct {
+	existed, replaced, firstRecording bool
+	tokensRevoked                     int64
+	owed                              int
+}
+
+// log logs, once the sign-in's transaction committed, what it ended and revoked, in the words the
+// README's account-binding section quotes (a passkey's account included, so the log has one line
+// for each event whoever's account it is).
+func (r signInRecorded) log(email string) {
 	switch {
-	case replaced:
-		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "email", email, "tokens_revoked", tokensRevoked)
-	case tokensRevoked > 0:
-		slog.Warn("dispatch: the first Google account recorded for the address revoked every personal token of it that records another account or none", "email", email, "tokens_revoked", tokensRevoked, "accounts", len(owed))
-	case existed && firstRecording:
+	case r.replaced:
+		slog.Warn("dispatch: a sign-in under another Google account ended every session and revoked every personal token of the address", "email", email, "tokens_revoked", r.tokensRevoked)
+	case r.tokensRevoked > 0:
+		slog.Warn("dispatch: the first Google account recorded for the address revoked every personal token of it that records another account or none", "email", email, "tokens_revoked", r.tokensRevoked, "accounts", r.owed)
+	case r.existed && r.firstRecording:
 		// A row this sign-in's own insert created had no cookie of its own to end, so only a row
 		// that existed is logged; the database ended the sessions either way.
 		slog.Warn("dispatch: a sign-in under another Google account ended every session of the address", "email", email)
 	}
-	return nil
+}
+
+// signInAccountTx is the account binding of a sign-in, in tx (SignInSubject, and a passkey's
+// enrollment and sign-in, PgPasskeys): it takes the address's advisory lock, creates and locks its
+// row, refuses a restricted sign-in that would take a full member's address
+// (auth.ErrAddressHeldByMember), revokes what the account it replaces or the address's first
+// recording revokes, writes the sign-in (account, member kind, confirmation, and sealed, the sealed
+// refresh token, nil for a passkey's sign-in, which holds none) and records the broker revocations
+// it owes, each of the replaced account under that account's own issuer
+// (coalesce(people.sub_issuer, the deployment's)). The caller commits and then logs what it did.
+func (s *PgPeopleStore) signInAccountTx(ctx context.Context, tx pgx.Tx, email string, account signInAccount, sealed *string, kind model.MemberKind) (signInRecorded, error) {
+	subject := account.subject
+	if _, err := tx.Exec(ctx, addressLockSQL, email); err != nil {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: lock the address: %w", email, err)
+	}
+	inserted, err := tx.Exec(ctx, `insert into people (email) values ($1) on conflict (email) do nothing`, email)
+	if err != nil {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
+	var stored, storedIssuer, storedKind string
+	if err := tx.QueryRow(ctx, `select coalesce(sub, ''), coalesce(sub_issuer, ''), member_kind from people where email = $1 for update`, email).Scan(&stored, &storedIssuer, &storedKind); err != nil {
+		return signInRecorded{}, fmt.Errorf("read the subject the sign-in of %q replaces: %w", email, err)
+	}
+	recorded := signInRecorded{existed: inserted.RowsAffected() == 0}
+	if recorded.existed && takesAMembersAddress(kind, stored, storedKind, subject) {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, auth.ErrAddressHeldByMember)
+	}
+	// An account is its issuer and its sub: the same sub under another issuer is another account.
+	recorded.replaced = stored != "" && (stored != subject || storedIssuer != account.issuer)
+	recorded.firstRecording = stored == "" && subject != ""
+	var owed []string
+	switch {
+	case recorded.replaced:
+		tokens, err := tx.Exec(ctx, revokeAddressTokensSQL, email)
+		if err != nil {
+			return signInRecorded{}, fmt.Errorf("revoke the personal tokens of %q, which another account signs in to now: %w", email, err)
+		}
+		recorded.tokensRevoked = tokens.RowsAffected()
+		owed = []string{stored}
+	case recorded.firstRecording:
+		if recorded.tokensRevoked, owed, err = revokeOtherAccountsTokens(ctx, tx, email, subject); err != nil {
+			return signInRecorded{}, err
+		}
+	}
+	recorded.owed = len(owed)
+	// Changing sub stamps people.sub_recorded_at from the database's own clock, the address's first
+	// recording included, and ends every session of the address (the triggers of migrations
+	// 20261117175133 and 20261118041916, which no statement can bypass): a credential recording no
+	// account made before it is refused as the person, and no cookie issued before it acts. A
+	// sign-in under the account the row already records leaves both, and its issuer
+	// (20261120165538's rule: sub_issuer moves only with sub).
+	if _, err := tx.Exec(ctx, `
+		update people
+		set signed_in_at = now(), refresh_token = $2, confirmed_at = now(), sub = $3, member_kind = $4, sub_issuer = nullif($5, '')
+		where email = $1
+	`, email, sealed, subject, string(kind), account.issuer); err != nil {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
+	if err := announceMemberKindChange(ctx, tx, storedKind, kind); err != nil {
+		return signInRecorded{}, fmt.Errorf("record sign-in of %q: %w", email, err)
+	}
+	if len(owed) > 0 && s.brokerRevocationIssuer != "" {
+		holderIssuer := s.revocationIssuer(account.issuer)
+		if _, err := tx.Exec(ctx, settleReclaimedBrokerRevocationsSQL, email, holderIssuer, subject); err != nil {
+			return signInRecorded{}, fmt.Errorf("settle the broker revocations of %q owed for the account that takes it back: %w", email, err)
+		}
+		// The replaced account is named under its own issuer; an account a first recording owes a
+		// revocation of is one a personal token recorded, made under the deployment's.
+		owedIssuer := s.brokerRevocationIssuer
+		if recorded.replaced {
+			owedIssuer = s.revocationIssuer(storedIssuer)
+		}
+		// Last, so the moment each records is as close to the commit as a statement can read it:
+		// the order a later replacement of the address is paid after.
+		for _, replaced := range owed {
+			if _, err := tx.Exec(ctx, recordBrokerRevocationSQL, email, owedIssuer, replaced, subject); err != nil {
+				return signInRecorded{}, fmt.Errorf("record the broker revocation of %q, which another account signs in to now: %w", email, err)
+			}
+		}
+	}
+	return recorded, nil
+}
+
+// revocationIssuer is the issuer a broker revocation names an account of people.sub_issuer issuer
+// under: the deployment's sign-in issuer for none (WithBrokerRevocations), else issuer itself.
+func (s *PgPeopleStore) revocationIssuer(issuer string) string {
+	if issuer == "" {
+		return s.brokerRevocationIssuer
+	}
+	return issuer
 }
 
 // addressLockSQL takes the advisory lock on $1, an address, in the form people.email holds it
@@ -425,13 +483,16 @@ func (s *PgPeopleStore) refuseAMembersAddress(ctx context.Context, email, subjec
 // text) is no refresh token: the read answers none, so the person signs in again, and logs that
 // without the value. The read writes nothing: the next boot retires a token stored in plain text
 // (RetirePlainRefreshTokens), and the person's next sign-in replaces whatever the row holds. The
-// subject and the member kind are read whatever the refresh token holds.
+// subject and the member kind are read whatever the refresh token holds. A passkey's row (its
+// account of another issuer, people.sub_issuer) holds no refresh token: it is confirmed while
+// confirmed_at holds a time (people_sign_in_stands, migration 20261120165538).
 func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.PersonMembership, bool, error) {
 	var sealed *string
 	var age *time.Duration
 	var kind string
 	membership := auth.PersonMembership{}
-	err := s.pool.QueryRow(ctx, `select refresh_token, now() - confirmed_at, coalesce(sub, ''), member_kind from people where email = $1`, email).Scan(&sealed, &age, &membership.Subject, &kind)
+	err := s.pool.QueryRow(ctx, `select refresh_token, now() - confirmed_at, coalesce(sub, ''), coalesce(sub_issuer, ''), member_kind from people where email = $1`, email).
+		Scan(&sealed, &age, &membership.Subject, &membership.Issuer, &kind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return auth.PersonMembership{}, false, nil
 	}
@@ -439,7 +500,14 @@ func (s *PgPeopleStore) Membership(ctx context.Context, email string) (auth.Pers
 		return auth.PersonMembership{}, false, fmt.Errorf("read membership of %q: %w", email, err)
 	}
 	membership.Kind = model.MemberKind(kind)
-	// people's check pairs the two: a row holds both or neither.
+	if membership.Issuer != "" {
+		if age != nil {
+			membership.Confirmed, membership.ConfirmedAge = true, *age
+		}
+		return membership, true, nil
+	}
+	// people's check pairs the two for an account of the sign-in issuer: a row holds both or
+	// neither.
 	if sealed == nil {
 		return membership, true, nil
 	}

@@ -135,6 +135,10 @@ type bootConfig struct {
 	// WorkspaceDomains, identity.WorkspaceAddress), since such an address signs in only as a
 	// Workspace account.
 	SignInWorkspaceDomains []string
+	// SignInPasskey is DISPATCH_SIGNIN_PASSKEY=1: under SignInDomain, a person outside the domain
+	// that a project names directly signs in with a passkey at OutsideOrigin, enrolled through the
+	// project's owner's single-use link (identity.PasskeyRule, identity.Passkeys).
+	SignInPasskey bool
 	// TestSignInDomainIssuer is DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1, under the test hooks alone:
 	// SignInDomain runs under an issuer other than Google's, the dev OIDC issuer a browser suite
 	// signs people in through.
@@ -552,7 +556,15 @@ func main() {
 	if boot.IAPAudience != "" {
 		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
+	passkeys, ceremonies, err := passkeySignIn(boot, people, rule)
+	if err != nil {
+		slog.Error("dispatch: configure passkey sign-in", "error", err)
+		os.Exit(1)
+	}
+	if passkeys != nil {
+		slog.Info("dispatch: people outside the domain that a project names sign in with a passkey", "origin", boot.OutsideOrigin)
+	}
+	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule, passkeys)
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -624,6 +636,7 @@ func main() {
 		Sessions:       sessions,
 		Identity:       requestIdentity,
 		SignIn:         signIn,
+		Passkeys:       ceremonies,
 		Store:          database,
 		ServerURL:      serverURL,
 		Docs:           documentService,
@@ -1515,6 +1528,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.SignInPasskey, err = parseSignInSwitch("DISPATCH_SIGNIN_PASSKEY", env.get("DISPATCH_SIGNIN_PASSKEY")); err != nil {
+		return bootConfig{}, err
 	}
 	// Checked with the rest of the sign-in settings (checkSignInSettings).
 	boot.SignInWorkspaceDomains = commaList(env, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
