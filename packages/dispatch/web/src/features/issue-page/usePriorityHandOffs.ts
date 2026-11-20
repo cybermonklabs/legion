@@ -31,16 +31,18 @@ function advancesSent(press: unknown): readonly string[] | undefined {
  * only where the newest priority write - the mutation cache lists mutations in the order they were
  * made, and no other line of priorities is drawn on the page - sent the issue's own set now drawn,
  * and is still out, or landed with an answer that holds the revision of that set the issue now
- * drawn holds: a change made elsewhere after it landed draws a newer revision. An answer Dispatch
- * did not give (`null`: a write it made and kept no answer for) is matched on the set alone. The
- * line's own `aria-disabled` cannot tell, since the write and the read it sets off as it settles
- * can end while the line is still drawn in its old place, the issue Details draws being drawn
- * after them. A write Dispatch refused (409 ADVANCES_REVISION) or that failed moves nothing once
- * it has ended: the read it sets off as it settles draws the set another session saved, and an
- * event read that lands while the reader's write is out draws another session's set too, so the
- * focus stays on the page's body. While that read is out the write still counts as out, so a
- * read that draws the very set it sent is handed on, since the line cannot tell that set from
- * its own write's.
+ * drawn holds and every priority it now draws, its own and those an issue above it states: a
+ * change made elsewhere after it landed draws a newer revision, and a priority an issue above it
+ * gains or loses moves the line with neither the issue's own set nor its revision changed. An
+ * answer Dispatch did not give (`null`: a write it made and kept no answer for) is matched on the
+ * set alone. The line's own `aria-disabled` cannot tell, since the write and the read it sets off
+ * as it settles can end while the line is still drawn in its old place, the issue Details draws
+ * being drawn after them. A write Dispatch refused (409 ADVANCES_REVISION) or that failed moves
+ * nothing once it has ended: the read it sets off as it settles draws the set another session
+ * saved, and an event read that lands while the reader's write is out draws another session's set
+ * too, so the focus stays on the page's body. While that read is out the write still counts as
+ * out, so a read that draws the very set it sent is handed on, since the line cannot tell that set
+ * from its own write's.
  *
  * Out of the place beside Add the focus goes to the Advances row's add control: the add control
  * beside Add is where the focus is once an add lands, so the reader stays on the control of that
@@ -74,16 +76,28 @@ export function usePriorityHandOffs(
       .findAll({ predicate: (mutation) => advancesSent(mutation.state.variables) !== undefined })
       .at(-1);
     const sent = advancesSent(newest?.state.variables);
-    const own = (issue.advances ?? []).filter((entry) => !entry.inherited).map((entry) => entry.id);
+    const drawn = issue.advances ?? [];
+    const own = drawn.filter((entry) => !entry.inherited).map((entry) => entry.id);
     // Compared in any order: the read need not answer the set in the order the write sent it.
     const sameSet = sent?.length === own.length && sent.every((id) => own.includes(id));
     if (newest === undefined || !sameSet) return false;
     if (newest.state.status === "pending") return true;
-    // Dispatch answers the PATCH with the issue it wrote, whose revision is that of the set saved.
-    const answer = newest.state.data as Pick<Issue, "advances_revision"> | null | undefined;
+    // Dispatch answers the PATCH with the issue it wrote, whose revision is that of the set saved
+    // and whose priorities are every one it advanced then, inherited ones included.
+    const answer = newest.state.data as
+      | Pick<Issue, "advances" | "advances_revision">
+      | null
+      | undefined;
+    const answered = answer?.advances ?? [];
     return (
       newest.state.status === "success" &&
-      (answer == null || answer.advances_revision === issue.advances_revision)
+      (answer == null ||
+        (answer.advances_revision === issue.advances_revision &&
+          // Each by its id and whether it is inherited, in any order, as the own set above.
+          answered.length === drawn.length &&
+          answered.every((entry) =>
+            drawn.some((other) => other.id === entry.id && other.inherited === entry.inherited)
+          )))
     );
   };
   const besideAddLeft = useFocusHandOff(() =>
