@@ -1090,7 +1090,10 @@ func (s *server) getArtifactBlockPath(w http.ResponseWriter, r *http.Request) {
 // table block. The predicate is two conjuncts (is not null, then not the empty
 // string) rather than nullif(...) is not null so the planner can use the partial
 // comments_/asks_anchor_block_id_idx indexes. The rows are counted only where who may read the
-// document (documentVisible), one test of the document for the whole statement.
+// document (documentVisible), one test of the document for the whole statement, and each comment
+// and ask only where who may read it (access.ItemOwnerClause over its own owner): a stored anchor
+// that names this document from a comment or an ask of a project who does not see counts as one no
+// row holds.
 func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactID string) (map[string]model.BlockReferences, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select anchor_block_id,
@@ -1100,10 +1103,12 @@ func (s *server) blockReferences(ctx context.Context, who model.Actor, artifactI
 			select anchor->>'block_id' as anchor_block_id, 'comment' as kind
 			from comments
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
+			  and `+access.ItemOwnerClause("comments.issue_key", "comments.artifact_id", "$2")+`
 			union all
 			select anchor->>'block_id' as anchor_block_id, 'ask' as kind
 			from asks
 			where anchor->>'artifact_id' = $1 and anchor->>'block_id' is not null and anchor->>'block_id' <> ''
+			  and `+access.ItemOwnerClause("asks.issue_key", "asks.artifact_id", "$2")+`
 		) anchored
 		where `+documentVisible("$1::uuid", "$2")+`
 		group by anchor_block_id
