@@ -182,6 +182,109 @@ func TestM19TheCensusNamesEveryUnboundProjectReadOfAStatement(t *testing.T) {
 			where t.kind = '` + graphstore.TuplePartOf + `' and t.from_kind = 'step' and t.to_kind = 'issue'
 			and ` + refs.VisibleKind("issue", "t.to_id", viewer),
 		want: nil,
+	}, {
+		name: "a view of tuples bound on the node it points at",
+		statement: `select g.to_id from graph_edges g
+			where g.from_kind = '` + graphstore.KindPerson + `' and g.from_id = $1 and g.to_kind = 'issue'
+			and ` + refs.VisibleKind("issue", "g.to_id", viewer),
+		want: nil,
+	}, {
+		name: "a view of tuples bound on nothing",
+		statement: `select g.to_id from graph_edges g
+			where g.from_kind = '` + graphstore.KindPerson + `' and g.from_id = $1 and g.to_kind = 'issue'`,
+		want: []string{"graph_edges as g"},
+	}, {
+		name: "a recursive expression's rows bound by induction from a bound first arm",
+		statement: `with recursive sub as (
+				select i.key, i.project_key from issues i where i.key = $1 and ` + access.ProjectClause("i.project_key", viewer) + `
+				union all
+				select c.key, c.project_key from issues c join sub s on c.project_key = s.project_key
+			) select key from sub`,
+		want: nil,
+	}, {
+		name: "a recursive expression's rows from a first arm bound on nothing",
+		statement: `with recursive sub as (
+				select i.key, i.project_key from issues i where i.key = $1
+				union all
+				select c.key, c.project_key from issues c join sub s on c.project_key = s.project_key
+			) select key from sub`,
+		want: []string{"issues as c", "issues as i"},
+	}, {
+		name: "a link cited from a block of a bound document",
+		statement: `select r.to_id from refs r
+			join block_refs b on b.from_node = r.from_id
+			join artifacts a on a.id = b.artifact_id
+			where r.from_kind = 'block' and r.to_kind = '` + graphstore.KindPerson + `'
+			and ` + access.DocumentClause("a", viewer),
+		want: nil,
+	}, {
+		name: "a link cited from a block of a document bound on nothing",
+		statement: `select r.to_id from refs r
+			join block_refs b on b.from_node = r.from_id
+			join artifacts a on a.id = b.artifact_id
+			where r.from_kind = 'block' and r.to_kind = '` + graphstore.KindPerson + `'`,
+		want: []string{"artifacts as a", "block_refs as b", "refs as r"},
+	}, {
+		name: "a tuple whose other node is null is no project's row",
+		statement: `select t.from_id from priority_tuples t
+			where t.from_kind = '` + graphstore.KindPerson + `' and t.from_id = $1 and t.to_kind is null`,
+		want: nil,
+	}, {
+		name: "a tuple whose other node is not null may be a project's row",
+		statement: `select t.from_id from priority_tuples t
+			where t.from_kind = '` + graphstore.KindPerson + `' and t.from_id = $1 and t.to_kind is not null`,
+		want: []string{"priority_tuples as t"},
+	}, {
+		name: "a row keyed by a union of rows every arm binds",
+		statement: `select m.target from comment_mentions m join (
+				select c.id from comments c where ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer) + `
+				union all
+				select d.id from comments d where ` + access.ItemOwnerClause("d.issue_key", "d.artifact_id", viewer) + `
+			) u on m.comment_id = u.id`,
+		want: nil,
+	}, {
+		name: "a row keyed by a union of rows one arm binds on nothing",
+		statement: `select m.target from comment_mentions m join (
+				select c.id from comments c where ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer) + `
+				union all
+				select d.id from comments d
+			) u on m.comment_id = u.id`,
+		want: []string{"comment_mentions as m", "comments as d"},
+	}, {
+		name: "a row named by an expression of its own key",
+		statement: `select m.target from comments c, comment_mentions m
+			where c.id = $1 and c.id = split_part(m.comment_id::text, '#', 1)::uuid
+			and ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer),
+		want: nil,
+	}, {
+		name: "a row named by an expression of a column that names no row",
+		statement: `select m.target from comments c, comment_mentions m
+			where c.id = $1 and c.id = split_part(m.target, '#', 1)::uuid
+			and ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer),
+		want: []string{"comment_mentions as m"},
+	}, {
+		name: "a thread's state bound through its bound root",
+		statement: `select p.thread_id from user_threads p join comments c on c.id = p.thread_id
+			where ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer),
+		want: nil,
+	}, {
+		name: "a thread's state bound through its bound newest reply",
+		statement: `select p.thread_id from user_threads p join comments c on c.id = p.last_reply_id
+			where ` + access.ItemOwnerClause("c.issue_key", "c.artifact_id", viewer),
+		want: nil,
+	}, {
+		name:      "a thread's state through a root bound on nothing",
+		statement: `select p.thread_id from user_threads p join comments c on c.id = p.thread_id`,
+		want:      []string{"comments as c", "user_threads as p"},
+	}, {
+		name: "a broadcast's copy bound by the broadcast it is of",
+		statement: `select m.id from messages m
+			where m.broadcast_id = $1 and ` + access.BroadcastClause("m.broadcast_id", viewer),
+		want: nil,
+	}, {
+		name:      "a broadcast's copy bound on nothing",
+		statement: `select m.id from messages m where m.broadcast_id = $1`,
+		want:      []string{"messages as m"},
 	}} {
 		t.Run(row.name, func(t *testing.T) {
 			found, _, err := m19UnboundReads(schema, row.statement, row.checked...)
