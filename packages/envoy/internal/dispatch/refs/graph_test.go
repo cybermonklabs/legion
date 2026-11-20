@@ -313,15 +313,22 @@ const mainLoadBlockNodes = `
 // are compared before Edges resolves them, because a source block with no position resolves to
 // no node, so a comparison of resolved edges would miss a statement that lists one.
 //
-// The plan of each of those statements, read under explain (analyze) with sequential scans off
-// and under the default settings, reads every link table that it ran a scan of by target, with an
-// Index Cond on to_id, and reads no blocks table whole. heldByABlock's probe of block_refs, in
-// every plan the test reads, keys the source document: its Index Cond holds to_kind, to_id and
-// (artifact_id)::text, and it removes no row by a filter. The probe case reads the in read of an
-// issue that edgesProbeDocuments documents mention in their text and in two of their blocks each,
-// the kinds case the in read of a node of every kind that carries the probe, and the index case
-// block_refs' indexes. Every table the statements read holds at least edgesOutsideNodes rows,
-// written by COPY and analyzed, so the default settings plan from real sizes.
+// The arms case holds graph_edges' arms that can end at a block to edgesBlockArms, so an arm a
+// later migration adds fails it until it is listed; the fixture writes a link of each arm into
+// each read node's blocks. The plan of each of the six statements, read under explain (analyze)
+// with sequential scans off and under the default settings, reads every link table that it ran a
+// scan of by target, with an Index Cond on to_id; reads no blocks table whole, and none into a
+// hash join but by an index probe; and reads comments and messages by replies_to_block wherever
+// it tests it. The count case holds the plan's reads of each link table to the rows of that table
+// the fixture holds whose target is the node read or one of its current blocks. heldByABlock's
+// probe of block_refs, in every plan the test reads, keys the source document: its Index Cond
+// holds to_kind, to_id and (artifact_id)::text, and it removes no row by a filter. The probe case
+// reads the in read of an issue that edgesProbeDocuments documents mention in their text and in
+// two of their blocks each, the kinds case the in read of a node of every kind that carries the
+// probe, and the index case block_refs' indexes. Every table the plans read holds at least
+// edgesOutsideNodes rows, written by COPY and analyzed, so the default settings plan from real
+// sizes. With -v the test logs the head's in statement of a document, on one line that starts
+// "head in statement, document:", for c-production-load.
 func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 	fixture := newEdgesFixture(t)
 	pool := fixture.database.Pool
@@ -334,12 +341,33 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 		}
 	}
 	reads, probe, kinds := every[:len(fixture.reads)], every[len(fixture.reads)], every[len(fixture.reads)+1:]
+	keys := explaintest.NewIndexKeys(pool)
+
+	t.Run("arms", func(t *testing.T) {
+		got, want := graphViewBlockArms(t, pool), make([]string, 0, len(edgesBlockArms))
+		for _, arm := range edgesBlockArms {
+			want = append(want, arm.String())
+		}
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("graph_edges' arms that can end at a block are not edgesBlockArms.\nthe view:\n  %s\nthe list:\n  %s\n"+
+				"List each new arm in edgesBlockArms, read it by the node's block ids in refs.Edges' in read, and write a link of it into each read node's blocks in the fixture.",
+				strings.Join(got, "\n  "), strings.Join(want, "\n  "))
+		}
+	})
 
 	t.Run("outside graph", func(t *testing.T) {
 		for _, subject := range fixture.subjects {
-			inside, outside := blockLinkCounts(t, pool, subject)
-			if inside == 0 || outside < 5*inside {
-				t.Errorf("the fixture holds %d links into the blocks of %s and %d into other blocks of kind %s; want at least five times as many outside", inside, subject.node, outside, subject.blockKind)
+			counts := blockLinkCounts(t, pool, subject)
+			tables := slices.Clone(edgesLinkTables)
+			if replies, ok := edgesReplyTables[subject.blockKind]; ok {
+				tables = append(tables, replies)
+			}
+			for _, table := range tables {
+				inside, outside := counts[table][0], counts[table][1]
+				if inside == 0 || outside < 5*inside {
+					t.Errorf("the fixture holds %d links of %s into the blocks of %s and %d into other blocks of kind %s; want at least one, and at least five times as many outside", inside, table, subject.node, outside, subject.blockKind)
+				}
 			}
 		}
 	})
@@ -347,10 +375,13 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 	t.Run("edges", func(t *testing.T) {
 		for _, read := range reads {
 			t.Run(read.name, func(t *testing.T) {
-				requireMainsRows(t, pool, read)
 				if read.query.Kind == "artifact" && !read.query.WholeDocuments {
-					t.Logf("refs.Edges' in statement of a document with WholeDocuments false:\n%s", read.statement.sql)
+					// One line, which c-production-load looks for: strings.Fields cuts the
+					// statement at every run of spaces, tabs and newlines, and the words are joined
+					// again by one space each.
+					t.Logf("head in statement, document: %s", strings.Join(strings.Fields(read.statement.sql), " "))
 				}
+				requireMainsRows(t, pool, read)
 			})
 		}
 	})
@@ -359,7 +390,18 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 		for _, read := range reads {
 			for setting, settings := range edgesPlanSettings {
 				t.Run(read.name+"/"+settings.name, func(t *testing.T) {
-					requireKeyedReads(t, read.plans[setting])
+					requireKeyedReads(t, keys, read.plans[setting])
+				})
+			}
+		}
+	})
+
+	t.Run("count", func(t *testing.T) {
+		for _, read := range reads {
+			counts := edgesTargetCounts(t, pool, read.query)
+			for setting, settings := range edgesPlanSettings {
+				t.Run(read.name+"/"+settings.name, func(t *testing.T) {
+					requireCountedReads(t, read.plans[setting], counts)
 				})
 			}
 		}
@@ -397,14 +439,7 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 		for _, member := range kinds {
 			t.Run(member.name, func(t *testing.T) {
 				t.Run("rows", func(t *testing.T) {
-					if member.main != "" {
-						requireMainsRows(t, pool, member)
-						return
-					}
-					got := edgeStatementRows(t, pool, member.statement)
-					if !slices.Equal(sortedEdgeKeys(got), sortedEdgeKeys(member.rows)) {
-						t.Errorf("the in read of %s %s answered %s; want the mentions of E and of D's block, and none of D's own (heldByABlock): %s", member.query.Kind, member.query.ID, got, member.rows)
-					}
+					requireMainsRows(t, pool, member)
 				})
 				for setting, settings := range edgesPlanSettings {
 					t.Run(settings.name, func(t *testing.T) {
@@ -420,21 +455,26 @@ func TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid(t *testing.T) {
 	})
 
 	t.Run("tables", func(t *testing.T) {
+		// Every relation a plan of the test scanned, in a scan that ran, holds at least
+		// edgesOutsideNodes rows as the planner counts them: pg_class.reltuples, which the
+		// fixture's analyze wrote.
 		relations := map[string]bool{}
 		for _, read := range every {
 			for _, plan := range read.plans {
 				for _, scan := range explaintest.Scans(t, plan) {
-					relations[scan.Relation] = true
+					if scan.Loops > 0 {
+						relations[scan.Relation] = true
+					}
 				}
 			}
 		}
 		for _, relation := range slices.Sorted(maps.Keys(relations)) {
-			var count int
-			if err := pool.QueryRow(context.Background(), "select count(*) from "+pgx.Identifier{relation}.Sanitize()).Scan(&count); err != nil {
-				t.Fatalf("count the rows of %s: %v", relation, err)
+			var tuples float64
+			if err := pool.QueryRow(context.Background(), "select reltuples::float8 from pg_class where oid = $1::regclass", relation).Scan(&tuples); err != nil {
+				t.Fatalf("read the size of %s: %v", relation, err)
 			}
-			if count < edgesOutsideNodes {
-				t.Errorf("the statements read %s, which holds %d rows; want at least %d, so the default settings plan from a real size", relation, count, edgesOutsideNodes)
+			if tuples < edgesOutsideNodes {
+				t.Errorf("the statements read %s, which the planner counts %g rows of; want at least %d, so the default settings plan from a real size", relation, tuples, edgesOutsideNodes)
 			}
 		}
 	})
@@ -476,21 +516,99 @@ var edgesPlanSettings = [2]struct {
 }
 
 // edgesLinkTables are the tables that store a link, and edgesBlockTables the tables of the blocks
-// a link starts or ends at.
+// a link starts or ends at: the list "The link tables the plan rule and the count judge" of
+// INFRA-4855's plan, with edgesReplyTables, the table of the replies that can name a block of
+// each kind: a comment answers a comment's block and an ask's part, a message a message's block,
+// and nothing answers a document's block.
 var (
 	edgesLinkTables  = []string{"refs", "block_refs", "ask_block_refs", "comment_block_refs", "message_block_refs"}
 	edgesBlockTables = []string{"document_blocks", "ask_blocks", "comment_blocks", "message_blocks"}
+	edgesReplyTables = map[string]string{"ask_block": "comments", "comment_block": "comments", "message_block": "messages"}
 )
+
+// edgesSourceColumns names, for each link table, the column that keys the item its links start
+// in, which heldByABlock's probe of that table tests (blockHolds): an Index Cond that names it is
+// a probe's. refs has none.
+var edgesSourceColumns = map[string]*regexp.Regexp{
+	"refs":               nil,
+	"block_refs":         regexp.MustCompile(`\bartifact_id\b`),
+	"ask_block_refs":     regexp.MustCompile(`\bask_id\b`),
+	"comment_block_refs": regexp.MustCompile(`\bcomment_id\b`),
+	"message_block_refs": regexp.MustCompile(`\bmessage_id\b`),
+}
+
+// edgesReplyIndexes are the indexes that key comments and messages by the block a reply names
+// (migration 0142). Each is partial on replies_to_block is not null, so a scan through one tests
+// replies_to_block though it may print no condition: the index's predicate holds it.
+var edgesReplyIndexes = []string{"comments_replies_to_block", "messages_replies_to_block"}
+
+// edgesBlockArm is one arm of graph_edges that can end at a block: the arm as parseGraphViewArms
+// reads it, and its FROM clause as pg_get_viewdef prints it, every run of white space one space,
+// which holds the rule the arm keeps for a current block at its source end.
+type edgesBlockArm struct {
+	arm  graphViewArm
+	from string
+}
+
+func (a edgesBlockArm) String() string {
+	return a.arm.String() + ": " + a.from
+}
+
+// edgesBlockArms is the list "The arms that can end at a block" of INFRA-4855's plan: the arms of
+// graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs; block_refs, whose
+// typed pointer is listed only where block_ref_listed allows its target; comment_block_refs,
+// message_block_refs and ask_block_refs, each joined to its source block, which must hold a
+// position; a comment's reply to a comment's block and to an ask's part, told apart by the ask/
+// that starts an ask part's node id; and a message's reply to a message's block. refs.Edges' in
+// read reads each of them by the node's block ids, and the fixture writes a link of each into each
+// read node's blocks. The arms case holds the view to this list, so an arm a later migration adds
+// fails it until it is listed here, read by block ids and written in the fixture.
+var edgesBlockArms = []edgesBlockArm{
+	{arm: graphViewArm{table: "refs"}, from: "FROM refs"},
+	{
+		arm:  graphViewArm{table: "block_refs", fromKind: "block"},
+		from: "FROM block_refs WHERE block_refs.to_types IS NULL OR block_ref_listed(block_refs.to_types, block_refs.to_id)",
+	},
+	{
+		arm:  graphViewArm{table: "comment_block_refs", fromKind: "comment_block"},
+		from: `FROM comment_block_refs r JOIN comment_blocks b ON b.comment_id = r.comment_id AND b.block_id = r.block_id WHERE b."position" IS NOT NULL`,
+	},
+	{
+		arm:  graphViewArm{table: "message_block_refs", fromKind: "message_block"},
+		from: `FROM message_block_refs r JOIN message_blocks b ON b.message_id = r.message_id AND b.block_id = r.block_id WHERE b."position" IS NOT NULL`,
+	},
+	{
+		arm:  graphViewArm{table: "ask_block_refs", fromKind: "ask_block"},
+		from: `FROM ask_block_refs r JOIN ask_blocks b ON b.ask_id = r.ask_id AND b.block_id = r.block_id WHERE b."position" IS NOT NULL`,
+	},
+	{
+		arm:  graphViewArm{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "comment_block"},
+		from: `FROM comments c WHERE c.replies_to_block IS NOT NULL AND c.replies_to_block !~~ 'ask/%'::text`,
+	},
+	{
+		arm:  graphViewArm{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "ask_block"},
+		from: `FROM comments c WHERE c.replies_to_block IS NOT NULL AND c.replies_to_block ~~ 'ask/%'::text`,
+	},
+	{
+		arm:  graphViewArm{table: "messages", fromKind: "message", kind: "replies_to", toKind: "message_block"},
+		from: "FROM messages m WHERE m.replies_to_block IS NOT NULL",
+	},
+}
 
 // An Index Cond keys a column when one of its comparisons has that column on the left, which is
 // where the plan writes an index's column, alone or under the scan's alias, each comparison in
 // parentheses. namesSourceDocument finds a scan of block_refs that tests the source document at
-// all, in its Index Cond or its Filter: heldByABlock's probe.
+// all, in its Index Cond or its Filter: heldByABlock's probe. namesRepliesToBlock finds a scan
+// that tests the block a reply names at all, and condKeysOwnID an Index Cond that keys a row's own
+// id, as text or not.
 var (
 	condKeysToKind         = regexp.MustCompile(`\((?:[a-z_][a-z0-9_]*\.)?to_kind = `)
 	condKeysToID           = regexp.MustCompile(`\((?:[a-z_][a-z0-9_]*\.)?to_id = `)
 	condKeysSourceDocument = regexp.MustCompile(`\(\((?:[a-z_][a-z0-9_]*\.)?artifact_id\)::text = `)
 	namesSourceDocument    = regexp.MustCompile(`\bartifact_id\b`)
+	condKeysRepliesToBlock = regexp.MustCompile(`\((?:[a-z_][a-z0-9_]*\.)?replies_to_block = `)
+	namesRepliesToBlock    = regexp.MustCompile(`\breplies_to_block\b`)
+	condKeysOwnID          = regexp.MustCompile(`\(\(?(?:[a-z_][a-z0-9_]*\.)?id(?:\)::text)? = `)
 )
 
 // edgeKey is one row of an in statement, comparable: its edge kind, the node at its other end,
@@ -537,17 +655,15 @@ const (
 )
 
 // edgesRead is one in read of the test: the Query refs.Edges is given, the statement it sent and
-// that statement's plan under each of edgesPlanSettings, and the answer it is held to. That is
-// main's statement with the arguments main bound, which must list every key of listed and none of
-// hidden, so a fixture main did not answer as it was written to decides nothing; or, where main
-// is empty, rows, the read's whole answer.
+// that statement's plan under each of edgesPlanSettings, and the answer it is held to: main's
+// statement with the arguments main bound, which must list every key of listed and none of
+// hidden, so a fixture main did not answer as it was written to decides nothing.
 type edgesRead struct {
 	name           string
 	query          Query
 	main           string
 	mainArgs       []any
 	listed, hidden []edgeKey
-	rows           []edgeKey
 	probes         edgesProbes
 	statement      recordedStatement
 	plans          [2]json.RawMessage
@@ -654,9 +770,14 @@ func edgeRowsDifference(got, want []edgeKey) string {
 // executor never ran read no row and is not judged. Every scan of a link table reads the table by
 // target, with an Index Cond on to_id, its own or its bitmap's: a scan keyed by to_kind alone
 // reads every link of that kind in the database. No read of a blocks table is a sequential scan
-// or a scan with no Index Cond, the two forms a read of the whole table takes, as the input of a
-// hash join or anywhere else; a read of a source's block by its item and its block id is keyed.
-func requireKeyedReads(t *testing.T, plan json.RawMessage) {
+// or a scan with no Index Cond, the two forms a read of the whole table takes; a read of a
+// source's block by its item and its block id is keyed. No read of a blocks table is an input of
+// a hash join unless it is an index probe (isIndexProbe): a hash join reads each of its inputs
+// whole, once. And every scan of comments or messages that tests replies_to_block, in a condition
+// or through an index whose predicate holds it, reads by replies_to_block in its Index Cond (D11
+// of INFRA-4855's plan): the reply arms read the replies to the node's blocks through
+// comments_replies_to_block and messages_replies_to_block.
+func requireKeyedReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawMessage) {
 	t.Helper()
 	failed := false
 	fail := func(format string, args ...any) {
@@ -664,7 +785,8 @@ func requireKeyedReads(t *testing.T, plan json.RawMessage) {
 		failed = true
 		t.Errorf(format, args...)
 	}
-	for _, node := range explaintest.Nodes(t, plan) {
+	nodes := explaintest.Nodes(t, plan)
+	for _, node := range nodes {
 		link, blocks := slices.Contains(edgesLinkTables, node.Relation), slices.Contains(edgesBlockTables, node.Relation)
 		switch {
 		case !link && !blocks, node.Type == "Bitmap Heap Scan":
@@ -698,30 +820,300 @@ func requireKeyedReads(t *testing.T, plan json.RawMessage) {
 			}
 		}
 	}
+
+	var tree edgesPlanTree
+	if err := json.Unmarshal(plan, &tree); err != nil {
+		t.Fatalf("decode the plan: %v", err)
+	}
+	for _, input := range hashJoinInputs(tree, nil) {
+		if slices.Contains(edgesBlockTables, input.Relation) && input.Loops > 0 && !isIndexProbe(t, keys, input) {
+			fail("%s (loops %g, Index Cond %q) is an input of a hash join, which reads %s whole: it is no probe of its index's first key column", input, input.Loops, input.IndexCond, input.Relation)
+		}
+	}
+
+	repliesKeyed := func(scan string, loops, rows float64, indexes []string, cond, filter, recheck string) {
+		t.Helper()
+		tests := namesRepliesToBlock.MatchString(cond) || namesRepliesToBlock.MatchString(filter) || namesRepliesToBlock.MatchString(recheck) ||
+			slices.ContainsFunc(indexes, func(index string) bool { return slices.Contains(edgesReplyIndexes, index) })
+		switch {
+		case !tests, condKeysRepliesToBlock.MatchString(cond):
+		case condKeysOwnID.MatchString(cond):
+			// The one exemption: a scan whose Index Cond keys the row's own id reads that one
+			// row each time it runs, and tests replies_to_block on that row alone. That is the
+			// exists foldsAnswers writes into a comment's read, which asks whether one answering
+			// comment replies to the comment or to one of its blocks; it reads no reply arm, so
+			// it has no replies_to_block to key (INFRA-4855's orchestrator, on D11).
+		default:
+			fail("%s (loops %g, rows %g) tests replies_to_block with Index Cond %q, Filter %q and Recheck Cond %q: it does not read by replies_to_block", scan, loops, rows, cond, filter, recheck)
+		}
+	}
+	for _, node := range nodes {
+		if (node.Relation != "comments" && node.Relation != "messages") || node.Type == "Bitmap Heap Scan" || node.Loops == 0 {
+			continue
+		}
+		repliesKeyed(node.String(), node.Loops, node.Rows, []string{node.Index}, node.IndexCond, node.Filter, node.RecheckCond)
+	}
+	for _, relation := range []string{"comments", "messages"} {
+		for _, scan := range explaintest.BitmapHeapScans(t, plan, relation) {
+			if scan.Scan.Loops == 0 {
+				continue
+			}
+			indexes, conds := make([]string, 0, len(scan.BitmapIndexScans)), make([]string, 0, len(scan.BitmapIndexScans))
+			for _, index := range scan.BitmapIndexScans {
+				indexes, conds = append(indexes, index.Index), append(conds, index.IndexCond)
+			}
+			repliesKeyed(scan.Scan.String(), scan.Scan.Loops, scan.Scan.Rows, indexes, strings.Join(conds, " AND "), scan.Scan.Filter, scan.Scan.RecheckCond)
+		}
+	}
 	if failed {
 		t.Logf("the plan's scans:%s", planScans(t, plan))
 	}
 }
 
+// edgesPlanTree is one node of a plan's own JSON with the nodes under it. The plan case walks it
+// for the inputs of each hash join, since explaintest answers a plan's nodes in a flat list and
+// exports no node's parent.
+type edgesPlanTree struct {
+	Type               string          `json:"Node Type"`
+	Relation           string          `json:"Relation Name"`
+	Index              string          `json:"Index Name"`
+	IndexCond          string          `json:"Index Cond"`
+	ParentRelationship string          `json:"Parent Relationship"`
+	Loops              float64         `json:"Actual Loops"`
+	Plans              []edgesPlanTree `json:"Plans"`
+}
+
+func (n edgesPlanTree) String() string {
+	return explaintest.Node{Type: n.Type, Relation: n.Relation, Index: n.Index}.String()
+}
+
+// hashJoinInputs appends to inputs every scan whose rows a hash join at or under node reads: on
+// each side of the join (the inner side under its Hash), the scans reached through the nodes that
+// pass rows on, as a Hash, a Sort, an Append or an Aggregate does (joinInputScans).
+func hashJoinInputs(node edgesPlanTree, inputs []edgesPlanTree) []edgesPlanTree {
+	if node.Type == "Hash Join" {
+		for _, side := range node.Plans {
+			inputs = joinInputScans(side, inputs)
+		}
+	}
+	for _, child := range node.Plans {
+		inputs = hashJoinInputs(child, inputs)
+	}
+	return inputs
+}
+
+// joinInputScans appends to scans the scans whose rows node passes on to the join above it. The
+// walk stops at a scan, and at another join, whose inputs are that join's own; it leaves out a
+// subplan and an initplan, which a node runs for a condition rather than for rows.
+func joinInputScans(node edgesPlanTree, scans []edgesPlanTree) []edgesPlanTree {
+	switch {
+	case node.ParentRelationship == "SubPlan", node.ParentRelationship == "InitPlan":
+		return scans
+	case node.Relation != "":
+		return append(scans, node)
+	case node.Type == "Nested Loop", node.Type == "Hash Join", node.Type == "Merge Join":
+		return scans
+	}
+	for _, child := range node.Plans {
+		scans = joinInputScans(child, scans)
+	}
+	return scans
+}
+
+// isIndexProbe reports whether scan reads its relation through an index whose first key column
+// its Index Cond names (explaintest.CondNamesFirstKey): its own Index Cond, or for a Bitmap Heap
+// Scan the Index Cond of every Bitmap Index Scan of its bitmap. A scan with no Index Cond, or with
+// one that names no column its index leads with, reads the whole of the index.
+func isIndexProbe(t *testing.T, keys *explaintest.IndexKeys, scan edgesPlanTree) bool {
+	t.Helper()
+	probes := func(index edgesPlanTree) bool {
+		return index.IndexCond != "" && explaintest.CondNamesFirstKey(index.IndexCond, keys.FirstKey(t, index.Index))
+	}
+	switch scan.Type {
+	case "Index Scan", "Index Only Scan":
+		return probes(scan)
+	case "Bitmap Heap Scan":
+		indexes := bitmapIndexScans(scan, nil)
+		return len(indexes) > 0 && !slices.ContainsFunc(indexes, func(index edgesPlanTree) bool { return !probes(index) })
+	}
+	return false
+}
+
+// bitmapIndexScans appends to indexes the Bitmap Index Scans that the bitmap of node, a Bitmap Heap
+// Scan, is built from: its child of parent relationship Outer, and through a BitmapOr or a
+// BitmapAnd their children of parent relationship Member, as explaintest.BitmapHeapScans reads
+// them.
+func bitmapIndexScans(node edgesPlanTree, indexes []edgesPlanTree) []edgesPlanTree {
+	for _, child := range node.Plans {
+		switch {
+		case child.ParentRelationship != "Outer" && child.ParentRelationship != "Member":
+		case child.Type == "Bitmap Index Scan":
+			indexes = append(indexes, child)
+		default:
+			indexes = bitmapIndexScans(child, indexes)
+		}
+	}
+	return indexes
+}
+
+// requireCountedReads holds plan to the count case (D11 of INFRA-4855's plan): the read reads no
+// block link but those that end at the node read or at one of its current blocks. For each link
+// table, the scans of it that ran and whose Index Cond does not name its source column
+// (edgesSourceColumns) read at most counts[table] rows in all: the rows of that table the fixture
+// holds that end at those targets. A scan whose Index Cond names the source column is
+// heldByABlock's probe of one item's links to one target: it reads at most one row a loop and
+// removes no row by a filter. A Bitmap Heap Scan's Index Cond is that of the Bitmap Index Scans of
+// its bitmap, and its rows are its own. Actual Rows is an average for each loop, rounded to two
+// decimals, and Rows Removed by Filter one rounded to a whole number, so each bound allows 0.005
+// or 0.5 times the loops beyond it: the precision of the plan's own numbers, the one margin the
+// Verification document's "Running the checks" allows.
+func requireCountedReads(t *testing.T, plan json.RawMessage, counts map[string]int) {
+	t.Helper()
+	failed := false
+	fail := func(format string, args ...any) {
+		t.Helper()
+		failed = true
+		t.Errorf(format, args...)
+	}
+	nodes := explaintest.Nodes(t, plan)
+	for _, table := range edgesLinkTables {
+		source := edgesSourceColumns[table]
+		var rows, loops float64
+		var read strings.Builder
+		judge := func(scan string, scanLoops, scanRows float64, cond string, removed float64) {
+			t.Helper()
+			switch {
+			case scanLoops == 0:
+				// A scan the executor never ran.
+			case source != nil && source.MatchString(cond):
+				if scanRows > 1.005 {
+					fail("%s (loops %g, Index Cond %q) is heldByABlock's probe of %s and read %g rows a loop; want at most one", scan, scanLoops, cond, table, scanRows)
+				}
+				if removed*scanLoops > 0.5*scanLoops {
+					fail("%s (loops %g, Index Cond %q) is heldByABlock's probe of %s and removed %g rows a loop by its filter; want none", scan, scanLoops, cond, table, removed)
+				}
+			default:
+				rows += scanRows * scanLoops
+				loops += scanLoops
+				fmt.Fprintf(&read, "\n\t%s: loops %g, rows %g, Index Cond %q", scan, scanLoops, scanRows, cond)
+			}
+		}
+		for _, node := range nodes {
+			if node.Relation == table && node.Type != "Bitmap Heap Scan" {
+				judge(node.String(), node.Loops, node.Rows, node.IndexCond, node.RowsRemovedByFilter)
+			}
+		}
+		for _, scan := range explaintest.BitmapHeapScans(t, plan, table) {
+			conds := make([]string, 0, len(scan.BitmapIndexScans))
+			for _, index := range scan.BitmapIndexScans {
+				conds = append(conds, index.IndexCond)
+			}
+			judge(scan.Scan.String(), scan.Scan.Loops, scan.Scan.Rows, strings.Join(conds, " AND "), scan.Scan.RowsRemovedByFilter)
+		}
+		if rows > float64(counts[table])+0.005*loops {
+			fail("the plan read %g rows of %s beyond heldByABlock's probes, in %g loops; the fixture holds %d rows of %s that end at the node read or at one of its current blocks, and the read reads no other:%s",
+				rows, table, loops, counts[table], table, read.String())
+		}
+	}
+	if failed {
+		t.Logf("the plan's scans:%s", planScans(t, plan))
+	}
+}
+
+// edgesTargetCounts is, for each link table, how many of its rows the fixture holds that end at
+// the node query reads or at one of its current blocks, by one count(*) of each table: the rows
+// the in read must read of it. A document's current blocks are its document_blocks rows; an
+// item's are its blocks that hold a position. Each count must be above 0, since the fixture
+// writes a link of each table into each read node's blocks, and a count of 0 would judge nothing.
+func edgesTargetCounts(t *testing.T, q Queryer, query Query) map[string]int {
+	t.Helper()
+	blockKind, blocks := "block", `select d.node_id from document_blocks d join artifacts a on a.id = d.artifact_id where a.ref_key = $4`
+	if query.Kind != "artifact" {
+		item := ItemKind(query.Kind)
+		tables, err := item.tables()
+		if err != nil {
+			t.Fatalf("the count case reads no blocks of kind %q: %v", query.Kind, err)
+		}
+		blockKind = item.BlockKind()
+		blocks = `select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = $4::uuid and b.position is not null`
+	}
+	counts := make(map[string]int, len(edgesLinkTables))
+	for _, table := range edgesLinkTables {
+		var count int
+		if err := q.QueryRow(context.Background(), `select count(*) from `+table+`
+			where (to_kind = $1 and to_id = $2) or (to_kind = $3 and to_id in (`+blocks+`))`,
+			query.Kind, query.ID, blockKind, query.ID).Scan(&count); err != nil {
+			t.Fatalf("count the rows of %s that end at %s %s or at one of its current blocks: %v", table, query.Kind, query.ID, err)
+		}
+		if count == 0 {
+			t.Errorf("the fixture holds no row of %s that ends at %s %s or at one of its current blocks, so the count case judges nothing of %s", table, query.Kind, query.ID, table)
+		}
+		counts[table] = count
+	}
+	return counts
+}
+
+// graphViewBlockArms is every arm of graph_edges that can end at a block, as the view's own text
+// declares it (edgesBlockArm.String), sorted: each arm parseGraphViewArms reads whose to_kind is a
+// column or one of blockNodeKinds, with its FROM clause. parseGraphViewArms splits the view's text
+// at each top-level UNION ALL; the same split gives each arm's text, whose FROM clause runs from
+// its FROM line to its end.
+func graphViewBlockArms(t *testing.T, q Queryer) []string {
+	t.Helper()
+	var definition string
+	if err := q.QueryRow(context.Background(), `select pg_get_viewdef('graph_edges'::regclass, true)`).Scan(&definition); err != nil {
+		t.Fatalf("read the graph_edges definition: %v", err)
+	}
+	arms := parseGraphViewArms(t, definition)
+	texts := strings.Split(strings.TrimSuffix(strings.TrimRight(definition, "\n"), ";"), "\nUNION ALL\n")
+	if len(texts) != len(arms) {
+		t.Fatalf("graph_edges splits into %d arms' texts and %d arms", len(texts), len(arms))
+	}
+	var blockKinds []string
+	for _, match := range regexp.MustCompile(`'([a-z_]+)'`).FindAllStringSubmatch(blockNodeKinds, -1) {
+		blockKinds = append(blockKinds, match[1])
+	}
+	if len(blockKinds) == 0 {
+		t.Fatalf("blockNodeKinds names no kind: %s", blockNodeKinds)
+	}
+	var found []string
+	for index, arm := range arms {
+		if arm.toKind != "" && !slices.Contains(blockKinds, arm.toKind) {
+			continue
+		}
+		_, from, ok := strings.Cut(texts[index], "\n   FROM ")
+		if !ok {
+			t.Fatalf("arm %d of graph_edges has no FROM line:\n%s", index+1, texts[index])
+		}
+		found = append(found, edgesBlockArm{arm: arm, from: "FROM " + strings.Join(strings.Fields(from), " ")}.String())
+	}
+	slices.Sort(found)
+	return found
+}
+
 // requireProbeRule holds plan to c-graph-edges' probe rule: every scan of block_refs that ran and
-// tests the source document (heldByABlock's probe) reads block_refs through an Index Cond that
-// holds to_kind, to_id and (artifact_id)::text, a Bitmap Heap Scan through its Bitmap Index Scans,
-// and removes no row by a filter; no scan of block_refs that ran is a sequential scan; and as many
-// probes ran as want says. Rows Removed by Filter is an average for each loop, rounded to a whole
-// number, so no row removed is at most 0.5 times the loops in all (D12).
+// tests the source document in its Index Cond, its Recheck Cond or its Filter (heldByABlock's
+// probe) reads block_refs through an Index Cond that holds to_kind, to_id and
+// (artifact_id)::text, a Bitmap Heap Scan through a Bitmap Index Scan of its bitmap that carries
+// that Index Cond, and removes no row by a filter; no scan of block_refs that ran is a sequential
+// scan; and as many probes ran as want says. Rows Removed by Filter is an average for each loop,
+// rounded to a whole number, so no row removed is at most 0.5 times the loops in all (D12).
 func requireProbeRule(t *testing.T, plan json.RawMessage, want edgesProbes) {
 	t.Helper()
 	failed := false
 	ran := 0
-	judge := func(scan string, loops float64, cond, filter string, removed float64) {
+	keysProbe := func(cond string) bool {
+		return condKeysToKind.MatchString(cond) && condKeysToID.MatchString(cond) && condKeysSourceDocument.MatchString(cond)
+	}
+	judge := func(scan string, loops float64, conds []string, filter, recheck string, removed float64) {
 		t.Helper()
-		if !namesSourceDocument.MatchString(cond) && !namesSourceDocument.MatchString(filter) {
+		if !slices.ContainsFunc(append([]string{filter, recheck}, conds...), namesSourceDocument.MatchString) {
 			return
 		}
 		ran++
-		if !condKeysToKind.MatchString(cond) || !condKeysToID.MatchString(cond) || !condKeysSourceDocument.MatchString(cond) {
+		if !slices.ContainsFunc(conds, keysProbe) {
 			failed = true
-			t.Errorf("heldByABlock's probe %s (loops %g) reads block_refs with Index Cond %q and Filter %q: its Index Cond does not hold to_kind, to_id and (artifact_id)::text", scan, loops, cond, filter)
+			t.Errorf("heldByABlock's probe %s (loops %g) reads block_refs with Index Cond %q and Filter %q: no Index Cond of it holds to_kind, to_id and (artifact_id)::text", scan, loops, conds, filter)
 		}
 		if removed*loops > 0.5*loops {
 			failed = true
@@ -739,7 +1131,7 @@ func requireProbeRule(t *testing.T, plan json.RawMessage, want edgesProbes) {
 		case "Bitmap Heap Scan":
 			// Judged with its bitmap below.
 		default:
-			judge(node.String(), node.Loops, node.IndexCond, node.Filter, node.RowsRemovedByFilter)
+			judge(node.String(), node.Loops, []string{node.IndexCond}, node.Filter, node.RecheckCond, node.RowsRemovedByFilter)
 		}
 	}
 	for _, scan := range explaintest.BitmapHeapScans(t, plan, "block_refs") {
@@ -750,7 +1142,7 @@ func requireProbeRule(t *testing.T, plan json.RawMessage, want edgesProbes) {
 		for _, index := range scan.BitmapIndexScans {
 			conds = append(conds, index.IndexCond)
 		}
-		judge(scan.Scan.String(), scan.Scan.Loops, strings.Join(conds, " AND "), scan.Scan.Filter, scan.Scan.RowsRemovedByFilter)
+		judge(scan.Scan.String(), scan.Scan.Loops, conds, scan.Scan.Filter, scan.Scan.RecheckCond, scan.Scan.RowsRemovedByFilter)
 	}
 	switch {
 	case want == probesAtLeastOne && ran == 0:
@@ -827,27 +1219,43 @@ func requireBlockRefsTargetIndex(t *testing.T, q Queryer) {
 	}
 }
 
-// blockLinkCounts is how many links the fixture holds into the blocks of subject, current or
-// not, and how many into other blocks of the same kind: rows of every link table, and replies
-// that name a block.
-func blockLinkCounts(t *testing.T, q Queryer, subject edgesSubject) (inside, outside int) {
+// blockLinkCounts is, for each table that stores a link that can end at a block (each link table,
+// and comments and messages, whose replies_to_block names a block), how many links of it the
+// fixture holds into the blocks of subject, current or not, and how many into other blocks of the
+// same kind.
+func blockLinkCounts(t *testing.T, q Queryer, subject edgesSubject) map[string][2]int {
 	t.Helper()
-	if err := q.QueryRow(context.Background(), `
-		select count(*) filter (where to_id = any($2)), count(*) filter (where not to_id = any($2))
+	rows, err := q.Query(context.Background(), `
+		select link, count(*) filter (where to_id = any($2)), count(*) filter (where not to_id = any($2))
 		from (
-			select to_id from refs where to_kind = $1
-			union all select to_id from block_refs where to_kind = $1
-			union all select to_id from ask_block_refs where to_kind = $1
-			union all select to_id from comment_block_refs where to_kind = $1
-			union all select to_id from message_block_refs where to_kind = $1
-			union all select replies_to_block from comments
+			select 'refs', to_id from refs where to_kind = $1
+			union all select 'block_refs', to_id from block_refs where to_kind = $1
+			union all select 'ask_block_refs', to_id from ask_block_refs where to_kind = $1
+			union all select 'comment_block_refs', to_id from comment_block_refs where to_kind = $1
+			union all select 'message_block_refs', to_id from message_block_refs where to_kind = $1
+			union all select 'comments', replies_to_block from comments
 			where replies_to_block is not null
 			and $1 = case when replies_to_block like 'ask/%' then 'ask_block' else 'comment_block' end
-			union all select replies_to_block from messages where replies_to_block is not null and $1 = 'message_block'
-		) links (to_id)`, subject.blockKind, []string{subject.blocks[0], subject.blocks[1], subject.gone}).Scan(&inside, &outside); err != nil {
+			union all select 'messages', replies_to_block from messages where replies_to_block is not null and $1 = 'message_block'
+		) links (link, to_id)
+		group by link`, subject.blockKind, []string{subject.blocks[0], subject.blocks[1], subject.gone})
+	if err != nil {
 		t.Fatalf("count the links into blocks of kind %s: %v", subject.blockKind, err)
 	}
-	return inside, outside
+	defer rows.Close()
+	counts := map[string][2]int{}
+	for rows.Next() {
+		var link string
+		var count [2]int
+		if err := rows.Scan(&link, &count[0], &count[1]); err != nil {
+			t.Fatalf("scan the links into blocks of kind %s: %v", subject.blockKind, err)
+		}
+		counts[link] = count
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("count the links into blocks of kind %s: %v", subject.blockKind, err)
+	}
+	return counts
 }
 
 // edgesFixture is the data the test reads: the outside graph, the four nodes of the five reads
@@ -874,14 +1282,14 @@ var edgesFixtureTables = []struct {
 	name    string
 	columns []string
 }{
-	{name: "projects", columns: []string{"key", "name", "default_assignee"}},
-	{name: "architecture_sources", columns: []string{"id", "project_key", "repo", "branch", "installation_id", "created_by"}},
+	{name: "projects", columns: []string{"key", "name", "default_assignee", "created_at"}},
+	{name: "architecture_sources", columns: []string{"id", "project_key", "repo", "branch", "installation_id", "created_by", "created_at"}},
 	{name: "architecture_snapshots", columns: []string{"id", "project_key", "commit", "files", "imported_at"}},
 	{name: "components", columns: []string{"project_key", "id", "title", "prose", "parent", "snapshot_id", "source_id"}},
 	{name: "component_depends", columns: []string{"project_key", "from_id", "to_id"}},
 	{name: "issues", columns: []string{"key", "project_key", "number", "title", "created_by", "rank", "created_at", "updated_at"}},
 	{name: "issue_links", columns: []string{"issue_key", "kind", "target_key", "created_at"}},
-	{name: "issue_components", columns: []string{"issue_key", "mode"}},
+	{name: "issue_components", columns: []string{"issue_key", "mode", "created_at", "updated_at"}},
 	{name: "issue_component_members", columns: []string{"issue_key", "project_key", "component_id"}},
 	{name: "artifacts", columns: []string{"id", "issue_key", "project_key", "slug", "name", "kind", "ref_key", "created_by", "created_at"}},
 	{name: "asks", columns: []string{"id", "issue_key", "artifact_id", "anchor", "author", "question", "created_at"}},
@@ -904,8 +1312,8 @@ var edgesFixtureTables = []struct {
 func newEdgesFixture(t *testing.T) edgesFixture {
 	t.Helper()
 	w := &edgesFixtureWriter{rows: map[string][][]any{}}
-	w.add("projects", "CORE", "CORE project", "alice")
-	w.add("projects", "OUT", "OUT project", "alice")
+	w.add("projects", "CORE", "CORE project", "alice", w.at())
+	w.add("projects", "OUT", "OUT project", "alice", w.at())
 	// CORE-1 holds the nodes of the five reads, CORE-2 the items that cite them, CORE-3 is the
 	// issue of the probe case, CORE-4 the issue of the kinds case, and CORE-5 holds its items.
 	for number := 1; number <= 5; number++ {
@@ -1130,7 +1538,7 @@ func (w *edgesFixtureWriter) outsideGraph() {
 		messages[index], _ = w.item(ItemMessage, message)
 		w.itemBlock(ItemMessage, messages[index], "b1", new(0))
 	}
-	w.add("architecture_sources", 1, "OUT", "sjawhar/out", "main", 1, edgesFixtureActor)
+	w.add("architecture_sources", 1, "OUT", "sjawhar/out", "main", 1, edgesFixtureActor, w.at())
 	for index := range n {
 		key, component := "OUT-"+strconv.Itoa(index+1), "component-"+strconv.Itoa(index)
 		var parent *string
@@ -1141,7 +1549,8 @@ func (w *edgesFixtureWriter) outsideGraph() {
 		w.add("components", "OUT", component, component, "", parent, index+1, 1)
 		w.add("component_depends", "OUT", component, "component-"+strconv.Itoa((index+1)%n))
 		w.add("issue_links", key, "blocked_by", "OUT-"+strconv.Itoa((index+1)%n+1), w.at())
-		w.add("issue_components", key, "explicit")
+		attached := w.at()
+		w.add("issue_components", key, "explicit", attached, attached)
 		w.add("issue_component_members", key, "OUT", component)
 		w.add("ask_followers", asks[index], "session-"+strconv.Itoa(index), w.at())
 	}
@@ -1433,7 +1842,7 @@ func (w *edgesFixtureWriter) probeCase() edgesRead {
 // kindsComponent writes the component of the kinds case, which no package helper writes, as
 // backlink_counts_test.go inserts one: under an architecture source and a snapshot of CORE's.
 func (w *edgesFixtureWriter) kindsComponent() Target {
-	w.add("architecture_sources", 2, "CORE", "sjawhar/core", "main", 1, edgesFixtureActor)
+	w.add("architecture_sources", 2, "CORE", "sjawhar/core", "main", 1, edgesFixtureActor, w.at())
 	w.add("architecture_snapshots", edgesOutsideNodes+1, "CORE", "abc123", "{}", w.at())
 	w.add("components", "CORE", "kinds-component", "Kinds", "", nil, edgesOutsideNodes+1, 2)
 	return Target{Kind: "component", ID: "CORE/kinds-component"}
@@ -1444,9 +1853,12 @@ func (w *edgesFixtureWriter) kindsComponent() Target {
 // its text alone; for a document, an ask, a comment and a message, D and E also mention a current
 // block of n in the same two ways. Each read is the Query GET /api/v1/references?to=<n> sends with
 // no ?kind= (api.parseReferencesQuery), a session's, which no reference names, with no filter, and
-// the whole-document read as refs.ReferencedBy sends it. A member's rows are E's mentions and
-// those of D's block: D's own are hidden behind its block's, which a probe of D's block links
-// found. The whole-document read lists D and E by their own mentions, as main's statement does.
+// the whole-document read as refs.ReferencedBy sends it. Each is held to main's statement for that
+// Query: mainEdgesInIssue with n's kind bound as $1 for the seven kinds with no arm over blocks,
+// and the held text of its read for a document, an ask, a comment, a message and the whole
+// document. Main lists E's mentions and those of D's block, and hides D's own behind its block's,
+// which a probe of D's block links found; the whole-document read lists D and E by their own
+// mentions and no block.
 func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 	t.Helper()
 	members := make([]edgesRead, 0, len(edgesProbeCarryingReads))
@@ -1476,12 +1888,24 @@ func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 			// The member is the block itself, which has no blocks of its own.
 			node, blocks = blocks[0], nil
 		}
-		member := edgesRead{name: name, query: Query{Direction: "in", Kind: node.Kind, ID: node.ID}, probes: probesAtLeastOne}
+		member := edgesRead{
+			name: name, query: Query{Direction: "in", Kind: node.Kind, ID: node.ID},
+			main: mainEdgesInIssue, mainArgs: []any{node.Kind, node.ID}, probes: probesAtLeastOne,
+		}
+		partOf := []string{"part_of"}
 		switch name {
-		case "artifact", "comment", "message":
-			member.query.ExcludeKinds = []string{"part_of"}
+		case "artifact":
+			member.query.ExcludeKinds = partOf
+			member.main, member.mainArgs = mainEdgesInDocument, []any{"artifact", node.ID, partOf}
+		case "comment":
+			member.query.ExcludeKinds = partOf
+			member.main, member.mainArgs = mainEdgesInComment, []any{"comment", node.ID, node.ID, partOf}
+		case "message":
+			member.query.ExcludeKinds = partOf
+			member.main, member.mainArgs = mainEdgesInMessage, []any{"message", node.ID, node.ID, partOf}
 		case "ask":
 			member.query.ExcludeKinds = AskBacklinkExclusions
+			member.main, member.mainArgs = mainEdgesInAskPanel, []any{"ask", node.ID, node.ID, AskBacklinkExclusions}
 		case edgesWholeDocumentRead:
 			member.query.Kinds, member.query.WholeDocuments = []string{"mentions"}, true
 			member.main, member.mainArgs, member.probes = mainEdgesInWholeDocument, []any{"artifact", node.ID, []string{"mentions"}}, probesNone
@@ -1498,12 +1922,13 @@ func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 			source, at := w.blockRef(d, "b1", "mentions", target, nil)
 			byBlock := edgeAt("mentions", "block", source, atBlock, at)
 			alone := edgeAt("mentions", "artifact", e.id, atBlock, w.ref("artifact", e.id, target))
-			if member.main != "" {
+			if member.query.WholeDocuments {
 				member.listed = append(member.listed, own, alone)
 				member.hidden = append(member.hidden, byBlock)
 				continue
 			}
-			member.rows = append(member.rows, alone, byBlock)
+			member.listed = append(member.listed, alone, byBlock)
+			member.hidden = append(member.hidden, own)
 		}
 		members = append(members, member)
 	}

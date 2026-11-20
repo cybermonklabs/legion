@@ -131,19 +131,98 @@ func blockHolds(alias, fromKind, table, column string) string {
 }
 
 // documentBlockIDs is the node id of every current block of the document whose ref_key is the
-// numbered parameter param, the set an "in" arm reads a document's blocks' edges by. A deleted
-// block has no row, so the edges at it drop out of every list until a version holds its id again.
+// numbered parameter param: the set an "in" read of the document reads once, and then reads the
+// links into each of its blocks by, one id at a time (keyedBlockArm). A deleted block has no row,
+// so the edges at it drop out of every list until a version holds its id again.
 func documentBlockIDs(param string) string {
 	return `(select d.node_id from document_blocks d join artifacts a on a.id = d.artifact_id where a.ref_key = ` + param + `)`
 }
 
 // itemBlockIDs is the node id of every current block of the item of kind whose uuid is the
-// numbered parameter param, the set an "in" arm reads an item's blocks' edges by. A removed block
-// keeps its row with no position, and the edges at it drop out of every list until a revision
-// holds its id again.
+// numbered parameter param: the set an "in" read of the item reads once, and then reads the links
+// into each of its blocks by, one id at a time (keyedBlockArm), and the set the read's replies
+// rule and answers fold test a reply's block against. A removed block keeps its row with no
+// position, and the edges at it drop out of every list until a revision holds its id again.
 func itemBlockIDs(kind ItemKind, param string) string {
 	tables, _ := kind.tables()
 	return `(select b.node_id from ` + tables.blocks + ` b where b.` + tables.item + ` = ` + param + `::uuid and b.position is not null)`
+}
+
+// itemBlockLinks and itemBlockCurrent are the rule that a link a block of an item holds stands
+// while that block is one of the item's current ones, the one place Go writes it: itemBlockLinks
+// is the from of a read of the links the blocks of an item of kind hold, its link table aliased r
+// joined to its blocks table aliased b by the item and the block id, and itemBlockCurrent the
+// condition on b. A removed block keeps its row with no position, so the links it held drop out
+// until a revision holds the block again. The words are graph_edges' own for its three arms over
+// these tables; the caller selects its columns and writes its own conditions beside
+// itemBlockCurrent. An ask's own refs row holds the links of its question alone, so a link
+// written in an option or in the answer is in ask_block_refs and in no edge of the ask's row,
+// where a comment's or a message's row holds every link its blocks hold.
+func itemBlockLinks(kind ItemKind) string {
+	tables, _ := kind.tables()
+	return tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id`
+}
+
+// itemBlockCurrent is the condition itemBlockLinks' reader writes on the block holding a link.
+const itemBlockCurrent = `b.position is not null`
+
+// keyedBlockArm is the arm of an "in" read over the current blocks of the node read, of storage
+// kind blockKind, whose node ids ids selects (documentBlockIDs, itemBlockIDs): each edge that
+// ends at one of those blocks, at that block, narrowed by source, the read's filter of a source
+// written over the arm's rows aliased g. It reads the ids once, and then, for each id, every arm
+// of graph_edges that can end at a block of that kind through its own index of targets, keyed by
+// to_kind and to_id (a reply by replies_to_block), each with the view's own rule for a current
+// block (migration 20261105014808): a block's pointer while block_ref_listed lists it, a link an
+// item's block holds while that block is current (itemBlockLinks), and a reply to an ask's part
+// told from one to a comment's block by its prefix. Each edge comes once: a node's block ids are
+// distinct, document_blocks being keyed by document and block and an item's blocks table holding
+// one row for each item and block id.
+func keyedBlockArm(blockKind, ids, source string) string {
+	arms := []string{
+		`select r.from_kind, r.from_id, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
+				from refs r where r.to_kind = '` + blockKind + `' and r.to_id = k.node_id`,
+		`select 'block', b.from_node, b.kind, b.to_kind, b.to_id, b.created_at, b.source_seq
+				from block_refs b where b.to_kind = '` + blockKind + `' and b.to_id = k.node_id
+				and (b.to_types is null or block_ref_listed(b.to_types, b.to_id))`,
+	}
+	for _, item := range itemKinds {
+		arms = append(arms, `select '`+item.BlockKind()+`', r.from_node, r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq
+				from `+itemBlockLinks(item)+`
+				where r.to_kind = '`+blockKind+`' and r.to_id = k.node_id and `+itemBlockCurrent)
+	}
+	// A reply names a block of an item, never a document's block.
+	for _, item := range itemKinds {
+		if item.BlockKind() == blockKind {
+			arms = append(arms, blockRepliesArm(item))
+		}
+	}
+	return `select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
+			from ` + ids + ` k (node_id)
+			cross join lateral (
+				` + strings.Join(arms, `
+				union all
+				`) + `
+			) g (from_kind, from_id, kind, to_kind, to_id, created_at, source_seq)
+			where ` + source
+}
+
+// blockRepliesArm is graph_edges' arm of the replies to a block of an item of kind owner, keyed
+// by the block's node id k.node_id through the replies' partial index on replies_to_block
+// (comments_replies_to_block, messages_replies_to_block). A comment answers a comment's block and
+// an ask's part, both named in comments.replies_to_block, and the node id's prefix tells the two
+// apart, as the view's two arms over comments tell them; a message answers a message's block.
+func blockRepliesArm(owner ItemKind) string {
+	replies := repliesFrom(owner)
+	tables, _ := replies.tables()
+	prefix := ""
+	switch {
+	case owner == ItemAsk:
+		prefix = ` and x.replies_to_block like 'ask/%'`
+	case replies == ItemComment:
+		prefix = ` and x.replies_to_block not like 'ask/%'`
+	}
+	return `select '` + string(replies) + `', x.id::text, 'replies_to', '` + owner.BlockKind() + `', x.replies_to_block, x.created_at, null::bigint
+				from ` + tables.items + ` x where x.replies_to_block = k.node_id` + prefix
 }
 
 // repliesToABlockOf is true of a graph_edges row alias that is the replies_to edge of a reply of
@@ -266,6 +345,15 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 // ask's parts among them (see Query) — and every inbound read lists an item's mention from the
 // block holding it (heldByABlock). A whole-document read lists each citer by its item instead,
 // an ask citing the document from a part included (asksCitingTheDocument).
+//
+// An inbound read's arm over the node's blocks reads the node's current block ids once, and then
+// each link table by its index of targets for each id (keyedBlockArm), never graph_edges with
+// to_id in those ids: the planner does not push that set into the view's arms, so that form read
+// refs by to_kind alone and hash-joined every block of that kind before a semi-join kept the
+// node's own. Measured at --scale 1 with jit off, it took 165 of the 166 ms of the statement for
+// the seed's root message with the most replies and 205 of the 261 ms of the one for the seed's
+// anchored document, and it grew with every block link of that kind in the database. The arm over
+// the node itself reads graph_edges by to_kind and to_id, which reach each arm's index.
 func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error) {
 	args := []any{query.Kind, query.ID}
 	document := query.Kind == "artifact"
@@ -293,8 +381,7 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 		case document:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = 'block' and g.to_id in ` + documentBlockIDs("$2") + ` and ` + source
+			` + keyedBlockArm("block", documentBlockIDs("$2"), source)
 			if query.WholeDocuments {
 				// An ask's row holds its question's links alone, so the only edge from an ask
 				// that cites the document in an option or in its answer is that part's.
@@ -305,8 +392,7 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 		case itemBlocks:
 			arms += `
 			union all
-			select g.kind, g.from_kind, g.from_id, g.created_at, g.source_seq, g.to_id
-			from graph_edges g where g.to_kind = '` + item.BlockKind() + `' and g.to_id in ` + itemBlockIDs(item, "$3") + ` and ` + source
+			` + keyedBlockArm(item.BlockKind(), itemBlockIDs(item, "$3"), source)
 		}
 	case query.Direction == "out" && document:
 		// The document's id again, bound as the uuid block_refs keys its rows by.
@@ -322,8 +408,8 @@ func readEdgeRows(ctx context.Context, q Queryer, query Query) ([]edgeRow, error
 			from graph_edges g where g.from_kind = $1 and g.from_id = $2 and not ` + heldByABlock("g") + `
 			union all
 			select r.kind, r.to_kind, r.to_id, r.created_at, r.source_seq, r.from_node
-			from ` + tables.refs + ` r join ` + tables.blocks + ` b on b.` + tables.item + ` = r.` + tables.item + ` and b.block_id = r.block_id
-			where r.` + tables.item + ` = $3::uuid and b.position is not null`
+			from ` + itemBlockLinks(item) + `
+			where r.` + tables.item + ` = $3::uuid and ` + itemBlockCurrent
 	case query.Direction == "out":
 		arms = `select g.kind, g.to_kind, g.to_id, g.created_at, g.source_seq, null::text
 			from graph_edges g where g.from_kind = $1 and g.from_id = $2`

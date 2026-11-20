@@ -356,13 +356,11 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
 	// (to_kind, to_id, (<item>::text)), then the blocks table's primary key for the join. The
-	// join keeps the view's position filter: a link a block holds is listed while that block is
-	// one of the item's current ones, and the count copies the view's answer rather than
-	// correcting it.
+	// join keeps the view's position filter (itemBlockLinks, itemBlockCurrent): a link a block
+	// holds is listed while that block is one of the item's current ones, and the count copies
+	// the view's answer rather than correcting it.
 	for _, item := range itemKinds {
-		tables, _ := item.tables()
-		arms = append(arms, arm(tables.refs+` r join `+tables.blocks+` b on b.`+tables.item+` = r.`+tables.item+` and b.block_id = r.block_id`,
-			` and b.position is not null`))
+		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent))
 	}
 	return arms
 }
