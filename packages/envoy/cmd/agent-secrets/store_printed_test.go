@@ -141,6 +141,20 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			wantNamedNotPrinted(t, "stderr", stderr, []string{row.says}, forbidden...)
 		})
 	}
+	// A create's cleanup deletes the empty secret it made (deleteOutright's DeleteSecret), which
+	// needs secretmanager.secrets.delete: its refusal names that permission, through the
+	// interceptor every Secret Manager call goes through.
+	t.Run("GCP Secret Manager, a refused DeleteSecret", func(t *testing.T) {
+		refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
+			return status.Error(codes.PermissionDenied, "Permission 'secretmanager.secrets.delete' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)
+		}
+		err := (&gcpBackend{}).storeInterceptor(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/DeleteSecret", nil, nil, nil, refused)
+		if err == nil {
+			t.Fatal("control: the refused DeleteSecret returned no error, so the row is blind")
+		}
+		wantNamedNotPrinted(t, "the refusal", err.Error(),
+			[]string{"Secret Manager DeleteSecret answered PermissionDenied (missing permission: secretmanager.secrets.delete; its message is not printed)"}, forbidden...)
+	})
 }
 
 // TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem: a settings answer from an

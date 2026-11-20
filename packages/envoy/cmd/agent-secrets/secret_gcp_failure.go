@@ -117,8 +117,8 @@ var gcpPermission = regexp.MustCompile(`Permission '([a-z]{1,64}(?:\.[a-zA-Z]{1,
 // the forms' calls need - Secret Manager's, and the agent-secrets key's Cloud KMS ones - and no other.
 var gcpPermissions = map[string]bool{
 	"secretmanager.secrets.list": true, "secretmanager.secrets.get": true, "secretmanager.secrets.create": true,
-	"secretmanager.secrets.update": true, "secretmanager.versions.access": true, "secretmanager.versions.add": true,
-	"secretmanager.versions.get": true, "secretmanager.versions.list": true,
+	"secretmanager.secrets.update": true, "secretmanager.secrets.delete": true, "secretmanager.versions.access": true,
+	"secretmanager.versions.add": true, "secretmanager.versions.get": true, "secretmanager.versions.list": true,
 	"cloudkms.cryptoKeyVersions.useToEncrypt": true, "cloudkms.cryptoKeyVersions.useToDecrypt": true,
 }
 
