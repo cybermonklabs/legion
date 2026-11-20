@@ -359,12 +359,14 @@ type Claim struct {
 	// store never writes them.
 	SuspensionHeld   bool
 	SuspensionHeldBy SuspendSource
-	// SessionLost is why the launch this claim is being built a spec for is a fresh agent in
-	// place of the session the claim recorded (startFresh), and "" for a launch that lost
-	// nothing. It is an argument of that one build and of nothing else: the machine sets it on
-	// the copy of the claim it hands the spec builder (spawnSpec), never on the claim it keeps or
-	// persists, so the new session is told it does not continue its predecessor's transcript and
-	// nothing afterwards reads it.
+	// SessionLost is the cause of the forget that the launch this claim is being built a spec for
+	// follows (startFresh): the launch is a fresh agent in place of the session the claim
+	// recorded, or a relaunch of that agent before its first ready, and "" for every other
+	// launch. It is an argument of that one build and of nothing else: the machine sets it on the
+	// copy of the claim it hands the spec builder (spawnSpec), from the cause it keeps from the
+	// forget to that ready (Machine.lostCause), never on the claim it keeps or persists, so the
+	// new session is told it does not continue its predecessor's transcript and nothing afterwards
+	// reads it.
 	SessionLost SessionLoss
 	// Compacting is whether the claim is working because its session is being compacted rather
 	// than because a turn is (Machine.Compact). It is memory only, as SuspensionHeld is:
@@ -997,11 +999,13 @@ type Deps struct {
 	// held by an untaken task would wait for the next tick. Nil tells no one. It is called inside
 	// the machine's decision, so it returns at once.
 	TaskConfirmed func(c Claim)
-	// SessionLost is told of each claim whose recorded session the launch forgot, once the fresh
-	// agent that replaces it is running (startFresh): the issue, its architect and the controller
-	// each have to know that a worker is continuing work it cannot read, and nothing else would
-	// say so. cause is why the session was forgotten, and detail is why in the runtime's words.
-	// Nil tells no one.
+	// SessionLost is told of each claim whose recorded session the launch forgot, once, at the
+	// forget and before the fresh agent that replaces it is spawned (startFresh), so a spawn that
+	// fails leaves the issue, its architect and the controller told all the same: each has to know
+	// that a worker is continuing work it cannot read, and nothing else would say so. c is the
+	// claim at the forget's launch, whose generation names it. cause is why the session was
+	// forgotten, and detail is why in words the cause chooses: the runtime's own account of the
+	// resume for a session no store holds, and none of it for the other two. Nil tells no one.
 	SessionLost func(c Claim, cause SessionLoss, detail string)
 	// SessionStoreFault is told when a start cannot reach the session store at all, at the first
 	// such start and hourly while it lasts (startWaitsForStore): the claim is not failing and
@@ -1249,6 +1253,16 @@ type Machine struct {
 	// generation: no answer of an earlier launch is in this daemon's stream. It is memory only, as
 	// answer is.
 	sessionFrom uint64
+	// lostCause is the cause of the forget the launch made last (startFresh), kept from that
+	// forget until the claim's first ready after it (ready), and "" at every other moment. Every
+	// launch until that ready is built with it (spawnSpec's sessionLost, Claim.SessionLost): the
+	// retry of a fresh spawn that failed, and a relaunch of the fresh agent before its ready, such
+	// as the stale-plugin relaunch that resumes its new file, so the agent that comes up is told
+	// in its own prompt that it does not continue the session the claim forgot. The session is
+	// not forgotten again: the claim records none by then, or the fresh agent's own. It is memory
+	// only: a restart loses it and the prompt's sentence with it, and the reason the claim stores
+	// with the abandoned session (Claim.Abandoned) still tells the fresh agent at its first task.
+	lostCause SessionLoss
 	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
 	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
 	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
@@ -2611,7 +2625,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 				return err
 			}
 		}
-		loc, err := m.start(starting, token)
+		loc, way, err := m.start(starting, token)
 		// A start cut short by its own context was refused by nothing, so it records no cause.
 		m.claim.LeakCheckCause = ""
 		if starting.Err() == nil {
@@ -2623,11 +2637,14 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// (start, Resume), so a stop an earlier try of this same launch could not make is no
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
+			// The mark of a start that had Oh My Pi resume the session by its id, which start set
+			// (Claim.AgentResumeGeneration), reaches the store in this one write with the process
+			// it names, so a claim that records that process always records the mark with it.
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
-				"resumed", m.claim.SessionFile != "")
+				"resumed", way != resumeNone, "resumedBy", string(way))
 			return m.persist(starting)
 		}
 		if starting.Err() != nil {
@@ -2849,20 +2866,45 @@ func (m *Machine) backOff(ctx context.Context) error {
 	return nil
 }
 
-// start launches the claim's process for this try: a Resume of its recorded session, or a Spawn
-// when it records none.
+// resumeWay is how a start began the claim's process (start), which the launched line names in
+// its resumedBy field (launchNow) and a production check of dispatch://INFRA-4108 reads.
+type resumeWay string
+
+const (
+	// resumeByFile is a Resume of the session file the claim records.
+	resumeByFile resumeWay = "file"
+	// resumeByID is a Resume of the session the claim records, by its id alone, which the pod's
+	// launcher found in its session table or the tmux runtime in the pane's sessions directory.
+	resumeByID resumeWay = "id"
+	// resumeByAgentLookup is a Resume of that session through a pod launcher that cannot look a
+	// session up by its id, whose agent's own command resolves the id (runtime.SpawnSpec's
+	// ResumeByAgent): Oh My Pi's own lookup.
+	resumeByAgentLookup resumeWay = "agent-lookup"
+	// resumeNone is a Spawn, which resumes nothing.
+	resumeNone resumeWay = "none"
+)
+
+// start launches the claim's process for this try, and answers how it began it (resumeWay):
+//
+//   - A claim that records a session file resumes that file.
+//   - A claim that records a session and no file resumes the session by its id alone
+//     (resumeByID), and spawns no fresh agent while it records the session: the fence would
+//     refuse that agent's registration as another session (claim.SameAgentRefusal), and the
+//     claim would be launched the same way again until its launch budget ran out
+//     (dispatch://INFRA-4108 R1). A Claude Code claim resumes only a transcript file and asks for
+//     no lookup by the id, so it forgets the session at once instead (startFresh,
+//     SessionLossClaudeNoFile).
+//   - A claim that records no session spawns a fresh agent.
 //
 // A Resume the runtime answers with runtime.ErrSessionFileMissing found the recorded session
 // nowhere it could be resumed: no store holds it any more. Both runtimes answer that way for that
-// one fact — the tmux runtime when no folder it searched holds the session, the Kubernetes
-// launcher when the session table does not hold the row (internal/shimwire's
-// LauncherStartResult) — and neither has started anything when it does. Resuming would fail the
-// same way on every try and wedge the claim until its launch budget ran out, so the claim forgets
-// the session and the same try spawns a fresh agent, which registers a session of its own. It is
-// charged nothing: a store that lost a session is not the claim failing. The loss is reported
-// (Deps.SessionLost) to the issue, its architect and the controller, and the fresh agent is told
-// in its own prompt (Claim.SessionLost), since nothing in a new session says that an older one
-// existed.
+// one fact, of a file and of an id — the tmux runtime when no folder it searched holds the
+// session, the Kubernetes launcher when the session table does not hold the row
+// (internal/shimwire's LauncherStartResult) — and neither has started anything when it does.
+// Resuming would fail the same way on every try and wedge the claim until its launch budget ran
+// out, so the claim forgets the session and the same try spawns a fresh agent, which registers a
+// session of its own (startFresh, SessionLossGone). It is charged nothing: a store that lost a
+// session is not the claim failing.
 //
 // A store that could not answer at all is not that fact and never gets here: it wraps
 // runtime.ErrSessionStore and the caller waits for the store (startWaitsForStore). Any other
@@ -2874,71 +2916,171 @@ func (m *Machine) backOff(ctx context.Context) error {
 // recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
 // is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
 // (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for
-// another claim's session. One another claim holds is refused here, as a launch failure the caller
+// another claim's session. A resume by the id runs under the id and under the id the file it finds
+// is named for (holdByID). One another claim holds is refused here, as a launch failure the caller
 // charges, and nothing starts under it.
-func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, error) {
-	spec, err := m.spawnSpec(ctx, token, "")
+func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, error) {
+	spec, err := m.spawnSpec(ctx, token, m.lostCause, false)
 	if err != nil {
-		return runtime.Locator{}, err
+		return runtime.Locator{}, resumeNone, err
 	}
-	if m.claim.SessionFile == "" {
-		return m.spawn(ctx, spec)
+	switch {
+	case m.claim.SessionFile == "" && m.claim.Session == "":
+		loc, err := m.spawn(ctx, spec)
+		return loc, resumeNone, err
+	case m.claim.SessionFile == "" && runtime.Of(spec.Backend) == runtime.BackendClaude:
+		return m.startFresh(ctx, token, SessionLossClaudeNoFile, nil)
+	case m.claim.SessionFile == "":
+		return m.resumeByID(ctx, token, spec)
 	}
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
-		return runtime.Locator{}, err
+		return runtime.Locator{}, resumeByFile, err
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
-		return loc, err
+		return loc, resumeByFile, err
 	}
-	return m.startFresh(ctx, token, err)
+	return m.startFresh(ctx, token, SessionLossGone, err)
+}
+
+// resumeByID is start's resume of the session a claim records with no file, by its id alone,
+// once the names it runs under are held to the claim (holdByID). A Resume the runtime answers
+// with runtime.ErrSessionFileMissing forgets the session, as a missing file does (start).
+//
+// One it answers with runtime.ErrSessionLookupUnavailable was never sent: the pod's launcher is
+// older than the lookup and has not said in its hello that it can make it (dispatch://INFRA-4108
+// R3). The same try then goes on by the claim's mark of a start that had Oh My Pi resume the
+// session by its id itself (Claim.AgentResumeGeneration):
+//
+//   - With no mark, the spec is built again, on a copy of the claim marked with this generation
+//     (spawnSpec's byAgent), which is how the spec builder knows to add to the agent's prompt
+//     that the workspace may have been recreated since the session last ran: that launcher reads
+//     no row of the session table, so its word that the workspace was not recreated was not
+//     checked. The prompt is part of the spec, so this build follows the first Resume's answer.
+//     The spec is resumed with ResumeByAgent, waiting out the same previous process: the agent's
+//     own command carries `--resume=<session id>`, which Oh My Pi resolves, and the launcher is
+//     named no session and no file. A start that succeeds marks the claim with its generation,
+//     which launchNow writes in the write that records the process, so a restart reads the mark
+//     back; one the runtime refuses marks nothing and is a launch failure the caller charges, as
+//     any refused start is.
+//   - With a mark, an earlier start of that kind did not register as the session, since that
+//     registration clears the mark (register). Oh My Pi is not asked again: this try forgets the
+//     session, charged nothing (startFresh, SessionLossNotResumedByID).
+//
+// The mark is set only while it is 0, so it names one generation. A try through a pod since
+// replaced by one whose launcher can make the lookup resumes by the id through that launcher and
+// leaves the mark as it is, for that start's registration or a forget to clear.
+func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.SpawnSpec) (runtime.Locator, resumeWay, error) {
+	if err := m.holdByID(ctx, m.claim.Session); err != nil {
+		return runtime.Locator{}, resumeByID, err
+	}
+	spec.ResumeSession = m.claim.Session
+	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
+	switch {
+	case errors.Is(err, runtime.ErrSessionFileMissing):
+		return m.startFresh(ctx, token, SessionLossGone, err)
+	case !errors.Is(err, runtime.ErrSessionLookupUnavailable):
+		return loc, resumeByID, err
+	case m.claim.AgentResumeGeneration != 0:
+		return m.startFresh(ctx, token, SessionLossNotResumedByID, err)
+	}
+	spec, err = m.spawnSpec(ctx, token, m.lostCause, true)
+	if err != nil {
+		return runtime.Locator{}, resumeByAgentLookup, err
+	}
+	spec.ResumeSession, spec.ResumeByAgent = m.claim.Session, true
+	loc, err = m.deps.Runtime.Resume(ctx, m.previous, spec)
+	if err != nil {
+		return loc, resumeByAgentLookup, err
+	}
+	m.claim.AgentResumeGeneration = m.claim.Generation
+	return loc, resumeByAgentLookup, nil
 }
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
 // machine knows — who the claim is, the generation and the boot token this try mints. A resume
-// adds its session file; a spawn carries none.
+// adds its session file or its session id; a spawn carries neither.
 //
-// sessionLost is the one thing about this launch that is not the claim's own state: a cause says
-// the agent it starts is fresh because the launch forgot the recorded session (startFresh), which
-// the spec builder turns into a sentence in the agent's own prompt, and "" says the launch lost
-// nothing. It is set on the copy handed to the builder and never on the claim the machine keeps,
-// which is the claim it persists.
-func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost SessionLoss) (runtime.SpawnSpec, error) {
+// Two things about this launch are not the claim's own state, and each is set on the copy handed
+// to the builder and never on the claim the machine keeps, which is the claim it persists.
+// sessionLost is the cause of the forget this launch follows (startFresh, Machine.lostCause),
+// which the spec builder turns into a sentence in the agent's own prompt, and "" for a launch that
+// follows none. byAgent marks the copy with the claim's generation (Claim.AgentResumeGeneration):
+// the launch has Oh My Pi resume the session by its id itself (resumeByID), and the builder adds
+// the sentence that the workspace may have been recreated. The claim the machine keeps is marked
+// only once that start has succeeded, after its build, and each later try moves the generation
+// before it builds, so no other build finds the mark equal to the generation.
+func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost SessionLoss, byAgent bool) (runtime.SpawnSpec, error) {
 	building := m.claim
 	building.SessionLost = sessionLost
+	if byAgent {
+		building.AgentResumeGeneration = m.claim.Generation
+	}
 	spec, err := m.deps.Specs.SpawnSpec(ctx, building)
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.Tree, m.claim.Issue, m.claim.Role
-	spec.Generation, spec.BootToken, spec.ResumeSessionFile = m.claim.Generation, token, ""
+	spec.Generation, spec.BootToken = m.claim.Generation, token
+	spec.ResumeSessionFile, spec.ResumeSession, spec.ResumeByAgent = "", "", false
 	return spec, nil
 }
 
-// startFresh spawns a new agent for a claim whose recorded session no store holds any more
-// (start). The spec is built again for a launch that lost its session, so the agent that starts
-// is told its predecessor is gone rather than left to infer it from an empty transcript, and the
-// report to the issue, the architect and the controller goes only once the fresh agent is
-// actually running: a spawn that failed is a launch failure the caller charges, and says nothing
-// yet about the session.
-func (m *Machine) startFresh(ctx context.Context, token string, cause error) (runtime.Locator, error) {
-	m.log.Warn("supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
-		"session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", cause)
-	lost := m.claim.Session
-	m.forgetSession(fmt.Sprintf("no session store the runtime could resume it from holds it any more: %v", cause))
-	spec, err := m.spawnSpec(ctx, token, SessionLossGone)
+// startFresh forgets the session the claim records, for cause, and spawns a fresh agent in its
+// place in the same try, charged nothing (start, resumeByID). cause chooses the words of the
+// forget's warning line and of its two texts (forgetWords): the reason the claim keeps with the
+// session it abandons (Claim.Abandoned), which the fresh agent is told at its first task, and the
+// detail the workflow tells the issue, its architect and the controller (Deps.SessionLost).
+// answer is the runtime's answer that led to the forget, which the line carries, and nil for a
+// Claude Code claim's, which asked the runtime nothing.
+//
+// The workflow is told once, at the forget and before the spawn: a fresh spawn that fails is a
+// launch failure the caller charges, and its retry finds no session to forget, so a report made
+// only after a spawn that succeeded would never be made at all. The cause is kept on the machine
+// until the claim's first ready (Machine.lostCause), so every launch until then — that retry, and
+// a relaunch of the fresh agent before its ready — is built for a claim that knows its session was
+// forgotten, and the agent that comes up is told in its own prompt rather than left to infer it
+// from an empty transcript.
+func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, error) {
+	line, why, detail := forgetWords(cause, m.claim.Session, answer)
+	m.log.Warn(line, "session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", answer)
+	m.forgetSession(why)
+	m.lostCause = cause
+	if m.deps.SessionLost != nil {
+		m.deps.SessionLost(m.current(), cause, detail)
+	}
+	spec, err := m.spawnSpec(ctx, token, cause, false)
 	if err != nil {
-		return runtime.Locator{}, err
+		return runtime.Locator{}, resumeNone, err
 	}
 	loc, err := m.spawn(ctx, spec)
-	if err != nil {
-		return loc, err
+	return loc, resumeNone, err
+}
+
+// forgetWords is what a forget of session for cause says (startFresh): its warning line, the
+// reason the claim keeps with the abandoned session (AbandonedSession.Why), and the detail the
+// workflow is told (Deps.SessionLost). For a session no store holds, the three keep the words they
+// had before there was a cause, with the runtime's answer in both texts, and the line keeps the
+// prefix a production check reads ("supervise: the recorded session is found nowhere"). For a
+// session the pod's launcher could not look up, neither text says that the session was lost or
+// that no store holds it, and neither carries the runtime's answer, which could: nothing of the
+// session was deleted, and a store may still hold it. The line carries that answer, which names
+// the pod.
+func forgetWords(cause SessionLoss, session string, answer error) (line, why, detail string) {
+	switch cause {
+	case SessionLossNotResumedByID:
+		return "supervise: the pod's launcher cannot look the recorded session up by its id, and Oh My Pi did not resume it by that id, so the claim forgets it and starts a fresh agent, charged nothing",
+			fmt.Sprintf("the pod's launcher, which is older than this release, could not look the session %s up by its id, and Oh My Pi did not resume it by that id", session),
+			fmt.Sprintf("the pod's launcher, which is older than this release, could not look the session %s this claim recorded up by its id, and Oh My Pi did not resume it by that id, so it runs a fresh agent that has read none of its own earlier work", session)
+	case SessionLossClaudeNoFile:
+		return "supervise: a Claude Code claim records a session and no transcript file, so the claim forgets it and starts a fresh agent, charged nothing",
+			fmt.Sprintf("a Claude Code claim recorded the session %s with no transcript file, so the launch cannot resume it", session),
+			fmt.Sprintf("this Claude Code claim recorded the session %s with no transcript file, so the launch cannot resume it, and it runs a fresh agent that has read none of its own earlier work", session)
 	}
-	if m.deps.SessionLost != nil {
-		m.deps.SessionLost(m.current(), SessionLossGone, fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", lost, cause))
-	}
-	return loc, nil
+	return "supervise: the recorded session is found nowhere the runtime can resume it, so the claim starts a fresh agent, charged nothing",
+		fmt.Sprintf("no session store the runtime could resume it from holds it any more: %v", answer),
+		fmt.Sprintf("the session %s this claim recorded is in no session store the runtime could resume it from, so it runs a fresh agent that has read none of its own earlier work: %v", session, answer)
 }
 
 // spawn starts a fresh agent for this launch, and so a session of its own: from here an answer of
@@ -3180,11 +3322,15 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // where it went and the fresh agent is told of it in its first task.
 //
 // It is the one place a claim leaves its session behind, so every start, retry or resume of a
-// claim relaunches the session the claim records, and a claim starts in a new session only after
-// this ran. It has three callers: the launch's startFresh, for a session no store holds any more;
-// retry, when freshSession says the retry needs a new session; and the operator's forget-session
-// (forgetSession, the table's), which `legion claims retry --fresh-session` and the controller's
-// fresh_session run (api's freshSession).
+// claim relaunches the session the claim records — by its file, or by its id where it records no
+// file (start) — unless that launch forgets the session here, and a claim starts in a new session
+// only after this ran. It has three callers: the launch's startFresh, for a session no store holds
+// any more, one the pod's launcher could not look up and Oh My Pi did not resume by its id, and
+// one a Claude Code claim records with no transcript file; retry, when freshSession says the retry
+// needs a new session; and the operator's forget-session (forgetSession, the table's), which
+// `legion claims retry --fresh-session` and the controller's fresh_session run (api's
+// freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
+// (Claim.AgentResumeGeneration).
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -3225,6 +3371,9 @@ func (m *Machine) forgetSession(why string) {
 		}
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""
+	// The mark of a start that had Oh My Pi resume the session by its id names a start of the
+	// session dropped here, so it goes with it (Claim.AgentResumeGeneration).
+	m.claim.AgentResumeGeneration = 0
 	// The names the machine knows it holds are of the session it just let go, which an operator's
 	// release may free later (ReleaseNames) and another claim then take: kept, they would let this
 	// claim register that session again without asking the store. So the cache holds only the

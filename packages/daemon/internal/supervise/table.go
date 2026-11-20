@@ -2327,12 +2327,17 @@ func spawn(m *Machine, ctx context.Context, ev Event) error {
 
 // register records the session the agent became, once every name of it is held to this claim
 // (holdRecorded): a session another claim recorded first, by its id or by its file, is refused
-// before anything of the registration is recorded or enrolled. The boot intervals end with the
-// registration, but not the deadline: it is armed again at its base bound, and only the agent's
-// ready ends it. A registration whose answer never reached its agent leaves a claim no ready will
-// ever come for, and from here that looks exactly like an agent slow to boot. A registration whose
-// plugin still differs from the daemon's is relaunched at once and refused (staleRegistration): the
-// agent that just registered is not the one that relaunch starts.
+// before anything of the registration is recorded or enrolled. It writes the session and its file
+// together, and it is the first registration after any launch, since it answers a claim still
+// booting: a claim that recorded a session and no file, resumed by the id, records the file again
+// here, with the file's names held, and the mark of a start that had Oh My Pi resume the session
+// by its id is cleared in the same write (Claim.AgentResumeGeneration), since that start has
+// registered. The boot intervals end with the registration, but not the deadline: it is armed
+// again at its base bound, and only the agent's ready ends it. A registration whose answer never
+// reached its agent leaves a claim no ready will ever come for, and from here that looks exactly
+// like an agent slow to boot. A registration whose plugin still differs from the daemon's is
+// relaunched at once and refused (staleRegistration): the agent that just registered is not the
+// one that relaunch starts.
 func register(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2342,6 +2347,7 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 		return err
 	}
 	m.claim.Session, m.claim.SessionFile = r.Session, r.SessionFile
+	m.claim.AgentResumeGeneration = 0
 	m.claim.CapabilityHash = bytes.Clone(r.CapabilityHash)
 	m.claim.PluginContract = r.PluginContract
 	if r.PluginContract == m.deps.PluginContract {
@@ -2365,9 +2371,10 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 // deadline stays where the first registration set it, so an agent that keeps registering and never
 // says it is ready is still relaunched. The session is held as register holds it, by every name of
 // it: one the claim recorded before the daemon held sessions is the claim's, unless another claim
-// recorded it too, when it is held for neither (the claim_sessions migration). A registration
-// whose plugin still differs from the daemon's is relaunched at once and refused the same way
-// register's is (staleRegistration).
+// recorded it too, when it is held for neither (the claim_sessions migration). It writes the file
+// alone, since the session is the one register recorded with a file at this launch's first
+// registration. A registration whose plugin still differs from the daemon's is relaunched at once
+// and refused the same way register's is (staleRegistration).
 func reregister(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestRegister)
 	if err := checkSessionNames(r.Session, r.SessionFile); err != nil {
@@ -2393,6 +2400,9 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // than the agent that is running now (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
+	// The cause of a forget is kept for the launches of the fresh agent until it comes up
+	// (Machine.lostCause): the first launch after this ready continues a session of its own.
+	m.lostCause = ""
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
 	// when this agent came up (Claim.PendingCause).
@@ -2448,16 +2458,22 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 // hold, asked before anything of the claim changes, and otherwise nil: a claim recording a session
 // another claim holds, or one no claim holds, is refused its resume, and stays suspended, rather
 // than launched into the hold's refusal at start, which charges each launch to its budget and
-// fails the claim within it (acceptance of #4220). Its remedy is a new session, `legion claims
-// forget-session`, then the resume. A store that does not answer is no refusal: the resume goes on,
-// and start asks again at the probe interval, charging nothing, as before. A claim recording no
-// session resumes as before, and so does one holding its session, which costs no store call once
-// admitted (R9).
+// fails the claim within it (acceptance of #4220). It asks the names start holds: those the record
+// gives (holdRecorded), and for a claim that records no file those a resume by the id runs under
+// (holdByID). Its remedy is a new session, `legion claims forget-session`, then the resume. A
+// store that does not answer is no refusal: the resume goes on, and start asks again at the probe
+// interval, charging nothing, as before. A claim recording no session resumes as before, and so
+// does one holding its session, which costs no store call once admitted (R9).
 func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 	if m.claim.Session == "" {
 		return nil
 	}
-	err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile)
+	var err error
+	if m.claim.SessionFile == "" {
+		err = m.holdByID(ctx, m.claim.Session)
+	} else {
+		err = m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile)
+	}
 	var refusal claim.Refusal
 	if !errors.As(err, &refusal) {
 		return nil
