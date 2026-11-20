@@ -307,17 +307,17 @@ func (c *Client) serviceToken() (string, error) {
 }
 
 // daemonSideFault reports whether err, from a login POST that got no HTTP answer, is a fault on
-// the daemon's own side rather than a broker out of reach: a TLS handshake that failed — a
-// certificate that does not verify (crypto/tls wraps a missing or wrong trust root, a host name
-// that does not match and an expired certificate alike as *tls.CertificateVerificationError), an
-// answer that is not TLS at all, or an alert, the far side's or one this client sent itself on an
-// answer it could not take — and a host name that does not resolve. Nothing the daemon waits for
-// fixes one of these: its trust store, its broker URL or its resolver has to change, so the login
-// takes the long schedule, as the daemon's Dispatch client keeps the same certificate and alert
-// shapes out of the class it waits out (transportFailure, internal/dispatch). Every other
-// transport failure — a refused or reset connection, a timeout, an unreachable network, a
-// resolver that failed for any other reason — is the broker out of reach, which the next seconds
-// may fix.
+// the daemon's own side rather than a broker out of reach: a TLS failure — a handshake that failed
+// (a certificate that does not verify: crypto/tls wraps a missing or wrong trust root, a host name
+// that does not match and an expired certificate alike as *tls.CertificateVerificationError; or an
+// answer that is not TLS at all), or a TLS alert on the handshake or on a later record, the far
+// side's or one this client sent itself on an answer it could not take — and a host name that does
+// not resolve. Nothing the daemon waits for fixes one of these: its trust store, its broker URL or
+// its resolver has to change, so the login takes the long schedule, as the daemon's Dispatch
+// client keeps the same certificate and alert shapes out of the class it waits out
+// (TransportRefusal, internal/dispatch). Every other transport failure — a refused or reset
+// connection, a timeout, an unreachable network, a resolver that failed for any other reason — is
+// the broker out of reach, which the next seconds may fix.
 //
 // Two shapes are read as the standard library leaves them. net/http answers a plain-HTTP port with
 // http.ErrSchemeMismatch in place of the tls.RecordHeaderError it read (net/http/client.go), so

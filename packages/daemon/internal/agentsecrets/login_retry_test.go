@@ -200,13 +200,13 @@ func withoutTime(groups []string, a slog.Attr) slog.Attr {
 // login falls in, each against a real server or a real resolver rather than a planted error, as
 // internal/dispatch/unreachable_test.go drives transportFailure's own shapes.
 //
-// The five long-retry rows are what changed: a TLS handshake that fails, an alert the far side
-// sent or the daemon sent itself included, and a name that does not resolve are faults on the
-// daemon's own side, which asking again in seconds only repeats, so they now wait the schedule a
-// refusal waits instead of the pod renewer's. The five short-retry rows — a refused connection, a
-// connection reset after it was accepted, a timeout, a DNS failure that is not "not found", and a
-// 5xx — are the behaviour this client already had, and are new coverage of it rather than proof
-// of a change.
+// The five long-retry rows are what changed: a TLS handshake that fails, a TLS alert the far side
+// sent or the daemon sent itself, and a name that does not resolve are faults on the daemon's own
+// side, which asking again in seconds only repeats, so they now wait the schedule a refusal waits
+// instead of the pod renewer's. The five short-retry rows — a refused connection, a connection
+// reset after it was accepted, a timeout, a DNS failure that is not "not found", and a 5xx — are
+// the behaviour this client already had, and are new coverage of it rather than proof of a
+// change.
 //
 // Each row reads the whole log the login wrote, not a line of it: one failed login is one line,
 // and a second line per failure would be a regression an operator sees.

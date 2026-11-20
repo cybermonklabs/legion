@@ -277,11 +277,12 @@ func WithLastError(err error, conn *nats.Conn) error {
 }
 
 // Unreachable reports whether err means NATS is not reachable yet, as against a misconfiguration
-// — a permission or an authorization violation the server itself refuses, an alert of a TLS
-// handshake (tlsalert.In: a server that demands a client certificate, say, or speaks no TLS version
-// this client does), or a malformed seed (userKey, before any dial is attempted) — that no wait
-// fixes. The alert is read before the dial's shape because crypto/tls returns it as a *net.OpError
-// too, which would otherwise read as a NATS not up yet and be waited out forever.
+// — a permission or an authorization violation the server itself refuses, a TLS alert, on the
+// handshake or on a later record (tlsalert.In: a server that demands a client certificate, say, or
+// speaks no TLS version this client does), or a malformed seed (userKey, before any dial is
+// attempted) — that no wait fixes. The alert is read before the dial's shape because crypto/tls
+// returns it as a *net.OpError too, which would otherwise read as a NATS not up yet and be waited
+// out forever.
 // Matched by concrete, named shapes only, never the net.Error interface: two unrelated
 // standard library types satisfy that interface without being network failures at all —
 // context.DeadlineExceeded and *url.Error — so a caller must never classify by the interface

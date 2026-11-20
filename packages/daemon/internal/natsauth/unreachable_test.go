@@ -45,9 +45,10 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 		{"no responders for a JetStream request: ambiguous (disabled vs. still starting), exits by default",
 			errors.New("nats: no responders available for request"), false},
 		{"a plain error with no recognized shape at all", errors.New("boom"), false},
-		// A TLS alert ends the handshake with an answer no wait fixes: the server demands a client
-		// certificate, say, or speaks no TLS version the client does. Each is built as crypto/tls
-		// builds it over TCP (crypto/tls/conn.go), a *net.OpError naming no network.
+		// A TLS alert is an answer no wait fixes: the server demands a client certificate, say, or
+		// speaks no TLS version the client does. These rows' alerts end the handshake; an alert on a
+		// later record reads the same (tlsalert.In). Each is built as crypto/tls builds it over TCP
+		// (crypto/tls/conn.go), a *net.OpError naming no network.
 		{"a TLS alert the server sent", &net.OpError{Op: "remote error", Err: errors.New("tls: certificate required")}, false},
 		{"a TLS alert the client sent itself, on a handshake answer it could not take",
 			&net.OpError{Op: "local error", Err: errors.New("tls: unexpected message")}, false},
