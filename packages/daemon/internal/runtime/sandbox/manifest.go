@@ -417,13 +417,13 @@ type keptPod struct {
 	store ompsessions.StoreKind
 	// checker is the manifest digest of the deployment's leak check this pod's install holds, as
 	// the pod records it (recordedLeakChecker): the digest its template was built under
-	// (leakCheckerAnnotation), the install made at the image's own pin, or else the digest this
-	// daemon pushed into it (leakCheckPushedAnnotation); and so the one its role is told
-	// (launch.leakChecker). recorded is whether the pod records one at all. A pod that records none
-	// was built under no setting, or by a daemon before the record: its role is told none where its
-	// launcher holds an install from before, which a daemon of a release before the setting pushed
-	// and hashed nothing of, and the setting's own digest where its launcher holds none, since this
-	// daemon records that digest and pushes the setting's check into it first (relaunch).
+	// (leakCheckerAnnotation), the install made at the image's own pin, or else the digest of the
+	// tarball the daemon served into it (leakCheckPushedAnnotation); and so the one its role is
+	// told (launch.leakChecker). recorded is whether the pod records one at all. A pod that records
+	// none was built under no setting, or by a daemon before the record: its role is told none where
+	// its launcher holds an install from before, which a daemon of a release before the setting
+	// pushed and hashed nothing of. Where it holds none, serveLeakCheck records the manifest of the
+	// served tarball for the reconnected session, then tells that digest to the role.
 	checker  string
 	recorded bool
 }

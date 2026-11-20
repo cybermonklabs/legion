@@ -6,6 +6,7 @@ import (
 	"cmp"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -93,29 +94,67 @@ var errOverLimit = errors.New("over the read limit")
 // maxPackedBytes. Each error is a predicate of the tarball, written to follow
 // `the tarball of <the repository> at <tag> ` in the cause sentence the daemon builds of it (Cause).
 func PackTarball(r io.Reader) ([]byte, error) {
+	body, _, err := packTarball(r, nil)
+	return body, err
+}
+
+// PackTarballManifest is PackTarball with the manifest digest of the exact regular-file bytes it
+// packs. It streams each manifest file through its sha256 while it writes the served tarball, so a
+// source need not unpack or copy the body it already holds.
+func PackTarballManifest(r io.Reader) ([]byte, string, error) {
+	manifest := &servedManifest{files: make(map[string][sha256.Size]byte, len(ManifestFiles))}
+	body, _, err := packTarball(r, manifest)
+	if err != nil {
+		return nil, "", err
+	}
+	digest, err := manifestFromSHA256(func(name string) ([sha256.Size]byte, error) {
+		sum, found := manifest.files[name]
+		if !found {
+			return [sha256.Size]byte{}, fs.ErrNotExist
+		}
+		return sum, nil
+	})
+	return body, digest, err
+}
+
+func packTarball(r io.Reader, manifest *servedManifest) ([]byte, int, error) {
 	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
-	files, found, err := pack(in, out)
+	files, found, err := pack(in, out, manifest)
 	switch {
 	case in.N <= 0:
-		return nil, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
+		return nil, 0, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
 	case out.over:
-		return nil, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
+		return nil, 0, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
 	case err != nil:
-		return nil, err
+		return nil, 0, err
 	case !found:
-		return nil, fmt.Errorf("holds no %s directory", checkDirectory)
+		return nil, 0, fmt.Errorf("holds no %s directory", checkDirectory)
 	case files == 0:
-		return nil, fmt.Errorf("holds a %s directory with no file", checkDirectory)
+		return nil, 0, fmt.Errorf("holds a %s directory with no file", checkDirectory)
 	}
-	return out.buf.Bytes(), nil
+	return out.buf.Bytes(), files, nil
+}
+
+type servedManifest struct {
+	files map[string][sha256.Size]byte
+}
+
+func isManifestFile(name string) bool {
+	for _, manifest := range ManifestFiles {
+		if name == manifest {
+			return true
+		}
+	}
+	return false
 }
 
 // pack copies the leak-check directory of the tarball r carries into a gzipped tarball written to
-// w, and answers how many files it wrote and whether the directory was there at all. GitHub's
-// tarball of a repository holds every member under one `<owner>-<repo>-<sha>/` directory, so the
-// members this reads are `<that>/leak-check/…` (memberPath).
-func pack(r io.Reader, w io.Writer) (files int, found bool, err error) {
+// w, and answers how many files it wrote and whether the directory was there at all. Where
+// manifest is non-nil, each manifest file is hashed as its bytes stream into the packed tarball.
+// GitHub's tarball of a repository holds every member under one `<owner>-<repo>-<sha>/`
+// directory, so the members this reads are `<that>/leak-check/…` (memberPath).
+func pack(r io.Reader, w io.Writer, manifest *servedManifest) (files int, found bool, err error) {
 	zipped, err := gzip.NewReader(r)
 	if err != nil {
 		return 0, false, fmt.Errorf("could not be read: %w", err)
@@ -147,9 +186,27 @@ func pack(r io.Reader, w io.Writer) (files int, found bool, err error) {
 		case tar.TypeDir:
 			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeDir, Name: strings.TrimSuffix(rel, "/") + "/", Mode: mode, ModTime: header.ModTime})
 		case tar.TypeReg:
+			if manifest != nil && isManifestFile(rel) {
+				if header.Size > manifestFileLimit {
+					return 0, false, fmt.Errorf("manifest file %s is over the %d MiB read limit", rel, manifestFileLimit>>20)
+				}
+				if _, duplicate := manifest.files[rel]; duplicate {
+					return 0, false, fmt.Errorf("the manifest file %q occurs more than once", rel)
+				}
+			}
 			err = packed.WriteHeader(&tar.Header{Typeflag: tar.TypeReg, Name: rel, Mode: mode, Size: header.Size, ModTime: header.ModTime})
 			if err == nil {
-				_, err = io.Copy(packed, archive)
+				if manifest == nil || !isManifestFile(rel) {
+					_, err = io.Copy(packed, archive)
+				} else {
+					sum := sha256.New()
+					_, err = io.Copy(io.MultiWriter(packed, sum), archive)
+					if err == nil {
+						var digest [sha256.Size]byte
+						copy(digest[:], sum.Sum(nil))
+						manifest.files[rel] = digest
+					}
+				}
 			}
 			files++
 		default:

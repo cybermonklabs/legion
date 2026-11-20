@@ -2,7 +2,9 @@ package leakguard
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -827,29 +829,25 @@ func TestAGuardUnderACheckerRunsOnlyTheCheckItNames(t *testing.T) {
 
 // The manifest digest is what the check's own install procedure records and an operator computes
 // with one shell line: `(cd <dir> && sha256sum public-leak-check.sh public_leak_check.py README.md
-// must-pass-lines.txt) | sha256sum`. That line, run here by the real sha256sum, is the oracle the
-// Go digest is held to, so the formula is not checked against a copy of itself; a reordering of
-// the files, a missing file and an edit of any one of them each change the digest.
+// must-pass-lines.txt) | sha256sum`. sha256sumLineDigest is a portable oracle for those exact
+// lines, so this test runs on a host with no sha256sum binary and still holds the Go digest to the
+// documented formula; a reordering of the files, a missing file and an edit of any one of them
+// each change the digest or refuse it.
 func TestTheManifestDigestIsWhatSha256sumPrintsOfTheCheck(t *testing.T) {
-	if _, err := exec.LookPath("sha256sum"); err != nil {
-		t.Skip("no sha256sum on PATH to hold the digest to")
-	}
 	dir := t.TempDir()
 	check := leakguardtest.Write(t, dir, leakguardtest.Passes)
 	leakguardtest.Companions(t, dir, leakguardtest.Program)
-	cmd := exec.Command("sh", "-c", "sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt | sha256sum")
-	cmd.Dir = dir
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oracle := strings.Fields(string(out))[0]
+	oracle := sha256sumLineDigest(t, dir, ManifestFiles)
 	got, err := manifestSHA256(check)
 	if err != nil || got != oracle {
 		t.Fatalf("manifestSHA256 = %q, %v; want %q, what sha256sum prints", got, err, oracle)
 	}
 	if !slices.Equal(ManifestFiles, []string{"public-leak-check.sh", "public_leak_check.py", "README.md", "must-pass-lines.txt"}) {
 		t.Fatalf("ManifestFiles = %q, want the install procedure's home set in its order", ManifestFiles)
+	}
+	reordered := []string{ManifestFiles[1], ManifestFiles[0], ManifestFiles[2], ManifestFiles[3]}
+	if other := sha256sumLineDigest(t, dir, reordered); other == oracle {
+		t.Fatalf("the reordered sha256sum lines digest to %s, want a digest other than %s", other, oracle)
 	}
 	for _, name := range ManifestFiles {
 		t.Run("an edit of "+name, func(t *testing.T) {
@@ -863,10 +861,35 @@ func TestTheManifestDigestIsWhatSha256sumPrintsOfTheCheck(t *testing.T) {
 			if _, err := f.WriteString("# an edit\n"); err != nil {
 				t.Fatal(err)
 			}
-			f.Close()
+			if err := f.Close(); err != nil {
+				t.Fatal(err)
+			}
 			if other, err := manifestSHA256(filepath.Join(edited, checkName)); err != nil || other == oracle {
 				t.Fatalf("an edit of %s left the digest %q (%v), want another", name, other, err)
 			}
 		})
 	}
+	if err := os.Remove(filepath.Join(dir, ManifestFiles[len(ManifestFiles)-1])); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manifestSHA256(check); err == nil {
+		t.Fatal("manifestSHA256 succeeded with a manifest file missing")
+	}
+}
+
+func sha256sumLineDigest(t *testing.T, dir string, files []string) string {
+	t.Helper()
+	var lines strings.Builder
+	for _, name := range files {
+		body, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(body)
+		if _, err := fmt.Fprintf(&lines, "%x  %s\n", sum, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sum := sha256.Sum256([]byte(lines.String()))
+	return fmt.Sprintf("%x", sum)
 }

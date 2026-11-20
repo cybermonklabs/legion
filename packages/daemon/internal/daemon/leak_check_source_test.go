@@ -53,12 +53,15 @@ var leakCheckGrant = map[string]string{"actions": "write", "checks": "read", "co
 	"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 
 // leakCheckTarball is a GitHub tarball of the check's repository: every member under one
-// `<owner>-<repo>-<sha>` directory, the check's launcher (leakguardtest.AnswersHelp) under its
-// leak-check directory.
+// `<owner>-<repo>-<sha>` directory, the check's launcher (leakguardtest.AnswersHelp) and every
+// other file its manifest covers under its leak-check directory.
 func leakCheckTarball(t *testing.T) []byte {
 	t.Helper()
 	return leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
+		leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
 	})
 }
 

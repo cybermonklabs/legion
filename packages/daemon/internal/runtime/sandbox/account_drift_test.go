@@ -8,6 +8,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -154,5 +155,29 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *test
 	}
 	if cache := CacheSandboxName(testProject, spec.Repository); warnings(cache) != 0 {
 		t.Errorf("the boot reconciliation warned of the cache %s, which its own sweep makes again: %q", cache, logs.String())
+	}
+}
+
+// The boot reconciliation logs the held and configured leak-check manifests of a pod that was
+// built under another setting. Without this warning an operator sees the round's drift reason
+// only after the round has chosen the pod, rather than in the boot sweep that names every pod
+// still running the old check.
+func TestTheBootReconciliationWarnsOfEachPodRunningAnotherLeakCheckManifest(t *testing.T) {
+	g := newRig(t, nil)
+	loc := g.spawn(workerSpec(t))
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	logs := &lockedLog{}
+	r2 := secondRuntime(t, g, func(o *Options) {
+		o.LeakCheckSetting = moved
+		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	})()
+
+	if err := r2.ReconcileOrphans(g.ctx, []runtime.Known{{Claim: workerToken, Locator: &loc}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	want := "sandbox runtime: " + loc.Sandbox.Name + " runs leak check manifest " + testLeakCheck.ManifestSHA256 +
+		", the configured manifest is " + moved.ManifestSHA256 + "; its agents keep the held check until its update round replaces the pod"
+	if got := strings.Count(logs.String(), want); got != 1 {
+		t.Fatalf("the boot reconciliation logged %q matching leak-check warning(s), want one in %q", want, logs.String())
 	}
 }

@@ -30,8 +30,9 @@ const testLeakCheckTag = "leak-check-v3"
 // (leakguard.Source): it answers body at any tag, sliced as the reader slices it, or refuses every
 // read with err, and records the tag of each read.
 type fakeLeakCheck struct {
-	body []byte
-	err  error
+	body     []byte
+	manifest string
+	err      error
 
 	mu   sync.Mutex
 	tags []string
@@ -48,7 +49,7 @@ func (f *fakeLeakCheck) Get(_ context.Context, tag string) (leakguard.Served, er
 	if err != nil {
 		return leakguard.Served{}, err
 	}
-	return leakguard.Served{Tag: tag, Body: f.body, Frames: frames}, nil
+	return leakguard.Served{Tag: tag, Body: f.body, ManifestSHA256: f.manifest, Frames: frames}, nil
 }
 
 func (f *fakeLeakCheck) reads() []string {
@@ -60,7 +61,8 @@ func (f *fakeLeakCheck) reads() []string {
 // servedLeakCheck is a reader whose packed check is more than one
 // shimwire.LauncherBundlePayloadBytes, so the push is a sequence of slices and not one frame.
 func servedLeakCheck() *fakeLeakCheck {
-	return &fakeLeakCheck{body: bytes.Repeat([]byte("leak-check\x00"), shimwire.LauncherBundlePayloadBytes/11+4096)}
+	return &fakeLeakCheck{body: bytes.Repeat([]byte("leak-check\x00"), shimwire.LauncherBundlePayloadBytes/11+4096),
+		manifest: testLeakCheck.ManifestSHA256}
 }
 
 // leakCheckStore is a store holding the issue's saved workspace bundle, as a released issue's
@@ -234,9 +236,9 @@ func TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone(t *testin
 // own pin has. Told the digest now, its shim would start no agent, so it would never answer the
 // round that is to replace the pod. A pod built under no setting records none: where its launcher
 // holds an install from before, its role is told the installed check and no digest; where its
-// launcher holds none, the restarted daemon pushes the setting's check into it, and its role is
-// told the setting's digest, so the check pushed is hashed. A pod the launch builds itself is told
-// the digest now (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
+// launcher holds none, the restarted daemon serves its check and tells the manifest of the served
+// tarball, so the pushed check is hashed. A pod the launch builds itself is told the digest now
+// (TestADeploymentThatNamesNoLeakCheckPushesNoneAndTellsItsRolesNone).
 func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T) {
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	for _, tc := range []struct {
@@ -252,7 +254,7 @@ func TestARoleStartedInAKeptPodIsToldTheCheckerItsPodWasBuiltUnder(t *testing.T)
 		{name: "built under no setting, its launcher holding an install from before", built: leakguard.Setting{}, held: true,
 			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck}},
 		{name: "built under no setting, its launcher holding none", built: leakguard.Setting{}, held: false, pushed: true,
-			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: moved.ManifestSHA256}},
+			told: map[string]string{leakguard.CheckVar: leakguard.InstalledCheck, leakguard.CheckerVar: testLeakCheck.ManifestSHA256}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, tc.held),
@@ -295,15 +297,15 @@ func leakCheckTold(start shimwire.LauncherStart) map[string]string {
 }
 
 // A pod built under no setting records no digest on its template. Once a daemon running the
-// setting keeps it and pushes the setting's check into it, the Sandbox records the digest pushed
-// for that pod (leakCheckPushedAnnotation), on its own metadata: the template, the Sandbox's
-// generation and the pod are as they were, and the pod has drifted from nothing. Its launcher holds
-// that install from then on and says so in the hello of every later connection, and a role started
-// after such a reconnect is told the digest pushed, so its guard hashes the check it runs; a daemon
-// restarted under another digest reads the record as drift. The control rows are the record
-// dropped and a record of another pod: each reads as no record at all, so the later role is told
-// no digest and its guard would run the pushed check unhashed, which is what every such role was
-// told before the record existed, and the restarted daemon reads no leak check drift.
+// setting keeps it and pushes a check into it, the Sandbox records the manifest digest served for
+// that pod (leakCheckPushedAnnotation), on its own metadata: the template, the Sandbox's
+// generation and the pod are as they were, and the pod has drifted from nothing. Its launcher
+// holds that install from then on and says so in the hello of every later connection, and a role
+// started after such a reconnect is told the digest pushed, so its guard hashes the check it runs;
+// a daemon restarted under another digest reads the record as drift. The control rows are the
+// record dropped and a record of another pod: each reads as no record at all, so the later role is
+// told no digest and its guard would run the pushed check unhashed, which is what every such role
+// was told before the record existed, and the restarted daemon reads no leak check drift.
 func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T) {
 	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
 	movedReason := "leak check manifest " + testLeakCheck.ManifestSHA256 + ", now " + moved.ManifestSHA256
@@ -410,6 +412,59 @@ func TestADigestPushedIntoAPodThatRecordsNoneIsToldToItsLaterRoles(t *testing.T)
 	}
 }
 
+// A launcher can reconnect while the setting turns on. The digest that guards its role must come
+// from the exact tarball the reconnected launcher receives, not from the setting that selected
+// the repository: an image pin can still name an older tag. The served digest is recorded for the
+// kept pod, so this role and later roles run it, and it is immediately PodDrift against the newer
+// setting. Replacing the serve-time decision with the old pre-start heldLeakCheck branch records
+// and tells configured.ManifestSHA256 instead, so this row fails.
+func TestAKeptPodRecordsAndTellsTheManifestItsReconnectedLauncherWasServed(t *testing.T) {
+	configured := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	source := servedLeakCheck()
+	g := newRig(t, nil, withLeakCheckHello(testLeakCheckTag, false),
+		withOptions(func(o *Options) { o.LeakCheck, o.LeakCheckSetting = source, leakguard.Setting{} }))
+	loc := g.spawn(workerSpec(t))
+	r2 := restartedOver(t, g, loc, func(o *Options) {
+		o.LeakCheck, o.LeakCheckSetting = source, configured
+	})
+
+	kept := resumeTester(t, g, r2, loc)
+	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Fatalf("Resume replaced the pod; this row is about the kept pod")
+	}
+	if got := leakCheckTold(startSent(t, g, 2))[leakguard.CheckerVar]; got != source.manifest {
+		t.Fatalf("the role the served check starts was told %q, want the served manifest %s", got, source.manifest)
+	}
+	pushed := g.sandbox(kept.Sandbox.Name)
+	var record pushedLeakCheck
+	if err := json.Unmarshal([]byte(pushed.Annotations[leakCheckPushedAnnotation]), &record); err != nil ||
+		record != (pushedLeakCheck{Pod: kept.Sandbox.PodUID, ManifestSHA256: source.manifest}) {
+		t.Fatalf("the Sandbox records %s=%q (%v), want the served manifest %s for pod %s",
+			leakCheckPushedAnnotation, pushed.Annotations[leakCheckPushedAnnotation], err, source.manifest, kept.Sandbox.PodUID)
+	}
+	reason := "leak check manifest " + source.manifest + ", now " + configured.ManifestSHA256
+	if drifted := slices.Contains(driftOf(t, g.ctx, r2, kept), reason); !drifted {
+		t.Fatalf("PodDrift = %q, want the served manifest drift %q", driftOf(t, g.ctx, r2, kept), reason)
+	}
+
+	before := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck)
+	spec := workerSpec(t)
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 3, "boot-tester-g3", resumeSession
+	later, err := r2.Resume(g.ctx, &kept, spec)
+	if err != nil {
+		t.Fatalf("Resume after the served check: %v", err)
+	}
+	if later.Sandbox.PodUID != kept.Sandbox.PodUID {
+		t.Fatalf("the later Resume replaced the kept pod")
+	}
+	if got := leakCheckTold(startSent(t, g, 3))[leakguard.CheckerVar]; got != source.manifest {
+		t.Fatalf("the later role was told %q, want the served manifest %s", got, source.manifest)
+	}
+	if after := countOf(g.sent(workerToken), shimwire.TypeLauncherLeakCheck); after != before {
+		t.Fatalf("the later role pushed %d more leak-check slices after its launcher installed the served check", after-before)
+	}
+}
+
 // A change of the deployment's manifest digest alone is drift: an issue pod built under one digest
 // is reported drifted, naming both, by a daemon restarted under another, so its update round
 // opens and replaces the pod once its workers have pushed — a corrected digest reaches every pod.
@@ -482,6 +537,15 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			source: &fakeLeakCheck{err: errors.New(leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil))},
 			want:   leakguard.Cause("GitHub answered the read of example-org/deployment at "+testLeakCheckTag+" with HTTP 404: Not Found", nil),
 		},
+		"the served manifest differs from a new pod's configured manifest": {
+			source: func() *fakeLeakCheck {
+				source := servedLeakCheck()
+				source.manifest = strings.Repeat("7c", 32)
+				return source
+			}(),
+			want: leakguard.Cause("the check the daemon served at "+testLeakCheckTag+" has manifest digest "+strings.Repeat("7c", 32)+
+				", but the role would be told "+testLeakCheck.ManifestSHA256, nil),
+		},
 		"the pod's launcher refuses the install": {
 			source:  servedLeakCheck(),
 			options: []rigOption{withRefusedLeakCheck(podsLauncher)},
@@ -513,7 +577,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if cause != tc.want || !strings.HasPrefix(cause, leakguard.RefusalPrefix) {
 				t.Fatalf("the launch failed with %q carrying the cause %q, want %q", err, cause, tc.want)
 			}
-			if want := "launch " + string(spec.Claim) + ": start through its authenticated launcher: " + tc.want; err.Error() != want {
+			if want := "launch " + string(spec.Claim) + ": serve the shared public leak check: " + tc.want; err.Error() != want {
 				t.Fatalf("the launch failed with %q, want %q", err, want)
 			}
 			frames := g.sent(spec.Claim)

@@ -256,6 +256,18 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	}
 }
 
+// The source serves only a body whose four manifest files are present. Its manifest is the digest
+// of the exact packed bytes, so a missing manifest file is refused instead of a digest with a gap.
+func TestPackTarballManifestRefusesAMissingManifestFile(t *testing.T) {
+	files := theCheck(answersItsHelp)
+	delete(files, leakguardtest.ReadmeName)
+	body, manifest, err := PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
+	if err == nil || !strings.Contains(err.Error(), leakguardtest.ReadmeName) {
+		t.Fatalf("PackTarballManifest = %d bytes, %q, %v; want the missing %s refused",
+			len(body), manifest, err, leakguardtest.ReadmeName)
+	}
+}
+
 // The launcher's install lands the served files and the tag beside them, logs nothing of a fetch,
 // and replaces what the directory held: an install of another tag, and one of the same tag, which
 // is what a restarted launcher finds and installs over.

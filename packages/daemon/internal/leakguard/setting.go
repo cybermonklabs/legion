@@ -74,13 +74,25 @@ var ManifestFiles = []string{checkName, checkProgram, "README.md", "must-pass-li
 // | sha256sum` prints of a directory holding the check, so an operator computes the setting's value
 // with that one line. A file read cannot answer is an error naming it.
 func Manifest(read func(name string) ([]byte, error)) (string, error) {
+	return manifestFromSHA256(func(name string) ([sha256.Size]byte, error) {
+		body, err := read(name)
+		if err != nil {
+			return [sha256.Size]byte{}, err
+		}
+		return sha256.Sum256(body), nil
+	})
+}
+
+// manifestFromSHA256 writes the sha256sum line of each named digest in ManifestFiles' order and
+// hashes those lines together. It keeps Manifest and the streamed digest of a served tarball on
+// the same formula without retaining a second copy of its files.
+func manifestFromSHA256(read func(name string) ([sha256.Size]byte, error)) (string, error) {
 	var lines strings.Builder
 	for _, name := range ManifestFiles {
-		body, err := read(name)
+		sum, err := read(name)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
-		sum := sha256.Sum256(body)
 		lines.WriteString(hex.EncodeToString(sum[:]) + "  " + name + "\n")
 	}
 	digest := sha256.Sum256([]byte(lines.String()))

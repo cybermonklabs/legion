@@ -1186,13 +1186,14 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 }
 
 // warnPodDrift logs, for the Sandbox u, what the pod it owns in the store runs that a pod created
-// now would not: a container on an image other than the runtime's (imageDrift), and the pod
-// running as a ServiceAccount other than the configured one (accountDrift). Each kind of drift is
-// one warning of its own, naming the Sandbox, what was found and what is configured, as
-// ReconcileOrphans says, so a pod holding both is named twice. A same-named pod u does not own is
-// an earlier Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is
-// ever warned of, for the account as for the image: ReconcileOrphans passes over it before the
-// call, since its own sweep replaces its pod for either drift without a relaunch to wait for.
+// now would not: a container on an image other than the runtime's (imageDrift), the pod running as
+// a ServiceAccount other than the configured one (accountDrift), and the recorded leak-check
+// manifest differing from the configured one (leakCheckDrift). Each kind of drift is one warning
+// of its own, naming the Sandbox and the held and current values, as ReconcileOrphans says, so a
+// pod holding several is named once for each. A same-named pod u does not own is an earlier
+// Sandbox's, on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned
+// of, for the account as for the image: ReconcileOrphans passes over it before the call, since its
+// own sweep replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {
@@ -1206,6 +1207,15 @@ func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs as ServiceAccount %s, the configured ServiceAccount is %s; its agents hold that identity until the pod is replaced — by its update round where a round covers the pod, by the next launch of one of its roles where none does",
 			u.GetName(), account, serviceAccountOr(r.pod.ServiceAccount)),
 			"sandbox", u.GetName(), "pod", pod.UID)
+	}
+	annotations, _, _ := unstructured.NestedStringMap(u.Object, "spec", "podTemplate", "metadata", "annotations")
+	if held, recorded := recordedLeakChecker(annotations, u.GetAnnotations(), string(pod.UID)); len(r.leakCheckDrift(held, recorded)) > 0 {
+		current := r.leakCheck.ManifestSHA256
+		if current == "" {
+			current = "none"
+		}
+		r.log.Warn(fmt.Sprintf("sandbox runtime: %s runs leak check manifest %s, the configured manifest is %s; its agents keep the held check until its update round replaces the pod",
+			u.GetName(), held, current), "sandbox", u.GetName(), "pod", pod.UID)
 	}
 }
 

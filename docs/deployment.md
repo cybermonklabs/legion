@@ -375,6 +375,8 @@ launcher script edited beside an unchanged program, a missing README or must-pas
 every call of its `legion gh` refused, reads included, with a setup error naming the digest told
 and the digest found, so the check the machine's installer put there must be the tag the setting
 names, whole.
+
+Under a checker digest, `legion gh` writes the four files it hashed into a new 0700 directory before it runs the check, and removes that directory when the call ends. A role pod puts that directory under `/var/run/legion/private`, a memory-backed path only that role's mount namespace reaches. A tmux pane has no such mount: its fallback is a 0700 directory under `/tmp`. That fallback keeps other Unix users out and is removed on every normal call exit, but it does not isolate same-user panes and it is not the `/var/run/legion/private` boundary.
 A broken setup on the machine is told to the pane all the same, as the path it is broken at: a
 stale `PUBLIC_LEAK_CHECK`, a `PUBLIC_LEAK_CHECK` or pointer file naming a directory or a file with
 no execute bit, a pointer file that names nothing or cannot be read, or, where nothing else names

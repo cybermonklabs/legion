@@ -95,11 +95,10 @@ type launcherSession struct {
 	// whether this launcher process holds that tag installed: as its hello said, or as its answer
 	// to the push on this connection did (serveLeakCheck). leakCheckHeld is what the hello said
 	// alone, and never changes: an install the launcher held before this connection, whether an
-	// earlier daemon pushed it or this daemon did on an earlier connection of the same launcher
-	// (heldLeakCheck). A daemon that pushes into a kept pod that records no digest records the
-	// digest it pushed first (recordLeakCheckPushed), so only an install a daemon of a release before
-	// the setting pushed is held in a pod that records none; a role told none for it runs that
-	// check, unhashed, until the pod is next replaced.
+	// earlier daemon pushed it or this daemon did on an earlier connection of the same launcher.
+	// A kept pod with no template record is recorded from the exact body a session is about to
+	// receive, not from leakCheckHeld: a disconnected observation tells nothing about the session
+	// that may reconnect for the push.
 	leakCheckTag       string
 	leakCheckInstalled bool
 	leakCheckHeld      bool
@@ -241,12 +240,9 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 	return session.state, true
 }
 
-// heldLeakCheck is whether token's launcher in podUID said in its hello that it held its pin's
-// check installed from before this connection (leakCheckHeld), and whether that launcher is
-// connected at all. A launcher that held none is pushed the check of the setting this daemon runs
-// before its first start (serveLeakCheck), so its role is told that setting's manifest digest even
-// in a kept pod that records none, and the digest is recorded on its Sandbox before the push
-// (relaunch, recordLeakCheckPushed).
+// heldLeakCheck reports what token's current launcher in podUID said in its hello. It is an
+// observation for diagnostics and tests; serveLeakCheck never uses it to choose a role checker,
+// because a reconnect can change the session after this observation.
 func (d *launchers) heldLeakCheck(token claim.Token, podUID string) (held, connected bool) {
 	d.mu.Lock()
 	session := d.sessions[token]
@@ -290,6 +286,13 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	if err != nil {
 		return nil, nil, fmt.Errorf("launcher %s did not connect: %w", token, err)
 	}
+	return d.requestSession(ctx, session, frame, id)
+}
+
+// requestSession sends one frame to session itself. A reconnect after the caller decided what that
+// session receives is a refusal rather than a send to its successor: the successor may hold a
+// different install, so it must make the decision and receive the push from the beginning.
+func (d *launchers) requestSession(ctx context.Context, session *launcherSession, frame shimwire.Frame, id string) (shimwire.Frame, *launcherSession, error) {
 	waiter := make(chan shimwire.Frame, 1)
 	session.mu.Lock()
 	if session.closed || session.write == nil {
@@ -301,7 +304,7 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	if until, ok := ctx.Deadline(); ok && until.Before(deadline) {
 		deadline = until
 	}
-	err = session.conn.SetWriteDeadline(deadline)
+	err := session.conn.SetWriteDeadline(deadline)
 	if err == nil {
 		stopCancel := context.AfterFunc(ctx, func() { _ = session.conn.Close() })
 		err = session.write.WriteFrame(frame)
@@ -324,16 +327,27 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 			return nil, nil, errors.New("launcher connection closed before its answer")
 		}
 		d.mu.Lock()
-		current := d.sessions[token]
-		sameProcess := current != nil && current.podUID == podUID && current.id == session.id
+		current := d.sessions[session.token]
 		d.mu.Unlock()
-		if !sameProcess {
+		if current != session {
 			return nil, nil, errors.New("launcher process changed before its answer was confirmed")
 		}
 		return answer, session, nil
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	}
+}
+
+func (d *launchers) current(session *launcherSession) bool {
+	d.mu.Lock()
+	current := d.sessions[session.token]
+	d.mu.Unlock()
+	if current != session || session.podUID == "" {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return !session.closed
 }
 
 // startRefusal is a Start the launcher answered OK: false, without starting the generation: the one
@@ -363,22 +377,13 @@ func (e startRefusal) Unwrap() error {
 	return nil
 }
 
-func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStart) error {
-	// The shared public leak check goes over before anything else, and a launcher that could not
-	// install it starts nothing: every write of the role resolves the check first and its shim
-	// refuses to start the agent without the install (leakguard.Installed), so a start sent
-	// anyway would be a role that fails at once. The refusal leaves the saved workspace bundle
-	// in the store, since a bundle taken here would spend its one restore attempt on a pod no role
-	// of which ran.
-	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
-		return err
-	}
-	// The work the release took off the pod this one replaces goes over next: the launcher holds
-	// the bundle and restores it into the workspace before it runs the role's command, so the
-	// restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). It never stops the start.
+func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, session *launcherSession, command shimwire.LauncherStart) error {
+	// serveLeakCheck chose this exact session and installed the check before the command was built.
+	// The start stays on it: a replacement session has not received that push, so this launch
+	// refuses and the supervisor retries from the new hello rather than starting a role without
+	// the checker its environment names.
 	d.restoreWorkspace(ctx, token, podUID)
-	answer, _, err := d.request(ctx, token, podUID, command, command.ID)
+	answer, _, err := d.requestSession(ctx, session, command, command.ID)
 	if err != nil {
 		return err
 	}
@@ -407,66 +412,70 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 // start is answered Installed at once.
 const leakCheckHopBound = 2 * time.Minute
 
-// serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
-// the launcher to install it, before any start frame or bundle slice reaches that launcher
-// (start). The tag is the launcher's own pin, which its hello named; the daemon reads the check
-// at that tag (Options.LeakCheck) and the launcher installs it once for its pod, for every role's
-// shim to read.
-//
-// Nothing is sent to a launcher whose hello named no tag: it takes no check from the daemon,
-// and its roles start as they always have. Nothing is sent either to one that holds the tag
-// installed, as its hello said or as its answer on this connection did, so a later start of the
-// role and a daemon that restarts push nothing to a running pod. And nothing is sent under a
-// deployment that names no shared leak check (Options.LeakCheckSetting): the image carries its
-// pin whatever the deployment runs, and the roles, told no leakguard.CheckerVar
-// (mainEnvironment), read no install (leakguard.Installed) and start without one.
-//
-// Every other outcome but an install is a runtime.LeakCheckRefusal, whose cause sentence
-// (leakguard.Cause) says why: the daemon holds no credential to read the check, its read was
-// refused, the launcher refused a slice or the install, the connection failed, or the hop ran
-// past leakCheckHopBound. No start frame has been sent when it refuses.
-func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUID string) error {
-	// A launcher that never arrives is the start's own error to report, not this hop's.
+// serveLeakCheck reads, records and pushes the shared public leak check for token's exact
+// launcher session. prepare decides the digest the role will be told from the served body after
+// that session has connected and before its first slice goes over; it may persist that decision.
+// A replacement session at any point refuses the launch, so no role starts on a session the
+// decision did not cover.
+func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUID string,
+	prepare func(*launcherSession, leakguard.Served) (string, error),
+) (*launcherSession, error) {
+	refuse := func(what string, err error) error {
+		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
+	}
+	// A launcher that never arrives is a failed install, not a later Start on an environment whose
+	// checker was guessed before a session existed.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil {
-		return nil
+		return nil, refuse("the pod's launcher did not connect before the shared public leak check could be installed", err)
 	}
 	tag := session.leakCheckTag
 	session.mu.Lock()
 	installed := session.leakCheckInstalled
 	session.mu.Unlock()
 	if tag == "" || installed || !d.leakCheckSetting.Configured() {
-		return nil
-	}
-	refuse := func(what string, err error) error {
-		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
+		return session, nil
 	}
 	if d.leakCheck == nil {
-		return refuse("the daemon runs with no GitHub App, so it cannot read "+d.leakCheckSetting.Repository.String(), nil)
+		return nil, refuse("the daemon runs with no GitHub App, so it cannot read "+d.leakCheckSetting.Repository.String(), nil)
 	}
 	served, err := d.leakCheck.Get(ctx, tag)
 	if err != nil {
-		return refuse(err.Error(), nil)
+		return nil, refuse(err.Error(), nil)
+	}
+	if served.ManifestSHA256 == "" {
+		return nil, refuse("the check the daemon read at "+tag+" has no manifest digest", nil)
+	}
+	if !d.current(session) {
+		return nil, refuse("the pod's launcher reconnected before the shared public leak check could be pushed", nil)
+	}
+	checker, err := prepare(session, served)
+	if err != nil {
+		return nil, refuse("the daemon could not record the shared public leak check it will push", err)
+	}
+	if checker != served.ManifestSHA256 {
+		return nil, refuse(fmt.Sprintf("the check the daemon served at %s has manifest digest %s, but the role would be told %s",
+			tag, served.ManifestSHA256, checker), nil)
 	}
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
 	for _, frame := range served.Frames {
-		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
+		answer, confirmed, err := d.requestSession(hop, session, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
 			if hop.Err() != nil && ctx.Err() == nil {
-				return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
+				return nil, refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
 			}
-			return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
+			return nil, refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
 		}
 		result, ok := answer.(shimwire.LauncherLeakCheckResult)
 		if !ok {
-			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
+			return nil, refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
 		}
 		if err := result.Validate(); err != nil {
-			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
+			return nil, refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
 		}
 		if !result.OK {
-			return refuse(result.Error, nil)
+			return nil, refuse(result.Error, nil)
 		}
 		if !result.Installed {
 			continue
@@ -478,10 +487,11 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		confirmed.mu.Unlock()
 		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
 			"launcher", token, "pod", podUID, "repository", d.leakCheckSetting.Repository.String(), "tag", tag,
-			"manifest_sha256", d.leakCheckSetting.ManifestSHA256, "bytes", len(served.Body), "slices", len(served.Frames))
-		return nil
+			"manifest_sha256", served.ManifestSHA256, "configured_manifest_sha256", d.leakCheckSetting.ManifestSHA256,
+			"bytes", len(served.Body), "slices", len(served.Frames))
+		return session, nil
 	}
-	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
+	return nil, refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
 }
 
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release

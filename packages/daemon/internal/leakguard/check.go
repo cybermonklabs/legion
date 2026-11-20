@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/rolefile"
 )
 
 // The exit statuses the shared public leak check documents. Anything else is a setup failure: a
@@ -190,10 +191,11 @@ type sharedRun struct {
 // sharedCheck answers, so the copy goes whatever the check answered: cleared, refused, a setup
 // failure, or a run the caller's bound stopped. A copy a killed process leaves is in the role's
 // own private directory, which the role's launcher clears before it starts the role's next
-// generation (internal/launcher's writeFiles).
+// generation (internal/launcher's writeFiles). The role can write that directory, so removal
+// follows no link and waits on no fifo (rolefile.RemoveTree).
 func (r sharedRun) remove() {
 	if r.dir != "" {
-		_ = os.RemoveAll(r.dir)
+		_ = rolefile.RemoveTree(r.dir)
 	}
 }
 

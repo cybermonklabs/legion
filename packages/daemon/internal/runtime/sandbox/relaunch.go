@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -304,20 +305,25 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := r.recordAddresses(starting, s, spec.Role, spec.Generation, l.enrolls(r)); err != nil {
 		return fail("record the addresses its generation is handed", err)
 	}
-	// A kept pod that records no leak check digest, whose launcher held no install before this
-	// connection, is about to be pushed the check of the setting this daemon runs (serveLeakCheck),
-	// so its role is told that setting's digest: its shim and guard then hash the check pushed. The
-	// digest is recorded on the Sandbox first (recordLeakCheckPushed), so a role started after the
-	// launcher reconnects, when its hello says it holds that install from before, is told the
-	// digest too. One whose launcher held an install from before, unrecorded, holds one a daemon of a
-	// release before the setting pushed, and keeps none (keptPod.checker).
-	if l.kept != nil && !l.kept.recorded && r.leakCheck.Configured() {
-		if held, connected := r.launchers.heldLeakCheck(spec.Claim, string(pod.UID)); connected && !held {
-			if err := r.recordLeakCheckPushed(starting, s, string(pod.UID)); err != nil {
-				return fail("record the leak check pushed into its pod", err)
+	// The check's digest is decided against the exact launcher's served tarball. For a kept pod
+	// whose template records none, record that digest only after the launcher that will receive
+	// the push has connected, then tell this generation that same digest. A launcher replacement
+	// during that sequence refuses this launch before its Start frame goes out; the retry makes the
+	// decision for the replacement session.
+	session, err := r.launchers.serveLeakCheck(starting, spec.Claim, string(pod.UID),
+		func(_ *launcherSession, served leakguard.Served) (string, error) {
+			if l.kept == nil || l.kept.recorded {
+				return l.leakChecker(r), nil
 			}
-			l.kept.checker = r.leakCheck.ManifestSHA256
-		}
+			if err := r.recordLeakCheckPushed(starting, s, string(pod.UID), served.ManifestSHA256); err != nil {
+				return "", err
+			}
+			l.kept.checker, l.kept.recorded = served.ManifestSHA256, true
+			return l.leakChecker(r), nil
+		},
+	)
+	if err != nil {
+		return fail("serve the shared public leak check", err)
 	}
 	// The start sent carries what this launch learned from the cluster since prepare measured it,
 	// so it is measured again here: a frame no launcher reads is refused as the prompt it is, which
@@ -326,7 +332,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	if err := l.checkStartFrame(command); err != nil {
 		return fail("measure its start frame", err)
 	}
-	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), command); err != nil {
+	if err := r.launchers.start(starting, spec.Claim, string(pod.UID), session, command); err != nil {
 		return fail("start through its authenticated launcher", errors.Join(err, r.stopIssuedChild(ctx, spec.Claim, string(pod.UID), spec.Generation, err)))
 	}
 	r.nameSession(loc, l)

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/http"
@@ -176,6 +177,19 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	sum := sha256.Sum256(got.Body)
 	if got.Tag != theTag || got.Frames[0].SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("served frames declaring %s at %s, want %s at the body's SHA-256 %x", got.Frames[0].SHA256, got.Tag, theTag, sum)
+	}
+	manifest, err := Manifest(func(name string) ([]byte, error) {
+		member, found := files[name]
+		if !found {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(member.Body), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestSHA256 != manifest {
+		t.Fatalf("served manifest = %s, want %s from the files in its body", got.ManifestSHA256, manifest)
 	}
 	members := membersOf(t, got.Body)
 	names := slices.Sorted(maps.Keys(members))

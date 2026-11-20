@@ -75,13 +75,14 @@ type tagRead struct {
 }
 
 // Served is the check at Tag as the daemon serves it: Body is the packed leak-check directory
-// (PackTarball) and Frames the launcher_leak_check sequence that carries it
-// (shimwire.SplitLeakCheck), each frame declaring the body's digest. Body and Frames are shared by
-// every caller served the same read, so no caller writes to them.
+// (PackTarball), ManifestSHA256 is the manifest of the files in that exact body, and Frames the
+// launcher_leak_check sequence that carries it, each frame declaring the body's digest. Body and
+// Frames are shared by every caller served the same read, so no caller writes to them.
 type Served struct {
-	Tag    string
-	Body   []byte
-	Frames []shimwire.LauncherLeakCheck
+	Tag            string
+	Body           []byte
+	ManifestSHA256 string
+	Frames         []shimwire.LauncherLeakCheck
 }
 
 // Get answers the check at tag, read once for every caller (Source). Every error is one cause
@@ -180,7 +181,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}
-	body, err := PackTarball(response.Body)
+	body, manifest, err := PackTarballManifest(response.Body)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Served{}, s.readFailure(ctx, tag, bound, err)
@@ -191,7 +192,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	if err != nil {
 		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err))
 	}
-	return Served{Tag: tag, Body: body, Frames: frames}, nil
+	return Served{Tag: tag, Body: body, ManifestSHA256: manifest, Frames: frames}, nil
 }
 
 // readFailure is the cause of a read that did not arrive: the bound's own sentence where the
