@@ -51,7 +51,7 @@ func pinLeakCheck(t *testing.T, tag string) {
 // leak-check directory, one file of the repository outside it), whose check is launcher, with
 // every other file of its manifest beside it (the python file, the README and the must-pass lines)
 // and a fixture of incompressible bytes large enough that the packed body takes two slices,
-// packed as the daemon packs it (leakguard.PackTarball).
+// packed as the daemon packs it (leakguard.PackTarballManifest).
 func packedLeakCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
 	fixture := make([]byte, shimwire.LauncherBundlePayloadBytes+4096)
@@ -63,7 +63,7 @@ func packedLeakCheck(t *testing.T, launcher string) []byte {
 		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
 		"fixtures/must-pass.bin":   {Body: string(fixture), Mode: 0o644},
 	})
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}

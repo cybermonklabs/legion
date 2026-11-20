@@ -28,7 +28,7 @@ const refusalBodyBytes = 64 << 10
 // Source is the daemon's reader of the shared public leak check: it reads the check's repository
 // (Repository, the deployment's Setting.Repository) at the tag a pod's launcher names, with a
 // read-only token of the daemon's own, and answers the leak-check directory alone, packed
-// (PackTarball), for the daemon to serve to that launcher. It runs no gh and reads no gh
+// (PackTarballManifest), for the daemon to serve to that launcher. It runs no gh and reads no gh
 // configuration. The daemon builds one only for a deployment that names a check
 // (Setting.Configured).
 //
@@ -75,9 +75,9 @@ type tagRead struct {
 }
 
 // Served is the check at Tag as the daemon serves it: Body is the packed leak-check directory
-// (PackTarball), ManifestSHA256 is the manifest of the files in that exact body, and Frames the
-// launcher_leak_check sequence that carries it, each frame declaring the body's digest. Body and
-// Frames are shared by every caller served the same read, so no caller writes to them.
+// (PackTarballManifest), ManifestSHA256 is the manifest of the files in that exact body, and
+// Frames the launcher_leak_check sequence that carries it, each frame declaring the body's digest.
+// Body and Frames are shared by every caller served the same read, so no caller writes to them.
 type Served struct {
 	Tag            string
 	Body           []byte

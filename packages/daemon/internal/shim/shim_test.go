@@ -609,7 +609,7 @@ var theChecker = leakguard.CheckerVar + "=" + func() string {
 
 // installedCheck is the directory the pod's launcher installs the check the daemon served into,
 // made the way the launcher makes it: a GitHub-shaped tarball of installedFiles, packed
-// (leakguard.PackTarball) and installed at tag (leakguard.InstallServed).
+// (leakguard.PackTarballManifest) and installed at tag (leakguard.InstallServed).
 func installedCheck(t *testing.T, tag string) string {
 	t.Helper()
 	members := map[string]leakguardtest.Member{}
@@ -621,7 +621,7 @@ func installedCheck(t *testing.T, tag string) string {
 		members[name] = leakguardtest.Member{Body: body, Mode: mode}
 	}
 	raw := leakguardtest.GitHubTarball(t, members)
-	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	body, _, err := leakguard.PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}

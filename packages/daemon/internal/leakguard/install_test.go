@@ -77,10 +77,11 @@ func wholeCheck(t *testing.T, launcher string) []byte {
 	return leakguardtest.GitHubTarball(t, theCheck(launcher))
 }
 
-// served is what the daemon serves of a tarball: its leak-check directory, packed.
+// served is what the daemon serves of a tarball: its leak-check directory, packed. The manifest
+// digest the pack answers beside it is the source's to read (TestTheServedBodyIsTheDirectoryAloneWithItsDigest).
 func served(t *testing.T, raw []byte) []byte {
 	t.Helper()
-	body, err := PackTarball(bytes.NewReader(raw))
+	body, _, err := PackTarballManifest(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -175,7 +176,7 @@ func membersOf(t *testing.T, body []byte) map[string]packedMember {
 // paths, with their bytes and modes, and nothing of the rest of the repository nor its prefix.
 func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 	files := theCheck(answersItsHelp)
-	body, err := PackTarball(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
+	body, _, err := PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
 	if err != nil {
 		t.Fatalf("pack: %v", err)
 	}
@@ -200,8 +201,10 @@ func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
 }
 
 // A member of the directory that is neither a directory nor a regular file, one whose path leaves
-// the directory, a tarball that holds no such directory and one whose directory holds no file
-// are each refused by name.
+// the directory, a tarball that holds no such directory, one whose directory holds no file, one
+// whose directory misses a file of the manifest and one whose manifest file is past the read limit
+// are each refused by name, with no body and no digest. A missing manifest file is refused rather
+// than hashed as a digest with a gap.
 func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -243,28 +246,34 @@ func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 			},
 			want: "holds a leak-check directory with no file",
 		},
+		{
+			name: "a missing manifest file",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				delete(files, leakguardtest.ReadmeName)
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: "holds a leak-check directory without a file of its manifest: " + leakguardtest.ReadmeName + ": file does not exist",
+		},
+		{
+			name: "a manifest file past the read limit",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				files[leakguardtest.ReadmeName] = leakguardtest.Member{Body: strings.Repeat("r", manifestFileLimit+1), Mode: 0o644}
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: `holds the manifest file "` + leakguardtest.ReadmeName + `", which is over the 8 MiB read limit`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body, err := PackTarball(bytes.NewReader(tc.raw(t)))
+			body, manifest, err := PackTarballManifest(bytes.NewReader(tc.raw(t)))
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("pack = %v, want %q", err, tc.want)
 			}
-			if body != nil {
-				t.Errorf("a refused pack answered %d bytes, want none", len(body))
+			if body != nil || manifest != "" {
+				t.Errorf("a refused pack answered %d bytes and the digest %q, want neither", len(body), manifest)
 			}
 		})
-	}
-}
-
-// The source serves only a body whose four manifest files are present. Its manifest is the digest
-// of the exact packed bytes, so a missing manifest file is refused instead of a digest with a gap.
-func TestPackTarballManifestRefusesAMissingManifestFile(t *testing.T) {
-	files := theCheck(answersItsHelp)
-	delete(files, leakguardtest.ReadmeName)
-	body, manifest, err := PackTarballManifest(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
-	if err == nil || !strings.Contains(err.Error(), leakguardtest.ReadmeName) {
-		t.Fatalf("PackTarballManifest = %d bytes, %q, %v; want the missing %s refused",
-			len(body), manifest, err, leakguardtest.ReadmeName)
 	}
 }
 

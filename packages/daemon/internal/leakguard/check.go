@@ -241,7 +241,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
 			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, check, held.digest)}
 	}
-	dir, err := held.privateCopy()
+	dir, err := held.privateCopy(PrivateCopyBase, privateCopyFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
 			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", check, CheckerVar, checker, err)}
@@ -284,16 +284,17 @@ func copyBase(base, fallback string) (string, error) {
 	return base, nil
 }
 
-// privateCopy writes the four files h holds into a new directory under copyBase's answer and
-// answers that directory. The directory is made 0700 (os.MkdirTemp), and each file is created anew
-// (writeCopyFile): the launcher, which the guard runs, 0500, and the three it only reads 0400. A
-// failure removes what it made.
-func (h heldCheck) privateCopy() (string, error) {
-	base, err := copyBase(PrivateCopyBase, privateCopyFallback)
+// privateCopy writes the four files h holds into a new directory under copyBase's answer of base
+// and fallback, and answers that directory. The directory is made 0700 (os.MkdirTemp), and each
+// file is created anew (writeCopyFile): the launcher, which the guard runs, 0500, and the three it
+// only reads 0400. A failure removes what it made as sharedRun.remove removes the copy, following
+// no link and waiting on no fifo (rolefile.RemoveTree).
+func (h heldCheck) privateCopy(base, fallback string) (string, error) {
+	under, err := copyBase(base, fallback)
 	if err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(base, "leak-check-")
+	dir, err := os.MkdirTemp(under, "leak-check-")
 	if err != nil {
 		return "", err
 	}
@@ -303,7 +304,7 @@ func (h heldCheck) privateCopy() (string, error) {
 			mode = 0o500
 		}
 		if err := writeCopyFile(filepath.Join(dir, name), h.files[name], mode); err != nil {
-			_ = os.RemoveAll(dir)
+			_ = rolefile.RemoveTree(dir)
 			return "", fmt.Errorf("%s: %w", name, err)
 		}
 	}
