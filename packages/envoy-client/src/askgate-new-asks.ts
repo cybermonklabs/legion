@@ -46,11 +46,11 @@
 // container; an opener four columns past its container's lines is code or paragraph text; a typed
 // block that opened with N colons closes only at a line of N colons or more, which closes it
 // whatever block inside it the line would continue; and an opener's attributes are read as the
-// server reads them (askgate-typed-opener.ts), so a `#` inside a quoted value is no id and an
-// opener whose attributes the server refuses opens nothing. A document's front matter is no
-// markdown, and an empty list item or one numbered other than 1 opens no list where the browser
-// editor's parser would not let it interrupt the block before it. HTML blocks, which the server
-// refuses in a write, are not read.
+// server reads them (askgate-typed-opener.ts, directive-attributes.ts), so a `#` inside a quoted
+// value is no id and an opener whose attributes the server refuses opens nothing. A document's
+// front matter is no markdown, and an empty list item or one numbered other than 1 opens no list
+// where the browser editor's parser would not let it interrupt the block before it. HTML blocks,
+// which the server refuses in a write, are not read.
 // The server's table of inserts and the ask blocks it adds
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.

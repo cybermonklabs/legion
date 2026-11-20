@@ -1,40 +1,28 @@
 import { PATH_KEEPS_BYTES, pathKeepsBytesOf } from "@legion/contracts";
-
-/** One attribute of a typed block's opening line as it is written (`#id`, `.class`, `name` or
- *  `name="value"`), under the name Dispatch reads it by: `id` for `#…` and `class` for `.…`. */
-interface WrittenAttribute {
-  readonly name: string;
-  readonly text: string;
-}
+import {
+  type DirectiveAttribute,
+  type DirectiveAttributes,
+  directiveAttributes,
+  directiveNameChar,
+} from "../directive-attributes";
 
 /**
  * A typed block's opening line, cut where the attribute-order check and the refusal read it:
  * `head` up to and with its `{` (a quote or list marker before the fence, the fence, the type),
- * each attribute as written, and the whitespace around them (`gaps`, one more than the
- * attributes). The line ends with the `}` after them.
+ * then the attributes before the `}` that ends the line as Dispatch reads them
+ * (directiveAttributes): each as written, the whitespace around them, and the block's id.
  */
-interface TypedOpener {
+interface TypedOpener extends DirectiveAttributes {
   readonly head: string;
   readonly type: string;
-  readonly attributes: readonly WrittenAttribute[];
-  readonly gaps: readonly string[];
 }
 
-/** A character of a typed block's type: a letter, a digit, `_` or `-`. */
-const TYPE_CHARACTER = /[A-Za-z0-9_-]/;
-
-/** The whitespace between two attributes, as Go's `unicode.IsSpace` reads an ASCII byte. */
-const ATTRIBUTE_SPACE = /[\t-\r ]/;
-
 /** `line` read as a typed block's opening line, or undefined for any other line and for one
- *  whose quoted value never closes. The line is three colons or more, the type, then its
- *  attributes between `{` and the `}` that ends the line (`renderTypedAttributes` in pmdoc's
- *  schema.go writes it), and its head is the shortest start of the line that ends in such a
- *  fence, type and `{`. One pass reads the line, so no line costs more than its length, and a
- *  line may hold any character, U+2028 and U+2029 among them, which Dispatch writes unescaped
- *  in a value. A quoted value runs to the next quote, so a space inside it splits no attribute,
- *  and a backslash in it escapes nothing: Dispatch's grammar gives it no meaning (pmdoc's
- *  parseDirectiveAttributes), so `\"` ends the value. */
+ *  whose attributes Dispatch refuses (directiveAttributes). The line is three colons or more,
+ *  the type, then its attributes between `{` and the `}` that ends the line
+ *  (`renderTypedAttributes` in pmdoc's schema.go writes it), and its head is the shortest start
+ *  of the line that ends in such a fence, type and `{`. Each character of the line is read once,
+ *  so no line costs more than its length. */
 function typedOpener(line: string): TypedOpener | undefined {
   if (!line.endsWith("}")) return undefined;
   // The `{` after the first run of three colons or more that a type and a `{` follow. A run of
@@ -49,48 +37,20 @@ function typedOpener(line: string): TypedOpener | undefined {
       continue;
     }
     typeStart = at;
-    while (at < line.length && TYPE_CHARACTER.test(line.charAt(at))) at += 1;
+    while (at < line.length && directiveNameChar(line.charAt(at))) at += 1;
     if (at > typeStart && line.charAt(at) === "{") open = at;
   }
   if (open === -1) return undefined;
-  const head = line.slice(0, open + 1);
-  const type = line.slice(typeStart, open);
   // The `{` is no `}`, so it stands before the `}` that ends the line.
-  const inside = line.slice(open + 1, -1);
-  const attributes: WrittenAttribute[] = [];
-  const gaps: string[] = [];
-  let at = 0;
-  for (;;) {
-    const gap = at;
-    while (at < inside.length && ATTRIBUTE_SPACE.test(inside.charAt(at))) at += 1;
-    gaps.push(inside.slice(gap, at));
-    if (at === inside.length) break;
-    const start = at;
-    while (at < inside.length && !ATTRIBUTE_SPACE.test(inside.charAt(at))) {
-      if (inside.charAt(at) !== '"') {
-        at += 1;
-        continue;
-      }
-      at += 1;
-      while (at < inside.length && inside.charAt(at) !== '"') at += 1;
-      if (at >= inside.length) return undefined;
-      at += 1;
-    }
-    const text = inside.slice(start, at);
-    const name = text.startsWith("#")
-      ? "id"
-      : text.startsWith(".")
-        ? "class"
-        : (text.split("=", 1)[0] ?? text);
-    attributes.push({ name, text });
-  }
-  return { head, type, attributes, gaps };
+  const attributes = directiveAttributes(line.slice(open + 1, -1));
+  if (attributes === undefined) return undefined;
+  return { ...attributes, head: line.slice(0, open + 1), type: line.slice(typeStart, open) };
 }
 
 /** The names of `attributes` as a map to each one's written text, or undefined when a name
  *  stands twice, since such a line can be put in no one order. */
 function attributesByName(
-  attributes: readonly WrittenAttribute[]
+  attributes: readonly DirectiveAttribute[]
 ): ReadonlyMap<string, string> | undefined {
   const byName = new Map(attributes.map((attribute) => [attribute.name, attribute.text]));
   return byName.size === attributes.length ? byName : undefined;
@@ -132,25 +92,11 @@ function onlyReordered(
   return given !== undefined && stored !== undefined && inStoredOrder(given, stored) === held;
 }
 
-/** The id a typed block's `id` attribute, as Dispatch writes it, names: what follows `#`, or the
- *  value of `id="…"` with the character references typedBlockIdAttribute (@legion/contracts)
- *  writes in it decoded, `&amp;` last, so a reference the id holds as text reads as it is. */
-function storedBlockId(attribute: string): string {
-  if (attribute.startsWith("#")) return attribute.slice(1);
-  return attribute
-    .slice('id="'.length, -1)
-    .replaceAll("&#xD;", "\r")
-    .replaceAll("&#xA;", "\n")
-    .replaceAll("&#x22;", '"')
-    .replaceAll("&amp;", "&");
-}
-
 /** What the answer of an upload says of a block whose attributes it put in Dispatch's order, read
- *  off `opener`, its opening line as Dispatch stores it: the block by its type and id, its line
- *  (counted from 1), and that order. */
+ *  off `opener`, its opening line as Dispatch stores it: the block by its type and its id as
+ *  Dispatch reads it (directiveAttributes), its line (counted from 1), and that order. */
 function reorderedBlockLine(line: number, opener: TypedOpener): string {
-  const id = opener.attributes.find((attribute) => attribute.name === "id")?.text;
-  const named = `${opener.type} block${id === undefined ? "" : ` ${storedBlockId(id)}`}`;
+  const named = `${opener.type} block${opener.id === undefined ? "" : ` ${opener.id}`}`;
   const order = opener.attributes.map((attribute) => attribute.name).join(", ");
   return `This upload put the attributes of ${named} (line ${line}) in the order Dispatch stores: ${order}.`;
 }

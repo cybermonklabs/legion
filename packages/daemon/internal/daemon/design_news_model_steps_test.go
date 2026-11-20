@@ -255,9 +255,6 @@ func (m *newsModel) rootTaskEnabled() bool {
 func (m *newsModel) do(name string) {
 	m.t.Helper()
 	rev := m.reviewer
-	if slices.Contains(newsModelEntryStarts, name) {
-		m.entryStarts = true
-	}
 	switch name {
 	case "approve-changed", "approve-decision-only":
 		m.approve(name == "approve-decision-only")
@@ -268,6 +265,7 @@ func (m *newsModel) do(name string) {
 	case "reconcile":
 		m.reconcile()
 	case "sweep":
+		m.entryStarts = true
 		// The entry sweep's tick: admission's pass, which sends each role the entry its phases
 		// row is owed (a claim a clear left behind the entry its run raised), and its backstop for
 		// news.
@@ -275,6 +273,7 @@ func (m *newsModel) do(name string) {
 		applyFact(m.t, m.r.pool, "controller", fmt.Sprintf("tick-%d", m.ticks), intake.ControllerTick{}, m.r.engine, m.r.admission)
 		m.r.sweepNews()
 	case "starts":
+		m.entryStarts = true
 		m.r.later(time.Hour)
 		m.r.run(ofKind(record.OutboxKindIssueBranch))
 		m.r.run(reviewerStarts)
@@ -305,6 +304,7 @@ func (m *newsModel) do(name string) {
 		m.handle(rev, supervise.RequestDeliver{Claim: rev.token, ID: m.superseding, Task: "Review the change again.",
 			Phase: phase.Reviewing, Generation: readIssue(m.t, m.r.pool, pathChild).Generation})
 	case "reenter", "readmit":
+		m.entryStarts = true
 		if m.handoverClearDue() {
 			m.handoverClear++
 		} else {
@@ -316,6 +316,7 @@ func (m *newsModel) do(name string) {
 			m.readmit()
 		}
 	case "handover":
+		m.entryStarts = true
 		m.handover()
 	case "restart":
 		m.restart()
@@ -401,12 +402,6 @@ const (
 	newsModelClears    = 3
 	newsModelHandovers = 2
 )
-
-// newsModelEntryStarts is every step that can run the start of a newer entry, which takes the place
-// of a task whose turn runs (check): a re-entry's, a re-admission's and a hand-over's starts of the
-// reviewer, the sweep's admission pass, which sends a claim the entry its phases row is owed, and
-// the starts step, which runs such a start that a refused write left on its backoff.
-var newsModelEntryStarts = []string{"reenter", "readmit", "handover", "sweep", "starts"}
 
 // reviewerStarts matches every start of the child's reviewer: its phase's own, which a run that
 // began again raises anew and which waits for the row that creates the issue's branch, and one

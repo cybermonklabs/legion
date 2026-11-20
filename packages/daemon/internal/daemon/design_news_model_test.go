@@ -92,7 +92,8 @@ import (
 //
 // A refused write leaves the claim store behind the machine until the machine's next write of the
 // same delivery finishes it or undoes it (lagging). The store refuses only the reviewer's writes, so
-// a store behind any other claim's machine lost a write it answered as made, and that fails the run.
+// a store behind any other claim's machine lost a write it answered as made, and that fails the run,
+// as does a store that falls behind the reviewer's with no write of it refused since the last check.
 // The model reads the credit the store holds, so the exact rule and the never-ahead rule hold
 // through a refused write; but whether the agents' own view is level with the record has two
 // answers until the store has caught up, so each step after which a claim's store lags is counted as
@@ -394,9 +395,10 @@ type newsModelAgent struct {
 	lost      map[string]bool
 	// carried is the copy the last write of the claim's delivery the store took held, and behind the
 	// delivery as the store held it at a restart that found the store lagging the stopped machine,
-	// nil otherwise (lagging).
+	// nil otherwise (lagging). lagged says the store lagged the claim's machine at the last check.
 	carried []byte
 	behind  *newsModelStored
+	lagged  bool
 }
 
 // newNewsModelRow is issue's audience row starting from version 4 of the spec, its opening told.
@@ -560,14 +562,19 @@ type newsModel struct {
 	// since the first hand-over, while that hand-over's tester credit stood: a credit counted from
 	// the version the tester's gave (newsModel.result).
 	reviewed bool
-	// ticks is how many admission passes the sweep has made, and entry the newest entry the root
-	// architect was handed.
+	// ticks is how many admission passes the sweep has made, entry the newest entry the root
+	// architect was handed, and spent how many refusals the claim store had spent at the last check
+	// (lagging).
 	ticks     int
 	entry     int64
+	spent     int
 	ambiguity newsModelAmbiguity
 	// superseding is the id of the task the supersede step queued since the last check, and
-	// entryStarts says a step since then can have run the start of a newer entry
-	// (newsModelEntryStarts): the two things that take the place of a task whose turn runs (check).
+	// entryStarts says a step since then can have run the start of a newer entry: a re-entry's, a
+	// re-admission's and a hand-over's starts of the reviewer, the sweep's admission pass, which
+	// sends a claim the entry its phases row is owed, and the starts step, which runs such a start
+	// that a refused write left on its backoff. Each of those steps sets it in its own case (do).
+	// The two are what take the place of a task whose turn runs (check).
 	superseding string
 	entryStarts bool
 }

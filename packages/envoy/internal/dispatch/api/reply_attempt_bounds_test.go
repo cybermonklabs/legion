@@ -10,13 +10,15 @@ import (
 // The attempt a reply names in its body is the caller's input, and comment_deliveries and
 // message_deliveries keep attempts in integer columns, so an attempt above their range names no
 // delivery any comment or message has. Each reply route answers it as it answers any attempt the
-// item does not have, 404 COMMENT_NOT_FOUND or 404 MESSAGE_NOT_FOUND. This is no regression test
-// of a 500: before the bound, each route already gave this 404, through the error branch of the
-// read of its delivery, which pgx failed to encode the attempt for. It pins that answer, which the
-// bound (fitsIntegerColumn) now gives before that read, as every handler of this package bounds
-// such a number before the query it reaches. The largest number the column holds is no delivery
-// either and is answered the same, and the control is the attempt that was delivered, which each
-// route takes.
+// item does not have, 404 COMMENT_NOT_FOUND or 404 MESSAGE_NOT_FOUND. This is a regression test of
+// a 500. Since #4387, replyComment and replyMessage read the route of the attempt's role holder
+// (roleHolderReplyOf) before their transaction, with the body's attempt. pgx could not encode an
+// attempt above the column's range for that read, so the read failed and the route answered 500,
+// and this test caught it. Now the bound (fitsIntegerColumn) acts twice in each route: it skips
+// that read for such an attempt, and it answers the 404 before the read of the delivery in the
+// transaction. The test pins that 404 against the 500. The largest number the column holds is no
+// delivery either and is answered the same, and the control is the attempt that was delivered,
+// which each route takes.
 func TestAnAttemptNumberAReplyNamesAboveTheColumnsRangeIsNotFoundNotAFault(t *testing.T) {
 	listener, _ := closedIssueListener(t)
 	handler, database := newTargetedMessageHandler(t, listener.URL)

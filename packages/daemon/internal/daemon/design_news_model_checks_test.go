@@ -153,14 +153,18 @@ func (m *newsModel) owes(row *newsModelRow, prompts []*newsModelPrompt) bool {
 // the booted machine's own first write of it can be refused too. So a store that lagged at a
 // restart lags until the stored delivery is another than it was then (behind). Only the reviewer's
 // writes are ever refused (newsModelStore.refusing), so a store that holds another claim's delivery
-// otherwise than its machine lost a write it answered as made, and that fails the run.
+// otherwise than its machine lost a write it answered as made, and that fails the run. So does a
+// lag of the reviewer's that starts with no refusal spent since the last check (newsModel.spent):
+// one that did not lag at that check (lagged) and stood behind no restart. No write of its was
+// refused, so the store lost one it answered as made too.
 func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise.Delivery) bool {
 	m.t.Helper()
 	if a.machine == nil {
 		return false
 	}
 	held := storedFrom(stored[a.token])
-	if a.behind != nil {
+	behind := a.behind != nil
+	if behind {
 		if held == *a.behind {
 			return true
 		}
@@ -172,6 +176,10 @@ func (m *newsModel) lagging(a *newsModelAgent, stored map[claim.Token]*supervise
 	}
 	if a.token != m.claims.refusing {
 		m.fail("the claim store lags the %s's claim, whose writes it never refuses: the store holds %+v, and the claim's machine holds %+v",
+			a.name, held, machine)
+	}
+	if !a.lagged && !behind && m.claims.spentCount() == m.spent {
+		m.fail("the claim store lags the %s's claim, and none of its writes was refused since the last check, at which it did not lag: the store holds %+v, and the claim's machine holds %+v",
 			a.name, held, machine)
 	}
 	return true
@@ -216,6 +224,7 @@ func (m *newsModel) check() {
 		}
 	}
 	m.ambiguity.step(ambiguous)
+	m.spent = m.claims.spentCount()
 	m.ran["checks"]++
 }
 
@@ -223,9 +232,9 @@ func (m *newsModel) check() {
 // holds (nil for none), in the place of the task whose turn a's agent runs. Two things do. The
 // supersede step's newer task leaves the reviewer's claim holding that task, or none where the
 // retirement landed and the write of the task was refused. The start of a newer entry, which a
-// re-entry, a re-admission, a hand-over or the sweep raises (newsModelEntryStarts), leaves the
-// claim holding a task of an entry above the one whose turn runs, or none on the same refusal. A
-// task of news alone carries no entry, so it never takes that place.
+// re-entry, a re-admission, a hand-over, the sweep or the starts step can run (entryStarts), leaves
+// the claim holding a task of an entry above the one whose turn runs, or none on the same refusal.
+// A task of news alone carries no entry, so it never takes that place.
 func (m *newsModel) replaced(a *newsModelAgent, pending *supervise.Delivery) bool {
 	if a == m.reviewer && m.superseding != "" && (pending == nil || pending.ID == m.superseding) {
 		return true
@@ -252,7 +261,8 @@ func (m *newsModel) checkRow(row *newsModelRow, stored map[claim.Token]*supervis
 	took, known := told.Took(record.DesignStepSpec)
 	lagging := false
 	for _, a := range row.agents {
-		lagging = m.lagging(a, stored) || lagging
+		a.lagged = m.lagging(a, stored)
+		lagging = a.lagged || lagging
 	}
 	m.settleFinals(row, lagging)
 	links, opens := m.standing(row, stored)
