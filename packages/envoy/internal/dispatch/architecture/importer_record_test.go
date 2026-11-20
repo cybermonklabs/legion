@@ -50,7 +50,8 @@ func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(
 		source, err := rig.process.Sync(starterCtx, "CORE", archRepo)
 		starter <- syncAnswer{source: source, err: err}
 	}()
-	receiveBeforeTheDeadline(t, "the starter's flight to reach its installation lookup", installation.arrived)
+	arrived, _ := installation.channels(t)
+	receiveBeforeTheDeadline(t, "the starter's flight to reach its installation lookup", arrived)
 	hangUp()
 	if answer := receiveBeforeTheDeadline(t, "the starter's answer once it hung up", starter); !errors.Is(answer.err, context.Canceled) {
 		t.Fatalf("the starter that hung up answered %+v (err %v); want context.Canceled", answer.source, answer.err)
@@ -59,12 +60,12 @@ func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(
 	later := make(chan syncAnswer, 1)
 	rig.syncOf(archRepo, later)
 	receiveBeforeTheDeadline(t, "the later call to stamp its call", laterStamped)
-	installation.release()
+	installation.releaseHeld(t)
 	// A barrier on the flight's end: singleflight hands this call the answer of the flight still
 	// in flight under the key, or runs it alone when none is, so once it answers, the starter's
 	// flight has ended and recorded itself, and nothing is in flight under the key.
 	receiveBeforeTheDeadline(t, "the starter's flight to end",
-		rig.process.syncs.DoChan("CORE\x00"+archRepo, func() (any, error) { return nil, nil }))
+		rig.process.syncs.DoChan(syncKey("CORE", archRepo), func() (any, error) { return nil, nil }))
 	releaseLater()
 	answer := receiveBeforeTheDeadline(t, "the later call's answer", later)
 

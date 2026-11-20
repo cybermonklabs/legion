@@ -52,23 +52,14 @@ type refusersRig struct {
 	late        chan struct{}
 	releaseLate func()
 	// installation is the hold the next installation lookup stops at, or nil.
-	installation atomic.Pointer[installationHold]
-}
-
-// installationHold is one installation lookup held open: arrived closes when it arrives, and
-// release lets it answer.
-type installationHold struct {
-	arrived chan struct{}
-	release func()
-	opened  chan struct{}
+	installation atomic.Pointer[releasableHold]
 }
 
 // holdNextInstallation holds the next installation lookup, a flight's first GitHub call, which
-// comes before its head lookup, until the returned hold's release.
-func (rig *refusersRig) holdNextInstallation(t *testing.T) *installationHold {
-	hold := &installationHold{arrived: make(chan struct{}), opened: make(chan struct{})}
-	hold.release = sync.OnceFunc(func() { close(hold.opened) })
-	t.Cleanup(hold.release)
+// comes before its head lookup, until the returned hold's releaseHeld.
+func (rig *refusersRig) holdNextInstallation(t *testing.T) *releasableHold {
+	hold := &releasableHold{}
+	hold.channels(t)
 	rig.installation.Store(hold)
 	return hold
 }
@@ -90,11 +81,7 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if hold := rig.installation.Swap(nil); hold != nil {
-			close(hold.arrived)
-			select {
-			case <-hold.opened:
-			case <-r.Context().Done():
-			}
+			hold.wait(t, r)
 		}
 		inner.ServeHTTP(w, r)
 	})

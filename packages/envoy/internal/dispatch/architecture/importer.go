@@ -274,7 +274,7 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 	if err := i.owner.Err(); err != nil {
 		return model.ArchitectureSource{}, err
 	}
-	key := project + "\x00" + repo
+	key := syncKey(project, repo)
 	// The key is entered before the call is stamped, so a flight that looks
 	// the head up after this call's stamp, and so is fresh for it, finds the
 	// entry held open when it ends, whoever started it and whether its
@@ -339,96 +339,6 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 			}
 		}
 	}
-}
-
-// syncOnce is one attempt of Sync, from the load of the source row to its write. It stamps the
-// flight's head lookup, which is how fresh the answer every caller of the flight reads is.
-func (i *Importer) syncOnce(ctx, parent context.Context, project, repo string, flight *syncFlight) (model.ArchitectureSource, error) {
-	source, err := i.loadSourceByRepo(ctx, project, repo)
-	if err != nil {
-		return model.ArchitectureSource{}, err
-	}
-	owner, name, token, importErr := i.resolve(ctx, &source)
-	if importErr != nil {
-		// Each of the four steps of the sync that read GitHub -- resolve here, then Ref, Dir and
-		// DirFiles -- gives up this source's read when it fails, which the running import's
-		// attempt records (githubreads), whatever failed inside it. The client notes only the
-		// answers no caller takes as data; a repository the App is not installed on, a missing
-		// Contents permission, a branch GitHub does not have and a 4xx GitHub answers a read with
-		// are answers it leaves to its caller, so the sync notes them here. ctx carries the values
-		// of the caller that started the flight, so a sync a route or a command started notes
-		// nothing. The content of the files (a note over notes.MaxFileSize, notes.Parse, the
-		// projection) is no GitHub read: last_error records it, and the attempt does not.
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	flight.headAt = time.Now()
-	commit, importErr := i.github.Ref(ctx, token, owner, name, source.Branch)
-	if importErr != nil {
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	// Unchanged head of a healthy source: the projection already is this
-	// commit. Refresh the freshness stamp only.
-	if source.LastError == nil && source.LastCommit != nil && *source.LastCommit == commit {
-		return i.touch(ctx, source, commit)
-	}
-	listing, importErr := i.github.Dir(ctx, token, owner, name, commit, SourceDir)
-	if importErr != nil {
-		githubreads.NoteFailure(ctx, importErr)
-		return i.failed(ctx, parent, source, importErr)
-	}
-	// The head moved but the architecture directory's tree object is
-	// identical: record the new commit without re-fetching or re-projecting.
-	if source.LastError == nil && source.LastTreeSha != nil && *source.LastTreeSha == listing.SHA {
-		return i.touch(ctx, source, commit)
-	}
-	files, importErr := i.github.DirFiles(ctx, token, owner, name, listing)
-	if importErr != nil {
-		// The client refuses a note over notes.MaxFileSize at two points, both
-		// notes.ErrFileTooLarge (notes.CheckSize): by its listed size before any blob read, and by
-		// a blob's decoded size after the read GitHub answered. Either is the source's content
-		// and no failure of GitHub's, so the attempt does not note it.
-		if !errors.Is(importErr, notes.ErrFileTooLarge) {
-			githubreads.NoteFailure(ctx, importErr)
-		}
-		return i.failed(ctx, parent, source, importErr)
-	}
-	parsed, importErr := notes.Parse(files)
-	if importErr != nil {
-		return i.failed(ctx, parent, source, importErr)
-	}
-	updated, importErr := i.project(ctx, source, commit, listing.SHA, files, parsed)
-	// A projection PostgreSQL refused, or one whose ids another source of the project holds, is
-	// recorded like any other import failure. A source that moved or was deleted while the sync
-	// ran has nothing to record it on, and one another sync recorded first is retried.
-	if importErr != nil && !errors.Is(importErr, errSourceMoved) && !errors.Is(importErr, ErrNoSource) &&
-		!errors.Is(importErr, errSuperseded) {
-		return i.failed(ctx, parent, source, importErr)
-	}
-	return updated, importErr
-}
-
-// failed records importErr on the source row and hands both back: the Sync
-// contract for every import failure. The sync's own deadline is always
-// recorded, on parent — the flight's own context, which carries no sync
-// deadline of its own and which the process stopping is the only thing to end
-// — so that the timeout lands on the row like any other failure while Close
-// can still cut a record write short, as it must: cmd/dispatch runs Close
-// inside the wait the shutdown takes before the pool closes. Which caller is
-// still listening does not come into it: a flight has no single caller, and
-// nobody being there was never a reason to lose the fact that GitHub timed
-// out.
-func (i *Importer) failed(ctx, parent context.Context, source loadedSource, importErr error) (model.ArchitectureSource, error) {
-	recordCtx := ctx
-	if ctx.Err() != nil {
-		recordCtx = parent
-	}
-	updated, err := i.recordFailure(recordCtx, source, importErr)
-	if err != nil {
-		return model.ArchitectureSource{}, err
-	}
-	return updated, importErr
 }
 
 // touch is the unchanged-model short-circuit's only write: last_sync_at (and
