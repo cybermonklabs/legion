@@ -229,13 +229,13 @@ func TestTheLastLookFailsARequirementStillUnobservedWhetherOrNotProductionCarrie
 	}
 }
 
-// The last look's pending carries no wake_at and closes the check as not run. That is true only of
-// an issue with none of the requirements that only the deploy can show, since for any other issue
-// a requirement still unobserved there is a fail. Before that pending the tester writes on the pull
-// request why the check did not run within the bound. So the last look's task gives its pending
-// that limit and that sentence, and no clause of it keeps a pending for a merge production does
-// not carry, the case a look before the last pends. A look before the last closes nothing: its
-// pending names the time of the next look.
+// The last look's task gives its pending only for an issue with none of the requirements that only
+// the deploy can show, since for any other issue a requirement still unobserved there is a fail.
+// The task says that pending carries no wake_at. Before that pending, the task has the tester write
+// on the pull request why the check did not run within the bound. No clause of the last look's task
+// keeps a pending for a merge production does not carry, the case a look before the last pends. The
+// task of a look before the last says nothing of a close as not run, since its pending names the
+// time of the next look.
 func TestTheLastLooksPendingIsOnlyForAnIssueWithNoneOfThoseRequirements(t *testing.T) {
 	const closes = "This last look's pending carries no wake_at and closes the check as not run: before reporting it, write on the pull request why the check did not run within the bound."
 	for _, tc := range checkTaskWakes {

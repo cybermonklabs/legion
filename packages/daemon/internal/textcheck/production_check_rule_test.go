@@ -72,7 +72,12 @@ func TestThePagesFailAnUnobservedRequirementWhetherOrNotProductionCarriesTheMerg
 // readings of the page. A comment around the rule's clause, around "whether or not", around an old
 // limit, or one that splits the words "whether or not production carries the merge", fails for
 // the comment. A comment that holds nothing of the rule, or a "<!--" inside a fenced block before
-// it, hides nothing of it. Each old wording is joined from halves, as bannedCheckLimits is.
+// it, hides nothing of it. Each old wording is joined from halves, as bannedCheckLimits is. A page
+// that lists the three verdicts also needs a fail clause for a requirement observed as not met.
+// Such a page that holds the rule but not that clause fails for the missing clause
+// (errNoObservedNotMet). The same page passes when its fail clause also names a requirement
+// observed as not met, so the refusal comes from the missing words and not from the mark that the
+// page lists the verdicts.
 func TestTheFailRuleIsHeldWhereAReaderSeesIt(t *testing.T) {
 	const (
 		rule         = "One still unobserved at the last look is a `fail` whether or not production carries the merge.\n"
@@ -81,31 +86,63 @@ func TestTheFailRuleIsHeldWhereAReaderSeesIt(t *testing.T) {
 	)
 	limited := "One still unobserved at the last look is a `fail` when production" + " carries the merge.\n"
 	banned := "That look's `pending` is for production not carrying" + " the merge alone.\n"
+	verdicts := "One observed as not met, or still unobserved at the last look, is a `fail` whether or not production carries the merge.\n"
 	for _, page := range []struct {
+		shape, text   string
+		listsVerdicts bool
+		err           error
+	}{
+		{"the rule a reader sees", before + rule, false, nil},
+		{"the rule beside a fail clause that names no production", before + rule + noProduction, false, nil},
+		{"the old limit of the fail", before + limited, false, errLimitedFail},
+		{"an old limit of the pending beside the rule", before + rule + banned, false, errBannedLimit},
+		{"a fail clause that names no production", before + noProduction, false, errNoStatement},
+		{"no rule", before, false, errNoStatement},
+		{"the rule inside a comment", before + "<!--\n" + rule + "-->\n", false, errCommented},
+		{"\"whether or not\" inside a comment",
+			before + "One still unobserved at the last look is a `fail` <!-- whether or not -->production carries the merge.\n",
+			false, errCommented},
+		{"an old limit of the fail inside a comment", before + rule + "\n<!--\n" + limited + "-->\n", false, errCommented},
+		{"a comment splitting \"whether or not production carries the merge\"",
+			before + "One still unobserved at the last look is a `fail` whether or not production <!-- whole -->carries the merge.\n",
+			false, errCommented},
+		{"a comment holding nothing of the rule", before + "<!-- a note -->\n" + rule, false, nil},
+		{"a comment opened inside a fenced block before the rule",
+			before + "```html\n<!--\n```\n\n" + rule, false, nil},
+		{"a page listing the verdicts with no fail clause for a requirement observed as not met",
+			before + rule, true, errNoObservedNotMet},
+		{"a page listing the verdicts with a fail clause for a requirement observed as not met",
+			before + verdicts, true, nil},
+	} {
+		err := failRuleOfThePage(page.text, page.listsVerdicts)
+		if !errors.Is(err, page.err) {
+			t.Errorf("%s: holding the rule answers the error %v, want %v: %q", page.shape, err, page.err, page.text)
+		}
+	}
+}
+
+// A proof script says proofSentence, that its issues have no requirement that only the deploy can
+// show, and states no old limit (failRuleOfTheScript). A script without that sentence fails for it
+// (errNoProofSentence). An old limit in a `#` comment that wraps over two lines fails too
+// (errBannedLimit), since scriptProse joins the lines of a comment. The old wording is joined from
+// halves, as bannedCheckLimits is.
+func TestAProofScriptSaysItsIssuesHaveNoRequirementOnlyTheDeployCanShow(t *testing.T) {
+	const (
+		shebang = "#!/usr/bin/env bash\n"
+		heredoc = "cat <<'EOF'\n" + proofSentence + ".\nEOF\n"
+	)
+	limit := "# That look's `pending` is for production not carrying" + "\n# the merge alone.\n"
+	for _, script := range []struct {
 		shape, text string
 		err         error
 	}{
-		{"the rule a reader sees", before + rule, nil},
-		{"the rule beside a fail clause that names no production", before + rule + noProduction, nil},
-		{"the old limit of the fail", before + limited, errLimitedFail},
-		{"an old limit of the pending beside the rule", before + rule + banned, errBannedLimit},
-		{"a fail clause that names no production", before + noProduction, errNoStatement},
-		{"no rule", before, errNoStatement},
-		{"the rule inside a comment", before + "<!--\n" + rule + "-->\n", errCommented},
-		{"\"whether or not\" inside a comment",
-			before + "One still unobserved at the last look is a `fail` <!-- whether or not -->production carries the merge.\n",
-			errCommented},
-		{"an old limit of the fail inside a comment", before + rule + "\n<!--\n" + limited + "-->\n", errCommented},
-		{"a comment splitting \"whether or not production carries the merge\"",
-			before + "One still unobserved at the last look is a `fail` whether or not production <!-- whole -->carries the merge.\n",
-			errCommented},
-		{"a comment holding nothing of the rule", before + "<!-- a note -->\n" + rule, nil},
-		{"a comment opened inside a fenced block before the rule",
-			before + "```html\n<!--\n```\n\n" + rule, nil},
+		{"a heredoc that holds the proof sentence", shebang + heredoc, nil},
+		{"the same script without the proof sentence", shebang + "cat <<'EOF'\nEOF\n", errNoProofSentence},
+		{"the proof sentence and an old limit in a comment over two lines", shebang + limit + heredoc, errBannedLimit},
 	} {
-		err := failRuleOfThePage(page.text, false)
-		if !errors.Is(err, page.err) {
-			t.Errorf("%s: holding the rule answers the error %v, want %v: %q", page.shape, err, page.err, page.text)
+		err := failRuleOfTheScript(script.text)
+		if !errors.Is(err, script.err) {
+			t.Errorf("%s: holding the rule answers the error %v, want %v: %q", script.shape, err, script.err, script.text)
 		}
 	}
 }

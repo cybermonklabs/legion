@@ -118,8 +118,8 @@ template, and the later phases fill in their own lines:
 - The `after_merge` check, recorded after the merge closes the issue by the role your project's
   `production_check` names — the tester, unless the setting is `off`, where no production check
   opens — once your deploy carries the change; its line reads `not yet run` until then, or a `fail`
-  at the check's last look for a deploy-only requirement still unobserved, whether or not production
-  carries the merge.
+  at the check's last look for a requirement only the deploy can show that is still unobserved,
+  whether or not production carries the merge.
 - Any line your repository's own instructions derive from the paths the change touches, such as a
   checklist named for each kind of path: after the approval, the retro recomputes it for the whole
   change, the way those instructions say.
