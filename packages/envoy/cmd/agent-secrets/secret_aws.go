@@ -310,16 +310,38 @@ func awsStoreFailure(operation string, err error) error {
 }
 
 // awsAPIWords is err's AWS API error as a message prints it, and whether err is one: its code
-// alone, where it is a code this client names (awsCodes), never AWS's message.
+// alone, where it is a code this client names (awsCodes), and the permission AWS's message says is
+// missing, where it names one in the shape AWS writes it (awsMissingPermission); never the rest of
+// AWS's message.
 func awsAPIWords(err error) (string, bool) {
 	var api smithy.APIError
 	if !errors.As(err, &api) {
 		return "", false
 	}
+	words := "AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"
 	if code := api.ErrorCode(); awsCodes[code] {
-		return "AWS refused it: " + code + " (AWS's message is not printed)", true
+		words = "AWS refused it: " + code + " (AWS's message is not printed)"
+		if permission := awsMissingPermission(api.ErrorMessage()); permission != "" {
+			words = "AWS refused it: " + code + " (missing permission: " + permission + "; AWS's message is not printed)"
+		}
 	}
-	return "AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)", true
+	return words, true
+}
+
+// awsPermission is how AWS's message names the IAM action a refusal lacks: "is not authorized to
+// perform: <service>:<Action>", the service a prefix of lower-case letters, digits and dashes, the
+// action a word that starts with a capital letter, as every IAM action does.
+var awsPermission = regexp.MustCompile(`not authorized to perform: ([a-z0-9-]{1,64}:[A-Z][A-Za-z0-9]{0,127})(?:[\s.,;)]|$)`)
+
+// awsMissingPermission is the IAM action message, AWS's own text, says the caller is not
+// authorized to perform, where it names one in AWS's shape (awsPermission), else "". Nothing else
+// of the message prints: it can name an ARN, and whoever answers at the store's address writes
+// it, but an action's name is no secret, and a person must know which one to ask for.
+func awsMissingPermission(message string) string {
+	if match := awsPermission.FindStringSubmatch(message); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 // awsCodes are the AWS error codes a message prints by name: the ones the forms act on

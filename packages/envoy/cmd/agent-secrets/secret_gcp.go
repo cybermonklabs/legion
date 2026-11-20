@@ -33,6 +33,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1127,13 +1128,14 @@ func (b *gcpBackend) isAccessDenied(err error) bool {
 }
 
 // storeFailure is err, the failure of the Secret Manager call method, as a message prints it: the
-// call and the gRPC code Secret Manager answered, never its message, which the server writes what
-// it likes in, an echo of what the call sent among it; and a failure that is no answer of Secret
-// Manager's by its class (redact.Class). An Unauthenticated whose cause was this client's own
-// token source failing prints that failure (storeTokens): gRPC writes it into the status message,
-// and its words are this program's own (redactedTokens, gcloudToken, googleidentity). Every
-// Secret Manager call's failure goes through it, and it unwraps to err, so status.Code,
-// isAccessDenied and gcpDefiniteRefusal still read the code.
+// call and the gRPC code Secret Manager answered, and the permission its message says is missing,
+// where it names one in the shape Google writes it (gcpMissingPermission), never the rest of its
+// message, which the server writes what it likes in, an echo of what the call sent among it; and a
+// failure that is no answer of Secret Manager's by its class (redact.Class). An Unauthenticated
+// whose cause was this client's own token source failing prints that failure (storeTokens): gRPC
+// writes it into the status message, and its words are this program's own (redactedTokens,
+// gcloudToken, googleidentity). Every Secret Manager call's failure goes through it, and it unwraps
+// to err, so status.Code, isAccessDenied and gcpDefiniteRefusal still read the code.
 func (b *gcpBackend) storeFailure(method string, err error) error {
 	if err == nil {
 		return nil
@@ -1146,7 +1148,25 @@ func (b *gcpBackend) storeFailure(method string, err error) error {
 	case answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil:
 		return redact.Masked(err, call+" answered Unauthenticated: "+b.tokens.failure().Error())
 	}
+	if permission := gcpMissingPermission(answer.Message()); permission != "" {
+		return redact.Masked(err, call+" answered "+answer.Code().String()+" (missing permission: "+permission+"; its message is not printed)")
+	}
 	return redact.Masked(err, call+" answered "+answer.Code().String()+" (its message is not printed)")
+}
+
+// gcpPermission is how Google's message names the IAM permission a refusal lacks: "Permission
+// '<service>.<resource>.<verb>' denied", dotted words of letters.
+var gcpPermission = regexp.MustCompile(`Permission '([a-z]{1,64}(?:\.[a-zA-Z]{1,64}){1,8})' denied`)
+
+// gcpMissingPermission is the IAM permission message, Google's own text, says is denied, where it
+// names one in Google's shape (gcpPermission), else "". Nothing else of the message prints: it
+// names the resource, and whoever answers at the store's address writes it, but a permission's
+// name is no secret, and a person must know which one to ask for.
+func gcpMissingPermission(message string) string {
+	if match := gcpPermission.FindStringSubmatch(message); match != nil {
+		return match[1]
+	}
+	return ""
 }
 
 // storeTokens is the token source the Secret Manager client signs its calls with, which keeps its

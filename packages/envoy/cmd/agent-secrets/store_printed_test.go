@@ -46,12 +46,17 @@ func (e echoingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 
 // TestAStoresRefusalPrintsItsCodeNeverItsMessage: a refusal of AWS Secrets Manager's, and one of
 // GCP Secret Manager's, whose message repeats a made-up secret, prints the call and the code the
-// store answered with, and no part of the message. An AWS code prints only where it is one this
-// client names (awsCodes): whoever answers at the store's address chooses it, so a code that is a
-// made-up secret prints as "an AWS error". A listed code is the control: the check sees the
-// store's answer.
+// store answered with, and no part of the message but the permission it says is missing, where the
+// message names one in the shape AWS or Google writes it (awsMissingPermission,
+// gcpMissingPermission): a person must know which permission to ask for, and a permission's name
+// is no secret. An AWS code prints only where it is one this client names (awsCodes): whoever
+// answers at the store's address chooses it, so a code that is a made-up secret prints as "an AWS
+// error". A listed code and a message with no permission in it are the controls: the check sees
+// the store's answer.
 func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 	planted := "hunter2pw-" + "storeecho-" + "4b1f"
+	const arn = "arn:aws:iam::111122223333:user/"
+	forbidden := []string{planted, "hunter2pw", "arn:aws:iam", "projects/1000", "validation error detected", "caller lacks access", "Access to KMS"}
 	for _, row := range []struct {
 		name, code, message, says string
 	}{
@@ -59,6 +64,11 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			"Secrets Manager ListSecrets: AWS refused it: ValidationException (AWS's message is not printed)"},
 		{"AWS Secrets Manager, a code that is a made-up secret", "hunter2pwCodeEcho77", "echo: " + planted,
 			"Secrets Manager ListSecrets: AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"},
+		{"AWS Secrets Manager, a missing permission beside an ARN and a made-up secret", "AccessDeniedException",
+			"User: " + arn + planted + " is not authorized to perform: secretsmanager:ListSecrets because no identity-based policy allows the secretsmanager:ListSecrets action; echo: " + planted,
+			"Secrets Manager ListSecrets: AWS refused it: AccessDeniedException (missing permission: secretsmanager:ListSecrets; AWS's message is not printed)"},
+		{"control: AWS Secrets Manager, a refusal that names no permission", "AccessDeniedException", "Access to KMS is not allowed; echo: " + planted,
+			"Secrets Manager ListSecrets: AWS refused it: AccessDeniedException (AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
@@ -68,40 +78,48 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			wantNamedNotPrinted(t, "stderr", stderr, []string{row.says}, planted, "hunter2pw", "validation error detected")
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.says}, forbidden...)
 		})
 	}
-	t.Run("GCP Secret Manager", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		lis, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		server := grpc.NewServer(grpc.UnaryInterceptor(func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
-			return nil, status.Error(codes.PermissionDenied, "caller lacks access; echo: "+planted)
-		}))
-		secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
-		go func() { _ = server.Serve(lis) }()
-		t.Cleanup(server.Stop)
-		restore := gcpClientDial
-		gcpClientDial = func(ctx context.Context, _ *google.Credentials) (*secretmanager.Client, error) {
-			conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	for _, row := range []struct{ name, message, says string }{
+		{"GCP Secret Manager, a missing permission beside a resource and a made-up secret",
+			"Permission 'secretmanager.secrets.list' denied on resource 'projects/100000000001' (or it may not exist); echo: " + planted,
+			"Secret Manager ListSecrets answered PermissionDenied (missing permission: secretmanager.secrets.list; its message is not printed)"},
+		{"control: GCP Secret Manager, a refusal that names no permission", "caller lacks access; echo: " + planted,
+			"Secret Manager ListSecrets answered PermissionDenied (its message is not printed)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			fake := newFakeSecretManager()
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
-				return nil, err
+				t.Fatal(err)
 			}
-			return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
-		}
-		t.Cleanup(func() { gcpClientDial = restore })
-		useNoADC(t)
-		useNoGcloud(t)
-		useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")
-		startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-		_, stderr, code := runSecret("list")
-		if code != 1 {
-			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
-		}
-		wantNamedNotPrinted(t, "stderr", stderr, []string{"Secret Manager ListSecrets answered PermissionDenied (its message is not printed)"}, planted, "caller lacks access")
-	})
+			server := grpc.NewServer(grpc.UnaryInterceptor(func(context.Context, any, *grpc.UnaryServerInfo, grpc.UnaryHandler) (any, error) {
+				return nil, status.Error(codes.PermissionDenied, row.message)
+			}))
+			secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
+			go func() { _ = server.Serve(lis) }()
+			t.Cleanup(server.Stop)
+			restore := gcpClientDial
+			gcpClientDial = func(ctx context.Context, _ *google.Credentials) (*secretmanager.Client, error) {
+				conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+				if err != nil {
+					return nil, err
+				}
+				return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
+			}
+			t.Cleanup(func() { gcpClientDial = restore })
+			useNoADC(t)
+			useNoGcloud(t)
+			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")
+			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.says}, forbidden...)
+		})
+	}
 }
 
 // TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem: a settings answer from an
