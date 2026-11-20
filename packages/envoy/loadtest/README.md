@@ -98,7 +98,9 @@ same step before and after its change, and compares the two rows.
 | `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
 | `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
-| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
+| `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. And of `test-lib.sh`'s `end_tree`: it sees each process stopped before it reads its children, reads on past a zombie child, names a process it cannot see stopped and still ends it and the rest of the tree, and refuses a token that is no pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
+| `restart-step.test.sh` | The test of `restart-step.sh`'s `kill_and_restart` and `end_step`: the listener is started again only once the killed one has ended, every thread of it, not once its main thread is a zombie; a failed script sends its SIGTERM to its step's own `loadgen run` alone, never to one of the same command line in another session, and returns once that loadgen has ended, every thread of it, its socket closed; and a step that has already ended, a zombie nothing has reaped, is sent nothing. It runs a stand-in listener, which picks and holds its own port, a step and a loadgen, and needs no stack: `cd packages/envoy && bash loadtest/restart-step.test.sh` |
+| `test-lib.sh` | What `common.test.sh`, `restart-step.test.sh`, `cluster/cluster.test.sh` and `vm/vm.test.sh` share about a process a case started and has to see end or hold still: `process_ended` (its `/proc` entry is gone, its main thread is a zombie and no other thread of it is left, or it reads dead, its parent reaping it), `wait_gone`, `end_process`, `stop_process` (every thread of it stopped, or a zombie: `common.sh`'s `proc_threads_stopped`, the drivers' own reading, which is why it sources `common.sh`), `process_start`, `process_state`, `socket_inodes` and `socket_held` (a socket told by its inode in `/proc/net/tcp`, never by a connect to its port number, which the machine can give to another program), and `record_pid` and `end_recorded`, by which a suite's exit ends every process its cases recorded, with the processes below it (`end_tree`), and no process it did not record. The four suites source it; it runs nothing of its own. |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml`, `cluster/nats-2.15.1.tgz` | The render of `manifests/nats.yaml` from the chart's archive, vendored here so that no render downloads it and checked against its published sha256 before helm reads it, and from its values, with every image pinned by digest |
@@ -2829,8 +2831,9 @@ credential: every token and password is random and made for the run.
   `started` and `heartbeat`. `up` reads the uid and the issue from `POD_UID` and `LEGION_ISSUE`,
   which a Legion pod sets. The heartbeat changes every 60 s while the run is being driven: each
   command registers its pid and start time in `<run>/commands/`, and the heartbeat stops once
-  none of them is the same live process any more and no hold (`all --keep-for`, `cluster.sh
-  hold`) holds the run. A run whose command was killed without its
+  each of them has ended -- its `/proc` entry gone, its pid another process's, or a zombie that
+  nothing reaps, as a command killed under a PID 1 that reaps nothing stays -- and no hold
+  (`all --keep-for`, `cluster.sh hold`) holds the run. A run whose command was killed without its
   EXIT trap (a SIGKILL, an OOM, an interrupted worker turn) thus leaves a lock that ages, and the
   run's next command starts the heartbeat again. The sampler stops with the heartbeat: once
   `heartbeat.pid` has named no live heartbeat of the run for 60 s, or the run directory is gone,
@@ -3001,12 +3004,37 @@ not even connect. So every step and every replay guards the volume with `df -B1
   is gone stops at its next reading, recording nothing and stopping no job: a step killed outright
   runs neither its stop nor its `EXIT` trap, and step names, job names and pods repeat across
   runs, so a watcher left behind would mark a dead step failed and stop a later run's job of the
-  same name.
+  same name. A reading that cannot read the step shell's start, its `/proc` entry there, is no
+  sign that the step has gone: the watcher names it and reads again at its next poll, as the
+  wait on the runner job does.
 - When the load ends.
 
 Each step and replay writes `<step>/pg-disk.json` from those readings (Output files, below). A
 read that failed is a sample with `error` and no number, and is never 0: it is no measurement, so
 it never refuses a step by itself.
+
+At the step's end, `pg_disk_watch_stop` sends the watcher `TERM`, and a watcher still acting
+300 s later is killed with every process of its act. Each `kubectl` of an act runs under
+`timeout`, most inside a command substitution, so the `kubectl` a stuck watcher waits on is a
+grandchild or further below it, and a `SIGKILL` of `timeout` leaves it running. So the stop
+stops the watcher with `SIGSTOP`, reads its whole process tree, seeing each process it finds
+stopped -- every thread of it stopped, or ended (a zombie forks nothing) -- before it reads that
+one's children, and reads again until a reading finds nothing new; then `SIGKILL` goes to all of
+them, and the stop waits until each has ended, naming any that has not, or whose `/proc` entry it
+could not read. Every process is walked: one that is not seen stopped by the walk's one deadline,
+10 s from its start, is named, still gets the `SIGKILL`, and its children are still read; the
+deadline is the walk's and not each process's, so a tree of many processes the walk cannot see
+stopped holds the stop no longer than one. A children file or a start the stop cannot read is
+named, and each process it froze gets a line of its own at the `SIGKILL`: sent it, gone before it,
+held by another process now (its start differs), or not signalled since its start could not be read. Its signals need no file descriptor, so under a descriptor limit (`ulimit -n 4`) it still
+ends the watcher. One record (`PG_DISK_FROZEN`, each pid with its start) holds every process the
+stop sent `SIGSTOP`, from before that signal until the wait after the `SIGKILL` is over, so a stop
+cut short anywhere in between kills them rather than leave them stopped, and no pid that the
+machine gave another process since is signalled. A process has ended once its `/proc` entry is
+gone, its main thread is a zombie and no other thread of it is left, or it reads dead (X), its
+parent reaping it: `SIGKILL` often ends the
+main thread first, and the other threads of a `kubectl` still hold its connections until they too
+have gone.
 
 ### The replay on the copy
 
@@ -3987,11 +4015,37 @@ leaves half:
 - `ssh` carries no signal to the command it runs, so killing the local `ssh` is nothing to the
   load. The load is started through a small `sh` that records the pid of the `loadgen run`
   itself on the load machine before it `exec`s it, and the step's stop kills that pid over a
-  connection of its own — `TERM`, then `KILL` after 10 s — and removes the file.
-- A bash script with no trap for a signal dies of it and never runs its `EXIT` trap, so `step`
-  traps `INT` and `TERM` beside `EXIT`, and ends with the status a shell killed by that signal
-  has (130 and 143). The load is waited on in the background, so the trap runs the moment the
-  signal arrives rather than when that `ssh` returns, which for a step's load is an hour away.
+  connection of its own — `TERM`, then `KILL` after 10 s — waits until that process has ended,
+  and removes the file. A process has ended when its `/proc` entry is gone, when it is a zombie
+  with no thread left but its main one, which holds no port, or when it reads dead (X), its parent
+  reaping it: a machine whose PID 1 reaps nothing
+  keeps such a zombie in its table for ever. A kill that cannot show its process ended — still
+  running 10 s after its `KILL`, or an `ssh` that did not reach the machine or timed out —
+  names it and keeps the file, and the kill needs no file on this pod to do any of it. A kill
+  that follows a start whose `ssh` this pod did not see return — a start a signal cut short, or
+  the load's `ssh` the stop itself ended — first waits up to that bound for the start's pid
+  file: the command that `ssh` carried may still run on the load machine and record its pid only
+  after the kill read the file. A start that records none by then is named as not shown gone.
+  Each pid file on the load machine holds the pid and its start time, which the script that
+  started the process read with that machine's shell alone, so a pid the machine has given
+  another process since is told apart. A start that differs from the start of the process now at
+  that pid shows that the recorded process has ended: the kill signals nothing, names that pid
+  and the command that holds it now, removes the file and goes on. A file of the pid alone was
+  written before these records, by the driver that started a deployment still running; its pid is
+  ended and waited for as before, so such a deployment needs nothing done. A start script that
+  could not read its own process's start writes `-` in the start's place, and a kill refuses that
+  pid by name, as it refuses one whose start it cannot read while the pid's `/proc` entry is
+  there: its process is not signalled; end that process by hand and remove the file.
+- A step whose earlier profiling tunnel or earlier `loadgen run` is not shown gone is refused
+  before it starts anything: that tunnel holds the port this step's tunnel needs, and that load
+  still loads the deployment this step would measure, and this step's own load would take the
+  pid file that names it, so that no later kill could reach it.
+- `step` traps `INT` and `TERM` beside `EXIT`, so a stop ends the step through `step_interrupt`,
+  which runs the cleanup, says what the stop ended — naming each part it could not show gone,
+  and a part whose own start or stop the signal cut short — and ends with the status a shell
+  killed by that signal has (130 and 143). The load is waited on in the background, so the trap
+  runs the moment the signal arrives rather than when that `ssh` returns, which for a step's load
+  is an hour away.
 
 ## What this harness does not do
 

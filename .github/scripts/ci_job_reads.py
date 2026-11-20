@@ -2219,6 +2219,7 @@ STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
 LOADTEST_LOCK = "Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)"
+LOADTEST_RESTART = "Stop test for loadtest/restart-step.sh (a stand-in step and loadgen; no stack)"
 LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
@@ -3331,7 +3332,10 @@ GATES = [
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/common.test.sh", at("envoy-go-checks", LOADTEST_LOCK)),
-        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
+        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh and restart-step.test.sh source it; run-step.sh and run-series.sh source it"),
+        (f"{ENVOY}/loadtest/restart-step.test.sh", at("envoy-go-checks", LOADTEST_RESTART)),
+        (f"{ENVOY}/loadtest/restart-step.sh", "packages/envoy/loadtest/restart-step.test.sh reads its end_step and step_loadgen"),
+        (f"{ENVOY}/loadtest/test-lib.sh", "packages/envoy/loadtest/common.test.sh, restart-step.test.sh, cluster/cluster.test.sh and vm/vm.test.sh source it"),
         # The chart archive render-nats.sh renders, vendored so that the step downloads no chart.
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "

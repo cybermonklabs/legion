@@ -445,7 +445,7 @@ func (s *curveStep) sampledDispatch() bool { return s.role(dispatchRoleName) != 
 // the claim that the generator kept up, and a step that recorded no config.generator_role, or no
 // cgroup.json, or a generator role with no cores mean against its machine's processors, holds
 // nothing that supports it (dispatch://INFRA-988). The deployment records the role for every step
-// it runs (vm/vm.sh:2545 passes -generator-role vm-<host>), so a step of this series that carries
+// it runs (vm/vm.sh's run_step passes -generator-role vm-<host>), so a step of this series that carries
 // none was not run the way the series runs steps, and what it measured is unknown rather than
 // good. Void is the verdict for unknown: the step measures nothing until it is run again.
 //

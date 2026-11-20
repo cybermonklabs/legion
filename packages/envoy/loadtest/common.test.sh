@@ -30,10 +30,19 @@
 # an ephemeral range that covers the old block (a gVisor pod's 16000-65535, or one from 15500) every
 # default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
 # room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set.
+#
+# And of test-lib.sh's end_tree, which every suite's exit runs over the processes it recorded: (k)
+# it sees a process stopped before it reads its children, so it ends a child forked while the STOP
+# was pending; (l) it reads on past a zombie child and ends the live child after it; (m) it names a
+# process it cannot see stopped and still ends it and the rest of the tree; (n) it refuses a token
+# that is no pid by name and signals nothing.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly helper="${here}/common.sh"
+# What the suites share about a process a case has to see end (process_ended, wait_gone).
+# shellcheck source=packages/envoy/loadtest/test-lib.sh
+source "${here}/test-lib.sh"
 temporary_dir="$(mktemp -d)"
 readonly temporary_dir
 readonly locker="${temporary_dir}/locker.sh"
@@ -47,6 +56,8 @@ pids=()
 cleanup() {
   local pid
   for pid in "${pids[@]}"; do
+    # no-wait: the suite's own exit. The wait below reaps this shell's children, and nothing
+    # reads the rest after it.
     kill -TERM "$pid" 2>/dev/null || true
   done
   wait 2>/dev/null || true
@@ -117,28 +128,11 @@ chmod +x "${slow_bin}/date"
 real_date="$(command -v date)"
 readonly real_date
 
-# alive PID: PID runs and is not a zombie.
-alive() {
-  local stat
-  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 1
-  [[ ${stat##*) } != Z* ]]
-}
-
 # wait_for FILE: wait up to 10 s for FILE to exist.
 wait_for() {
   local i
   for ((i = 0; i < 100; i++)); do
     [[ -s "$1" ]] && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-# wait_gone PID: wait up to 10 s for PID to end.
-wait_gone() {
-  local i
-  for ((i = 0; i < 100; i++)); do
-    alive "$1" || return 0
     sleep 0.1
   done
   return 1
@@ -179,7 +173,7 @@ case_orphaned_child() {
   pids+=("$child")
   kill -TERM "$holder"
   wait "$holder" 2>/dev/null || true
-  alive "$child" || { fail "(a) the child ended with its holder"; return; }
+  ! process_ended "$child" || { fail "(a) the child ended with its holder"; return; }
 
   try_lock "$root"
   if ((rc == 0)); then
@@ -544,6 +538,195 @@ case_ports_below_ephemeral_range() {
   printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
 }
 
+# case_end_tree_stops_before_walk: a child that the recorded parent forks while its STOP is still
+# pending is part of the tree end_tree must read and end. The case orders that on events, never on
+# a nap. The kill wrapper sends the parent no STOP when end_tree asks for one: it marks the ask.
+# The parent forks its child only once the walk has napped after that ask -- the nap of a walk
+# that waits to see the parent stopped, which the case's sleep marks -- and then stops itself. So a
+# walk that confirms the stop always meets the child, however late the parent runs, and a walk that
+# reads the children as soon as its STOP is sent never does: it sends its SIGKILL before the fork,
+# which the wrapper notes, and the case fails on that line of its own. end_tree gets 60 s for the
+# parent to stop, far above the parent's own steps.
+case_end_tree_stops_before_walk() {
+  local parent parent_start child mark=$temporary_dir/tree real_nap=$TEST_LIB_SLEEP rc=0
+  rm -f -- "$mark"-*
+  bash -c 'until [ -e "$2-walk-naps" ]; do "$1" 0.01; done; "$1" 300 & echo "$!" >"$2-child"; kill -STOP "$$"; wait' _ "$real_nap" "$mark" &
+  parent=$!
+  parent_start=$(process_start "$parent")
+  [ -n "$parent_start" ] || { fail "(k) the tree parent had no start time"; return; }
+  pids+=("$parent")
+  # shellcheck disable=SC2329 # end_tree, which this case runs, calls it in place of the builtin
+  kill() {
+    if [ "$1" = -STOP ] && [ "${2:-}" = "$parent" ]; then
+      : >"$mark-stop-asked"
+      return 0
+    fi
+    if [ "$1" = -KILL ] && [ "${2:-}" = "$parent" ] && [ ! -s "$mark-child" ]; then
+      : >"$mark-killed-before-fork"
+    fi
+    command kill "$@" # no-wait: a pass-through; end_tree, whose kill it is, waits for each process
+  }
+  # The walk's nap, end_tree's TEST_LIB_SLEEP for this case: it marks a nap taken once the STOP was
+  # asked for, and then naps.
+  # shellcheck disable=SC2016 # expanded by the nap script it writes
+  printf '#!/usr/bin/env bash\n[ ! -e %q ] || : >%q\nexec %q "$@"\n' "$mark-stop-asked" "$mark-walk-naps" "$real_nap" >"$mark-nap"
+  chmod +x "$mark-nap"
+  TEST_LIB_SLEEP=$mark-nap
+  end_tree "$parent" 60 2>"$mark-err" || rc=$?
+  TEST_LIB_SLEEP=$real_nap
+  unset -f kill
+  if [ -e "$mark-killed-before-fork" ]; then
+    end_process "$parent" || true
+    fail "(k) end_tree sent the parent its SIGKILL before the child its pending STOP let it fork: it read the parent's children before it saw the parent stopped"
+    return
+  fi
+  ((rc == 0)) || {
+    end_process "$parent" || true
+    fail "(k) end_tree returned $rc for a parent that stopped itself once forked: $(<"$mark-err")"
+    return
+  }
+  [ -s "$mark-child" ] || { fail "(k) the parent did not fork its delayed child"; return; }
+  child=$(<"$mark-child")
+  pids+=("$child")
+  if ! process_ended "$child"; then
+    end_process "$child" || true
+    fail "(k) end_tree left the child (pid $child) that the parent forked while its STOP was pending"
+    return
+  fi
+  wait "$parent" 2>/dev/null || true
+  printf 'PASS: end_tree confirms a process is stopped before it reads and ends children it can still fork\n'
+}
+
+# case_end_tree_zombie_child: a child that has ended and that no process reaps -- a zombie, which
+# never reads stopped -- is no reason to give up the walk: end_tree reads on past it, and ends the
+# live child after it and the parent. The parent is a sleep that a shell became by exec once it had
+# started its two children, so nothing reaps the first once it ends, which it does on a mark this
+# case makes once the parent is the sleep. The children file lists the zombie first.
+case_end_tree_zombie_child() {
+  local mark=$temporary_dir/zombie parent zombie live t0 comm rc=0
+  rm -f -- "$mark"-*
+  # shellcheck disable=SC2016 # expanded by the shell it starts
+  bash -c 'bash -c "until [ -e \"\$1\" ]; do \"\$2\" 0.01; done" _ "$2-go" "$1" & z=$!; "$1" 300 & echo "$z $!" >"$2-kids"; exec "$1" 600' _ "$TEST_LIB_SLEEP" "$mark" &
+  parent=$!
+  pids+=("$parent")
+  wait_for "$mark-kids" || { fail "(l) the tree parent wrote no children within 10 s"; return; }
+  read -r zombie live <"$mark-kids"
+  pids+=("$zombie" "$live")
+  t0=$EPOCHSECONDS comm=""
+  until [ "$comm" = sleep ]; do
+    ((EPOCHSECONDS - t0 <= 10)) || { fail "(l) the tree parent did not become its sleep within 10 s"; return; }
+    "$TEST_LIB_SLEEP" 0.05
+    { read -r comm <"/proc/$parent/comm"; } 2>/dev/null || comm=""
+  done
+  : >"$mark-go"
+  t0=$EPOCHSECONDS
+  until process_ended "$zombie"; do
+    ((EPOCHSECONDS - t0 <= 10)) || { fail "(l) the first child (pid $zombie) did not end within 10 s of its mark"; return; }
+    "$TEST_LIB_SLEEP" 0.05
+  done
+  end_tree "$parent" 2>"$mark-err" || rc=$?
+  if ! process_ended "$live" || ! process_ended "$parent"; then
+    end_process "$live" || true
+    end_process "$parent" || true
+    fail "(l) end_tree returned $rc and left the parent (pid $parent) or its live child (pid $live) behind a zombie child (pid $zombie): $(<"$mark-err")"
+    return
+  fi
+  ((rc == 0)) || { fail "(l) end_tree ended a tree with a zombie in it but returned $rc: $(<"$mark-err")"; return; }
+  wait "$parent" 2>/dev/null || true
+  printf 'PASS: end_tree reads on past a zombie child, which has ended, and ends the live child after it and the parent\n'
+}
+
+# case_end_tree_names_unconfirmed: a process that end_tree cannot see stopped is named, and the
+# walk goes on: that process still gets the SIGKILL, and so do its children and every other process
+# of the tree. Here stop_process, end_tree's own, answers that it could not see the middle one of
+# three stopped, after its STOP went out as ever.
+case_end_tree_names_unconfirmed() {
+  local mark=$temporary_dir/unconfirmed parent middle below p rc=0
+  rm -f -- "$mark"-*
+  # shellcheck disable=SC2016 # expanded by the shell it starts
+  bash -c '( "$1" 300 & echo "$BASHPID $!" >"$2-tree.tmp"; mv -- "$2-tree.tmp" "$2-tree"; wait ) & wait' _ "$TEST_LIB_SLEEP" "$mark" &
+  parent=$!
+  pids+=("$parent")
+  wait_for "$mark-tree" || { fail "(m) the tree parent wrote no tree within 10 s"; return; }
+  read -r middle below <"$mark-tree"
+  pids+=("$middle" "$below")
+  eval "orig_$(declare -f stop_process)"
+  stop_process() {
+    local rc=0
+    orig_stop_process "$@" || rc=$?
+    [ "$1" != "$middle" ] || return 1
+    return "$rc"
+  }
+  end_tree "$parent" 2>"$mark-err" || rc=$?
+  eval "$(declare -f orig_stop_process | sed 1s/orig_stop_process/stop_process/)"
+  unset -f orig_stop_process
+  for p in "$parent" "$middle" "$below"; do
+    process_ended "$p" && continue
+    kill -CONT "$p" 2>/dev/null || true
+    end_process "$p" || true
+    fail "(m) end_tree left pid $p of a tree whose middle process (pid $middle) it could not see stopped: $(<"$mark-err")"
+    return
+  done
+  ((rc == 1)) || { fail "(m) end_tree returned $rc, not 1, for a tree with a process it could not see stopped"; return; }
+  grep -qF "end_tree: pid $middle, below pid $parent, was not seen stopped by the walk's deadline, 10 s from its start; it is sent the SIGKILL with the rest, and its children are read" "$mark-err" ||
+    { fail "(m) end_tree did not name the process it could not see stopped (pid $middle): $(<"$mark-err")"; return; }
+  wait "$parent" 2>/dev/null || true
+  printf 'PASS: end_tree names a process it cannot see stopped and still ends it, its children and the rest of the tree\n'
+}
+
+# case_end_tree_refuses_no_pid: end_tree refuses a token that is no pid by name and signals
+# nothing: `kill -STOP 0` would stop every process of the caller's process group. The caller runs in
+# a session of its own, so a fault stops that shell alone, which the case sees as its state T; the
+# case then ends it. The case decides by those events, never by a clock: the caller's status file
+# (end_tree returned), its state T (end_tree stopped it), or the caller ended with no status
+# written (end_tree killed it). A machine that runs the caller late only makes the event come
+# later. The 600 s is a hang's backstop, named as one, far above a source and two file writes.
+case_end_tree_refuses_no_pid() {
+  local mark=$temporary_dir/no-pid job pid t0 state rc
+  rm -f -- "$mark"-*
+  # shellcheck disable=SC2016 # expanded by the shell it starts
+  setsid bash -c 'echo "$$" >"$2-pid.tmp"; mv -- "$2-pid.tmp" "$2-pid"; source "$1"; rc=0; end_tree 0 2>"$2-err" || rc=$?; echo "$rc" >"$2-rc"' _ "$here/test-lib.sh" "$mark" &
+  job=$!
+  t0=$EPOCHSECONDS
+  until [ -s "$mark-pid" ]; do
+    if process_ended "$job"; then
+      wait "$job" 2>/dev/null || true
+      fail "(n) the caller (pid $job) ended before it wrote its pid"
+      return
+    fi
+    ((EPOCHSECONDS - t0 <= 600)) || { fail "(n) the caller (pid $job) wrote no pid within 600 s, the case's backstop for a hang"; return; }
+    "$TEST_LIB_SLEEP" 0.05
+  done
+  pid=$(<"$mark-pid")
+  until [ -s "$mark-rc" ]; do
+    state=$(process_state "$pid")
+    if [ "$state" = T ]; then
+      end_process "$pid" || true
+      wait "$job" 2>/dev/null || true
+      fail "(n) end_tree 0 stopped its caller (pid $pid), which reads state T: it signalled process group 0"
+      return
+    fi
+    if process_ended "$pid" && [ ! -s "$mark-rc" ]; then
+      wait "$job" 2>/dev/null || true
+      fail "(n) end_tree 0 ended its caller (pid $pid) before the caller wrote its status: it signalled process group 0"
+      return
+    fi
+    if ((EPOCHSECONDS - t0 > 600)); then
+      end_process "$pid" || true
+      wait "$job" 2>/dev/null || true
+      fail "(n) end_tree 0 neither returned nor stopped its caller (pid $pid, state ${state:-gone}) within 600 s, the case's backstop for a hang"
+      return
+    fi
+    "$TEST_LIB_SLEEP" 0.05
+  done
+  wait "$job" 2>/dev/null || true
+  rc=$(<"$mark-rc")
+  [ "$rc" = 1 ] || { fail "(n) end_tree 0 returned $rc, not 1"; return; }
+  grep -qxF "end_tree: refusing invalid process id 0" "$mark-err" ||
+    { fail "(n) end_tree 0 did not refuse by name: $(<"$mark-err")"; return; }
+  printf 'PASS: end_tree refuses a token that is no pid by name and signals nothing\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -555,8 +738,12 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_end_tree_stops_before_walk || failed=$((failed + 1))
+case_end_tree_zombie_child || failed=$((failed + 1))
+case_end_tree_names_unconfirmed || failed=$((failed + 1))
+case_end_tree_refuses_no_pid || failed=$((failed + 1))
 case_ports_below_ephemeral_range || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 11 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 15 cases failed\n' "$failed" >&2
   exit 1
 fi
