@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// The fixture's order is held here directly: a recordingQuerier stands under CancelAfterScan, so
+// The fixture's order is held here directly: a recordingPool stands under CancelAfterScan, so
 // each event below is the fixture's own, and no row pgx has already buffered decides it.
 func TestCancelAfterScanCancelsOnlyOnceTheScanHasEnded(t *testing.T) {
 	scanFailed := errors.New("the row could not be scanned")
@@ -45,8 +45,8 @@ func TestCancelAfterScanCancelsOnlyOnceTheScanHasEnded(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			events := &eventLog{}
-			querier := recordingQuerier{events: events, scanErr: tc.scanErr}
-			wrapped := CancelAfterScan(querier, "probe", func() { events.add("cancel") })
+			pool := recordingPool{events: events, scanErr: tc.scanErr}
+			wrapped := CancelAfterScan(pool, "probe", func() { events.add("cancel") })
 			ctx := context.Background()
 			tx, err := wrapped.BeginTx(ctx, pgx.TxOptions{})
 			if err != nil {
@@ -97,40 +97,32 @@ func (l *eventLog) all() []string {
 // a Commit whatever its result.
 var errCommitLost = errors.New("the commit's reply was lost")
 
-// recordingQuerier is a Querier whose rows record the start and the end of each Scan.
-type recordingQuerier struct {
+// recordingPool begins transactions whose rows record the start and the end of each Scan.
+type recordingPool struct {
 	events  *eventLog
 	scanErr error
 }
 
-func (q recordingQuerier) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
-	return recordingTx{querier: q}, nil
+func (p recordingPool) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
+	return recordingTx{pool: p}, nil
 }
 
-func (q recordingQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
-	return nil, errors.New("the recording querier reads no rows with Query")
-}
-
-func (q recordingQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
-	return recordingRow(q)
-}
-
-// recordingTx is a transaction of the recording querier. Its embedded pgx.Tx is nil, so a method
+// recordingTx is a transaction of the recording pool. Its embedded pgx.Tx is nil, so a method
 // the fixture should not call panics.
 type recordingTx struct {
 	pgx.Tx
-	querier recordingQuerier
+	pool recordingPool
 }
 
 func (tx recordingTx) QueryRow(context.Context, string, ...any) pgx.Row {
-	return recordingRow(tx.querier)
+	return recordingRow(tx.pool)
 }
 
 func (tx recordingTx) Commit(context.Context) error { return errCommitLost }
 
-// recordingRow records "scan start", sets its destination to 7 or answers its querier's scanErr,
+// recordingRow records "scan start", sets its destination to 7 or answers its pool's scanErr,
 // and records "scan end".
-type recordingRow recordingQuerier
+type recordingRow recordingPool
 
 func (row recordingRow) Scan(dest ...any) error {
 	row.events.add("scan start")
