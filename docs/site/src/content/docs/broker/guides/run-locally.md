@@ -167,8 +167,8 @@ asking, and no person's session sees any of them at all.
 They are `DEMO_SERVICE_TOKEN`, a stored value, and two `github-app` secrets minted at the GitHub
 stand this stack starts: `DEMO_GITHUB_APP`, whose `github-owners` tag names `acme-org`, and
 `DEMO_GITHUB_APP_CASE_PAIR`, whose tag names `ada`, on which that stand's App is installed twice
-under logins that differ only in case (`ada` and `Ada`), so a release of it holds two
-installations and `agent-secrets --github-token` refuses it. The exports name all three
+under logins that differ only in case (`ada` and `Ada`), so a release of its profile holds two
+installations, which is no one token to hand over. The exports name all three
 `github-app` secrets, the stand's address, the route that reads back every call it was sent, and
 the route that sets what it answers each token request from then on: `ordinary`, `refuse`,
 `refuse-repository`, `refuse-permissions`, `widen`, or `fail-once`, which answers the next one
