@@ -12,7 +12,9 @@
 // two-go shape of a call whose body is on standard input, and AnswersHelp is a check a pod's
 // launcher installs, counting the verifications that ran it. GitHubTarball writes the tarball
 // GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
-// one of a shape GitHub's is not.
+// one of a shape GitHub's is not. GhReadNotFound and GhReadServerError are what gh prints for
+// the guard's own REST visibility read of a repository GitHub answers 404 and 500 for, which a
+// stand-in gh of the guard's tests and of `legion gh`'s prints in the real gh's place.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says

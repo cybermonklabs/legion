@@ -268,6 +268,48 @@ func TestTypeSecretWithoutAMinterDoesNotReleaseItsStoredValue(t *testing.T) {
 	}
 }
 
+// TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne: for each type the policy serves
+// (policy.Types), an approved grant of a secret of that type releases what the type's minter
+// mints, and the value the store holds appears nowhere in the release; with no minter for the
+// type, it releases nothing at all. A type secret is served as its type and never as the stored
+// secret it also is. Each is human-tier and asked for an hour, the grant every type allows: an
+// Azure login is released only on a person's approval, and a Google service account's grant is
+// an hour at most.
+func TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne(t *testing.T) {
+	for _, secretType := range policy.Types {
+		t.Run(secretType, func(t *testing.T) {
+			const name = "TYPED_KEY"
+			machine, enrollmentID, key, approver := newFixture(t)
+			retag(t, machine, requestTypeSecret(name, secretType, policy.TierHuman, ""))
+			stored := policytest.TypeValue(secretType)
+			minted := "minted-" + secretType + "-token"
+			request, err := machine.Create(t.Context(), enrollmentID, signRequestFor(t, machine, key, 60*60, name), "", nil)
+			if err != nil || request.RecordID == nil {
+				t.Fatalf("Create(%s) = %+v, %v; want a request waiting on its person", secretType, request, err)
+			}
+			decision, err := machine.ApplyDecision(t.Context(), *request.RecordID, true, approver)
+			if err != nil || decision.GrantID == "" {
+				t.Fatalf("ApplyDecision(%s) = %+v, %v; want a grant", secretType, decision, err)
+			}
+			if release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, nil, ReleaseCall{}); err == nil || release.Values != nil {
+				t.Fatalf("Values with no %s minter = %v, %v; want an error and nothing released", secretType, release.Values, err)
+			}
+			machine.Minters = map[string]Minter{secretType: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				return secrets.Minted{Value: minted}, nil
+			}}
+			release, err := machine.Values(t.Context(), decision.GrantID, enrollmentID, nil, ReleaseCall{})
+			if err != nil || release.Values[name] != minted {
+				t.Fatalf("Values of a %s secret = %v, %v; want the minted %q", secretType, release.Values, err, minted)
+			}
+			for got, value := range release.Values {
+				if strings.Contains(value, stored) {
+					t.Fatalf("the release of a %s secret carries its stored value under %s", secretType, got)
+				}
+			}
+		})
+	}
+}
+
 // TestAMaxGrantAddedLaterBoundsLiveGrantsAndPendingApprovals: a max-grant tag set after a grant
 // was made, or after a request started waiting, holds them to it as Create holds a new request:
 // the grant that lasts until its session ends releases nothing more, and the waiting request is

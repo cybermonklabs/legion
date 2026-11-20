@@ -129,7 +129,7 @@ func driveGrantLogFlow(t *testing.T, ts *testServer) grantLogFlow {
 	// requesters rule rather than by an owner's denial.
 	listed := policytest.ListedSecret("LISTED_KEY", testApprover, policy.TierAgent, listedOwner, "listed-v1")
 	ts.Secrets.Put(listed)
-	if status, body := ts.req(t, http.MethodPost, "/v1/secrets/LISTED_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := ts.sessionReread(t, "LISTED_KEY"); status != http.StatusOK {
 		t.Fatalf("reread LISTED_KEY = %d %s, want 200", status, body)
 	}
 

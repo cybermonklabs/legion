@@ -1813,7 +1813,7 @@ export default function envoyExtension(hostApi: PiApi): void {
   // run as its `addressedSessionOpen()` check. An entry that lands in another conversation all
   // the same, where that session's next start will not read it, is logged. A forged
   // frame can name an attempt before Dispatch's frame does and so spend it; what that costs is
-  // `packages/pi-envoy/AGENTS.md`'s (the record's limit).
+  // the record's limit (`packages/pi-envoy/README.md`, "A person's message from Dispatch").
   const acceptedUserTurn = (
     rendered: RenderInboundResult,
     acceptedSessionID: string
