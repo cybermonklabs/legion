@@ -1459,28 +1459,28 @@ func (s *server) architectOwns(w http.ResponseWriter, r *http.Request, grant cre
 
 // architectOwnsUnder is architectOwns for an operation that moves recorded into or out of the
 // workflow, park_child or rerun_child, which an architect takes only on an issue under its own:
-// recorded lies under the grant's issue through its recorded parents (owns), and a sub-architect's
-// own issue is refused too, as are the tree root, a sibling of it and an issue under a sibling. An
-// issue's run is moved by an architect above it, as one released it (releasableChild). The tree
-// root's architect owns every issue of its tree, so nothing is read for it, and the root it names
-// is childOfTree's to refuse. It writes a 403 ISSUE_NOT_OWNED naming op when the architect does
-// not own recorded.
+// recorded lies under the grant's issue through its recorded parents, and a sub-architect's own
+// issue is refused too, as are the tree root, a sibling of it and an issue under a sibling. An
+// issue's run is moved by an architect above it, as one released it (releasableChild). The rule
+// is record.OwnsUnder, which the engine also asks before it takes the owning architect's status
+// on a child (workflow's sessionStatusWrite), so the API and the engine agree on the owner. The
+// tree root's architect owns every issue of its tree, so nothing is read for it, and the root it
+// names is childOfTree's to refuse. A sub-architect's request reads the tree once (treeMembers).
+// It writes a 403 ISSUE_NOT_OWNED naming op when the architect does not own recorded.
 func (s *server) architectOwnsUnder(w http.ResponseWriter, r *http.Request, grant credential.Grant, recorded record.Issue, op string) bool {
 	if claim.IsTreeRoot(grant.Issue, grant.Tree) {
 		return true
 	}
-	under := recorded.Key != grant.Issue
-	if under {
-		var err error
-		if under, err = s.owns(r.Context(), grant, recorded); err != nil {
-			writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
-			return false
-		}
+	members, err := s.treeMembers(r.Context(), grant.Tree)
+	if err != nil {
+		writeFailure(w, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read issue tree membership")
+		return false
 	}
-	if !under {
+	if !record.OwnsUnder(members, grant.Tree, grant.Issue, recorded) {
 		notUnder(w, op, recorded.Key, grant)
+		return false
 	}
-	return under
+	return true
 }
 
 // notUnder refuses grant's sub-architect op on key, an issue of its tree that is not under the
@@ -1491,52 +1491,26 @@ func notUnder(w http.ResponseWriter, op, key string, grant credential.Grant) {
 }
 
 // owns says whether grant's architect owns recorded, an issue of its tree: recorded is the grant's
-// own issue or lies under it, through its recorded parents. So the tree root's architect owns every
-// issue of its tree, and a sub-architect its own issue and those under it, never the root or a
-// sibling: a sub-architect holds a grant for the whole tree and can name any issue of it. A chain
-// that leaves the tree before reaching the grant's issue (no parent on a child, a parent not
-// recorded or recorded in another tree, a cycle) ends at the tree root, whose architect owns the
-// issue: a human's re-parent in Dispatch leaves an issue's tree as it was (admit's
-// recordObservation), except a root that never ran, which joins its parent's live tree
-// (workflow/adopt.go), and the notice router ends the same walk at the same place
-// (record.OwningArchitect), so the architect the reviewer's phase-finished notice reaches is the
-// one that may accept the issue. The walk reads every parent in one read-only transaction, opened
-// only when it has a parent to read.
+// own issue or lies under it, through its recorded parents (record.OwnsUnder, the walk
+// architectOwnsUnder takes too). So the tree root's architect owns every issue of its tree, and a
+// sub-architect its own issue and those under it, never the root or a sibling: a sub-architect
+// holds a grant for the whole tree and can name any issue of it. A chain that leaves the tree
+// before reaching the grant's issue (no parent on a child, a parent not recorded or recorded in
+// another tree, a cycle) ends at the tree root, whose architect owns the issue: a human's re-parent
+// in Dispatch leaves an issue's tree as it was (admit's recordObservation), except a root that
+// never ran, which joins its parent's live tree (workflow/adopt.go), and the notice router ends
+// the same walk at the same place (record.OwningArchitect), so the architect the reviewer's
+// phase-finished notice reaches is the one that may accept the issue. The grant's own issue and
+// the tree root's architect need no read. Any other question reads the tree once (treeMembers).
 func (s *server) owns(ctx context.Context, grant credential.Grant, recorded record.Issue) (bool, error) {
-	var tx pgx.Tx
-	defer func() {
-		if tx != nil {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-	byRoot := claim.IsTreeRoot(grant.Issue, grant.Tree)
-	seen := map[string]bool{}
-	for current := &recorded; ; {
-		if current.Key == grant.Issue {
-			return true, nil
-		}
-		if current.Parent == nil || claim.IsTreeRoot(current.Key, current.Tree) || seen[current.Key] {
-			return byRoot, nil
-		}
-		seen[current.Key] = true
-		if tx == nil {
-			if s.pool == nil {
-				return false, errors.New("record dependencies are unavailable")
-			}
-			var err error
-			if tx, err = s.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly}); err != nil {
-				return false, err
-			}
-		}
-		parent, err := s.records.Issue(ctx, tx, *current.Parent)
-		if err != nil {
-			return false, err
-		}
-		if parent == nil || parent.Tree != grant.Tree {
-			return byRoot, nil
-		}
-		current = parent
+	if recorded.Key == grant.Issue || claim.IsTreeRoot(grant.Issue, grant.Tree) {
+		return true, nil
 	}
+	members, err := s.treeMembers(ctx, grant.Tree)
+	if err != nil {
+		return false, err
+	}
+	return record.OwnsUnder(members, grant.Tree, grant.Issue, recorded), nil
 }
 
 // parkChild takes a running child the architect owns (childOfTree: for a sub-architect, an issue

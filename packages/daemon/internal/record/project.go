@@ -173,6 +173,25 @@ func Ancestors(issue Issue, byKey map[string]Issue) []Issue {
 	return above
 }
 
+// OwnsUnder says whether the architect of architectIssue, an issue of tree, owns target, an issue
+// of the same tree, for a move of target into or out of the workflow. members is the tree's
+// records (Store.TreeIssues). The tree root's architect owns every issue of its tree. A
+// sub-architect owns only the issues under its own issue through their recorded parents
+// (Ancestors), and not its own issue: an architect above it moves that issue, as one released it.
+// A chain that leaves the tree, or loops back on itself, ends at the root, so only the root's
+// architect owns an issue on such a chain.
+//
+// It is the one statement of that rule, and two readers ask it: the API's operations on a child
+// (api's architectOwnsUnder) and the engine's exception for the owning architect's status on a
+// child (workflow's sessionStatusWrite). Written twice, the API could refuse an architect a child
+// whose status the engine takes from that architect, or the other way round.
+func OwnsUnder(members []Issue, tree, architectIssue string, target Issue) bool {
+	if claim.IsTreeRoot(architectIssue, tree) {
+		return true
+	}
+	return target.Key != architectIssue && descends(target, architectIssue, byKey(members))
+}
+
 // chainOf is the records one admission pass walks its parent chains over (Ancestors): the pass's
 // own records, by key, and the records above them that its read leaves out (LineFacts.Parents),
 // which is how a walk crosses an ancestor already done rather than stopping at it. It is one

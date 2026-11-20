@@ -1840,6 +1840,11 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// ArchitectIssueOfSession is the issue of the architect claim that the agent session holds in
+	// the tree, and whether it holds one. It reads the claim in any state, as SessionClaimsTree
+	// does: a suspended architect's session is still the session of its claim, and a write in
+	// Dispatch names that session.
+	ArchitectIssueOfSession(ctx context.Context, tx pgx.Tx, tree, session string) (string, bool, error)
 	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.

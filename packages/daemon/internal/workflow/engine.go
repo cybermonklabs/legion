@@ -524,6 +524,16 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
 // carry no session (intake.DispatchIssue.ActorSession): they are the workflow's to act on.
+//
+// One write of a session of the tree is not set back: the owning architect's done, backlog,
+// icebox or triage on a child of its tree (owningArchitectsMove). The architect decides that the
+// work of a child is done, folded into another issue or no longer needed, and the child's status
+// in Dispatch is the one field that records that decision (dispatch://INFRA-3178). For that write
+// the function answers that it did not handle it, so dispatchIssue takes the move as it takes a
+// person's: it drops the status writes it queued for the child, and the child leaves the workflow
+// (leave). Every other write of a session of the tree is set back. That is a status that moves
+// the workflow or todo, any status of a phase worker, a child's own architect's status on its own
+// issue, an architect's status on an issue it does not own, and any status on the tree root.
 func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if fact.ActorSession == "" {
 		return false, nil
@@ -532,7 +542,11 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	if err != nil {
 		return false, err
 	}
-	if !agent {
+	if agent {
+		if stands, err := e.owningArchitectsMove(ctx, tx, issue, fact); err != nil || stands {
+			return false, err
+		}
+	} else {
 		// Whether the write lands on the root of a tree that is running now, by the one rule every
 		// reader of that question asks (record.TreeRunning, record.TreeRuns): its lifecycle stands
 		// open under the workflow's own authority, it does not linger, and it is not itself waiting
@@ -565,6 +579,38 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 	}
 	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
 		Reason: fmt.Sprintf("session %s set %s to %s, and the daemon set it back to %s", fact.ActorSession, issue.Key, fact.Status, issue.Status)})
+}
+
+// owningArchitectsMove says whether fact, the write of a session that holds a claim in issue's
+// tree, is the owning architect's move of issue out of the workflow, which sessionStatusWrite does
+// not set back. Four conditions make it one:
+//   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
+//   - The issue is not the tree root, which leaves the workflow only by the architect's sign-off
+//     or close_root.
+//   - The session holds the architect claim of an issue of the tree, in any state
+//     (record.Store.ArchitectIssueOfSession).
+//   - That architect owns the issue by the rule of the API's operations on a child
+//     (record.OwnsUnder), read over the tree's records.
+//
+// A move that stands writes its own log line, which names the architect's issue.
+func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
+	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
+		return false, nil
+	}
+	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
+	if err != nil || !held {
+		return false, err
+	}
+	members, err := e.treeMembers(ctx, tx, issue)
+	if err != nil {
+		return false, err
+	}
+	if !record.OwnsUnder(members, issue.Tree, architect, issue) {
+		return false, nil
+	}
+	e.logOnCommit(ctx, "workflow: the owning architect's status on its child stands", "issue", issue.Key,
+		"session", fact.ActorSession, "architect", architect, "status", fact.Status)
+	return true, nil
 }
 
 // observedIssue is issue with everything an observation of fact records on it: its title, rank,
