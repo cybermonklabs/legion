@@ -18,6 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
+// RecordsNamed is how every message names the records file: by the setting that names it, never
+// by its path. A named session's record holds that session's signing key, and the default path
+// sits beside the machine file, so its path repeats AGENT_SECRETS_MACHINE_FILE's value.
+const RecordsNamed = "the session records AGENT_SECRETS_STATE_FILE names (default sessions.json beside the machine file)"
+
 // Session is one registered host process and the broker identity the helper holds for it. Key
 // never leaves this process beyond the records file, which holds it only for a session that has
 // an omp session id and is 0600 under a 0700 directory; Record is what survives a restart.
@@ -77,10 +82,9 @@ type Session struct {
 	// not reach the broker rather than reading it as a refusal — a blip between a record and
 	// the broker must not cost the session the grants that record exists to keep — so those
 	// retries last as long as the outage does, and a register that waited on them would burn
-	// its whole wait on every launch for all that time, the per-launch stall the `Secrets
-	// broker` section of packages/envoy/AGENTS.md promises against at "`register --wait N`
-	// answers at once while the helper holds no launcher credential". A later register waits
-	// for nothing it did not see start.
+	// its whole wait on every launch for all that time. A register on a helper with no launcher
+	// credential waits only while an inherited enrollment's first confirming renew runs, and at
+	// most DefaultFirstConfirmBound. A later register waits for nothing it did not see start.
 	//
 	// Every write is under s.mu: newSession installs a CLOSED channel, since a session that
 	// has inherited nothing has no confirmation to wait for; inheritLocked installs a fresh
@@ -531,14 +535,15 @@ func nonEmpty(ids ...string) []string {
 
 // PrivateKey reads a record's signing key, nil when it has none and an error when what it has is
 // not a P-256 PKCS#8 key (a records file edited or truncated): the caller then makes a fresh key,
-// as it did before records carried one at all.
+// as it did before records carried one at all. The error is this package's own words, never the
+// base64 or x509 parser's, since the key is the records file's content.
 func (rec Record) PrivateKey() (*ecdsa.PrivateKey, error) {
 	if rec.Key == "" {
 		return nil, nil
 	}
 	parsed, err := decodeKeyDER(rec.Key)
 	if err != nil {
-		return nil, fmt.Errorf("session %s: key: %w", rec.RuntimeID, err)
+		return nil, fmt.Errorf("session %s: its recorded key is not a base64 PKCS#8 key", rec.RuntimeID)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
@@ -1038,7 +1043,8 @@ func (r *Registry) record(s *Session, cur identity) (Record, error) {
 
 // Save writes every live session's record and every dormant one, atomically, 0600 in a directory
 // it makes 0700: a record of a named session holds that session's signing key, so nothing but
-// this user may read the file or list the directory. After Close it writes nothing.
+// this user may read the file or list the directory. After Close it writes nothing. A write that
+// fails is an error naming the file as RecordsNamed.
 //
 // Live and dormant are snapshotted under ONE registry lock. Read in two, a retire landing
 // between them would put the same session in the file twice — live and dormant at once, so a
@@ -1080,7 +1086,10 @@ func (r *Registry) Save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileOwnerOnly(r.path, data)
+	if err := writeFileOwnerOnly(r.path, data); err != nil {
+		return fileError("write", RecordsNamed, err)
+	}
+	return nil
 }
 
 // LoadDormant takes the dormant records out of recs and keeps them, so a session that comes back
@@ -1107,18 +1116,20 @@ func (r *Registry) Close() {
 	r.closed = true
 }
 
-// LoadRecords reads what Save wrote; no file means no sessions.
+// LoadRecords reads what Save wrote; no file means no sessions. An error names the file as
+// RecordsNamed, and holds neither path nor the decoder's words about the file's content (a time
+// error quotes the value it could not read).
 func LoadRecords(path string) ([]Record, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fileError("read", RecordsNamed, err)
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s do not read as a JSON list of session records", RecordsNamed)
 	}
 	return recs, nil
 }

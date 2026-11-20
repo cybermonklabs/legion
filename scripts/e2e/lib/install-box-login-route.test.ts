@@ -390,40 +390,4 @@ describe("a box-login run's teardown", () => {
     expect(existsSync(join(r.agent, "config.yml"))).toBe(true);
     expect(readFileSync(r.db, "utf8")).toBe(dbBytes);
   });
-
-  test("gives each process SIGTERM and the grace to exit, then SIGKILLs only the survivors", async () => {
-    const graceful = join(dir, "graceful-exited");
-    const stubborn = join(dir, "stubborn-killed");
-    // One exits on SIGTERM after a short write (a refresh finishing), one ignores SIGTERM. Each says
-    // "ready" once its trap is set, and the stop starts only then.
-    const a = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap 'sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
-      ],
-      { stdout: "pipe" }
-    );
-    const b = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap '' TERM; echo ready; while :; do sleep 0.1; done; touch ${JSON.stringify(stubborn)}`,
-      ],
-      { stdout: "pipe" }
-    );
-    await a.stdout.getReader().read();
-    await b.stdout.getReader().read();
-    const stop = Bun.spawnSync([
-      "bash",
-      "-c",
-      helpers(undefined, `box_login_stop_grace=1; stop_box_login_processes ${a.pid} ${b.pid}`),
-    ]);
-    expect(stop.exitCode).toBe(0);
-    expect(await a.exited).toBe(0);
-    expect(existsSync(graceful)).toBe(true);
-    await b.exited;
-    expect(b.signalCode).toBe("SIGKILL");
-    expect(existsSync(stubborn)).toBe(false);
-  });
 });

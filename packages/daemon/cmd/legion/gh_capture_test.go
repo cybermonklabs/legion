@@ -72,17 +72,24 @@ func ghWrapperFirstOnPath(t *testing.T) {
 // an option's value read as that option's from the leaf command's own help, GH_REPO under an
 // explicit endpoint, -R under GH_REPO, --help=false, a name in --repos under --org, -R after an
 // optional-value shorthand, every argument of a plural slot, a placeholder gh fills from GH_REPO,
-// the working directory's own repository as gh reads its remotes whatever their scheme — the issue
-// owner's token only for the issue owner's repository and for a command naming none run
-// where only that owner's remotes are, each other owner's own token for that owner's, and the
-// git gh runs itself asking the wrapper for the owner in its path. A command the wrapper cannot
-// read for certain (a gh alias or an extension, run, as `gh help`'s target or after --version, a
-// command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
-// GH_HOST naming another host, an argument a later gh's usage names otherwise), one naming two
-// owners — an option or another repository naming one owner while gh takes the command's own from
-// the working directory or GH_REPO, or a workspace whose remotes name two — and one naming an owner
-// the bundle does not hold are refused with exit 2 and send nothing; no alias or extension runs,
-// none is installed, and gh's own help and version answer.
+// the working directory's own repository as gh reads its remotes whatever their scheme, origin's
+// alone in a fork's checkout whose origin carries gh's default marker, `remote.origin.gh-resolved
+// base`, for a command of a group gh resolves through that marker — the issue owner's token only
+// for the issue owner's repository and for a command naming none run where only that owner's
+// remotes are or where that marker makes the issue owner's origin the repository gh acts on, each
+// other owner's own token for that owner's, and the git gh runs itself asking the wrapper for the
+// owner in its path. A command the wrapper cannot read for certain (a gh alias or an extension,
+// run, as `gh help`'s target or after --version, a command gh's own help does not list, `gh
+// extension exec`, a search qualifier it cannot read, GH_HOST naming another host, an argument a
+// later gh's usage names otherwise), one naming two owners — an option or another repository
+// naming one owner while gh takes the command's own from the working directory or GH_REPO, or a
+// workspace whose remotes name two, every one but that marked checkout: a group that never reads
+// the marker, repo set-default reading every remote's network, a second marker line gh reads, a
+// marker that is not origin's `base`, an origin URL gh may read otherwise — and one naming an owner
+// the bundle does not hold are refused with exit 2 and send nothing, but a read naming only such
+// owners where no remote names a github.com repository for it, which carries GH_CONFIG_DIR's token
+// (R4 of dispatch://INFRA-3399); no alias or extension runs, none is installed, and gh's own help
+// and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	gh := realGHForCapture(t)
 	git, err := exec.LookPath("git")
@@ -143,6 +150,28 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		return 0, string(out)
 	}
 	run := func(env []string, name string, args ...string) (int, string) { return runIn(home, env, name, args...) }
+	// sentWith checks that r, a request what sent, went to GitHub, api.github.com or github.com,
+	// with owner's token: gh's `token` header, or, for git (git), the Basic credential the helper
+	// answers. It says whether r carried that token, and reads no target owner of r's. A git
+	// request with no credential, which git sends before GitHub asks it for one, carries none and
+	// fails nothing.
+	sentWith := func(what string, r capturedRequest, owner string, git bool) bool {
+		t.Helper()
+		want := "token " + tokens[owner]
+		if git {
+			want = "Basic " + base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens[owner]))
+		}
+		switch {
+		case r.host != "api.github.com" && r.host != "github.com":
+			t.Errorf("%s sent %s%s with %q, to a host that is not GitHub's", what, r.host, r.path, r.auth)
+		case git && r.auth == "":
+		case r.auth != want:
+			t.Errorf("%s sent %s%s (target owner %q) with %q, want %s's %q", what, r.host, r.path, r.owner, r.auth, owner, want)
+		default:
+			return true
+		}
+		return false
+	}
 	wantSent := func(what, owner string, git bool) {
 		t.Helper()
 		requests := proxy.take()
@@ -150,20 +179,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 			t.Errorf("%s sent GitHub nothing", what)
 			return
 		}
-		want := "token " + tokens[owner]
-		if git {
-			want = "Basic " + base64.StdEncoding.EncodeToString([]byte(ghconfig.GitUser+":"+tokens[owner]))
-		}
 		for _, r := range requests {
-			if r.host != "api.github.com" && r.host != "github.com" {
-				t.Errorf("%s sent %s%s with %q, to a host that is not GitHub's", what, r.host, r.path, r.auth)
-				continue
-			}
-			if git && r.auth == "" {
-				continue
-			}
-			if r.auth != want || (r.owner != "" && r.owner != owner) {
-				t.Errorf("%s sent %s%s (target owner %q) with %q, want %s's %q", what, r.host, r.path, r.owner, r.auth, owner, want)
+			if sentWith(what, r, owner, git) && r.owner != "" && r.owner != owner {
+				t.Errorf("%s sent %s%s, whose target owner is %q, with %s's token", what, r.host, r.path, r.owner, owner)
 			}
 		}
 	}
@@ -287,12 +305,11 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		{[]string{"CI=1"}, []string{"stack"}, "", `"stack" is no command gh's own help lists`},
 		{nil, []string{"repo", "sync", "acme/widgets", "--source", "sjawhar/legion"}, "", "more than one owner"},
 		{[]string{"GH_REPO=sjawhar/legion"}, []string{"api", "graphql", "-F", "o=:owner", "-F", "r=:repo", "-f", "query=query($o:String!,$r:String!){repository(owner:$o,name:$r){id}}"}, "sjawhar", ""},
-		// Controls: the issue owner's repository, a command naming none, an owner outside the
-		// bundle, and an option the leaf's help does not list.
+		// Controls: the issue owner's repository, a command naming none, and an option the leaf's
+		// help does not list. (A read naming an owner outside the bundle is R4's, below.)
 		{nil, []string{"pr", "view", "--json", "title", "https://github.com/sjawhar/legion/pull/2"}, "sjawhar", ""},
 		{nil, []string{"api", "repos/acme/widgets"}, "acme", ""},
 		{nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
-		{nil, []string{"api", "repos/other/thing"}, "", `the role's GitHub App is not installed on "other"`},
 		{nil, []string{"pr", "view", "1", "-R", "sjawhar/legion", "--bogus"}, "", `"--bogus" is no option`},
 		// gh 2.104.0's --attach uploads a file the leak guard does not read, so it is refused by
 		// name; a gh with no --attach refuses it as an option its help does not list.
@@ -614,8 +631,165 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
 		rows = append(rows, row{workspace([][]string{origin, {"remote", "add", "upstream", scheme}}), nil, []string{"pr", "list", "--json", "title"}, "", "more than one owner"})
 	}
+	// R1 of dispatch://INFRA-3399: the marked fork checkout, acme's fork whose upstream is
+	// sjawhar's and whose origin carries gh's default marker, `remote.origin.gh-resolved base`, as
+	// the issue clone a pod provisions does. gh resolves a command of the groups that read the
+	// marker to origin's repository there, gh api naming no repository among them, so it carries
+	// acme's token; so it does where the one change to that checkout is a spelling of github.com
+	// gh normalizes, an origin push URL naming another owner, which gh reads only where the fetch
+	// URL names nothing, or a marker line gh reads as none: an empty value on a remote other than
+	// origin, a key set with no value. Every other two-owner checkout is refused as before: a group
+	// that never reads the marker, repo set-default reading every remote's network, the marker on
+	// upstream or on both, origin's naming sjawhar's repository, origin's URL an ssh one or on a
+	// host gh does not normalize to github.com, a second line gh gives origin — a dotted remote's
+	// key, the key given twice, an empty value clearing base — and origin's marker gone where
+	// upstream's value holds a newline, so git prints a second line, `origin base`, which gh skips.
+	markedFork := func(changes ...[]string) string {
+		return workspace(append([][]string{
+			{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+			{"remote", "add", "upstream", "git@github.com:sjawhar/legion.git"},
+			{"config", "remote.origin.gh-resolved", "base"},
+		}, changes...))
+	}
+	marked := markedFork()
+	// git config writes no key without a value, so that line is written into the checkout's
+	// configuration file itself.
+	valueless := markedFork()
+	appendTo(t, filepath.Join(valueless, ".git", "config"), "[remote \"upstream\"]\n\tgh-resolved\n")
+	repoView := []string{"repo", "view", "--json", "nameWithOwner"}
+	rows = append(rows,
+		row{marked, nil, repoView, "acme", ""},
+		row{marked, nil, []string{"api", "repos/{owner}/{repo}"}, "acme", ""},
+		row{marked, nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "https://www.github.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "https://GitHub.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "http://github.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"config", "remote.origin.pushurl", "https://github.com/sjawhar/legion.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"config", "remote.upstream.gh-resolved", ""}), nil, repoView, "acme", ""},
+		row{valueless, nil, repoView, "acme", ""},
+		row{marked, nil, []string{"variable", "list"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "acme/widgets"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "--view=false", "acme/widgets"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "--view", "--view=false", "acme/widgets"}, "", "more than one owner"},
+	)
+	for _, changes := range [][][]string{
+		{{"config", "--unset", "remote.origin.gh-resolved"}, {"config", "remote.upstream.gh-resolved", "base"}},
+		{{"config", "remote.upstream.gh-resolved", "base"}},
+		{{"config", "remote.origin.gh-resolved", "sjawhar/legion"}},
+		{{"remote", "set-url", "origin", "git@github.com:acme/widgets.git"}},
+		{{"remote", "set-url", "origin", "https://WWW.github.com/acme/widgets.git"}},
+		{{"remote", "set-url", "origin", "https://api.github.com/acme/widgets.git"}},
+		{{"remote", "add", "origin.fork", "https://github.com/acme/widgets.git"}, {"config", "remote.origin.fork.gh-resolved", "sjawhar/legion"}},
+		{{"config", "--add", "remote.origin.gh-resolved", "base"}},
+		{{"config", "--add", "remote.origin.gh-resolved", ""}},
+		{{"config", "--unset", "remote.origin.gh-resolved"}, {"config", "remote.upstream.gh-resolved", "\norigin base"}},
+	} {
+		rows = append(rows, row{markedFork(changes...), nil, repoView, "", "more than one owner"})
+	}
 	for _, tc := range rows {
 		check(tc.dir, tc.env, tc.args, tc.owner, tc.refuse)
+	}
+
+	// R4 of dispatch://INFRA-3399: a read naming only owners the bundle holds no directory for,
+	// octocat here and other in one row, where no remote of the working directory names a
+	// github.com repository for it, runs with GH_CONFIG_DIR's directory rather than being refused:
+	// in home, which is no git repository, and in the marked fork checkout, whose remotes the
+	// reader reads for no call naming its repository. It sends GitHub, here the proxy, which
+	// refuses it, that directory's token on every request, and among them a request whose target
+	// is octocat's. The proxy reads a request's target owner from a REST path or a GraphQL `owner`
+	// variable alone, so a row whose request names octocat in a search's q or in another GraphQL
+	// variable names the path that request reaches instead. The reads run under the stand-in the
+	// tests count as the shared check the read rule was proven against (testProvenCheckEnv), which
+	// the guard runs alone for a call that writes nothing: the whole guard would first read the
+	// repository's visibility, which `legion gh` refuses for an owner it holds no directory for. A
+	// GraphQL query, which ghWritesNothing does not count as a read, gets the whole guard, and names
+	// no repository whose visibility it would read.
+	proven := []string{"PUBLIC_LEAK_CHECK=" + ghCheckAt(t, ghCheckPasses), testProvenCheckEnv + "=" + ghProvenProgramSHA256}
+	for _, tc := range []struct {
+		dir   string
+		env   []string
+		args  []string
+		owner string // the owner whose directory's token every request carries
+		reach string // what one request names: its target owner as the proxy reads it, or else its path
+	}{
+		{home, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner,id"}, "acme", "octocat"},
+		{home, nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number"}, "acme", "octocat"},
+		{home, nil, []string{"pr", "list", "-R", "octocat/hello", "--state", "all", "--limit", "300", "--json", "number", "--search", "author:octocat"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "repos/octocat/hello/contents/README.md?ref=0123abc", "-H", "Accept: application/vnd.github.raw"}, "acme", "octocat"},
+		{home, nil, []string{"api", "graphql", "-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"}, "acme", "octocat"},
+		{home, nil, []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org:String!){organization(login:$org){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization:String!){organization(login:$organization){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login:String!){repositoryOwner(login:$login){login}}"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "orgs/octocat"}, "acme", "/orgs/octocat"},
+		{home, nil, []string{"api", "users/octocat"}, "acme", "/users/octocat"},
+		{home, []string{"GH_REPO=octocat/hello"}, []string{"pr", "list", "--json", "number"}, "acme", "octocat"},
+		{home, nil, []string{"repo", "list", "octocat", "--limit", "1", "--json", "name"}, "acme", "octocat"},
+		{home, nil, []string{"search", "repos", "--owner", "octocat", "--limit", "1", "--json", "name"}, "acme", "/search/repositories"},
+		{home, nil, []string{"search", "prs", "repo:octocat/hello", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
+		{home, nil, []string{"search", "issues", "owner:octocat", "--limit", "1", "--json", "number"}, "acme", "/graphql"},
+		{home, nil, []string{"api", "repos/other/thing"}, "acme", "other"},
+		// Under a GH_CONFIG_DIR naming sjawhar's directory, the same read carries sjawhar's token.
+		{home, []string{"GH_CONFIG_DIR=" + ghconfig.Dir(root, "sjawhar")}, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "sjawhar", "octocat"},
+		// In the marked fork checkout, whose remotes name acme's repository and sjawhar's, the
+		// read naming its repository carries acme's token.
+		{marked, nil, []string{"repo", "view", "octocat/hello", "--json", "nameWithOwner"}, "acme", "octocat"},
+	} {
+		what := "legion gh " + strings.Join(tc.args, " ")
+		code, out := runIn(tc.dir, slices.Concat(ghEnv, proven, tc.env), os.Args[0], append([]string{"gh"}, tc.args...)...)
+		requests := proxy.take()
+		if len(requests) == 0 {
+			t.Errorf("%s = exit %d, %q, and sent GitHub nothing; want its requests sent with %s's token", what, code, out, tc.owner)
+			continue
+		}
+		reached := false
+		for _, r := range requests {
+			sentWith(what, r, tc.owner, false)
+			reached = reached || r.owner == tc.reach || r.path == tc.reach
+		}
+		if !reached {
+			t.Errorf("%s sent %+v, and none of it to %s", what, requests, tc.reach)
+		}
+	}
+	// Every other call naming octocat is refused with the OwnerNotServedError refusal, exit 2, and
+	// sends nothing, under the same check: a write, a GraphQL mutation or subscription, a query gh
+	// would read from a file or fill a placeholder in after `legion gh` read it — {branch}, in a
+	// checkout whose branch is named `mutation` — a read naming octocat beside sjawhar, whom the
+	// bundle serves, and a read in a clone of octocat's repository, whose remote names it (beside
+	// the rows above, `pr list` there).
+	queryFile := filepath.Join(home, "query.graphql")
+	if err := os.WriteFile(queryFile, []byte(`mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	onMutation := workspace([][]string{origin, {"checkout", "-q", "-b", "mutation"}, {"-c", "user.name=Legion test", "-c", "user.email=legion-test@example.invalid", "commit", "-q", "--allow-empty", "-m", "on a branch named mutation"}})
+	for _, tc := range []struct {
+		dir  string
+		args []string
+	}{
+		{home, []string{"issue", "create", "-R", "octocat/hello", "--title", "t", "--body", "b"}},
+		{home, []string{"api", "-X", "POST", "repos/octocat/hello/issues", "-f", "title=t"}},
+		{home, []string{"api", "graphql", "-f", "owner=octocat", "-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`}},
+		{home, []string{"api", "graphql", "-f", "owner=octocat", "-f", "query=subscription{issueUpdated{title}}"}},
+		{home, []string{"api", "graphql", "-f", "owner=octocat", "-F", "query=@" + queryFile}},
+		{onMutation, []string{"api", "graphql", "-f", "owner=octocat", "-F", "query={branch}{viewer{login}}"}},
+		{home, []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query=query{viewer{login}}"}},
+		{outsideClone, []string{"api", "user"}},
+	} {
+		check(tc.dir, proven, tc.args, "", `the role's GitHub App is not installed on "octocat"`)
+	}
+
+	// repo set-default --view and -v print the default repository the marker names, and gh sends
+	// nothing for them, returning before it builds an HTTP client, so each exits 0 against the
+	// proxy: the one request is the leak guard's read of acme's repository's visibility, carrying
+	// acme's token.
+	guardsRead := capturedRequest{host: "api.github.com", path: "/repos/acme/widgets", owner: "acme", auth: "token " + tokens["acme"]}
+	for _, option := range []string{"--view", "-v"} {
+		what := "legion gh repo set-default " + option
+		if code, out := runIn(marked, ghEnv, os.Args[0], "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
+			t.Errorf("%s = exit %d, %q; want exit 0 naming acme/widgets", what, code, out)
+		}
+		if sent := proxy.take(); !slices.Equal(sent, []capturedRequest{guardsRead}) {
+			t.Errorf("%s sent %+v, want the leak guard's visibility read alone, %+v", what, sent, guardsRead)
+		}
 	}
 
 	// Every git gh runs gets ghForcedGitConfig, submodule recursion off among it, whatever the

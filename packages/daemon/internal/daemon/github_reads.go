@@ -94,9 +94,10 @@ type githubPullRequest struct {
 
 // mergeability is the pull request's `mergeable` as the mergeability fact reads it: null
 // is record.MergeabilityUnknown, GitHub not having computed it yet; true is
-// record.MergeabilityMergeable; false is record.MergeabilityConflicting, the state that sends the
-// issue back to implementing from every phase after the implementer's (workflow's
-// mergeability).
+// record.MergeabilityMergeable; false is record.MergeabilityConflicting, a head that conflicts
+// with its base, which a second read confirms before the workflow decides whether to merge the
+// base forward (workflow's mergeability), and which the read carries the base's rules for
+// (applyMergeability).
 func (p githubPullRequest) mergeability() record.Mergeability {
 	switch {
 	case p.Mergeable == nil:
