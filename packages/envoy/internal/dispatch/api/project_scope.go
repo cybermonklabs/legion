@@ -32,18 +32,19 @@ package api
 // rather than the path, the issue create and the going request (scopeProjectInBody), refuse a
 // project outside the list by name, since the name is the caller's own.
 //
-// One credential is held otherwise while the deployment holds no private project: a broker token
-// an operator's entry mapped to one project (model.ListHoldsWrites), whose list held its writes
-// and no read before projects could be private. It reads and writes as an open viewer then
-// (access.Resolve), exactly as it did, and the writes it made are held to its project by the
+// One credential is held otherwise while the deployment holds no private project: a full member's
+// broker token an operator's entry mapped to one project (model.ListHoldsWrites), whose list held
+// its writes and no read before projects could be private. It reads and writes as an open viewer
+// then (access.Resolve), exactly as it did, and the writes it made are held to its project by the
 // checks it was held by (writesHeldTo): a deployment's row is 403 PROJECT_SCOPE_DEPLOYMENT, a
 // project's row whose object is of another project, of none, or of no row at all is 403
 // PROJECT_SCOPE naming what the object resolved to (writeOutsideTheBrokerProject), a body's
 // project outside it is 403 PROJECT_SCOPE (refuseOutsideCallerProjects), and a blocked_by target
 // outside it is 403 PROJECT_SCOPE (writeBlockedBy), each in the words it was answered before (R9).
 // Nothing is private then, so no refusal names an object a reader may not see, and no answer of a
-// write it makes reads anything an open viewer would not; once a project is private it reads and
-// writes within its list, and an object outside it answers as missing.
+// write it makes reads anything an open viewer would not; once a project is private, and for a
+// restricted member's token whatever the deployment holds, it reads and writes within its list,
+// and an object outside it answers as missing.
 
 import (
 	"context"
@@ -119,10 +120,11 @@ func (s *server) callerProjects(r *http.Request) ([]string, bool) {
 // writesHeldTo is the list credential's writes are held to, given viewer, what access.Resolve
 // answered it may read: the viewer's own list where Resolve held it to one, and, for a credential
 // whose list holds its writes and no read while no project is private (model.ListHoldsWrites, a
-// broker token an operator's entry mapped to one project), its list then too, as it was before
-// projects could be private. Every other credential's writes are held to no list: the open viewer's
-// of a credential that lists none, and a broker token's acting as its person while no project is
-// private, whose list held nothing before.
+// full member's broker token an operator's entry mapped to one project, which Resolve leaves open
+// then), its list then too, as it was before projects could be private. Every other credential's
+// writes are held to no list: the open viewer's of a credential that lists none, and a full
+// member's broker token's acting as its person while no project is private, whose list held
+// nothing before.
 func writesHeldTo(viewer *model.Viewer, credential *model.Credential) []string {
 	switch {
 	case viewer == nil || viewer.All:

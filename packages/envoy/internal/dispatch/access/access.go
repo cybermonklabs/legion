@@ -72,22 +72,26 @@ func PersonSeesProjectSQL(personExpr, memberExpr, projectAlias string) string {
 // none), $2 whether the credential is a broker token, whose person reads as a full member when no
 // people row holds them (the broker signs in only people of its sign-in domain), $3 whether it is
 // an agent credential rather than a browser, $4 its list of projects (null or empty for none), and
-// $5 whether that list holds it only while some project is private (model.ListHold): with $5 and
-// no private project, the caller sees what a credential listing none sees.
+// $5 whether that list holds it only while some project is private or its person is a restricted
+// member (model.ListHold): with $5, no private project and a person who is not restricted, the
+// caller sees what a credential listing none sees.
 func VisibleProjectsSQL() string {
 	return fragment("VisibleProjectsSQL", `
 		with deployment as (
 			select exists (select 1 from projects where visibility = 'private') as private
-		), viewer as (
+		), person as (
 			select $1::text as person,
 				case when $1::text is null then null
 					else coalesce(
 						(select member_kind from people where email = $1::text),
 						case when $2::boolean then 'full' end)
-				end as member_kind,
-				coalesce(cardinality($4::text[]), 0) > 0 and (not $5::boolean or deployment.private) as listed,
+				end as member_kind
+		), viewer as (
+			select person.person, person.member_kind,
+				coalesce(cardinality($4::text[]), 0) > 0
+					and (not $5::boolean or deployment.private or coalesce(person.member_kind = 'restricted', false)) as listed,
 				deployment.private
-			from deployment
+			from deployment, person
 		)
 		select
 			coalesce(jsonb_agg(p.key order by p.key collate "C") filter (where
@@ -291,11 +295,13 @@ func PartyClause(partiesExpr, viewerParam string) string {
 //
 // A list holds what its credential reads unless the credential's ListHoldsWhileNoPrivate says it
 // holds no read while the deployment holds no private project (a broker token's list, which
-// existed before projects could be private and limited no read then): such a credential reads as
-// one that lists none until a project is private, open and with no Lists, exactly as it read
-// before (R9), and once one is it is held to its list (R3). What its writes are held to while it
-// reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one project
-// made before projects could be private within that project.
+// existed before projects could be private and limited no read then): such a credential of a full
+// member, or of no person, reads as one that lists none until a project is private, open and with
+// no Lists, exactly as it read before (R9). Once a project is private, and for a restricted member
+// whatever the deployment holds, it is held to its list (R3): a restricted member's credential sees
+// exactly the projects its list and its person both see. What a full member's broker token writes
+// while it reads open is api's (writesHeldTo), which keeps the writes a broker token scoped to one
+// project made before projects could be private within that project.
 func Resolve(ctx context.Context, q Querier, actor model.Actor) (model.Viewer, error) {
 	if actor.Credential == nil {
 		return model.Viewer{}, ErrUnresolvedActor
