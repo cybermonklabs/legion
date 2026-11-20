@@ -58,10 +58,14 @@ func runStep(pr record.PullRequest, step record.RunStep) record.PullRequest {
 // recorded, each spent by the arrival that took it. The run stays open from its first head judged
 // with no chain of pushes, or still waiting for what its synchronize named, its anchor the
 // judgement before that head, and closes when there is none; past maxRunSteps its oldest steps
-// fold into the anchor too. The pull request keeps its own pushes.
+// fold into the anchor too. The pull request keeps its own pushes. The runs remembered settled
+// (record.PullRequest.SettledRuns) start from the anchor's too (record.HeadRun.Settled), so each
+// settlement step is fenced by what was settled before it (settledBefore), as it was when it
+// arrived, and never by a later step that an earlier replay applied.
 func replayRun(pr record.PullRequest) record.PullRequest {
 	run, live := pr.Run, pr.Pushes
 	at := withJudgement(pr, run.Anchor)
+	at.SettledRuns = clone(run.Settled)
 	at.Pushes, at.Run = clone(run.Pushes), nil
 	for _, p := range at.Pushes {
 		at.Moves, _ = pushedMoves(at.Moves, p)
@@ -72,12 +76,13 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 		pushes    []record.ClassifiedPush
 		names     []record.Named
 		since     time.Time
+		settled   []record.AttemptRun
 	}
 	names, since := clone(run.Names), run.Since
 	before := make([]state, len(run.Steps))
 	var unchained []int
 	for i, step := range run.Steps {
-		before[i] = state{judgementOf(at), clone(at.Pushes), names, since}
+		before[i] = state{judgementOf(at), clone(at.Pushes), names, since, at.SettledRuns}
 		var chained bool
 		at, chained, names = applyStep(at, step, names, since)
 		if step.Head != "" {
@@ -105,7 +110,7 @@ func replayRun(pr record.PullRequest) record.PullRequest {
 	}
 	if waiting < len(run.Steps) {
 		at.Run = &record.HeadRun{Anchor: before[waiting].judgement, Pushes: before[waiting].pushes, Names: clone(before[waiting].names),
-			Since: before[waiting].since, Steps: clone(run.Steps[waiting:])}
+			Since: before[waiting].since, Settled: clone(before[waiting].settled), Steps: clone(run.Steps[waiting:])}
 	}
 	at.Pushes = unspentPushes(live, at.Moves, false)
 	return at

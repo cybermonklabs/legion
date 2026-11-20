@@ -842,8 +842,9 @@ type PullRequest struct {
 	// head, after a reopen and after a new generation's clear, which leaves it nothing to find an
 	// older settlement of a head stale against when the branch comes back to that head; this is
 	// what it is found stale against then (classify.SettlementFor). Nothing else reads it, no
-	// verdict among them, and it is kept through a reopen and a new generation, as the pull
-	// request's row is.
+	// verdict among them, but a head run, which keeps it as it stood at the run's anchor
+	// (HeadRun.Settled); it is kept through a reopen and a new generation, as the pull request's
+	// row is.
 	SettledRuns []AttemptRun
 	// Pushes are the branch's pushes the daemon still reads: every push whose own move, its two
 	// heads, the record has not made (Moves) - a push still on its way from the head, a link of a
@@ -1122,7 +1123,13 @@ type HeadRun struct {
 	// Since is GitHub's clock of the anchor's head (PullRequest.HeadUpdatedAt when the run opened),
 	// zero when unknown: a named move older than it is no arrival's of the run.
 	Since time.Time `json:"since,omitzero"`
-	Steps []RunStep `json:"steps"`
+	// Settled is the runs the pull request remembered settling at the anchor (PullRequest's
+	// SettledRuns), which the replay starts from: a settlement among the steps is then stale only
+	// against what was settled before it, never against a later step of the same run, which
+	// would drop it from the replay with the statuses only it names. omitempty, so a run anchored
+	// on a record that remembers nothing, or before the field, writes and reads as it did.
+	Settled []AttemptRun `json:"settled,omitempty"`
+	Steps   []RunStep    `json:"steps"`
 }
 
 // Named is a move a synchronize named without moving the head: the move from Before to SHA, made by

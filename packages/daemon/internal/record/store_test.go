@@ -379,12 +379,17 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
 		StateReadAt: updatedAt.Add(3 * time.Minute),
+		// The runs remembered settled for each head read back whole, in their order, and so do the
+		// ones the head run was anchored with.
+		SettledRuns: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed},
+			{Name: "lint", ID: 92, Head: "b1c2d3", Conclusion: RunSucceeded}, {Name: "unit", ID: 91, Head: "b1c2d3", Conclusion: RunFailed}},
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.
 		Run: &HeadRun{
 			Anchor: Judgement{HeadSHA: "a0b1c2", CheckedHead: "a0b1c2", Failing: []string{"unit"},
 				CheckRuns: []AttemptRun{{Name: "unit", ID: 90}}, Generation: 3, Snapshot: "snapshot-3",
 				Statuses: []CommitStatus{{Context: "test", State: CommitStatusFailure, CreatedAt: updatedAt.Add(-3 * time.Minute), Head: "a0b1c2"}}},
-			Pushes: pushes[:1],
+			Pushes:  pushes[:1],
+			Settled: []AttemptRun{{Name: "unit", ID: 90, Head: "a0b1c2", Conclusion: RunFailed}},
 			Steps: []RunStep{{Head: "b1c2d3", Before: "a0b1c2"}, {Settlement: &Settlement{Head: "b1c2d3", CheckRuns: []AttemptRun{{Name: "unit", ID: 91}}, Generation: 4,
 				Snapshot: "snapshot-4", Failing: []string{"unit"}, Cancelled: []string{"e2e"},
 				Statuses: []CommitStatus{{Context: "ci/license", State: CommitStatusError, CreatedAt: updatedAt.Add(-time.Minute)},
@@ -797,7 +802,8 @@ func samePullRequest(got, want PullRequest) bool {
 		got.Mergeability == want.Mergeability && got.MergeState == want.MergeState &&
 		got.ConflictingHead == want.ConflictingHead &&
 		got.StateReadAt.Equal(want.StateReadAt) &&
-		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward)
+		reflect.DeepEqual(got.ConflictRead, want.ConflictRead) && reflect.DeepEqual(got.MergeForward, want.MergeForward) &&
+		reflect.DeepEqual(got.SettledRuns, want.SettledRuns)
 }
 
 // A production check is one record per closed issue, every field read back as written — the role
@@ -2281,15 +2287,19 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "handoff_record", "handoff_version", "reviewed_head"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward", "settled_runs"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq", "declined", "declined_note", "declined_words"},
-		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent"},
+		"dispatch_issues":   {"key", "project", "status", "blockers", "dispatch_seq", "parent", "status_seq"},
 		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
 		"slots":             {"issue", "index", "admitted_at"},
 		"processed_events":  {"source", "event_id", "processed_at"},
 		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"intake_failures": {"id", "project", "consumer", "subject", "stream_seq", "stored_at", "headers", "payload", "event_source", "event_id",
+			"first_failed_at", "updated_at", "deliveries", "ended_delivery", "last_error", "given_up_at", "give_up_reason", "notice_id",
+			"replay_claimed_at", "closed_at", "closed_how", "closed_by", "discarded_at", "discarded_by", "discard_reason"},
+		"cleared_pull_requests": {"repo", "number", "head_updated_at", "cleared_at"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {

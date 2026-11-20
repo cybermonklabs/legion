@@ -1640,9 +1640,11 @@ legion state --config legion.yaml --json | jq '.consumers[] | {name, waiting, ol
   each failure, from one second up to five minutes, and once JetStream has delivered it 21 times and
   an hour has passed since its first failure, the daemon gives it up and it waits no more
   ([A message the intake gave up](#a-message-the-intake-gave-up)). Search the daemon's log for
-  `retryable intake processing failure` and the other warnings naming a `subject` of that
-  consumer, whose `error` says what fails, `delivered` how many times JetStream has delivered the
-  message and `retry_in` how long the daemon waits for its next delivery. A handler that does not
+  the warnings that carry `retry_in` and `delivered` and name a `subject` of that consumer. The
+  daemon writes one for each failed delivery: its message is the step that failed (each is
+  listed under [A message the intake gave up](#a-message-the-intake-gave-up)), `error` says what
+  fails, `delivered` how many times JetStream has delivered the message and `retry_in` how long
+  the daemon waits for its next delivery. A handler that does not
   finish writes none of those lines while it holds
   ([a handling that outlives its window](#a-handling-that-outlives-its-window)).
   The stall is all that shows until the handler passes the intake handler limit and the daemon
@@ -1681,9 +1683,30 @@ as a message of one of its three durable consumers ([GitHub events wait](#github
 When the handling of a message fails, the daemon puts the message back, and JetStream delivers it
 again: one second after the first failure, and twice as long after each later failure, up to five
 minutes. When GitHub's rate limit names a longer wait, the daemon waits that long. Each failure
-writes the warning `retryable intake processing failure`, with its `error`, the wait (`retry_in`)
-and JetStream's count of the message's deliveries (`delivered`). From the first failure the daemon
-keeps the whole message in its database, with the error of the last failure.
+writes one warning, which carries the failure's `error`, the wait (`retry_in`), JetStream's count
+of the message's deliveries (`delivered`), and the message's `subject` and `stream_seq`. Search for
+`retry_in` and `delivered` together to find every one of them, because the warning's message is
+the step that failed. Seven name a step of the handling: the first six are the reads and
+preparations the daemon makes before the event's database transaction, and the last is that
+transaction:
+
+- `read the project's repository mapping again`
+- `read whether the pull request is recorded`
+- `prepare the issue's repository`
+- `prepare the review's issue`
+- `restore the review's truncated body`
+- `read the reviewer's repository permission`
+- `retryable intake processing failure`
+
+Three more name a write of the record itself, which failed, so the message waits for its next
+delivery rather than being given up: `record the give-up of a message that does not decode`,
+`a message that does not decode has no metadata to record it under` and `give up a message whose
+delivery did not end`. A record write that fails after a failed handling writes the warning
+`intake: the give-up record of a delivery was not written; the delivery goes on without it`, then
+that handling's own line from the seven above.
+
+From the first failure the daemon keeps the whole message in its database, with the error of the
+last failure.
 
 The daemon gives the message up, and stops taking it, for one of five reasons, which the record
 keeps:
@@ -1699,8 +1722,8 @@ keeps:
 - **`consumer moved past`**: the consumer moved past the message without delivering it again,
   because the consumer was made again past it or the stream deleted it. A sweep finds such a
   message within a few minutes. Its record keeps the error `the consumer moved past it without
-  delivering it again`, so the error of its handling is in the earlier `retryable intake processing
-  failure` warnings with the same `stream_seq`.
+  delivering it again`, so the error of its handling is in the earlier failure warnings (those
+  that carry `retry_in` and `delivered`) with the same `stream_seq`.
 
 A message given up is terminated: JetStream does not deliver it again, and its consumer counts it
 as handled and moves past it. The daemon writes one error line, `intake: a message was given up`,

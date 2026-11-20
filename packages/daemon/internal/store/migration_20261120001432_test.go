@@ -76,7 +76,7 @@ func columnShape(t *testing.T, store *Store, table, column string) string {
 // default, so a row an earlier daemon inserts holds no settled run; and dispatch_issues.status_seq,
 // a sequence that is null on every row written before it.
 var intakeFailuresColumns = map[[2]string]string{
-	{"pull_requests", "settled_runs"}:  "jsonb nullable=NO default='[]'::jsonb",
+	{"pull_requests", "settled_runs"}: "jsonb nullable=NO default='[]'::jsonb",
 	{"dispatch_issues", "status_seq"}: "bigint nullable=YES default=",
 }
 

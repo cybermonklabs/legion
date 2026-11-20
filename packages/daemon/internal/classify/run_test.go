@@ -481,6 +481,63 @@ func TestALateSettlementOfAHeadWhoseFenceWasResetChangesNothing(t *testing.T) {
 	}
 }
 
+// A settlement that is a step of an open head run replays against the runs the record remembered
+// settling at the run's anchor (record.HeadRun.Settled) and those of the steps before it, never
+// against a later step an earlier replay applied. Here each settlement of h1 is earlier than the
+// next - an older run of ci, then ci alone before lint's run appeared - and the first alone names
+// deploy's failure: the head keeps that failure, and judges as it does with its push first, while
+// the run is open and once the push closes it. A settlement earlier than one the record settled
+// for h1 before the run opened is still stale in the run, and after it closes.
+func TestASettlementStepIsFencedOnlyByWhatWasSettledBeforeIt(t *testing.T) {
+	settlements := []SettlementCandidate{
+		{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 9}}, Generation: 1, Snapshot: "h1-1", Failing: []string{}, Cancelled: []string{},
+			Statuses: []record.CommitStatus{statusOf("deploy", record.CommitStatusFailure, 2)}},
+		{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}}, Generation: 2, Snapshot: "h1-2", Failing: []string{}, Cancelled: []string{}},
+		{Head: "h1", CheckRuns: []record.AttemptRun{{Name: "ci", ID: 10}, {Name: "lint", ID: 3}}, Generation: 3, Snapshot: "h1-3", Failing: []string{},
+			Cancelled: []string{}},
+	}
+	start := record.PullRequest{HeadSHA: "h0", CheckedHead: "h0", Failing: []string{}, Cancelled: []string{}, Generation: 1, Snapshot: "h0-1",
+		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 8, Head: "h0", Conclusion: record.RunSucceeded}}}
+	push := record.ClassifiedPush{SHA: "h1", Before: "h0"}
+	settleEach := func(pr record.PullRequest, candidates ...SettlementCandidate) record.PullRequest {
+		for _, candidate := range candidates {
+			pr, _ = ApplyCheckSettlement(pr, candidate)
+			pr = stored(t, pr)
+		}
+		return pr
+	}
+	want := settleEach(stored(t, AdvancePullRequestHead(stored(t, ApplyPush(start, push)), Arrival{}, "h1")), settlements...)
+	keptFailure := []record.CommitStatus{keptStatus("deploy", record.CommitStatusFailure, 2, "h1")}
+	if want.Run != nil || want.Snapshot != "h1-3" || !reflect.DeepEqual(want.Statuses, keptFailure) {
+		t.Fatalf("with the push first: run open %v, snapshot %q, statuses %+v; want no run, h1-3 and %+v: this test proves nothing without it",
+			want.Run != nil, want.Snapshot, want.Statuses, keptFailure)
+	}
+	got := settleEach(stored(t, AdvancePullRequestHead(start, Arrival{}, "h1")), settlements...)
+	if got.Run == nil || JudgementChanged(want, got) {
+		t.Fatalf("under the run: run open %v, snapshot %q, statuses %+v; want it open and judged as with the push first: %q, %+v",
+			got.Run != nil, got.Snapshot, got.Statuses, want.Snapshot, want.Statuses)
+	}
+	if got = stored(t, ApplyPush(got, push)); got.Run != nil || JudgementChanged(want, got) {
+		t.Fatalf("once the push closed the run: run open %v, snapshot %q, statuses %+v; want it closed and judged as with the push first: %q, %+v",
+			got.Run != nil, got.Snapshot, got.Statuses, want.Snapshot, want.Statuses)
+	}
+
+	// h1 settled at ci's run 10 and lint's run 3 before the branch left it for h0.
+	returned := start
+	returned.SettledRuns = []record.AttemptRun{{Name: "ci", ID: 10, Head: "h1", Conclusion: record.RunSucceeded},
+		{Name: "lint", ID: 3, Head: "h1", Conclusion: record.RunSucceeded}}
+	opened := stored(t, AdvancePullRequestHead(returned, Arrival{}, "h1"))
+	for _, earlier := range settlements[:2] {
+		late := settleEach(opened, earlier)
+		if late.Run == nil || JudgementChanged(opened, late) {
+			t.Errorf("under the run the earlier settlement at %q changed the judgement to %q at %q; want it stale", earlier.Snapshot, late.Snapshot, late.CheckedHead)
+		}
+		if closed := stored(t, ApplyPush(late, push)); closed.Run != nil || closed.CheckedHead == "h1" {
+			t.Errorf("once the push closed the run the earlier settlement at %q stands at %q, %q; want it stale", earlier.Snapshot, closed.CheckedHead, closed.Snapshot)
+		}
+	}
+}
+
 // BenchmarkReplayAtTheBound replays a head run of maxRunSteps steps - heads and settlements of ten
 // check runs alternating, every head waiting for its push - which is the most a push replays.
 func BenchmarkReplayAtTheBound(b *testing.B) {

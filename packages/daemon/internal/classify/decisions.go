@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"slices"
 	"sort"
 	"time"
 
@@ -34,7 +33,7 @@ func AdvancePullRequestHead(pr record.PullRequest, arrival Arrival, headSHA stri
 			pr, _, _ = advance(pr, arrival, headSHA, nil)
 			return pr
 		}
-		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt}
+		pr.Run = &record.HeadRun{Anchor: judgementOf(pr), Pushes: clone(pr.Pushes), Since: pr.HeadUpdatedAt, Settled: clone(pr.SettledRuns)}
 	}
 	pr = runStep(pr, record.RunStep{Head: headSHA, Before: arrival.Before, Sender: arrival.Sender, SyncedAt: arrival.At})
 	pr.Pushes = unspentPushes(pr.Pushes, pr.Moves, true)
@@ -715,11 +714,12 @@ func HeadRuns(pr record.PullRequest) []record.AttemptRun {
 // A fresh fence holds no run of the head, so an older settlement of it would be classified newer
 // than nothing. That happens when the branch went to another head that settled and then came
 // back, when a reopen emptied the fence, and when a new generation's clear did (record.Store's
-// ClearGeneration). So a settlement older, check by check, than the runs of the head a settlement
-// the record applied before held (record.PullRequest.SettledRuns, settledBefore) - delivered late,
-// or replayed from a message the intake gave up on, however late - stands for nothing either. A
-// settlement of those same runs again is no older and stands: it says what the head came to,
-// which the fresh fence does not say.
+// ClearGeneration). So a settlement earlier than one the record applied before on that head -
+// older, check by check, than the runs it held, or naming fewer checks and no newer run
+// (record.PullRequest.SettledRuns, settledBefore) - delivered late, or replayed from a message the
+// intake gave up on, however late, stands for nothing either. A settlement of those same runs and
+// checks again is no earlier and stands: it says what the head came to, which the fresh fence
+// does not say.
 func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record.PullRequest, bool) {
 	head := candidate.Head
 	if head != pr.HeadSHA {
@@ -749,10 +749,14 @@ func SettlementFor(pr record.PullRequest, candidate SettlementCandidate) (record
 // settlement of it applies, as one of a head the record never settled does.
 const maxSettledHeads = 16
 
-// settledBefore says whether candidate is older, check by check (CompareAttemptSets), than the
-// runs the record remembers settling for candidate.Head (record.PullRequest.SettledRuns): the
-// settlement is an earlier one of that head than one already applied. A head the record never
-// settled, or one it no longer remembers, says nothing against it.
+// settledBefore says whether candidate is an earlier settlement of candidate.Head than one already
+// applied, by the runs the record remembers settling for that head (record.PullRequest.SettledRuns).
+// It is earlier when it is older, check by check (CompareAttemptSets). It is earlier too when no
+// run of it is newer than the remembered one of its name and the remembered runs name a check it
+// does not: CompareAttemptSets ignores a name only the stored side holds, and the listener settles
+// a head only once every check it has seen there is terminal, so a later settlement names every
+// check an earlier one did. A settlement of the same runs naming the same checks is no earlier. A
+// head the record never settled, or one it no longer remembers, says nothing against it.
 func settledBefore(pr record.PullRequest, candidate SettlementCandidate) bool {
 	var settled []record.AttemptRun
 	for _, run := range pr.SettledRuns {
@@ -760,7 +764,24 @@ func settledBefore(pr record.PullRequest, candidate SettlementCandidate) bool {
 			settled = append(settled, run)
 		}
 	}
-	return settled != nil && CompareAttemptSets(settled, candidate.CheckRuns) == AttemptSetOlder
+	if settled == nil {
+		return false
+	}
+	switch CompareAttemptSets(settled, candidate.CheckRuns) {
+	case AttemptSetOlder:
+		return true
+	case AttemptSetEqual:
+		named := make(map[string]bool, len(candidate.CheckRuns))
+		for _, run := range candidate.CheckRuns {
+			named[run.Name] = true
+		}
+		for _, run := range settled {
+			if !named[run.Name] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // rememberSettled is settled, the runs the record remembers settling (record.PullRequest's
@@ -770,14 +791,14 @@ func settledBefore(pr record.PullRequest, candidate SettlementCandidate) bool {
 // keeps: only settledBefore does.
 func rememberSettled(settled []record.AttemptRun, head string, fence []record.AttemptRun) []record.AttemptRun {
 	var own, others []record.AttemptRun
-	var heads []string
+	place := map[string]int{} // each other head's place among them, oldest first
 	for _, run := range settled {
 		if run.Head == head {
 			own = append(own, run)
 			continue
 		}
-		if !slices.Contains(heads, run.Head) {
-			heads = append(heads, run.Head)
+		if _, known := place[run.Head]; !known {
+			place[run.Head] = len(place)
 		}
 		others = append(others, run)
 	}
@@ -786,8 +807,14 @@ func rememberSettled(settled []record.AttemptRun, head string, fence []record.At
 			own = append(own, run)
 		}
 	}
-	if drop := len(heads) - (maxSettledHeads - 1); drop > 0 {
-		others = slices.DeleteFunc(others, func(run record.AttemptRun) bool { return slices.Contains(heads[:drop], run.Head) })
+	if drop := len(place) - (maxSettledHeads - 1); drop > 0 {
+		kept := others[:0]
+		for _, run := range others {
+			if place[run.Head] >= drop {
+				kept = append(kept, run)
+			}
+		}
+		others = kept
 	}
 	return append(others, mergeAttemptSets(own, nil)...)
 }
