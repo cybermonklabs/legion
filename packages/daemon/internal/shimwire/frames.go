@@ -184,6 +184,11 @@ type AgentSecretsTokenResult struct {
 // again; a launcher process that restarts says false and is pushed the check again. The hello
 // does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
 // daemon refuses that tag as the cause of the start it cannot serve the check for.
+//
+// ResumesBySession is this launcher saying it can look a session up by its id and resume the file
+// it finds (LauncherStart.ResumeSession). A launcher built before the member sends none, and the
+// daemon names a session only to a launcher that said resumesBySession: to any other it names no
+// session, and the agent's own command carries `--resume=<session id>` instead.
 type LauncherHello struct {
 	Token              string `json:"token"`
 	Sandbox            string `json:"sandbox"`
@@ -192,6 +197,7 @@ type LauncherHello struct {
 	LauncherID         string `json:"launcherId"`
 	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
 	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
+	ResumesBySession   bool   `json:"resumesBySession,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands, and hands it the
@@ -588,13 +594,21 @@ type LauncherState struct {
 // before the child starts, and removes the directory when the child ends — so a role started in a
 // running pod never waits on the kubelet to propagate a Secret. Argv and Env name those files by
 // path; no credential is ever in Argv, Env, or an error.
+//
+// ResumeFile is the session file the child resumes. ResumeSession is the id of a session the
+// child resumes where the daemon knows no file of it: the launcher looks the id up in the session
+// table and resumes the file it finds, as it resumes ResumeFile. An older launcher ignores
+// resumeSession and sends no resumesBySession in its hello, and the daemon names a session only to
+// a launcher that said resumesBySession (LauncherHello), so an older launcher is never sent one; an
+// older daemon sends no resumeSession.
 type LauncherStart struct {
-	ID         string            `json:"id"`
-	Generation uint64            `json:"generation"`
-	Argv       []string          `json:"argv"`
-	Env        []string          `json:"env"`
-	Files      map[string]string `json:"files,omitempty"`
-	ResumeFile string            `json:"resumeFile,omitempty"`
+	ID            string            `json:"id"`
+	Generation    uint64            `json:"generation"`
+	Argv          []string          `json:"argv"`
+	Env           []string          `json:"env"`
+	Files         map[string]string `json:"files,omitempty"`
+	ResumeFile    string            `json:"resumeFile,omitempty"`
+	ResumeSession string            `json:"resumeSession,omitempty"`
 }
 
 // GenerationDir is the directory under a launcher's private directory that holds one generation's

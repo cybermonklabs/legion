@@ -501,7 +501,7 @@ func addressingFragment(project string, c supervise.Claim, architect claim.Token
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+
 		"the project's controller is `%s%s`; a sibling role on your issue is your topic with the trailing `-<role>` replaced.",
 		notify.RoleTopicPrefix, c.Token, owner, notify.RoleTopicPrefix, architect, notify.RoleTopicPrefix, claim.ControllerToken(project))
-	if c.SessionLost {
+	if c.SessionLost != "" {
 		// The agent this launch starts is a fresh session on a claim that had one: nothing in it
 		// says an earlier session existed, so it would read an empty transcript as a fresh start
 		// and redo work that is already pushed (dispatch://INFRA-714 R8).

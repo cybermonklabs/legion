@@ -114,6 +114,18 @@ func Written(ctx context.Context, conn *pgx.Conn, path string) (at time.Time, ok
 	return time.UnixMilli(mtime), true, nil
 }
 
+// FindByID is not written yet: it answers an error and asks nothing. Once written, it is the path
+// of the newest session the table holds under the session id id, for a start of the role launcher
+// that names a session by its id alone (shimwire.LauncherStart.ResumeSession): the path of the row
+// whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then the least path. It
+// compares the path's end as text, never with LIKE, so a `_` or a `%` in the id matches only
+// itself. found is false when the table holds no such session; a database no Oh My Pi has opened
+// has no table yet, and so holds none, as Written answers. It refuses an id that is not a single
+// path element (empty, or holding `/` or NUL) before any query.
+func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, found bool, err error) {
+	return "", false, fmt.Errorf("look up session %s by its id: FindByID is not written yet", id)
+}
+
 // Read is the session the table holds at path as Oh My Pi reads it (readFull): the row's content,
 // then each of its parts in offset order, in one statement so both come from one snapshot. ok is
 // false when the table holds no such session.

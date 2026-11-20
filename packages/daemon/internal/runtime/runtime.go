@@ -169,6 +169,13 @@ var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 // started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
+// ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
+// that the runtime did not send, because the pod's launcher has not said that it can look a
+// session up by its id (shimwire.LauncherHello.ResumesBySession). Nothing was started, and the
+// caller may call Resume again with ResumeByAgent set, which has the agent's own command resolve
+// the id instead (supervise's start).
+var ErrSessionLookupUnavailable = errors.New("the pod's launcher cannot look a session up by its id")
+
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
 // that is not its round's: the Sandbox the locator records is gone, no pod of it is running, the
 // pod running now is not the one the locator records, or the pod is being ended under it — the
@@ -369,7 +376,13 @@ func (k Known) Validate() error {
 // values — each is written to a 0600 file and reaches the process as a `<NAME>_FILE` pointer — and
 // carries only what is the claim's to carry: a credential every agent of the deployment shares,
 // like the Dispatch bearer, is a runtime option. ResumeSessionFile is set only by `Resume`, and it
-// names the transcript the same agent continues from.
+// names the transcript the same agent continues from. ResumeSession is the session id a `Resume`
+// continues when the claim records no file of it: it is set only by supervise's Machine.start, in
+// its branch that resumes a session by its id, and only when ResumeSessionFile is empty.
+// ResumeByAgent is read only with ResumeSession: the agent's own command resolves the id
+// (`--resume=<ResumeSession>`), and the runtime names no session and no file to the pod's
+// launcher. Machine.start sets it only on the second `Resume` of a try whose first `Resume`
+// answered ErrSessionLookupUnavailable.
 // Plugins, set only under Kubernetes (specs.SpawnSpec, LEGION-164), carries the plugin pair a
 // stale-plugin relaunch installs into the kept pod before Oh My Pi starts, in place of the
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
@@ -401,6 +414,8 @@ type SpawnSpec struct {
 	Repository        ghrepo.Repository
 	DefaultBranch     string
 	ResumeSessionFile string
+	ResumeSession     string
+	ResumeByAgent     bool
 	Plugins           *PluginInstall
 	Variants          []Variant
 	IssueTrailer      string

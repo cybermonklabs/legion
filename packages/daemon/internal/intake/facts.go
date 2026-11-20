@@ -1149,10 +1149,14 @@ func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 // runs a fresh agent that has read none of its own earlier work (supervise's startFresh). Detail
 // is why, as the runtime said it. It is told on the issue, to its architect and to the controller,
 // because a worker that silently lost its memory looks like one that is merely slow.
+//
+// Cause is why the claim forgot the session, as a supervise.SessionLoss value; empty reads as
+// gone (supervise.SessionLossGone).
 type SessionLost struct {
 	Issue  string
 	Role   claim.Role
 	Detail string
+	Cause  string
 }
 
 func (f SessionLost) namedIssue() (string, bool) { return f.Issue, true }
