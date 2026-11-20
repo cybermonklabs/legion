@@ -184,8 +184,8 @@ jobs:
       # not yet name, because the package can hold a digest no row points at — the one an earlier
       # push's build pushed, whose row lands in a later push — and this build would push a NEW
       # digest on every run until the row caught up, since a rebuild of one recipe does not
-      # reproduce the bytes it built before — the manifest reading in
-      # .github/workflows/dispatch-browser.yaml, where three builds of one Dockerfile share layers
+      # reproduce the bytes it built before — the manifest reading of the shard job's budget in
+      # .github/ci-notes/dispatch-browser.md, where three builds of one Dockerfile share layers
       # 1 to 7 and differ in 8 to 10 — so the row would chase a digest that moved. So this
       # publishes unless the row names a digest AND the image at that digest carries this build
       # recipe's own sha256 in its legion.browser-image.source-sha256 label. This answer decides
