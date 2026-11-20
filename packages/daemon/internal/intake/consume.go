@@ -381,6 +381,12 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 	return c.repos
 }
 
+// Records is what a replay and a discard of this project's give-ups read of the intake
+// (NewGiveUps): the pool, the consumers' spec, and the repositories GitHub intake hears now.
+func (c *Consumers) Records() Records {
+	return Records{Pool: c.pool, Spec: c.spec, Repositories: c.repositories}
+}
+
 // openConsumer updates the durable consumer config names, keeping the start position it was created
 // with (JetStream refuses to change it), or creates it. A consumer created where pool keeps a
 // position for it (recordStreamPosition) starts at that position's stream time, so the messages
@@ -798,7 +804,8 @@ func (l *lagWatch) observe(message jetstream.Msg, metadata *jetstream.MsgMetadat
 //     returns a messageOutcome, stop() ends the keeper, and only then does the one terminal call
 //     that outcome asks for follow.
 //  5. Acknowledged. An applied fact deleted its open failure in its own transaction
-//     (streamPosition.record); one acknowledged with no transaction has it deleted after.
+//     (streamPosition.record), and a duplicate writes its line first (logDuplicate); one
+//     acknowledged with no transaction has its open failure deleted after.
 //  6. and 7. Naked: a failure is recorded, and the message given up where the bound or the
 //     stream's retention says so, a delivery a daemon stop ended written only for the retention
 //     (consumerRun.failed).
@@ -861,8 +868,11 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
+	log := func(level slog.Level, line string, attributes ...any) {
+		logMessage(spec.Logger, level, line, message, attributes...)
+	}
 	started := time.Now()
-	outcome := handleMessage(work, message, run.position(metadata, mayHaveFailed), spec, run.pool, decoded, handlers)
+	outcome := handleMessage(work, log, run.position(metadata, mayHaveFailed), spec, run.pool, decoded, handlers)
 	took := time.Since(started)
 	stop()
 
@@ -885,17 +895,13 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 	// redelivery that is not coming of a fact that is already applied.
 	cut := outcome.nak && ctx.Err() == nil && errors.Is(work.Err(), context.DeadlineExceeded)
 	if outlived || cut {
-		var consumer string
-		if metadata != nil {
-			consumer = metadata.Consumer
-		}
 		if outlived {
 			logMessage(spec.Logger, slog.LevelInfo, "an intake fact outlived its acknowledgement window and was held in progress while it ran", message,
-				"consumer", consumer, "event_id", decoded.EventID, "delivered", deliveredCount(metadata), "took", took)
+				"consumer", consumerOf(metadata), "event_id", decoded.EventID, "delivered", deliveredCount(metadata), "took", took)
 		}
 		if cut {
 			logMessage(spec.Logger, slog.LevelWarn, "an intake handler outran its limit and was cut", message,
-				"consumer", consumer, "event_id", decoded.EventID, "fact", fmt.Sprintf("%T", decoded.Fact), "limit", spec.HandlerLimit)
+				"consumer", consumerOf(metadata), "event_id", decoded.EventID, "fact", fmt.Sprintf("%T", decoded.Fact), "limit", spec.HandlerLimit)
 		}
 	}
 
@@ -903,6 +909,9 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, metadata *jetstr
 		return run.failed(ctx, message, metadata, decoded, outcome)
 	}
 	if outcome.applied {
+		if outcome.duplicate {
+			logDuplicate(log, decoded, consumerOf(metadata), deliveredCount(metadata))
+		}
 		acked := ackMessage(spec.Logger, message)
 		if acked && mayHaveFailed {
 			run.remade.forget(metadata.Consumer, metadata.Sequence.Stream)
@@ -928,21 +937,27 @@ func acknowledged(ctx context.Context, message jetstream.Msg, metadata *jetstrea
 // messageOutcome is what one message's handling asks of JetStream, with nothing of it taken yet:
 // acknowledge the message, or nak it with what nakResolve names the failure by. applied is an
 // acknowledgement of a fact ApplyFact committed, whose transaction deleted the message's open
-// failure. handleMessage returns one rather than ending the message itself, so its caller can
-// stop the progress keeper before the one terminal call.
+// failure, and duplicate one whose fact ApplyFact found applied already (Result.Duplicate), whose
+// line the caller writes (logDuplicate). handleMessage returns one rather than ending the message
+// itself, so its caller can stop the progress keeper before the one terminal call, and so a
+// replay, which has no message to end, reads it as the record's outcome (GiveUps.Replay).
 type messageOutcome struct {
-	nak     bool
-	applied bool
-	what    string
-	nakWhat string
-	err     error
+	nak       bool
+	applied   bool
+	duplicate bool
+	what      string
+	nakWhat   string
+	err       error
 }
 
 // ackOutcome asks for the acknowledgement of a message handled with no transaction.
 func ackOutcome() messageOutcome { return messageOutcome{} }
 
-// appliedOutcome asks for the acknowledgement of a fact ApplyFact committed, a duplicate included.
+// appliedOutcome asks for the acknowledgement of a fact ApplyFact committed.
 func appliedOutcome() messageOutcome { return messageOutcome{applied: true} }
+
+// duplicateOutcome asks for the acknowledgement of a fact ApplyFact found applied already.
+func duplicateOutcome() messageOutcome { return messageOutcome{applied: true, duplicate: true} }
 
 // nakOutcome asks for the nak nakResolve makes: what failed, which it logs at warn, nakWhat, which
 // it logs at error if the nak itself fails, and the failure, whose RetryLater can widen the delay.
@@ -951,14 +966,22 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 	return messageOutcome{nak: true, what: what, nakWhat: nakWhat, err: err}
 }
 
+// messageLog writes one line about the message a handling is for: line at level with attributes,
+// then the attributes that say which message it is. A delivery's are its subject and its stream
+// and delivery sequences (logMessage); a replay's, its subject, its stream sequence and the
+// give-up record it replays (GiveUps.Replay).
+type messageLog func(level slog.Level, line string, attributes ...any)
+
 // handleMessage does one decoded message's work — the reads its fact needs, then the fact's
 // transaction, which records position (withStreamPosition) — under work, the deadline context of
 // consumeMessage's handling, and says what should become of the message. It acknowledges, naks
-// and terminates nothing. Each read keeps its own AckWait bound, nested under work, so one
-// dependency that is slow to answer is cut while the handling as a whole runs to HandlerLimit.
-func handleMessage(work context.Context, message jetstream.Msg, position *streamPosition, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
+// and terminates nothing, and reads nothing of a jetstream.Msg: log writes its lines, and a
+// replay runs it with no message and no position (nil). Each read keeps its own AckWait bound,
+// nested under work, so one dependency that is slow to answer is cut while the handling as a
+// whole runs to HandlerLimit.
+func handleMessage(work context.Context, log messageLog, position *streamPosition, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
-	// before it starts the keeper this work runs under.
+	// before it starts the keeper this work runs under, and a replay answers such a message no fact.
 	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
 		if err := readMapping(work, spec); err != nil {
 			return nakOutcome("read the project's repository mapping again", "nak the mapping read", err)
@@ -970,7 +993,7 @@ func handleMessage(work context.Context, message jetstream.Msg, position *stream
 		return nakOutcome("read whether the pull request is recorded", "nak the pull request read", err)
 	}
 	if !recorded {
-		logMessage(spec.Logger, slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction", message,
+		log(slog.LevelDebug, "a GitHub event of a pull request the daemon does not record is acknowledged without a transaction",
 			"event_id", decoded.EventID)
 		return ackOutcome()
 	}
@@ -998,47 +1021,13 @@ func handleMessage(work context.Context, message jetstream.Msg, position *stream
 	if err != nil {
 		return nakOutcome("retryable intake processing failure", "nak intake processing failure", err)
 	}
-	// Nothing records how often this consumer is handed a fact it has already applied: a
-	// duplicate is dropped with no trace, since ApplyFact answers Result{Duplicate: true} before
-	// any handler runs (facts.go) and the message is acknowledged like an applied one. This line
-	// records every copy dropped here, and the lines whose `delivered` is above 1 are the rate
-	// at which JetStream delivers again a fact this consumer had already applied. It comes
-	// before the refusal branch and returns the acknowledgement on its own, because a duplicate
-	// carries no refusal: no handler ran to make one.
-	//
-	// The line counts every copy this consumer drops, and a JetStream redelivery is one of five
-	// readings of it. A `delivered` above 1 is that redelivery. A `delivered` of 1 is a second
-	// reading of one fact, in one of four ways: the listener's mention fan-out, which publishes
-	// a review or a comment that mentions the trigger on each of its mention topics beside its
-	// own as one fact under one dedupe key (decode.go, factID); a durable consumer created
-	// again at the last message it applied, which is delivered that message once more
-	// (openConsumer); a GitHub delivery the listener publishes again, which reaches the stream
-	// only where its own duplicate window did not refuse it; and, under a configured rename,
-	// the copy published under the repository's other name, which carries the same fact on a
-	// subject of its own. A `delivered` of 0 is the metadata read below failing, and no reading
-	// of a drop. So the subject and the delivery count are what tell them apart, and the total
-	// of these lines is this consumer's share of what ApplyFact's lock-before-dedupe costs.
+	// A duplicate is answered before the refusal branch, on its own, because it carries no
+	// refusal: no handler ran to make one.
 	if result.Duplicate {
-		// The metadata is read here, inside the branch: the read tokenizes the acknowledgement
-		// subject and allocates, and this line is not the ordinary message's, so the applied
-		// fact's path pays nothing for it. A read that fails leaves the consumer empty and the
-		// count zero, and the line is written all the same, since the duplicate happened and a
-		// line without its metadata is better evidence than no line.
-		var consumer string
-		var delivered uint64
-		if metadata, metadataErr := message.Metadata(); metadataErr == nil {
-			consumer, delivered = metadata.Consumer, metadata.NumDelivered
-		}
-		logMessage(spec.Logger, slog.LevelInfo, "an intake fact was delivered again and dropped as already applied", message,
-			"consumer", consumer,
-			"source", decoded.Source,
-			"event_id", decoded.EventID,
-			"delivered", delivered,
-		)
-		return appliedOutcome()
+		return duplicateOutcome()
 	}
 	if result.Refusal != nil {
-		logMessage(spec.Logger, slog.LevelWarn, "committed refusal", message,
+		log(slog.LevelWarn, "committed refusal",
 			"event_id", decoded.EventID,
 			"status", result.Refusal.Status,
 			"code", result.Refusal.Code,
@@ -1046,6 +1035,50 @@ func handleMessage(work context.Context, message jetstream.Msg, position *stream
 		)
 	}
 	return appliedOutcome()
+}
+
+// logDuplicate writes the duplicate line, at info, for a fact ApplyFact answered
+// Result{Duplicate: true} for: the consumer whose delivery or replay dropped it, the fact's source
+// and event id, and JetStream's count of the message's deliveries, then what log names the message
+// by.
+//
+// Nothing else records how often a consumer is handed a fact it has already applied: a duplicate
+// is dropped with no trace, since ApplyFact answers it before any handler runs (facts.go) and the
+// message is acknowledged like an applied one. This line records every copy dropped, and the
+// lines whose `delivered` is above 1 and that name no `replay` are the rate at which JetStream
+// delivers again a fact the consumer had already applied.
+//
+// The line counts every copy a consumer drops, and a JetStream redelivery is one of six readings
+// of it. A `delivered` above 1 on a line that names no `replay` is that redelivery. A
+// `replay=<record id>` is the operator's or the controller's replay of a give-up
+// (GiveUps.Replay), whose `delivered` is the count the record kept. A `delivered` of 1 is a
+// second reading of one fact, in one of four ways: the listener's mention fan-out, which
+// publishes a review or a comment that mentions the trigger on each of its mention topics beside
+// its own as one fact under one dedupe key (decode.go, factID); a durable consumer created again
+// at the last message it applied, which is delivered that message once more (openConsumer); a
+// GitHub delivery the listener publishes again, which reaches the stream only where its own
+// duplicate window did not refuse it; and, under a configured rename, the copy published under
+// the repository's other name, which carries the same fact on a subject of its own. A
+// `delivered` of 0 is a delivery whose metadata did not parse, which leaves the consumer empty
+// too: the line is written all the same, since the duplicate happened and a line without its
+// metadata is better evidence than no line. So the subject, the delivery count and the replay are
+// what tell them apart, and the total of these lines is the consumer's share of what ApplyFact's
+// lock-before-dedupe costs.
+func logDuplicate(log messageLog, decoded decodedMessage, consumer string, delivered uint64) {
+	log(slog.LevelInfo, "an intake fact was delivered again and dropped as already applied",
+		"consumer", consumer,
+		"source", decoded.Source,
+		"event_id", decoded.EventID,
+		"delivered", delivered,
+	)
+}
+
+// consumerOf is the durable consumer of a delivery, "" for metadata that did not parse.
+func consumerOf(metadata *jetstream.MsgMetadata) string {
+	if metadata == nil {
+		return ""
+	}
+	return metadata.Consumer
 }
 
 // recordedPullRequest says whether the daemon records the pull request a review or a checks

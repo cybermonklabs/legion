@@ -1577,7 +1577,9 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). A fact a replay applies (withReplayClose) closes the
+// give-up it was stored in, in the same transaction too, as applied or, for a duplicate, as
+// already applied (closeReplayed).
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1627,6 +1629,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		return Result{}, err
 	}
 	if !fresh {
+		if err := closeReplayed(ctx, tx, record.IntakeAlreadyApplied); err != nil {
+			return Result{}, err
+		}
 		if err := tx.Commit(ctx); err != nil {
 			return Result{}, err
 		}
@@ -1668,6 +1673,9 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
 			return Result{}, err
 		}
+	}
+	if err := closeReplayed(ctx, tx, record.IntakeApplied); err != nil {
+		return Result{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Result{}, err
