@@ -2488,6 +2488,9 @@ func register(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
+	// The agent opened its session, so its session store answered its process: a store fault
+	// after this is a new outage, told at once (tellStoreFault).
+	m.storeFaultTold = time.Time{}
 	// A stale registration's process is let go by its relaunch, so it is never enrolled: the
 	// refusal returns before the enrollment a current registration gets.
 	if err := m.staleRegistration(ctx, r.PluginContract); err != nil {

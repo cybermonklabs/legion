@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -203,6 +206,44 @@ func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.
 	}
 	if held, _ := r.held(architect); held != "{\"type\":\"session\",\"id\":\"0001\"}\n" {
 		t.Errorf("after the refusal the table holds %q for the architect, want what it held", held)
+	}
+}
+
+// A session database with no session table, where this run copied nothing that would make one,
+// cannot say which recorded sessions it holds: the import exits 1 with one line naming the
+// database and the table, and prints no missing line and no count, since either would describe a
+// store that answered. The control is the same run once the database holds the table: the claim
+// is reported missing and counted.
+func TestSessionsImportOverADatabaseWithNoSessionTableIsRefusedNamingIt(t *testing.T) {
+	const token = "legion-store-fault-architect"
+	recorded := agentSessions + "/--legion-workspaces-store-fault--/2026-10-08T12-00-00-000Z_0001.jsonl"
+	r := newSessionsImportRig(t, []map[string]string{{"token": token, "tree": "STORE-FAULT", "sessionFile": recorded}})
+	dsn, err := ompsessions.ReadDSN(r.dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := ompsessions.ConnectURL(context.Background(), dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(context.Background())
+	config := conn.Config()
+	want := fmt.Sprintf("legion sessions import: the session database %s at %s has no session table omp_session_files, so it cannot say which recorded sessions it holds\n",
+		config.Database, net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))))
+
+	code, out, errb := r.run("--tree", "STORE-FAULT")
+	if code != 1 || errb != want || strings.Contains(out, " missing ") || strings.Contains(out, "legion sessions import:") {
+		t.Fatalf("import over a database with no session table = %d, stdout\n%s\nstderr %q; want exit 1, the stderr line %q alone, and no missing line or count",
+			code, out, errb, want)
+	}
+
+	if err := ompsessions.CreateTables(context.Background(), conn); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb = r.run("--tree", "STORE-FAULT")
+	if code != 1 || errb != "" || !strings.Contains(out, token+" missing "+recorded+": the session table holds no such session (tree STORE-FAULT)\n") ||
+		!strings.Contains(out, "legion sessions import: copied 0, copied before 0, nothing recorded 0, failed 1, refused 0, missing 1\n") {
+		t.Fatalf("import over a database with the table = %d, stdout\n%s\nstderr %q; want the claim missing and counted, exit 1", code, out, errb)
 	}
 }
 

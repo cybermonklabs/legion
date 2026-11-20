@@ -138,9 +138,10 @@ func TestTheLookupByIDMatchesTheSessionsDirectoryAndTheIDAsWritten(t *testing.T)
 }
 
 // A pane sessions directory the daemon cannot read may hold the session, so a resume by the id
-// whose search cannot read it is a failure to look, not the session found nowhere: its error wraps
-// no runtime.ErrSessionFileMissing, which the claim's machine would answer by forgetting the
-// session, and it opens no pane. The machine charges it as a launch failure and tries again.
+// whose search cannot read it is a failure to look, not the session found nowhere: its error is
+// runtime.ErrSessionStore, a store that did not answer, and wraps no runtime.ErrSessionFileMissing,
+// which the claim's machine would answer by forgetting the session, and it opens no pane. The
+// machine waits it out a minute at a time with the session kept, charged nothing.
 func TestAResumeByIDThatCannotReadThePanesSessionsDirectoryIsNoMissingSession(t *testing.T) {
 	f := homed(t)
 	sessions := paneSessions(f)
@@ -151,20 +152,24 @@ func TestAResumeByIDThatCannotReadThePanesSessionsDirectoryIsNoMissingSession(t 
 
 	_, err := f.Resume(context.Background(), nil, spec)
 
-	if err == nil || errors.Is(err, runtime.ErrSessionFileMissing) {
-		t.Errorf("Resume of session %s whose sessions directory %s cannot be read = %v; want an error that is not runtime.ErrSessionFileMissing", resumeSessionID, sessions, err)
+	if !errors.Is(err, runtime.ErrSessionStore) || errors.Is(err, runtime.ErrSessionFileMissing) {
+		t.Errorf("Resume of session %s whose sessions directory %s cannot be read = %v; want runtime.ErrSessionStore, not runtime.ErrSessionFileMissing", resumeSessionID, sessions, err)
 	}
 	if opened(f.argvs) {
 		t.Error("a resume whose sessions directory cannot be read opened a pane")
 	}
 }
 
-// A folder of the pane's sessions directory that the search cannot read holds no session Oh My Pi
-// could resume, since the search runs as the user Oh My Pi runs as, so the search skips it and
-// the launch goes on as it would without the folder, whether it names the session by its id or by
-// a recorded file that is gone: it resumes the session's file from another, readable folder, or,
-// with the session nowhere else, answers runtime.ErrSessionFileMissing and opens no pane. Either
-// way it logs one warning naming the claim and the folder it skipped, with why.
+// A folder of the pane's sessions directory that the search cannot read is one of two things,
+// whether the launch names the session by its id or by a recorded file that is gone. A folder of
+// this daemon's own user may hold the session: the launch is runtime.ErrSessionStore, which the
+// claim's machine waits out with the session kept, opens no pane, and skips nothing, whether
+// another, readable folder holds the session or none does. A folder another user owns that denies
+// this daemon's user is no part of its session store, here a link to /root: the search skips it
+// and the launch goes on as it would without the folder, resuming the session's file from another,
+// readable folder, or, with the session nowhere else, answering runtime.ErrSessionFileMissing and
+// opening no pane; either way it logs one warning naming the claim and the folder it skipped, with
+// why.
 func TestAResumeWhoseSearchSkipsAFolderItCannotReadNamesItInAWarning(t *testing.T) {
 	name := "2026-11-19T22-12-27-829Z_" + resumeSessionID + ".jsonl"
 	for by, set := range map[string]func(t *testing.T, spec *runtime.SpawnSpec){
@@ -174,41 +179,69 @@ func TestAResumeWhoseSearchSkipsAFolderItCannotReadNamesItInAWarning(t *testing.
 		},
 	} {
 		for where, elsewhere := range map[string]bool{"the session in another folder": true, "the session nowhere else": false} {
-			t.Run(by+", "+where, func(t *testing.T) {
-				var logs strings.Builder
-				f := homedLogging(t, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
-				shut := filepath.Join(paneSessions(f), resumeFolder)
-				writeSession(t, filepath.Join(shut, name), time.Now())
-				readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets-legion-43--", name)
-				if elsewhere {
-					writeSession(t, readable, time.Now().Add(-time.Hour))
-				}
-				unreadable(t, shut)
-				spec := f.spec(t, claim.RoleTester)
-				set(t, &spec)
+			for owner, others := range map[string]bool{"a folder of its own user": false, "a folder another user denies it": true} {
+				t.Run(by+", "+where+", "+owner, func(t *testing.T) {
+					if others {
+						requireOthersFolder(t)
+					}
+					var logs strings.Builder
+					f := homedLogging(t, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+					shut := filepath.Join(paneSessions(f), resumeFolder)
+					if others {
+						if err := os.MkdirAll(paneSessions(f), 0o700); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Symlink("/root", shut); err != nil {
+							t.Fatal(err)
+						}
+					} else {
+						writeSession(t, filepath.Join(shut, name), time.Now())
+					}
+					readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets--", name)
+					if elsewhere {
+						writeSession(t, readable, time.Now().Add(-time.Hour))
+					}
+					if !others {
+						unreadable(t, shut)
+					}
+					spec := f.spec(t, claim.RoleTester)
+					set(t, &spec)
 
-				_, err := f.Resume(context.Background(), nil, spec)
+					_, err := f.Resume(context.Background(), nil, spec)
 
-				if elsewhere {
-					if err != nil {
-						t.Fatalf("Resume beside the unreadable %s = %v, want it to resume %s", shut, err, readable)
+					warned := logLines(logs.String(), "tmux runtime: the session search skipped what it could not read")
+					switch {
+					case !others:
+						if !errors.Is(err, runtime.ErrSessionStore) || errors.Is(err, runtime.ErrSessionFileMissing) {
+							t.Errorf("Resume beside the unreadable %s = %v, want runtime.ErrSessionStore", shut, err)
+						}
+						if opened(f.argvs) {
+							t.Error("a resume whose search could not read a folder of its own user opened a pane")
+						}
+						if len(warned) != 0 {
+							t.Errorf("the launch warned %q, want no folder skipped", warned)
+						}
+						return
+					case elsewhere:
+						if err != nil {
+							t.Fatalf("Resume beside the denied %s = %v, want it to resume %s", shut, err, readable)
+						}
+						if command := openedCommand(f); !strings.Contains(command, "--resume="+readable) {
+							t.Errorf("the pane's command = %q, want it to resume %s", command, readable)
+						}
+					default:
+						if !errors.Is(err, runtime.ErrSessionFileMissing) {
+							t.Errorf("Resume with the session only behind the denied %s = %v, want runtime.ErrSessionFileMissing", shut, err)
+						}
+						if opened(f.argvs) {
+							t.Error("a resume of a session found nowhere opened a pane")
+						}
 					}
-					if command := openedCommand(f); !strings.Contains(command, "--resume="+readable) {
-						t.Errorf("the pane's command = %q, want it to resume %s", command, readable)
+					if len(warned) != 1 || !strings.Contains(warned[0], "claim="+string(spec.Claim)) || !strings.Contains(warned[0], denied(shut)) {
+						t.Errorf("the launch warned %q, want one line naming claim %s and %q; log: %s", warned, spec.Claim, denied(shut), logs.String())
 					}
-				} else {
-					if !errors.Is(err, runtime.ErrSessionFileMissing) {
-						t.Errorf("Resume with the session only in the unreadable %s = %v, want runtime.ErrSessionFileMissing", shut, err)
-					}
-					if opened(f.argvs) {
-						t.Error("a resume of a session found nowhere opened a pane")
-					}
-				}
-				warned := logLines(logs.String(), "tmux runtime: the session search skipped what it could not read")
-				if len(warned) != 1 || !strings.Contains(warned[0], "claim="+string(spec.Claim)) || !strings.Contains(warned[0], denied(shut)) {
-					t.Errorf("the launch warned %q, want one line naming claim %s and %q; log: %s", warned, spec.Claim, denied(shut), logs.String())
-				}
-			})
+				})
+			}
 		}
 	}
 }

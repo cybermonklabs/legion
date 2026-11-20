@@ -29,15 +29,68 @@ import (
 // password.
 func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 	t.Helper()
-	const named = "the database URL to proxy"
+	through, upstream := relayFor(t, "the database URL to proxy", dsn)
+	startRelay(t, through, func() string { return upstream }, func(client, server net.Conn) {
+		relayDelayed(client, server, delay)
+	})
+	return through.url
+}
+
+// chunk is what one read of the client returned, and when it may be written to the server.
+type chunk struct {
+	data []byte
+	due  time.Time
+}
+
+// relayDelayed copies client to server, each chunk written delay after it was read. A reader and
+// a writer run apart, so a chunk read while an earlier one is held is held from its own read.
+func relayDelayed(client, server net.Conn, delay time.Duration) {
+	chunks := make(chan chunk, 64)
+	go func() {
+		defer close(chunks)
+		buffer := make([]byte, 64<<10)
+		for {
+			n, err := client.Read(buffer)
+			if n > 0 {
+				chunks <- chunk{data: bytes.Clone(buffer[:n]), due: time.Now().Add(delay)}
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	for next := range chunks {
+		time.Sleep(time.Until(next.due))
+		if _, err := server.Write(next.data); err != nil {
+			// The reader stops once its connection is closed here; drain what it still sends.
+			_ = client.Close()
+			_ = server.Close()
+			for range chunks {
+			}
+			return
+		}
+	}
+}
+
+// relayListener is a fixture proxy's listener on 127.0.0.1 and the URL that reaches dsn through
+// it.
+type relayListener struct {
+	listener net.Listener
+	url      string
+}
+
+// relayFor listens for a fixture proxy in front of dsn, named named in a refusal, and answers that
+// listener and the server the proxy dials for dsn: the one pgconn.ParseConfig reads from dsn, as
+// Delayed says.
+func relayFor(t testing.TB, named, dsn string) (relayListener, string) {
+	t.Helper()
 	target, err := pgconn.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("pgx refuses %s", named)
 	}
-	upstream := net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen for the delayed Postgres proxy: %v", err)
+		t.Fatalf("listen for a Postgres proxy in front of %s: %v", named, err)
 	}
 	address := listener.Addr().(*net.TCPAddr)
 	through, err := rewriteDSN(named, dsn, rewrite{host: address.IP.String(), port: uint16(address.Port)})
@@ -45,19 +98,18 @@ func Delayed(t testing.TB, dsn string, delay time.Duration) string {
 		_ = listener.Close()
 		t.Fatal(err)
 	}
-	proxy := &delayedProxy{listener: listener, upstream: upstream, delay: delay, conns: map[net.Conn]struct{}{}}
-	proxy.wg.Add(1)
-	go proxy.serve()
-	t.Cleanup(proxy.close)
-	return through
+	return relayListener{listener: listener, url: through}, net.JoinHostPort(target.Host, strconv.Itoa(int(target.Port)))
 }
 
-// delayedProxy is Delayed's proxy: conns are the client and server connections open through it,
-// closed with it.
-type delayedProxy struct {
+// relayProxy is the one lifecycle of this package's fixture proxies (Delayed, Breaking, Flapping):
+// a listener, every pair of connections open through it, and their close when the test ends. What
+// a fixture varies is the server each accepted connection dials (upstream, read at each accept)
+// and how the client's bytes reach it (relay, which returns once that direction is done); the
+// server's answers pass back to the client at once.
+type relayProxy struct {
 	listener net.Listener
-	upstream string
-	delay    time.Duration
+	upstream func() string
+	relay    func(client, server net.Conn)
 
 	mu     sync.Mutex
 	closed bool
@@ -65,14 +117,23 @@ type delayedProxy struct {
 	wg     sync.WaitGroup
 }
 
-func (p *delayedProxy) serve() {
+// startRelay serves a relayProxy on through's listener until the test ends, then closes it and
+// every connection through it.
+func startRelay(t testing.TB, through relayListener, upstream func() string, relay func(client, server net.Conn)) {
+	p := &relayProxy{listener: through.listener, upstream: upstream, relay: relay, conns: map[net.Conn]struct{}{}}
+	p.wg.Add(1)
+	go p.serve()
+	t.Cleanup(p.close)
+}
+
+func (p *relayProxy) serve() {
 	defer p.wg.Done()
 	for {
 		client, err := p.listener.Accept()
 		if err != nil {
 			return
 		}
-		server, err := net.Dial("tcp", p.upstream)
+		server, err := net.Dial("tcp", p.upstream())
 		if err != nil {
 			_ = client.Close()
 			continue
@@ -88,49 +149,14 @@ func (p *delayedProxy) serve() {
 		}()
 		go func() {
 			defer p.wg.Done()
-			p.relayDelayed(client, server)
+			p.relay(client, server)
 			p.untrack(client, server)
 		}()
 	}
 }
 
-// chunk is what one read of the client returned, and when it may be written to the server.
-type chunk struct {
-	data []byte
-	due  time.Time
-}
-
-// relayDelayed copies client to server, each chunk written delay after it was read. A reader and
-// a writer run apart, so a chunk read while an earlier one is held is held from its own read.
-func (p *delayedProxy) relayDelayed(client, server net.Conn) {
-	chunks := make(chan chunk, 64)
-	go func() {
-		defer close(chunks)
-		buffer := make([]byte, 64<<10)
-		for {
-			n, err := client.Read(buffer)
-			if n > 0 {
-				chunks <- chunk{data: bytes.Clone(buffer[:n]), due: time.Now().Add(p.delay)}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	for next := range chunks {
-		time.Sleep(time.Until(next.due))
-		if _, err := server.Write(next.data); err != nil {
-			// The reader stops once its connection is closed below; drain what it still sends.
-			p.untrack(client, server)
-			for range chunks {
-			}
-			return
-		}
-	}
-}
-
 // track records a pair of connections, and closes them instead when the proxy is already closed.
-func (p *delayedProxy) track(client, server net.Conn) bool {
+func (p *relayProxy) track(client, server net.Conn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -143,7 +169,7 @@ func (p *delayedProxy) track(client, server net.Conn) bool {
 }
 
 // untrack closes a pair of connections, once either direction ends.
-func (p *delayedProxy) untrack(client, server net.Conn) {
+func (p *relayProxy) untrack(client, server net.Conn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	delete(p.conns, client)
@@ -152,7 +178,7 @@ func (p *delayedProxy) untrack(client, server net.Conn) {
 	_ = server.Close()
 }
 
-func (p *delayedProxy) close() {
+func (p *relayProxy) close() {
 	p.mu.Lock()
 	p.closed = true
 	_ = p.listener.Close()
@@ -162,4 +188,9 @@ func (p *delayedProxy) close() {
 	clear(p.conns)
 	p.mu.Unlock()
 	p.wg.Wait()
+}
+
+// relayPlain copies client to server as it comes.
+func relayPlain(client, server net.Conn) {
+	_, _ = io.Copy(server, client)
 }

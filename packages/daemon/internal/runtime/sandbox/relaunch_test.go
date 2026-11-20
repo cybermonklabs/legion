@@ -2127,17 +2127,28 @@ func loggedSandboxMachine(
 	t *testing.T, g *rig, spec runtime.SpawnSpec, c supervise.Claim, w io.Writer,
 ) (*supervise.Machine, *supervisedSandboxStore, *sandboxMachineSpecs) {
 	t.Helper()
+	return clockedSandboxMachine(t, g, spec, c, w, sandboxMachineClock{}, nil)
+}
+
+// clockedSandboxMachine is loggedSandboxMachine on clock, telling storeFault of every session
+// store fault the machine reports (supervise.Deps.SessionStoreFault) when it is not nil.
+func clockedSandboxMachine(
+	t *testing.T, g *rig, spec runtime.SpawnSpec, c supervise.Claim, w io.Writer, clock supervise.Clock,
+	storeFault func(supervise.Claim, string),
+) (*supervise.Machine, *supervisedSandboxStore, *sandboxMachineSpecs) {
+	t.Helper()
 	store := &supervisedSandboxStore{claim: c}
 	specs := &sandboxMachineSpecs{spec: spec}
 	machine, err := supervise.NewMachine(g.ctx, supervise.Deps{
-		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: sandboxMachineClock{},
+		Runtime: g.r, Conns: g.conns, Store: store, Specs: specs, Clock: clock,
 		Log:    slog.New(slog.NewTextHandler(w, nil)),
 		Limits: supervise.Limits{LaunchFailures: 3, PromptFailures: 1, PromptRetires: 1},
 		Timeouts: supervise.Timeouts{
 			Boot: time.Hour, RegistrationIntervals: 1, RPC: time.Hour, Probe: time.Hour, Stop: time.Hour, LaunchBackoff: time.Millisecond,
 		},
-		PluginContract: 24,
-		RefreshGate:    supervise.NewRefreshGate(0),
+		PluginContract:    24,
+		RefreshGate:       supervise.NewRefreshGate(0),
+		SessionStoreFault: storeFault,
 	}, c)
 	if err != nil {
 		t.Fatalf("new Machine: %v", err)

@@ -5,6 +5,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/legion/daemon/internal/sqlstate"
 )
 
 // owedClaimWrite is one claim write the store did not take and the machine still owes: the whole
@@ -285,25 +287,15 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 //
 // The SQLSTATE comes second, and only then is it the server's answer about a statement it was
 // given: an error that unwraps to a *pgconn.PgError is owed when that code's class, its first two
-// characters, is one of the six a server answers with about something other than the statement:
-//
-//   - 08, connection exception: the connection itself is what failed, and the statement went down
-//     with it.
-//   - 40, transaction rollback: the server rolled its own transaction back — a serialization
-//     failure, a deadlock it broke — so the statement was abandoned rather than judged.
-//   - 53, insufficient resources: the memory, the disk or the connection slots the server had not
-//     got for this statement, and will have again.
-//   - 55, object not in prerequisite state: an object another session holds, a lock not available
-//     chief among them, rather than a statement the server read and refused.
-//   - 57, operator intervention: a backend terminated, a query cancelled, a database shutting down
-//     or starting up — the platform's doing or an operator's, not the statement's.
-//   - 58, system error: a file or an input/output error of the server's own, which says nothing
-//     about what was asked of it.
-//
-// Any other class is the server judging the statement, and is not owed. A code shorter than two
-// characters has no class to read and judges nothing, so it is owed with the rest rather than
-// taken for a decision about the statement. An error that unwraps to neither type is owed too:
-// the network cut, and a write the claim-write deadline cut short before any answer (R5).
+// characters, is one of the six a server answers with about something other than the statement
+// (sqlstate.NotJudged, which says why each is; the session store's start reads a server's answer
+// by the same rule, ompsessions.StoreFault): 08, connection exception; 40, transaction rollback; 53,
+// insufficient resources; 55, object not in prerequisite state; 57, operator intervention; 58,
+// system error. Any other class is the server judging the statement, and is not owed. A code
+// shorter than two characters has no class to read and judges nothing, so it is owed with the
+// rest rather than taken for a decision about the statement. An error that unwraps to neither
+// type is owed too: the network cut, and a write the claim-write deadline cut short before any
+// answer (R5).
 //
 // Read the other way round — the SQLSTATE first, the wrapper after — the rule refuses every
 // connection the server itself refused, because such an error does carry a PgError and its class
@@ -351,13 +343,8 @@ func writeOwed(err error) bool {
 		return true
 	}
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+	if !errors.As(err, &pgErr) {
 		return true
 	}
-	switch pgErr.Code[:2] {
-	case "08", "40", "53", "55", "57", "58":
-		return true
-	default:
-		return false
-	}
+	return sqlstate.NotJudged(pgErr.Code)
 }

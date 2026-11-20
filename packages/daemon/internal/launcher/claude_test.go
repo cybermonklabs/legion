@@ -507,11 +507,11 @@ func TestClaudeKeeperRefusesASessionIDThatIsNoUUID(t *testing.T) {
 		claudeSession + "/..",
 		"..",
 	} {
-		if _, err := newClaudeKeeper(env(session), "", "", io.Discard); err == nil || !strings.Contains(err.Error(), claudelaunch.SessionVariable) {
+		if _, err := newClaudeKeeper(env(session), "", "", 0, io.Discard); err == nil || !strings.Contains(err.Error(), claudelaunch.SessionVariable) {
 			t.Errorf("newClaudeKeeper(session %q) refused with %v, want a refusal naming %s", session, err, claudelaunch.SessionVariable)
 		}
 	}
-	k, err := newClaudeKeeper(env(claudeSession), "", "", io.Discard)
+	k, err := newClaudeKeeper(env(claudeSession), "", "", 0, io.Discard)
 	if err != nil || k == nil {
 		t.Fatalf("newClaudeKeeper(session %q) made a keeper: %v, err %v; want a keeper", claudeSession, k != nil, err)
 	}
@@ -561,7 +561,7 @@ func newKeeperRig(t *testing.T, dsnFile string) *keeperRig {
 		record:     filepath.Join(configDir, "legion-phase-stall-"+claudeSession+".json")}
 	env := []string{"CLAUDE_CONFIG_DIR=" + configDir, claudelaunch.SessionVariable + "=" + claudeSession,
 		ompsessions.StorageVariable + "=" + ompsessions.SQLStorage, ompsessions.DSNFileVariable + "=" + dsnFile}
-	if c.k, err = newClaudeKeeper(env, "", "", c.log); err != nil {
+	if c.k, err = newClaudeKeeper(env, "", "", 0, c.log); err != nil {
 		t.Fatal(err)
 	}
 	c.k.appendRow, c.k.replaceRow = c.faulty(ompsessions.Append), c.faulty(ompsessions.Replace)

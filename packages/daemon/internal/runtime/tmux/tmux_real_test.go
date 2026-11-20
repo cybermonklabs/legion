@@ -1,10 +1,10 @@
 package tmux
 
 // The real-tmux tests. Each test gets a private tmux server of its own (its own socket name under
-// its own TMUX_TMPDIR), the real `legion worker-shim` built from cmd/legion, the stand-in OMP built
-// from testdata, an httptest daemon serving the two claim routes the stand-in calls, and a
-// unix-socket stub standing in for the worker stream listener. They skip, naming tmux, where tmux
-// is not on PATH.
+// its own TMUX_TMPDIR, and its own configuration under a HOME of its own, rigHome), the real
+// `legion worker-shim` built from cmd/legion, the stand-in OMP built from testdata, an httptest
+// daemon serving the two claim routes the stand-in calls, and a unix-socket stub standing in for
+// the worker stream listener. They skip, naming tmux, where tmux is not on PATH.
 
 import (
 	"context"
@@ -490,12 +490,19 @@ func newRig(t *testing.T, adjust ...func(*Options)) *rig {
 	if err := os.WriteFile(r.instructions, []byte("# Deployment instructions (demo)\n\nRun the checks.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// The server's HOME and XDG_CONFIG_HOME are the rig's own (rigHome), never the user's who runs
+	// the test: tmux reads ~/.tmux.conf, or $XDG_CONFIG_HOME/tmux/tmux.conf, when its server
+	// starts, and a user's file can run anything there, a plugin manager whose start outlasts a
+	// command's 10 s bound among them. The rig's is the one file the server reads.
+	home := rigHome(t, dir)
 	for _, entry := range os.Environ() {
-		if !strings.HasPrefix(entry, "TMUX_TMPDIR=") {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != "TMUX_TMPDIR" && name != "HOME" && name != "XDG_CONFIG_HOME" {
 			r.environ = append(r.environ, entry)
 		}
 	}
-	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
+	r.environ = append(r.environ, "TMUX_TMPDIR="+dir, "HOME="+home, "XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		"LEGION_STANDIN_PLUGIN_CONTRACT="+strconv.Itoa(api.DaemonAPIVersion))
 	watchdog := armOrphanWatchdog(t, "legion-"+r.project, r.environ)
 	r.daemon = newFakeDaemon()
 	r.stream = newStreamStub(t, filepath.Join(dir, "stream.sock"), r.daemon)
@@ -554,6 +561,38 @@ func (r *rig) recorded() [][]string {
 	r.argvMu.Lock()
 	defer r.argvMu.Unlock()
 	return slices.Clone(r.argvs)
+}
+
+// rigConfigOption is the user option the rig's own tmux configuration sets (rigHome), which a
+// server answers only when it read that file.
+const rigConfigOption = "@legion_rig_config"
+
+// rigHome is the HOME the rig's tmux server starts under, a folder of dir: its .tmux.conf sets
+// rigConfigOption and nothing else, and its XDG configuration folder is empty.
+func rigHome(t *testing.T, dir string) string {
+	t.Helper()
+	home := filepath.Join(dir, "home")
+	if err := os.MkdirAll(filepath.Join(home, ".config"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".tmux.conf"), []byte("set-option -g "+rigConfigOption+" on\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+// The rig's server reads the configuration the rig wrote under its own HOME (rigHome), and no
+// user's: started as the runtime starts it (ensureSession), it answers the option that file sets.
+// A user's ~/.tmux.conf that ran a slow command at the server's start timed out the runtime's
+// first new-session, and with it every test that starts an agent on a real server.
+func TestRealTmuxServerReadsTheRigsOwnConfiguration(t *testing.T) {
+	r := newRig(t)
+	if _, err := r.rt.ensureSession(context.Background()); err != nil {
+		t.Fatalf("ensureSession: %v", err)
+	}
+	if got := r.mustTmux("show-options", "-gv", rigConfigOption); got != "on" {
+		t.Fatalf("the server's %s = %q, want on, as the rig's own .tmux.conf sets it", rigConfigOption, got)
+	}
 }
 
 // tmux runs a command against the rig's server as a bystander would: not through the runtime. It

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 )
 
@@ -62,11 +63,16 @@ func newUpstream(t *testing.T) *upstream {
 	return up
 }
 
-// next is the connection the upstream accepted next, which is the one the proxy just dialed.
+// next is the connection the upstream accepted next, which is the one the proxy just dialed. It is
+// held open until the test ends, whether or not the caller keeps it, and a caller may still close
+// it earlier: an accepted connection a test lets go is closed by its finalizer once the collector
+// runs, an end of file the proxy reads as the database's own end of a connection it serves, and
+// records (servedUpstream).
 func (u *upstream) next(t *testing.T) net.Conn {
 	t.Helper()
 	select {
 	case conn := <-u.accepted:
+		t.Cleanup(func() { _ = conn.Close() })
 		return conn
 	case <-time.After(2 * time.Second):
 		t.Fatal("the proxy did not dial the upstream")
@@ -77,24 +83,37 @@ func (u *upstream) next(t *testing.T) net.Conn {
 // fakeDialer stands in for the Cloud SQL connector: it records what the proxy asked of it and
 // hands back a real connection to the test's upstream listener.
 type fakeDialer struct {
+	// addr is read and written under mu, so a test can point the dialer elsewhere while the proxy
+	// serves.
 	addr string
 
 	mu        sync.Mutex
 	instances []string
 	err       error
 	closed    int
+	// hold is how long each dial waits before it dials (holdEach), and held the next dial's hold
+	// until its release (holdNext).
+	hold time.Duration
+	held *heldDial
 }
 
 func (f *fakeDialer) Dial(ctx context.Context, instance string) (net.Conn, error) {
 	f.mu.Lock()
 	f.instances = append(f.instances, instance)
-	err := f.err
+	err, addr, hold, held := f.err, f.addr, f.hold, f.held
+	f.held = nil
 	f.mu.Unlock()
+	if held != nil {
+		close(held.entered)
+		<-held.release
+		addr = held.addr
+	}
+	time.Sleep(hold)
 	if err != nil {
 		return nil, err
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", f.addr)
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 func (f *fakeDialer) Close() error {
@@ -124,6 +143,17 @@ func (f *fakeDialer) failWith(err error) {
 
 // build is the Config.NewDialer a test passes: the proxy gets this very fake.
 func (f *fakeDialer) build(context.Context, string) (Dialer, error) { return f, nil }
+
+// timeoutOnStopDialer holds each dial until its context ends and then answers with an i/o timeout,
+// as a connector whose own bound on the instance ran out as the stop came does.
+type timeoutOnStopDialer struct{}
+
+func (timeoutOnStopDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
+	<-ctx.Done()
+	return nil, &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+}
+
+func (timeoutOnStopDialer) Close() error { return nil }
 
 // socketPath is this package's socket path: a socket named session.sock in a directory of the
 // test's own, placed by TMPDIR and falling back to /tmp for the socket path's length alone, so
@@ -476,6 +506,76 @@ func TestStartRefusesWhenSomethingHoldsTheSocket(t *testing.T) {
 		t.Fatalf("the holder lost its address: %v", err)
 	}
 	_ = conn.Close()
+}
+
+// A proof dial the database refused or never answered is ErrUnreachable, which the launcher
+// answers as a session store that did not answer; every other refusal is not: a dialer that could
+// not be built (a credential that is not there), a sign-in the instance refused, a start stopped
+// during its proof dial, the proxy's own configuration or socket.
+func TestOnlyAProofDialTheDatabaseRefusedOrNeverAnsweredIsErrUnreachable(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cfg         func(t *testing.T, socket string) Config
+		stop        bool
+		unreachable bool
+	}{
+		"a proof dial the database refused": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: testdb.RefusedAddress(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"a proof dial the database never answered": {unreachable: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &stallingDialer{addr: silentUpstream(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: 200 * time.Millisecond}
+		}},
+		"a dialer that cannot be built": {cfg: func(_ *testing.T, socket string) Config {
+			return Config{Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout,
+				NewDialer: func(context.Context, string) (Dialer, error) {
+					return nil, errors.New("google: could not find default credentials")
+				}}
+		}},
+		"a sign-in the instance refused": {cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			dialer.failWith(errors.New("the instance refused the login"))
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"a start stopped during its proof dial": {stop: true, cfg: func(t *testing.T, socket string) Config {
+			dialer := &stallingDialer{addr: silentUpstream(t)}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		// A connector can answer a stopped dial with an error of its own that reads as a timeout,
+		// its own bound on the instance having run out as the stop came: the stop decides.
+		"a start stopped during a proof dial that answers in a timeout's words": {stop: true, cfg: func(_ *testing.T, socket string) Config {
+			return Config{Socket: socket, Instance: testInstance, ProofTimeout: testProofTimeout,
+				NewDialer: func(context.Context, string) (Dialer, error) { return timeoutOnStopDialer{}, nil }}
+		}},
+		"a socket something else holds": {cfg: func(t *testing.T, socket string) Config {
+			held, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatalf("listen as the address's holder: %v", err)
+			}
+			t.Cleanup(func() { _ = held.Close() })
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build, ProofTimeout: testProofTimeout}
+		}},
+		"an unbounded proof dial": {cfg: func(t *testing.T, socket string) Config {
+			dialer := &fakeDialer{addr: newUpstream(t).listener.Addr().String()}
+			return Config{Socket: socket, Instance: testInstance, NewDialer: dialer.build}
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.stop {
+				time.AfterFunc(100*time.Millisecond, cancel)
+			}
+			_, err := Start(ctx, tc.cfg(t, socketPath(t)))
+			if err == nil {
+				t.Fatal("Start served")
+			}
+			if got := errors.Is(err, ErrUnreachable); got != tc.unreachable {
+				t.Fatalf("Start = %v, which is ErrUnreachable %t, want %t", err, got, tc.unreachable)
+			}
+		})
+	}
 }
 
 func TestConnectionIsClosedWhenItsUpstreamDialFails(t *testing.T) {

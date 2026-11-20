@@ -110,7 +110,9 @@ func shortTempDir(t *testing.T) string {
 }
 
 // newSessionRig runs a launcher that carries cfg's session database and dialer, the fake standing
-// in for the Cloud SQL connector, besides the fields every rig's launcher is given.
+// in for the Cloud SQL connector, besides the fields every rig's launcher is given. Its launcher
+// writes to g.stderr, unless cfg names a Config.Stderr of its own, as a controller pod's container
+// hands the launcher a file.
 func newSessionRig(t *testing.T, cfg Config) *rig {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -122,7 +124,10 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &rig{t: t, listener: listener, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-legion-208"
-	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
+	cfg.Role, cfg.PodUID, cfg.PrivateDir = "tester", "pod-1", g.private
+	if cfg.Stderr == nil {
+		cfg.Stderr = g.stderr
+	}
 	go func() {
 		g.result <- Run(ctx, cfg)
 	}()
@@ -1311,7 +1316,7 @@ func (d *sessionDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	d.mu.Lock()
 	index := len(d.bounds)
 	d.bounds = append(d.bounds, bound)
-	silent := d.silent
+	silent, addr := d.silent, d.addr
 	d.mu.Unlock()
 	if silent != "" {
 		conn, err := stalledDial(ctx, silent)
@@ -1326,7 +1331,7 @@ func (d *sessionDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 		}
 	}
 	var dialer net.Dialer
-	return dialer.DialContext(ctx, "tcp", d.addr)
+	return dialer.DialContext(ctx, "tcp", addr)
 }
 
 // stallAt makes every dial from now on stall against the silent upstream at addr; "" ends that.
@@ -1334,6 +1339,13 @@ func (d *sessionDialer) stallAt(addr string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.silent = addr
+}
+
+// dialAt points every dial from now on at addr.
+func (d *sessionDialer) dialAt(addr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.addr = addr
 }
 
 func (d *sessionDialer) Close() error { return nil }

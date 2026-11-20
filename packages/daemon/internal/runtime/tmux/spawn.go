@@ -462,7 +462,9 @@ func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Lo
 // spawning a fresh agent, charged nothing and reported. That holds whether or not take_over is
 // set: the folders searched are the same, and a session no folder holds is gone whichever runtime
 // last wrote it — under the key most such sessions are the taken-over runtime's, which neither the
-// recorded path nor the previous incarnation tells from this host's own.
+// recorded path nor the previous incarnation tells from this host's own. A place the search cannot
+// read starts nothing and wraps runtime.ErrSessionStore, a store that did not answer, which the
+// claim's machine waits out with the session kept, charged nothing, starting it again every minute.
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	switch {
 	case spec.ResumeByAgent:
@@ -531,14 +533,15 @@ func (r *Runtime) awaitGone(ctx context.Context, loc runtime.Locator) error {
 // session nothing holds is the same fact however the daemon is configured. The caller starts a
 // fresh agent in its place, charged nothing and reported (supervise's start), which is also what a
 // taken-over runtime's session gets, since nothing tells it from this host's own (sessionfile.go).
-// A search that fails — a recorded path it cannot check, a pane sessions directory it cannot
-// resolve, or a searched sessions directory itself it cannot read — opens no pane either, and its
-// error wraps no runtime.ErrSessionFileMissing: what it could not read may hold the session, so
-// the caller keeps the session, charges the launch failure and tries again. A folder of a
-// sessions directory it cannot read, or a matching file in one it cannot check, is no failure:
-// the search runs as the user Oh My Pi runs as, so what that user cannot read holds no session Oh
-// My Pi could resume, and the search skips it as holding none (newestOneFolderDown). Whenever it
-// skipped any, whatever it found, the launch names each one it skipped, with why, in one warning.
+// A place the search cannot read — a recorded path it cannot check, a searched sessions directory,
+// a folder of one, or a matching file in one — opens no pane either, and is
+// runtime.ErrSessionStore, never runtime.ErrSessionFileMissing: nothing says the session is not
+// there, so the caller keeps it and tries the same session again a minute later, charged nothing
+// (supervise's startWaitsForStore). A pane sessions directory it cannot resolve, and a recorded
+// path under a file, are the launch's own failure, which the caller charges. A folder another user
+// owns that denies this daemon's user is no failure: it is no part of this daemon's session store,
+// so the search passes it over as holding none (newestOneFolderDown). Whenever it passed over any,
+// whatever it found, the launch names each one, with why, in one warning.
 func (r *Runtime) launch(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	if err := validateSpawnSpec(spec, r.providerKeys, r.operatorEnv); err != nil {
 		return runtime.Locator{}, err

@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -105,8 +107,11 @@ type importedClaim struct {
 // count of each outcome. It exits 1 when any claim's session could not be copied (a file it cannot
 // read, several files for one closed claim's id, or a session the table already holds with other
 // content) or a recorded session of the claims it was asked to copy is missing from the table; a
-// missing one of another tree is reported and leaves the exit as it is. A rerun copies nothing
-// twice: a session the table already holds byte for byte is reported as copied before.
+// missing one of another tree is reported and leaves the exit as it is. A database with no session
+// table at all, which no copy of this run made, cannot say which recorded sessions it lacks: the
+// command exits 1 with one line naming the database and the table, and prints no missing line and
+// no count. A rerun copies nothing twice: a session the table already holds byte for byte is
+// reported as copied before.
 func runSessionsImport(ctx context.Context, input sessionsInput, tree, treeVolume string, args []string, stdout, stderr io.Writer) int {
 	claims, conn, code := input.open(ctx, args, stderr)
 	if conn == nil {
@@ -242,7 +247,8 @@ func sessionFileForID(session, treeVolume string) (string, error) {
 }
 
 // missingSessions are the claims of the list, every tree's, that record a session the table does
-// not hold: under SQL storage each would fail every launch until it is copied or marked lost.
+// not hold: under SQL storage each would fail every launch until it is copied or marked lost. A
+// database with no session table answers for none of them (noSessionTable).
 func missingSessions(ctx context.Context, conn *pgx.Conn, claims []importedClaim) ([]importedClaim, error) {
 	var missing []importedClaim
 	for _, c := range claims {
@@ -250,6 +256,9 @@ func missingSessions(ctx context.Context, conn *pgx.Conn, claims []importedClaim
 			continue
 		}
 		_, found, err := ompsessions.Written(ctx, conn, c.SessionFile)
+		if ompsessions.NoSessionTable(err) {
+			return nil, noSessionTable(conn)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -258,6 +267,15 @@ func missingSessions(ctx context.Context, conn *pgx.Conn, claims []importedClaim
 		}
 	}
 	return missing, nil
+}
+
+// noSessionTable is the refusal of a session database that has no session table at all, naming
+// the database and the table: such a database cannot say which recorded sessions it lacks, so a
+// missing line for every claim would describe a store that answered.
+func noSessionTable(conn *pgx.Conn) error {
+	config := conn.Config()
+	return fmt.Errorf("the session database %s at %s has no session table %s, so it cannot say which recorded sessions it holds",
+		config.Database, net.JoinHostPort(config.Host, strconv.Itoa(int(config.Port))), ompsessions.SessionTable)
 }
 
 // readImportedClaims reads the claims list from file, or from stdin when file is `-`, in token

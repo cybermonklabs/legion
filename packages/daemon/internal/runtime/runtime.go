@@ -171,10 +171,10 @@ type Runtime interface {
 var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 
 // ErrSessionStore is a Resume whose session store could not be asked: the table does not exist, or
-// the store did not answer. It says nothing about the claim's session, so it is neither a missing
-// session nor the claim's own failure: the caller keeps the session, charges nothing, and starts
-// again every minute until the store answers (supervise's startWaitsForStore). Nothing was
-// started.
+// the store did not answer, a sessions folder the tmux runtime cannot read among them. It says
+// nothing about the claim's session, so it is neither a missing session nor the claim's own
+// failure: the caller keeps the session, charges nothing, and starts again every minute until the
+// store answers (supervise's startWaitsForStore). Nothing was started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrSessionLookupUnavailable is a Resume by id (spec.ResumeSession, without spec.ResumeByAgent)
@@ -675,6 +675,17 @@ type Observation struct {
 	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
 	// for the reason Displaced is: Detail is prose for an operator and nothing else.
 	OutOfMemory bool
+	// StoreFault is a Gone of a process that exited after its session store stopped answering
+	// it: the Kubernetes launcher's proxy could not reach the session database for the child's
+	// own connection, with no later one that reached it, or, for a store no proxy serves, the
+	// launcher's own dial of it when the child exited with an error was refused or not answered
+	// (shimwire.LauncherExit.Session). The
+	// process ended on a store that did not answer, which says nothing about the claim or its
+	// session, so the supervisor keeps the session, charges nothing, and starts it again every
+	// minute until the store answers, telling the issue and the controller (supervise's
+	// startWaitsForStore). Only the Sandbox runtime reports it. It is a field rather than a shape
+	// of Detail for the reason Displaced is.
+	StoreFault bool
 	// PodEnd is the pod's own reason for the end and the kubelet's message with it, as
 	// `<reason>: <message>`, the reason alone where there is no message, and empty where the pod
 	// carries no reason: `Evicted: The node was low on resource: ephemeral-storage. ...` is the

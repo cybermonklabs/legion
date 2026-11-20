@@ -342,6 +342,11 @@ func (r *Runtime) verdict(ctx context.Context, loc runtime.Locator, v view) obse
 	case state.LastExit != nil && state.LastExit.Generation == loc.Sandbox.Generation && state.LastExit.Code == shimwire.LauncherExitSetupFailed:
 		return observe(runtime.Gone, "pod %s (uid %s) role %s reports generation %d failed setting up its namespaces before its shim started; last lines of %s:\n%s",
 			name, pod.UID, role, state.LastExit.Generation, role, r.roleLog(ctx, name, container, role))
+	case state.LastExit != nil && state.LastExit.Generation == loc.Sandbox.Generation && state.LastExit.Session == shimwire.SessionStoreUnreachable:
+		gone := observe(runtime.Gone, "pod %s (uid %s) role %s reports generation %d exited (code %d, signal %s) after the session database stopped answering its connections",
+			name, pod.UID, role, state.LastExit.Generation, state.LastExit.Code, state.LastExit.Signal)
+		gone.StoreFault = true
+		return gone
 	case state.LastExit != nil && state.LastExit.Generation == loc.Sandbox.Generation:
 		return observe(runtime.Gone, "pod %s (uid %s) role %s reports generation %d exited (code %d, signal %s)",
 			name, pod.UID, role, state.LastExit.Generation, state.LastExit.Code, state.LastExit.Signal)

@@ -1,5 +1,5 @@
 // Package supervisetest is what a test outside supervise needs to stand in for a part of
-// supervise.Store.
+// supervise.Store, or for supervise.Clock.
 package supervisetest
 
 import (

@@ -120,6 +120,7 @@ on:
       - 'packages/daemon/internal/sessionproxy/*'
       - 'packages/daemon/internal/shim/*'
       - 'packages/daemon/internal/shimwire/*'
+      - 'packages/daemon/internal/sqlstate/*'
       - 'packages/daemon/internal/store/**'
       - 'packages/daemon/internal/stream/*'
       - 'packages/daemon/internal/supervise/*'

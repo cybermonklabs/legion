@@ -569,11 +569,16 @@ type LauncherChild struct {
 // reconnect before it accepts another start, so the daemon never invents Gone from a lost reply.
 // Code is the process's exit status, or one of two values no process exits with: -1 when the
 // launcher has no status for it (killed by a signal, which Signal then names, or never waited on),
-// and LauncherExitSetupFailed.
+// and LauncherExitSetupFailed. Session is SessionStoreUnreachable for a child that exited after
+// the session database stopped answering it: the generation's proxy could not reach it for the
+// child's own connections, or, where no proxy serves it, the launcher's own dial of it at an exit
+// with an error was refused or not answered. The daemon waits that out a minute at a time with the
+// session kept rather than charge it as the child's death. It is empty for every other exit.
 type LauncherExit struct {
-	Generation uint64 `json:"generation"`
-	Code       int    `json:"code"`
-	Signal     string `json:"signal,omitempty"`
+	Generation uint64         `json:"generation"`
+	Code       int            `json:"code"`
+	Signal     string         `json:"signal,omitempty"`
+	Session    SessionRefusal `json:"session,omitempty"`
 }
 
 // LauncherExitSetupFailed is the Code of an issue pod role's generation whose role-init failed

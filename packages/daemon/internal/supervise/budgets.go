@@ -11,7 +11,9 @@ import (
 //   - LaunchFailures: launches that never became a working agent — a spawn or resume the runtime
 //     refused, a process that died, one whose agent never registered or registered and never said
 //     it was ready. Reset only by the agent's ready: a registration alone proves nothing about the
-//     next launch.
+//     next launch. A start the session store could not answer, and a process that exited on a
+//     store that stopped answering it, are neither, and charge none of these (startWaitsForStore,
+//     diedOnTheStore).
 //   - Deaths: processes that died after their agent was ready with work outstanding — a pending
 //     task, or a turn the agent had begun and not ended, whether or not a task was behind it
 //     (chargeDeath). The relaunch reaches ready again whatever killed the last process, so ready

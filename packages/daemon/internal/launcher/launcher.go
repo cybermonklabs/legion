@@ -91,6 +91,11 @@ type Config struct {
 	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
 	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
 	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	// SessionLookup bounds a resume's lookup of its session in the session table, and a Claude
+	// Code keeper's own dial of that table, retries included (sessionDial.lookup). Zero is the
+	// daemon's own bound, resumeLookupTimeout; a test of the whole chain shortens it, so a start
+	// the store does not answer is refused in seconds.
+	SessionLookup time.Duration
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
@@ -614,6 +619,18 @@ type child struct {
 	// (claudeKeeper). It saves until the child has exited, then makes its last save before the
 	// proxy closes (wait).
 	keeper *claudeKeeper
+	// store is the session database the child dials itself, through its proxy's socket or with
+	// none through the URL file its environment names (childStore): the store whose answer tells a
+	// child that exited with an error on a store that stopped answering it from the child's own end
+	// (wait). Nil for a child whose sessions are no rows, and for a Claude Code child, which never
+	// dials the store: its keeper is the launcher's own.
+	store *sessionDial
+	// witness is the launcher's own look at store for the child's whole life, for a child whose
+	// connections no proxy sees (storeWitness); nil otherwise.
+	witness *storeWitness
+	// report is the child's own report of a session database it could not open, read from its
+	// standard error as it passes (childReport).
+	report *childReport
 	// stopBy is when the stop under way, if any, gives up on the child: the end of its grace
 	// (endGeneration), which bounds the keeper's last save. Guarded by manager.mu.
 	stopBy time.Time
@@ -896,9 +913,9 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// received: body was marshalled from it above, and the change is made to this call's copy of
 	// the frame with its argv copied (resumeArgv), so the caller's frame is not changed either.
 	if command.ResumeSession != "" {
-		file, err := sessionByID(ctx, env, command.ResumeSession, clientURL)
+		file, err := sessionByID(ctx, env, command.ResumeSession, clientURL, m.cfg.SessionLookup)
 		if err != nil {
-			return abandon(err)
+			return abandon(proxiedStoreFault(proxy, err))
 		}
 		command.Argv = resumeArgv(command.Argv, command.ResumeSession, file)
 		command.ResumeFile = file
@@ -906,18 +923,18 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// A Claude Code child's session is kept in the session table (claudeKeeper): the order is
 	// the resume's lookup, which decides the recreated-workspace notice from the row's last save,
 	// then the restore of the session's files from their rows, then the child, then the saves.
-	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.stderr); err != nil {
+	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.cfg.SessionLookup, m.stderr); err != nil {
 		return abandon(err)
 	}
 	recreated := false
 	var sessions *pgx.Conn
 	if command.ResumeFile != "" {
-		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
-			return abandon(err)
+		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.cfg.SessionLookup, m.stderr); err != nil {
+			return abandon(proxiedStoreFault(proxy, err))
 		}
 	}
 	if err := keeper.open(ctx, sessions); err != nil {
-		return abandon(err)
+		return abandon(proxiedStoreFault(proxy, err))
 	}
 	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
 	// that had none sweeps it here, before the restore below runs real git and jj against that
@@ -944,7 +961,14 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// carried, when this launcher serves it, and the environment as it is when it does not
 	// (metadataEnv).
 	env = metadataEnv(env, m.metadataAddress)
-	process, err := m.command(command, env)
+	// A child that dials a URL file's store itself, with no proxy of the generation's to see its
+	// connections, is the one whose own report of a failed open is read (childReport).
+	store := childStore(env, keeper, clientURL)
+	var report *childReport
+	if store != nil && proxy == nil {
+		report = &childReport{}
+	}
+	process, err := m.command(command, env, report)
 	if err != nil {
 		return abandon(err)
 	}
@@ -964,7 +988,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		m.mu.Unlock()
 		return abandon(fmt.Errorf("start child: %w", err))
 	}
-	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, done: make(chan struct{})}
+	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: store, witness: watchStore(store, proxy != nil), report: report, done: make(chan struct{})}
 	m.child = active
 	result := shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation}
 	m.requests[command.ID] = request{body: body, result: result}
@@ -973,6 +997,23 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	go m.wait(process.cmd, active)
 	_ = m.state()
 	return result
+}
+
+// proxiedStoreFault is err, a refusal of the resume's lookup or the keeper's work that reached the
+// table through proxy, as a store fault when it is one the launcher's own client cannot see: the
+// proxy closes a connection whose dial of the database was refused or never answered, which that
+// client reads as the connection closing, but the proxy records it (sessionproxy.Proxy.Fault). A
+// refusal already read as the store's or as a session the table lacks is left as it is, and so is
+// every refusal under no proxy, or while every dial since the last fault reached the database.
+func proxiedStoreFault(proxy *sessionproxy.Proxy, err error) error {
+	if proxy == nil || errors.Is(err, shimwire.SessionStoreUnreachable) || errors.Is(err, shimwire.SessionGone) {
+		return err
+	}
+	fault := proxy.Fault()
+	if fault == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %v (%v)", shimwire.SessionStoreUnreachable, err, fault)
 }
 
 func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
@@ -986,13 +1027,16 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
 // itself in the container's own namespaces, writing to the container's stdout and stderr
 // themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
-// the shim's descriptors are the container's files and no pipe through the launcher.
-func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
+// the shim's descriptors are the container's files and no pipe through the launcher. The one
+// exception is a child report reads, one that dials a URL file's store itself (start): its
+// standard error passes through the launcher, as it is, to the same file and to report, for the
+// child's own report of a session database it could not open. A nil report reads nothing.
+func (m *manager) command(start shimwire.LauncherStart, env []string, report *childReport) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
 		process, err := newRoleProcess(RoleInitConfig{
 			RoleCover: roleCoverFor(m.cfg.RolesDir), Role: m.role, Generation: start.Generation, Argv: start.Argv,
-		}, env, stdout, stderr)
+		}, env, stdout, report.alongside(stderr))
 		if err != nil {
 			return nil, err
 		}
@@ -1001,7 +1045,13 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 	}
 	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
+	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, report.alongside(m.cfg.Stderr)
+	if report != nil {
+		// The report makes the child's standard error a pipe the launcher copies, which a
+		// descendant that outlives the child would hold open: Wait waits for it a second at most
+		// after the child exits, and cleanExitedGeneration ends such a descendant after that.
+		cmd.WaitDelay = time.Second
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
 }
@@ -1029,6 +1079,14 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 // nothing is left listening over a socket that has been removed, and between generations nothing is
 // bound at all. active.done is closed last, so endGeneration, and with it Run's stopActive, returns
 // only once the proxy is closed.
+//
+// A child that dials the session database itself (child.store), and exits on its own with an
+// error, exited on a store that stopped answering it when the store's own last word to it says so,
+// under either session store: its exit carries shimwire.SessionStoreUnreachable, which the daemon
+// waits out a minute at a time with the session kept and charges nothing for, where any other exit
+// is the child's own end (childExitFault). A Claude Code child never dials the store, so its exit is
+// always its own, whatever its keeper met. The generation's store witness, if it has one, ends here
+// whatever the exit, and so does the child's report of a store it could not open.
 func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	var reported *syscall.WaitStatus
 	if active.status != nil {
@@ -1059,9 +1117,23 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	m.mu.Lock()
 	end := active.stopBy
 	m.mu.Unlock()
+	ownEnd := end.IsZero()
 	// A child that exited on its own is given the whole grace a stop would have given it.
-	if end.IsZero() {
+	if ownEnd {
 		end = time.Now().Add(m.cfg.StopGrace)
+	}
+	judged := active.store != nil && ownEnd && failedExit(exit)
+	var bound time.Duration
+	if judged {
+		bound = time.Until(end) / 2
+	}
+	witnessed := active.witness.finish(bound)
+	if judged {
+		if fault := childExitFault(*active.store, active.proxy, active.report.storeFault(), witnessed, time.Until(end)/2); fault != nil {
+			exit.Session = shimwire.SessionStoreUnreachable
+			m.logf("launcher: generation %d exited with an error on a session database that stopped answering it: %v",
+				active.generation, fault)
+		}
 	}
 	active.keeper.finish(end.Add(-sessionDrain))
 	if active.proxy != nil {
@@ -1078,6 +1150,94 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	close(active.done)
 	m.mu.Unlock()
 	_ = m.state()
+}
+
+// childStore is the session database a child that keeps its sessions in it dials itself: an Oh My
+// Pi child's under SQL storage, through clientURL, its proxy's socket, or with no proxy through the
+// URL file its environment names. Nil for a child whose sessions are no rows, and for a Claude Code
+// child, whose sessions keeper keeps: such a child never dials the store, so no exit of its is the
+// store's.
+func childStore(env []string, keeper *claudeKeeper, clientURL string) *sessionDial {
+	if keeper != nil || envValue(env, ompsessions.StorageVariable) != ompsessions.SQLStorage {
+		return nil
+	}
+	store, err := newSessionDial(env, clientURL)
+	if err != nil {
+		return nil
+	}
+	return &store
+}
+
+// failedExit is whether exit is a child's own end with an error: a status other than 0, or a
+// signal. A role-init that failed before it started the shim is no child's end at all.
+func failedExit(exit shimwire.LauncherExit) bool {
+	return exit.Code != 0 && exit.Code != shimwire.LauncherExitSetupFailed
+}
+
+// childExitFault is the store's own fault a child that dials store itself exited on with an error,
+// nil for an exit of the child's own. First the child's own connections, as proxy, the
+// generation's, saw them at the exit: the latest event of the database's own, a dial it refused or
+// never answered or a served connection it ended, with no dial that reached it since
+// (sessionproxy.Proxy.Fault). With no proxy, reported, the store fault the child reported itself:
+// a first open of its session database whose connection failed before the server answered it
+// (childReport). The report's code is the driver's, which names a URL file whose host does not
+// resolve, or whose port is some other server's, as it names a refused dial, so the report decides
+// only once the launcher's own connect to the same URL file within bound answered (askStore): one
+// that meets the store's own fault is that fault, and one that meets a fault of the
+// configuration's is the child's own end, charged, whatever the child wrote, as the same URL file
+// is charged at a resume's lookup. With no such report, witnessed, the fault the latest look of the
+// generation's store witness met (storeWitness): a fault no later look found over overlaps the
+// exit, so a store that failed the child's open and answered again only after the witness's last
+// look still reads as the store's, and one a later look found answering does not. With no fault
+// there, the launcher asks the store once, as the child would, within bound, half of what the
+// child's grace leaves, as the proxy's proof dial is bounded by half of it: through the proxy's
+// socket that ask's own dial is one more event the proxy records. A child's report is not read
+// under a proxy, which ends a connection whose sign-in the instance refused as it ends one whose
+// database it could not reach, and records which itself.
+func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, reported, witnessed error, bound time.Duration) error {
+	if proxy != nil {
+		if fault := proxy.Fault(); fault != nil {
+			return fault
+		}
+	} else if reported != nil {
+		asked, err := askStore(store, bound)
+		switch {
+		case ompsessions.StoreFault(err):
+			return err
+		case err != nil:
+			return nil
+		case asked:
+			return reported
+		}
+	}
+	if witnessed != nil {
+		return witnessed
+	}
+	if _, err := askStore(store, bound); ompsessions.StoreFault(err) {
+		return err
+	}
+	if proxy != nil {
+		return proxy.Fault()
+	}
+	return nil
+}
+
+// askStore connects to store once, within bound, as the child would, and answers whether it asked
+// and what the connect met: nil for a store that answered, an error ompsessions.StoreFault reads as
+// the store's own, or any other refusal, an answer about the configuration (a login the server
+// refused, a host that does not resolve, a URL file that is not there). A bound that leaves no
+// time to ask asks nothing. The connection alone is asked, never the table: a child that failed in
+// a database no Oh My Pi has opened yet would otherwise read as a store fault and be tried for
+// ever.
+func askStore(store sessionDial, bound time.Duration) (bool, error) {
+	if bound <= 0 {
+		return false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), bound)
+	defer cancel()
+	conn, err := store.connect(ctx)
+	closeSessions(conn)
+	return true, err
 }
 
 func (m *manager) stop(command shimwire.LauncherStop) shimwire.LauncherStopResult {
@@ -1317,7 +1477,10 @@ func writeCredential(path, content string) error {
 // own pgx client, which spells a unix socket differently from the client the agent runs
 // (ompsessions.Endpoint); with no session database it is "", and the launcher looks a resume up
 // through the pointer the child's environment carries instead. A failure leaves nothing bound and
-// names the generation; its caller removes the directory.
+// names the generation; its caller removes the directory. A proxy whose proof dial the database
+// refused or never answered (sessionproxy.ErrUnreachable) is shimwire.SessionStoreUnreachable, a
+// store that did not answer, as the resume's own lookup is (resumable); a proxy refused over its
+// configuration, its socket, a dialer it could not build or a sign-in the instance refused is not.
 //
 // In an issue pod's container the launcher and the role see the generation's directory at two
 // paths: the launcher binds the socket at dir, under the role's own private directory of the roles
@@ -1347,6 +1510,9 @@ func (m *manager) startSession(ctx context.Context, generation uint64, dir strin
 		ImpersonateServiceAccount: m.cfg.SessionDatabase.ImpersonateServiceAccount, NewDialer: m.cfg.SessionDialer,
 		ProofTimeout: m.proofTimeout(), Drain: sessionDrain, Log: m.stderr,
 	})
+	if errors.Is(err, sessionproxy.ErrUnreachable) {
+		return nil, "", fmt.Errorf("the session database proxy for generation %d: %w: %v", generation, shimwire.SessionStoreUnreachable, err)
+	}
 	if err != nil {
 		return nil, "", fmt.Errorf("the session database proxy for generation %d: %v", generation, err)
 	}
@@ -1396,11 +1562,12 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
+func resumable(ctx context.Context, env []string, file, clientURL string, lookup time.Duration, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
-		return false, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
+		return false, nil, fmt.Errorf("resume session %s: %v", file, err)
 	}
+	sessions.bound = lookup
 	written, conn, err := sessionWritten(ctx, sessions, file)
 	if err != nil {
 		return false, nil, err
@@ -1421,8 +1588,10 @@ func resumable(ctx context.Context, env []string, file, clientURL string, log io
 
 // sessionWritten is when the session a resume names was last written, read from the session table
 // the child's Oh My Pi keeps it in (resumable) through a connection sessions dials, which it returns
-// open. A table that could not be asked at all is shimwire.SessionStoreUnreachable; a session the
-// table answers it does not hold is shimwire.SessionGone, refused at once.
+// open. A table that refused or never answered the lookup, or that does not exist, is
+// shimwire.SessionStoreUnreachable (storeRefusal); any other refusal, a URL file that is not there
+// or a login the server refused, is the start's own, which the daemon charges; a session the table
+// answers it does not hold is shimwire.SessionGone, refused at once.
 func sessionWritten(parent context.Context, sessions sessionDial, file string) (time.Time, *pgx.Conn, error) {
 	var written time.Time
 	var found bool
@@ -1431,7 +1600,7 @@ func sessionWritten(parent context.Context, sessions sessionDial, file string) (
 		return err
 	})
 	if err != nil {
-		return time.Time{}, nil, fmt.Errorf("resume session %s: %w: %v", file, shimwire.SessionStoreUnreachable, err)
+		return time.Time{}, nil, fmt.Errorf("resume session %s: %w", file, storeRefusal(err))
 	}
 	if !found {
 		closeSessions(conn)
@@ -1442,15 +1611,19 @@ func sessionWritten(parent context.Context, sessions sessionDial, file string) (
 
 // sessionByID is the file of the newest session the session table holds under the session id id
 // (ompsessions.FindByID), for a start that names its session by its id alone, asked through the
-// same sessionDial resumable's lookup uses. The connection is closed once it answers, since the
-// path resume that follows (resumable) dials its own and hands it to the keeper. A table that could
-// not be asked at all is shimwire.SessionStoreUnreachable; a table that answers it holds no such
-// session is shimwire.SessionGone, refused at once, so no child starts.
-func sessionByID(ctx context.Context, env []string, id, clientURL string) (string, error) {
+// same sessionDial resumable's lookup uses, with the same bound, lookup (sessionDial.lookup), and
+// read by the same rule as sessionWritten's: a table that refused or never answered, or that does
+// not exist, is shimwire.SessionStoreUnreachable (storeRefusal); any other refusal, a URL file
+// that is not there or a login the server refused, is the start's own, which the daemon charges.
+// The connection is closed once it answers, since the path resume that follows (resumable) dials
+// its own and hands it to the keeper. A table that answers it holds no such session is
+// shimwire.SessionGone, refused at once, so no child starts.
+func sessionByID(ctx context.Context, env []string, id, clientURL string, lookup time.Duration) (string, error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
-		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+		return "", fmt.Errorf("resume session %s: %v", id, err)
 	}
+	sessions.bound = lookup
 	var file string
 	var found bool
 	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *pgx.Conn) (err error) {
@@ -1458,7 +1631,7 @@ func sessionByID(ctx context.Context, env []string, id, clientURL string) (strin
 		return err
 	})
 	if err != nil {
-		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+		return "", fmt.Errorf("resume session %s: %w", id, storeRefusal(err))
 	}
 	closeSessions(conn)
 	if !found {

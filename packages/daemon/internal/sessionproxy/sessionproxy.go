@@ -6,10 +6,12 @@
 // with a user and a database and no password; this proxy dials Cloud SQL for every accepted
 // connection with automatic IAM database authentication and copies bytes both ways.
 //
-// Nothing here reads the Postgres wire protocol, and nothing here belongs to it: with automatic
-// IAM database authentication the login token travels in the connector's ephemeral-certificate
-// exchange, not in the startup packet, which is why Google's own cloud-sql-proxy is likewise a
-// plain bidirectional copy over the connector's net.Conn.
+// The proxy changes nothing of the Postgres wire protocol and needs nothing of it to serve: with
+// automatic IAM database authentication the login token travels in the connector's
+// ephemeral-certificate exchange, not in the startup packet, which is why Google's own
+// cloud-sql-proxy is likewise a plain bidirectional copy over the connector's net.Conn. It reads
+// only the framing of the messages that cross, and the severity and SQLSTATE of an error the
+// database sends, to tell whether the database's end of a connection is the store's fault (wire).
 package sessionproxy
 
 import (
@@ -20,6 +22,7 @@ import (
 	"net"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cloud.google.com/go/cloudsqlconn"
@@ -27,6 +30,7 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/sqlstate"
 )
 
 // Dialer is the upstream the proxy dials for each accepted connection: the Cloud SQL connector in
@@ -36,6 +40,22 @@ type Dialer interface {
 	Dial(ctx context.Context, instance string) (net.Conn, error)
 	Close() error
 }
+
+// ErrUnreachable is what a refusal of Start is (errors.Is) when the database did not answer: the
+// proof dial was refused or never answered (ompsessions.StoreFault). It is also what Fault answers
+// once a connection's own dial meets the same while the proxy serves, or the database ends a
+// connection the proxy serves for a reason of its own state. Every other refusal is over the
+// proxy's own configuration or socket, or a dialer that could not be built (a credential that is
+// not there, an account that cannot be impersonated), or a sign-in the instance refused, or a start
+// that was stopped.
+var ErrUnreachable = errors.New("sessionproxy: the database could not be reached")
+
+// unreachable is a refusal of Start that is ErrUnreachable and reads as its own error alone.
+type unreachable struct{ error }
+
+func (u unreachable) Unwrap() error { return u.error }
+
+func (unreachable) Is(target error) bool { return target == ErrUnreachable }
 
 // Config is one proxy's whole configuration. A proxy serves exactly one generation, so every field
 // is fixed for that generation's lifetime.
@@ -101,6 +121,15 @@ type Proxy struct {
 	closeOnce sync.Once
 	closeErr  error
 
+	// faultMu guards fault and faultAt: what the latest event of the database's own met while the
+	// proxy served (Fault), and that event's place in events. events numbers every dial a
+	// connection makes, at its start, and every served connection the database ends, as it ends, so
+	// that the record is the latest event's whatever order their ends came in (record).
+	faultMu sync.Mutex
+	fault   error
+	faultAt uint64
+	events  atomic.Uint64
+
 	logMu sync.Mutex
 	log   io.Writer
 }
@@ -114,10 +143,13 @@ type Proxy struct {
 // ctx bounds the start alone: a start whose ctx ends before the proof dial succeeds fails and
 // leaves nothing bound. The proof dial is bounded besides by cfg.ProofTimeout, so a start against
 // an instance that never answers fails within that bound however long ctx lives, with an error
-// naming the instance and the bound that wraps the dial's own (context.DeadlineExceeded). Once
-// Start returns, ctx no longer matters: the proxy serves until Close, so its owner can keep it
-// serving after ctx ends, as the launcher does through a child's stop grace when the container is
-// told to stop.
+// naming the instance and the bound that wraps the dial's own (context.DeadlineExceeded). A start
+// whose proof dial was refused or never answered is ErrUnreachable, which the launcher answers the
+// daemon as a session store that did not answer; a refusal over the configuration or the socket, a
+// dialer that could not be built, a sign-in the instance refused and a start whose ctx was cancelled
+// are not. Once Start returns, ctx no longer matters: the proxy serves until Close, so its owner can
+// keep it serving after ctx ends, as the launcher does through a child's stop grace when the
+// container is told to stop.
 func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 	if !filepath.IsAbs(cfg.Socket) {
 		return nil, fmt.Errorf("sessionproxy: Socket %q is not an absolute path", cfg.Socket)
@@ -166,8 +198,15 @@ func Start(ctx context.Context, cfg Config) (*Proxy, error) {
 		cancel()
 		_ = listener.Close()
 		_ = dialer.Close()
-		if timedOut {
-			return nil, fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.ProofTimeout, err)
+		switch {
+		case timedOut:
+			return nil, unreachable{fmt.Errorf("sessionproxy: dial %s: no answer within %s: %w", cfg.Instance, cfg.ProofTimeout, err)}
+		case ctx.Err() != nil:
+			// The start was stopped, as the launcher's container is told to stop: no store was
+			// asked to the end, so this is no fault of it.
+			return nil, fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)
+		case ompsessions.StoreFault(err):
+			return nil, unreachable{fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)}
 		}
 		return nil, fmt.Errorf("sessionproxy: dial %s: %w", cfg.Instance, err)
 	}
@@ -303,16 +342,36 @@ func (p *Proxy) accept(ctx context.Context) {
 // certificate cache it keeps refreshed, so every connection carries a freshly minted one. serve
 // already runs on a goroutine of its own, so only the other copy direction takes one. The pair is
 // tracked from the dial's success until both copies end, so Close can close it once the drain is
-// over; a pair dialed once Close has begun is closed at once and never copied for.
+// over; a pair dialed once Close has begun is closed at once and never copied for. A dial the
+// database refused or never answered is recorded for Fault, a dial that reaches it clears the
+// record (the store answers again), and the database ending the served connection is recorded too,
+// when the end is the store's: an error of severity FATAL that the database ends the connection
+// with, by its SQLSTATE (sqlstate.NotJudged: 57P03, a database starting up or shutting down, is the
+// store's, and 28P01, a sign-in it refused, is not), and with no such word a reset, any other
+// failure of a read or a write on the upstream, or an end of file, but the end of a session the
+// client ended in order or of a cancel request, and the proxy's own close of it (wire). Each is
+// recorded as of the dial's start, or of the end (record).
 func (p *Proxy) serve(ctx context.Context, client net.Conn) {
-	upstream, err := p.dialer.Dial(ctx, p.instance)
+	at := p.events.Add(1)
+	dialed, err := p.dialer.Dial(ctx, p.instance)
 	if err != nil {
-		// Nothing is written back: a client that reads a Postgres error here would believe the
-		// database answered it.
+		// The fault is recorded before the client is closed, so whoever saw the connection end
+		// reads it. Nothing is written back: a client that reads a Postgres error here would
+		// believe the database answered it.
+		if ctx.Err() == nil && ompsessions.StoreFault(err) {
+			p.record(at, unreachable{fmt.Errorf("sessionproxy: dial %s for a connection: %w", p.instance, err)})
+		}
 		_ = client.Close()
 		p.logf("sessionproxy: could not dial %s for a connection: %v", p.instance, err)
 		return
 	}
+	p.record(at, nil)
+	ended := func(err error) {
+		if ctx.Err() == nil {
+			p.record(p.events.Add(1), unreachable{fmt.Errorf("sessionproxy: %s ended a served connection: %w", p.instance, err)})
+		}
+	}
+	upstream := &servedUpstream{Conn: dialed, ended: ended}
 	if !p.track(client, upstream) {
 		return
 	}
@@ -336,6 +395,69 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	_, _ = io.Copy(client, upstream)
 	stop()
 	copies.Wait()
+}
+
+// servedUpstream is a connection's upstream while the proxy serves it, which reads what crosses it
+// (wire) to pass the database's end of the connection to ended, once, when that end is the store's:
+// a FATAL error of the database's own state as it arrives, before the client reads it, and else the
+// first read or write that fails with no such word from the database (wire.databaseEnded), other
+// than on the proxy's own close of it.
+type servedUpstream struct {
+	net.Conn
+	wire  wire
+	ended func(error)
+	once  sync.Once
+}
+
+func (u *servedUpstream) Read(b []byte) (int, error) {
+	n, err := u.Conn.Read(b)
+	if code, fatal := u.wire.fromServer(b[:n]); fatal && sqlstate.NotJudged(code) {
+		u.end(fmt.Errorf("the database ended it with SQLSTATE %s", code))
+	}
+	u.failed(err)
+	return n, err
+}
+
+func (u *servedUpstream) Write(b []byte) (int, error) {
+	u.wire.fromClient(b)
+	n, err := u.Conn.Write(b)
+	u.failed(err)
+	return n, err
+}
+
+func (u *servedUpstream) failed(err error) {
+	if err == nil || errors.Is(err, net.ErrClosed) || !u.wire.databaseEnded(err) {
+		return
+	}
+	u.end(err)
+}
+
+func (u *servedUpstream) end(err error) {
+	u.once.Do(func() { u.ended(err) })
+}
+
+// Fault is what the latest event of the database's own met while the proxy served, when that was a
+// dial the database refused or never answered, or a served connection the database ended: an error
+// that is ErrUnreachable. It is nil once a dial that started later reached the database, and when
+// none failed. Events are ordered by when each began, a dial at its start and an end as it came, so
+// a slow dial that fails after a later one reached the database leaves no fault behind, and a dial
+// that started before the database ended a connection does not clear that end (record). A child
+// that exits after such an event exited on a store that stopped answering it, which the launcher
+// reports as a store fault and not as the child's own end (launcher's wait).
+func (p *Proxy) Fault() error {
+	p.faultMu.Lock()
+	defer p.faultMu.Unlock()
+	return p.fault
+}
+
+// record makes err, nil for none, what Fault answers, when at, the event's place in events, is
+// later than the event the record holds.
+func (p *Proxy) record(at uint64, err error) {
+	p.faultMu.Lock()
+	defer p.faultMu.Unlock()
+	if at > p.faultAt {
+		p.fault, p.faultAt = err, at
+	}
 }
 
 // logf writes one event line, under a lock because connections log concurrently.

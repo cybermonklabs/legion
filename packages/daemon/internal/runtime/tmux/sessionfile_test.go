@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // writeSession writes a session file at path, its parents made, last modified at.
@@ -190,18 +193,18 @@ func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
 }
 
 // A folder of a sessions directory that cannot be read, and a matching file that cannot be checked
-// — in a folder that can be listed but not entered — are skipped, and the skipped list names each:
-// the search runs as the user Oh My Pi runs as, so what that user cannot read holds no session Oh
-// My Pi could resume. With the session in another, readable folder, it is found; with the session
-// nowhere else, the search answers no file and no error, the session found nowhere, which the
-// claim's machine meets with a fresh agent charged nothing. A recorded file gone from directly
-// under a temporary directory, as the real tmux rig's under /tmp, sends the search to the folders
-// of that directory's parent, and one of them, as /tmp/snap-private-tmp, may be another user's. An
+// — in a folder that can be listed but not entered — may hold the session: each is a store that
+// did not answer (runtime.ErrSessionStore), which the claim's machine waits out with the session
+// kept, whether another, readable folder holds the session or none does, and nothing is skipped.
+// A recorded file gone from directly under a temporary directory, as the real tmux rig's under
+// /tmp, sends the search to the folders of that directory's parent: a folder there of this
+// daemon's own user that it cannot read is the same store fault, and one another user owns, as
+// /tmp/snap-private-tmp, is passed over (TestSessionFileOfPassesOverAFolderAnotherUserDenies). An
 // entry of the sessions directory that is no folder holds no session: a file, one it may not read
 // among them, is skipped by its type and never opened, and a symlink to a file or to nothing is
 // skipped because it reads as no folder (not a directory, or not there). Neither is a failure to
 // read, so the list names none of them.
-func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
+func TestSessionFileOfWaitsOnAFolderOrFileItCannotReadAndSkipsAnEntryThatIsNoFolder(t *testing.T) {
 	recorded := filepath.Join(t.TempDir(), "sessions", "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
 	for name, shut := range map[string]func(t *testing.T, folder string) (unread string){
 		"a folder it cannot read": func(t *testing.T, folder string) string {
@@ -225,18 +228,16 @@ func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
 				pane := filepath.Join(t.TempDir(), "pane-sessions")
 				folder := filepath.Join(pane, "--pane-work--")
 				writeSession(t, filepath.Join(folder, filepath.Base(recorded)), time.Now())
-				want := ""
 				if elsewhere {
-					want = filepath.Join(pane, "--pod-work--", filepath.Base(recorded))
-					writeSession(t, want, time.Now().Add(-time.Hour))
+					writeSession(t, filepath.Join(pane, "--pod-work--", filepath.Base(recorded)), time.Now().Add(-time.Hour))
 				}
 				unread := shut(t, folder)
 				got, _, skipped, err := sessionFileOf(recorded, paneAt(pane))
-				if err != nil || got != want {
-					t.Fatalf("sessionFileOf beside %s = %q, %v; want %q and no error", unread, got, err, want)
+				if !errors.Is(err, runtime.ErrSessionStore) || got != "" || !strings.Contains(err.Error(), unread) {
+					t.Fatalf("sessionFileOf beside %s = %q, %v; want no file and runtime.ErrSessionStore naming it", unread, got, err)
 				}
-				if !slices.Equal(skipped, []string{denied(unread)}) {
-					t.Errorf("skipped %q, want %q", skipped, []string{denied(unread)})
+				if len(skipped) != 0 {
+					t.Errorf("skipped %q, want nothing skipped", skipped)
 				}
 			})
 		}
@@ -252,12 +253,12 @@ func TestSessionFileOfSkipsAFolderOrFileItCannotRead(t *testing.T) {
 			}
 		}
 		unreadable(t, private)
-		got, searched, skipped, err := sessionFileOf(recorded, nil)
-		if err != nil || got != "" || !slices.Equal(searched, []string{tmp}) {
-			t.Fatalf("sessionFileOf of %s = %q, %v, %v; want nothing found in %s and no error", recorded, got, searched, err, tmp)
+		got, _, skipped, err := sessionFileOf(recorded, nil)
+		if !errors.Is(err, runtime.ErrSessionStore) || got != "" || !strings.Contains(err.Error(), private) {
+			t.Fatalf("sessionFileOf of %s = %q, %v; want no file and runtime.ErrSessionStore naming %s", recorded, got, err, private)
 		}
-		if !slices.Equal(skipped, []string{denied(private)}) {
-			t.Errorf("skipped %q, want %q", skipped, []string{denied(private)})
+		if len(skipped) != 0 {
+			t.Errorf("skipped %q, want nothing skipped", skipped)
 		}
 	})
 
@@ -327,6 +328,100 @@ func TestSessionFileOfResolvesThePanesSessionsDirectoryOnlyWhenItSearches(t *tes
 	}
 	if _, _, _, err := sessionFileOf(filepath.Join(filepath.Dir(here), "gone_ses-gone.jsonl"), refused); err == nil || err.Error() != "no home to resolve under" {
 		t.Fatalf("sessionFileOf with an unresolvable pane directory = %v, want its error", err)
+	}
+}
+
+// A session the search finds by its name and cannot look at may be the one it is after, so it is a
+// store that did not answer (runtime.ErrSessionStore), never the session's absence. The pane
+// sessions directory that cannot be resolved, above, is no store, and stays the search's own error.
+func TestSessionFileOfAnswersASessionItCannotLookAtAsAStoreFault(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	looped := filepath.Join(sessions, "--pod-work--", filepath.Base(recorded))
+	if err := os.MkdirAll(filepath.Dir(looped), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A link to itself: its folder lists it by name, and no look at it answers, root's included.
+	if err := os.Symlink(looped, looped); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	if !errors.Is(err, runtime.ErrSessionStore) || got != "" {
+		t.Fatalf("sessionFileOf over a session it cannot look at = %q, %v; want runtime.ErrSessionStore", got, err)
+	}
+}
+
+// A search that cannot read a place its session may be in is a store that did not answer
+// (runtime.ErrSessionStore), never the session's absence: a sessions directory that is there and
+// cannot be read, a folder of this daemon's own user with its mode taken away, and a folder that
+// fails otherwise, here a link to itself, which stands for an I/O error any user can stage. The
+// recorded path itself is gone in each, so the search is what answers.
+func TestSessionFileOfAnswersAPlaceItCannotReadAsAStoreFault(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a directory whatever its mode")
+	}
+	const name = "2026-10-20T10-00-00-000Z_ses-abc.jsonl"
+	for label, fault := range map[string]func(t *testing.T, sessions, pane string){
+		"a sessions directory it cannot read": func(t *testing.T, _, pane string) {
+			writeSession(t, filepath.Join(pane, "--pane-work--", name), time.Now())
+			unreadable(t, pane)
+		},
+		"a folder of its own user it cannot read": func(t *testing.T, sessions, _ string) {
+			writeSession(t, filepath.Join(sessions, "--pod-work--", name), time.Now())
+			unreadable(t, filepath.Join(sessions, "--pod-work--"))
+		},
+		"a folder that fails otherwise": func(t *testing.T, sessions, _ string) {
+			looped := filepath.Join(sessions, "--looped--")
+			if err := os.MkdirAll(sessions, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(looped, looped); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(label, func(t *testing.T) {
+			sessions, pane := filepath.Join(t.TempDir(), "sessions"), filepath.Join(t.TempDir(), "pane-sessions")
+			fault(t, sessions, pane)
+			got, _, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
+			if !errors.Is(err, runtime.ErrSessionStore) || got != "" {
+				t.Fatalf("sessionFileOf over %s = %q, %v; want runtime.ErrSessionStore", label, got, err)
+			}
+		})
+	}
+}
+
+// A folder another user owns and denies this daemon's user is no part of this daemon's session
+// store, as a sessions directory such as /tmp holds folders of other users: the search passes it
+// over, names it in what it skipped, with why, and a session found nowhere else reads missing. The
+// folder here is /root, reached through a link the sessions directory holds, so a user other than
+// root can stage it.
+func TestSessionFileOfPassesOverAFolderAnotherUserDenies(t *testing.T) {
+	info, err := os.Stat("/root")
+	if err != nil {
+		t.Skipf("no /root to stand for another user's folder: %v", err)
+	}
+	if _, err := os.ReadDir("/root"); !errors.Is(err, os.ErrPermission) {
+		t.Skipf("this user can read /root (%v), so it stands for no folder another user denies", err)
+	}
+	if owner, ok := info.Sys().(*syscall.Stat_t); !ok || int(owner.Uid) == os.Geteuid() {
+		t.Skip("/root is this user's own, so it stands for no folder another user owns")
+	}
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(sessions, "--another-user--")
+	if err := os.Symlink("/root", link); err != nil {
+		t.Fatal(err)
+	}
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	got, searched, skipped, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	if err != nil || got != "" || len(searched) != 2 {
+		t.Fatalf("sessionFileOf beside a folder another user denies = %q, %v, %v; want nothing found in both directories, no error", got, searched, err)
+	}
+	if !slices.Equal(skipped, []string{denied(link)}) {
+		t.Errorf("skipped %q, want %q", skipped, []string{denied(link)})
 	}
 }
 

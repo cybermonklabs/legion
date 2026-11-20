@@ -1536,7 +1536,8 @@ type Machine struct {
 	// is their own lock, held only to set, clear or call them, so a suspension can reach them
 	// while the decision that started the launch holds mu for minutes (stopStart, startable).
 	// storeFaultTold is when the issue and the controller were last told the session store could
-	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore).
+	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore),
+	// and zero once an agent registered, the store having answered its process (register).
 	startMu        sync.Mutex
 	cancelStart    context.CancelFunc
 	startStopped   bool
@@ -2946,24 +2947,38 @@ const (
 // startWaitsForStore is a start the session store could not answer: the table is missing, or the
 // store did not reply. That says nothing about the claim's session, so it is neither a lost
 // session nor a launch failure — charging it would fail a claim whose agent is fine for a fault
-// outside it — and the same session is started again every minute (relaunchLater) until the store
-// answers. The issue and the controller are told at once and then hourly, since nothing else says
-// why the worker is not running. The process the launch let go is let go already, so the retry
-// lets none go (noEnd). The store's error is a far side's text: the line, the claim and the
-// notices carry it as the claim keeps one (storetext.FarSideError, logFarSideError).
+// outside it — and the same session is started again every minute until the store answers
+// (waitForStore). The process the launch let go is let go already, so the retry lets none go
+// (noEnd).
 func (m *Machine) startWaitsForStore(ctx context.Context, cause error, charged, exempt bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
-	m.logFarSideError(ctx, slog.LevelError, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
-		err, "generation", m.claim.Generation, "retry", sessionStoreRetry)
+	return errors.Join(err, m.waitForStore(ctx, "supervise: the session store could not answer this start; trying it again every minute, charging nothing",
+		cause, err, charged, exempt))
+}
+
+// waitForStore is the one way a claim waits out its session store, for a start the store could
+// not answer (startWaitsForStore) and for a process that exited on a store that stopped answering
+// it (diedOnTheStore): it logs why with logged, the error the caller has to show, tells the issue
+// and the controller of cause at once and then hourly (tellStoreFault), since nothing else says why
+// the worker is not running, starts the same session again a minute from now with the launch's
+// own charged and exempt (relaunchLater), lets no process go then (noEnd), and persists the claim.
+// The store's error is a far side's text: the line, the claim and the notices carry it as the
+// claim keeps one (storetext.FarSideError, logFarSideError).
+func (m *Machine) waitForStore(ctx context.Context, message string, cause, logged error, charged, exempt bool) error {
+	m.logFarSideError(ctx, slog.LevelError, message, logged, "generation", m.claim.Generation, "retry", sessionStoreRetry)
 	m.tellStoreFault(cause)
 	m.relaunchLater(sessionStoreRetry, func(ctx context.Context) error { return m.launchAfter(ctx, charged, exempt, noEnd) })
-	return errors.Join(err, m.persist(ctx))
+	return m.persist(ctx)
 }
 
 // tellStoreFault reports the session store fault to the issue and the controller, at the first
-// start that met it and at most once an hour after that (Deps.SessionStoreFault). The hour is
-// counted from the last report rather than from the first fault, so an outage that ends and
-// returns is reported again.
+// start that met it and at most once an hour after that while it lasts (Deps.SessionStoreFault).
+// The hour is counted from the last report rather than from the first fault, and the outage ends
+// when an agent registers (register): its process opened its session, so its store answered it. A
+// start that launches does not end it, since a fresh start asks the store nothing before its child
+// does: one outage in which each minute's process dies on the store before it registers is told
+// once an hour, and an outage that returns after an agent registered is told again at once,
+// however soon it returns.
 func (m *Machine) tellStoreFault(cause error) {
 	if m.deps.SessionStoreFault == nil {
 		return
@@ -3393,6 +3408,9 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx, false, stopSent)
 	}
+	if observation.StoreFault {
+		return m.diedOnTheStore(ctx, observation, ended)
+	}
 	relaunch := func(ctx context.Context) error { return m.relaunchAfterFailure(ctx, CauseDied, ended) }
 	if m.endUncharged("died") {
 		relaunch = func(ctx context.Context) error { return m.launch(ctx, ended) }
@@ -3449,6 +3467,22 @@ func (m *Machine) endUncharged(ended string) bool {
 		return true
 	}
 	return false
+}
+
+// diedOnTheStore is a death the runtime says came of a session store that stopped answering the
+// process after its start's checks had passed (runtime.Observation.StoreFault): the process exited
+// on a store that did not answer, which says nothing about the claim or its session, so it is no
+// launch failure and no death with work outstanding, as a start the store could not answer is none
+// (startWaitsForStore). The process is let go here, for ending, with nothing charged, and the same
+// session is started again every minute until the store answers, the issue and the controller told
+// at once and then hourly. The take-back, the session's clean stop and the record of what the
+// process ended are died's, made before this is reached.
+func (m *Machine) diedOnTheStore(ctx context.Context, observation runtime.Observation, ending string) error {
+	cause := fmt.Errorf("%w: %s", runtime.ErrSessionStore, deathCause(observation))
+	m.letGo(ctx, ending)
+	m.claim.LastStartFailure = cause.Error()
+	return m.waitForStore(ctx, "supervise: the process exited on a session store that stopped answering it; trying it again every minute, charging nothing",
+		cause, cause, false, false)
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the

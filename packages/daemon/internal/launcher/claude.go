@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"golang.org/x/sys/unix"
 )
 
@@ -43,25 +44,39 @@ const saveTimeout = 10 * time.Second
 // record by a rename, so anything else is a file the keeper rewrites whole.
 const tailWindow = 4096
 
-// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included;
-// a test shortens it. A start's whole budget is the proof dial, at most proofTimeout (StopGrace/2),
-// then this lookup: 35 s at the daemon's defaults, inside its wait on the start, its boot timeout
-// plus its stop grace (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected
-// as that wait begins, which is every relaunch into a running pod. Only a launcher that connects late
-// in a new pod's boot window has less: at least the grace remains, and the proof's half of it is
-// still inside.
+// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included,
+// where the launcher's Config.SessionLookup names no bound; a test of this package shortens it. A
+// start's whole budget is the proof dial, at most proofTimeout (StopGrace/2), then this lookup: 35 s
+// at the daemon's defaults, inside its wait on the start, its boot timeout plus its stop grace
+// (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected as that wait
+// begins, which is every relaunch into a running pod. Only a launcher that connects late in a new
+// pod's boot window has less: at least the grace remains, and the proof's half of it is still
+// inside.
 var resumeLookupTimeout = 30 * time.Second
 
 // resumeLookupBackoff is the wait before each retry of a session table lookup that could not reach
-// the database, doubling up to its last value until resumeLookupTimeout; a test shortens it.
+// the database, doubling up to its last value until the lookup's bound; a test shortens it.
 var resumeLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
 // sessionDial is how the launcher reaches a generation's session database, for a resume's lookups
 // (sessionWritten, and sessionByID for a session named by its id alone) and for the keeper alike:
 // through clientURL, the generation's own database through the socket its proxy has already bound,
 // or with none through the URL file the child's environment names (DSNFileVariable), read afresh
-// at each connection, since that file is a projection something else may replace.
-type sessionDial struct{ clientURL, dsnFile string }
+// at each connection, since that file is a projection something else may replace. bound is how
+// long a lookup on it asks, retries included: the launcher's Config.SessionLookup, and
+// resumeLookupTimeout when that is zero (lookup).
+type sessionDial struct {
+	clientURL, dsnFile string
+	bound              time.Duration
+}
+
+// lookup is how long a lookup through d asks the database, retries included.
+func (d sessionDial) lookup() time.Duration {
+	if d.bound > 0 {
+		return d.bound
+	}
+	return resumeLookupTimeout
+}
 
 // newSessionDial is the session database a generation's environment names, refused when it has no
 // database of its own and names no URL file.
@@ -89,32 +104,53 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.open(ctx, dsn)
+}
+
+// open opens one connection to the database at dsn, d's url: through the generation proxy's own
+// socket where clientURL names it (ompsessions.ConnectProxy), whose ends the proxy itself records,
+// and otherwise to whatever address the URL file names, a unix socket included.
+func (d sessionDial) open(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	if d.dsnFile == "" {
+		return ompsessions.ConnectProxy(ctx, dsn)
+	}
 	return ompsessions.ConnectURL(ctx, dsn)
 }
 
 // dial opens a connection on which ready succeeds, the caller's to close. One that cannot be
 // opened, or on which ready fails, is asked again after each of resumeLookupBackoff's waits until
-// resumeLookupTimeout, as a database that is briefly unreachable must not fail the launch; a URL
-// file that is missing or empty is refused at once. parent's end (the container's stop) ends the
-// wait as the timeout does.
+// the lookup's bound (lookup), as a database that is briefly unreachable must not fail the launch;
+// a URL file that is missing or empty is refused at once. parent's end (the container's stop) ends
+// the wait as the timeout does. The refusal wraps the last answer the database gave (%w), so
+// whoever reads it can tell a store that refused or never answered from one that answered with a
+// refusal (ompsessions.StoreFault): an attempt the bound or the stop cut short says nothing the one
+// before it did not, and stands only where no attempt ended on its own. A wait the stop ended
+// wraps the stop's own error too, which is no fault of the store's.
 func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := context.WithTimeout(parent, d.lookup())
 	defer cancel()
+	var last error
 	for attempt := 0; ; attempt++ {
 		dsn, err := d.url()
 		if err != nil {
 			return nil, err
 		}
-		conn, err := ompsessions.ConnectURL(ctx, dsn)
+		conn, err := d.open(ctx, dsn)
 		if err == nil {
 			if err = ready(ctx, conn); err == nil {
 				return conn, nil
 			}
 			closeSessions(conn)
 		}
+		if ctx.Err() == nil || last == nil {
+			last = err
+		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("%v (after %d attempts in %s)", err, attempt+1, resumeLookupTimeout)
+			if errors.Is(parent.Err(), context.Canceled) {
+				return nil, fmt.Errorf("%w (after %d attempts; the start was stopped: %w)", last, attempt+1, parent.Err())
+			}
+			return nil, fmt.Errorf("%w (after %d attempts in %s)", last, attempt+1, d.lookup())
 		case <-time.After(resumeLookupBackoff[min(attempt, len(resumeLookupBackoff)-1)]):
 		}
 	}
@@ -210,7 +246,7 @@ type keptState struct {
 // not in a database. It checks the session's paths and connects nothing: a resume's transcript is
 // resume, which must be `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl` for the session's own id
 // (claudelaunch.ResumeSession), and a fresh one is found once Claude Code writes it (find).
-func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*claudeKeeper, error) {
+func newClaudeKeeper(env []string, resume, clientURL string, lookup time.Duration, log io.Writer) (*claudeKeeper, error) {
 	session := envValue(env, claudelaunch.SessionVariable)
 	if session == "" || envValue(env, ompsessions.StorageVariable) != ompsessions.SQLStorage {
 		return nil, nil
@@ -232,6 +268,7 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
+	sessions.bound = lookup
 	k := &claudeKeeper{log: log, sessions: sessions, configDir: configDir, session: session,
 		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace, quit: make(chan struct{}), done: make(chan struct{}),
 		transcript: &keptFile{lines: true, marker: resume == "", keptState: keptState{saved: ompsessions.Absent}},
@@ -256,13 +293,17 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 // transcript the keeper names from the start, then restores each file from its row (restore), so
 // the child starts on the session the table holds, and the transcript's marker is written: the
 // table already holds what the claim records. parent's end (the container's stop) ends the wait as
-// the timeout does. A nil keeper, a generation that keeps nothing, closes conn.
+// the timeout does. A nil keeper, a generation that keeps nothing, closes conn. A table that
+// refused or never answered its dial, or the read of its rows (ompsessions.StoreFault), is
+// shimwire.SessionStoreUnreachable, a store that did not answer, as the resume's own lookup is
+// (resumable); a URL file that is missing, a login the server refused and a file of the session it
+// cannot write on the pod's disk are not.
 func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if k == nil {
 		closeSessions(conn)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := context.WithTimeout(parent, k.sessions.lookup())
 	defer cancel()
 	if conn != nil && ompsessions.CreateTables(ctx, conn) != nil {
 		closeSessions(conn)
@@ -271,7 +312,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	if conn == nil {
 		var err error
 		if conn, err = k.sessions.dial(ctx, ompsessions.CreateTables); err != nil {
-			return fmt.Errorf("keep Claude Code session %s: %v", k.session, err)
+			return fmt.Errorf("keep Claude Code session %s: %w", k.session, storeRefusal(err))
 		}
 	}
 	k.conn = conn
@@ -280,7 +321,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 	}
 	for _, f := range [...]*keptFile{k.transcript, k.record} {
 		if err := k.restore(ctx, f); err != nil {
-			return fmt.Errorf("keep Claude Code session %s: restore %s: %v", k.session, f.path, err)
+			return fmt.Errorf("keep Claude Code session %s: restore %s: %w", k.session, f.path, err)
 		}
 	}
 	return writeMarker(k.transcript.path)
@@ -310,11 +351,15 @@ func (k *claudeKeeper) connect(ctx context.Context) error {
 // The file there is something the role wrote and the launcher is its container's PID 1, so it is
 // read only as a regular file and only up to one byte past the row (readHead): a link, a fifo or
 // anything else that is no regular file is refused at once in words naming it, never followed or
-// waited on, and a file of any size is read no further than one byte past the row.
+// waited on, and a file of any size is read no further than one byte past the row. A read of the
+// row the table refused or never answered is shimwire.SessionStoreUnreachable (storeRefusal).
 func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	row, ok, err := ompsessions.Read(ctx, k.conn, f.path)
-	if err != nil || !ok {
-		return err
+	if err != nil {
+		return storeRefusal(err)
+	}
+	if !ok {
+		return nil
 	}
 	f.saved, f.tail = int64(len(row)), lastWindow(row)
 	// One byte past the row is all the comparisons below need: a file no longer than the row is
@@ -337,6 +382,17 @@ func (k *claudeKeeper) restore(ctx context.Context, f *keptFile) error {
 	f.extends = true
 	f.dev, f.ino = fileID(info)
 	return nil
+}
+
+// storeRefusal is err as a start's refusal over its session store: wrapped as
+// shimwire.SessionStoreUnreachable, which the daemon waits out a minute at a time with the
+// session kept, when the store refused or never answered or holds no session table
+// (ompsessions.StoreFault), and err as it is otherwise, a refusal the daemon charges.
+func storeRefusal(err error) error {
+	if ompsessions.StoreFault(err) {
+		return fmt.Errorf("%w: %v", shimwire.SessionStoreUnreachable, err)
+	}
+	return err
 }
 
 // run saves the session's files every saveInterval until finish. A nil keeper saves nothing.

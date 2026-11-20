@@ -531,6 +531,9 @@ type rig struct {
 	commandsMu sync.Mutex
 	commands   map[claim.Token][]shimwire.Frame
 	wanted     map[claim.Token]bool
+	// real, under commandsMu, is the roles whose launcher is a real `legion launcher` the test runs
+	// (realLauncher): each is started for every pod of its issue the controller makes.
+	real map[claim.Token]func(pod *corev1.Pod)
 	// refuseBundle, when set, is the error every fake launcher of this rig answers each
 	// launcher_bundle slice with, as a launcher refuses one that did not arrive as it was sent.
 	// failRestore, when set, is the error its report of the restore carries instead, which is a
@@ -969,7 +972,7 @@ func (g *rig) createPod(s *sandbox) {
 	g.commandsMu.Unlock()
 	_ = g.kube.Tracker().Add(pod)
 	for _, token := range reconnect {
-		g.connect(token)
+		g.connectFor(token)
 	}
 }
 
@@ -1151,6 +1154,19 @@ func (g *rig) launcher(token claim.Token) {
 	_, exists := g.r.launchers.sessions[token]
 	g.r.launchers.mu.Unlock()
 	if exists || g.pod(SandboxName(token)) == nil {
+		return
+	}
+	g.connectFor(token)
+}
+
+// connectFor connects token's launcher in its pod: a real one where the test runs one for the role
+// (g.real, realLauncher), the rig's fake otherwise.
+func (g *rig) connectFor(token claim.Token) {
+	g.commandsMu.Lock()
+	real := g.real[token]
+	g.commandsMu.Unlock()
+	if real != nil {
+		real(g.pod(SandboxName(token)))
 		return
 	}
 	g.connect(token)
