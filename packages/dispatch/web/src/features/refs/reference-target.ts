@@ -75,23 +75,6 @@ export { refetchFailedOnFocus };
  * so a view that observes such a read takes these options too: under the app's defaults
  * (`main.tsx`: a 30 s `staleTime`, and a window focus fetches a stale read) a focus more than
  * 30 s after the load would read it again for that view alone.
- *
- * Of the feed's rules, these refresh the reads the issue page's tree is built from
- * (`useIssueTree.ts`): `["comments", key]` on a comment event and on a document's upload or new
- * version; `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
- * repaired or found invalid; `["decisions", key]` on an ask event, a Keep and a document's new
- * version; `["issue-messages", key]` on a message event; `["issue", key, "coverage"]` on a
- * document's upload or new version; `["issue", key, "results"]` on those too, on a result
- * recorded or retracted and on a pull request moved to another issue; `["artifact", id]`, a
- * prefix of the document's blocks read (`["artifact", id, "blocks"]`), on its new version, its
- * rename, removal or review, and an ask or comment in it; and a names read
- * (`["reference-targets", …]`) on an event that changes the words or the name under an address
- * its key holds, on the issue or project document that address is of: a comment's edit, an
- * ask's edit, a document's creation, new version, rename or removal, and an issue's write that
- * changes its title (`referenceNameTargets`). A names read's key is the set of addresses it
- * names, so a tree that comes to hold another set reads again under a key of its own, and only a
- * change under an address the tree already names needs a rule. No rule names `["whoami"]`, which
- * the tree reads with these options too: the reader's login does not change while a page is open.
  */
 export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,

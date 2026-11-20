@@ -188,8 +188,14 @@ export function BlockedByControl({
           </span>
           {/* What Dispatch refused, where the reader is typing: the page's sentence, with the key
               it is about as the reader's own text; a refusal the page has no sentence for is
-              Dispatch's own words. */}
-          {write.error === undefined ? null : typeof write.error === "string" ? (
+              Dispatch's own words. A save the reader stopped is no refusal: it may have been
+              saved, and the page says so in its own words, as it says a save that ended in an
+              error of its own, which holds no word of Dispatch's. */}
+          {write.stopped !== undefined || write.failed !== undefined ? (
+            <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...pageChrome}>
+              {write.stopped ?? write.failed}
+            </span>
+          ) : write.error === undefined ? null : typeof write.error === "string" ? (
             <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...authorText}>
               {write.error}
             </span>

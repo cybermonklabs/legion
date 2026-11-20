@@ -52,7 +52,7 @@ import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
-import { stoppedWriteNote } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
@@ -314,10 +314,10 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
   }
 });
 
-// A blocked-by save the reader stopped may have been saved: the editor says so, and stays open
-// with the list in it, rather than say the save failed. Its Save is a press of its own, so the
-// sentence says Save sends what the box holds then as a new write, and Save does: under a key of
-// its own, not the stopped save's.
+// A blocked-by save the reader stopped may have been saved: the editor says so, in the page's
+// words and not as Dispatch's, and stays open with the list in it, rather than say the save
+// failed. Its Save is a press of its own, so the sentence says Save sends what the box holds then
+// as a new write, and Save does: under a key of its own, not the stopped save's.
 test("a blocked-by save the reader stopped says it may have been saved, and Save sends it anew", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -336,10 +336,17 @@ test("a blocked-by save the reader stopped says it may have been saved, and Save
     const held = userOnFakeClock();
     await held.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await stopTheLateWrite(queryClient);
-    expect(screen.getByRole("alert").textContent).toBe(
+    const stoppedLine = screen.getByRole("alert");
+    expect(stoppedLine.textContent).toBe(
       stoppedWriteNote("what CORE-1 waits on", "saved", {
         anew: "Saving again sends what the box holds now as a new write.",
       })
+    );
+    expect(stoppedLine, "the stopped sentence is not marked as the page's words").toHaveAttribute(
+      "data-page-chrome"
+    );
+    expect(stoppedLine, "the stopped sentence is marked as Dispatch's words").not.toHaveAttribute(
+      "data-author-text"
     );
     expect(
       (screen.getByLabelText("Issues CORE-1 waits on") as HTMLInputElement).value,
@@ -364,6 +371,49 @@ test("a blocked-by save the reader stopped says it may have been saved, and Save
     );
   } finally {
     realClock();
+    unmount();
+    restore();
+  }
+});
+
+// A blocked-by save that ends without Dispatch's answer - an error of the page's own, which ends
+// the write at once (`writeUnderKey`) - says the page's own line, marked as the page's words and
+// not as Dispatch's. A refusal the page has no sentence for is what Dispatch said, marked so.
+test("a blocked-by save that fails without Dispatch's answer says the page's line in the page's words", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValueOnce(new Error("the page could not build the request"));
+  const { unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    const failedLine = await screen.findByRole("alert");
+    expect(failedLine.textContent).toBe("Could not save what CORE-1 waits on.");
+    expect(failedLine, "the page's line is not marked as the page's words").toHaveAttribute(
+      "data-page-chrome"
+    );
+    expect(failedLine, "the page's line is marked as Dispatch's words").not.toHaveAttribute(
+      "data-author-text"
+    );
+
+    const said = "blocked_by must list issue keys";
+    patchIssue.mockRejectedValueOnce(new ApiError(400, { code: "INVALID_INPUT", error: said }));
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toBe(said));
+    expect(
+      screen.getByRole("alert"),
+      "Dispatch's own words are not marked as Dispatch's"
+    ).toHaveAttribute("data-author-text");
+    expect(
+      screen.getByRole("alert"),
+      "Dispatch's own words are marked as the page's"
+    ).not.toHaveAttribute("data-page-chrome");
+  } finally {
     unmount();
     restore();
   }
@@ -3153,6 +3203,55 @@ test("a repository refused because the issue closed is said without Retry", asyn
   }
 });
 
+// A repository pick the reader stopped may have been saved. On an open issue its line says so
+// with the Retry that asks again under the same key. A closed issue's row draws no Retry, since
+// Dispatch refuses every repository of a closed issue, so there the line says the issue is closed
+// rather than offer that Retry.
+test("a stopped repository pick offers its Retry while the issue is open, and says it is closed once it is", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", {
+        name: repoTextControlName("CORE-1", { resolvedRepo: null, words: CONTROL_NAME_WORDS }),
+      })
+    );
+    await user.click(await screen.findByRole("combobox", { name: repoControlName("CORE-1") }));
+    await user.paste("acme/web");
+    jest.useFakeTimers();
+    await userOnFakeClock().keyboard("{Enter}");
+    await stopTheLateWrite(queryClient);
+    const row = detailsRow(PROPERTY_LABELS.repository);
+    expect(within(row).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the repository of CORE-1", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+    expect(within(row).queryByRole("button", { name: CONTROL_LABELS.retry })).not.toBeNull();
+
+    drawIssue(getIssue, queryClient, closedIssue);
+    expect(
+      within(row).getByRole("alert").textContent,
+      "the stopped pick's line on a closed issue offers a Retry the row does not draw"
+    ).toBe(
+      stoppedWriteNote("the repository of CORE-1", "saved", {
+        anew: "The issue is closed, so the repository cannot be saved again.",
+      })
+    );
+    expect(within(row).queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
+  } finally {
+    realClock();
+    unmount();
+    restore();
+  }
+});
+
 /** A second caller of the issue's writes on the page, as the header slot is: slots share no
  *  state, so each makes its own set (`slots/details.tsx`). */
 function OtherWrites({ issue: details }: { issue: IssueDetails }): ReactNode {
@@ -3871,6 +3970,54 @@ test("a parent Dispatch refuses is said in the Parent row with Dispatch's reason
     ).toBe(reason);
     expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
   } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A parent save the reader stopped may have been saved. On an open issue its line says saving it
+// again sends it as a new write, as the header says it. A closed issue's row draws no control
+// that saves a parent, since Dispatch refuses every parent of a closed issue, so there the line
+// says the issue is closed rather than offer that save.
+test("a stopped parent save says it can be saved anew while the issue is open, and that it is closed once it is", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  patchIssue.mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await screen.findByText(PROPERTY_LABELS.parent, { selector: "[data-page-chrome]" });
+    await user.click(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("button", {
+        name: CONTROL_LABELS.set_parent,
+      })
+    );
+    await user.click(await screen.findByLabelText(PROPERTY_LABELS.parent));
+    await user.paste("CORE-9");
+    jest.useFakeTimers();
+    await userOnFakeClock().click(screen.getByRole("button", { name: CONTROL_LABELS.save_parent }));
+    await stopTheLateWrite(queryClient);
+    const line = () =>
+      detailsRow(PROPERTY_LABELS.parent).querySelector(`#${PARENT_ERROR_ID}`)?.textContent;
+    expect(line()).toBe(
+      stoppedWriteNote("the new parent", "saved", {
+        anew: "Saving it again sends it as a new write.",
+      })
+    );
+
+    drawIssue(getIssue, queryClient, closedIssue);
+    expect(
+      line(),
+      "the stopped save's line on a closed issue offers a save the row does not draw"
+    ).toBe(
+      stoppedWriteNote("the new parent", "saved", {
+        anew: "The issue is closed, so the parent cannot be saved again.",
+      })
+    );
+  } finally {
+    realClock();
     unmount();
     restore();
   }

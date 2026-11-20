@@ -156,10 +156,9 @@ export function OutlineWriterProvider({
   // The reader's own comment the line is editing, if it is: its id and its words as they stand.
   const [editing, setEditing] = useState<{ readonly body: string; readonly id: string }>();
   const agentText = useAgentText();
-  // The reads the outline is drawn from, by the same definitions (`useIssueTree.ts`) and kept
-  // fresh as it keeps them (`EVENT_FRESH`), so a reply's target costs no request of its own, and
-  // a window focus reads one again only while its last read failed, never because it is past
-  // the app's 30 s `staleTime`.
+  // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
+  // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
+  // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });
   const messages = useQuery({ ...issueMessagesQuery(issueKey), ...EVENT_FRESH });

@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import { AGENT_LIST_REFILLING, isAgentListRefilling } from "../../api/client";
+import { AGENT_LIST_REFILLING, isAgentListRefilling, type WriteMethod } from "../../api/client";
 import { pageFailedText, pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -121,6 +121,9 @@ export interface RowWrite<Variables> {
   readonly error: unknown;
   readonly isError: boolean;
   readonly isPending: boolean;
+  /** The method of the last press's request where the reader stopped that press
+   *  (`KeyedWriteResult.method`), `undefined` otherwise. */
+  readonly method: WriteMethod | undefined;
   readonly submittedAt: number;
   readonly variables: Variables | undefined;
 }
@@ -130,6 +133,9 @@ export interface SaidFailure<Variables> {
   /** One more for each failure said while the line stayed (`DetailsErrorLineProps.failure`). */
   readonly count: number;
   readonly error: unknown;
+  /** The method of the press that failed where the reader stopped it, kept with the failure
+   *  while the press its Retry sent again is out, when the write holds none (`stoppedNote`). */
+  readonly method: WriteMethod | undefined;
   readonly submittedAt: number;
   readonly variables: Variables | undefined;
 }
@@ -152,6 +158,7 @@ export function useSaidFailure<Variables>(
       next = {
         count: (said?.count ?? 0) + 1,
         error: write.error,
+        method: write.method,
         submittedAt: write.submittedAt,
         variables: write.variables,
       };

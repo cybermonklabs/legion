@@ -116,6 +116,9 @@ export type RepoControlFailure =
       /** Makes the refused pick again; undefined where a newer write of the repository is live
        *  (`IssueFieldWrite.retry`). */
       readonly retry: (() => void) | undefined;
+      /** Whether the reader stopped the pick, which `message` then says may have been saved
+       *  (`IssueFieldWrite.stopped`), rather than Dispatch refusing it. */
+      readonly stopped: boolean;
     };
 
 /**
@@ -642,6 +645,7 @@ export function RepoControl({
             kind: "write",
             message: write.error ?? `Could not update the repository of ${issueKey}.`,
             retry: write.retry,
+            stopped: write.stopped !== undefined,
           })
         : null}
     </div>

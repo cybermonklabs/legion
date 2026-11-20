@@ -95,6 +95,15 @@ const FOLD_AFTER = 10;
 /** The id of the Parent row's line that says why Dispatch refused a parent. */
 export const PARENT_ERROR_ID = "issue-parent-error";
 
+/** What the line of a write the reader stopped says on a closed issue, whose row of Details draws
+ *  no Retry and no control that would save `field` again, since Dispatch refuses every change to
+ *  a closed issue (`ISSUE_CLOSED`). `what` is what Dispatch has not confirmed. */
+function closedStoppedNote(what: string, field: string): string {
+  return stoppedWriteNote(what, "saved", {
+    anew: `The issue is closed, so the ${field} cannot be saved again.`,
+  });
+}
+
 /** The rows of each section that a control elsewhere on the page opens Details at
  *  (`DetailsRow`), each where it is drawn: the section opens for a request of one of them.
  *  People holds the issue's collaborators, whose place there is `DetailsPeople`. */
@@ -361,7 +370,9 @@ export function IssueMarginPanel({
   // out, else the text or None the row draws in its place; and where the row holds nothing that
   // takes it, on a closed issue, to Development's heading. On a closed issue a write's line has no
   // Retry: Dispatch refuses every repository of a closed issue (`ISSUE_CLOSED`), so the pick sent
-  // again would be refused again.
+  // again would be refused again, and a pick the reader stopped says the issue is closed in place
+  // of the Retry its line would offer; the control says which pick the reader stopped
+  // (`RepoControlFailure`'s `stopped`).
   const repoValue = useRef<HTMLDivElement>(null);
   const repoRetryLeft = useFocusHandOff(() =>
     firstUsable(
@@ -370,10 +381,13 @@ export function IssueMarginPanel({
       developmentHeading.current
     )
   );
+  const repoWhat = `the repository of ${issue.key}`;
   const sayRepoFailure = (failure: RepoControlFailure): ReactNode =>
     failure.kind === "write" ? (
       <DetailsErrorLine
-        message={failure.message}
+        message={
+          isClosed && failure.stopped ? closedStoppedNote(repoWhat, "repository") : failure.message
+        }
         onRetry={isClosed ? undefined : failure.retry}
         retryRef={repoRetryLeft}
       />
@@ -581,9 +595,13 @@ export function IssueMarginPanel({
               writes={writes}
             />
           ) : null}
+          {/* A parent save the reader stopped offers to be saved again, for which a closed
+              issue's row draws no control, so there its line says the issue is closed instead. */}
           {writes.parentSaveFailed ? (
             <p className={`w-full text-sm ${pageFailedText}`} id={PARENT_ERROR_ID} role="alert">
-              {writes.parentError}
+              {isClosed && writes.updateIssue.error instanceof SendStoppedError
+                ? closedStoppedNote("the new parent", "parent")
+                : writes.parentError}
             </p>
           ) : null}
         </Row>
@@ -700,8 +718,9 @@ export function IssueMarginPanel({
               send nothing while a save is out (`useSubmitGuard`), and is never disabled. A
               save the reader stopped is no refusal: it may have been saved, and the line says so
               in the header's words for a title or a route save, whose Retry is this one, a press
-              of its own. Once the route lands the line goes, and the row's control takes the
-              focus Retry held (`useFocusHandOff`). */}
+              of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
+              sentence, that the route cannot be saved again. Once the route lands the line goes,
+              and the row's control takes the focus Retry held (`useFocusHandOff`). */}
           {fieldFailure !== null &&
           fieldFailure.variables?.input.route !== undefined &&
           writes.drafts.route !== (issue.route ?? "") ? (
@@ -710,12 +729,11 @@ export function IssueMarginPanel({
               failure={fieldFailure.count}
               message={
                 fieldFailure.error instanceof SendStoppedError
-                  ? stoppedWriteNote("this change to the issue", "saved", {
-                      // A closed issue's line draws no Retry, and Dispatch refuses its route.
-                      anew: isClosed
-                        ? "The issue is closed, so the route cannot be saved again."
-                        : "Retry sends what the field holds now as a new write.",
-                    })
+                  ? isClosed
+                    ? closedStoppedNote("this change to the issue", "route")
+                    : stoppedWriteNote("this change to the issue", "saved", {
+                        anew: "Retry sends what the field holds now as a new write.",
+                      })
                   : apiErrorMessage(fieldFailure.error, "Could not update this issue.")
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
