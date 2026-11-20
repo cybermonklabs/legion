@@ -3,117 +3,22 @@
 package storetest
 
 import (
-	"context"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
 	"strconv"
 	"testing"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
-
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// A Linux build does not promise a schedstat file: gVisor exposes neither /proc/self/schedstat
-// nor /proc/thread-self/schedstat. Nor does it promise that a thread can be held out of NUMA
-// balancing: a container's seccomp profile may refuse set_mempolicy. Where the probe cannot read
-// the clocks, or cannot hold the thread on a machine NUMA balancing runs on, the rig must follow
-// its race build and judge window shape alone, rather than fail every Measure before it starts.
-//
-// The readable row proves a build whose probe reads the clocks and holds the thread still judges
-// a planted gap. It fakes only the probe and judges a window built here, so it holds on a kernel
-// whose real reader reads nothing too: Measure records each statement through the real
-// readXidThreadClock, and a Measure run where that reader fails would judge the run's own unread
-// gaps, not the probe.
-//
-// The unreadable and unholdable rows drive one real transaction through Measure and must not
-// fail: the old compile-time `xidThreadClocks = true` makes the unreadable row call Fatal before
-// it begins, so it is the control for this runtime probe.
-func TestXidGapJudgmentNeedsReadableThreadClocks(t *testing.T) {
-	if raceDetector {
-		t.Skip("the race build judges window shape alone")
-	}
-	held := func() (func(), bool) { return func() {}, true }
-	for _, test := range []struct {
-		name    string
-		read    func() xidThreadClock
-		hold    func() (func(), bool)
-		judge   bool
-		measure bool
-	}{
-		{
-			name:  "readable",
-			read:  func() xidThreadClock { return xidThreadClock{thread: xidThread()} },
-			hold:  held,
-			judge: true,
-		},
-		{
-			name:    "unreadable",
-			read:    func() xidThreadClock { return xidThreadClock{} },
-			hold:    held,
-			measure: true,
-		},
-		{
-			name:    "unholdable",
-			read:    func() xidThreadClock { return xidThreadClock{thread: xidThread()} },
-			hold:    func() (func(), bool) { return func() {}, false },
-			measure: true,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			previous := xidThreadClockAvailability
-			xidThreadClockAvailability = &xidThreadClockProbe{read: test.read, hold: test.hold}
-			t.Cleanup(func() { xidThreadClockAvailability = previous })
-
-			if got := XidJudgesGaps(); got != test.judge {
-				t.Fatalf("XidJudgesGaps() = %t, want %t when the thread-clock probe is %s", got, test.judge, test.name)
-			}
-
-			if test.measure {
-				database := Open(t)
-				tracer := NewXidTracer()
-				traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
-				report := tracer.Measure(t, traced.Pool, func() {
-					ctx := MarkXid(context.Background())
-					tx, err := traced.Pool.Begin(ctx)
-					if err != nil {
-						t.Fatalf("begin the transaction: %v", err)
-					}
-					defer tx.Rollback(ctx)
-					if _, err := tx.Exec(ctx, "select pg_current_xact_id()"); err != nil {
-						t.Fatalf("take a transaction id: %v", err)
-					}
-					if err := tx.Commit(ctx); err != nil {
-						t.Fatalf("commit the transaction: %v", err)
-					}
-				})
-				AssertXidWindows(t, report, XidWindowOf(2, "the forced xid and its COMMIT"))
-			}
-
-			window := XidWindow{
-				Statements:    []XidStatement{{SQL: "select pg_current_xact_id()"}},
-				MaxGap:        2 * XidMaxGap,
-				GapTime:       2 * XidMaxGap,
-				StatementTime: time.Nanosecond,
-			}
-			if got := window.Violations(); !test.judge && len(got) != 0 {
-				t.Fatalf("a thread-clock probe that is %s made the rig report gap violations %v, want shape alone", test.name, got)
-			}
-			if test.judge && len(window.Violations()) == 0 {
-				t.Fatal("a readable thread clock judged no planted gap")
-			}
-		})
-	}
-}
 
 // The rig reads a thread's clocks at both ends of every gap, and while the collector is held off
 // an allocation there would be a first touch of a page the process never used: on a loaded
 // machine, milliseconds of the thread's CPU in the kernel that the gap reads as the code's
-// (runWithoutCollector). So a read allocates nothing. The reader before this rule, which read the
-// file through os.ReadFile and split it with bytes.Fields, allocates on every read and fails here.
+// (runWithoutCollector). So a read allocates nothing, on a thread the rig holds (its clock open
+// once, xidWatchThreadClock) or not. The reader before this rule, which read the file through
+// os.ReadFile and split it with bytes.Fields, allocates on every read and fails here.
 func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -121,7 +26,18 @@ func TestReadingAThreadsClocksAllocatesNothing(t *testing.T) {
 		t.Skip("this kernel shows no thread's scheduler clocks, so the rig reads none")
 	}
 	if allocs := testing.AllocsPerRun(100, func() { readXidThreadClock() }); allocs != 0 {
-		t.Fatalf("a read of the thread's clocks allocates %v times, want none", allocs)
+		t.Fatalf("a read of a thread's clocks the rig does not hold allocates %v times, want none", allocs)
+	}
+	stop, ok := xidWatchThreadClock()
+	if !ok {
+		t.Fatal("open this thread's clock to hold it")
+	}
+	defer stop()
+	if readXidThreadClock().thread == 0 {
+		t.Fatal("a held thread's clock read nothing off its own descriptor")
+	}
+	if allocs := testing.AllocsPerRun(100, func() { readXidThreadClock() }); allocs != 0 {
+		t.Fatalf("a read of a held thread's clocks allocates %v times, want none", allocs)
 	}
 }
 

@@ -3,6 +3,8 @@
 package docs
 
 import (
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -84,14 +86,17 @@ type crowdedCPU struct {
 }
 
 // crowdACPU starts the crowding: a CPU this thread may run on, and xidCrowdingProcesses shells,
-// each pinned to that CPU and spinning in a loop of its own builtin. They are processes of their
+// each pinned to that CPU and spinning in a loop of its own builtins. They are processes of their
 // own, as a loaded machine's other work is, and not goroutines of this one: a goroutine that spins
 // is preempted by the runtime every 10 ms, and each preemption of a goroutine locked to its thread
 // is a handoff between threads of this process, which crowding goroutines turned into a storm of
 // handoffs the measured thread's own had to wait in (traced at a load of about 300 on a 288-CPU
 // machine, 2026-11-20: a measured thread parked 7 ms for a P that one of them, itself waiting for
-// the crowded CPU, was to hand back). All of it is done before the measured transaction begins,
-// and stop undoes it after, so none of it is inside a window.
+// the crowded CPU, was to hand back). Each shell spins only while this test process lives: its
+// loop tests the test's pid with kill -0, a builtin, so a test process that dies, killed or
+// panicking past its cleanups, leaves no busy loop pinned to a CPU of a shared machine. All of it
+// is done before the measured transaction begins, and stop undoes it after, so none of it is
+// inside a window.
 func crowdACPU(t *testing.T) *crowdedCPU {
 	t.Helper()
 	var own unix.CPUSet
@@ -110,7 +115,7 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 	}
 	t.Cleanup(crowded.stop)
 	for range xidCrowdingProcesses {
-		spinner := exec.Command("sh", "-c", "while :; do :; done")
+		spinner := exec.Command("sh", "-c", fmt.Sprintf("while kill -0 %d 2>/dev/null; do :; done", os.Getpid()))
 		if err := spinner.Start(); err != nil {
 			t.Fatalf("start a crowding process: %v", err)
 		}
@@ -122,11 +127,8 @@ func crowdACPU(t *testing.T) *crowdedCPU {
 	return crowded
 }
 
-// run runs work of this thread's CPU time pinned to the crowded CPU, in xidCrowdedTurns pieces,
-// yielding its turn after each as a thread the scheduler preempts gives it up, so it waits
-// runnable behind the crowding processes however the scheduler placed it; and gives the thread
-// back its own CPUs. The rig locked the calling goroutine to this thread at its transaction's BEGIN.
-func (crowded *crowdedCPU) run(t *testing.T, work time.Duration) {
+// pin pins this thread to the crowded CPU, and answers what gives it back its own CPUs.
+func (crowded *crowdedCPU) pin(t *testing.T) (unpin func()) {
 	t.Helper()
 	var own unix.CPUSet
 	if err := unix.SchedGetaffinity(0, &own); err != nil {
@@ -135,11 +137,20 @@ func (crowded *crowdedCPU) run(t *testing.T, work time.Duration) {
 	if err := unix.SchedSetaffinity(0, &crowded.cpu); err != nil {
 		t.Fatalf("pin this thread to the crowded CPU: %v", err)
 	}
-	defer func() {
+	return func() {
 		if err := unix.SchedSetaffinity(0, &own); err != nil {
 			t.Errorf("give this thread back its CPUs: %v", err)
 		}
-	}()
+	}
+}
+
+// run runs work of this thread's CPU time pinned to the crowded CPU, in xidCrowdedTurns pieces,
+// yielding its turn after each as a thread the scheduler preempts gives it up, so it waits
+// runnable behind the crowding processes however the scheduler placed it; and gives the thread
+// back its own CPUs. The rig locked the calling goroutine to this thread at its transaction's BEGIN.
+func (crowded *crowdedCPU) run(t *testing.T, work time.Duration) {
+	t.Helper()
+	defer crowded.pin(t)()
 	for range xidCrowdedTurns {
 		from := threadCPU(t)
 		for threadCPU(t)-from < work/xidCrowdedTurns {
@@ -189,11 +200,10 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 	} {
 		t.Run(probe.name, func(t *testing.T) {
 			_, database, tracer := xidService(t)
-			procs := runtime.GOMAXPROCS(1)
+			defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
 			report := tracer.Measure(t, database.Pool, func() {
 				runRigTransactionDoing(t, database, probe.wait)
 			})
-			runtime.GOMAXPROCS(procs)
 			if len(report.Problems) > 0 || len(report.Windows) != 1 {
 				t.Fatalf("the rig judged %d windows with problems %v, want the one transaction judged", len(report.Windows), report.Problems)
 			}
@@ -213,6 +223,68 @@ func TestXidWindowRigReadsTheRuntimesWaitAsTheRuntimes(t *testing.T) {
 			t.Logf("%s\n%s", window.Summary(), window.Detail())
 		})
 	}
+}
+
+// xidPlantedSleep is the sleep the code asks for after a handoff, in
+// TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes: past the bound, so it breaks D6.
+const xidPlantedSleep = 8 * time.Millisecond
+
+// xidHandoffRuns is how many times that test plants the sleep at most, to see one handoff wait on
+// the crowded CPU: a woken thread often takes the CPU from the spinners at once, as the kernel
+// favours a thread that slept, and then its handoff waits no time on the run queue. About one run
+// in five did, on a 288-CPU machine at a load of about 250 (2026-11-20), so sixteen runs all
+// missing it is one chance in tens of billions.
+const xidHandoffRuns = 16
+
+// A system call the code makes after the runtime hands its goroutine back is the code's time, and
+// the run-queue wait of that handoff is counted once. With one P, the window's goroutine yields
+// behind a spinning goroutine while its thread is pinned to a CPU other processes crowd, so when
+// the runtime hands the goroutine back the woken thread may wait its turn on that CPU: a wait its
+// scheduler clocks count (Runnable) and the trace counts as the goroutine's runnable time
+// (GoRunnable), the same time twice. Then the goroutine sleeps 8 ms in a system call (nanosleep).
+// Every run's gap must read at least the 8 ms made, and break D6. The formula before Overlap took
+// the handoff's run-queue wait out twice and left the system call out of its floor, and read such
+// a gap at 3.1 to 6.6 ms made. The plant runs until one run's handoff waited on the crowded CPU (an
+// Overlap of at least 1 ms), at most xidHandoffRuns times, and fails if none did, so a machine on
+// which it never did cannot pass for one that counted the wait once.
+func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
+	skipWhereNoGapIsJudged(t)
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	for run := 1; run <= xidHandoffRuns; run++ {
+		// Each run's rig transaction inserts the project anew, so each run has a database of its
+		// own.
+		_, database, tracer := xidService(t)
+		crowded := crowdACPU(t)
+		report := tracer.Measure(t, database.Pool, func() {
+			runRigTransactionDoing(t, database, func() {
+				unpin := crowded.pin(t)
+				yieldBehindASpinner()
+				sleep := unix.NsecToTimespec(int64(xidPlantedSleep))
+				if err := unix.Nanosleep(&sleep, nil); err != nil {
+					t.Fatalf("sleep %s: %v", xidPlantedSleep, err)
+				}
+				unpin()
+			})
+		})
+		crowded.stop()
+		if len(report.Problems) > 0 || len(report.Windows) != 1 {
+			t.Fatalf("run %d: the rig judged %d windows with problems %v, want the one transaction judged", run, len(report.Windows), report.Problems)
+		}
+		window := report.Windows[0]
+		gap := window.Gaps[0]
+		if made := gap.Made(); made < xidPlantedSleep {
+			t.Fatalf("run %d: a %s sleep after a handoff read %s made, want at least the sleep\n%s", run, xidPlantedSleep, storetest.XidMillis(made), window.Detail())
+		}
+		if err := report.Err(); err == nil || !strings.Contains(err.Error(), "XID WINDOW VIOLATION") ||
+			!strings.Contains(err.Error(), "follows statement 0: insert into projects") {
+			t.Fatalf("run %d: a %s sleep after a handoff: verdict %v, want a D6 violation after the insert\n%s", run, xidPlantedSleep, err, window.Detail())
+		}
+		if gap.Overlap >= time.Millisecond {
+			t.Logf("run %d: the handoff waited %s on the crowded CPU\n%s\n%s", run, storetest.XidMillis(gap.Overlap), window.Summary(), window.Detail())
+			return
+		}
+	}
+	t.Fatalf("in %d runs no handoff waited 1 ms on the crowded CPU, so the wait that both clocks count was never planted", xidHandoffRuns)
 }
 
 // yieldBehindASpinner starts a goroutine that spins until told to stop and yields to it until it

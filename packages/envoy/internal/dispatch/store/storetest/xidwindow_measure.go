@@ -5,6 +5,7 @@ import (
 	"math"
 	"runtime"
 	"runtime/debug"
+	"runtime/trace"
 	"sync"
 	"testing"
 	"time"
@@ -27,8 +28,18 @@ type xidPoll struct {
 // is the pool under test; the poller dials a connection of its own from its configuration,
 // untraced, so it never waits for one of the pool's. operation runs on its caller's goroutine with
 // the collector held off (runWithoutCollector).
+//
+// A run that sets XidRequireGapsEnv and cannot judge gaps fails here, naming why
+// (XidNoGapJudgment), instead of judging the window's shape alone; and a run that judges gaps
+// fails here if an execution trace is already running, since the rig takes one of its own.
 func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *XidReport {
 	t.Helper()
+	if reason := XidNoGapJudgment(); reason != "" && xidGapsRequired() {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", XidRequireGapsEnv, reason)
+	}
+	if XidJudgesGaps() && trace.IsEnabled() {
+		t.Fatalf("XID RIG PROBLEM (not a finding about the code): an execution trace is already running - go test -trace takes one for the whole test binary - and the runtime runs one at a time, so the rig cannot take the trace it reads the runtime's own waits off; run the xid window tests without go test -trace")
+	}
 
 	ctx := context.Background()
 	config := pool.Config().ConnConfig.Copy()
@@ -96,12 +107,19 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	// The capture ends however operation leaves: a t.Fatalf inside it exits through the deferred
 	// calls alone. Left running, the poller would query a connection Measure's defer closes, the
 	// tracer would go on recording, and the execution tracer would stay on, so the next Measure in
-	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). endCapture
-	// is deferred after conn.Close, so it runs first; traced.stop is deferred inside the callback.
+	// the process could not start its own (TestAStoppedMeasureLeavesTheNextItsOwnTrace). A
+	// transaction the stop left open leaves its thread's clock open too, which the capture's end
+	// drops (xidDropThreadClock). endCapture is deferred after conn.Close, so it runs first;
+	// traced.stop is deferred inside the callback.
 	endCapture := sync.OnceFunc(func() {
 		close(stop)
 		<-polled
 		x.recording.Store(false)
+		x.mu.Lock()
+		for _, held := range x.locked {
+			xidDropThreadClock(held.thread)
+		}
+		x.mu.Unlock()
 	})
 	defer endCapture()
 

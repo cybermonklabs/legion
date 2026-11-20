@@ -1,15 +1,22 @@
+//go:build !race
+
 package storetest
 
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime"
 	"runtime/trace"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+// These tests are of the rig's execution trace, which the race build does not take, so they are
+// out of it and run in envoy-go's plain step (xidwindow_gaps_test.go says how).
 
 // A measured operation may stop its test: the docs package's runRigTransactionDoing calls
 // t.Fatalf on a transaction's error, inside the window. That exit runs only Measure's deferred
@@ -21,9 +28,7 @@ import (
 // own under a testing.TB whose Fatalf stops that goroutine as a test's does (stoppingTB), so this
 // test watches the stop without failing.
 func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
-	if !XidJudgesGaps() {
-		t.Skip("this build judges no gap, so Measure takes no execution trace")
-	}
+	skipWhereNoTraceIsTaken(t)
 	// A run of this test against a rig that leaks the trace leaves it on; stop it, so the tests
 	// after this one still start their own.
 	t.Cleanup(trace.Stop)
@@ -69,6 +74,47 @@ func TestAStoppedMeasureLeavesTheNextItsOwnTrace(t *testing.T) {
 		if !gap.Traced {
 			t.Errorf("the gap after statement %d of the next Measure's window was not read off its own execution trace", i)
 		}
+	}
+}
+
+// go test -trace takes the runtime's one execution trace for the whole test binary, so a
+// Measure that judges gaps cannot take its own. It stops before the operation runs and says so,
+// naming go test -trace, rather than failing as the trace it could not start
+// ("execution tracer already enabled").
+func TestAMeasureUnderGoTestTraceSaysSo(t *testing.T) {
+	skipWhereNoTraceIsTaken(t)
+	database := Open(t)
+	tracer := NewXidTracer()
+	traced := &store.Store{Pool: Traced(t, database.Pool, tracer, nil)}
+	if err := trace.Start(io.Discard); err != nil {
+		t.Fatalf("start a trace as go test -trace does: %v", err)
+	}
+	t.Cleanup(trace.Stop)
+	ran := false
+	stopping := &stoppingTB{TB: t}
+	measured := make(chan struct{})
+	go func() {
+		defer close(measured)
+		tracer.Measure(stopping, traced.Pool, func() { ran = true })
+	}()
+	<-measured
+	if got := stopping.stop(); !strings.Contains(got, "go test -trace") {
+		t.Fatalf("Measure under a running trace stopped with %q, want a stop that names go test -trace", got)
+	}
+	if ran {
+		t.Error("Measure ran its operation under a trace it could not take its own beside")
+	}
+}
+
+// skipWhereNoTraceIsTaken skips a test of the rig's execution trace in a run that judges no gap,
+// and so takes no trace, naming why - unless the run sets XidRequireGapsEnv, where it fails.
+func skipWhereNoTraceIsTaken(t *testing.T) {
+	t.Helper()
+	if reason := XidNoGapJudgment(); reason != "" {
+		if xidGapsRequired() {
+			t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", XidRequireGapsEnv, reason)
+		}
+		t.Skipf("this run judges no gap, so Measure takes no execution trace: %s", reason)
 	}
 }
 

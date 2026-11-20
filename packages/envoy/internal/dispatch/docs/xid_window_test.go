@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -84,8 +85,11 @@ const rigInjectedGap = storetest.XidFaultGap
 // where it holds.
 func skipWhereNoGapIsJudged(t *testing.T) {
 	t.Helper()
-	if !storetest.XidJudgesGaps() {
-		t.Skip("this build judges no statement-free gap; the window's shape is what holds here")
+	if reason := storetest.XidNoGapJudgment(); reason != "" {
+		if os.Getenv(storetest.XidRequireGapsEnv) != "" {
+			t.Fatalf("XID RIG PROBLEM (not a finding about the code): %s is set, so this run must judge statement-free gaps, and it cannot: %s", storetest.XidRequireGapsEnv, reason)
+		}
+		t.Skipf("this run judges window shape alone, not statement-free gaps (%s); the window's shape is what holds here", reason)
 	}
 }
 
@@ -125,10 +129,10 @@ func TestXidWindowRigKeepsItsOwnWorkOutOfTheGaps(t *testing.T) {
 	if len(window.Statements) != 3 {
 		t.Fatalf("the window holds %d statements, want the forced xid, the long statement and the commit:\n%s", len(window.Statements), window.Detail())
 	}
-	took := window.Statements[1].End.Sub(window.Statements[1].Start)
-	if took <= 4*storetest.XidMaxGap {
-		t.Fatalf("the long statement took %s with the rig's work on it, not past %s: the rig's work was too quick to tell where it fell\n%s",
-			storetest.XidMillis(took), storetest.XidMillis(4*storetest.XidMaxGap), window.Detail())
+	ran := window.Statements[1].Ran()
+	if ran <= 4*storetest.XidMaxGap {
+		t.Fatalf("the long statement's thread ran %s of CPU with the rig's work on it, not past %s: the rig's work was too quick to tell where it fell\n%s",
+			storetest.XidMillis(ran), storetest.XidMillis(4*storetest.XidMaxGap), window.Detail())
 	}
 	if err := report.Err(); err != nil {
 		t.Fatalf("the rig's own work on a long statement broke D6, so it ran in a gap:\n%v", err)

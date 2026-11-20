@@ -5,49 +5,14 @@ package storetest
 import (
 	"bytes"
 	"os"
-	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
-
-// xidThreadClocksAvailable reports whether this process can judge a window's gaps: whether it can
-// read an OS thread's scheduler clocks, and whether it can hold a thread, and the memory every
-// thread touches, out of NUMA balancing (xidHoldThread, xidHoldMemory). Linux does not promise
-// either: gVisor, for example, exposes no /proc/thread-self/schedstat, and a container's seccomp
-// profile may refuse set_mempolicy and mbind. The first caller probes once while locked to an OS
-// thread, as a marked transaction's goroutine is; every later caller reads that same fact, so a
-// kernel that cannot give the rig either follows the race build and judges window shape alone.
-//
-// xidThreadClockAvailability is a pointer so its readers and its once can be replaced together by
-// the test that proves an unreadable clock, or a thread NUMA balancing cannot be kept off, judges
-// no gap. Tests in this package do not run in parallel.
-var xidThreadClockAvailability = &xidThreadClockProbe{read: readXidThreadClock, hold: xidHoldThread}
-
-type xidThreadClockProbe struct {
-	once      sync.Once
-	read      func() xidThreadClock
-	hold      func() (release func(), held bool)
-	available bool
-}
-
-func xidThreadClocksAvailable() bool {
-	probe := xidThreadClockAvailability
-	probe.once.Do(func() {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		if probe.read().thread == 0 {
-			return
-		}
-		release, held := probe.hold()
-		release()
-		probe.available = held && xidHoldMemory()
-	})
-	return probe.available
-}
 
 // xidThread is the calling OS thread's id.
 func xidThread() int { return unix.Gettid() }
@@ -79,19 +44,29 @@ const xidClockTries = 16
 // 2.1 ms). It answers the zero clock when the clocks cannot be read, when the goroutine moved to
 // another thread while it read them, or when no try of xidClockTries landed between two switches.
 //
-// It allocates nothing, so it touches no memory the process has not used before: the file is
-// opened by a path built once, read into a buffer on the stack and parsed in place. The tracer
-// reads the clocks at a gap's two ends, and while the collector is held off (runWithoutCollector)
-// an allocation there would land on a page the process never touched - a first touch that, on a
-// loaded machine, costs milliseconds of the thread's CPU in the kernel (runWithoutCollector).
+// It allocates nothing and, on a thread the rig holds (XidTracer.lockTransaction), makes no system
+// call but the clock reads: the schedstat file is opened once, when the thread is held, and read on
+// that descriptor (xidHeldClocks); and each read goes into a buffer on the stack and is parsed in
+// place. The tracer reads the clocks at a gap's two ends, so an open or a close there would run
+// inside the gap the rig keeps for the code; and while the collector is held off
+// (runWithoutCollector) an allocation there would land on a page the process never touched - a
+// first touch that, on a loaded machine, costs milliseconds of the thread's CPU in the kernel. On
+// a thread the rig does not hold it opens the file for the one reading.
 func readXidThreadClock() xidThreadClock {
 	thread := unix.Gettid()
-	fd, _, errno := unix.Syscall6(unix.SYS_OPENAT, uintptr(xidAtCWD),
-		uintptr(unsafe.Pointer(&xidSchedstatPath[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
-	if errno != 0 {
+	if fd, held := (*xidHeldClocks.Load())[thread]; held {
+		return readXidThreadClockOn(fd, thread)
+	}
+	fd, ok := xidOpenThreadClock()
+	if !ok {
 		return xidThreadClock{}
 	}
-	defer unix.Syscall(unix.SYS_CLOSE, fd, 0, 0)
+	defer xidCloseThreadClock(fd)
+	return readXidThreadClockOn(fd, thread)
+}
+
+// readXidThreadClockOn is readXidThreadClock's reading, on thread's schedstat open as fd.
+func readXidThreadClockOn(fd uintptr, thread int) xidThreadClock {
 	for range xidClockTries {
 		before, ok := xidReadSchedstat(fd)
 		if !ok {
@@ -111,6 +86,66 @@ func readXidThreadClock() xidThreadClock {
 		}
 	}
 	return xidThreadClock{}
+}
+
+// xidHeldClocks is, for each thread the rig holds, its schedstat open as a descriptor. It is read
+// at every statement's two ends without a lock, as an immutable map an atomic pointer swaps, and
+// changed only when a thread is held or let go (xidWatchThreadClock, xidDropThreadClock).
+var (
+	xidHeldClocks      atomic.Pointer[map[int]uintptr]
+	xidHeldClocksWrite sync.Mutex
+)
+
+func init() { xidHeldClocks.Store(&map[int]uintptr{}) }
+
+// xidOpenThreadClock opens the calling thread's schedstat. /proc/thread-self names the thread at
+// the open, so the descriptor stays that thread's for as long as it is open.
+func xidOpenThreadClock() (uintptr, bool) {
+	fd, _, errno := unix.Syscall6(unix.SYS_OPENAT, uintptr(xidAtCWD),
+		uintptr(unsafe.Pointer(&xidSchedstatPath[0])), uintptr(unix.O_RDONLY|unix.O_CLOEXEC), 0, 0, 0)
+	return fd, errno == 0
+}
+
+func xidCloseThreadClock(fd uintptr) { unix.Syscall(unix.SYS_CLOSE, fd, 0, 0) }
+
+// xidWatchThreadClock opens the calling thread's schedstat and keeps it open as the thread's own
+// descriptor until the returned stop, which a held thread's COMMIT or ROLLBACK calls
+// (xidDropThreadClock); ok is false when the file cannot be opened.
+func xidWatchThreadClock() (stop func(), ok bool) {
+	fd, ok := xidOpenThreadClock()
+	if !ok {
+		return func() {}, false
+	}
+	thread := unix.Gettid()
+	xidSwapHeldClocks(func(held map[int]uintptr) { held[thread] = fd })
+	return func() { xidDropThreadClock(thread) }, true
+}
+
+// xidDropThreadClock stops reading thread's held clock and closes it, if it is still held. A
+// transaction's COMMIT drops its thread's clock, and so does the end of a capture, for a thread
+// whose transaction never ended - its goroutine stopped by a Fatalf - so that no later thread the
+// kernel gives the same id reads a dead thread's descriptor. Dropping twice closes once.
+func xidDropThreadClock(thread int) {
+	var fd uintptr
+	var open bool
+	xidSwapHeldClocks(func(held map[int]uintptr) {
+		fd, open = held[thread]
+		delete(held, thread)
+	})
+	if open {
+		xidCloseThreadClock(fd)
+	}
+}
+
+func xidSwapHeldClocks(change func(map[int]uintptr)) {
+	xidHeldClocksWrite.Lock()
+	defer xidHeldClocksWrite.Unlock()
+	held := make(map[int]uintptr, len(*xidHeldClocks.Load())+1)
+	for thread, fd := range *xidHeldClocks.Load() {
+		held[thread] = fd
+	}
+	change(held)
+	xidHeldClocks.Store(&held)
 }
 
 // xidSchedstat is the two fields of a thread's schedstat the rig reads: run_delay, and the number

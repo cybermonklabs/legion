@@ -2642,6 +2642,8 @@ envoy_go_race:
   - '!packages/envoy/internal/dispatch/sessionanswers/**/*_test.go'
   - '!packages/envoy/internal/dispatch/specgraph/**/*_test.go'
   - '!packages/envoy/internal/dispatch/startup/**/*_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_gaps_test.go'
+  - '!packages/envoy/internal/dispatch/store/storetest/xidwindow_measure_test.go'
   - '!packages/envoy/internal/dispatch/testlimits/**/*_test.go'
   - '!packages/envoy/internal/dispatch/text/**/*_test.go'
   - '!packages/envoy/internal/dispatch/texttreefill/**/*_test.go'
