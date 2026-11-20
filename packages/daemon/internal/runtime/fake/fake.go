@@ -84,6 +84,11 @@ type Runtime struct {
 	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
 	// and nothing is started.
 	OnResume func(ctx context.Context) error
+	// OnSpawn, when set, runs at the start of every Spawn, after the call is recorded, with that
+	// call's own context: a test that must act while a launch is still in the runtime blocks here
+	// and watches that context for the caller's cancellation. A non-nil answer is the Spawn's,
+	// nothing is started and no scripted answer is spent.
+	OnSpawn func(ctx context.Context) error
 	// RefuseLookupByID, when set, stands for a pod whose launcher has not said it can look a
 	// session up by its id, on every try: Resume records its call and then answers an error that
 	// wraps runtime.ErrSessionLookupUnavailable to a spec that has ResumeSession and no
@@ -340,10 +345,20 @@ func (r *Runtime) Methods() []string {
 	return methods
 }
 
-func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+// Spawn records its call, then runs OnSpawn when a test set one, then answers the next scripted
+// answer, or a locator of its own once the script runs out.
+func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
+	hook := r.OnSpawn
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return runtime.Locator{}, err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.calls = append(r.calls, Call{Method: "Spawn", Spec: spec})
 	if len(r.spawns) > 0 {
 		next := r.spawns[0]
 		r.spawns = r.spawns[1:]

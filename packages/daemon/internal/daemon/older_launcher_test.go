@@ -22,6 +22,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -133,45 +134,13 @@ func (s *builtSpecs) last(t *testing.T) supervise.Claim {
 	return s.built[len(s.built)-1]
 }
 
-// heldSpawns is the rig's fake runtime, whose next Spawn a test can hold until the daemon's stop
-// (hold): the held Spawn waits for its context to end, as the Sandbox runtime's Spawn waits on a
-// pod that is coming up, and then is the fake's own Spawn answering that context's error, so the
-// call is recorded and nothing is started. Every other call is the fake's own.
-type heldSpawns struct {
-	*fake.Runtime
-	mu      sync.Mutex
-	waiting chan struct{}
-}
-
-// hold holds the next Spawn, and answers a channel closed once that Spawn waits.
-func (s *heldSpawns) hold() <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.waiting = make(chan struct{})
-	return s.waiting
-}
-
-func (s *heldSpawns) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	s.mu.Lock()
-	waiting := s.waiting
-	s.waiting = nil
-	s.mu.Unlock()
-	if waiting != nil {
-		close(waiting)
-		<-ctx.Done()
-		s.ScriptSpawn(fake.SpawnResult{Err: ctx.Err()})
-	}
-	return s.Runtime.Spawn(ctx, spec)
-}
-
 // olderLauncherRig is one root issue implementing, its implementer's claim recording the session
 // olderLauncherSession and no file, supervised over a real Postgres. Its Deps are those
 // newPodUpdateRig builds — the daemon's store, the fake runtime and a held clock the test fires —
 // with the daemon's own spec builder in place of the stub outboxSpecs, the fake runtime refusing
-// every resume by the id alone and holding a Spawn where a test asks it to (heldSpawns), and the
-// forget told to a real workflow engine (workflowRuntime.sessionLost), whose rows the rig's outbox
-// runs with a recording publisher and a recording Dispatch, as newFreshSessionRig wires its
-// runner.
+// every resume by the id alone, and the forget told to a real workflow engine
+// (workflowRuntime.sessionLost), whose rows the rig's outbox runs with a recording publisher and a
+// recording Dispatch, as newFreshSessionRig wires its runner.
 type olderLauncherRig struct {
 	t       *testing.T
 	ctx     context.Context
@@ -179,7 +148,6 @@ type olderLauncherRig struct {
 	st      *store.Store
 	sup     *supervisor
 	rt      *fake.Runtime
-	spawns  *heldSpawns
 	clock   *heldClock
 	specs   *builtSpecs
 	token   claim.Token
@@ -240,12 +208,12 @@ func newOlderLauncherRig(t *testing.T, failures int) *olderLauncherRig {
 	engine := workflow.New(records, workflow.Config{Project: olderLauncherProject, Repositories: testRepositories}, log)
 	w := &workflowRuntime{pool: pool, records: records, log: log, handlers: []intake.Handler{engine}}
 
-	r := &olderLauncherRig{t: t, ctx: store.ForConcurrentWorker(ctx), pool: pool, st: st, rt: rt, spawns: &heldSpawns{Runtime: rt}, clock: clock, token: token,
+	r := &olderLauncherRig{t: t, ctx: store.ForConcurrentWorker(ctx), pool: pool, st: st, rt: rt, clock: clock, token: token,
 		specs:       &builtSpecs{specs: specs{stateDir: t.TempDir(), project: olderLauncherProject, prompts: composer, appOwners: noAppOwners}},
 		workflowLog: workflowLog, notices: &outboxPublisher{}, dispatch: &outboxDispatch{}}
 	sup := newSupervisor(ctx, st, olderLauncherProject, t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
-		Runtime: r.spawns, Conns: conns, Store: st, Specs: r.specs, Clock: clock, Log: quietLogger(),
+		Runtime: rt, Conns: conns, Store: st, Specs: r.specs, Clock: clock, Log: quietLogger(),
 		ClaimActivity:      st.ClaimActivity,
 		Limits:             supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:           supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
@@ -300,11 +268,22 @@ func (r *olderLauncherRig) restart() {
 
 // stopInTheFreshSpawn hands the claim's machine ev on a context of its own, as a daemon's machines
 // decide on the daemon's, and ends that context — the daemon's stop — while the Spawn of the fresh
-// agent the decision launches waits in the runtime (heldSpawns). The launch is cut short, and
-// writes nothing after the write its try made before its start (launchNow).
+// agent the decision launches waits in the runtime (fake.Runtime.OnSpawn): that Spawn alone waits
+// for its context to end, as the Sandbox runtime's Spawn waits on a pod that is coming up, and then
+// answers that context's error, so the call is recorded and nothing is started. The launch is cut
+// short, and writes nothing after the write its try made before its start (launchNow).
 func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 	r.t.Helper()
-	waiting := r.spawns.hold()
+	waiting := make(chan struct{})
+	var held atomic.Bool
+	r.rt.OnSpawn = func(ctx context.Context) error {
+		if held.Swap(true) {
+			return nil // a Spawn after the held one is the fake's own
+		}
+		close(waiting)
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	ctx, stop := context.WithCancel(r.ctx)
 	defer stop()
 	decided := make(chan error, 1)
@@ -317,6 +296,7 @@ func (r *olderLauncherRig) stopInTheFreshSpawn(ev supervise.Event) {
 	stop()
 	<-decided
 	r.machine.Wait()
+	r.rt.OnSpawn = nil
 }
 
 func (r *olderLauncherRig) claim() supervise.Claim { return r.machine.Claim() }
@@ -517,6 +497,20 @@ func (r *olderLauncherRig) awaitForgetTold() {
 	}
 }
 
+// wantToldOnce holds that the workflow told the forget once: one message on the issue, and one
+// session-forgotten notice each to the architect and the controller.
+func (r *olderLauncherRig) wantToldOnce() {
+	r.t.Helper()
+	if posted := r.rows(record.OutboxKindDispatchMessage); len(posted) != 1 {
+		r.t.Errorf("the outbox holds %d messages for the issue; want one", len(posted))
+	}
+	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
+		if kinds := r.noticeKinds(kind); len(kinds) != 1 || kinds[0] != sessionForgottenKind {
+			r.t.Errorf("the outbox holds the %s rows %q; want one %s", kind, kinds, sessionForgottenKind)
+		}
+	}
+}
+
 // wantNothingForgotten is a launch that forgot nothing: the workflow was told of no forget, and
 // the outbox holds no message for the issue and no notice of a lost or a forgotten session.
 func (r *olderLauncherRig) wantNothingForgotten() {
@@ -573,14 +567,7 @@ func (r *olderLauncherRig) wantForgotAtTheNextTry(from, failures int) {
 	}
 
 	r.awaitForgetTold()
-	if posted := r.rows(record.OutboxKindDispatchMessage); len(posted) != 1 {
-		r.t.Errorf("the outbox holds %d messages for the issue; want one", len(posted))
-	}
-	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
-		if kinds := r.noticeKinds(kind); len(kinds) != 1 || kinds[0] != sessionForgottenKind {
-			r.t.Errorf("the outbox holds the %s rows %q; want one %s", kind, kinds, sessionForgottenKind)
-		}
-	}
+	r.wantToldOnce()
 
 	if err := r.registerAs(olderLauncherFresh, olderLauncherFreshFile, api.DaemonAPIVersion); err != nil {
 		r.t.Fatalf("the fresh agent's registration as %s = %v; want it accepted", olderLauncherFresh, err)
@@ -857,12 +844,5 @@ func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
 	if strings.Contains(r.workflowLog.String(), `"error":`) {
 		t.Fatalf("the workflow could not apply a forget:\n%s", r.workflowLog.String())
 	}
-	if posted := r.rows(record.OutboxKindDispatchMessage); len(posted) != 1 {
-		t.Errorf("the outbox holds %d messages for the issue; want one", len(posted))
-	}
-	for _, kind := range []record.OutboxKind{record.OutboxKindNotice, record.OutboxKindControllerNotice} {
-		if kinds := r.noticeKinds(kind); len(kinds) != 1 || kinds[0] != sessionForgottenKind {
-			t.Errorf("the outbox holds the %s rows %q; want one %s", kind, kinds, sessionForgottenKind)
-		}
-	}
+	r.wantToldOnce()
 }

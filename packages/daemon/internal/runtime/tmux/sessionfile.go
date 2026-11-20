@@ -65,10 +65,9 @@ func newestSession(sessions, name string) string {
 // regular file written last among Oh My Pi's `<timestamp>_<id>.jsonl`, any name ending in
 // `_<id>.jsonl`, one folder below sessions, where Oh My Pi keeps the sessions of every working
 // directory; "" for none. Nothing is a pattern: no character of sessions or id can match another
-// session's file. An empty id names no session, and an id holding a path separator names no file
-// one folder down, so either is searched for nowhere.
+// session's file. An empty id names no session, so it is searched for nowhere.
 func sessionFileByID(sessions, id string) string {
-	if id == "" || strings.ContainsRune(id, filepath.Separator) {
+	if id == "" {
 		return ""
 	}
 	return newestOneFolderDown(sessions, endingIn("_"+id+".jsonl"))
