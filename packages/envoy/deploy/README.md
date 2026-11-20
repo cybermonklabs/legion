@@ -114,8 +114,12 @@ by a person at a terminal, nothing unattended calls it, and its Compose calls ha
 the deployed tag back from it, so an `ENVOY_IMAGE_TAG` in the deployer's own environment (the
 `export` of the "Image" steps above, say) is ignored by design. It writes `compose/.env` (the tag, and
 its schema record `ENVOY_IMAGE_SCHEMA`) through a staging file beside it, `compose/.env.stage.XXXXXX`
-(mode 0600), renamed over it; the deployer removes that file when it stops, and a deployer killed
-by SIGKILL, which it cannot see, leaves it, under a name git ignores, for the next start to remove.
+(mode 0600), renamed over it; the deployer removes that file when it exits, and a deployer killed
+by SIGKILL, which it cannot see, leaves it, under a name git ignores. The deployer sweeps such files
+only when it starts, and only those more than a minute old, so a start sooner than that leaves one
+for a later start. A `compose/.env` that is a symlink is replaced, at the deployer's first write, by
+a regular file with the mode of the link's target; edits after that go to `compose/.env` itself,
+since the link's old target no longer reaches Compose.
 
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the

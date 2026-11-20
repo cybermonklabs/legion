@@ -373,12 +373,11 @@ grep -q '^mv-source ' "$argv" || fail 'UNKNOWN: the deployer reached no move ont
 left=$(find "$compose" -maxdepth 1 -name '.env.stage.*' | head -n 1)
 [[ -z "$left" ]] || fail "a deployer stopped by TERM at its rename left its staging file: $left"
 
-# Outside that write no trap is set, so a deployer stopped by TERM while it waits out its poll stops
-# at once, as one with no trap does, where a trap set for the whole run made bash wait for the
-# running `sleep` to end first. The poll is an hour, so a deployer that waits out its sleep stops
-# after an hour and one that does not stops at once; the row's bound, 120 s of the clock (SECONDS),
-# guards only against never, so the load of the box cannot move a run across it. Every process the
-# row starts is stopped by its own process ID.
+# The deployer sets no INT or TERM trap, so one stopped by TERM while it waits out its poll stops at
+# once, where a TERM trap made bash wait for the running `sleep` to end first. The poll is an hour,
+# so a deployer that waits out its sleep stops after an hour and one that does not stops at once;
+# the row's bound, 120 s of the clock (SECONDS), guards only against never, so the load of the box
+# cannot move a run across it. Every process the row starts is stopped by its own process ID.
 # The deploy before it lands new-image, so the poll's pass finds nothing to deploy and sleeps.
 fresh_env
 output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_once) || true
@@ -412,12 +411,21 @@ if [[ -z "$poll_sleep" ]]; then
   done
   kill "$job" 2>/dev/null || true
   wait "$job" || true
+  # A process sent TERM can still be running for a moment, and it is no child of this shell, so
+  # each one gets 5 s of the clock to be gone or a zombie before it counts as one the give-up left.
   alive=()
   for pid in "${tree[@]}"; do
-    kill -0 "$pid" 2>/dev/null && alive+=("$pid")
+    gone=$((SECONDS + 5))
+    while state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]] && ((SECONDS < gone)); do
+      sleep 0.1
+    done
+    if state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]]; then
+      alive+=("$pid")
+    fi
   done
-  ((${#alive[@]} == 0)) || fail "UNKNOWN: the give-up left process(es) ${alive[*]} running"
-  fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged: $(<"$root/poll.out")"
+  left=
+  ((${#alive[@]} == 0)) || left=" (and the give-up left process(es) ${alive[*]} running)"
+  fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged$left; its output: $(<"$root/poll.out")"
 fi
 deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')
 kill -TERM "$deployer"
