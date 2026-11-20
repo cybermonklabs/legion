@@ -60,8 +60,12 @@ const (
 	// row (RoleHoldersPublish).
 	OutboxKindRoleHoldersPublish OutboxKind = "role_holders_publish"
 	// OutboxKindStepRecord writes one start or one end of a step of the issue onto Dispatch's
-	// record of that step (StepRecord).
+	// record of that step, or the rating a retro gave the plan onto the retro's record
+	// (StepRecord).
 	OutboxKindStepRecord OutboxKind = "step_record"
+	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
+	// (PlanRecord).
+	OutboxKindPlanRecord OutboxKind = "plan_record"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -90,10 +94,11 @@ const (
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
 // is what a place on the board lane would cost it.
-// The record lane runs the writes of the issue's step records (step_record) on a lane of its own,
-// so a Dispatch that is slow to take a record, or one that backs a record off until it has the
-// route, delays no status write, notice or start of that issue: a record is history, and the work
-// it records never waits for it.
+// The record lane runs the writes of the records of the issue's work — each step's record and the
+// rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
+// their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
+// has the route, delays no status write, notice or start of that issue: a record is history, and
+// the work it records never waits for it.
 type OutboxLane string
 
 const (
@@ -111,7 +116,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneRecord:      {OutboxKindStepRecord},
+	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 }
 
 // LaneOf is the lane that runs kind.
@@ -412,6 +417,119 @@ type Notice struct {
 	// Update is an update-stalled notice's account of the round that is not finishing, and is
 	// absent from every other kind. Only an UpdateStalledNotice carries one.
 	Update *UpdateStalled `json:"update,omitempty"`
+	// Volume is what a volume-near-full notice carries: one sweep of the issue pod's volume as
+	// the cache trimmer in that pod's launcher reported it. Only that kind carries one.
+	Volume *VolumeNearFull `json:"volume,omitempty"`
+}
+
+// VolumeNearFull is one sweep of an issue pod's volume as the trimmer in its launcher process
+// reported it (shimwire.LauncherVolumeReport), plus the pod it was of, which the report does not
+// carry: the launcher is authenticated for one pod and the session names it. It is what a
+// volume-near-full notice tells the issue's architect, and the one thing in Legion that sees the
+// volume the roles of an issue share fill under them (INFRA-2009).
+//
+// It holds everything the report holds. Trimmer is the identifier the trimmer minted for itself
+// when the launcher process started, which is what counts a restarted roles container apart from
+// the first episode, Episode the trimmer's own episode number and RaisedBy what raised it
+// (shimwire.VolumeEpisodeFirst, VolumeEpisodeRecovery, VolumeEpisodeRise). UsedBytes and
+// FreeBytes are the volume as the sweep's last reading saw it and FreedBytes what the sweep
+// freed, read from the volume and never counted from the bytes unlinked: the sweep's first
+// reading's used bytes less its last's, negative where the volume's used bytes grew while the
+// sweep ran. StopReason is why the sweep stopped, in the trimmer's own words, and RefusedReads
+// the /proc reads the kernel refused that no report had carried yet, of this sweep and of earlier
+// ones that sent no report: one per process the trimmer could not read, or one for /proc itself
+// when /proc could not be listed.
+//
+// Sizes are the size walk's targets with their two age splits (VolumeSize), SizesAt when they
+// were measured — a report made between walks carries the last walk's numbers with that walk's
+// time — SizesPartial a walk its budget or the container's stop cut before it reached every
+// target, which is the one way a walk ends early, and SizesMissing every target the walk did not
+// measure at all, and the volume root or an immediate child of it where the walk did not list
+// one in full, each with its reason where a read was refused (VolumeMissing): a directory it
+// could not open or list, a file whose lstat was refused, and, of a walk that was cut, every
+// target it had not measured when it was cut, as far as the report's cap and counted past it
+// (SizesMissingOmitted) — where the cut came while it listed them, every one it had listed, the
+// child of the volume root whose names it was reading, whole, and every child it had not yet
+// listed, or the volume root alone where the cut came inside the root's own listing
+// (shimwire.LauncherVolumeReport). A directory the walk could read only in part is a
+// size that names the first read under it the walk did not make, one the kernel refused or a
+// directory deeper than the walk descends (VolumeSize). Faults are the panics the trimmer
+// recovered from, each with its stack, and SwitchedOff the report no sweep produces: the trimmer
+// has stopped itself after three faults in a row, and the daemon sends that one whatever its
+// bounds stand at, since the protection this notice exists for has stopped on exactly the pod
+// that has been reporting.
+//
+// The four Omitted counts are how many entries the launcher's own bound left out of each list,
+// which it cuts because a path two levels under /legion is a name a role of the pod chose and a
+// pod may hold thousands of them (internal/launcher's bound, and its walk's own for the sizes,
+// which keeps the largest): a reader of a notice is never shown a cut list as the whole of what
+// the trimmer measured.
+//
+// It is a shape of this package rather than the wire's because it is a durable payload: an
+// outbox row's JSON is read back by a daemon of a later release (the re-hold's decode, Notice's
+// own), so the shape a row carries must be one this package owns and can keep.
+type VolumeNearFull struct {
+	PodUID              string          `json:"podUid"`
+	Trimmer             string          `json:"trimmer"`
+	Episode             int             `json:"episode"`
+	RaisedBy            string          `json:"raisedBy"`
+	UsedBytes           int64           `json:"usedBytes"`
+	FreeBytes           int64           `json:"freeBytes"`
+	FreedBytes          int64           `json:"freedBytes"`
+	StopReason          string          `json:"stopReason"`
+	RefusedReads        []string        `json:"refusedReads,omitempty"`
+	RefusedReadsOmitted int             `json:"refusedReadsOmitted,omitempty"`
+	Sizes               []VolumeSize    `json:"sizes"`
+	SizesOmitted        int             `json:"sizesOmitted,omitempty"`
+	SizesAt             time.Time       `json:"sizesAt"`
+	SizesPartial        bool            `json:"sizesPartial,omitempty"`
+	SizesMissing        []VolumeMissing `json:"sizesMissing,omitempty"`
+	SizesMissingOmitted int             `json:"sizesMissingOmitted,omitempty"`
+	Faults              []string        `json:"faults,omitempty"`
+	FaultsOmitted       int             `json:"faultsOmitted,omitempty"`
+	SwitchedOff         bool            `json:"switchedOff,omitempty"`
+}
+
+// VolumeSize is one target of the trimmer's size walk — a directory two levels under the pod's
+// volume root, a regular file beside such directories in an immediate child of the root, or an
+// immediate child of the root that holds no directory of its own — as the walk measured it: the
+// bytes of the regular files under it, or of the file itself, and of those the bytes of the files
+// whose modification time is more than an hour old and more than a day old, which are what tell
+// a reader a working set from cold bytes. Refused names the first read under Path the walk did
+// not make — one the kernel refused, or a directory deeper below Path than the walk descends,
+// which it does not open — as Path/<name> for a name in it and Path/.../<name> (depth N) for a
+// name N levels below it, and Refusals is how many such reads there were in all: a size that
+// carries them is a lower bound of the directory's own, never the whole of it. A target the walk
+// read nothing of is no size but one of SizesMissing (VolumeMissing, shimwire.LauncherVolumeSize).
+type VolumeSize struct {
+	Path          string `json:"path"`
+	Bytes         int64  `json:"bytes"`
+	BytesOverHour int64  `json:"bytesOverHour"`
+	BytesOverDay  int64  `json:"bytesOverDay"`
+	Refused       string `json:"refused,omitempty"`
+	Refusals      int    `json:"refusals,omitempty"`
+}
+
+// VolumeMissing is one target the trimmer's size walk measured none of, or the volume root or an
+// immediate child of it that the walk did not list in full, and why where a read was refused: the
+// read and the kernel's answer, as `openat: permission denied`, for a directory the walk could
+// not open or list or a file whose lstat was refused, and nothing for one the cut of a walk left
+// unmeasured, which VolumeNearFull.SizesPartial says (shimwire.LauncherVolumeMissing).
+type VolumeMissing struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// MarshalJSON keeps `sizes` an array on the wire, empty rather than `null`, exactly as
+// UpdateStalled.MarshalJSON keeps `waiting` one and for the same reason: the plugin's strict
+// reader refuses a null. The `wire` alias is what keeps the method from re-entering itself.
+func (v VolumeNearFull) MarshalJSON() ([]byte, error) {
+	type wire VolumeNearFull
+	out := wire(v)
+	if out.Sizes == nil {
+		out.Sizes = []VolumeSize{}
+	}
+	return json.Marshal(out)
 }
 
 // NoticeFailure is why a claim failed, as the notices of that failure name it: Cause is the one
@@ -1147,9 +1265,60 @@ type StepRecord struct {
 	Result     *string    `json:"result,omitempty"`
 	ReturnedTo *int       `json:"returned_to,omitempty"`
 	Report     *string    `json:"report,omitempty"`
+	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
+	// it is the retro's rating, which Dispatch takes on the record's rating route
+	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
+	// members are members of the payload itself, written together and left out together when it is
+	// nil (validateOutboxPayload holds a stored row to that).
+	*PlanRating
+}
+
+// PlanRating is a retro's rating of the plan its issue ran: Rating, on the scale
+// github.com/sjawhar/envoy/steprecord holds (RatingLeast, the plan cost the work, to RatingMost,
+// the plan fit the work), and Reason, why. The two are one value, so a step record carries a
+// rating with its reason or no rating. It mirrors dispatch.PlanRating, which the publication
+// converts it to (publishStepRecord), because the dispatch package imports no record of the daemon's;
+// internal/daemon's TestAStepRecordReachesDispatchWithEveryField holds the two to the same fields.
+type PlanRating struct {
+	Rating int    `json:"rating"`
+	Reason string `json:"rating_reason"`
 }
 
 func (StepRecord) OutboxKind() OutboxKind { return OutboxKindStepRecord }
+
+// PlanRecord is the plan one run of an issue carries out, written onto Dispatch (PUT
+// /api/v1/issues/{key}/plans/{id}) when the run's work starts. ID is the plan's id, a uuid of the
+// issue and its run, and the row's issue column is the issue. Each other field is a field of the
+// route's body under the same name: the run (record.Issue.Generation), where the plan came from
+// (default, the steps Legion runs when the owner gave none, or owner), the owner's document with
+// its version, which a plan of the source default leaves out, and each task with its steps in
+// order. Dispatch sets each field once, so a plan sent again changes nothing.
+type PlanRecord struct {
+	ID         string `json:"id"`
+	Generation uint64 `json:"generation"`
+	Source     string `json:"source"`
+	// PlanDocument is embedded, so its two members are members of the payload itself, written
+	// together and left out together when it is nil.
+	*PlanDocument
+	Tasks []PlanRecordTask `json:"tasks"`
+}
+
+// PlanDocument is the owner's document a plan of the source owner was taken from: the artifact and
+// the version of it Legion took. The two are one value, so a plan names its document with its
+// version or no document. It mirrors dispatch.PlanDocument, which the publication converts it to
+// (publishPlanRecord), because the dispatch package imports no record of the daemon's.
+type PlanDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
+}
+
+// PlanRecordTask is one task of a plan: its id and its steps in order, each a role or `role:key`.
+type PlanRecordTask struct {
+	ID    string   `json:"id"`
+	Steps []string `json:"steps"`
+}
+
+func (PlanRecord) OutboxKind() OutboxKind { return OutboxKindPlanRecord }
 
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
@@ -1413,6 +1582,20 @@ func (p MergeQueueRemoval) Message(issue, repo string) string {
 		issue, repo, p.Number, p.Head, unread)
 }
 
+// retryBackoffDoublings is how many times a row's backoff doubles before it stops at
+// RetryBackoffMost.
+const retryBackoffDoublings = 6
+
+// RetryBackoffMost is the longest a row waits to run again after a failed run: the backoff's cap.
+const RetryBackoffMost = time.Second << retryBackoffDoublings
+
+// RetryBackoff is how long a row waits to run again after a failed run, given its attempts before
+// that run (the count RetryOutbox raises): one second, doubled at each attempt, at most
+// RetryBackoffMost. The daemon's outbox sets a retried row's next run by it.
+func RetryBackoff(attempts int) time.Duration {
+	return time.Second << min(max(attempts, 0), retryBackoffDoublings)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1595,6 +1778,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindPlanRecord:
+		value := PlanRecord{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindClaimRelease:
 		value := ClaimRelease{}
 		if err := decoder.Decode(&value); err != nil {
@@ -1696,6 +1885,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Update != nil {
 			return fmt.Errorf("a %s notice carries an update round; only the controller's update-stalled notice does", value.Kind)
 		}
+		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
+			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
+		}
+		if volume := value.Volume; volume != nil && (volume.PodUID == "" || volume.Trimmer == "" || volume.Episode <= 0) {
+			return fmt.Errorf("a volume-near-full notice requires the pod it is of, the trimmer that swept it and the episode it was in")
+		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
 		}
@@ -1721,6 +1916,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
+		}
+		if value.Volume != nil {
+			return fmt.Errorf("a %s controller notice carries a volume sweep; a filling issue pod's volume is its own architect's to read", value.Kind)
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err
@@ -1866,11 +2064,16 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	// The rest of what Dispatch takes is Dispatch's to judge, and a value it refuses ends the row
-	// with a warning (the outbox's permanentRefusal). These two it would not end: an empty id
+	// with a warning (the outbox's permanentRefusal). These two it would not: an empty id
 	// addresses the route's parent path, which Dispatch's router answers NOT_FOUND "no route for
-	// …", the one answer the row waits on for ever, and a write without the step's identity is
+	// …", the one answer the row waits on for ever; and a write without the step's identity is
 	// refused only when it is the record's first, so the same defect would make a record on one
 	// run and none on another.
+	// A rating is held whole here too, though Dispatch's rating route would refuse half of one: the
+	// workflow (rateRetro) writes the rating and its reason as one value, so a rating of 0 or an
+	// empty reason, which is what a stored row naming only one of the two reads as, is a defect of
+	// the daemon, refused where it is queued rather than found by a warning after the completion
+	// that carried it committed.
 	case StepRecord:
 		if _, err := uuid.Parse(value.ID); err != nil {
 			return fmt.Errorf("a step record names no uuid as its id; it names %q", value.ID)
@@ -1885,6 +2088,16 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Result != nil && !slices.Contains([]string{steprecord.ResultPassed, steprecord.ResultFailed, steprecord.ResultStopped}, *value.Result) {
 			return fmt.Errorf("a step record's result %q is no result of a run", *value.Result)
+		}
+		if value.PlanRating != nil && (value.PlanRating.Rating == 0 || value.PlanRating.Reason == "") {
+			return fmt.Errorf("a step record carries the rating of the plan with its reason or neither; it carries the rating %d with the reason %q",
+				value.PlanRating.Rating, value.PlanRating.Reason)
+		}
+	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
+	// same reason a step record's is.
+	case PlanRecord:
+		if _, err := uuid.Parse(value.ID); err != nil {
+			return fmt.Errorf("a plan record names no uuid as its id; it names %q", value.ID)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
@@ -1931,9 +2144,17 @@ var validNoticeKinds = []NoticeKind{
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
-	"catch-up", "checks-red", "review-stuck", "status-reasserted",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-store-fault",
 }
+
+// VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
+// that volume still above its low mark, or of the trimmer having switched itself off: the one
+// word anybody in Legion gets that the disk the roles of an issue share is filling under them
+// (INFRA-2009). It is the architect's and not the controller's because the work that filled the
+// volume is the issue's — a repository cache, a build tree, a test run's artefacts — and the
+// architect is who can stop or redirect it.
+const VolumeNearFullNotice NoticeKind = "volume-near-full"
 
 // validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {

@@ -48,9 +48,7 @@ func TestAnOwningClientLeavesAStreamANewerGenerationStampedUntouched(t *testing.
 		Replicas:   3,
 		Metadata:   map[string]string{generationKey: strconv.Itoa(streamConfigGeneration + 1)},
 	}
-	if _, err := js.AddStream(&newer); err != nil {
-		t.Fatalf("the newer build creates the stream: %v", err)
-	}
+	cluster.CreateStream(t, newer)
 	for _, tc := range []struct {
 		name    string
 		options []ConnectOption

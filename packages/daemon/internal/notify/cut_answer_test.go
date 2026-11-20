@@ -1,0 +1,83 @@
+package notify
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// cutAnswer serves status with half of body under a Content-Length for the whole of it, then
+// closes the connection, as a reset mid-body reads to the client: the headers, part of the body,
+// then an unexpected end.
+func cutAnswer(t *testing.T, status int, body string) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, out, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Errorf("hijack the connection: %v", err)
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintf(out, "HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s",
+			status, http.StatusText(status), len(body), body[:len(body)/2])
+		_ = out.Flush()
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// A listener answer whose body could not be read to its end is no answer at all (review round 19
+// of #4220): what the listener said is unknown, so each reader returns a plain error that asking
+// again can clear, never a refusal or an outcome read from part of a body. RoleHolder gives no
+// RoleLookupRefused, which a forget would report as a fault an operator must fix; Publish gives
+// none of its refusal kinds, a role nobody holds among them; and DeleteSession does not report
+// a delete the listener may have refused.
+//
+// The controls (the pull request records each run): RoleHolder reading a cut 200 or 404 as a
+// refusal; DeleteSession reading a cut 200 as deleted.
+func TestAnAnswerCutOffMidBodyIsNoAnswer(t *testing.T) {
+	ctx := context.Background()
+	t.Run("RoleHolder", func(t *testing.T) {
+		for _, tc := range []struct {
+			name   string
+			status int
+			body   string
+		}{
+			{"a 200", http.StatusOK, `{"role":"legion-x","holder":"ses_s","holder_state":"live","last_seen":1,"title":"a title long enough to cut"}`},
+			{"a 404", http.StatusNotFound, `{"error":"…","reason":"holder_lapsed","holder":"ses_s","holder_state":"unresponsive"}`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				holder, state, err := New(cutAnswer(t, tc.status, tc.body), "").RoleHolder(ctx, "legion-x")
+				var refused *RoleLookupRefused
+				if err == nil || errors.As(err, &refused) {
+					t.Fatalf("RoleHolder of a cut %s = %q (%q), %v; want a plain error, no RoleLookupRefused", tc.name, holder, state, err)
+				}
+				if !strings.Contains(err.Error(), "could not be read to its end") {
+					t.Fatalf("RoleHolder of a cut %s = %v; want it to say the answer could not be read", tc.name, err)
+				}
+			})
+		}
+	})
+	t.Run("Publish", func(t *testing.T) {
+		err := New(cutAnswer(t, http.StatusNotFound, `{"error":"no live session holds the role","reason":"unclaimed"}`), "").
+			Publish(ctx, "notifications.role.legion-x", "a notice", map[string]string{"k": "v"}, "key-1")
+		if err == nil || errors.Is(err, ErrNoHolder) || errors.Is(err, ErrHolderUnresponsive) {
+			t.Fatalf("Publish answered by a cut 404 = %v; want a plain error, no refusal kind", err)
+		}
+		if !strings.Contains(err.Error(), "could not be read to its end") {
+			t.Fatalf("Publish answered by a cut 404 = %v; want it to say the answer could not be read", err)
+		}
+	})
+	t.Run("DeleteSession", func(t *testing.T) {
+		stopped, err := New(cutAnswer(t, http.StatusOK, `{"deleted":false,"reason":"the registration is newer than the stop"}`), "").
+			DeleteSession(ctx, "ses_s", DeleteConditions{NotRegisteredAfter: time.Now()})
+		if err == nil || stopped.Deleted {
+			t.Fatalf("DeleteSession answered by a cut 200 = %+v, %v; want an error and no delete reported", stopped, err)
+		}
+	})
+}

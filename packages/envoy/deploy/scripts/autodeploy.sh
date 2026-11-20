@@ -309,9 +309,11 @@ pg_client() {
 # answers f and the key's holder, takes nothing and reads nothing of the schema, and the next try
 # follows a second later as a fresh session holding nothing. The \if is what keeps the read out of
 # a refused try, and it is no nicety. A read that ran behind a held key can fail (a first boot
-# holds the key before schema_migrations is committed, and the runner's one-time widening ALTER
-# TABLE makes the read wait on its lock), and under ON_ERROR_STOP=1 that failure ends psql non-zero,
-# which would end this read in its caller rather than try the key again.
+# holds the key before schema_migrations is committed, and the runner's one-time ALTER TABLE,
+# which widens the version and adds the name and checksum columns, makes the read wait on its
+# lock_timeout), and under ON_ERROR_STOP=1 that failure ends psql non-zero, which would end this
+# read in its caller rather than try the key again. Once the deadline passes with the key still
+# held the read fails, and the caller refuses to deploy rather than wait for ever.
 #
 # Every wait of a try takes what <deadline> leaves: its psql's `timeout` inside the container, and
 # lock_timeout, which ends a statement's wait for a table lock, so a try that starts a second before

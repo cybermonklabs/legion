@@ -146,6 +146,15 @@ type outbox struct {
 	// limitsMu guards it (deferral, noteLimit).
 	limitsMu sync.Mutex
 	limits   map[githubrest.Budget]rateLimit
+	// unheldWarned is every claim publish has written its refusal's Warn line for since that
+	// claim's hold last passed (a claim.Token), so a claim's held rows — one at each attempt of its
+	// backoff, and several of them taking turns — write one line between them. The claim's next
+	// publish the gate admits deletes it, so a later refusal is written again. It holds at most one
+	// entry a claim the supervisor holds.
+	unheldWarned sync.Map
+	// controllerLaunched is `controller: daemon`: the daemon launches the project's controller, so
+	// its claim holds the controller topic back (heldTopic). False is `controller: operator`.
+	controllerLaunched bool
 	// The lane registry (outbox_lanes.go). mu guards running, laneCtx and lanes; running is true
 	// between Run's start and its stop, laneCtx is Run's context, which every lane runs under, and
 	// lanes is each live lane by its key. wg counts the lane goroutines, so Run returns only once
@@ -181,13 +190,15 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+// newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
+// which decides whether the launched controller claim holds the controller topic back (heldTopic).
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
-		handlers: handlers, gatedSteps: gatedSteps,
+		handlers: handlers, gatedSteps: gatedSteps, controllerLaunched: controllerLaunched,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
@@ -207,6 +218,93 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 			return workspace.CheckedOut(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working)
 		},
 	}
+}
+
+// publish is every executor's publish to Envoy (r.notices), and publishKept its publish with keep,
+// both held to the claims this daemon supervises (heldBack). A publish to the role topic of a
+// claim the daemon supervises, or to its project's controller topic under `controller: daemon`
+// (heldTopic), is made only while that claim holds the session it records
+// (supervise.Machine.HoldsItsSession, plan E's t-e-54): a claim the boot could not suspend keeps
+// its process, and that process keeps the Envoy role its session claimed, so a notice, a role
+// message, a phase's end, a hook's prompt, an update ask, a merge-queue removal or a controller
+// notice would reach a process working under another claim's session, or one no claim holds
+// (review rounds 13 to 16 of #4220). Such a publish is not made and answers notify.ErrNoHolder,
+// which every executor already answers its own way — a notice is held for its architect, a
+// merge-queue removal and a controller notice wait, and a role message, a phase's end, a hook's
+// prompt and an update ask finish undelivered — so an operator's settle of the name lets a held
+// row's next attempt through (a notice, a merge-queue removal, a controller notice), while a row
+// that finished undelivered is not sent again (review round 13 of #4220, note 36). A store that
+// does not answer publishes nothing and fails the attempt, which the row's backoff retries.
+//
+// HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
+// relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
+// newOutbox is given, so every executor, and every test that builds an outbox, publishes through
+// it. A kept publish is held as much as any other: its copy waits on the role's kept lane for the
+// role's next live holder, and while the unheld session's process lives, that holder is it. A
+// claim's role topics are held whatever its state: a retired or failed claim's unheld session may
+// still be a live process the daemon no longer manages, and the Envoy listener does not yet
+// withhold the role from it, so the daemon withholds its own messages. A topic of no claim this
+// daemon supervises, and every other topic, is published as made.
+func (r *outbox) publish(ctx context.Context, topic, message string, payload any, dedupeKey string) error {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return err
+	}
+	return r.notices.Publish(ctx, topic, message, payload, dedupeKey)
+}
+
+// publishKept is publish with keep (notify.Publisher.PublishKept), the publish phaseEnded and
+// hookPrompt share through publishKeptToRole, held as publish is: a topic heldBack refuses is
+// not published, kept or not, and answers the gate's notify.ErrNoHolder.
+func (r *outbox) publishKept(ctx context.Context, topic, message string, payload any, dedupeKey string) (bool, error) {
+	if err := r.heldBack(ctx, topic, dedupeKey); err != nil {
+		return false, err
+	}
+	return r.notices.PublishKept(ctx, topic, message, payload, dedupeKey)
+}
+
+// heldBack is the gate publish and publishKept share: nil when topic may be published to, and
+// otherwise why not.
+func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
+	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
+		if m, ok := r.supervisor.Machine(token); ok {
+			if err := m.HoldsItsSession(ctx); err != nil {
+				var refusal claim.Refusal
+				if !errors.As(err, &refusal) {
+					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
+				}
+				// One line per claim while its hold refuses, as holdRecorded writes one per
+				// refusal (warnRefusal): a held row asks again at each attempt of its backoff,
+				// and several rows of one claim take turns (outbox.unheldWarned).
+				if _, seen := r.unheldWarned.LoadOrStore(token, true); !seen {
+					log := r.log
+					if log == nil {
+						log = slog.Default()
+					}
+					log.Warn("outbox: not publishing to a claim that records a session it does not hold",
+						"topic", topic, "claim", token, "key", dedupeKey, "error", err)
+				}
+				return fmt.Errorf("%w: %s records a session it does not hold, so nothing is published to it: %w", notify.ErrNoHolder, token, err)
+			}
+			r.unheldWarned.Delete(token)
+		}
+	}
+	return nil
+}
+
+// heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
+// topic names, or, under `controller: daemon` alone, the project's controller claim for its
+// controller topic. Under `controller: operator` the controller topic is the operator's own
+// controller's, so no claim the daemon launched holds it back, a launched controller an earlier
+// boot retired included (stopLaunchedController); under `controller: daemon` the launched
+// controller claim is the deployment's controller, since one runs per project.
+func (r *outbox) heldTopic(topic string) (claim.Token, bool) {
+	if role, isRole := strings.CutPrefix(topic, notify.RoleTopicPrefix); isRole {
+		return claim.Token(role), true
+	}
+	if r.controllerLaunched && r.project != "" && topic == notify.ControllerTopic(r.project) {
+		return claim.ControllerToken(r.project), true
+	}
+	return "", false
 }
 
 // RunOnce drains every row of the project due now, in the order the lanes would run them within
@@ -415,19 +513,12 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		// Nobody is told: no architect can change an issue Dispatch does not have, a body it will
 		// never take, a writer its route refuses or an id of another issue, and the work the
 		// record is of went on without it. The line is what says the record is not in Dispatch,
-		// since nothing else would. The refusal is read as Dispatch's own error, not through
-		// dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER. settle
-		// comes here only with one (stepRecordRefused finds it first), so the zero error below is
-		// no path of its own: it keeps this line from a nil error should those two rules ever part.
-		// The other arms need no such guard, since one function there both decides and answers.
-		var refusal *dispatch.Error
-		if !errors.As(cause, &refusal) {
-			refusal = &dispatch.Error{}
-		}
-		told = func() {
-			r.log.Warn("outbox step record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
-				"step", value.ID, "status", refusal.Status, "code", refusal.Code, "error", cause)
-		}
+		// since nothing else would.
+		told = r.recordDropped(row, "step", value.ID, cause)
+	case record.PlanRecord:
+		// Nobody is told, for the step record's reasons: the plan is history of a run that went
+		// on without it, and the line is what says Dispatch does not hold it.
+		told = r.recordDropped(row, "plan", value.ID, cause)
 	}
 	var scoped context.Context
 	var finished func(write func(pgx.Tx) error) error
@@ -450,6 +541,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told()
 	}
 	return nil
+}
+
+// recordDropped is the one line that says Dispatch refused a record of the record lane for good
+// and its row dropped it: kind is the record's kind, step or plan, which names the record in the
+// message and is the log key its id goes under. The refusal is read as Dispatch's own error, not
+// through dispatch.PermanentRefusal, which answers nothing for a 403 such as STEP_WRITER;
+// recordRefused ended the row only on a *dispatch.Error, so the refusal is set.
+func (r *outbox) recordDropped(row record.OutboxRow, kind, id string, cause error) func() {
+	var refusal *dispatch.Error
+	errors.As(cause, &refusal)
+	return func() {
+		r.log.Warn("outbox "+kind+" record refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+			kind, id, "status", refusal.Status, "code", refusal.Code, "error", cause)
+	}
 }
 
 // messageRefusedPreview is how much of a refused message's first line its notice quotes: enough to
@@ -571,7 +676,7 @@ func statusRefusalTold(r *outbox, row record.OutboxRow, payload record.StatusWri
 // again then rather than climbing its backoff for days. A named moment already past is the backoff's.
 func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) error {
 	now := r.now().UTC()
-	delay := retryBackoff(row.Attempts)
+	delay := record.RetryBackoff(row.Attempts)
 	if after, _ := githubrest.RetryAfter(cause); after > delay {
 		delay = after
 	}
@@ -624,16 +729,6 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 	return latest, !latest.until.IsZero()
 }
 
-func retryBackoff(attempts int) time.Duration {
-	if attempts < 0 {
-		attempts = 0
-	}
-	if attempts > 6 {
-		attempts = 6
-	}
-	return time.Second << attempts
-}
-
 // permanentRefusal is a row's failure no retry repairs, so the row is finished with its follow-up
 // (finishRefused) rather than retried: a Dispatch status write or message post Dispatch refuses
 // the same way every time (dispatch.PermanentRefusal) — a refused status would hold every later
@@ -643,9 +738,11 @@ func retryBackoff(attempts int) time.Duration {
 // this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
 // purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
 // refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
-// stay permanent and end the row. A step record ends on exactly the refusals its route makes for
-// good (stepRecordRefused), so a credential answer retries; the router's NOT_FOUND of a Dispatch
-// older than the route is a wait of its executor's (publishStepRecord), and never reaches this.
+// stay permanent and end the row. A step record and a plan record end on exactly the refusals
+// their routes make for good (recordRefused), so a credential answer retries. The router's 404 of a
+// Dispatch that has no route for a record's or the role holders' write never reaches this: execute
+// makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
+// coded 404 it says.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
@@ -671,8 +768,8 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 			return false
 		}
 		return refusal.Status == http.StatusBadRequest || (refusal.Status == http.StatusNotFound && refusal.Code == dispatch.IssueNotFound)
-	case record.OutboxKindStepRecord:
-		return stepRecordRefused(err)
+	case record.OutboxKindStepRecord, record.OutboxKindPlanRecord:
+		return recordRefused(err)
 	default:
 		return false
 	}
@@ -703,7 +800,38 @@ func (w routineWaiting) Unwrap() error { return w.err }
 
 func (routineWaiting) Routine() bool { return true }
 
+// execute runs one row, and is the one place each row's run passes, so the rule for a Dispatch
+// that has no route for a write is here: its router's 404 (dispatch.NoRoute), which a Dispatch
+// older than the route answers and so does the older build while a release rolls out, so no
+// handler ran. For a kind whose route a Dispatch may not serve yet (waitsForTheRoute) that answer
+// is a wait, not a failure, so the daemon and Dispatch deploy in either order: the row runs again
+// on its backoff and is logged as a wait is (settle), INFO at its first run, DEBUG after, and WARN
+// from waitWarnAttempts on, about two minutes after the first run, once a minute at the backoff's
+// cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
+// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer,
+// and that answer for every other kind, is decided as its executor and permanentRefusal decide it.
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
+	err := r.run(ctx, row)
+	if waitsForTheRoute(row.Kind) && dispatch.NoRoute(err) {
+		return wait.Errorf("outbox row %d (%s) of %s waits for a Dispatch that serves the route: %v", row.ID, row.Kind, row.Issue, err)
+	}
+	return err
+}
+
+// waitsForTheRoute is whether a write of kind waits for a Dispatch that has no route for it: the
+// records of the record lane (a step's start and end, a retro's rating and a run's plan) and the
+// role holders' publication, whose routes came after the Dispatch a daemon may meet. Every other
+// kind's route stands on every Dispatch it is sent to, so that answer there means a dispatch_url
+// that reaches no such Dispatch, and it is the refusal it says: a status write, a message post and
+// a claim release end on it with their follow-ups (dispatch.PermanentRefusal), and a status write
+// left waiting would hold every later status of its issue behind it; the gated steps' and the
+// design gates' publications retry it as a failure.
+func waitsForTheRoute(kind record.OutboxKind) bool {
+	return record.LaneOf(kind) == record.LaneRecord || kind == record.OutboxKindRoleHoldersPublish
+}
+
+// run is the executor of row's kind.
+func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	payload, err := record.DecodeOutboxPayload(row)
 	if err != nil {
 		return fmt.Errorf("decode outbox row %d: %w", row.ID, err)
@@ -759,7 +887,14 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 	case record.RoleHoldersPublish:
 		return r.publishRoleHolders(ctx, value)
 	case record.StepRecord:
+		// A step record carrying a rating is the rating a retro gave the plan, which Dispatch
+		// takes on the record's rating route alone (publishStepRating).
+		if value.PlanRating != nil {
+			return r.publishStepRating(ctx, row, value)
+		}
 		return r.publishStepRecord(ctx, row, value)
+	case record.PlanRecord:
+		return r.publishPlanRecord(ctx, row, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.CheckWakeDue:
@@ -1240,15 +1375,11 @@ func (r *outbox) publishDesignGates(ctx context.Context, payload record.DesignGa
 // issue never publish a stale set. It is sent whole, empty included, since it replaces what
 // Dispatch holds, so a role whose claim ended leaves the set with no delete route.
 //
-// A Dispatch that has not got the route yet answers its router's 404 (dispatch.NoRoute), so the
-// daemon and Dispatch deploy in either order: that answer is a wait, not a failure. The row runs
-// again on its backoff and is logged as a wait is (settle): INFO at its first run, DEBUG after,
-// and WARN from waitWarnAttempts on, about two minutes after the first run, once a minute at the
-// backoff's cap. The wait wraps nothing of Dispatch's refusal, as the claim release's waits do
-// (claimHeldWait), so no reading of permanentRefusal can end the row on it. Every other answer
-// is decided as it was: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row
-// (permanentRefusal), and a 5xx, a codeless 4xx, a handler's 404 NOT_FOUND "not found" and a
-// transport failure are failures retried on the same backoff.
+// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
+// so the daemon and Dispatch deploy in either order. Every other answer is decided by
+// permanentRefusal: the route's own 404 ISSUE_NOT_FOUND and a coded 400 end the row, and a 5xx, a
+// codeless 4xx, a handler's 404 NOT_FOUND "not found" and a transport failure are failures retried
+// on the row's backoff.
 func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHoldersPublish) error {
 	if r.dispatch == nil {
 		return errors.New("role holders executor has no Dispatch client")
@@ -1266,9 +1397,6 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 		holders[i] = dispatch.RoleHolder{Role: string(holder.Role), Session: holder.Session}
 	}
 	if err := r.dispatch.PutRoleHolders(ctx, payload.Issue, holders); err != nil {
-		if dispatch.NoRoute(err) {
-			return wait.Errorf("the role holders of %s wait for a Dispatch that serves the route: %v", payload.Issue, err)
-		}
 		return fmt.Errorf("publish the role holders of %s: %w", payload.Issue, err)
 	}
 	return nil
@@ -1276,43 +1404,81 @@ func (r *outbox) publishRoleHolders(ctx context.Context, payload record.RoleHold
 
 // publishStepRecord writes one start or one end of a step onto Dispatch's record of it, under the
 // row's issue and the record's own id. Dispatch writes each field once and keeps what the write
-// leaves out, so the start and the end land in either order, and a write that runs again after a
-// lost answer changes nothing.
+// leaves out, so the start, the end and the rating land in any order, and a write that runs again
+// after a lost answer changes nothing.
 //
-// A Dispatch that has not got the route yet answers its router's 404 (dispatch.NoRoute), so the
-// daemon and Dispatch deploy in either order: that answer is a wait, not a failure, as it is for
-// the role holders' publication (publishRoleHolders). The row runs again on its backoff and is
-// logged as a wait is (settle): INFO at its first run, DEBUG after, and WARN from waitWarnAttempts
-// on. The wait wraps nothing of Dispatch's refusal, so no reading of stepRecordRefused can end the
-// row on it, and once Dispatch serves the route the row's next run writes the record and ends it.
-// Every other answer is decided by stepRecordRefused: a refusal its route makes for good ends the
-// row, and anything else is a failure retried on the same backoff.
+// A Dispatch that has not got the route yet answers its router's 404, which execute makes a wait,
+// so the daemon and Dispatch deploy in either order, and once Dispatch serves the route the row's
+// next run writes the record and ends it. Every other answer is decided by recordRefused: a refusal
+// its route makes for good ends the row, and anything else is a failure retried on the row's
+// backoff.
 func (r *outbox) publishStepRecord(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
 	if r.dispatch == nil {
 		return errors.New("step record executor has no Dispatch client")
 	}
-	write := dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
-		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
-		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
-		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
-	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, write); err != nil {
-		if dispatch.NoRoute(err) {
-			return wait.Errorf("the step record %s of %s waits for a Dispatch that serves the route: %v", payload.ID, row.Issue, err)
-		}
+	if err := r.dispatch.PutStep(ctx, row.Issue, payload.ID, stepWriteOf(payload)); err != nil {
 		return fmt.Errorf("write the step record %s of %s: %w", payload.ID, row.Issue, err)
 	}
 	return nil
 }
 
-// stepRecordRefused is whether Dispatch refused a step record in a way no retry changes: an issue
-// it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400 the shared rule
-// calls final, which leaves out an older Dispatch's refusal of a field this daemon added), a
-// writer its route refuses (403 STEP_WRITER: the daemon names its own session on every write, so
-// the route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE).
-// Everything else retries: a handler's 404 NOT_FOUND, an outage, "come back later", a codeless
-// answer and a credential an operator restores. The router's NOT_FOUND of a Dispatch older than
-// the route never reaches it: publishStepRecord makes that answer a wait.
-func stepRecordRefused(err error) bool {
+// publishStepRating writes the rating a retro gave the plan, which payload carries, onto the
+// retro's record on Dispatch, under the row's issue and the record's own id, through the record's
+// rating route (dispatch.Client.PutStepRating), with the record's identity, so the write makes the
+// record where the retro's start and end have not landed yet. Its answers are decided as a step
+// record's are (publishStepRecord).
+func (r *outbox) publishStepRating(ctx context.Context, row record.OutboxRow, payload record.StepRecord) error {
+	if r.dispatch == nil {
+		return errors.New("step record executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutStepRating(ctx, row.Issue, payload.ID, stepWriteOf(payload), dispatch.PlanRating(*payload.PlanRating)); err != nil {
+		return fmt.Errorf("write the rating of the step record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// stepWriteOf is the step write of payload's fields, the rating aside: the identity of the run, and
+// each field of its start or its end that payload carries.
+func stepWriteOf(payload record.StepRecord) dispatch.StepWrite {
+	return dispatch.StepWrite{Task: payload.Task, Step: payload.Step, Kind: payload.Kind, Role: payload.Role,
+		Type: payload.Type, Agent: payload.Agent, Generation: payload.Generation, Session: payload.Session,
+		Model: payload.Model, StartedAt: payload.StartedAt, EndedAt: payload.EndedAt, Result: payload.Result,
+		ReturnedTo: payload.ReturnedTo, Report: payload.Report}
+}
+
+// publishPlanRecord writes the plan one run of an issue carries out onto Dispatch, under the row's
+// issue and the plan's own id. Dispatch sets each field once, so a write that runs again after a
+// lost answer changes nothing. A Dispatch that has not got the route yet answers its router's 404,
+// which execute makes a wait; every other answer is decided by recordRefused, as a step record's is.
+func (r *outbox) publishPlanRecord(ctx context.Context, row record.OutboxRow, payload record.PlanRecord) error {
+	if r.dispatch == nil {
+		return errors.New("plan record executor has no Dispatch client")
+	}
+	tasks := make([]dispatch.PlanTask, len(payload.Tasks))
+	for i, task := range payload.Tasks {
+		tasks[i] = dispatch.PlanTask(task)
+	}
+	plan := dispatch.PlanWrite{Generation: payload.Generation, Source: payload.Source,
+		PlanDocument: (*dispatch.PlanDocument)(payload.PlanDocument), Tasks: tasks}
+	if err := r.dispatch.PutPlan(ctx, row.Issue, payload.ID, plan); err != nil {
+		return fmt.Errorf("write the plan record %s of %s: %w", payload.ID, row.Issue, err)
+	}
+	return nil
+}
+
+// recordRefused is whether Dispatch refused a step record, a rating or a plan in a way no retry
+// changes: an issue it does not have (404 ISSUE_NOT_FOUND), a body it will never take (a coded 400
+// the shared rule calls final, which leaves out the refusal of a field this daemon added by a
+// Dispatch from before #2461; a refusal naming the rating is no such refusal, since no Dispatch
+// refused the rating by name), a writer its route refuses (403 STEP_WRITER, which the step, the
+// rating and the plan routes all answer: the daemon names its own session on every write, so the
+// route's rule and the daemon's disagree) and an id of another issue (409 STEP_OTHER_ISSUE, or
+// PLAN_OTHER_ISSUE for a plan).
+// Everything else retries: a handler's 404 NOT_FOUND, which the code, not the status, tells from
+// ISSUE_NOT_FOUND, an outage, "come back later", a codeless answer and a credential an operator
+// restores. The router's NOT_FOUND of a Dispatch older than the route never reaches it: execute
+// makes that answer a wait.
+func recordRefused(err error) bool {
 	var refusal *dispatch.Error
 	if !errors.As(err, &refusal) {
 		return false
@@ -1326,7 +1492,7 @@ func stepRecordRefused(err error) bool {
 	case http.StatusForbidden:
 		return refusal.Code == steprecord.CodeWriter
 	case http.StatusConflict:
-		return refusal.Code == steprecord.CodeOtherIssue
+		return refusal.Code == steprecord.CodeOtherIssue || refusal.Code == steprecord.CodePlanOtherIssue
 	}
 	return false
 }
@@ -1694,7 +1860,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 		}
 		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
 	}
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
+	published := r.publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
 }
 
@@ -1725,11 +1891,11 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 			"row", row.ID, "issue", row.Issue, "role", payload.Role)
 		return nil
 	}
-	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
+	err := r.publish(ctx, notify.RoleTopicPrefix+payload.Role, payload.Body, payload.Body, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrHolderUnresponsive) {
-		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO then DEBUG rather than
-		// ERROR on every attempt, as the notice executor's own unresponsive branch does
-		// (notice_exceptions.go).
+		// A wait, not a failure: settle logs a wait.ErrWaiting at INFO, then DEBUG, and at WARN
+		// from attempt waitWarnAttempts on, rather than ERROR on every attempt, as the notice
+		// executor's own unresponsive branch does (notice_exceptions.go).
 		return wait.Errorf("%s's role message for %s waits for its holder, whose session the listener reports %s: %w",
 			row.Issue, payload.Role, notify.StateUnresponsive, err)
 	}
@@ -1737,8 +1903,8 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 	var denied notify.ErrPublishDenied
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
-		r.log.Info("outbox role message finished undelivered: its role has no live holder",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role)
+		r.log.Info("outbox role message finished undelivered: its role has no live holder, or its claim records a session it does not hold",
+			"row", row.ID, "issue", row.Issue, "role", payload.Role, "error", err)
 		return nil
 	case errors.As(err, &refused):
 		r.log.Info("outbox role message finished undelivered: its role's holder does not advertise the delivery mode",
@@ -1996,9 +2162,9 @@ func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Tok
 // publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
 // message.
 func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic, message, noHolder string, fields ...any) (bool, error) {
-	err := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
+	err := r.publish(ctx, topic, message, message, record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
-		r.log.Info(noHolder, fields...)
+		r.log.Info(noHolder, append(fields, "error", err)...)
 		return false, nil
 	}
 	return err == nil, err
@@ -2006,17 +2172,19 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 
 // publishKeptToRole publishes message to topic, the Envoy topic of one role's claim
 // (notify.RoleTopicPrefix and the claim's token), under the row's own key, and asks the listener
-// to keep it for the role's next live holder. A retry of the row while its copy is still on the
-// role's kept lane stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's
-// answers and what a repeat after the copy's hand-over does. It is the publish phaseEnded and
+// to keep it for the role's next live holder, through the gate every publish of the outbox goes
+// through (publishKept). A retry of the row while its copy is still on the role's kept lane
+// stores nothing new; notify.HTTPPublisher.PublishKept gives the listener's answers and what a
+// repeat after the copy's hand-over does. It is the publish phaseEnded and
 // hookPrompt share; each decides what comes before it, and each wraps the error it returns. What
 // each answer does to the row:
 //
 //   - a live holder took the message: the row ends, with nothing logged;
 //   - the listener kept the message on the role's kept lane for one hour: the row ends with kept
 //     logged at Info with fields, the listener being the message's keeper from there;
-//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder): the row
-//     ends undelivered with noHolder logged at Info with fields;
+//   - no live session holds the role and the listener kept nothing (notify.ErrNoHolder), or the
+//     role's claim records a session it does not hold and nothing was published (the gate's
+//     notify.ErrNoHolder): the row ends undelivered with noHolder logged at Info with fields;
 //   - a holder the listener calls unresponsive (notify.ErrHolderUnresponsive), and every other
 //     failure: the error is returned as the publisher gave it, and the row keeps its retry.
 //
@@ -2048,7 +2216,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // updateAsk's round ends at its bound whether or not the role answers. So whoever changes the
 // rule for a topic with no holder must read all six executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message, kept, noHolder string, fields ...any) error {
-	keeps, err := r.notices.PublishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
+	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
 	case errors.Is(err, notify.ErrNoHolder):
 		r.log.Info(noHolder, fields...)
@@ -2066,7 +2234,15 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	if err := r.notices.Publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID)); err != nil {
+	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
+		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
+		// attempt, and the row runs again on its backoff, so an operator's settle of the
+		// controller claim's name lets the next attempt through.
+		return wait.Errorf("the controller notice for %s waits for the controller's claim to hold its session: %w", row.Issue, err)
+	}
+	if err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil

@@ -178,14 +178,17 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	return c
 }
 
-// acknowledge admits the connection's hello and reads the launcher's first state on it.
+// acknowledge admits the connection's hello with the empty acknowledgement and reads the
+// launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
 	g.t.Helper()
 	return g.acknowledgeWith(shimwire.LauncherHelloAck{})
 }
 
-// acknowledgeWith admits the connection's hello with ack, whatever memory guard settings it
-// carries, and reads the launcher's first state on it.
+// acknowledgeWith admits the hello with an acknowledgement of the case's own, whatever memory
+// guard settings it carries, and reads the launcher's first state on it: the answer to an issue
+// pod's first role carries the settings the pod's cache trimmer runs by, and the absence of them
+// is what turns it off (launcher.go's serveVolumeTrim).
 func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.LauncherState {
 	g.t.Helper()
 	g.send(ack)
@@ -477,6 +480,49 @@ func TestAPlantedPathCannotRedirectCredentials(t *testing.T) {
 	g.stop(8)
 }
 
+// A link the previous agent planted in the private directory toward a directory outside it, under
+// a directory it made 0555, which the launcher, holding no capability, cannot unlink the link
+// from, is never followed when the next start clears the private directory: what the link names,
+// and the file in it, are as they were, and the start is refused naming the entry it could not
+// clear. os.RemoveAll opens such an entry with O_DIRECTORY|O_NOFOLLOW, which a gVisor release
+// follows a link through (rolefile.OpenDirectory), so in such a pod it deletes what the link
+// names; Linux refuses that open, so only such a gVisor shows that control fail.
+func TestWriteFilesRemovesAPlantedLinkWithoutFollowingIt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("as root a 0555 directory does not stop the unlink, so the removal never opens the link")
+	}
+	g := newRig(t)
+	workspace := t.TempDir()
+	keep := filepath.Join(workspace, "keep")
+	if err := os.WriteFile(keep, []byte("kept\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(g.private, "planted")
+	if err := os.Mkdir(planted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(planted, "link")
+	if err := os.Symlink(workspace, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(planted, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// The private directory keeps planted, which its own cleanup could not remove at 0555.
+	t.Cleanup(func() { _ = os.Chmod(planted, 0o755) })
+	marker := filepath.Join(t.TempDir(), "marker")
+	got := g.start(g.childStart(8, marker, map[string]string{"ENVOY_TOKEN": "envoy-8"}))
+	if got.OK || !strings.Contains(got.Error, "clear planted from the private directory") {
+		t.Fatalf("start result = %#v, want the start refused naming planted, the entry it could not clear", got)
+	}
+	if body, err := os.ReadFile(keep); err != nil || string(body) != "kept\n" {
+		t.Fatalf("%s, in the directory the planted link names, is %q (%v), want it kept", keep, body, err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("the planted link is %v (%v), want it left as it was", info, err)
+	}
+}
+
 // A replayed start of the live generation answers as before and rewrites nothing; the same id with
 // another payload, credentials included, is refused before anything is written; and a generation
 // that already ran is never started again.
@@ -580,30 +626,40 @@ type fleet struct {
 	conns                 map[string]*roleConn
 }
 
-// newFleet starts a launcher over a roles directory shaped as an issue pod's one container gives
-// it — every role's launcher token, gh bundle, private, state and agent-secrets directory — and
-// takes every role's connection through its hello, acknowledgement and state. A generation of
-// such a launcher runs in namespaces of its own, so a test that starts one calls
-// requireRoleNamespaces first.
+// newFleet is newFleetOf of a launcher that carries no fields of its own but its stop grace.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
 	return newFleetOf(t, Config{StopGrace: grace}, roles...)
 }
 
-// newFleetOf is newFleet of a launcher that carries cfg's own fields (its stop grace, its
-// leak-check directory) besides the fields every fleet's launcher is given.
+// newFleetOf is newFleetDialedOf with every role's hello admitted by the empty acknowledgement,
+// in the order of the --role list, which is the order an issue pod's daemon answers them in.
 func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
-	f := launchFleet(t, cfg, roles...)
-	for _, conn := range f.conns {
-		conn.acknowledge()
+	f := newFleetDialedOf(t, cfg, roles...)
+	for _, role := range roles {
+		f.role(role).acknowledge()
 	}
 	return f
 }
 
-// launchFleet is newFleetOf up to every role's hello, which it leaves unacknowledged, for a test
-// whose acknowledgements carry something of their own.
-func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
+// newFleetDialed is newFleetDialedOf of a launcher that carries no fields of its own but its
+// stop grace.
+func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
+	t.Helper()
+	return newFleetDialedOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetDialedOf starts a launcher that carries cfg's own fields (its stop grace, its
+// leak-check directory) besides the fields every fleet's launcher is given, over a roles
+// directory shaped as an issue pod's one container gives it — every role's launcher token, gh
+// bundle, private, state and agent-secrets directory — and takes every role's connection up to
+// its hello, acknowledging none: a case that drives the pod's cache trimmer or its memory guard
+// answers each hello itself, since the answer to the first role's is what hands the trimmer its
+// settings (launcher.go's serveVolumeTrim) and each answer hands the guard its own (serve). A
+// generation of such a launcher runs in namespaces of its own, so a test that starts one calls
+// requireRoleNamespaces first.
+func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
@@ -661,6 +717,22 @@ func launchFleet(t *testing.T, cfg Config, roles ...string) *fleet {
 		f.conns[conn.hello.Role] = conn
 	}
 	return f
+}
+
+// stop ends the container's context and answers what Run returned, putting it back where the
+// case's own cleanup reads it: the cleanup waits for one value, and a case that read it and
+// kept it would leave the cleanup waiting out its bound for a launcher that had already left.
+func (f *fleet) stop() error {
+	f.t.Helper()
+	f.cancel()
+	select {
+	case err := <-f.result:
+		f.result <- err
+		return err
+	case <-time.After(testwait.Bounded(f.t, 30*time.Second, time.Second)):
+		f.t.Fatalf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
+		return nil
+	}
 }
 
 // role is the daemon end of role's connection.

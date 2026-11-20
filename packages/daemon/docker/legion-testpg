@@ -491,7 +491,11 @@ check)
 	bin=$(bindir)
 	"$bin/postgres" --version
 	"$bin/initdb" --version
-	control=$(pg_config --sharedir)/extension/vector.control
+	# The extension is the selected server's, so its share directory is read from that server's own
+	# pg_config: the pg_config first on PATH is postgresql-common's, which answers for the newest
+	# client installed, and a client of another major would name a share directory this server
+	# never reads.
+	control=$("$bin/pg_config" --sharedir)/extension/vector.control
 	[ -f "$control" ] || die "no pgvector: $control is missing"
 	echo "pgvector $(sed -n "s/^default_version = '\(.*\)'/\1/p" "$control")"
 	;;

@@ -773,11 +773,19 @@ type cliShell struct {
 // answers both streams and the exit code.
 func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput, int) {
 	s.t.Helper()
+	return s.run(extra, "bun", append([]string{program}, args...)...)
+}
+
+// run runs `name args...` in the shell, with extra after the shell's own variables, where a
+// variable extra names again replaces the shell's (os/exec keeps the last), and answers both
+// streams and the exit code.
+func (s cliShell) run(extra []string, name string, args ...string) (cliOutput, int) {
+	s.t.Helper()
 	home := filepath.Join(s.dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		s.t.Fatal(err)
 	}
-	command := exec.Command("bun", append([]string{program}, args...)...)
+	command := exec.Command(name, args...)
 	command.Dir = s.dir
 	command.Env = []string{
 		"PATH=" + os.Getenv("PATH"),
@@ -801,7 +809,7 @@ func (s cliShell) bun(extra []string, program string, args ...string) (cliOutput
 	if err != nil {
 		exit, ok := err.(*exec.ExitError)
 		if !ok {
-			s.t.Fatalf("run %s under bun: %v", program, err)
+			s.t.Fatalf("run %s %s: %v", name, strings.Join(args, " "), err)
 		}
 		code = exit.ExitCode()
 	}
@@ -933,7 +941,7 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve()
+	c.sh.serve(c.serve)
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -944,13 +952,13 @@ func (r *handoffRecordsLive) claimant(role claim.Role, issue, session string) *h
 	return c
 }
 
-// serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt - answering it and starting the turn, as Oh My Pi does - for the step to read.
+// serve reads every frame the daemon sends the shim until the connection closes or the test ends
+// it (shim.serve): it answers the protocol negotiation and the state probe (idle, or streaming
+// while a turn runs), and takes each prompt - answering it and starting the turn, as Oh My Pi
+// does - for the step to read.
 func (c *handoffClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
-	_ = c.sh.conn.SetReadDeadline(time.Time{})
 	for {
 		line, err := reader.ReadBytes('\n')
 		if err != nil {
@@ -975,7 +983,11 @@ func (c *handoffClaimant) serve() {
 			c.turn = true
 			c.mu.Unlock()
 			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
+			select {
+			case c.prompts <- f:
+			case <-c.sh.stopping:
+				return
+			}
 		}
 	}
 }

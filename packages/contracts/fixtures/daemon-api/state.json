@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 152,
-    "caller": 152
+    "daemon": 168,
+    "caller": 168
   },
   "admission": {
     "cap": 5,
@@ -943,6 +943,13 @@
             "wait_seconds": 8,
             "interval_milliseconds": 250
           }
+        },
+        "volume_trim": {
+          "enabled": true,
+          "high_percent": 90,
+          "low_percent": 60,
+          "min_age_minutes": 120,
+          "interval_seconds": 30
         },
         "sandbox": {
           "type": "gvisor",

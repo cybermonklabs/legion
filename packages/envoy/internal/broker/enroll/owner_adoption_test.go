@@ -7,6 +7,7 @@ package enroll
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -98,6 +99,9 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 	// A second role of the same pod, stating no claim: the slot the daemon gives each role process.
 	unclaimedSlot := r.podEnrollment(t, launcher, workerPodAccount, "pod-uid-unclaimed")
 	unclaimedSlot.SessionID, unclaimedSlot.Slot, unclaimedSlot.Thumbprint = str("unclaimed-slot-session"), "planner-g1", unclaimed.Thumbprint+"-planner-g1"
+	// A pod's grants follow the pair of its account and the account its launcher's login proved
+	// (carryPrincipal), whatever owner it records.
+	podCarry := exchange.PodLaunchPrincipal(workerPodAccount, exchange.AccountPrincipal(launcherAccount))
 
 	for _, c := range []struct {
 		name      string
@@ -123,19 +127,19 @@ func TestAnEnrollmentRecordsTheOwnerItsCallerProved(t *testing.T) {
 			name:  "a pod a launcher enrols under a claim belongs to that claim of the launcher's login",
 			cred:  launcher,
 			in:    claimed,
-			owner: "claim:" + launcherAccount + "/" + plannerClaim, claim: plannerClaim, principal: "account:" + workerPodAccount,
+			owner: "claim:" + launcherAccount + "/" + plannerClaim, claim: plannerClaim, principal: podCarry,
 		},
 		{
 			name:  "a pod that states no claim belongs to its own pod",
 			cred:  launcher,
 			in:    unclaimed,
-			owner: "machine:legion-daemon/pod-uid-unclaimed", principal: "account:" + workerPodAccount,
+			owner: "machine:legion-daemon/pod-uid-unclaimed", principal: podCarry,
 		},
 		{
 			name:  "a slot of a pod that states no claim belongs to that slot of its pod",
 			cred:  launcher,
 			in:    unclaimedSlot,
-			owner: "machine:legion-daemon/pod-uid-unclaimed/planner-g1", principal: "account:" + workerPodAccount,
+			owner: "machine:legion-daemon/pod-uid-unclaimed/planner-g1", principal: podCarry,
 		},
 		{
 			name:  "a machine's own session belongs to the machine its credential proved",
@@ -666,5 +670,114 @@ func TestAMachinesGrantStaysWithItsSession(t *testing.T) {
 		if held := readCarryState(t, r.svc, other.ID); held.LiveGrants != 0 {
 			t.Fatalf("the machine's other session %s holds %+v, want no grant", other.ID, held)
 		}
+	}
+}
+
+// pairedWorkerPodAccount is the account a deployment's worker pods move to from workerPodAccount,
+// which BROKER_SESSION_ACCOUNT_PAIRS pairs with it in the tests that pair them (pairAccounts).
+const pairedWorkerPodAccount = "system:serviceaccount:legion-next:legion-worker"
+
+// holdEnrollment takes enrollment id's row for update in a transaction of its own, as a renewal
+// holds it while it runs, and answers the function that ends that transaction; t's cleanup ends
+// it too. An end that would hand what it holds to a live pod of its claim passes over a pod held
+// this way (handOver, skip locked) and leaves the row dormant.
+func holdEnrollment(t *testing.T, svc *Service, id uuid.UUID) (release func()) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := svc.Store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction holding %s: %v", id, err)
+	}
+	release = func() { _ = tx.Rollback(ctx) }
+	t.Cleanup(release)
+	if _, err := tx.Exec(ctx, `select 1 from enrollments where id=$1 for update`, id); err != nil {
+		t.Fatalf("hold enrollment %s: %v", id, err)
+	}
+	return release
+}
+
+// TestAPairedTakeGoesThroughTheSessionRuleAndTheClaimRuleIsUnchanged: a paired account's pod takes
+// what the other account's enrollments of its session name hold by the session rule, and nothing
+// more than that rule gives; the claim rule beside it reads the owner alone and is as it was.
+// Three pods of one claim ran as the first account: one of the session name the next pod states,
+// one of another name, both ended dormant holding a grant, a pending request and a withheld
+// name, and one of a third name still up and holding a grant. The claim's next pod, running as
+// the paired account, takes all three things from the first by the session rule, although the
+// claim rule finds that row too; only the grant and the request from the second, by the claim
+// rule, which leaves a withheld name where it is because a withhold binds a session name; and
+// nothing from the live third.
+func TestAPairedTakeGoesThroughTheSessionRuleAndTheClaimRuleIsUnchanged(t *testing.T) {
+	ctx := context.Background()
+	r := newPodRig(t)
+	r.svc.ServicesByAccount[pairedWorkerPodAccount] = podLoginService
+	pairAccounts(t, r.svc, workerPodAccount, pairedWorkerPodAccount)
+	launcher := r.login(t, launcherAccount, "pod-uid-daemon")
+	const name, otherName, thirdName = "planner-session-1", "planner-session-2", "planner-session-3"
+	// The three pods are up at once, so none takes anything of another's at its enrolment.
+	sameName := claimPod(t, r, launcher, plannerClaim, name, "pod-uid-1")
+	otherNamed := claimPod(t, r, launcher, plannerClaim, otherName, "pod-uid-2")
+	live := claimPod(t, r, launcher, plannerClaim, thirdName, "pod-uid-3")
+	sameNameGrant, sameNameRequest := insertLiveGrant(t, r.svc, sameName.ID), insertPendingRequest(t, r.svc, sameName.ID)
+	withholdSecret(t, r.svc, sameName.ID, "FIRST_KEY")
+	otherNamedGrant, otherNamedRequest := insertLiveGrant(t, r.svc, otherNamed.ID), insertPendingRequest(t, r.svc, otherNamed.ID)
+	withholdSecret(t, r.svc, otherNamed.ID, "SECOND_KEY")
+	liveGrant := insertLiveGrant(t, r.svc, live.ID)
+
+	// The first two pods stop renewing and the sweep ends them while the third's renewal holds its
+	// row, so neither end hands what it held to the third (handOver passes over a held pod) and
+	// both rows go dormant holding it, for the claim's next pod.
+	lapseLease(t, r.svc, sameName.ID)
+	lapseLease(t, r.svc, otherNamed.ID)
+	release := holdEnrollment(t, r.svc, live.ID)
+	if _, err := r.svc.EndLapsed(ctx); err != nil {
+		t.Fatalf("EndLapsed: %v", err)
+	}
+	release()
+	for _, e := range []Enrollment{sameName, otherNamed} {
+		if left := readCarryState(t, r.svc, e.ID); !left.Dormant || left.LiveGrants != 1 || left.Pending != 1 {
+			t.Fatalf("pod %s is %+v after the sweep, want it dormant holding its grant and its pending request: this test measures what the next pod takes", e.ID, left)
+		}
+	}
+
+	in := r.podEnrollment(t, launcher, pairedWorkerPodAccount, "pod-uid-next")
+	in.SessionID, in.Claim = str(name), plannerClaim
+	next, err := r.svc.Create(ctx, launcher, in)
+	if err != nil {
+		t.Fatalf("the paired account's pod of the claim under %s = %v, want it enrolled: it takes the name its pair holds", name, err)
+	}
+	if got, want := sessionNameHolder(t, r.svc, name), exchange.AccountPrincipal(pairedWorkerPodAccount); got != want {
+		t.Fatalf("the name %s is held by %q, want the paired account %q", name, got, want)
+	}
+	for what, grant := range map[string]uuid.UUID{"the same name's": sameNameGrant, "the other name's": otherNamedGrant} {
+		if holder := grantHolder(t, r.svc, grant); holder != next.ID {
+			t.Fatalf("%s grant %s hangs off %s, want the next pod's %s", what, grant, holder, next.ID)
+		}
+	}
+	for what, request := range map[string]string{"the same name's": sameNameRequest, "the other name's": otherNamedRequest} {
+		if holder := requestHolder(t, r.svc, request); holder != next.ID {
+			t.Fatalf("%s request %s hangs off %s, want the next pod's %s", what, request, holder, next.ID)
+		}
+	}
+	if got, want := withheldNames(t, r.svc, next.ID), []string{"FIRST_KEY"}; !slices.Equal(got, want) {
+		t.Fatalf("the next pod withholds %v, want %v: the session rule moves the same name's withheld name, the claim rule no other name's", got, want)
+	}
+	if got := withheldNames(t, r.svc, sameName.ID); len(got) != 0 {
+		t.Fatalf("the same name's pod still withholds %v, want nothing: the paired take is the session rule's, which moves withheld names", got)
+	}
+	if got, want := withheldNames(t, r.svc, otherNamed.ID), []string{"SECOND_KEY"}; !slices.Equal(got, want) {
+		t.Fatalf("the other name's pod withholds %v, want %v: the claim rule leaves a withheld name with the session name it binds", got, want)
+	}
+	if holder := grantHolder(t, r.svc, liveGrant); holder != live.ID {
+		t.Fatalf("the live pod's grant %s hangs off %s, want the live pod's %s: the claim rule takes nothing from a pod still up", liveGrant, holder, live.ID)
+	}
+	// Each predecessor's requests are its pending one and the granted one insertLiveGrant writes
+	// beside its grant.
+	want := []adoption{
+		{From: sameName.ID, Rule: "session", Grants: 1, Requests: 2, Withheld: 1},
+		{From: otherNamed.ID, Rule: "claim", Grants: 1, Requests: 2, Withheld: 0},
+	}
+	slices.SortFunc(want, func(a, b adoption) int { return strings.Compare(a.From.String(), b.From.String()) })
+	if got := adoptionsOf(t, r.svc, next.ID); !slices.Equal(got, want) {
+		t.Fatalf("the next pod's enrollment.adopted rows are %+v, want %+v: the same name's pod by the session rule, the other name's by the claim rule, and none for the live pod", got, want)
 	}
 }

@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/steprecord"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
@@ -943,6 +945,18 @@ type HandoffComplete struct {
 	// Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
+	// PlanRating is the rating of the plan the issue ran, as the completion named it: the route held
+	// it to the scale and to a reason (api's planRatingOf, its one producer), and nil is a
+	// completion that named none. Only the completion that ends the retro carries one, and which
+	// completion that is the workflow judges where it ends the retro, on the issue as the fact's
+	// own transaction reads it (workflow's planRatingRefusal); it writes the rating onto the
+	// retro's record as it stands.
+	PlanRating *record.PlanRating
+	// MustRate is whether the completion that ends the retro must carry PlanRating: the claim's
+	// plugin declared the contract that added the rating (api.PlanRatingContract) or a later one,
+	// whose tool takes it. The route reads it from the claim, which no state of the issue changes;
+	// a plugin before that contract sends no rating, and its retro ends with none.
+	MustRate bool
 }
 
 func (f HandoffComplete) namedIssue() (string, bool) { return f.Issue, true }
@@ -1062,14 +1076,27 @@ func (f CloseRoot) Message() string {
 // why the claim's process was last found gone and StartFailure why its last start did not produce
 // a running agent, each as the runtime said it and empty when the claim has none: the two answer
 // different questions — a worker that kept dying and a worker that could never start — and the
-// notices this fact sends name both, since the architect reading them has no other way to learn
-// either (dispatch://INFRA-714 R6).
+// failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
+// since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
+// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
+// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
+// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
+// (workflow's deathReason).
+//
+// PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
+// read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
+// runtime.Observation.PodEnd): `Evicted: The node was low on resource: ephemeral-storage. ...`
+// and nothing of the role's own log. It is carried beside Reason and never folded into it,
+// because the two say different things — Reason is what the supervisor decided, PodEnd what the
+// cluster did — and because it is persisted on the claim, so the boot's replay of a failure no
+// daemon applied reports the same end (the daemon's replayTerminal).
 type ClaimFailed struct {
 	Issue        string
 	Role         claim.Role
 	Reason       string
 	Death        string
 	StartFailure string
+	PodEnd       string
 	// Cause is the one word for what failed the claim, chosen by the site that failed it and
 	// carried beside Reason's sentence (supervise.FailureCause, Claim.FailureCause): one sentence
 	// covers several events, and a notice that names the word says which of them this was. It is
@@ -1134,6 +1161,25 @@ type MemoryGuardKill struct {
 }
 
 func (f MemoryGuardKill) namedIssue() (string, bool) { return f.Issue, true }
+
+// VolumeNearFull is one sweep of an issue pod's volume as its launcher reported it: the cache
+// trimmer in that pod's launcher process swept the cache roots and the volume was still above
+// its low mark when it stopped, or the trimmer has switched itself off after three faults. It is
+// never decoded from an event — the launcher's frame reaches the runtime, and the daemon's
+// Kubernetes wiring applies one fact per report under an id of its own (INFRA-2009).
+//
+// Issue is the issue whose pod reported, PodUID the pod the launcher is authenticated for, and
+// Report everything the sweep said, as the record keeps it. The workflow's handler decides from
+// the daemon's bounds whether the issue's architect is told (workflow's volumeNearFull): two
+// reports of one sweep are two facts, so the id the caller applies it under must be unique per
+// report.
+type VolumeNearFull struct {
+	Issue  string
+	PodUID string
+	Report record.VolumeNearFull
+}
+
+func (f VolumeNearFull) namedIssue() (string, bool) { return f.Issue, true }
 
 // ClaimReady is a claim ready to be prompted, from either of two sources: the supervision
 // observation of a launch's ready, its agent having taken its Envoy role and said it can be
@@ -1451,6 +1497,25 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // (api's handoffComplete), so a worker reads the same words from either.
 func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
 	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
+// PlanRatingRequired is the 400 PLAN_RATING_REQUIRED refusal of what, the completion that ends the
+// retro, which carries no rating of the plan though its caller must rate (HandoffComplete.MustRate).
+// The workflow answers it where it ends the retro (its planRatingRefusal), and records nothing.
+func PlanRatingRequired(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_REQUIRED", Message: fmt.Sprintf(
+		"%s carries no rating of the plan, and the completion that ends the retro rates it: rate the plan the issue ran from %d (the plan cost the work) to %d (the plan fit the work) in planRating, say why in planReason, and send it again; nothing was recorded", what, steprecord.RatingLeast, steprecord.RatingMost)}
+}
+
+// PlanRatingUnexpected is the 400 PLAN_RATING_UNEXPECTED refusal of what, a completion or a report
+// that names planRating or planReason and does not end the retro, which alone rates the plan.
+// Dropping them unread would let an agent believe it had rated the plan. The workflow answers it
+// for a completion that does not end the retro on the issue it reads (its planRatingRefusal), and
+// the completion route for a report on a look of a production check, which ends no phase (api's
+// checkReport), so an agent reads the same words from either. Neither records anything.
+func PlanRatingUnexpected(what string) *Refusal {
+	return &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(
+		"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}
 }
 
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
