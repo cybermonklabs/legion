@@ -1,14 +1,26 @@
 import { join } from "node:path";
-import { CorpusError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
+import type { CaseRow } from "./build-corpus";
+import {
+  CorpusError,
+  countAt,
+  listOf,
+  numberOf,
+  parsed,
+  recordOf,
+  sha256At,
+  stringOf,
+  textAt,
+} from "./corpus-io";
 import type { DispatchEvent } from "./dispatch-read";
-import type { BuildChain } from "./draw-io";
+import type { BuildChain, FinalTestTree } from "./draw-io";
 import { type AskDocument, askDocsOf, type LegionFact } from "./s10-mirror";
 
 /**
  * The files the claim's S10 inputs stage (`s10-inputs.ts`) writes that a later stage reads back,
- * with one owner: their shapes, the parsers that read each back and refuse any other shape, and
- * the rule that places the person's answer to a request, which the stage and the analysis both
- * run over their own walks of the log, so the two stages read one answer.
+ * with one owner: their shapes, the parsers that read each back and refuse any other shape, the
+ * inventory's rule (`inventoryOf`), which the stage writes its inventory by and the analysis
+ * holds that inventory to, and the rule that places the person's answer to a request in a walk
+ * of the log, by which the stage finds each request's judged moment.
  *
  * `s10-inputs.ts` writes the files under its `--out`, and `s10_judge.py` and `analyze.ts` read
  * them back: `inventory.jsonl` (`InventoryLine`, `inventoryLinesOf`), `requests/<ask id>.json`
@@ -396,22 +408,89 @@ export class AnswerLog {
   }
 }
 
-/** A JSON text read back, refused where it is not JSON (`s10-judged-io.ts` reads its files so too). */
-export function parsed(text: string, where: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new CorpusError(`${where} is not JSON`);
-  }
+/** One request of the inventory, with the corpus's cases of its ask, which are never written. */
+export interface InventoryRequest {
+  askId: string;
+  issueKey: string | null;
+  group: string;
+  rows: readonly CaseRow[];
 }
 
-/** A count: a whole number, not below zero. */
-export function countAt(value: unknown, where: string, field: string): number {
-  const count = numberOf(value);
-  if (count === null || !Number.isSafeInteger(count) || count < 0) {
-    throw new CorpusError(`${where} holds a ${field} that is no count`);
+/**
+ * The inventory (point 6): one request per ask among the approval cases of the eligible trees the
+ * draw put in report, sorted by ask id, with the corpus's cases of each ask, which are its
+ * provenance and never a second request. Every way the draw's two files could make a report case
+ * map to no request or to two is refused, and so is a case either names twice. The inputs stage
+ * writes its inventory by this rule, and the analysis holds that inventory to it.
+ */
+export function inventoryOf(
+  byCaseId: ReadonlyMap<string, CaseRow>,
+  trees: readonly FinalTestTree[],
+  report: readonly string[]
+): InventoryRequest[] {
+  const inReport = new Set<string>();
+  for (const caseId of report) {
+    if (inReport.has(caseId)) {
+      throw new CorpusError(`the draw's report slice names the case ${caseId} twice`);
+    }
+    inReport.add(caseId);
   }
-  return count;
+  const requests = new Map<string, InventoryRequest & { rows: CaseRow[] }>();
+  const placed = new Set<string>();
+  for (const tree of trees) {
+    for (const caseId of tree.cases) {
+      const row = byCaseId.get(caseId);
+      if (row === undefined) {
+        throw new CorpusError(
+          `the draw's tree ${tree.group} names the case ${caseId}, which the build does not hold`
+        );
+      }
+      if (placed.has(caseId)) {
+        throw new CorpusError(`the draw's trees name the case ${caseId} twice`);
+      }
+      placed.add(caseId);
+      if (row.kind !== "approval") continue;
+      if (tree.slice !== "report" || !inReport.has(caseId)) {
+        throw new CorpusError(
+          `the draw left the approval case ${caseId} of the eligible tree ${tree.group} out of ` +
+            "its report slice, where the claim's draw puts every one"
+        );
+      }
+      const known = requests.get(row.askId);
+      if (known === undefined) {
+        requests.set(row.askId, {
+          askId: row.askId,
+          issueKey: row.issueKey,
+          group: tree.group,
+          rows: [row],
+        });
+      } else if (known.group !== tree.group) {
+        throw new CorpusError(
+          `the ask ${row.askId} has cases in the trees ${known.group} and ${tree.group}, so its ` +
+            "one request would be judged twice"
+        );
+      } else {
+        known.rows.push(row);
+      }
+    }
+  }
+  for (const caseId of inReport) {
+    const row = byCaseId.get(caseId);
+    if (row === undefined) {
+      throw new CorpusError(
+        `the draw's report slice names the case ${caseId}, which the build does not hold`
+      );
+    }
+    if (!placed.has(caseId)) {
+      throw new CorpusError(
+        `the draw's report slice holds the case ${caseId}, which no eligible tree of its ` +
+          "record holds"
+      );
+    }
+  }
+  return [...requests.values()].sort((one, other) =>
+    one.askId < other.askId ? -1 : one.askId > other.askId ? 1 : 0
+  );
 }
 
 /** An event id or another whole number a file names, refused where it is none. */
@@ -421,22 +500,6 @@ function wholeAt(value: unknown, where: string, field: string): number {
     throw new CorpusError(`${where} holds a ${field} that is no whole number`);
   }
   return whole;
-}
-
-/** A text a file names, refused where it is none. */
-export function textAt(value: unknown, where: string, field: string): string {
-  const text = stringOf(value);
-  if (text === null) throw new CorpusError(`${where} holds a ${field} that is no text`);
-  return text;
-}
-
-/** A sha256 a file names, as 64 hexadecimal digits. */
-export function sha256At(value: unknown, where: string, field: string): string {
-  const sha256 = stringOf(value);
-  if (sha256 === null || !/^[0-9a-f]{64}$/.test(sha256)) {
-    throw new CorpusError(`${where} holds a ${field} that is no sha256`);
-  }
-  return sha256;
 }
 
 /** A record a file holds, refused where it is none. */

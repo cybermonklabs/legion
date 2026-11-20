@@ -20,27 +20,20 @@ import {
   runDigestOf,
 } from "../reserve";
 import { DecisionError, type ReserveVerdict } from "../s10-decision";
-import {
-  assertNoAnswer,
-  CandidateLog,
-  InputsLog,
-  inventoryOf,
-  main,
-  writeTimeAsk,
-} from "../s10-inputs";
+import { assertNoAnswer, CandidateLog, InputsLog, main, writeTimeAsk } from "../s10-inputs";
 import {
   AnswerLog,
   type CandidateCounts,
   INPUTS_VERSION,
   type InventoryLine,
   inventoryLinesOf,
+  inventoryOf,
   pageRecordOf,
   type RequestInputs,
   requestInputsOf,
   type StageRecord,
   stageRecordOf,
 } from "../s10-inputs-io";
-import { S10InputsError } from "../s10-stage";
 
 /**
  * `s10-inputs.ts` against a fake Dispatch that serves the reads it makes in the shapes the real
@@ -1773,7 +1766,7 @@ describe("the inventory", () => {
     expect(() => inventoryOf(byCaseId, trees.slice(0, 2), report)).toThrow(
       "which no eligible tree of its record holds"
     );
-    expect(() => inventoryOf(byCaseId, trees, report.slice(1))).toThrow(S10InputsError);
+    expect(() => inventoryOf(byCaseId, trees, report.slice(1))).toThrow(CorpusError);
     const unknown = [...report, "nowhere@2026-11-17T10:00:00Z"];
     expect(() => inventoryOf(byCaseId, trees, unknown)).toThrow("which the build does not hold");
   });

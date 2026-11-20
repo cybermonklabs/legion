@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { CaseKind } from "./build-corpus";
@@ -13,10 +14,11 @@ import type { NearDuplicateJoin, ParentChange, TreeOutcome } from "./trees";
  * `draw.ts` writes both into the directory holding the slices, and five commands read them
  * back: `run-round.ts` for the cases of the scored slices and the cut its dating rule applies,
  * `analyze.ts` for those cases, that cut and the key the cases were grouped by, `strata.ts`
- * for the cut, `refusals.ts` for the issue facts the never-decide rule needs, and
- * `s10-inputs.ts` for the final test's trees and the claim run and build the draw was made in.
- * So the shape of each file, where it sits and the rule that reads each fact out of it live
- * here, and the writer and every reader import them.
+ * for the cut, `refusals.ts` for the issue facts the never-decide rule needs, and the claim run's
+ * later stages, `s10-inputs.ts` and `analyze.ts --claim-s10`, for the final test's trees and the
+ * claim run and build the draw was made in (`claimDrawOf`). So the shape of each file, where it
+ * sits and the rule that reads each fact out of it live here, and the writer and every reader
+ * import them.
  *
  * A draw written before a field was recorded does not carry it, which is why `readDraw` hands
  * back `DrawFacts` and not the record's own type: the record's type says what a draw writes
@@ -663,6 +665,73 @@ export function slicesOf(text: string, path: string): DrawnSlices {
     slices[slice] = ids;
   }
   return slices;
+}
+
+/** The claim's draw as a later stage of the claim run reads it, with the sha256 of its two files. */
+export interface ClaimDraw {
+  directory: string;
+  trees: readonly FinalTestTree[];
+  report: readonly string[];
+  drawSha256: string;
+  slicesSha256: string;
+}
+
+/** The bytes of one of a draw's files, refused where they are not there. */
+async function drawBytesOf(path: string): Promise<Buffer> {
+  try {
+    return await readFile(path);
+  } catch {
+    throw new CorpusError(`${path} could not be read: --draw takes the directory the draw wrote`);
+  }
+}
+
+/**
+ * The claim's draw at `directory`, as every later stage of the claim run takes it
+ * (`s10-inputs.ts`, `analyze.ts --claim-s10`): refused unless the claim run made it under the
+ * read `reference` from the build `build` names, as its record says (the claim run and the sha256
+ * of each of the build's three files, each the bytes the build directory holds now, in one
+ * `chainRefusal`), and records that it applied no never-decide rule and the final test's trees.
+ * Each file is read once, so the sha256 a stage records is of the bytes these facts came from.
+ */
+export async function claimDrawOf(
+  directory: string,
+  build: BuildChain,
+  reference: string
+): Promise<ClaimDraw> {
+  const drawFile = drawPath(directory);
+  const slicesFile = slicesPath(directory);
+  const drawBytes = await drawBytesOf(drawFile);
+  const slicesBytes = await drawBytesOf(slicesFile);
+  const facts = drawFactsOf(drawBytes.toString("utf8"), drawFile);
+  const refusal = chainRefusal(facts.claimRun, build, BUILD_CHAIN_NAMES);
+  if (refusal !== null) {
+    throw new CorpusError(
+      `${drawFile} is not this claim run's draw of the build it reads: ${refusal}. A stage ` +
+        "takes only its own claim run's draw of the build's bytes now"
+    );
+  }
+  if (facts.finalTestReference !== reference) {
+    throw new CorpusError(
+      `${drawFile} was drawn under ${facts.finalTestReference ?? "no read of the reserve"}, and ` +
+        `this run reads under ${reference}`
+    );
+  }
+  if (facts.neverDecideApplied !== false) {
+    throw new CorpusError(
+      `${drawFile} does not record that it applied no never-decide rule, which the claim's draw ` +
+        "does not apply (draw.ts)"
+    );
+  }
+  if (facts.finalTestTrees === undefined) {
+    throw new CorpusError(`${drawFile} records no final test's trees`);
+  }
+  return {
+    directory,
+    trees: facts.finalTestTrees,
+    report: slicesOf(slicesBytes.toString("utf8"), slicesFile).report,
+    drawSha256: createHash("sha256").update(drawBytes).digest("hex"),
+    slicesSha256: createHash("sha256").update(slicesBytes).digest("hex"),
+  };
 }
 
 /**

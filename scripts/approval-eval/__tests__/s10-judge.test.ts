@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
+import { ruleVerdictOf } from "../s10-analysis";
 import {
   INPUTS_VERSION,
   type InventoryLine,
@@ -20,6 +21,7 @@ import {
   judgedOutcomeOf,
   judgedStageOf,
   RULE_VERSIONS,
+  recordedAnswersOf,
   reportedOutcomesOf,
   STARTED_FILE,
   STARTED_REASON,
@@ -32,7 +34,9 @@ import {
  * directory's one `bun test` runs them: over an inputs stage written here and read back through
  * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and every stage that
  * suite judges whole, that one among them, is read back here through `s10-judged-io.ts`, with the
- * constants both sides hold equal. That suite is handed this test's own Bun (`S10_BUN`), so its
+ * constants both sides hold equal, and the analysis's own recomputation of point 2's verdict from
+ * the answers each stage kept (`recordedAnswersOf`, `ruleVerdictOf`) is held to the verdict the
+ * driver recorded. That suite is handed this test's own Bun (`S10_BUN`), so its
  * read-back test runs `s10-judged-check.ts`. The rest test the admission the driver asks before it
  * reads anything (`s10-judge-admit.ts`), with a registration made for this test's own digest over
  * a bundle root of its own, as `s10-inputs.test.ts` makes one.
@@ -285,7 +289,8 @@ describe("s10_judge.py and the modules beside it", () => {
     }
     const outcomes = new Set<string>();
     const deviations = new Set<string>();
-    for (const stage of stages.values()) {
+    let recomputed = 0;
+    for (const [name, stage] of stages) {
       expect(stage.record.state).toBe("written");
       expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
       for (const outcome of stage.outcomes.values()) {
@@ -298,8 +303,21 @@ describe("s10_judge.py and the modules beside it", () => {
           expect(outcome.judges.filter((one) => one.transcript !== null).length).toBe(5);
           expect(outcome.sandbox?.listing?.lines).toBeGreaterThan(0);
         }
+        // The analysis reads the five answers the driver kept and recomputes point 2's verdict
+        // from them: under every version of the rule that gave a verdict, the verdict recorded.
+        const given = RULE_VERSIONS.filter(
+          (version) => outcome.byRule[version].outcome === "verdict"
+        );
+        if (given.length === 0) continue;
+        const kept = await recordedAnswersOf(join(keep, "stages", name), stage, outcome);
+        const rule = "answers" in kept ? ruleVerdictOf(kept.answers) : kept;
+        for (const version of given) {
+          expect(rule).toMatchObject({ verdict: outcome.byRule[version].verdict });
+        }
+        recomputed += 1;
       }
     }
+    expect(recomputed).toBeGreaterThan(0);
     expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
     expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
     const kept = (test: string): JudgedStage => {
