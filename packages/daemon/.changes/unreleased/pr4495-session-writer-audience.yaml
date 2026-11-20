@@ -20,5 +20,5 @@ body: |-
   controller's pod runs the launcher's roles-dir form for its one role. A pod whose writer audience
   differs from the configuration has drifted. The deployment makes the pool, its provider and the
   account's `roles/iam.workloadIdentityUser` for the pool's principal (docs/kubernetes.md,
-  "Selecting the store"). The daemon declares API contract 186 for the new launcher flag and the
+  "Selecting the store"). The daemon declares API contract 191 for the new launcher flag and the
   start command's `agentExecutable`, so the daemon and the worker image move together.

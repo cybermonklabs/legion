@@ -3,6 +3,7 @@ import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { api, apiErrorCodeIn, apiErrorMessage, issuePatchRequest } from "../../api/client";
 import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { stateForIssue } from "../issue/pins";
@@ -214,6 +215,10 @@ export function useIssueHeaderWrites(
   });
   const pinGuard = useSubmitGuard();
   const pin = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer, for at most `SEND_DEADLINE_MS`. The state
+    // is the viewer's alone, so the wait keeps back nobody else's change.
+    holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: ({ issueKey, pinned }: IssuePinSave) => `${issueKey} ${pinned ? "pinned" : "unpinned"}`,
     method: "PUT",
     write: ({ issueKey, pinned }, bounds) => api.putIssueState(issueKey, { pinned }, bounds),
@@ -244,7 +249,8 @@ export function useIssueHeaderWrites(
     },
     onSuccess: (next, { issueKey }) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // Over any read of the state still out, asked before the answer (`replaceQueryData`).
+      replaceQueryData<UserState>(queryClient, userStateQuery().queryKey, (current) => ({
         ...current,
         [issueKey]: next,
       }));

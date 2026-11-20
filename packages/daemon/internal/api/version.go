@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 186: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 191: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
 // `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
 // `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
@@ -2473,7 +2482,7 @@ package api
 // controller's pod runs the launcher's roles-dir form for its one role in place of the
 // single-role form (`--roles-dir` and `--role controller`, sandbox's
 // controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
-// launcher token from the controller's agent. A launcher built before 186 exits 2 on the unknown
+// launcher token from the controller's agent. A launcher built before 191 exits 2 on the unknown
 // flag in every pod the daemon creates with it, so the image probe, which holds the image's
 // pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
@@ -2482,7 +2491,7 @@ package api
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
 // launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
 // newSessionPeer). An older daemon also reads no fifth flag, and where it knows a plugin pair
-// every relaunch of an Oh My Pi claim recorded at 186 installs that pair and so keeps the pod
+// every relaunch of an Oh My Pi claim recorded at 191 installs that pair and so keeps the pod
 // whatever its image: each Oh My Pi start is refused and charged as a launch failure (a Claude
 // Code start is admitted), the controller's claim fails and its retries install into the same pod
 // until its Sandbox is deleted, and each issue claim on Oh My Pi fails and needs a retry once its
@@ -2492,7 +2501,7 @@ package api
 // round, the controller's pod at its next launch). The writer pool, its provider and the
 // account's grant to the pool's principal stay until then, since a pod that carries the flag
 // exchanges the writer token until it is replaced. Only once no launcher command carries the flag
-// is the daemon rolled back below 186 (docs/kubernetes.md, "Selecting the store"). A deployment
+// is the daemon rolled back below 191 (docs/kubernetes.md, "Selecting the store"). A deployment
 // that sets no writer audience renders no fifth flag, and its launcher reads no
 // `agentExecutable`, so its pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
@@ -2525,7 +2534,10 @@ package api
 // that merge, which ended at 2026-11-20T04:54:42Z, found 179 (#4540), 180 (#4049), 181 (#3831 and
 // #4273), 182 (#4173, #4180, #4193, #4392 and #4493 as well), 183 (#2230, #3712, #4030 and
 // #4432), 184 (#3659, #4065, #4553 and #4573) and 185 (#4175 and #4543) declared, so this entry
-// moved to 186, the lowest number above main's 178 that no other open pull request declares. Read
-// the base's own number and every open pull request again at every forward merge rather than from
-// this line.)
-const DaemonAPIVersion = 186
+// moved to 186, the lowest number above main's 178 that no other open pull request declares. The
+// forward merge of 2026-11-20 that brought in 1c7c8253 brought main's 188 (#4543's entry above). A
+// reading of every open pull request at that merge, which ended at 2026-11-20T10:16:19Z, found 189
+// (#3831, #4592 and #4596) and 190 (#4493 and #4578) declared, so this entry moved to 191, the
+// lowest number above main's 188 that no other open pull request declares. Read the base's own
+// number and every open pull request again at every forward merge rather than from this line.)
+const DaemonAPIVersion = 191
