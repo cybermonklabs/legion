@@ -185,11 +185,11 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	// selection is the sender's, not a set the list has to be scanned for, so there is nothing
 	// a single list read buys that is worth that.
 	//
-	// A selected session the sender may not see (hiddenBroadcastSessions) is a session nobody
+	// A selected session the sender may not see (sessionsHiddenFromReader) is a session nobody
 	// holds: the listener is asked nothing about it, so it is missing from what the reads find
 	// and excluded "no live session" with no title, and a send to hidden sessions alone answers
 	// 400 BROADCAST_EMPTY in the words a send to sessions nobody holds does.
-	hidden, err := s.hiddenBroadcastSessions(r.Context(), requested)
+	hidden, err := s.sessionsHiddenFromReader(r.Context(), requested)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -407,27 +407,10 @@ func (s *server) resolveBroadcastSessions(
 	return live, nil
 }
 
-// hiddenBroadcastSessions reports which requested sessions the request's reader may not see
-// (access.SessionClause), read in one statement (seenSessions): sessionHiddenFromReader's rule over
-// a whole selection. Work with no reader in ctx, and a reader that sees every object - among them an
-// open reader of a deployment that holds no private project (R9) - sees every session and costs no
-// read.
-func (s *server) hiddenBroadcastSessions(ctx context.Context, requested []string) (func(string) bool, error) {
-	reader, ok := readerFromContext(ctx)
-	if !ok || seesEveryObject(reader) {
-		return func(string) bool { return false }, nil
-	}
-	seen, err := s.seenSessions(ctx, refs.VisibilityArg(reader), requested)
-	if err != nil {
-		return nil, err
-	}
-	return func(sessionID string) bool { return !seen[sessionID] }, nil
-}
-
 // resolveBroadcastTargets judges each selected session against the record the session store
 // holds for it: it is a recipient when the store holds its session, that session has not gone,
 // and it advertises the chosen mode, and otherwise carries the reason it was left out. A session
-// the sender may not see is missing from live (hiddenBroadcastSessions), as one the store holds
+// the sender may not see is missing from live (sessionsHiddenFromReader), as one the store holds
 // no record of is.
 //
 // An unresponsive session is a recipient like any other: the listener stores what is sent to

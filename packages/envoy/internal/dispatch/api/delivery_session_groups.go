@@ -17,6 +17,11 @@ import (
 // Parent agent (api/delivery.go). The timeline carries every group, so these routes only write.
 // Access is the delivery settings' rule, any signed-in person or agent (putDeliverySettings), and,
 // as there, no event is appended: a group has no project, issue or artifact to own one.
+//
+// A session a write names - a group's sessions, what an edit adds or removes - is read as the
+// writer sees it (refuseHiddenSessions) before anything of a group is locked or read: one it may not
+// see is a session nobody holds, refused 404 SESSION_NOT_FOUND, so no refusal names the group that
+// holds it and no write reaches it.
 
 // createDeliverySessionGroupInput is the body of POST /api/v1/delivery/session-groups.
 type createDeliverySessionGroupInput struct {
@@ -47,6 +52,9 @@ func (s *server) createDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 	}
 	if len(sessions) == 0 {
 		writeError(w, "SESSION_GROUP_INPUT", http.StatusBadRequest, "sessions must name at least one session")
+		return
+	}
+	if s.refuseHiddenSessions(w, r, sessions) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -104,6 +112,9 @@ func (s *server) updateDeliverySessionGroup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	if update.Remove, ok = sessionGroupSessions(w, "remove", input.Remove); !ok {
+		return
+	}
+	if s.refuseHiddenSessions(w, r, update.Add, update.Remove) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -184,6 +195,26 @@ func sessionGroupSessions(w http.ResponseWriter, field string, values []string) 
 		}
 	}
 	return sessions, true
+}
+
+// refuseHiddenSessions answers 404 SESSION_NOT_FOUND for the first session of lists the request's
+// reader may not see (sessionsHiddenFromReader, access.SessionClause), in the words a session nobody
+// holds is refused in elsewhere (withinSessionScope), and reports whether it answered. While a
+// project is private a session nobody holds is one the writer does not see either, so the two take
+// this one path; an open writer of a deployment that holds no private project reads nothing for it
+// (R9), and every other writer is refused the deployment's rows before this (withinProjectScope).
+func (s *server) refuseHiddenSessions(w http.ResponseWriter, r *http.Request, lists ...[]string) bool {
+	named := slices.Concat(lists...)
+	hidden, err := s.sessionsHiddenFromReader(r.Context(), named)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return true
+	}
+	if index := slices.IndexFunc(named, hidden); index >= 0 {
+		writeError(w, codeSessionNotFound, http.StatusNotFound, "no session "+named[index])
+		return true
+	}
+	return false
 }
 
 // writeSessionGroupError answers a group write's refusal with its code, naming what it refers to.

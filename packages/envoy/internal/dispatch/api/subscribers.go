@@ -257,6 +257,23 @@ func (s *server) seenSessions(ctx context.Context, viewer any, ids []string) (ma
 	return seen, nil
 }
 
+// sessionsHiddenFromReader reports which of ids the request's reader may not see
+// (access.SessionClause), read in one statement (seenSessions): sessionHiddenFromReader's rule over a
+// list of sessions. Work with no reader in ctx, and a reader that sees every object - among them an
+// open reader of a deployment that holds no private project (R9) - sees every session and costs no
+// read.
+func (s *server) sessionsHiddenFromReader(ctx context.Context, ids []string) (func(string) bool, error) {
+	reader, ok := readerFromContext(ctx)
+	if !ok || seesEveryObject(reader) {
+		return func(string) bool { return false }, nil
+	}
+	seen, err := s.seenSessions(ctx, refs.VisibilityArg(reader), ids)
+	if err != nil {
+		return nil, err
+	}
+	return func(sessionID string) bool { return !seen[sessionID] }, nil
+}
+
 // unsubscribeIssueSession removes a session from an issue's topics. The issue is read first as
 // the caller reads it, as unsubscribeArtifactSession reads its document: an issue of a project the
 // caller does not see is a key no issue holds, before the listener is asked anything. The session

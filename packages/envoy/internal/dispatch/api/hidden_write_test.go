@@ -380,7 +380,7 @@ var personAndSessionReferences = []struct {
 	{"POST /api/v1/broadcasts", "session_ids", "/api/v1/broadcasts", probeSession,
 		`{"body":"To walked sessions.","delivery":"btw","session_ids":["%s"]}`, false, false, false},
 	{"POST /api/v1/delivery/session-groups", "sessions", "/api/v1/delivery/session-groups", probeSession,
-		`{` + probeActor + `,"name":"walked","sessions":["%s"]}`, false, false, false},
+		`{` + probeActor + `,"name":"walked","sessions":["%s"]}`, false, false, true},
 }
 
 // on is path with {project}, {issue} and {ask} written as project's own: its key, its issue and
@@ -511,6 +511,68 @@ func TestWithNoPrivateProjectASessionWriteAnswersAsToday(t *testing.T) {
 			}
 		}
 		awaitBackgroundWrites(t, walk.server)
+	}
+}
+
+// TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds: a session group's write
+// that names a session its writer may not see answers as the same write naming a session nobody
+// holds - the same status and bytes, the same work, and no table written (callPair) - and so names
+// no group that holds it. carol, who sees PRIV, groups privateSession; alice, an open viewer who does
+// not see PRIV, may not see it. Her group of it, her edit adding it to a group of her own, and her
+// edit removing it from carol's group each answer as the same write naming s-nobody does: a refusal
+// of a session another group holds would name carol's group, and a removal would empty it.
+func TestASessionGroupWriteAnswersASessionItsWriterMayNotSeeAsOneNobodyHolds(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	carols := createdID(t, walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated))
+	alices := createdID(t, walk.mustRequest(t, callerAlice, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "alice's sessions", "sessions": []string{"s-pub"}}, http.StatusCreated))
+	for _, call := range []struct{ name, method, path, body string }{
+		{"a group of the session", http.MethodPost, "/api/v1/delivery/session-groups", `{"name":"walked","sessions":["%s"]}`},
+		{"an edit adding it", http.MethodPatch, "/api/v1/delivery/session-groups/" + alices, `{"add":["%s"]}`},
+		{"an edit removing it", http.MethodPatch, "/api/v1/delivery/session-groups/" + carols, `{"remove":["%s"]}`},
+	} {
+		missing := walk.callPair(t, callerAlice, call.name, call.method, call.path, call.path,
+			json.RawMessage(fmt.Sprintf(call.body, privateSession)), json.RawMessage(fmt.Sprintf(call.body, "s-nobody")),
+			map[string]string{"s-nobody": privateSession}, false)
+		if missing.Code != http.StatusNotFound {
+			t.Errorf("%s: alice's write naming s-nobody answered %d %s, want 404: a session nobody holds is one she does not see while PRIV is private",
+				call.name, missing.Code, strings.TrimSpace(missing.Body.String()))
+		}
+	}
+}
+
+// TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday (R9): with PRIV made public alice sees
+// every session, so a group write of hers answers as before and reads nothing of whether she sees a
+// session it names (sessionVisibilityRead): her group of privateSession, which carol's group holds,
+// is refused naming carol's group, and her group of a session no group holds is made.
+func TestWithNoPrivateProjectASessionGroupWriteAnswersAsToday(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	walk.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/delivery/session-groups",
+		map[string]any{"name": "PRIV workers", "sessions": []string{privateSession}}, http.StatusCreated)
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	for _, call := range []struct {
+		session string
+		status  int
+		code    string
+	}{
+		{privateSession, http.StatusConflict, "SESSION_IN_GROUP"},
+		{"s-nobody", http.StatusCreated, ""},
+	} {
+		answer, statements, _ := walk.recorded(t, callerAlice, http.MethodPost, "/api/v1/delivery/session-groups",
+			map[string]any{"name": "alice's " + call.session, "sessions": []string{call.session}})
+		var refusal refusalAnswer
+		_ = json.Unmarshal(answer.Body.Bytes(), &refusal)
+		if answer.Code != call.status || refusal.Code != call.code {
+			t.Errorf("PRIV public: alice's group of %s answered %d %s, want %d %s", call.session, answer.Code,
+				strings.TrimSpace(answer.Body.String()), call.status, call.code)
+		}
+		if call.code != "" && !strings.Contains(refusal.Error, `"PRIV workers"`) {
+			t.Errorf("PRIV public: alice's group of %s is refused %q, want carol's group named, as before", call.session, refusal.Error)
+		}
+		if slices.ContainsFunc(statements, sessionVisibilityRead.MatchString) {
+			t.Errorf("PRIV public: alice's group of %s read a session's visibility, which every session passes for her: %v", call.session, statements)
+		}
 	}
 }
 
@@ -974,9 +1036,6 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	asCarol(http.MethodPut, "/api/v1/access-groups/"+group, map[string]any{"members": []string{seedCarol}})
 	asCarol(http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/groups/"+group, nil)
 	priority := createdID(t, asCarol(http.MethodPost, "/api/v1/priorities", map[string]any{"title": "A priority PRIV's people steer"}))
-	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
-		"name": "PRIV's sessions", "sessions": []string{"s1"},
-	}))
 	// A repository PRIV maps, which an issue's external reference names; and one PUB maps, an
 	// issue of which PRIV's issue links (privateHeldURL).
 	asCarol(http.MethodPut, "/api/v1/settings/repo-projects/acme/p_x", map[string]any{"project": seedPrivate})
@@ -1000,6 +1059,11 @@ func seedHiddenWrites(t *testing.T) hiddenWriteSeed {
 	// in no project only through that record (access.SessionClause). No call of the walk reads the
 	// list again.
 	seed.mustRequest(t, callerCarol, http.MethodGet, "/api/v1/agents", nil, http.StatusOK)
+	// A Delivery session group of s1, which carol may name now that Dispatch holds s1's record: a
+	// group write reads its sessions as its writer sees them (refuseHiddenSessions).
+	sessionGroup := createdID(t, asCarol(http.MethodPost, "/api/v1/delivery/session-groups", map[string]any{
+		"name": "PRIV's sessions", "sessions": []string{"s1"},
+	}))
 	// Each hidden session follows an ask of a project its callers see, so an unfollow that reached
 	// it would remove it.
 	asCarol(http.MethodPut, "/api/v1/asks/"+ask+"/followers/s-pub", nil)
