@@ -9,8 +9,9 @@ body: |-
     daemon suspended, it reads the issue workspace once through a role whose process runs in the
     pod (the new shim frame `workspace-work`) before it replaces the pod, once every role it asks
     has answered and no turn runs, and writes one message on the issue where the read finds work
-    that no branch or tag at origin holds, or fails. A replacement the bound lets through over a
-    role that has not answered, or over a turn, makes no read. A round whose pod has no role
+    that no branch or tag at origin holds, or fails; on a kept volume that the issue's next pod
+    mounts, that message says the work is still on the volume. A replacement the bound lets through
+    over a role that has not answered, or over a turn, makes no read. A round whose pod has no role
     process in it is replaced by issue where nothing holds the pod, and a launch into such a pod
     reads the round's bound when it runs and replaces the pod first, so the role starts once; a pod
     that a project's pause still keeps for a role it stopped is kept, and so is the pod of that

@@ -128,7 +128,8 @@ export function AgentRuntimeThread({
     // A person's direct message the session took as its own user turn is in the stream too,
     // normally tagged with its Dispatch id: then it shows once, where the session took it, still
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
-    // taken, so it shows twice (`packages/pi-envoy/AGENTS.md` says which turns go untagged). Any
+    // taken, so it shows twice (`packages/pi-envoy/README.md`, "A person's message from
+    // Dispatch", says which turns go untagged). Any
     // bus client can publish a tag, so only a person's stored message can be one, and only a
     // streamed message saying what that person wrote - beside what the stream names of what the
     // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its

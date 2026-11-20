@@ -255,7 +255,7 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 		if err := sandbox.CheckInstalled(checking, reads.client, agentSandbox); err != nil {
 			return err
 		}
-		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.Log)
+		return sandbox.CensusLegacyIssueSandboxes(ctx, reads.client, reads.opts.Namespace, reads.opts.Project, reads.opts.IssueDisks(), reads.opts.Log)
 	}
 	return sandboxBoot{clusterCheck: clusterCheck, probe: probe}, nil
 }
@@ -427,7 +427,7 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchTok
 func sandboxConfig(c config.SandboxConfig) sandbox.SandboxConfig {
 	settled := sandbox.SandboxConfig{Type: sandbox.SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
 	if m := c.MicroVM; m != nil {
-		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		settled.MicroVM = &sandbox.MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass, KeepVolume: m.KeepVolume}
 		if endpoint := m.Metadata; endpoint != nil {
 			settled.MicroVM.Metadata = &sandbox.MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
@@ -619,6 +619,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = savedWorkspaceBundle(st, opts.Project), st.DeleteRestoredWorkspaceBundle
+		// A pod whose Sandbox owns the issue's kept volume, and was created before the save,
+		// mounts the volume the work was taken off. The runtime asks this drop first for such a
+		// pod, and the store deletes the bundle the take would answer, without its body, so the
+		// pod is sent nothing and the bundle holds the issue's pod no longer.
+		opts.HeldWorkspaceBundle = heldWorkspaceBundle(st, opts.Project)
 		// The cache trimmer's own half: every report a pod's trimmer sends — of a sweep that
 		// left the volume above its low mark, or of the trimmer switching itself off — reaches
 		// the daemon through this, and the daemon turns it into the one fact that can tell the
@@ -667,6 +672,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 func savedWorkspaceBundle(st *store.Store, project string) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 		return st.TakeWorkspaceBundleForRestore(ctx, project, issue, podUID, podCreated)
+	}
+}
+
+// heldWorkspaceBundle is st's drop of a release's saved work that the kept volume of a pod of
+// project already holds, in the shape the runtime calls it (runtime.HeldWorkspaceBundleDrop).
+// project is the runtime's project token (sandbox.Options.Project). The drop follows the take's
+// project rule (store.Store.DropHeldWorkspaceBundle): a bundle of an issue that project does not
+// record is another project's daemon's, and a pod of this daemon drops none of it.
+func heldWorkspaceBundle(st *store.Store, project string) runtime.HeldWorkspaceBundleDrop {
+	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceBundle, bool, error) {
+		return st.DropHeldWorkspaceBundle(ctx, project, issue, podUID, keptSince)
 	}
 }
 

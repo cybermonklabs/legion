@@ -1,0 +1,30 @@
+HTTP/2 301 
+date: Thu, 19 Nov 2026 22:13:19 GMT
+content-type: application/json; charset=utf-8
+content-length: 213
+location: https://api.github.com/repositories/1146927990
+x-github-media-type: github.v3; format=json
+x-github-api-version-selected: 2022-11-28
+access-control-expose-headers: ETag, Link, Location, Retry-After, X-GitHub-OTP, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Used, X-RateLimit-Resource, X-RateLimit-Reset, X-OAuth-Scopes, X-Accepted-OAuth-Scopes, X-Poll-Interval, X-GitHub-Media-Type, X-GitHub-SSO, X-GitHub-Request-Id, Deprecation, Sunset, Warning
+access-control-allow-origin: *
+strict-transport-security: max-age=31536000; includeSubdomains; preload
+x-frame-options: deny
+x-content-type-options: nosniff
+x-xss-protection: 0
+referrer-policy: origin-when-cross-origin, strict-origin-when-cross-origin
+content-security-policy: default-src 'none'
+vary: Accept-Encoding, Accept, X-Requested-With
+server: github.com
+x-ratelimit-limit: 15000
+x-ratelimit-remaining: 14902
+x-ratelimit-reset: 1795126699
+x-ratelimit-used: 98
+x-ratelimit-resource: core
+x-github-request-id: F204:31BE70:236420:373A42:6AFF747E
+x-github-edge-region: westus2
+
+{
+  "message": "Moved Permanently",
+  "url": "https://api.github.com/repositories/1146927990",
+  "documentation_url": "https://docs.github.com/rest/guides/best-practices-for-using-the-rest-api#follow-redirects"
+}

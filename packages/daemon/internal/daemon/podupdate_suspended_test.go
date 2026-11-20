@@ -193,7 +193,9 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 // work (replacedOverPassedOverClaims), so what the read found decides nothing. Its line names both
 // suspended roles and the commit or the error, and one message on the issue names both roles,
 // each with its state, and the commit or the error. The sweeps after the round's end write no
-// second message.
+// second message. On a kept volume that the issue's next pod mounts (#4550), the same read's
+// message says the commit is still on that volume rather than lost, and the line says the volume
+// is kept: nothing went with the pod.
 func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 	for _, read := range []struct {
 		name   string
@@ -215,6 +217,19 @@ func TestAnUpdateRoundNamesTheWorkItsSuspendedClaimsLeft(t *testing.T) {
 				}
 			},
 			says: passedOverCommit,
+		},
+		{
+			name: "an unpushed commit on a kept volume",
+			script: func(rig *podUpdateRig) {
+				rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+				rig.rt.ScriptKeptVolume(podUpdateIssue, podUpdateStart.Add(-time.Hour))
+			},
+			line: func(t *testing.T, line map[string]any) {
+				if line["workspaceRead"] != "found work" || line["keptVolume"] != true {
+					t.Errorf("the replacement's line names %+v, want a read that found work over a kept volume", line)
+				}
+			},
+			says: "Work that is not on a branch at origin is on that volume.",
 		},
 		{
 			name:   "a read that fails",

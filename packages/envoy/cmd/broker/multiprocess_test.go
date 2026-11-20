@@ -59,6 +59,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -381,7 +382,8 @@ const spendBound = 60
 // and the Retry-After is the one thing in a refusal that says WHICH of the two reread buckets
 // refused it: the shared bucket's rate and the per-address bucket's are always a factor of two
 // apart (api.RereadLimitFor), so the header names the bucket. The route takes no credential at
-// all (api's routes_table: public), so this needs none of the client's signing.
+// all (api's routes_table: public) and spends both buckets before it reads one, so this sends
+// none and reads the 202 every caller with no proof is answered.
 type rereadCaller struct {
 	addr string
 	url  string
@@ -402,7 +404,7 @@ func newRereadCaller(t *testing.T, process *brokerProcess) *rereadCaller {
 }
 
 // send asks for one reread and answers the status and the Retry-After a refusal carried, zero
-// for an answer that is not a refusal. Any status but 200 and 429 fails the row: a reread the
+// for an answer that is not a refusal. Any status but 202 and 429 fails the row: a reread the
 // broker refused for another reason says nothing about either bucket.
 func (c *rereadCaller) send(t *testing.T) (status, retryAfter int) {
 	t.Helper()
@@ -415,11 +417,11 @@ func (c *rereadCaller) send(t *testing.T) (status, retryAfter int) {
 	if err != nil {
 		t.Fatalf("read the answer to POST %s: %v", c.url, err)
 	}
-	if resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusAccepted {
 		return resp.StatusCode, 0
 	}
 	if resp.StatusCode != http.StatusTooManyRequests {
-		t.Fatalf("POST %s = %d %s; want 200 or the 429 a spent reread bucket answers", c.url, resp.StatusCode, body)
+		t.Fatalf("POST %s = %d %s; want 202 or the 429 a spent reread bucket answers", c.url, resp.StatusCode, body)
 	}
 	if code := errorCode(t, string(body)); code != "RATE_LIMITED" {
 		t.Fatalf("the pod at %s refused a reread with %s; want RATE_LIMITED", c.addr, body)
@@ -835,12 +837,20 @@ func TestTwoBrokers(t *testing.T) {
 				b.Addr, control.Status, control.Body)
 		}
 
-		status, body := a.Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
+		// A's reread is a session's, so its answer says what A now serves: one enrolled on A,
+		// under the machine login B approved, since the two share one database.
+		rereaderID, rereaderKey := a.EnrollSession(t, machineKey, credentialID, host+"-rereader")
+		path := "/v1/secrets/" + multiprocessSecret + "/reread"
+		signed, err := proof.Sign(rereaderKey, rereaderID, http.MethodPost, a.PublicURL+path, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		status, body := a.Req(t, http.MethodPost, path, map[string]string{"Proof": signed}, nil)
 		var reread struct {
 			Served bool `json:"served"`
 		}
 		if status != http.StatusOK || json.Unmarshal(body, &reread) != nil || !reread.Served {
-			t.Fatalf("POST /v1/secrets/%s/reread at A (%s) = %d %s; want 200 with the retagged secret still served, which is the only answer that fans out",
+			t.Fatalf("a session's POST /v1/secrets/%s/reread at A (%s) = %d %s; want 200 with the retagged secret still served, a reread that merged what it read and so fans out",
 				multiprocessSecret, a.Addr, status, body)
 		}
 		rereadAt := time.Now()
@@ -883,8 +893,11 @@ func TestTwoBrokers(t *testing.T) {
 	// fleet would spend twice what the figure says.
 	//
 	// So the row empties A's broker-wide bucket with a burst — which is also a burst of
-	// notifications at B — and then asks B for a reread of its own, which must be answered 200
-	// straight away.
+	// notifications at B — waits until B has reread the secret for every one of them, and then
+	// asks B for a reread of its own, which must be answered 202 straight away. A answers a reread
+	// with no proof before it runs it, and sends the notification only once it has, so without
+	// that wait B could answer before a single notification had reached it, and the row would pass
+	// whatever a notification costs B.
 	//
 	// The burst is bounded well below the per-address bucket's own burst (thirty, one back every
 	// two seconds at two pods, of which the row above spent one), so the 429 this row stops on
@@ -892,16 +905,20 @@ func TestTwoBrokers(t *testing.T) {
 	// nothing in the answer would otherwise tell them apart.
 	t.Run("5_ANotificationSpendsNoRereadTokenOnTheReceivingPod", func(t *testing.T) {
 		const burstBound = 20
+		const notifiedWithin = 10 * time.Second
 		a, b := pair.Clients[0], pair.Clients[1]
 		path := "/v1/secrets/" + multiprocessSecret + "/reread"
+		// Every reread A accepts makes B read the store once, when A's notification of it
+		// reaches B (peerReread).
+		bReads := storeReads(t, pair.Processes[1])
 		var status int
 		var body []byte
 		sent := 0
 		for sent < burstBound && status != http.StatusTooManyRequests {
 			status, body = a.Req(t, http.MethodPost, path, nil, nil)
 			sent++
-			if status != http.StatusOK && status != http.StatusTooManyRequests {
-				t.Fatalf("reread %d at A (%s) = %d %s; want 200 until a bucket runs out", sent, a.Addr, status, body)
+			if status != http.StatusAccepted && status != http.StatusTooManyRequests {
+				t.Fatalf("reread %d at A (%s) = %d %s; want 202 until a bucket runs out", sent, a.Addr, status, body)
 			}
 		}
 		if status != http.StatusTooManyRequests {
@@ -914,8 +931,12 @@ func TestTwoBrokers(t *testing.T) {
 		refusal := string(body)
 		t.Logf("A (%s) served %d rereads and refused the next: %s", a.Addr, sent-1, refusal)
 
-		if status, body := b.Req(t, http.MethodPost, path, nil, nil); status != http.StatusOK {
-			t.Fatalf("A (%s) refused its own next reread with %s, and B (%s) then answered a reread of its own %d %s; want 200 — the %d notifications B took from A must have spent nothing of B's bucket",
+		if !testwait.Holds(notifiedWithin, listeningPoll, func() bool { return storeReads(t, pair.Processes[1]) >= bReads+sent-1 }) {
+			t.Fatalf("%s after A (%s) accepted %d rereads, B (%s) had read the store %d times since; want once for each of A's notifications",
+				notifiedWithin, a.Addr, sent-1, b.Addr, storeReads(t, pair.Processes[1])-bReads)
+		}
+		if status, body := b.Req(t, http.MethodPost, path, nil, nil); status != http.StatusAccepted {
+			t.Fatalf("A (%s) refused its own next reread with %s, and B (%s) then answered a reread of its own %d %s; want 202 — the %d notifications B took from A must have spent nothing of B's bucket",
 				a.Addr, refusal, b.Addr, status, body, sent-1)
 		}
 	})
@@ -1111,8 +1132,8 @@ func TestTwoBrokers(t *testing.T) {
 
 		before := [2]int{storeReads(t, serving), storeReads(t, draining)}
 		status, body := stopping.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
-		if status != http.StatusOK {
-			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 200 that fans out",
+		if status != http.StatusAccepted {
+			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 202 whose reread fans out",
 				multiprocessSecret, stopping.Clients[0].Addr, status, body)
 		}
 		rereadAt := time.Now()
@@ -1185,8 +1206,8 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 				before := storeReadsPerPod(t, fleet)
 
 				status, body := fleet.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
-				if status != http.StatusOK {
-					t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 200 that spends a token of the broker-wide bucket and fans out",
+				if status != http.StatusAccepted {
+					t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 202 that spends a token of the broker-wide bucket and whose reread fans out",
 						multiprocessSecret, fleet.Clients[0].Addr, status, body)
 				}
 				rereadAt := time.Now()
@@ -1294,7 +1315,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 		for time.Since(started) < window {
 			time.Sleep(askEvery)
 			status, retryAfter := caller.send(t)
-			if status == http.StatusOK {
+			if status == http.StatusAccepted {
 				accepted++
 				continue
 			}

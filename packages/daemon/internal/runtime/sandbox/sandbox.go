@@ -123,6 +123,9 @@ type Runtime struct {
 	launcherAuth            launcherCredentials
 	now                     func() time.Time
 	log                     *slog.Logger
+	// keptVolumeBound is how long a launch gives a pod with a kept volume to start where the boot
+	// timeout is shorter (startBound): keptVolumeAttachWait, which a test sets short.
+	keptVolumeBound time.Duration
 	// memoryGuard is Options.MemoryGuard: the memory guard settings an issue pod's launcher is
 	// handed on the answer to each hello (LauncherResolver), nil for a deployment that turned the
 	// guard off.
@@ -287,6 +290,14 @@ func configureProber(opts Options) (*Runtime, error) {
 	// which its stream from the repository cache runs outside of, the shared clone's own, and the
 	// issue's own checkout's.
 	provisionBound := workspace.FetchBudget + workspace.CloneTimeout + workspace.CheckoutTimeout
+	// The longest a launch try gives a pod to start (startBound), which the try's bound counts in
+	// awaitRoleLauncher's backstop (launchBound): the kept-volume bound where the microvm block
+	// keeps an issue pod's volume and that bound is longer than the boot timeout, and the boot
+	// timeout otherwise.
+	longestStart := opts.BootTimeout
+	if keptVolume(issuePod{}, opts.Sandbox.MicroVM) {
+		longestStart = max(longestStart, keptVolumeAttachWait)
+	}
 	refuse := func(format string, args ...any) (*Runtime, error) {
 		return nil, fmt.Errorf("sandbox runtime: "+format, args...)
 	}
@@ -408,9 +419,9 @@ func configureProber(opts Options) (*Runtime, error) {
 		variantFiles: runtime.VariantOverlays(opts.ExperimentVariants),
 		providerKeys: opts.ProviderKeys, providersSecrets: slices.Sorted(slices.Values(opts.ProvidersSecrets)), natsUser: opts.NATSUser,
 		sessionStore: opts.SessionStore, controllerSlackChannels: slices.Clone(opts.ControllerSlackChannels),
-		bootTimeout: opts.BootTimeout, registrationIntervals: opts.RegistrationIntervals,
+		bootTimeout: opts.BootTimeout, keptVolumeBound: keptVolumeAttachWait, registrationIntervals: opts.RegistrationIntervals,
 		busyBackoff: opts.BusyBackoff, provisionBound: provisionBound, terminationGrace: opts.TerminationGrace,
-		launchBound:   launchBound(opts.BootTimeout, provisionBound, opts.TerminationGrace),
+		launchBound:   launchBound(opts.BootTimeout, longestStart, provisionBound, opts.TerminationGrace),
 		probeInterval: opts.ProbeInterval, adoptTimeout: opts.AdoptTimeout, agent: opts.Agent, setup: slices.Clone(opts.Setup),
 		testPostgres: opts.TestPostgres, memoryGuard: opts.MemoryGuard, volumeTrim: opts.VolumeTrim, roundPodEnds: opts.RoundPodEnds,
 		tokens: opts.Tokens, gitHubCredential: opts.GitHubCredential, controllerCredential: opts.ControllerCredential,
@@ -434,8 +445,8 @@ func configureProber(opts Options) (*Runtime, error) {
 	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
 	// sweep reports, and log what they could not carry or record, so they are built once the
 	// runtime's log is settled.
-	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
-		opts.VolumeReported, r.log)
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.HeldWorkspaceBundle,
+		opts.MemoryGuardKilled, opts.VolumeReported, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -898,7 +909,8 @@ func (r *Runtime) checkLocator(loc runtime.Locator) error {
 }
 
 // ProvisionsWorkspaces is true: every pod's init containers provision its claim's workspace on the
-// issue's disk, the pod's own ephemeral volume, which goes with the pod.
+// issue's disk: the pod's own ephemeral volume, which goes with the pod, or a kept volume
+// (keptVolume), which the issue's Sandbox owns and which outlives the pod.
 func (r *Runtime) ProvisionsWorkspaces() bool { return true }
 
 // Suspend ends only the recorded role process. It never changes the issue Sandbox operating mode:

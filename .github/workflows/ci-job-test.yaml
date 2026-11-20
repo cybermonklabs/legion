@@ -130,6 +130,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
         required: true
+      check_workflow_files_test:
+        description: "ci.yaml's needs.changes.outputs.check_workflow_files_test: check-workflow-files.test.sh and what it tests."
+        type: string
+        required: true
       check_private_names_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
@@ -405,6 +409,10 @@ jobs:
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
         run: .github/scripts/check-action-pins.test.sh
+
+      - name: Test the workflow file check
+        if: inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true'
+        run: .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
