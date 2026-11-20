@@ -86,12 +86,25 @@ import { TREES_FILE } from "./trees";
  * as the log's `issue.` events set them up to that moment (`issue.created`, `issue.updated` and
  * `issue.closed` carry the whole issue, `issue.claimed` and `issue.released` its status), with the
  * id of the last of them applied; and each document the payload names, as S10's `ask_docs` names
- * them (`approval.documents`, or the approval's own document where that list is absent), is the
- * `markdown` of its immutable `version`, checked against the sha256 the version route answers,
- * with the `artifact_id`, `name` and `version` the request's own payload gives. A field S10 reads
- * of the request (its question, its first opening, its issue, each document's id, name and
- * version, and each issue field `legion_fact` reads) that the log cannot give as of the moment
- * makes the request a deviation, naming the field.
+ * them (`approval.documents` whenever Python takes that list for true, every entry of it, or the
+ * approval's own document where it is absent or empty: `askDocsOf`), is the `markdown` of its
+ * immutable `version`, checked against the sha256 the version route answers, with the
+ * `artifact_id`, `name` and `version` the request's own payload gives. A field S10 reads of the
+ * request (its question, its first opening, its issue, each document's id, name and version, an
+ * entry of `approval.documents` that is no document, and each issue field `legion_fact` reads)
+ * that the log cannot give as of the moment makes the request a deviation, naming the field. The
+ * answer rule's one-document test reads the same list.
+ *
+ * The fact check. S10's `prepare` reads `legion_fact` over the request and its issue before any
+ * neighbour, and a fact that holds (the primary document of a root issue carrying the `legion`
+ * label, waiting on the backlog or in icebox) ends the request there: S10 decides it
+ * never-decide, reading each document's version and no neighbour. So the fact is read here as
+ * `legion_fact` reads it (`legionFactOf`), over the request as written and its issue as of the
+ * moment, before any search: every request file carries it (`fact`, its five fields, and
+ * `factHold`), and a request it holds is searched for nothing, none of its hits is decided, and
+ * its file has its documents and no `search`, `candidates` or `counts`; no neighbour can make it a
+ * deviation. `s10_judge.py` runs the frozen `legion_fact` over the same file, and a fact it reads
+ * otherwise than `factHold` is a deviation.
  *
  * His answer is placed and never written: no verdict, option, words or answer time of it, and no
  * id of its event, is in any file this writes. The analysis places it again over its own walk of
@@ -322,7 +335,10 @@ export interface InventoryLine {
   reason: string | null;
   /** The sha256 of `requests/<ask id>.json`, written for a ready request only. */
   requestSha256: string | null;
-  /** The request's candidates, a deviation's too; null for one that stopped before its search. */
+  /**
+   * The request's candidates, a deviation's too; null for one that stopped before its search, and
+   * for one its fact holds, which S10 searches for nothing.
+   */
   counts: CandidateCounts | null;
 }
 
@@ -393,9 +409,16 @@ export interface RequestInputs {
   /** The last `issue.` event applied to `issue`. */
   issueAsOfEventId: number;
   documents: RequestDocument[];
-  search: { title: QueryInputs; question: QueryInputs };
-  candidates: Record<string, CandidateInputs>;
-  counts: CandidateCounts;
+  /** S10's `legion_fact` over `ask` and `issue` (`legionFactOf`); `s10_judge.py` must agree. */
+  fact: LegionFact;
+  /**
+   * Whether the fact holds: S10 then decides the request never-decide before any neighbour is
+   * read, so a held request has no `search`, `candidates` or `counts` (each null).
+   */
+  factHold: boolean;
+  search: { title: QueryInputs; question: QueryInputs } | null;
+  candidates: Record<string, CandidateInputs> | null;
+  counts: CandidateCounts | null;
 }
 
 /** One read a page answered: the query, its offset, and when it was read. */
@@ -519,36 +542,41 @@ export function firstCharacters(text: string, count: number = QUERY_CHARACTERS):
 }
 
 /**
- * The documents an ask names, as S10 reads them: `approval.documents`, or the approval's own
- * document where that list is absent or empty. Each field is as the payload holds it.
+ * Whether Python reads a value as false, which is what its `x or y` passes over: none, false, a
+ * zero, and an empty text, list or object.
  */
-export function documentsOf(
-  approval: unknown
-): Array<{ artifact_id: unknown; name: unknown; version: unknown }> {
-  const record = recordOf(approval);
-  if (record === null) return [];
-  const listed = listOf(record.documents)
-    .map(recordOf)
-    .filter((entry): entry is Record<string, unknown> => entry !== null);
-  const entries = listed.length > 0 ? listed : Object.hasOwn(record, "artifact_id") ? [record] : [];
-  return entries.map((entry) => ({
-    artifact_id: entry.artifact_id,
-    name: entry.name,
-    version: entry.version,
-  }));
+function falsy(value: unknown): boolean {
+  if (value === undefined || value === null || value === false || value === 0 || value === "") {
+    return true;
+  }
+  if (Array.isArray(value)) return value.length === 0;
+  const record = recordOf(value);
+  return record !== null && Object.keys(record).length === 0;
 }
 
 /**
  * The documents an approval names as S10's `ask_docs` reads them, each with an `artifact_id`, a
- * `name` and a `version`, or the first of those the approval does not give, by its place.
+ * `name` and a `version`, or the first place where it reads one the approval does not give.
+ * `ask_docs` reads `approval.documents` whenever Python takes it for true, every entry of it,
+ * and falls back to the approval's own document only where that list is absent or empty, and to
+ * none where there is no approval: `ap.get("documents") or ([...] if ap else [])`. So a list
+ * holding an entry that is no document, or naming no document field, gives no documents at all,
+ * the place of that entry named, and never the approval's own document in their stead.
  */
 export function askDocsOf(approval: unknown): { documents: AskDocument[] } | { missing: string } {
+  if (falsy(approval)) return { documents: [] };
   const record = recordOf(approval);
-  if (record === null) return { documents: [] };
-  const listed = listOf(record.documents).length > 0;
+  if (record === null) return { missing: "approval" };
+  const listed = record.documents;
+  if (!falsy(listed) && !Array.isArray(listed)) return { missing: "approval.documents" };
+  const entries: Array<[string, unknown]> =
+    Array.isArray(listed) && listed.length > 0
+      ? listed.map((entry, at): [string, unknown] => [`approval.documents[${at}]`, entry])
+      : [["approval", record]];
   const documents: AskDocument[] = [];
-  for (const [at, document] of documentsOf(record).entries()) {
-    const where = listed ? `approval.documents[${at}]` : "approval";
+  for (const [where, entry] of entries) {
+    const document = recordOf(entry);
+    if (document === null) return { missing: where };
     const artifactId = stringOf(document.artifact_id);
     const name = stringOf(document.name);
     const version = numberOf(document.version);
@@ -558,6 +586,59 @@ export function askDocsOf(approval: unknown): { documents: AskDocument[] } | { m
     documents.push({ artifact_id: artifactId, name, version });
   }
   return { documents };
+}
+
+/** S10's `legion_fact` over a request and its issue, field for field as it returns them. */
+export interface LegionFact {
+  holds: boolean;
+  legion: boolean;
+  primary: boolean;
+  root: boolean;
+  status: unknown;
+}
+
+/**
+ * An issue's parent as S10's `parent_key` reads it, and null where it reads none: a key written
+ * as text, or an object's `key`, `issue_key` or `id`, the first Python takes for true, or else
+ * its `id`, whatever that holds. `undefined` where `parent_key` cannot read the value at all.
+ */
+export function parentKeyOf(parent: unknown): unknown {
+  if (falsy(parent)) return null;
+  if (typeof parent === "string") return parent;
+  const record = recordOf(parent);
+  if (record === null) return undefined;
+  for (const field of ["key", "issue_key"]) {
+    if (!falsy(record[field])) return record[field];
+  }
+  return record.id ?? null;
+}
+
+/**
+ * S10's `legion_fact` over the request as this stage writes it and its issue as of the judged
+ * moment, mirrored exactly, or null where Python would stop on a value it cannot read (a parent
+ * `parent_key` cannot read, labels `in` cannot search). It holds for the primary document of a
+ * root issue carrying the `legion` label that waits on the backlog or in icebox: S10 decides
+ * that request never-decide without its judges or its neighbours.
+ */
+export function legionFactOf(
+  ask: Readonly<Record<string, unknown>>,
+  issue: Readonly<Record<string, unknown>>
+): LegionFact | null {
+  const artifact = recordOf(ask.approval_artifact) ?? {};
+  const approved = recordOf(ask.approval)?.artifact_id ?? null;
+  const primary = !falsy(artifact.primary) || approved === (issue.primary_artifact_id ?? null);
+  const parent = parentKeyOf(issue.parent);
+  if (parent === undefined) return null;
+  const labels = falsy(issue.labels) ? [] : issue.labels;
+  let legion: boolean;
+  if (Array.isArray(labels)) legion = labels.includes("legion");
+  else if (typeof labels === "string") legion = labels.includes("legion");
+  else if (recordOf(labels) !== null) legion = Object.hasOwn(labels as object, "legion");
+  else return null;
+  const root = parent === null;
+  const status = issue.status ?? null;
+  const holds = root && legion && primary && (status === "backlog" || status === "icebox");
+  return { holds, legion, primary, root, status };
 }
 
 /**
@@ -739,7 +820,8 @@ export class InputsLog {
 
   /**
    * A document settlement by the person, which answers each request still waiting for its answer
-   * that names that one document at that version and first opened before it.
+   * that names that one document at that version and first opened before it: one document as
+   * `ask_docs` reads them (`askDocsOf`), so a list `ask_docs` cannot read names none.
    */
   private noteSettlement(event: DispatchEvent): void {
     if (event.actor?.id !== this.person) return;
@@ -749,8 +831,8 @@ export class InputsLog {
     for (const judging of this.judging.values()) {
       if (judging.answer !== null || judging.firstOpened === null) continue;
       if (event.id <= judging.firstOpened) continue;
-      const documents = documentsOf(judging.statement?.payload.approval);
-      const only = documents.length === 1 ? documents[0] : undefined;
+      const read = askDocsOf(judging.statement?.payload.approval);
+      const only = "documents" in read && read.documents.length === 1 ? read.documents[0] : null;
       if (only?.artifact_id !== artifactId || only.version !== version) continue;
       judging.answer = { eventId: event.id, own: true };
       judging.judged = judging.statement;
@@ -1590,6 +1672,8 @@ interface Ready {
   issue: IssueAsOf;
   issueAsOfEventId: number;
   documents: AskDocument[];
+  /** S10's `legion_fact`; where it holds, no search is run and no neighbour read. */
+  fact: LegionFact;
   queries: { title: string; question: string };
 }
 
@@ -1649,10 +1733,6 @@ function planOf(request: InventoryRequest, log: InputsLog): Ready | Deviation {
       judged
     );
   }
-  const title = stringOf(step.fields.title);
-  if (title === null || title.trim() === "") {
-    return deviation(`${issueKey} has no title as of event ${event.id} for S10 to search`, judged);
-  }
   if (approval === null) return missing("approval");
   const documents = askDocsOf(approval);
   if ("missing" in documents) return missing(documents.missing);
@@ -1666,6 +1746,21 @@ function planOf(request: InventoryRequest, log: InputsLog): Ready | Deviation {
       judged
     );
   }
+  const ask = { ...writeTimeAsk(payload), approval_artifact: { primary } };
+  const issue = { key: issueKey, ...step.fields } as IssueAsOf;
+  // S10's `prepare` reads the fact before its neighbours, and a fact that holds reads none.
+  const fact = legionFactOf(ask, issue);
+  if (fact === null) {
+    return deviation(
+      `S10's legion_fact cannot read the parent or the labels of ${issueKey} as of event ` +
+        `${event.id}`,
+      judged
+    );
+  }
+  const title = stringOf(step.fields.title) ?? "";
+  if (!fact.holds && title.trim() === "") {
+    return deviation(`${issueKey} has no title as of event ${event.id} for S10 to search`, judged);
+  }
   return {
     state: "ready",
     request,
@@ -1673,10 +1768,11 @@ function planOf(request: InventoryRequest, log: InputsLog): Ready | Deviation {
     judgedAt,
     openedAt,
     answerEventId: judging.answer.eventId,
-    ask: { ...writeTimeAsk(payload), approval_artifact: { primary } },
-    issue: { key: issueKey, ...step.fields } as IssueAsOf,
+    ask,
+    issue,
     issueAsOfEventId: step.eventId,
     documents: documents.documents,
+    fact,
     queries: { title: firstCharacters(title), question: firstCharacters(question) },
   };
 }
@@ -1746,13 +1842,14 @@ function guardOf(plan: Ready): AnswerGuard {
 
 /**
  * A request file a resume takes, already held to the bytes its record names, held to this run's
- * reading too: the request this run judges at that same moment, and no part of its answer.
+ * reading too: the request this run judges at that same moment, under the same fact, and no part
+ * of its answer. Gives back its counts, null for a request the fact holds.
  */
 async function takenRequest(
   stage: Stage,
   askId: string,
   plan: Ready | Deviation | undefined
-): Promise<CandidateCounts> {
+): Promise<CandidateCounts | null> {
   const path = join(stage.directory, REQUESTS_DIRECTORY, `${askId}.json`);
   if (plan === undefined || plan.state !== "ready") {
     const reads = plan === undefined ? "holds no request" : "reads a deviation";
@@ -1764,13 +1861,16 @@ async function takenRequest(
       `${path} is not the request this run judges at event ${plan.judged.eventId}`
     );
   }
+  if (inputs.factHold !== plan.fact.holds) {
+    throw new S10InputsError(`${path} records another legion_fact than this run reads`);
+  }
   try {
     assertNoAnswer(inputs, guardOf(plan));
   } catch (error) {
     if (!(error instanceof LeakError)) throw error;
     throw new S10InputsError(`${path} carries the person's answer to it: ${error.message}`);
   }
-  return countsOf(inputs.counts);
+  return inputs.counts === null ? null : countsOf(inputs.counts);
 }
 
 async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
@@ -1899,7 +1999,7 @@ async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
   await pool([...wanted.entries()], DOCUMENT_CONCURRENCY, async ([key, document]) => {
     versions.set(key, await versionOf(document, config));
   });
-  const searchable: Array<{ plan: Ready; documents: RequestDocument[] }> = [];
+  const readable: Array<{ plan: Ready; documents: RequestDocument[] }> = [];
   for (const plan of pending) {
     const documents: RequestDocument[] = [];
     let unread: string | null = null;
@@ -1911,9 +2011,12 @@ async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
       }
       documents.push({ ...document, ...read });
     }
-    if (unread === null) searchable.push({ plan, documents });
+    if (unread === null) readable.push({ plan, documents });
     else lines.set(plan.request.askId, lineOf(plan, null, null, `a document: ${unread}`));
   }
+  // S10 reads no neighbour of a request its fact holds (`prepare` returns the hold first), so
+  // such a request is searched for nothing and none of its hits is decided.
+  const searchable = readable.filter(({ plan }) => !plan.fact.holds);
 
   // S10's two queries of each request, each query once.
   const searches = new Searches(stage, config, await Searches.archived(stage));
@@ -1974,7 +2077,9 @@ async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
   const candidateLog = new CandidateLog(kept);
   if (kept.size > 0) await walkThroughPin(corpus, (event) => candidateLog.note(event));
 
-  for (const { plan, documents } of searchable) {
+  // One request's neighbours: each hit as of the judged moment, the counts, and the first field
+  // S10's `neighbours` reads that the log cannot give.
+  const neighboursOf = (plan: Ready) => {
     const search = searchesOf(plan);
     const outcomes: Record<string, CandidateInputs> = {};
     const counts = noCounts();
@@ -2000,6 +2105,13 @@ async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
       openedAt: plan.openedAt,
       documents: new Set(plan.documents.map((document) => document.artifact_id)),
     });
+    return { search, outcomes, counts, fault };
+  };
+
+  for (const { plan, documents } of readable) {
+    const neighbours = plan.fact.holds ? null : neighboursOf(plan);
+    const counts = neighbours?.counts ?? null;
+    const fault = neighbours?.fault ?? null;
     if (fault !== null) {
       const reason =
         `a candidate: the log gives no ${fault.field} of the ask ${fault.askId} as of event ` +
@@ -2018,8 +2130,10 @@ async function inputs(flags: Flags, options: InputsOptions): Promise<number> {
       issue: plan.issue,
       issueAsOfEventId: plan.issueAsOfEventId,
       documents,
-      search,
-      candidates: outcomes,
+      fact: plan.fact,
+      factHold: plan.fact.holds,
+      search: neighbours?.search ?? null,
+      candidates: neighbours?.outcomes ?? null,
       counts,
     };
     let text: string;

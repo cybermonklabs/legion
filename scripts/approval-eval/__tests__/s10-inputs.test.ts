@@ -11,13 +11,16 @@ import type { FinalTestTree } from "../draw-io";
 import { LeakError } from "../render";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import {
+  askDocsOf,
   assertNoAnswer,
   type CandidateCounts,
+  type CandidateInputs,
   CandidateLog,
   InputsLog,
   type InventoryLine,
   inventoryOf,
   main,
+  neighbourFault,
   type RequestInputs,
   type ReserveVerdict,
   reserveAskDecision,
@@ -44,8 +47,11 @@ import {
  * ASK_F the draw put in fit; a neighbour NOAT whose answer names no time, and ASK_G, whose search
  * finds it; ASK_D, naming ASK_A's document version under another name; ASK_E, naming a document
  * with no name; ASK_R, on which the person first restores another user's answer, then edits, then
- * answers; and, after the build's pin, a comment on the neighbour PINNED, which only the drop scan
- * reads. Every ask payload carries a primary flag that disagrees with its document's creation.
+ * answers; ASK_H, the primary document of a `legion` root on the backlog, which S10's fact check
+ * holds and whose title would find NOAT too; ASK_N, whose documents are `[null]` beside its own
+ * lead document, which the person approves before answering; and, after the build's pin, a
+ * comment on the neighbour PINNED, which only the drop scan reads. Every ask payload carries a
+ * primary flag that disagrees with its document's creation.
  */
 
 const TOKEN = "fake-bearer";
@@ -64,6 +70,8 @@ const ASK_D = ask("a2");
 const ASK_E = ask("a3");
 const ASK_G = ask("a4");
 const ASK_R = ask("a5");
+const ASK_H = ask("a6");
+const ASK_N = ask("a7");
 const ASK_B = ask("b1");
 const ASK_C = ask("c1");
 const ASK_Q = ask("d1");
@@ -91,6 +99,7 @@ const DOCUMENTS: Record<string, string> = {
   "doc-a@2": "# The judged spec\n\nWhat the request asks to approve.\n",
   "doc-b@4": "# The settled spec\n\nA document the person approved directly.\n",
   "doc-g@1": "# A spec with one neighbour\n",
+  "doc-h@1": "# The spec of a legion root on the backlog\n",
 };
 
 const sha256 = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
@@ -193,6 +202,10 @@ const E_OPENED = whole(ASK_E, "ACME-8", 47, "doc-e@1", {
   },
 });
 const R_OPENED = whole(ASK_R, "ACME-10", 49, "doc-r@1");
+const H_OPENED = whole(ASK_H, "ACME-11", 55, "doc-h@1");
+const N_OPENED = whole(ASK_N, "ACME-12", 57, "doc-a@2", {
+  approval: { artifact_id: "doc-a", name: "spec.md", version: 2, documents: [null] },
+});
 const neighbour = (id: string, opened: number): Record<string, unknown> =>
   whole(id, "ACME-2", opened, "doc-n@1", { question: `Neighbour question ${id}` });
 /** NOAT as the person answered it: an answer that names no time. */
@@ -279,10 +292,21 @@ const EVENTS: DispatchEvent[] = [
   event(50, "ask.answered", answered(R_OPENED, 50, ["Approve"], null, OTHER), USER),
   event(51, "ask.edited", { ...R_OPENED, question: "Edited after the restore" }),
   event(52, "ask.answered", answered(R_OPENED, 52), USER),
+  event(
+    53,
+    "issue.created",
+    issue("ACME-11", { labels: ["legion"], status: "backlog", primary_artifact_id: "doc-h" })
+  ),
+  event(54, "issue.created", issue("ACME-12")),
+  event(55, "ask.opened", H_OPENED),
+  event(56, "ask.answered", answered(H_OPENED, 56), USER),
+  event(57, "ask.opened", N_OPENED),
+  event(58, "artifact.approved", { artifact_id: "doc-a", version: 2, ask_id: ASK_N }, USER),
+  event(59, "ask.answered", answered(N_OPENED, 59), USER),
   // After the pin: the build's walk never reads it, and the drop scan reads its ask alone.
   event(60, "comment.created", { ask_id: PINNED, body: "a comment after the pin" }),
 ];
-const THROUGH = 52;
+const THROUGH = 59;
 
 /** The search's answers, by the query sent: hits in rank order. */
 const documentHit = (index: number): Record<string, unknown> => ({
@@ -311,6 +335,8 @@ const SEARCH: Record<string, Record<string, unknown>[]> = {
     askHit(KEPT, 0.1),
   ],
   "ACME-9 title": [askHit(NOAT, 0.4)],
+  // ASK_H's title: S10 never searches it, since its fact holds.
+  "ACME-11 title": [askHit(NOAT, 0.4)],
 };
 
 /** Each request the fake served, by its path and query. */
@@ -433,10 +459,14 @@ const G1 = caseRow(ASK_G, 44, "approval", "ACME-9");
 const D1 = caseRow(ASK_D, 46, "approval", "ACME-7");
 const E1 = caseRow(ASK_E, 48, "approval", "ACME-8");
 const R1 = caseRow(ASK_R, 52, "approval", "ACME-10");
+const H1 = caseRow(ASK_H, 56, "approval", "ACME-11");
+const N1 = caseRow(ASK_N, 59, "approval", "ACME-12");
 
 const TREES: FinalTestTree[] = [
   { group: "tree:ACME-1", slice: "report", cases: [A1.caseId, A2.caseId].sort() },
   { group: "tree:ACME-10", slice: "report", cases: [R1.caseId] },
+  { group: "tree:ACME-11", slice: "report", cases: [H1.caseId] },
+  { group: "tree:ACME-12", slice: "report", cases: [N1.caseId] },
   { group: "tree:ACME-3", slice: "report", cases: [B1.caseId] },
   { group: "tree:ACME-4", slice: "report", cases: [C1.caseId] },
   { group: "tree:ACME-5", slice: "report", cases: [Q1.caseId] },
@@ -470,7 +500,7 @@ async function build(): Promise<{ corpus: string; hashes: BuildHashes }> {
     readFinishedAt: "2026-11-20T00:01:00Z",
     reserve: { leftOut: false, cases: 0, issues: 0, readUnder: CLAIM, claimRun: START },
   })}\n`;
-  const rows = [A1, A2, B1, C1, Q1, F1, G1, D1, E1, R1]
+  const rows = [A1, A2, B1, C1, Q1, F1, G1, D1, E1, R1, H1, N1]
     .map((row) => `${JSON.stringify(row)}\n`)
     .join("");
   const trees = `${JSON.stringify({ version: 1, throughEventId: THROUGH, groups: [] })}\n`;
@@ -581,6 +611,20 @@ async function requestAt(
   return { text, inputs: JSON.parse(text) as RequestInputs };
 }
 
+/** A request file of a request S10 searched for: its search and its candidates are there. */
+type Searched = RequestInputs & {
+  search: NonNullable<RequestInputs["search"]>;
+  candidates: NonNullable<RequestInputs["candidates"]>;
+};
+
+/** A searched request's file, refused where it holds no search, as a held request's does not. */
+async function searchedAt(out: string, askId: string): Promise<{ text: string; inputs: Searched }> {
+  const { text, inputs } = await requestAt(out, askId);
+  const { search, candidates } = inputs;
+  if (search === null || candidates === null) throw new Error(`${askId} was not searched`);
+  return { text, inputs: { ...inputs, search, candidates } };
+}
+
 async function stageAt(out: string): Promise<StageRecord> {
   return JSON.parse(await readFile(join(out, "s10-inputs.json"), "utf8")) as StageRecord;
 }
@@ -632,12 +676,16 @@ describe("the claim's inputs, as of each request's judged moment", () => {
       [ASK_E, "deviation", 1, "tree:ACME-8"],
       [ASK_G, "deviation", 1, "tree:ACME-9"],
       [ASK_R, "deviation", 1, "tree:ACME-10"],
+      [ASK_H, "ready", 1, "tree:ACME-11"],
+      [ASK_N, "deviation", 1, "tree:ACME-12"],
       [ASK_B, "ready", 1, "tree:ACME-3"],
       [ASK_C, "deviation", 1, "tree:ACME-4"],
     ]);
     // A case id carries the answer time, so no line names one.
     const text = await readFile(join(out, "inventory.jsonl"), "utf8");
-    for (const row of [A1, A2, B1, C1, D1, E1, G1, R1]) expect(text).not.toContain(row.caseId);
+    for (const row of [A1, A2, B1, C1, D1, E1, G1, R1, H1, N1]) {
+      expect(text).not.toContain(row.caseId);
+    }
   });
 
   test("an ask edited twice before the answer is judged at the second edit, not at an edit after it", async () => {
@@ -646,7 +694,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
       type: "ask.edited",
       createdAt: at(18),
     });
-    const { inputs } = await requestAt(out, ASK_A);
+    const { inputs } = await searchedAt(out, ASK_A);
     expect(inputs.judged.eventId).toBe(18);
     expect(inputs.ask.question).toBe("Third words");
     expect(inputs.ask.answer).toBeNull();
@@ -654,7 +702,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   });
 
   test("the issue is read as it stood at the judged moment, not as a later event left it", async () => {
-    const { inputs } = await requestAt(out, ASK_A);
+    const { inputs } = await searchedAt(out, ASK_A);
     expect(inputs.issue).toEqual({
       key: "ACME-1",
       title: "First title",
@@ -668,7 +716,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   });
 
   test("the payload drops what the log's route adds when read, and the primary flag is the creation's", async () => {
-    const { inputs } = await requestAt(out, ASK_A);
+    const { inputs } = await searchedAt(out, ASK_A);
     for (const field of ["opened_event_id", "referenced_by_count", "revision", "anchor_artifact"]) {
       expect(inputs.ask).not.toHaveProperty(field);
     }
@@ -720,6 +768,50 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     );
   });
 
+  test("a request S10's fact check holds is written as a hold, ready, and searched for nothing", async () => {
+    const { inputs } = await requestAt(out, ASK_H);
+    expect(inputs.factHold).toBe(true);
+    expect(inputs.fact).toEqual({
+      holds: true,
+      legion: true,
+      primary: true,
+      root: true,
+      status: "backlog",
+    });
+    expect(inputs.search).toBeNull();
+    expect(inputs.candidates).toBeNull();
+    expect(inputs.counts).toBeNull();
+    const markdown = DOCUMENTS["doc-h@1"] as string;
+    expect(inputs.documents).toEqual([
+      { artifact_id: "doc-h", name: "spec.md", version: 1, markdown, sha256: sha256(markdown) },
+    ]);
+    expect(await lineOf(out, ASK_H)).toMatchObject({ state: "ready", reason: null, counts: null });
+    // Its title would find NOAT, whose answer names no time; S10 searches neither of its queries.
+    const searched = firstSeen.filter((path) => path.startsWith("/api/v1/search/results"));
+    expect(searched.some((path) => path.includes(encodeURIComponent("ACME-11 title")))).toBe(false);
+    expect(searched.some((path) => path.includes(ASK_H))).toBe(false);
+    // A request the fact does not hold carries the fact too.
+    const judged = (await requestAt(out, ASK_A)).inputs;
+    expect(judged.factHold).toBe(false);
+    expect(judged.fact).toEqual({
+      holds: false,
+      legion: false,
+      primary: true,
+      root: true,
+      status: "in_progress",
+    });
+  });
+
+  test("a documents list holding an entry that is no document is a deviation, never the lead's", async () => {
+    expect(await lineOf(out, ASK_N)).toMatchObject({
+      state: "deviation",
+      judged: { eventId: 57, type: "ask.opened", createdAt: at(57) },
+      reason: "the log gives no approval.documents[0] of the request as of event 57",
+      requestSha256: null,
+      counts: null,
+    });
+  });
+
   test("no part of the person's answer to the judged request is written", async () => {
     const { text } = await requestAt(out, ASK_A);
     for (const answer of [A1, A2]) {
@@ -734,7 +826,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   });
 
   test("a candidate with an event after the judged moment is dropped, and the next hit is kept", async () => {
-    const { inputs } = await requestAt(out, ASK_A);
+    const { inputs } = await searchedAt(out, ASK_A);
     expect(inputs.search.question.hits.map((hit) => hit.id)).toEqual([
       ASK_A,
       LATER,
@@ -769,7 +861,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   });
 
   test("a candidate whose only later event is after the pin is dropped, with none of its fields", async () => {
-    const { text, inputs } = await requestAt(out, ASK_A);
+    const { text, inputs } = await searchedAt(out, ASK_A);
     expect(inputs.candidates[PINNED]).toEqual({ dropped: "later-event", seen: "after-pin" });
     expect(text).not.toContain(`Neighbour question ${PINNED}`);
     expect((await stageAt(out)).dropScanThrough).toBe(60);
@@ -794,7 +886,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   });
 
   test("a neighbour the reserve holds is skipped, and no field of it is ever read", async () => {
-    const { text, inputs } = await requestAt(out, ASK_A);
+    const { text, inputs } = await searchedAt(out, ASK_A);
     expect(inputs.candidates[HELD]).toEqual({ held: true, reserve: "held" });
     expect(text).not.toContain(`Neighbour question ${HELD}`);
     expect(text).not.toContain("held words");
@@ -852,7 +944,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     // Two queries each of A, B, D and G, B's title at two pages.
     expect(searched).toHaveLength(9);
     expect(new Set(searched).size).toBe(9);
-    const { inputs } = await requestAt(out, ASK_B);
+    const { inputs } = await searchedAt(out, ASK_B);
     expect(inputs.search.title.pages.map((page) => page.offset)).toEqual([0, 50]);
     expect(inputs.search.title.hits).toEqual([
       { id: KEPT, rank: 0.1, page: inputs.search.title.pages[1]?.sha256, position: 0 },
@@ -897,6 +989,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
       [ASK_A]: sha256((await requestAt(out, ASK_A)).text),
       [ASK_B]: sha256((await requestAt(out, ASK_B)).text),
       [ASK_D]: sha256((await requestAt(out, ASK_D)).text),
+      [ASK_H]: sha256((await requestAt(out, ASK_H)).text),
     });
     for (const [page, sha] of Object.entries(record.pages)) {
       expect(sha256(await readFile(join(out, "pages", `${page}.json`), "utf8"))).toBe(sha);
@@ -909,10 +1002,10 @@ describe("the claim's inputs, as of each request's judged moment", () => {
         droppedLaterEvent: { log: 2, "no-event-through-pin": 1, "after-pin": 1 },
         kept: 4,
       }),
-      requests: 7,
-      ready: 3,
-      deviations: 4,
-      cases: 8,
+      requests: 9,
+      ready: 4,
+      deviations: 5,
+      cases: 10,
       pages: 6,
     });
   });
@@ -920,7 +1013,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
   test("a resume of a complete directory takes every file, its first scan, and the same counts", async () => {
     const before = await stageAt(out);
     const files = await Promise.all(
-      [ASK_A, ASK_B, ASK_D].map(async (askId) => (await requestAt(out, askId)).text)
+      [ASK_A, ASK_B, ASK_D, ASK_H].map(async (askId) => (await requestAt(out, askId)).text)
     );
     // An event of NOAT after the first run's scan: a resume scans through that run's last event
     // and no further, so NOAT is not dropped and G stays the deviation it was.
@@ -938,7 +1031,7 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     }
     expect(seen.filter((path) => path.startsWith("/api/v1/search/results"))).toEqual([]);
     const after = await Promise.all(
-      [ASK_A, ASK_B, ASK_D].map(async (askId) => (await requestAt(out, askId)).text)
+      [ASK_A, ASK_B, ASK_D, ASK_H].map(async (askId) => (await requestAt(out, askId)).text)
     );
     expect(after).toEqual(files);
     const record = await stageAt(out);
@@ -1111,6 +1204,65 @@ describe("the inventory", () => {
   });
 });
 
+describe("the documents an approval names, as S10's ask_docs reads them", () => {
+  const lead = { artifact_id: "doc-a", name: "spec.md", version: 2 };
+
+  test("reads every entry of a list it takes for true, and the lead document only where none", () => {
+    expect(askDocsOf({ ...lead, documents: [null] })).toEqual({ missing: "approval.documents[0]" });
+    const malformed = [
+      { artifact_id: "doc-b", name: "b.md", version: 1 },
+      { artifact_id: "doc-c", version: 1 },
+    ];
+    expect(askDocsOf({ ...lead, documents: malformed })).toEqual({
+      missing: "approval.documents[1].name",
+    });
+    expect(askDocsOf({ ...lead, documents: "doc-b" })).toEqual({ missing: "approval.documents" });
+    expect(askDocsOf({ ...lead, documents: [] })).toEqual({ documents: [lead] });
+    expect(askDocsOf(lead)).toEqual({ documents: [lead] });
+    expect(askDocsOf(null)).toEqual({ documents: [] });
+  });
+
+  test("a list it cannot read names no one document, so a settlement of the lead answers nothing", () => {
+    const answerOf = (documents: unknown): number | null => {
+      const log = new InputsLog(PERSON, [ASK_N]);
+      const approval = { ...lead, documents };
+      log.note(event(1, "ask.opened", whole(ASK_N, "ACME-12", 1, "doc-a@2", { approval })));
+      log.note(
+        event(2, "artifact.approved", { artifact_id: "doc-a", version: 2, ask_id: ASK_N }, USER)
+      );
+      return log.judgingOf(ASK_N)?.answer?.eventId ?? null;
+    };
+    expect(answerOf([null])).toBeNull();
+    expect(answerOf([])).toBe(2);
+    expect(answerOf([lead])).toBe(2);
+  });
+
+  test("a candidate whose list holds an entry that is no document is a deviation on its path", () => {
+    const candidate: CandidateInputs = {
+      asOfEventId: 8,
+      ask: {
+        state: "answered",
+        kind: "approval",
+        issue_key: "ACME-2",
+        question: "A neighbour",
+        approval: { ...lead, documents: [lead, null] },
+        answer: { user: PERSON, at: at(8), selected: ["Approve"], text: null },
+      },
+      issue: { key: "ACME-2", title: "Neighbour issue" },
+    };
+    const judged = {
+      person: PERSON,
+      issueKey: "ACME-1",
+      openedAt: 1_000 * Date.parse(at(16)) + 1,
+      documents: new Set(["doc-z"]),
+    };
+    expect(neighbourFault([KEPT], { [KEPT]: candidate }, judged)).toEqual({
+      askId: KEPT,
+      field: "approval.documents[1]",
+    });
+  });
+});
+
 describe("the guard over a request file", () => {
   const inputs = (markdown: string): RequestInputs => ({
     version: 2,
@@ -1130,6 +1282,8 @@ describe("the guard over a request file", () => {
     },
     issueAsOfEventId: 15,
     documents: [{ artifact_id: "doc-a", name: "spec.md", version: 2, markdown, sha256: "x" }],
+    fact: { holds: false, legion: false, primary: false, root: true, status: "backlog" },
+    factHold: false,
     search: {
       title: { query: "First title", pages: [], hits: [] },
       question: { query: "Third words", pages: [], hits: [] },
