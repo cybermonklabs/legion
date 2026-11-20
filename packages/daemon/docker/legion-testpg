@@ -49,6 +49,11 @@ set -eu
 name=legion-testpg
 dir=${LEGION_TESTPG_DIR:-/var/run/legion/roles/testpg}
 data=$dir/data
+# initdb writes a new cluster here, and the directory is renamed to $data only once initdb has
+# exited 0 (start). So $data holds a whole cluster or nothing: a stop of initdb part way, which the
+# launcher's boot budget makes on a slow node, leaves its part in this directory alone, and the
+# next start removes it and runs initdb again.
+initdb_data=$dir/data.initdb
 sockets=$dir/sockets
 # The launcher names the log (LEGION_TESTPG_LOG), so the file role-init binds into every role's
 # namespace is the one this script and the server write; the default serves the image build's
@@ -258,26 +263,39 @@ own_log() {
 start() {
 	own_log
 	bin=$(bindir)
-	mkdir -p "$data" "$sockets"
-	chmod 700 "$data"
+	mkdir -p "$sockets"
 	# start() is reached with no server, and also with one this script started and did not
 	# finish: every step below the postmaster can die with the postmaster up, and the tick that
 	# follows has to carry that server the rest of the way. So each step here is idempotent, and
 	# the postmaster is launched only when nothing accepts connections on the port — `pg_ctl
 	# start` against a running server fails, which would turn a repair into a refusal.
 	if ! listening; then
-		# An interrupted initdb leaves a directory with no PG_VERSION, which no server starts on.
-		if [ ! -f "$data/PG_VERSION" ]; then
-			rm -rf "${data:?}"/* "${data:?}"/.[!.]* 2> /dev/null || true
+		# A whole cluster is a $data holding PG_VERSION and global/pg_control. Neither file alone
+		# says initdb finished: initdb writes PG_VERSION first and pg_control in its bootstrap
+		# step, and goes on after both (template1's contents, template0, postgres). So initdb
+		# runs in $initdb_data, which becomes $data only once it has exited 0, and a $data
+		# that is no whole cluster, as an earlier layout's interrupted initdb left, is made
+		# again rather than started. Either part is removed only when no process runs in it,
+		# and is named on stderr as it goes.
+		if [ ! -f "$data/PG_VERSION" ] || [ ! -f "$data/global/pg_control" ]; then
+			for part in "$data" "$initdb_data"; do
+				[ -e "$part" ] || continue
+				! holders "$part" ||
+					die "a process still runs in $part, an initdb that did not finish, so refusing to remove it and run initdb again"
+				echo "$name: removing $part, which holds no whole cluster (an initdb that did not finish), and running initdb again" >&2
+				rm -rf -- "$part" || die "removing $part failed"
+			done
 			# --locale-provider=icu with en-US sorts text the way CI's en_US.utf8 databases
 			# do: a suite whose ORDER BY output is a fixture would otherwise pass here and
 			# fail there on C collation. --username keeps the OS user as the superuser; the
 			# DSN's role is made below, with no superuser rights.
-			"$bin/initdb" --pgdata "$data" --username "$superuser" --auth-local=trust \
+			"$bin/initdb" --pgdata "$initdb_data" --username "$superuser" --auth-local=trust \
 				--auth-host=trust --encoding=UTF8 --locale-provider=icu --icu-locale=en-US \
 				--no-sync > "$log" 2>&1 ||
 				die "initdb failed; $log holds its output"
+			mv -T -- "$initdb_data" "$data" || die "renaming $initdb_data to $data failed"
 		fi
+		chmod 700 "$data"
 		# initdb's own pg_hba.conf trusts every user on every address this server listens on.
 		# This one keeps the superuser on the socket alone and rejects it on every host line,
 		# so a connection that arrives over TCP can never be the superuser, and trusts every

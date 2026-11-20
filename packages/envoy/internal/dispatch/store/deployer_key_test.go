@@ -8,27 +8,29 @@ import (
 	"testing"
 )
 
-// deployerAdvisoryKey reads the key out of each pg_try_advisory_lock call written in a shell
-// script with an integer literal, which is how the auto-deployer and its own test write theirs.
-// The test below reads the keys the scripts use rather than asserting a number of its own, so the
-// relation it states is "the deployer takes the key this package defines" rather than one more
-// copy of 8150001.
-var deployerAdvisoryKey = regexp.MustCompile(`pg_try_advisory_lock\(\s*(-?[0-9]+)\s*\)`)
+// deployerAdvisoryKey reads the key out of each place a deployer shell script writes it with an
+// integer literal: a pg_try_advisory_lock(<key>) call, which is how the deployer's test fixture
+// writes the statement its fake psql answers; an `objid = <key>` term, which is how that fixture
+// writes the read of the key's holder; and the deployer's own MIGRATION_KEY=<key>, the one literal
+// it holds, which every statement of its schema read takes the key from. The test below reads the
+// keys the scripts use rather than asserting a number of its own, so the relation it states is "the
+// deployer takes the key this package defines" rather than one more copy of 8150001.
+var deployerAdvisoryKey = regexp.MustCompile(`(?m)pg_try_advisory_lock\(\s*(-?[0-9]+)\s*\)|\bobjid\s*=\s*(-?[0-9]+)|^MIGRATION_KEY=(-?[0-9]+)$`)
 
 // deployerKeyScripts are the shell files that name the migration advisory key, as paths from this
 // test's own directory.
 //
-// autodeploy_test.sh is checked beside autodeploy.sh because its copies are keys in the same
-// sense: its fake psql answers the exact statement text `select pg_try_advisory_lock(<key>)` and
-// exits 3 on any other statement, and its expectation line asserts that text. That makes the
-// shell suite loud about drift between the two scripts, but only about drift between them - both
-// could move away from migrationLockKey together and every check of this package would stay
-// green. Checking every such literal of both scripts in one Go test is what pins the deployer's
-// world to the runner's, and it is the cheaper half of the job: the Go test needs no database and
-// no shell.
+// The suite's fixture, autodeploy_test/fixture.sh, is checked beside autodeploy.sh because its
+// copies are keys in the same sense: its fake psql answers the exact statement texts
+// `select pg_try_advisory_lock(<key>)` and the holder read, and exits 3 on any other statement.
+// That makes the shell suite loud about drift between the two scripts, but only about drift between
+// them - both could move away from migrationLockKey together and every check of this package would
+// stay green. Checking every such literal of both scripts in one Go test is what pins the
+// deployer's world to the runner's, and it is the cheaper half of the job: the Go test needs no
+// database and no shell.
 var deployerKeyScripts = []string{
 	filepath.Join("..", "..", "..", "deploy", "scripts", "autodeploy.sh"),
-	filepath.Join("..", "..", "..", "deploy", "scripts", "autodeploy_test.sh"),
+	filepath.Join("..", "..", "..", "deploy", "scripts", "autodeploy_test", "fixture.sh"),
 }
 
 // The deployer reads schema_migrations under the migration advisory key, and the key it takes is
@@ -46,16 +48,17 @@ func TestTheDeployerTakesTheMigrationKeyThisPackageDefines(t *testing.T) {
 			t.Errorf("read the deployer script that takes the migration key: %v", err)
 			continue
 		}
-		calls := deployerAdvisoryKey.FindAllStringSubmatch(string(text), -1)
-		if len(calls) == 0 {
-			t.Errorf("%s takes no pg_try_advisory_lock(<key>) this test can read, so nothing holds its key to migrationLockKey (%d); the script's shape changed and this test must be taught the new one",
+		keys := deployerAdvisoryKey.FindAllStringSubmatch(string(text), -1)
+		if len(keys) == 0 {
+			t.Errorf("%s writes no pg_try_advisory_lock(<key>), objid = <key> or MIGRATION_KEY=<key> this test can read, so nothing holds its key to migrationLockKey (%d); the script's shape changed and this test must be taught the new one",
 				script, migrationLockKey)
 			continue
 		}
-		for _, call := range calls {
-			key, err := strconv.ParseInt(call[1], 10, 64)
+		for _, groups := range keys {
+			written := groups[1] + groups[2] + groups[3]
+			key, err := strconv.ParseInt(written, 10, 64)
 			if err != nil {
-				t.Errorf("%s takes advisory key %q, which is no int64: %v", script, call[1], err)
+				t.Errorf("%s takes advisory key %q, which is no int64: %v", script, written, err)
 				continue
 			}
 			if key != migrationLockKey {
