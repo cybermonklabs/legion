@@ -450,7 +450,14 @@ export function IssueMarginPanel({
   // The status as the header draws it: the one being saved while any caller's write of it is
   // in flight, so the page never says two statuses at once.
   const status = writes.pendingStatus ?? issue.status;
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  // The project's gated steps, for a top-level issue. The events that change a project refresh
+  // its read (`api/event-refresh.ts`), so a window focus past the app's staleness reads it again
+  // only while its last read failed.
+  const projects = useQuery({
+    ...projectsQuery(),
+    ...EVENT_FRESH,
+    enabled: issue.parent === null,
+  });
   const gated = gatedStepEntries(
     projects.data?.find((candidate) => candidate.key === issue.project),
     issue

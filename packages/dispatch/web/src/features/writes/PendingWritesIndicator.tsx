@@ -82,7 +82,11 @@ function focusFirst(candidates: Iterable<HTMLElement | null>): boolean {
  * A focus a pointer press puts in the panel is forgotten too, never noted: Chromium focuses a
  * pressed button and draws it no focus ring, so a hand-off would move that focus, unseen, onto
  * another row's control, and the next Space or Enter would press it - Discard, first in a row
- * waiting to send. Returns the panel's ref.
+ * waiting to send. A press lasts from its `pointerdown` until its `click` has been dispatched: on
+ * a touch screen the browser moves the focus only once the finger lifts, on the `mousedown` it
+ * sends after the `pointerup`, which can come well after the press began. A key pressed in
+ * between ends it, so the focus the keyboard moves is noted even after a press no `click` ended.
+ * Returns the panel's ref.
  */
 function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   const panel = useRef<HTMLElement>(null);
@@ -99,12 +103,13 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
       heldRow.current = null;
       from.current = null;
     };
-    // Whether a pointer press in the panel is making its focus change: set as it starts, and
-    // cleared once that change is done.
-    let pointerPressing = false;
+    // Where the pointer press under way began - in the panel or elsewhere - from its
+    // `pointerdown` until its `click` has been dispatched, or until a key is pressed; null
+    // between presses.
+    let press: "panel" | "elsewhere" | null = null;
     const focused = (event: FocusEvent) => {
       const { relatedTarget, target } = event;
-      if (pointerPressing || !inPanel(target)) {
+      if (press === "panel" || !inPanel(target)) {
         forget();
         return;
       }
@@ -117,27 +122,32 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
           ? (target.closest("[data-pending-write]")?.getAttribute("data-pending-write") ?? null)
           : null;
     };
-    // A press elsewhere forgets, not a blur: Stop trying turns disabled while its write's last
-    // attempt is out, and Chromium moves its focus to the body then, before the panel takes it.
-    // A press moves the focus only after this listener, so where it left the focus is read, and a
-    // press in the panel stops marking its focus change, once that move is done.
     const pressed = (event: PointerEvent) => {
-      if (inPanel(event.target)) {
-        pointerPressing = true;
-        setTimeout(() => {
-          pointerPressing = false;
-        });
-        return;
-      }
+      press = inPanel(event.target) ? "panel" : "elsewhere";
+    };
+    // A press elsewhere forgets, not a blur: the control that holds the focus is blurred too as
+    // the window loses the focus to another tab or app, which moves nothing of the reader's place
+    // on the page. Whatever the press does to the focus is done once its `click` has been
+    // dispatched, so where it left the focus is read after that, and the press ends there.
+    const clicked = () => {
+      const ended = press;
       setTimeout(() => {
-        if (!inPanel(document.activeElement)) forget();
+        press = null;
+        if (ended === "elsewhere" && !inPanel(document.activeElement)) forget();
       });
+    };
+    const keyed = () => {
+      press = null;
     };
     document.addEventListener("focusin", focused, true);
     document.addEventListener("pointerdown", pressed, true);
+    document.addEventListener("click", clicked, true);
+    document.addEventListener("keydown", keyed, true);
     return () => {
       document.removeEventListener("focusin", focused, true);
       document.removeEventListener("pointerdown", pressed, true);
+      document.removeEventListener("click", clicked, true);
+      document.removeEventListener("keydown", keyed, true);
     };
   }, []);
   // React sends no blur for an element it takes off the page, and the browser moves the focus

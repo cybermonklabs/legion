@@ -12,7 +12,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { issueQuery } from "../../api/queries";
-import type { ClaimHolderLiveness, Issue, IssueDetails } from "../../api/types";
+import type { ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { dangerText, pageFailedText, pageHeaderControl } from "../../theme/classes";
 import { runningAgent } from "../credentials/agent-fixture";
 import { stateForIssue } from "../issue/pins";
@@ -459,6 +459,64 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
     ).toBe(none);
   } finally {
     stopBlurring();
+    view.unmount();
+    release.mockRestore();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// Dispatch releases whichever claim the issue holds, so a release is about the claim it was
+// pressed on. After a release that failed, the claim released elsewhere and the issue claimed
+// again by another session, the row drew the old failure beside the new claim, with a Retry that
+// would release that one. The failure goes with its claim: the new claim reads no failure and
+// offers no Retry, and a Release of it draws no line of the old failure while it is out.
+test("a failed release is forgotten once its claim is gone, so a new claim reads no failure and offers no Retry", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    runningAgent({ session_id: "session-one", title: "Implementer" }),
+    runningAgent({ session_id: "session-two", title: "Reviewer" }),
+  ]);
+  const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(new Error("network error"));
+  const view = claimRow({ ...base, claim });
+  const drawClaim = (next: IssueClaim | null) => {
+    const read = view.client.getQueryData<IssueDetails>(issueQuery("CORE-1").queryKey);
+    if (read === undefined) throw new Error("the row reads no cached issue");
+    act(() => view.client.setQueryData(issueQuery("CORE-1").queryKey, { ...read, claim: next }));
+  };
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    await screen.findByRole("alert");
+
+    drawClaim(null);
+    await screen.findByText(CONTROL_LABELS.none);
+    drawClaim({
+      actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
+      at: "2026-09-24T07:00:00Z",
+    });
+    const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    expect(
+      screen.queryByRole("alert"),
+      "the new claim reads the failure of the release of the claim before it"
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: CONTROL_LABELS.retry }),
+      "the new claim offers a Retry that would release it"
+    ).toBeNull();
+
+    const out = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => out.promise);
+    await view.user.click(releaseNew);
+    await waitFor(() => expect(releaseNew).toHaveTextContent(ANSWER_LINES.saving_release));
+    expect(
+      screen.queryByRole("alert"),
+      "a Release of the new claim drew the old failure while it is out"
+    ).toBeNull();
+    await act(async () => out.resolve({ ...base, claim: null }));
+    expect(await screen.findByText(CONTROL_LABELS.none)).toBeDefined();
+  } finally {
     view.unmount();
     release.mockRestore();
     agents.mockRestore();

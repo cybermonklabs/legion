@@ -1175,6 +1175,13 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
+      // An issue's decisions.md sends this event alone on its first upload, no version, and the
+      // outline and the margin beside the spec read the decisions under events alone
+      // (`EVENT_FRESH`), so without this they draw none of them until a reload. The server names
+      // that document by its role, which it writes as it creates the row.
+      if (event.payload.artifact.role === "decisions") {
+        targets.push({ exact: true, queryKey: ["decisions", key] });
+      }
     }
     return targets;
   }

@@ -1,4 +1,4 @@
-import { type ReactNode, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import type { IssueDetails } from "../../api/types";
@@ -27,6 +27,11 @@ const RELEASE_FAILED = "Could not release this claim.";
  * control that goes as the release lands goes on in the row (`useFocusHandOff`): from Retry to
  * Release while the claim is still drawn, and from any of them, once it is not, to the None the
  * row reads then, the one place left in the row and the answer to the reader's press.
+ *
+ * A release's failure is about the claim it was pressed on, and the row says it only while that
+ * claim is still the issue's: Dispatch releases whichever claim the issue holds, so once the claim
+ * is released elsewhere and the issue claimed again, the line would say the new claim could not
+ * be released, and its Retry would release it.
  */
 export function IssueClaimControl({
   issue,
@@ -37,7 +42,25 @@ export function IssueClaimControl({
 }): ReactNode {
   const { releaseClaim } = writes;
   const press = useSubmitGuard();
-  const failure = useSaidFailure(releaseClaim);
+  // The issue's claim by its holder and since when: the issue claimed again, by the same holder
+  // or another, holds another claim.
+  const held =
+    issue.claim === null
+      ? null
+      : JSON.stringify([issue.claim.actor.kind, issue.claim.actor.id, issue.claim.at]);
+  // The claim the newest press of Release or Retry was made on; until one, the claim the row is
+  // first drawn with.
+  const [pressedOn, setPressedOn] = useState(held);
+  // A failure of a release pressed on a claim the issue no longer holds is said by no line, and
+  // the write forgets it, so the line a press on the new claim draws while it is out is never the
+  // old one (`useSaidFailure` keeps a line while the same press is out again).
+  const forgotten = releaseClaim.isError && pressedOn !== held;
+  const { reset } = releaseClaim;
+  useEffect(() => {
+    if (forgotten) reset();
+  }, [forgotten, reset]);
+  const said = useSaidFailure(releaseClaim);
+  const failure = forgotten ? null : said;
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
   const retryLeft = useFocusHandOff(() => releaseControl.current);
@@ -47,6 +70,7 @@ export function IssueClaimControl({
   // this row was drawn afresh, with a guard that starts free.
   const release = () => {
     if (releaseClaim.isPending) return;
+    setPressedOn(held);
     press.guard(() => releaseClaim.mutate(issue.key, { onSettled: () => press.release() }));
   };
   if (issue.claim === null) {

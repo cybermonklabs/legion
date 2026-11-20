@@ -197,17 +197,19 @@ async function lateInlineWrite(writes: Writes, attempt: Promise<never>): Promise
   return within(screen.getByTestId("pending-writes")).getByRole("button", { name: "Stop trying" });
 }
 
-// A press in the indicator that takes it away gives the focus back to the control it came from,
-// rather than leaving it on the page's body. Stop trying, pressed by keyboard, turns disabled while
-// the write's last attempt is out, and Chromium moves the focus to the body then
-// (`emulateChromiumFocusFixup`); once that attempt fails the write is refused, its own surface
-// shows the refusal, and the indicator goes.
-test("a Stop trying pressed by keyboard that takes the indicator away gives the focus back", async () => {
+// Stop trying, pressed by keyboard, keeps the focus while the write's last attempt is out: it
+// reads Stopping… and refuses a press (`aria-disabled`) rather than turn disabled, which in
+// Chromium would move the focus to the page's body (`emulateChromiumFocusFixup` does that here),
+// so a second Enter stops nothing more. Once that attempt fails the write is refused, its own
+// surface shows the refusal, and the indicator goes: the focus goes back to the control it came
+// from, rather than staying on the page's body.
+test("a Stop trying pressed by keyboard keeps the focus while it stops, and gives it back as the indicator goes", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const stopBlurring = emulateChromiumFocusFixup();
   const attempt = Promise.withResolvers<never>();
   const { unmount, writes } = mountOnPage();
+  const stops = spyOn(writes, "stop");
   try {
     const stop = await lateInlineWrite(writes, attempt.promise);
     const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
@@ -216,13 +218,20 @@ test("a Stop trying pressed by keyboard that takes the indicator away gives the 
     expect(stop).toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
-    expect(document.body).toHaveFocus();
+    expect(stop).toHaveTextContent("Stopping…");
+    expect(stop).toHaveAttribute("aria-disabled", "true");
+    expect(stop, "Stop trying lost the focus while its write's last attempt is out").toHaveFocus();
+    await user.keyboard("{Enter}");
+    await settle();
+    expect(stops, "a second Enter on Stopping… stopped the write again").toHaveBeenCalledTimes(1);
+    expect(stop).toHaveFocus();
 
     attempt.reject(refusal);
     await jump(30 * 60_000);
     expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
     expect(elsewhere).toHaveFocus();
   } finally {
+    stops.mockRestore();
     unmount();
     stopBlurring();
     realClock();
@@ -313,7 +322,7 @@ test("a press that leaves the indicator drawn keeps the focus in it, in the same
     expect(secondStop).toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
-    expect(document.body).toHaveFocus();
+    expect(secondStop).toHaveFocus();
 
     second.reject(refusal);
     await jump(30 * 60_000);
@@ -360,6 +369,116 @@ test("a Discard pressed by pointer that takes its row away moves the focus to no
   }
 });
 
+/** Taps `target` as a touch screen does, on the fake clock: the `pointerdown` as the finger
+ *  lands; then, once it lifts - a tap is held longer than a timer of no delay waits - the
+ *  `pointerup`, and only after it the `mousedown` that moves the focus, onto the button tapped or
+ *  else off any control, and the `click`. */
+async function tap(target: HTMLElement): Promise<void> {
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+  });
+  await jump(100);
+  act(() => {
+    target.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, pointerType: "touch" }));
+    target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    const button = target.closest("button");
+    if (button !== null) button.focus();
+    else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await jump(0);
+}
+
+// On a touch screen the browser moves the focus of a tap only as the finger lifts, after the
+// tap's `pointerup` (`tap`), well after its `pointerdown`. That focus is the pointer's all the
+// same, which the indicator does not hand on: a Discard tapped that takes its row away moves the
+// focus to no other row's control.
+test("a Discard tapped on a touch screen that takes its row away moves the focus to no other row's control", async () => {
+  jest.useFakeTimers();
+  const { unmount, writes } = mountOnPage();
+  try {
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", () => Promise.reject(verdict));
+    indicatorWrite(writes, "CORE-2 set to done", "PATCH", () => Promise.reject(verdict));
+    await settle();
+    const indicator = screen.getByTestId("pending-writes");
+    const line = within(indicator).getByText(/^Not saved: CORE-2 set to done/);
+    const discard = within(line.closest("li") as HTMLElement).getByRole("button", {
+      name: "Discard",
+    });
+
+    await tap(discard);
+    await settle();
+    expect(within(indicator).queryByText(/CORE-2/)).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+  } finally {
+    unmount();
+    realClock();
+  }
+});
+
+// Where a tap elsewhere left the focus is read once the tap is done, as the finger lifts on a
+// touch screen (`tap`): a keyboard reader who stopped a write and then tapped the page's plain
+// text, which leaves the focus on the page's body, keeps it there as the indicator goes.
+test("a tap on the page's plain text keeps the focus off the indicator's origin as the indicator goes", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const stopBlurring = emulateChromiumFocusFixup();
+  const attempt = Promise.withResolvers<never>();
+  const { unmount, writes } = mountOnPage();
+  try {
+    const stop = await lateInlineWrite(writes, attempt.promise);
+    act(() => screen.getByRole("button", { name: "Elsewhere" }).focus());
+    await user.tab();
+    await user.keyboard("{Enter}");
+    await settle();
+    expect(stop).toHaveFocus();
+    await tap(screen.getByText("Page text"));
+    expect(document.body).toHaveFocus();
+
+    attempt.reject(refusal);
+    await jump(30 * 60_000);
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(document.body).toHaveFocus();
+  } finally {
+    unmount();
+    stopBlurring();
+    realClock();
+  }
+});
+
+// A key ends a pointer press no `click` ended, as when the pointer is dragged off the control
+// before it is let go: the focus the keyboard then moves into the indicator is noted, so the Stop
+// trying pressed by keyboard gives the focus back as the indicator goes.
+test("a key after a pointer press no click ended lets the indicator note where the keyboard takes the focus", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const stopBlurring = emulateChromiumFocusFixup();
+  const attempt = Promise.withResolvers<never>();
+  const { unmount, writes } = mountOnPage();
+  try {
+    const stop = await lateInlineWrite(writes, attempt.promise);
+    act(() => {
+      stop.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    const elsewhere = screen.getByRole("button", { name: "Elsewhere" });
+    act(() => elsewhere.focus());
+    await user.tab();
+    expect(stop).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await settle();
+
+    attempt.reject(refusal);
+    await jump(30 * 60_000);
+    expect(screen.queryByTestId("pending-writes")).not.toBeInTheDocument();
+    expect(elsewhere).toHaveFocus();
+  } finally {
+    unmount();
+    stopBlurring();
+    realClock();
+  }
+});
+
 // A press elsewhere that leaves the focus in the indicator - on a control whose `mousedown` is
 // prevented, as a toolbar's button keeps the focus where it was - forgets nothing: the Stop
 // trying the reader then presses by keyboard gives the focus back as the indicator goes.
@@ -381,7 +500,7 @@ test("a press elsewhere that leaves the focus in the indicator keeps where the f
     expect(stop).toHaveFocus();
     await user.keyboard("{Enter}");
     await settle();
-    expect(document.body).toHaveFocus();
+    expect(stop).toHaveFocus();
 
     attempt.reject(refusal);
     await jump(30 * 60_000);
