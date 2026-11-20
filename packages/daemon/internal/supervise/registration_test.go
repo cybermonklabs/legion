@@ -67,49 +67,6 @@ func TestTheRegistrationDeadlineLogsTheClaimTheReasonAndTheAttempt(t *testing.T)
 	h.wantBudgets(Budgets{LaunchFailures: 1})
 }
 
-// A ready agent that registers again - a controller whose session changed and that claims its role
-// again - has the registration deadline again: one that never says it is ready is retired and
-// relaunched at the deadline, and the daemon's line names the claim, that it registered again and
-// never said it was ready, and the launch it counts. One that says ready again before the deadline
-// keeps its process: the ready ends the deadline. The control is a reregister that arms no
-// deadline, which this row's first half refuses (no retirement at the deadline).
-func TestAReadyAgentThatRegistersAgainHasTheRegistrationDeadlineAgain(t *testing.T) {
-	t.Run("never ready again: retired at the deadline", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateReady)
-		alive := h.locator()
-
-		h.register()
-		h.advance(deadline)
-
-		if suspends := h.wantCalls("Suspend", 1); suspends[0].Locator != alive {
-			t.Errorf("suspended %+v, want the process that registered again", suspends[0].Locator)
-		}
-		h.wantBudgets(Budgets{LaunchFailures: 1})
-		lines := h.logs.lines("supervise: the agent registered again and never said it was ready; retired its process")
-		if len(lines) != 1 {
-			t.Fatalf("retire lines %q, want one", lines)
-		}
-		for _, want := range []string{"claim=" + string(testToken), "launchFailure=1", fmt.Sprintf("limit=%d", testLimits().LaunchFailures)} {
-			if !strings.Contains(lines[0], want) {
-				t.Errorf("retire line %q does not carry %q", lines[0], want)
-			}
-		}
-	})
-	t.Run("ready again: kept", func(t *testing.T) {
-		h := newHarness(t)
-		h.reach(StateReady)
-
-		h.register()
-		h.ready()
-		h.advance(deadline)
-
-		h.wantCalls("Suspend", 0)
-		h.wantBudgets(Budgets{})
-		h.wantState(StateReady)
-	})
-}
-
 // A daemon stopping mid-relaunch leaves a claim with no Locator at all, in StateLaunching: the
 // registration deadline retires the live process (letGo clears Locator) and starts its relaunch,
 // but the relaunch's own backoff wait (launchAfter's backOff, machine.go) returns the context's

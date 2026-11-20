@@ -5553,29 +5553,27 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
 
-  // A session change's re-claim holds its notices until the change's reset, but not the waiting
-  // state: a re-claim the listener answers 503 shows on the claim widget that the controller holds
-  // no Envoy role yet while it waits, and the widget comes down once the claim lands. The row reads
-  // the widget at the claim that lands, so a waiting line shown only after the claim settled fails
-  // it, and so does one left up after.
-  test("a daemon-launched controller's re-claim after a session change shows it is waiting while the listener answers 503, and takes the widget down once it claims", async () => {
-    let busy = false;
-    let claims = 0;
-    let shownAtLanding: (string[] | undefined)[] = [];
+  // A session change in the daemon-launched controller never reaches its Envoy role claim: the
+  // daemon refuses to register a session other than the one it recorded with its same-agent
+  // refusal (409, the sentence of claim.SameAgentRefusal; supervise's
+  // TestAControllersSessionChangeIsRefusedAndItIsRelaunchedOnItsRecordedSession runs that fence),
+  // so the controller exits, for the daemon to relaunch it on its recorded session, and claims the
+  // role for the new session not at all.
+  test("a daemon-launched controller whose session changed is refused at registration (409), exits, and claims no role for the new session", async () => {
+    let switched = false;
+    let roleClaimsAfterSwitch = 0;
     const controller = await launchedController({
-      sessionId: "ses_controller_reclaim_busy",
+      sessionId: "ses_controller_switched",
       stateFixture: "state-controller-claim.json",
+      register: (body) =>
+        body.sessionId === "ses_controller_switched"
+          ? undefined
+          : Response.json(
+              { error: "Worker respawn must resume the same agent session" },
+              { status: 409 }
+            ),
       roleClaim: () => {
-        if (!busy) return undefined;
-        if (++claims <= LISTENER_CALL_ATTEMPTS) {
-          return Response.json(
-            { error: "envoy: the takeover record of the claim did not store" },
-            { status: 503 }
-          );
-        }
-        shownAtLanding = widgetCalls
-          .filter((call) => call.key === "legion-controller-claim")
-          .map((call) => call.lines);
+        if (switched) roleClaimsAfterSwitch += 1;
         return undefined;
       },
     });
@@ -5588,27 +5586,29 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     try {
       await controller.handlers.get("session_start")?.(
         {},
-        controller.context("ses_controller_reclaim_busy")
+        controller.context("ses_controller_switched")
       );
-      busy = true;
-      await loggedWarnings(async () => {
+      expect(controller.exits).toEqual([]);
+      switched = true;
+      await loggedErrors(async () => {
         await controller.handlers.get("session_switch")?.(
           { reason: "new" },
-          controller.context("ses_controller_reclaim_busy_new")
+          controller.context("ses_controller_switched_new")
         );
       });
     } finally {
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
-    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
-    expect(shownAtLanding).toHaveLength(1);
-    expect(shownAtLanding[0]?.[0]).toStartWith(
-      `legion: this controller holds no Envoy role yet: claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+    const refused = controller.requests.filter(
+      (request) =>
+        request.path === "/legion/v1/claims/register" &&
+        (request.body as { sessionId?: string } | undefined)?.sessionId ===
+          "ses_controller_switched_new"
     );
-    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
-    expect(shown.at(-1)?.lines).toBeUndefined();
-    expect(controller.holder()).toBe("ses_controller_reclaim_busy_new");
-    expect(controller.exits).toEqual([]);
+    expect(refused).toHaveLength(1);
+    expect(controller.exits).toEqual([1]);
+    expect(roleClaimsAfterSwitch).toBe(0);
+    expect(controller.holder()).toBe("ses_controller_switched");
   });
 
   // The bound follows who started the claim, not which controller runs it: `/legion-claim-controller`

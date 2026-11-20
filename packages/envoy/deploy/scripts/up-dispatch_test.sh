@@ -95,7 +95,7 @@ for line in "DATABASE_URL=\"postgres://dispatch:$canary@db.test:5432/dispatch" \
   if output=$(up_with "$line"); then
     fail "started Dispatch with an unterminated quote in ${line%%=*}"
   fi
-  [[ "$output" == *"Compose refused"*"docker compose config exited 1; its message is not printed"*"docker compose -f compose/dispatch.compose.yml config"* && ! -s "$log" ]] ||
+  [[ "$output" == *"Compose refused"*"docker compose config exited "[0-9]*"; its message is not printed"*"docker compose -f compose/dispatch.compose.yml config"* && ! -s "$log" ]] ||
     fail "did not refuse an unterminated quote in ${line%%=*} with the command to read Compose's message"
   [[ "$output" != *cret* && "$output" != *CANARY* ]] || fail "the refusal carries a value of ${line%%=*}: $output"
 done
@@ -107,4 +107,33 @@ fi
 [[ "$output" == *"docker compose cannot run"* && ! -s "$log" ]] ||
   fail "did not refuse by name when docker compose cannot run"
 
-printf 'up-dispatch: refusal and start for each spelling, the shell override, Compose'"'"'s refusal and no Compose: PASS\n'
+# The script reads only through `docker compose config --format json`, so it runs on Compose
+# releases that lack `config --environment` (before 2.28): it starts Dispatch through Compose 2.12.2,
+# the oldest release measured, pinned by its published sha256 and cached between runs, through a
+# `docker` that hands `compose ...` to it and counts the calls.
+compose_2_12=${XDG_CACHE_HOME:-$HOME/.cache}/legion-autodeploy-test/docker-compose-v2.12.2
+compose_2_12_sha256=36d1728ce001c7f021294be43bdfa3f508038bb00886c34b0794f7731cc9bf4b
+if [[ "$(sha256sum "$compose_2_12" 2>/dev/null | cut -d' ' -f1)" != "$compose_2_12_sha256" ]]; then
+  mkdir -p "$(dirname "$compose_2_12")"
+  curl -fsSL -o "$compose_2_12.part" https://github.com/docker/compose/releases/download/v2.12.2/docker-compose-linux-x86_64 ||
+    fail 'UNKNOWN: could not download Compose 2.12.2, so the oldest release was not judged'
+  [[ "$(sha256sum "$compose_2_12.part" | cut -d' ' -f1)" == "$compose_2_12_sha256" ]] ||
+    fail 'UNKNOWN: the Compose 2.12.2 download does not match its published sha256'
+  chmod +x "$compose_2_12.part"
+  mv "$compose_2_12.part" "$compose_2_12"
+fi
+cat >"$root/docker-2.12" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == compose ]] || exec "$real_docker" "\$@"
+shift
+printf '%s\n' "\$*" >>"$root/compose-2.12.calls"
+exec "$compose_2_12" "\$@"
+EOF
+chmod +x "$root/docker-2.12"
+: >"$root/compose-2.12.calls"
+output=$(test_real_docker="$root/docker-2.12" up_with "ENVOY_ACCOUNT_GOOGLE_AUDIENCE=envoy-listener") ||
+  fail "refused to start Dispatch through Compose 2.12.2"
+[[ $(<"$log") == "$started" ]] || fail "did not start Dispatch through Compose 2.12.2"
+grep -q ' config --format json' "$root/compose-2.12.calls" || fail 'UNKNOWN: Compose 2.12.2 served no config read'
+
+printf 'up-dispatch: refusal and start for each spelling, the shell override, Compose'"'"'s refusal, no Compose and Compose 2.12.2: PASS\n'

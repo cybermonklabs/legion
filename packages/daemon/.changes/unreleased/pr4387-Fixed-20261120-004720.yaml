@@ -1,5 +1,0 @@
-kind: Fixed
-body: 'A ready agent that registers again (a controller whose Oh My Pi session changed, which claims its Envoy role again) has the registration deadline again until it says it is ready: one that never does is retired and relaunched at the deadline (`worker_boot_timeout_seconds × worker_boot_registration_deadline_intervals`, 6 minutes at the defaults), as an agent at its first boot is, logging `supervise: the agent registered again and never said it was ready; retired its process`. Before, a re-registration armed no deadline, so such an agent waited for ever. Each retirement line at the registration deadline now carries `launchFailure` and `limit`, the launch failure it counts and the limit it counts toward, beside the claim.'
-time: 2026-11-20T00:47:20.000000000Z
-custom:
-    Issue: pr4387

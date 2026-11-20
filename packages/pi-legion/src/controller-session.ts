@@ -369,21 +369,21 @@ export function createControllerSession(deps: {
     // record a claim writes first did not store - and is made again after a growing wait
     // (claimRoleAgainOnBusy), each wait logged with its attempt and the listener's answer, and the
     // claim widget shows that the controller holds no Envoy role yet until the claim lands (taken
-    // down below), a session change's re-claim included, whose notices wait for the change's reset
-    // but whose widget does not. The bound follows who started the claim. The daemon-launched
-    // controller's own claims (at `session_start`, and its re-claim after a session change) claim
-    // again, as the claim boot does, rather than exiting for a relaunch that would meet the same
-    // 503. Under `controller: daemon` the controller runs as `omp --mode rpc`, where the widget and
-    // the notices are frames to the daemon that nothing shows: each wait shows in the Oh My Pi log of
-    // the controller's session, and the daemon retires and relaunches a controller that never
-    // reports ready after its registration deadline (120 s x 3 by default), at `session_start` and
-    // after a session change alike (the daemon arms the deadline again when a ready agent registers
-    // again), logging the claim, the reason and the launch it counts (supervise's
-    // registrationDeadline). A command a person typed (`/legion-claim-controller`,
-    // `/legion-controller-start`), wherever it runs, the daemon-launched controller's pane
-    // included, and any claim of a controller the daemon did not launch, also shows each wait as a
-    // notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where the person
-    // sees it, with the listener's answer.
+    // down below). The bound follows who started the claim. The daemon-launched controller's own
+    // claim at `session_start` claims again, as the claim boot does, rather than exiting for a
+    // relaunch that would meet the same 503; it is bounded by the daemon's registration deadline
+    // (120 s x 3 by default), after which the daemon retires and relaunches a controller that never
+    // reported ready, logging the claim, the reason and the launch it counts (supervise's
+    // registrationDeadline). A session change there never reaches this claim: the daemon refuses a
+    // registration from a session other than the one it recorded (SameAgentRefusal, 409), so the
+    // controller exits (claimOnce) and is relaunched on its recorded session. Under `controller:
+    // daemon` the controller runs as `omp --mode rpc`, where the widget and the notices are frames
+    // to the daemon that nothing shows: each wait shows in the Oh My Pi log of the controller's
+    // session. A command a person typed (`/legion-claim-controller`, `/legion-controller-start`),
+    // wherever it runs, and any claim of a controller the daemon did not launch, also shows each
+    // wait as a notice and gives up after CONTROLLER_CLAIM_BUSY_ATTEMPTS tries, so it fails where
+    // the person sees it, with the listener's answer; in the daemon-launched controller its process
+    // stays up, with the role and topics its first claim took, and its waits are in that log.
     const ui: SessionContext["ui"] = context.ui;
     let waitShown = false;
     const showWaiting = (line: string): void => {

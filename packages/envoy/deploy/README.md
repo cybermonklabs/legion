@@ -94,19 +94,23 @@ defaults target the devbox; set `REPO`, `COMPOSE_PROJECT`, or `BACKUPS` to run
 against another checkout, Compose project, or dump directory.
 
 It needs, on the host it runs on, Docker with the Compose plugin (`docker compose version` must
-succeed) and `python3`; `scripts/up-dispatch.sh` needs Docker with Compose. Both read `compose/.env`
-only through Compose's own resolution (`docker compose config`), so a setting counts as Compose
-gives it to the container, quotes, `${...}` and an `export` prefix included. A configuration Compose
-refuses is refused with no text of Compose's, which can quote a setting's value: the log names a
-required variable missing a value, or else gives Compose's exit status and the `docker compose
-config` command that shows its message.
+succeed) and `python3`, as does `scripts/up-dispatch.sh`. Both read `compose/.env` only through
+Compose's own resolution, and only through `docker compose config --format json`, so a setting
+counts as Compose gives it to the container, quotes, `${...}` and an `export` prefix included; they
+run on Compose 2.12.2, the oldest release their tests run (`autodeploy_test.sh` and
+`up-dispatch_test.sh` fetch it and check its published sha256), and later ones, where
+`config --environment`, which they do not use, needs 2.28. A configuration Compose refuses is
+refused with no text of Compose's, which can quote a setting's value: the log names a required
+variable missing a value, or else gives Compose's exit status and the `docker compose config`
+command that shows its message. A failed read of the deployed tag is refused by name, never taken
+for an env file that names no tag.
 
 `compose/.env` owns `ENVOY_IMAGE_TAG` for the deployer: it writes the tag it deployed there and reads
 the deployed tag back from it, so an `ENVOY_IMAGE_TAG` in the deployer's own environment (the
 `export` of the "Image" steps above, say) is ignored by design. It writes `compose/.env` (the tag, and
-its schema record `ENVOY_IMAGE_SCHEMA`) by staging the new file in an owner-only directory under
-`BACKUPS` and renaming it over the old one, so `BACKUPS` must be on `compose/.env`'s filesystem: on
-another, the deployer writes nothing and does not deploy, naming both.
+its schema record `ENVOY_IMAGE_SCHEMA`) through a staging file beside it, `compose/.env.stage.XXXXXX`
+(mode 0600), renamed over it; the deployer removes that file when it stops, and a deployer killed
+by SIGKILL, which it cannot see, leaves it, under a name git ignores, for the next start to remove.
 
 Two releases of Dispatch never serve the database together in this compose deployment:
 `docker compose up -d --no-deps dispatch` stops and removes the old container before it starts the
