@@ -4,7 +4,7 @@ body: |-
     `/healthz` answers, so it becomes the person's turn on the replay rather than a card: every
     Dispatch runs the keyed layer, and the Dispatch client no longer reads `/healthz` before it
     resends a keyed write. Before, a `/healthz` that was refused, timed out or answered no JSON left
-    the accept a single attempt. A write retried after an answer of no route keeps its first key.
+    the accept a single attempt.
 time: 2026-11-17T20:27:50.206250540Z
 custom:
     Issue: pr4379

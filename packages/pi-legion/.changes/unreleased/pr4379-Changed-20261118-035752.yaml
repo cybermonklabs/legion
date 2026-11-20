@@ -2,8 +2,7 @@ kind: Changed
 body: |-
     The bundled Dispatch client sends a keyed write whose answer was lost again under its key whatever
     Dispatch's `/healthz` answers, and asks nothing first: every Dispatch runs the keyed layer, and
-    the client no longer reads `/healthz` before it resends a keyed write. A write retried after an
-    answer of no route keeps its first key.
+    the client no longer reads `/healthz` before it resends a keyed write.
 time: 2026-11-18T03:57:52.85445965Z
 custom:
     Issue: pr4379
