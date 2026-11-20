@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks
+  no TLS version the daemon does, now stops the daemon's start at once and names the alert, as one
+  from its store does. Before, the start waited out NATS and Dispatch for ever, because Go returns
+  the alert as a network error.
