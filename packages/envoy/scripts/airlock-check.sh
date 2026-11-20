@@ -64,6 +64,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENVOY_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 LEAN_DIR="$ENVOY_DIR/internal/broker/airlock/lean"
+# shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
+source "$SCRIPT_DIR/airlock/k7-consumers.sh"
 
 usage() {
 	cat <<'EOF'
@@ -127,42 +129,8 @@ k1 | k2 | k3 | k4 | k5 | k6 | k7 | k8a | k9 | k15) ;;
 	;;
 esac
 
-# K7_SECRET_INPUTS are the k7 inputs that name a broker secret: the operator's own logins, which
-# the consumers k7 runs read by those names, so k7 binds and stores its fake values under them.
-K7_SECRET_INPUTS=(AIRLOCK_GCLOUD_SECRET AIRLOCK_GWS_READ_SECRET AIRLOCK_GWS_ADMIN_SECRET)
-
-# broker_name says whether $1 is a name of policy.NameToSlug's form, the one form the broker
-# reads a rules file entry of: ASCII capitals, digits and single underscores, starting with a
-# capital. The letters are listed, since [A-Z] matches other letters in some locales.
-broker_name() {
-	local upper=ABCDEFGHIJKLMNOPQRSTUVWXYZ digit=0123456789
-	[[ $1 =~ ^[$upper][$upper$digit]*(_[$upper$digit]+)*$ ]]
-}
-
-# broker_slug is the name a broker secret is stored under, policy.NameToSlug's mapping of the
-# name a session asks for: lower-cased, each underscore a hyphen (GWS_READ is gws-read).
-broker_slug() {
-	local slug="${1,,}"
-	printf '%s' "${slug//_/-}"
-}
-
 if [ "$CHECK_ID" = k7 ]; then
-	k7_absent=()
-	for input in "${K7_SECRET_INPUTS[@]}" AIRLOCK_GWS_TIER_KEY; do
-		if [ -z "${!input:-}" ]; then
-			k7_absent+=("$input")
-		fi
-	done
-	if [ "${#k7_absent[@]}" -ne 0 ]; then
-		printf 'airlock-check: k7 requires operator inputs: %s\n' "${k7_absent[*]}" >&2
-		exit 2
-	fi
-	for input in "${K7_SECRET_INPUTS[@]}"; do
-		if ! broker_name "${!input}"; then
-			printf 'airlock-check: %s=%s is no broker name: uppercase letters, digits and single underscores, starting with a letter\n' "$input" "${!input}" >&2
-			exit 2
-		fi
-	done
+	k7_consumer_require_inputs || exit $?
 fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/airlock-check-$CHECK_ID.XXXXXX")"
@@ -1521,77 +1489,30 @@ k7_broker() {
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
 }
 
-# k7_names is the rules file and the fake secrets this check adds: one name per consumer, bound
-# to the real hosts that consumer calls, and a fake value for each. The stack's own entries are
-# kept, so the seven plain clients still reach S.
-k7_names() {
-	local d="$WORK_DIR/k7"
-	mkdir -p "$d"
-	jq --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" '.secrets += [
-	     {"name": "SLACK_BOT_TOKEN", "hosts": ["slack.com"]},
-	     {"name": "GITHUB_ADMIN_PAT", "hosts": ["api.github.com", "github.com"]},
-	     {"name": "TAILSCALE_API_KEY", "hosts": ["api.tailscale.com"]},
-	     {"name": $gcloud, "hosts": ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"]},
-	     {"name": $read, "hosts": ["www.googleapis.com", "oauth2.googleapis.com"]},
-	     {"name": $admin, "hosts": ["admin.googleapis.com"]}
-	   ]' "$AIRLOCK_RULES_FILE" >"$d/rules.json"
-	K7_SLACK="xoxb-the-fake-slack-token-$RANDOM$RANDOM"
-	K7_GITHUB="ghp_thefakegithubadminpat$RANDOM$RANDOM"
-	K7_TAILSCALE="tskey-api-the-fake-tailscale-key-$RANDOM$RANDOM"
-	add_fake_secret "${STACK_SECRETS_PREFIX}slack-bot-token" '{"owner":"legion-daemon","tier":"agent"}' "$K7_SLACK"
-	add_fake_secret "${STACK_SECRETS_PREFIX}github-admin-pat" '{"owner":"legion-daemon","tier":"agent"}' "$K7_GITHUB"
-	add_fake_secret "${STACK_SECRETS_PREFIX}tailscale-api-key" '{"owner":"legion-daemon","tier":"agent"}' "$K7_TAILSCALE"
-	# The three Google logins are minted types: the broker mints each at the stack's stand-in
-	# Google token endpoint, so what the consumer holds a placeholder for is a minted value.
-	local google login input
-	google='{"owner":"legion-daemon","tier":"agent","type":"google-login"}'
-	login='{"type":"authorized_user","client_id":"the-stand-in-client","client_secret":"the-stand-in-client-secret","refresh_token":"the-stand-in-refresh-token"}'
-	for input in "${K7_SECRET_INPUTS[@]}"; do
-		add_fake_secret "${STACK_SECRETS_PREFIX}$(broker_slug "${!input}")" "$google" "$login"
-	done
-}
-
-# k7_pulumi writes the Pulumi program the Tailscale provider's getDevices is called from: a YAML
-# program, which needs no language runtime of its own, and a local state directory.
-k7_pulumi() {
-	local d="$WORK_DIR/k7/pulumi"
-	mkdir -p "$d/state"
-	cat >"$d/Pulumi.yaml" <<EOF
-name: airlock-k7
-runtime: yaml
-description: one tailscale:getDevices call, which the real Tailscale API refuses a fake key
-variables:
-  devices:
-    fn::invoke:
-      function: tailscale:index:getDevices
-outputs:
-  devices: \${devices}
-EOF
-}
 
 # k7_steps writes every consumer's own command into one file, as k3's and k4's steps are
 # written, so one grant of the seven names covers them all.
 k7_steps() {
-	local d="$WORK_DIR/k7" gcloud_secret read_secret admin_secret tier_key
+	local d="$WORK_DIR/k7" gcloud_secret read_secret admin_secret tier_key dotfiles consumer_boundary
 	printf -v gcloud_secret '%q' "$AIRLOCK_GCLOUD_SECRET"
 	printf -v read_secret '%q' "$AIRLOCK_GWS_READ_SECRET"
 	printf -v admin_secret '%q' "$AIRLOCK_GWS_ADMIN_SECRET"
 	printf -v tier_key '%q' "$AIRLOCK_GWS_TIER_KEY"
+	printf -v dotfiles '%q' "$K7_DOTFILES"
+	printf -v consumer_boundary '%q' "$SCRIPT_DIR/airlock/k7-consumers.sh"
 	cat >"$d/steps.sh" <<EOF
 set -u
-gcloud_secret=$gcloud_secret
-gws_read_secret=$read_secret
-gws_admin_secret=$admin_secret
-gws_tier_key=$tier_key
-out=$d/out
-: >"\$out"
+K7_CONSUMER_WORK_DIR=$d
+K7_CONSUMER_GCLOUD_SECRET=$gcloud_secret
+K7_CONSUMER_GWS_READ_SECRET=$read_secret
+K7_CONSUMER_GWS_ADMIN_SECRET=$admin_secret
+K7_CONSUMER_TIER_KEY=$tier_key
+K7_DOTFILES=$dotfiles
+# shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
+source $consumer_boundary
+k7_consumer_prepare_steps
+out="\$K7_CONSUMER_WORK_DIR/out"
 say() { printf '%s\n' "\$1" >>"\$out"; }
-export DOTFILES_DIR=$K7_DOTFILES
-export PATH="$K7_DOTFILES/scripts:$K7_DOTFILES/shims:\$PATH"
-# shims/gh builds a gh configuration directory of its own with scripts/gh-agent-config, under
-# XDG_CONFIG_HOME; this run's is under its work directory, never the person's home.
-export XDG_CONFIG_HOME=$d/xdg
-mkdir -p \$XDG_CONFIG_HOME
 say "no_proxy=\$NO_PROXY"
 say "https_proxy=\$(printf '%s' "\$HTTPS_PROXY" | sed 's/:[^:@]*@/:***@/')"
 
@@ -1610,25 +1531,9 @@ say "gh=\$(secret-run --reason 'k7: one gh api call with a fake admin token' GIT
 # pulumi preview of a program whose Tailscale provider calls tailscale:getDevices.
 say "pulumi=\$(cd $d/pulumi && export PULUMI_CONFIG_PASSPHRASE= PULUMI_BACKEND_URL=file://$d/pulumi/state TAILSCALE_API_KEY="\$TAILSCALE_API_KEY" TAILSCALE_TAILNET=example.com && pulumi stack init k7 >/dev/null 2>&1; pulumi preview --stack k7 --non-interactive 2>&1 | grep -iE 'error|refus|unauthor|401|403' | head -n 1 | tr -d '\r')"
 
-# A gRPC client: Pulumi's gcpkms secrets manager, which calls Cloud KMS over gRPC alone and offers
-# h2 and nothing else in its TLS handshake, makes a stack's data key at stack init with the
-# placeholder as its access token. The airlock carries it in HTTP/2 and Cloud KMS refuses the fake
-# value with gRPC's own UNAUTHENTICATED; a proxy that does not speak HTTP/2 fails the handshake
-# ("tls: no application protocol") and Pulumi says only "context deadline exceeded".
-say "kms=\$(cd $d/pulumi && export PULUMI_BACKEND_URL=file://$d/pulumi/state GOOGLE_OAUTH_ACCESS_TOKEN="\${!gcloud_secret}" && timeout 120 pulumi stack init k7kms --non-interactive --secrets-provider gcpkms://projects/airlock-k7/locations/global/keyRings/airlock-k7/cryptoKeys/airlock-k7 2>&1 | grep -iE 'error|unauthenticated|deadline|application protocol' | head -n 1 | tr -d '\r')"
-
-# gcloud-broker with gcloud projects list. It reads the login under the operator's name for it,
-# which agent-secrets put in this command's environment.
-say "gcloud=\$(GCLOUD_BROKER_INNER=1 bash $K7_DOTFILES/scripts/gcloud-broker -- gcloud projects list --format=json 2>&1 | grep -iE 'ERROR|reason:' | head -n 1 | tr -d '\r')"
-
-# One gws call under the operator's read tier: that tier's own command out of gws/accounts.json,
-# running the Drive call gws makes, since gws itself is no file of that repository.
-say "gws_tier=\$(jq -r --arg key "\$gws_tier_key" '.[\$key].tiers.read.command | @tsv' $K7_DOTFILES/gws/accounts.json 2>&1 | tr '\t' ' ')"
-say "gws=\$(secret-run --reason 'gws operator read' "\$gws_read_secret" -- bash -c 'printf "Authorization: Bearer %s" "\${!1}" | curl -sS -o /dev/null -w %{http_code} -H @- "https://www.googleapis.com/drive/v3/about?fields=user"' gws "\$gws_read_secret" 2>&1 | tail -n 1 | tr -d '\r')"
-
-# The google-workspace skill's Bearer call to admin.googleapis.com. Its domain is a placeholder:
-# Google refuses the fake token (401) before it reads the query, which is the answer k7 reads.
-say "admin=\$(printf 'Authorization: Bearer %s' "\${!gws_admin_secret}" | curl -sS -o /dev/null -w %{http_code} -H @- "https://admin.googleapis.com/admin/directory/v1/users?domain=example.com" 2>&1 | tail -n 1)"
+# The callable boundary runs the gRPC, gcloud and Google Workspace consumers after the generated
+# setup above has established their work directory, dotfiles path and isolated configuration.
+k7_consumer_google_steps
 
 # git push --dry-run through scripts/airlock/credential-helper, which answers the placeholder,
 # with the proxy in git's own configuration. It is given in the environment (GIT_CONFIG_*) rather
@@ -1702,11 +1607,13 @@ check_k7() {
 	stack_facts
 	k7_dotfiles
 	observe "the consumers, fetched from sjawhar/dotfiles at main: $K7_FETCHED"
-	k7_names
+	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
+		k7_consumer_add_fixtures
 	k7_broker
 	observe "this check's own broker is the stack's first broker's environment with its rules file, its two ports and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL, names $(jq -c '[.secrets[].name]' "$WORK_DIR/k7/rules.json")"
 
-	k7_pulumi
+	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
+		k7_consumer_write_pulumi
 	k7_steps
 
 	local s_before

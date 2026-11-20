@@ -65,62 +65,60 @@ label='the accepted run reaches the work directory boundary'; check test "${outp
 check_id=k6 run_check
 label='other checks do not require the k7 inputs'; check test "$status" -eq 93
 
-# Intercept the real driver just before check_k7 starts its stack. Exercise its fixture builders
-# and the generated gcloud and Google Workspace commands, without fetching consumers or calling a
-# service.
-cat >"$work/k7-builders.sh" <<'HOOK'
-probe_builders() {
-  set -e
-  add_fake_secret() { printf '%s\n' "$1" >>"$PROBE_DIR/k7-names"; }
-  : >"$PROBE_DIR/k7-names"
-  AIRLOCK_RULES_FILE="$PROBE_DIR/k7-rules.json"
-  printf '{"secrets":[]}\n' >"$AIRLOCK_RULES_FILE"
-  STACK_SECRETS_PREFIX=k7-fixture-
-  k7_names
-  jq -e --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" \
-    'any(.secrets[]; .name == $gcloud and .hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
-     and any(.secrets[]; .name == $read and .hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
-     and any(.secrets[]; .name == $admin and .hosts == ["admin.googleapis.com"])' "$WORK_DIR/k7/rules.json" >/dev/null
-  # Each login's fake secret is stored under policy.NameToSlug's slug of the operator's name.
-  for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
-    grep -qFx "k7-fixture-$slug" "$PROBE_DIR/k7-names"
-  done
-  K7_DOTFILES="$PROBE_DIR/k7-consumer"
-  mkdir -p "$K7_DOTFILES/gws" "$K7_DOTFILES/scripts" "$WORK_DIR/k7/pulumi"
-  jq -n --arg key "$AIRLOCK_GWS_TIER_KEY" \
-    '{($key):{tiers:{read:{command:["secret-run","GWS_EXAMPLE_VIEW_2"]}}}}' >"$K7_DOTFILES/gws/accounts.json"
-  # The consumer's gcloud-broker reads its login under the operator's name for it.
-  cat >"$K7_DOTFILES/scripts/gcloud-broker" <<'BROKER'
+# The fixture and Google-consumer boundary is called directly below. It does not parse text from
+# airlock-check.sh, so splitting or changing that caller cannot change this fixture test.
+boundary="$script_dir/airlock/k7-consumers.sh"
+run_boundary() {
+  status=0
+# shellcheck disable=SC2016 # "$1" expands in bash -c, where it is the boundary path.
+  output="$(env "${unset_inputs[@]}" bash -c 'source "$1"; k7_consumer_require_inputs' bash "$boundary" 2>&1)" || status=$?
+}
+run_boundary
+label='k7 fixture boundary refuses all missing inputs'; check test "$status" -eq 2
+for input in "${inputs[@]}"; do
+  label="the fixture-boundary refusal names $input"; check test "${output#*"$input"}" != "$output"
+done
+
+# The external consumers are faked; the fixture builder and the consumer boundary stay real.
+# shellcheck source=packages/envoy/scripts/airlock/k7-consumers.sh
+source "$script_dir/airlock/k7-consumers.sh"
+add_fake_secret() {
+  printf '%s\n' "$1" >>"$work/k7-names"
+  case "$1" in
+    k7-fixture-gcloud-example-login | k7-fixture-gws-example-view-2 | k7-fixture-gws-example-admin-2)
+      printf '%s\n' "$3" >>"$work/k7-google-logins"
+      ;;
+  esac
+}
+: >"$work/k7-names"
+: >"$work/k7-google-logins"
+AIRLOCK_GCLOUD_SECRET=GCLOUD_EXAMPLE_LOGIN
+AIRLOCK_GWS_READ_SECRET=GWS_EXAMPLE_VIEW_2
+AIRLOCK_GWS_ADMIN_SECRET=GWS_EXAMPLE_ADMIN_2
+AIRLOCK_GWS_TIER_KEY="operator.with space's [key]"
+AIRLOCK_RULES_FILE="$work/k7-rules.json"
+printf '{"secrets":[]}\n' >"$AIRLOCK_RULES_FILE"
+STACK_SECRETS_PREFIX=k7-fixture-
+K7_CONSUMER_WORK_DIR="$work/k7"
+k7_consumer_add_fixtures
+jq -e --arg gcloud "$AIRLOCK_GCLOUD_SECRET" --arg read "$AIRLOCK_GWS_READ_SECRET" --arg admin "$AIRLOCK_GWS_ADMIN_SECRET" \
+  'any(.secrets[]; .name == $gcloud and .hosts == ["cloudresourcemanager.googleapis.com", "oauth2.googleapis.com", "www.googleapis.com", "cloudkms.googleapis.com"])
+   and any(.secrets[]; .name == $read and .hosts == ["www.googleapis.com", "oauth2.googleapis.com"])
+   and any(.secrets[]; .name == $admin and .hosts == ["admin.googleapis.com"])' "$work/k7/rules.json" >/dev/null
+# Each login's fake secret is stored under policy.NameToSlug's slug of the operator's name.
+for slug in gcloud-example-login gws-example-view-2 gws-example-admin-2; do
+  grep -qFx "k7-fixture-$slug" "$work/k7-names"
+done
+jq -e -s 'length == 3 and all(.[]; type == "object" and .type == "authorized_user" and (.client_id | type == "string") and (.client_secret | type == "string") and (.refresh_token | type == "string"))' "$work/k7-google-logins" >/dev/null
+consumer="$work/k7-consumer"
+mkdir -p "$consumer/gws" "$consumer/scripts" "$work/k7/pulumi"
+jq -n --arg key "$AIRLOCK_GWS_TIER_KEY" \
+  '{($key):{tiers:{read:{command:["secret-run","GWS_EXAMPLE_VIEW_2"]}}}}' >"$consumer/gws/accounts.json"
+# The consumer's gcloud-broker reads its login under the operator's name for it.
+cat >"$consumer/scripts/gcloud-broker" <<'BROKER'
 #!/usr/bin/env bash
 [[ "$GCLOUD_BROKER_INNER" == 1 ]] && printf 'ERROR: %s\n' "${GCLOUD_EXAMPLE_LOGIN:-unset}"
 BROKER
-  K7_GH_DIR=/unused
-  AIRLOCK_S_URL=https://unused.example
-  AIRLOCK_BOTO3_PYTHON=python3
-  STANDS_BIN=/unused
-  k7_steps
-  env -u BASH_ENV bash -n "$WORK_DIR/k7/steps.sh"
-  # Select commands from the actual generated script, not copies of their implementation.
-  cat >"$PROBE_DIR/k7-steps.sh" <<'STEPS'
-set -euo pipefail
-say() { printf '%s\n' "$1"; }
-STEPS
-  selected=0
-  while IFS= read -r line; do
-    case "$line" in
-      gcloud_secret=* | gws_read_secret=* | gws_admin_secret=* | gws_tier_key=* | 'say "kms='* | 'say "gcloud='* | 'say "gws_tier='* | 'say "gws='* | 'say "admin='*)
-        printf '%s\n' "$line" >>"$PROBE_DIR/k7-steps.sh"
-        selected=$((selected + 1))
-        ;;
-    esac
-  done <"$WORK_DIR/k7/steps.sh"
-  [[ "$selected" == 9 ]]
-  env -u BASH_ENV PATH="$PROBE_DIR/consumer-bin:$PATH" \
-    GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
-    bash "$PROBE_DIR/k7-steps.sh"
-}
-trap 'if [[ "$BASH_COMMAND" == check_k7 ]]; then probe_builders; exit; fi' DEBUG
-HOOK
 mkdir -p "$work/consumer-bin"
 cat >"$work/consumer-bin/secret-run" <<'RUNNER'
 #!/usr/bin/env bash
@@ -145,14 +143,23 @@ cat >"$work/consumer-bin/pulumi" <<'PULUMI'
 #!/usr/bin/env bash
 [[ "$1 $2" == 'stack init' ]] && printf 'error: token %s\n' "${GOOGLE_OAUTH_ACCESS_TOKEN:-unset}"
 PULUMI
-chmod +x "$work/consumer-bin/secret-run" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi"
+chmod +x "$consumer/scripts/gcloud-broker" "$work/consumer-bin/secret-run" "$work/consumer-bin/curl" "$work/consumer-bin/pulumi"
 status=0
-output="$(env BASH_ENV="$work/k7-builders.sh" PROBE_DIR="$work" \
-  AIRLOCK_GCLOUD_SECRET=GCLOUD_EXAMPLE_LOGIN \
-  AIRLOCK_GWS_READ_SECRET=GWS_EXAMPLE_VIEW_2 AIRLOCK_GWS_ADMIN_SECRET=GWS_EXAMPLE_ADMIN_2 \
-  AIRLOCK_GWS_TIER_KEY="operator.with space's [key]" bash "$script_dir/airlock-check.sh" k7 2>&1)" || status=$?
-label='operator inputs build matching rules, store names and valid consumer commands'; check test "$status" -eq 0
-label='the gcloud login, the selected tier and both Google Workspace logins reach the real generated commands'
+# shellcheck disable=SC2016 # These variables expand in bash -c after the fake environment is set.
+output="$(env -u BASH_ENV PATH="$work/consumer-bin:$PATH" \
+  GCLOUD_EXAMPLE_LOGIN=gcloud-placeholder GWS_EXAMPLE_VIEW_2=read-placeholder GWS_EXAMPLE_ADMIN_2=admin-placeholder \
+  K7_CONSUMER_WORK_DIR="$work/k7" K7_DOTFILES="$consumer" \
+  K7_CONSUMER_GCLOUD_SECRET="$AIRLOCK_GCLOUD_SECRET" K7_CONSUMER_GWS_READ_SECRET="$AIRLOCK_GWS_READ_SECRET" \
+  K7_CONSUMER_GWS_ADMIN_SECRET="$AIRLOCK_GWS_ADMIN_SECRET" K7_CONSUMER_TIER_KEY="$AIRLOCK_GWS_TIER_KEY" \
+  bash -c 'source "$1"
+    k7_consumer_prepare_steps
+    [[ "$DOTFILES_DIR" == "$K7_DOTFILES" ]]
+    [[ "$XDG_CONFIG_HOME" == "$K7_CONSUMER_WORK_DIR/xdg" && -d "$XDG_CONFIG_HOME" ]]
+    [[ "$PATH" == "$K7_DOTFILES/scripts:$K7_DOTFILES/shims:"* ]]
+    k7_consumer_google_steps
+    cat "$K7_CONSUMER_WORK_DIR/out"' bash "$boundary" 2>&1)" || status=$?
+label='operator inputs build matching rules, store names, prepare consumers and run valid commands'; check test "$status" -eq 0
+label='the gcloud login, selected tier and both Google Workspace logins reach the real consumer boundary'
 check test "$output" = $'kms=error: token gcloud-placeholder\ngcloud=ERROR: gcloud-placeholder\ngws_tier=secret-run GWS_EXAMPLE_VIEW_2\ngws=200\nadmin=200'
 
 if [[ "$failed" -ne 0 ]]; then

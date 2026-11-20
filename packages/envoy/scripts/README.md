@@ -248,18 +248,18 @@ the broker reads:
 The check uses fake login values in its local store, each stored under the name the
 broker reads its input's name by (lower-cased, each underscore a hyphen). These inputs
 identify the consumer's existing broker names and account; they do not rename the
-operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` checks the
-required inputs, fake broker rules, store names and generated consumer commands without
-starting a stack.
+operator's logins. `bash packages/envoy/scripts/airlock-check.test.sh` calls the k7
+fixture and Google consumer boundary directly under fakes. It checks required inputs,
+fake broker rules, store names and consumer results without starting a stack.
 
 The programs the checks drive are files, not text a run writes out. The three Go
 clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
 `probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
 the plain tunnel its baseline goes through. CI compiles and vets all three with the
-rest of that command. The others are under `scripts/airlock/`: `memscan.py`, `k6`'s
-boto3 steps (`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git
-credential helper.
+rest of that command. The others are under `scripts/airlock/`: `k7-consumers.sh`
+(the fixture and Google consumer boundary), `memscan.py`, `k6`'s boto3 steps
+(`aws-boto3.py`), `k7`'s Slack poster (`slack.ts`) and `k7`'s git credential helper.
 
 The grant's proxy password and placeholder stay out of a command's arguments, which
 every process of the pod reads in `/proc/<pid>/cmdline`. `load` reads the proxy URL from
