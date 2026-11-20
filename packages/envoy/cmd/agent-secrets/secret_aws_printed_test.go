@@ -30,6 +30,18 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
+// refusingWith is the address of an STS that refuses every call with code and message, both of
+// which whoever answers there chooses.
+func refusingWith(t *testing.T, code, message string) string {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>` + code + `</Code><Message>` + message + `</Message></Error><RequestId>r2</RequestId></ErrorResponse>`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
 // useAWSWebIdentity leaves the rest of t with the real awsClients, signing in with a web identity:
 // AWS_ROLE_ARN set and AWS_WEB_IDENTITY_TOKEN_FILE naming tokenFile, with no other source the SDK
 // could take (no keys, no profile, empty shared config and credentials files, no instance
@@ -262,13 +274,24 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 	t.Cleanup(refusing.Close)
 	// refusingAs is an STS that refuses with code, which whoever answers there chooses.
 	refusingAs := func(t *testing.T, code string) string {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "text/xml")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>` + code + `</Code><Message>no</Message></Error><RequestId>r2</RequestId></ErrorResponse>`))
-		}))
-		t.Cleanup(srv.Close)
-		return srv.URL
+		return refusingWith(t, code, "no")
+	}
+	// roleProfile signs in with the profile AWS_PROFILE=role, whose role_arn the SDK assumes with
+	// STS's AssumeRole under the static keys of its source_profile.
+	roleProfile := func(t *testing.T) {
+		dir := t.TempDir()
+		config, credentials := filepath.Join(dir, "config"), filepath.Join(dir, "credentials")
+		if err := os.WriteFile(config, []byte("[profile role]\nrole_arn = arn:aws:iam::111122223333:role/agent\nsource_profile = base\nregion = us-east-1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(credentials, []byte("[base]\naws_access_key_id = AKIA"+"EXAMPLEKEY\naws_secret_access_key = not-a-"+"secret\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AWS_ACCESS_KEY_ID", "")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+		t.Setenv("AWS_CONFIG_FILE", config)
+		t.Setenv("AWS_SHARED_CREDENTIALS_FILE", credentials)
+		t.Setenv("AWS_PROFILE", "role")
 	}
 	// expiredSSOSession is an sso_session profile, AWS_PROFILE=sso, whose cached token has expired
 	// and whose refresh IAM Identity Center refuses with InvalidGrantException at
@@ -375,6 +398,22 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 			t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
 		}, "load your AWS sign-in: the web identity sign-in names no role to assume: set AWS_ROLE_ARN, or role_arn in the profile, beside its token file"},
+		{"STS refuses a role_arn profile's AssumeRole, naming the permission", func(t *testing.T) {
+			roleProfile(t)
+			t.Setenv("AWS_ENDPOINT_URL_STS", refusingWith(t, "AccessDenied",
+				"User: arn:aws:iam::111122223333:user/"+user+" is not authorized to perform: sts:AssumeRole on resource: arn:aws:iam::111122223333:role/agent; echo: "+secret))
+		}, "read your AWS sign-in: AWS refused it: AccessDenied (missing permission: sts:AssumeRole; AWS's message is not printed)"},
+		{"STS refuses a web identity's AssumeRoleWithWebIdentity, naming the permission in STS's words", func(t *testing.T) {
+			tokenFile := filepath.Join(t.TempDir(), "token")
+			if err := os.WriteFile(tokenFile, []byte("the.web.identity"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("AWS_ACCESS_KEY_ID", "")
+			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+			t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", tokenFile)
+			t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::111122223333:role/agent")
+			t.Setenv("AWS_ENDPOINT_URL_STS", refusingWith(t, "AccessDenied", "Not authorized to perform sts:AssumeRoleWithWebIdentity; echo: "+secret))
+		}, "read your AWS sign-in: AWS refused it: AccessDenied (missing permission: sts:AssumeRoleWithWebIdentity; AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))

@@ -204,19 +204,23 @@ func awsAPIWords(err error) (string, bool) {
 }
 
 // awsPermission is how AWS's message names the IAM action a refusal lacks: "is not authorized to
-// perform: <service>:<Action>", the service a prefix of lower-case letters, digits and dashes, the
-// action a word that starts with a capital letter, as every IAM action does.
-var awsPermission = regexp.MustCompile(`not authorized to perform: ([a-z0-9-]{1,64}:[A-Z][A-Za-z0-9]{0,127})(?:[\s.,;)]|$)`)
+// perform: <service>:<Action>", or STS's "Not authorized to perform <service>:<Action>" for a
+// role a web identity may not assume, the service a prefix of lower-case letters, digits and
+// dashes, the action a word that starts with a capital letter, as every IAM action does.
+var awsPermission = regexp.MustCompile(`[Nn]ot authorized to perform:? ([a-z0-9-]{1,64}:[A-Z][A-Za-z0-9]{0,127})(?:[\s.,;)]|$)`)
 
 // awsPermissions are the IAM actions a message names by name (awsMissingPermission): the ones the
-// forms' calls need - Secrets Manager's, the agent-secrets key's KMS actions Secrets Manager takes
-// on the caller's behalf, and STS's - and no other.
+// forms' calls need - Secrets Manager's; the agent-secrets key's kms:GenerateDataKey and
+// kms:Decrypt, which Secrets Manager takes on the caller's behalf to write and read a value
+// (Secrets Manager's "Secret encryption and decryption"); and STS's, the sign-in's own calls
+// among them: AssumeRole for a profile's role_arn and AssumeRoleWithWebIdentity for a web
+// identity token file - and no other.
 var awsPermissions = map[string]bool{
 	"secretsmanager:ListSecrets": true, "secretsmanager:DescribeSecret": true, "secretsmanager:GetSecretValue": true,
 	"secretsmanager:CreateSecret": true, "secretsmanager:PutSecretValue": true, "secretsmanager:TagResource": true,
 	"secretsmanager:UntagResource": true, "secretsmanager:DeleteSecret": true, "secretsmanager:RestoreSecret": true,
-	"kms:Decrypt": true, "kms:GenerateDataKey": true, "kms:Encrypt": true, "kms:DescribeKey": true,
-	"sts:GetCallerIdentity": true, "sts:AssumeRoleWithWebIdentity": true,
+	"kms:Decrypt": true, "kms:GenerateDataKey": true,
+	"sts:GetCallerIdentity": true, "sts:AssumeRole": true, "sts:AssumeRoleWithWebIdentity": true,
 }
 
 // permissionNotNamed is what a store's refusal prints in place of a permission its message names
