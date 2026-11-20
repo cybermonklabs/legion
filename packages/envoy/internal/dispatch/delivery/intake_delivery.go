@@ -273,17 +273,24 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 
 // callNATS makes call, one call to NATS named by what, where the stop waits for it -- a call of the
 // stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and waits for it
-// at most bus.ConnLockWait. A call NATS has not answered by then goes on, on a goroutine of its own
-// (bus.Bounded), and answered is false. That goroutine holds nothing of the stop's; a call through
-// the bus client that holds the client's own lock while it reads nats.go's state (Connected, and
-// DrainSubscription through it) holds that lock until nats.go answers. Its failure is logged when
-// it ends, with attrs; a connection already closed is how a call that outlived the stop ends when
-// the client closes at shutdown, and is logged as that rather than as an error.
+// at most callNATSWait (bus.ConnLockWait, 100 ms). The call always starts, on a goroutine of its
+// own, so a caller that keeps a count across the call (publishHandBack) sees the decrement when the
+// call finishes, even when the goroutine is descheduled past the wait. A call NATS has not answered
+// by then goes on, with a WARN line (callLeftRunning), and answered is false. That goroutine holds
+// nothing of the stop's; a call through the bus client that holds the client's own lock while it
+// reads nats.go's state (Connected, and DrainSubscription through it) holds that lock until nats.go
+// answers. Its failure is logged when it ends, with attrs; a connection already closed is how a call
+// that outlived the stop ends when the client closes at shutdown, and is logged as that rather than
+// as an error; a publish refused because the connection is reconnecting (ErrReconnectBufExceeded) is
+// logged at INFO.
 func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T, answered bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), bus.ConnLockWait)
-	defer cancel()
-	value, answered, _ = bus.Bounded(ctx, func() (T, error) {
-		value, err := call()
+	type answer struct {
+		value T
+		err   error
+	}
+	answers := make(chan answer, 1)
+	go func() {
+		v, err := call()
 		switch {
 		case err == nil:
 		case errors.Is(err, natsgo.ErrConnectionClosed):
@@ -293,13 +300,26 @@ func callNATS[T any](what string, call func() (T, error), attrs ...any) (value T
 		default:
 			slog.Error("dispatch delivery: "+what, append(attrs, "error", err)...)
 		}
-		return value, nil
-	})
-	if !answered {
-		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", bus.ConnLockWait)...)
+		answers <- answer{value: v, err: err}
+	}()
+	wait := time.Duration(callNATSWait.Load())
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case a := <-answers:
+		return a.value, true
+	case <-timer.C:
+		slog.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
+		return value, false
 	}
-	return value, answered
 }
+
+// callNATSWait is how long callNATS waits for the call's answer. It is bus.ConnLockWait (100 ms)
+// outside tests. A row sets it to 0 to exercise the path where every call outlives the wait, so
+// the bookkeeping inside each call still completes.
+var callNATSWait atomic.Int64
+
+func init() { callNATSWait.Store(int64(bus.ConnLockWait)) }
 
 // callLeftRunning is the line callNATS logs for a call it goes on without.
 const callLeftRunning = "dispatch delivery: NATS did not answer a call in time, so it goes on without waiting for it"

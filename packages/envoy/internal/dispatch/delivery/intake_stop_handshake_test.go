@@ -536,6 +536,32 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 	}
 }
 
+// A hand-back's publish count returns to zero even when every callNATS outlives its wait. At
+// 45c29a6944, callNATS used bus.Bounded, whose context could end before the call started; the
+// decrement inside the call never ran, handBacksLanded never closed, and the finalizer waited
+// forever. With callNATSWait set to 0, every call outlives its wait, and the row checks that
+// handBacksLanded still closes. The negative control is 45c29a6944's callNATS (bus.Bounded with
+// a context.WithTimeout of 0).
+func TestACallNATSThatOutlivesItsWaitStillCompletesItsBookkeeping(t *testing.T) {
+	saved := callNATSWait.Swap(0)
+	t.Cleanup(func() { callNATSWait.Store(saved) })
+	row := startStopRow(t, intakeKey, func(delivery *intakeDelivery, message intakeMessage) {
+		delivery.handBack(message.msg)
+	}, true)
+	publishPullRequestEnvelope(t, row.client, "acme", "widgets", 7, map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
+	})
+	delivery := row.delivery()
+	waitFor(t, 30*time.Second, func() bool { return delivery.handedBack() }, func() string {
+		return "the hand-back was never published"
+	})
+	select {
+	case <-delivery.handBacksLanded():
+	case <-time.After(30 * time.Second):
+		t.Fatal("handBacksLanded never closed: the publish count was lost because callNATS skipped the call")
+	}
+}
+
 // startBufferedDrainRow starts a row whose subscription's callback holds the first message of a
 // pull request while keying it, so the second stays in the subscription's buffer and a drain cannot
 // end. release lets the callback go.
