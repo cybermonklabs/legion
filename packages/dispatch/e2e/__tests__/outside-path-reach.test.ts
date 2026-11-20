@@ -185,14 +185,27 @@ describe.concurrent("outside-path-reach.sh", () => {
     }
   );
 
+  // A name that does not resolve is answered by the row's own curl as Ubuntu 24.04's curl 8.5.0
+  // answers one, measured: exit 6, with `0.000000 0.000000` for its lookup and connect times. The
+  // row asks no resolver, so its verdict is the script's reading of exit 6, not how fast the
+  // machine's DNS answers; with a resolver slower than the probe's 3 s, the host's curl would give
+  // exit 28 instead. The stand-in logs each probe it answered, one per round.
   probingRow(withoutTools)("is unknown, never a pass, when a target does not resolve", async () => {
     const origin = await fakeDispatch();
     try {
-      const run = await drive({
-        OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
-        OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
-      });
-      expect(lineFor(run, "ghost")).toContain(" unresolved");
+      const log = written("");
+      const path = pathWithCurl(
+        `case "$*" in *telnet://does-not-exist.invalid:4222*) echo probe >>${log}; printf '0.000000 0.000000'; exit 6 ;; esac`
+      );
+      const run = await drive(
+        {
+          OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
+          OUTSIDE_PATH_TARGETS: await list("ghost does-not-exist.invalid 4222"),
+        },
+        { path }
+      );
+      expect(readFileSync(log, "utf8")).toBe("probe\n".repeat(5));
+      expect(lineFor(run, "ghost")).toContain(" unresolved; curl exit 6,");
       expect(verdict(run)).toBe("UNKNOWN: ghost unresolved or unknown");
       expect(run.code).toBe(2);
     } finally {
