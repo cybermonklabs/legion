@@ -1,6 +1,13 @@
 # A path you did not write
 
-Read this when step 2 of `skill://legion-worker` lists a path you did not write. Before this branch's first push, read the second list against your default branch at origin instead of `legion/<issue>@origin`.
+Read this before the turn's first `jj new` or commit, in a workspace you share, and list the paths of the working copy and of your branch against origin:
+
+```bash
+cd -- "$LEGION_WORKSPACE" && jj -R "$LEGION_WORKSPACE" diff -r @ --name-only
+jj -R "$LEGION_WORKSPACE" diff --from "legion/<issue>@origin" --to @ --name-only
+```
+
+Every path yours: commit and push as your role prompt says. Before this branch's first push, read the second list against your default branch at origin instead of `legion/<issue>@origin`.
 
 - The path is only in the second list, or already inside a commit of yours: split nothing, and tell the architect.
 - The path is in the first list (the working copy `@`): take your own paths out of `@`, without `jj new` first:
