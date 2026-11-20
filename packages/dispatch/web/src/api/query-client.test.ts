@@ -1,4 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
@@ -7,12 +8,14 @@ import {
   DispatchQueryClient,
   hearLiveEvent,
   holdBackReads,
+  LATE_EVENT_GRACE_MS,
   QUERY_RETRY_DELAY_MS,
   queryRetry,
   queryRetryDelay,
   replaceQueryData,
 } from "./query-client";
 import type { DispatchEvent } from "./types";
+import { snoozeWritten } from "./write-events";
 
 /**
  * A server for one read whose every request is answered by the test: `answer()` lands the oldest
@@ -372,6 +375,113 @@ test("a hold ends on its write's own live event, and on no other", async () => {
     release();
   } finally {
     unsubscribe();
+  }
+});
+
+/** The `user_state.updated` naming `snoozed` that a snooze of alice's publishes (`snoozeWritten`):
+ *  it names no ask, so it matches every snooze of hers still out. */
+function snoozeEvent(): DispatchEvent {
+  return {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-11-20T00:00:00Z",
+    id: 1,
+    issue_key: null,
+    notify: false,
+    payload: { changed: ["snoozed"], login: "alice" },
+    seq: 1,
+    type: "user_state.updated",
+  } as DispatchEvent;
+}
+
+// A bulk snooze of two asks goes past its deadline still out, and a snooze is pressed after it.
+// Dispatch then answers the bulk snooze, one of whose asks moved nothing, so one of its two events
+// never comes. It takes the snooze events that come within `LATE_EVENT_GRACE_MS` of its answer,
+// and then waits for none: the event after that ends the later snooze's hold.
+test("a hold past its deadline takes its write's events until LATE_EVENT_GRACE_MS after its answer, and none after", async () => {
+  jest.useFakeTimers();
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("rows");
+  const observer = new QueryObserver(queryClient, { queryFn: server.queryFn, queryKey: ["inbox"] });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const bulk = holdBackReads(queryClient, {
+      endsOn: snoozeWritten,
+      events: 2,
+      keys: [["inbox"]],
+    });
+    jest.advanceTimersByTime(SEND_DEADLINE_MS);
+    const later = holdBackReads(queryClient, { endsOn: snoozeWritten, keys: [["inbox"]] });
+    bulk();
+    void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // An event just within the grace is the bulk snooze's, and the read waits for the later's.
+    jest.advanceTimersByTime(LATE_EVENT_GRACE_MS - 1);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // Past it, the bulk snooze waits for no event: the next is the later snooze's, and the read
+    // asks.
+    jest.advanceTimersByTime(1);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(2);
+    later();
+  } finally {
+    unsubscribe();
+    jest.useRealTimers();
+  }
+});
+
+// A snooze the page tries for as long as the reader leaves it may never be answered. Past its
+// deadline its hold holds no read and still waits for its write's events, for no longer than
+// `IDEMPOTENCY_KEY_TTL_MS` after it began: an event just within that is its own, and the one
+// after ends the hold of a snooze pressed after it.
+test("a hold whose write is never answered takes its write's events until IDEMPOTENCY_KEY_TTL_MS after it began, and none after", async () => {
+  jest.useFakeTimers();
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const server = heldServer("rows");
+  const observer = new QueryObserver(queryClient, { queryFn: server.queryFn, queryKey: ["inbox"] });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    server.answer();
+    await settle();
+
+    const unanswered = holdBackReads(queryClient, {
+      endsOn: snoozeWritten,
+      events: 2,
+      keys: [["inbox"]],
+    });
+    jest.advanceTimersByTime(IDEMPOTENCY_KEY_TTL_MS - SEND_DEADLINE_MS / 2);
+    const later = holdBackReads(queryClient, { endsOn: snoozeWritten, keys: [["inbox"]] });
+    void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // An event just within the key's lifetime is the unanswered snooze's, and the read waits.
+    jest.advanceTimersByTime(SEND_DEADLINE_MS / 2 - 1);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(1);
+
+    // Past it, the unanswered snooze waits for no event: the next is the later snooze's, and the
+    // read asks.
+    jest.advanceTimersByTime(1);
+    hearLiveEvent(queryClient, snoozeEvent(), "alice");
+    await settle();
+    expect(server.requests()).toBe(2);
+    later();
+    unanswered();
+  } finally {
+    unsubscribe();
+    jest.useRealTimers();
   }
 });
 
