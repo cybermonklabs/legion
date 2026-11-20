@@ -23,7 +23,9 @@ for Go, the closure of the packages the job compiles (`go list -deps -test`), th
 targets of the go commands its tests start, and the module files of the workspace the
 build runs in, whose go.mod files move the versions it compiles; and this file, since a
 job reads its own definition. The ci-filters job (.github/scripts/check-ci-filters.sh)
-recomputes those sets and fails naming each file a filter misses.
+recomputes those sets and fails naming each file a filter misses. A list names each path
+or alias once, as written: rule 22 of that check refuses a second copy, which selects
+nothing, and names both lines. Two groups one filter names may share a path.
 
 dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
 when one of its patterns without `!` matches and none of its `!` patterns does.

@@ -296,6 +296,18 @@ run_write() {
   set -e
 }
 
+# A path written twice in one list is check-ci-filters.sh's rule 22, which runs in that check's
+# own entry point and not in the reader this check shares with it: here a repeat is no refusal,
+# and the write mode passes as before.
+echo "case: a path written twice in one filter list is the other check's refusal"
+root=$(fixture path-repeated)
+replace "$root/.github/ci-filters.yaml" "  - 'other/**'" $'  - \'other/**\'\n  - \'other/**\''
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "says nothing of the repeat" "$(is "$(contains "$out" 'twice')" false)"
+run_write "$root"
+check "and the write mode passes too" "$(is "$status" 0)"
+
 echo "case: the write mode writes a listed block of the files the source filter's programs compile"
 root=$(fixture listed-write)
 listed "$root"

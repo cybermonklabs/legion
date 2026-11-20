@@ -326,13 +326,21 @@
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
-#      nothing would say so.
+#      nothing would say so,
+#  22. a list of .github/ci-filters.yaml that holds one item twice as written, before any anchor
+#      expands, naming the list, the item and the line of each copy: a path, quoted or plain
+#      alike, or an alias written twice in one list. dorny/paths-filter and every rule above read
+#      the two copies as one, so the second selects nothing; it is a slip a forward merge leaves
+#      without a conflict, and one of the two lines was likely meant to be another path. A path
+#      that two groups one list names both hold is no repeat, since each group's list holds it
+#      once, and neither is an alias beside a glob that spells its name (`*group` and
+#      `'*group'`), since the two select different files.
 #
-# Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
-# in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
-# is read once per run, and a run that cannot read it stops there, naming the file and whether it
-# is absent or there and refusing the open: every job is selected by a filter of it, so a run that
-# read none would hold every filter to nothing.
+# Rules 1, 6, 9, 17 and 22 name .github/ci-filters.yaml in their refusals, the file the filters
+# are in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That
+# file is read once per run, and a run that cannot read it stops there, naming the file and
+# whether it is absent or there and refusing the open: every job is selected by a filter of it, so
+# a run that read none would hold every filter to nothing.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
