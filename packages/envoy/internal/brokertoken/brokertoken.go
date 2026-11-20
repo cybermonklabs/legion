@@ -595,13 +595,13 @@ func (v *Verifier) known(ctx context.Context, r *http.Request, token string) (In
 // has no forwarding headers. The origin it came to is the one of Options.Origins whose host is
 // r.Host, compared without regard to case, and the first, the canonical one, for every other
 // Host — Dispatch's own rule for which origin a request is answered as (routes.publicOrigin). So
-// a verifier of one origin checks every request against it, whatever its Host, as it always has.
+// a verifier of one origin checks every request against it, whatever its Host.
 //
 // The library rebuilds a proof's expected 'htu' from X-Forwarded-Proto and r.Host
 // (oauth2.RequestURL), both of which a caller behind a proxy could choose, so the proof would
 // name a URL the caller picked rather than Dispatch's. The broker answers this the same way for
-// its own OAuth routes (internal/broker/api/handlers_oauth.go, atPublicURL): the caller signs
-// DISPATCH_SERVER_URL plus the request's path, and Dispatch checks against exactly that. r.Host
+// its own OAuth routes (internal/broker/api/handlers_oauth.go, atPublicURL): the caller signs the
+// origin it sends to plus the request's path, and Dispatch checks against exactly that. r.Host
 // is the caller's to write too, and choosing it chooses only which of the program's own origins
 // the proof must name, never a URL the caller picked: a proof names one 'htu', and the replay
 // store records it by that 'htu', so a proof one origin accepted is spent, and the other never
