@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+    At a reading at or above the urgent share, halfway from the mark to the limit (92.5% at the
+    default `act_percent`), where the processes the launcher's memory guard may end hold one that is
+    not new to its stay in the band, the guard now also ends at that reading every process that grew
+    by 1 MiB or more since that stay's first kill, and every one that started during the stay, is
+    not a fork that still runs its parent's program and holds memory of its own, each beside the
+    first with its own `ended` line, `rule=urgent`. A stay begins at its first reading at or above
+    the band below the mark, and a process started during it is one that reading's process table
+    did not list. In the wait after a kill such a process is a reason to act, and where it is the
+    only one, the first kill goes to the first such process in the order, not to a larger process
+    that never grew. So growers that started inside the band and step together after an urgent
+    reading no longer outrun one kill a reading, and a parent that grew before the stay's first kill
+    and has been flat since, or a sleeping fork, is not ended for this.
+custom:
+    Issue: pr4273

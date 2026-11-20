@@ -41,12 +41,15 @@ import (
 // that process was first (INFRA-3531 R3 of spec version 31): rule is the tier of the order of ends
 // that put it first, or the urgent rule for a process ended beside the first at a reading at or
 // above the urgent share, one that grew over the window or, where the decision holds a process that
-// is not new to the stay, one new to it with memory of its own, which at the reading at the mark
-// the read-on after the first kill can read (ruleUrgent, spec versions 39, 41, 42 and 43), or,
-// at such a reading after a kill, one the guard read at the reading before that grew since that
-// kill, which the reads again before the full read end (endKnown, spec version 43), and
-// sizes where the sizes the guard chose it by came from: the decision's for each kill of the
-// reading. Its less_parent, after sizes, is how much of its size its rank did not count
+// is not new to the stay, one of the sets the urgent rule ends for the stay, grown since the stay's
+// first kill, started during the stay and no fork with memory of its own, or new to it with memory
+// of its own, which at the reading at the mark the read-on after the first kill can read
+// (ruleUrgent, spec versions 39, 41, 42, 43 and 46), or, at such a reading after a kill, one the
+// guard read at the reading before that grew since that kill, which the reads again before the full
+// read end (endKnown, spec version 43), or a first kill of a reading of the wait where those sets
+// are the one reason to act and the order puts another process first (urgentFirst, spec version
+// 46), and sizes where the sizes the guard chose it by came from: the decision's for each kill of
+// the reading. Its less_parent, after sizes, is how much of its size its rank did not count
 // (INFRA-3531 R1 of spec version 33): for a fork that runs its parent's executable with its
 // parent's arguments, its parent being one the guard has read in this stay, its parent's size at
 // the guard's latest read of the parent, or its own size where that is less, so that size less
@@ -95,13 +98,14 @@ const (
 // between them, or there are none. It is given up with reasonNotFallen where the wait after a
 // kill has passed with the reading not below the reading at the kill, and either no process the
 // guard may end has grown since that kill (grownSinceKill) and, at a reading at or above the urgent
-// share in a stay with history, none is new to the stay with memory of its own (urgentNew), or
-// they hold less than the floor: the guard goes on after a kill that lowered nothing only while
-// one of them has grown since it (INFRA-3531 R1 of spec version 25) or, at such a reading, one is
-// new to the stay with memory of its own, which the urgent rule ends (spec version 43,
-// verification version 36). So below the urgent share a rise that is a protected process's own,
-// which no kill of the guard's lowers, ends at most one process before this reason; at or above
-// it, in a stay with history, it can also end each process new to the stay with memory of its own,
+// share in a stay with history, none is of the sets the urgent rule ends for the stay, grown since
+// the stay's first kill, started during the stay and no fork with memory of its own, or new to it
+// with memory of its own (urgentFirst), or they hold less than the floor: the guard goes on after a
+// kill that lowered nothing only while one of them has grown since it (INFRA-3531 R1 of spec
+// version 25) or, at such a reading, one is of those sets, which the urgent rule ends (spec
+// versions 43 and 46, verification version 36). So below the urgent share a rise that is a
+// protected process's own, which no kill of the guard's lowers, ends at most one process before
+// this reason; at or above it, in a stay with history, it can also end each process of those sets,
 // at the reading of that kill or at a later reading of the wait at or above that share.
 const (
 	reasonNotFallen    = "not fallen"
@@ -120,16 +124,25 @@ const (
 // largest. ruleUrgent is a process ended beside the first at a reading at or above the urgent
 // share, the mark plus half the distance from the mark to the limit, where the guard ends every
 // process that grew over the window and, where the decision holds a process that is not new to the
-// stay, every process new to it that holds memory of its own, a fork whose parent's size covers
-// its own not among them, each with its line, the first naming its own tier and each other this
-// rule, whichever of the two groups it is of (endUrgent, INFRA-3531 R1 of spec versions 39, 41 and
-// 42; `4g-latepool-4tpqx`), and, at the reading at the mark, those the read-on after the first
-// kill reads up to one interval from the reading (readOn, spec version 43; `4g-t4latepool-r3`).
-// At such a reading after a kill the guard also ends by this rule, as it reads them again before
-// the full read, the processes it read at the reading before that grew since that kill, but the
-// first of its kills, whose line names its own tier (endKnown, spec version 43; the tester's run
-// r17 at 41d4f45b).
-// Where every process is new to the stay, it ends the window's growers alone beside the first.
+// stay, every process of the sets the urgent rule ends for the stay: grown since the stay's first
+// kill by growthNoise or more, started during the stay and no fork with memory of its own, or new
+// to it with memory of its own, a fork whose parent's size covers its own not among them, each with
+// its line, the first naming its own tier and each other this rule, whichever of the groups it is
+// of (endUrgent, endsInStay, INFRA-3531 R1 of spec versions 39, 41, 42 and 46, the last by
+// INFRA-3368's architect's decisions of 2026-11-20T13:55Z, 14:00Z, 14:05Z and 14:58Z;
+// `4g-latepool-4tpqx`, and `4g-r15latepool-r206` at 00405eb3, where four growers that started
+// together inside the band, read three times and not yet stepped at an urgent reading of 93.95%,
+// stepped together within one 131 ms gap and brought the pod to 2.3 MiB from the kill point), and,
+// at the reading at the mark, those the read-on after the first kill reads up to one interval from
+// the reading (readOn, spec version 43; `4g-t4latepool-r3`). At such a reading after a kill the
+// guard also ends by this rule, as it reads them again before the full read, the processes it read
+// at the reading before that grew since that kill, and after the first of those kills each of the
+// sets of the stay, but the first of its kills, whose line names its own tier (endKnown, spec
+// versions 43 and 46; the tester's run r17 at 41d4f45b). And where, at such a reading, those sets
+// are the one reason to act and the order puts first a process in none of them, the first kill goes
+// to the first of them in the order and its line names this rule, since the order did not put it
+// first (urgentFirst, spec version 46). Where every process is new to the stay, it ends the
+// window's growers alone beside the first.
 // ruleKernel is a process the guest kernel killed (Guest), which the kernel chose by rules of its
 // own.
 const (
