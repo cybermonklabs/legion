@@ -924,6 +924,9 @@ function countsTable(draw: Draw): string {
   return lines.join("\n");
 }
 
+/** A rule record as a draw writes it now: the fields older draws lack are always set. */
+type WrittenRule = DrawRule & Required<Pick<DrawRule, "servedModels" | "answers">>;
+
 /**
  * What `draw.json` records of the never-decide rule over the cases it read: the prose it applied,
  * what applying it cost, which model each answer says served it (admitted, held and unreadable
@@ -934,7 +937,7 @@ function ruleRecordOf(
   checks: readonly string[],
   definition: string,
   cache: string | null
-): DrawRule {
+): WrittenRule {
   const answered = cases.flatMap((one) =>
     one.hold === null ? [] : [{ caseId: one.row.caseId, hold: one.hold }]
   );
@@ -1132,6 +1135,72 @@ export interface DrawOptions {
   ask?: AskModel;
 }
 
+/** The fields of a draw's record its mode settles, in the order the record holds them. */
+type ModeFields = Pick<
+  DrawRecord,
+  "backlogLegionRootsRead" | "backlogLegionRoots" | "rule" | "neverDecideApplied" | "claimRun"
+>;
+
+/**
+ * The draw over the mode's cases: rendered, put to the rule where the mode applies one, and drawn
+ * into the slices; with the record fields the mode settles and the lines it prints, those after
+ * the groups (`held`) and those after the undrawable cases (`rule`). The one place the mode is
+ * branched on after it is settled.
+ */
+async function drawnOf(
+  mode: DrawMode,
+  seed: number,
+  config: DispatchConfig,
+  cache: string | undefined
+): Promise<{
+  rendered: { cases: DrawCase[]; unread: number; checks: string[] };
+  drawn: Draw;
+  fields: ModeFields;
+  printout: { held: string[]; rule: string[] };
+}> {
+  switch (mode.kind) {
+    case "claim": {
+      const rendered = await drawCasesOf(mode.toRender, null, config);
+      const drawn = drawSlices(rendered.cases, seed, mode.finalTest);
+      const fields: ModeFields = {
+        backlogLegionRootsRead: null,
+        backlogLegionRoots: null,
+        rule: null,
+        neverDecideApplied: false,
+        claimRun: mode.claimRun,
+      };
+      return { rendered, drawn, fields, printout: { held: [], rule: [] } };
+    }
+    case "ruled": {
+      const rendered = await drawCasesOf(mode.toRender, mode.rule, config);
+      const drawn = drawSlices(rendered.cases, seed);
+      const { definition } = mode.rule;
+      const rule = ruleRecordOf(rendered.cases, rendered.checks, definition, cache ?? null);
+      const fields: ModeFields = {
+        backlogLegionRootsRead: mode.roots.issues.length,
+        backlogLegionRoots: mode.roots,
+        rule,
+        neverDecideApplied: true,
+        claimRun: null,
+      };
+      const held = [`held by the never-decide rule  ${drawn.held.length}`];
+      for (const [kind, count] of Object.entries(drawn.heldByKind).sort()) {
+        held.push(`  ${kind.padEnd(22)}${count}`);
+      }
+      const settled = rule.answers.length - rule.asked - rule.cached;
+      const lines = [
+        `the rule's calls  ${rule.asked} asked, ${rule.cached} from the cache, ` +
+          `${settled} settled by the issue's facts`,
+      ];
+      for (const [name, count] of Object.entries(rule.servedModels).sort()) {
+        lines.push(`  served by ${name.padEnd(30)}${count}`);
+      }
+      lines.push(`the rule's tokens ${rule.inputTokens} read, ${rule.outputTokens} written`);
+      return { rendered, drawn, fields, printout: { held, rule: lines } };
+    }
+  }
+}
+
 async function draw(flags: Flags, options: DrawOptions): Promise<number> {
   const reading = Boolean(readReferenceOf(process.env[RESERVE_VARIABLE]));
   if (reading && flags.seed === undefined) {
@@ -1186,14 +1255,7 @@ async function draw(flags: Flags, options: DrawOptions): Promise<number> {
     readUnder === null
       ? await ruledModeOf(post, flags, config, options.ask)
       : await claimModeOf(corpus, readUnder, post, flags, directory, config);
-  const claim = mode.kind === "claim" ? mode : null;
-  const ruled = mode.kind === "ruled" ? mode : null;
-  const rendered = await drawCasesOf(mode.toRender, ruled?.rule ?? null, config);
-  const drawn = drawSlices(rendered.cases, seed, claim?.finalTest ?? null);
-  const ruleRecord =
-    ruled === null
-      ? null
-      : ruleRecordOf(rendered.cases, rendered.checks, ruled.rule.definition, flags.cache ?? null);
+  const { rendered, drawn, fields, printout } = await drawnOf(mode, seed, config, flags.cache);
   console.log("");
   console.log(countsTable(drawn));
   console.log("");
@@ -1201,29 +1263,12 @@ async function draw(flags: Flags, options: DrawOptions): Promise<number> {
     `groups            ${drawn.groupCount} under the key ${drawn.groupKey}, of which ` +
       `${drawn.groups.approval} hold an approval case and ${drawn.groups.question} a question`
   );
-  if (ruleRecord !== null) {
-    console.log(`held by the never-decide rule  ${drawn.held.length}`);
-    for (const [kind, count] of Object.entries(drawn.heldByKind).sort()) {
-      console.log(`  ${kind.padEnd(22)}${count}`);
-    }
-  }
+  for (const line of printout.held) console.log(line);
   console.log(`undrawable                     ${drawn.undrawable.length}`);
   for (const kind of UNDRAWABLE_KINDS) {
     console.log(`  ${UNDRAWABLE_NAMES[kind].padEnd(35)}${drawn.undrawableByKind[kind]}`);
   }
-  if (ruleRecord !== null) {
-    const settled = (ruleRecord.answers?.length ?? 0) - ruleRecord.asked - ruleRecord.cached;
-    console.log(
-      `the rule's calls  ${ruleRecord.asked} asked, ${ruleRecord.cached} from the cache, ` +
-        `${settled} settled by the issue's facts`
-    );
-    for (const [name, count] of Object.entries(ruleRecord.servedModels ?? {}).sort()) {
-      console.log(`  served by ${name.padEnd(30)}${count}`);
-    }
-    console.log(
-      `the rule's tokens ${ruleRecord.inputTokens} read, ${ruleRecord.outputTokens} written`
-    );
-  }
+  for (const line of printout.rule) console.log(line);
   console.log(`documents that could not be read ${rendered.unread}`);
   console.log(
     drawn.finalTest === null
@@ -1278,19 +1323,14 @@ async function draw(flags: Flags, options: DrawOptions): Promise<number> {
     groups: drawn.groups,
     postCutCases: post.length,
     documentsUnread: rendered.unread,
-    // The one input of a ruled draw that is not the corpus: the labelled roots on the backlog or
-    // in icebox, which the never-decide rule reads. The list is written whole, with the time it
-    // was read, so `--backlog-roots <this file>` draws these slices again whatever Dispatch
-    // shows later. The claim's draw reads none.
-    backlogLegionRootsRead: ruled === null ? null : ruled.roots.issues.length,
-    backlogLegionRoots: ruled?.roots ?? null,
-    // What the rule was, for a ruled draw: the prose it applied, what applying it cost, and what
-    // was checked of the text it was applied to. A change of one byte of that prose changes every
-    // cache key, so a later draw over the same corpus and seed with another definition is a
-    // different reading and says so here.
-    rule: ruleRecord,
-    neverDecideApplied: ruled !== null,
-    claimRun: claim?.claimRun ?? null,
+    // What the mode was: for a ruled draw, the labelled roots on the backlog or in icebox it read
+    // (written whole, with the time they were read, so `--backlog-roots <this file>` draws these
+    // slices again whatever Dispatch shows later) and what the rule was (the prose it applied,
+    // what applying it cost, and what was checked of the text it was applied to: a change of one
+    // byte of that prose changes every cache key, so a later draw over the same corpus and seed
+    // with another definition is a different reading and says so here); for the claim's draw,
+    // none of those, and the claim run and the build it read.
+    ...fields,
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },
       undrawable: {

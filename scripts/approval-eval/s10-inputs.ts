@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import type { CaseRow } from "./build-corpus";
 import {
@@ -20,7 +20,6 @@ import {
   type DispatchEvent,
   dispatchConfig,
   pageEventLog,
-  readBytes,
 } from "./dispatch-read";
 import {
   BUILD_CHAIN_NAMES,
@@ -42,6 +41,7 @@ import {
   type Registration,
   runDigestOf,
 } from "./reserve";
+import { type Decision, type ReserveVerdict, reserveAskDecision } from "./s10-decision";
 import {
   AnswerLog,
   CANDIDATE_FIELDS,
@@ -50,7 +50,6 @@ import {
   type CandidateInputs,
   COUNT_FIELDS,
   DROP_SEEN,
-  FILE_KEY,
   INPUTS_VERSION,
   INVENTORY_FILE,
   type InventoryLine,
@@ -59,14 +58,7 @@ import {
   type IssueField,
   type JudgedMoment,
   noCounts,
-  PAGES_DIRECTORY,
-  type PageRecord,
-  pageHitOf,
-  pagePath,
-  pageRecordOf,
   type QueryHit,
-  type QueryInputs,
-  REQUESTS_DIRECTORY,
   type RequestDocument,
   type RequestInputs,
   type RequestSearch,
@@ -75,9 +67,6 @@ import {
   STAGE_FILE,
   type StageChain,
   type StageCounts,
-  type StageRecord,
-  stageChainRefusal,
-  stageRecordOf,
 } from "./s10-inputs-io";
 import {
   type AskDocument,
@@ -88,6 +77,14 @@ import {
   neighbourFault,
   neighbourOrder,
 } from "./s10-mirror";
+import {
+  type QueryPages,
+  queryInputsOf,
+  S10InputsError,
+  Searches,
+  Stage,
+  writeWhole,
+} from "./s10-stage";
 import { TREES_FILE } from "./trees";
 
 /**
@@ -97,9 +94,11 @@ import { TREES_FILE } from "./trees";
  * registered read and the claim run (`APPROVAL_EVAL_RESERVE`, `APPROVAL_EVAL_CLAIM_RUN`).
  *
  * The files. The shapes of the four files written here, the parsers that read each back, and the
- * rule that places the person's answer are in `s10-inputs-io.ts`, which every later stage imports
- * in place of this command; S10's own reads of a request, mirrored from its Python code, are in
- * `s10-mirror.ts`.
+ * rule that places the person's answer are in `s10-inputs-io.ts`, which every later stage written
+ * in TypeScript imports in place of this command; S10's own reads of a request, mirrored from its
+ * Python code, are in `s10-mirror.ts`; the reserve's decision and its pin are in
+ * `s10-decision.ts`; and the stage record, the files it names and the search pages are kept by
+ * `s10-stage.ts`.
  *
  * The inventory. Before any judging, `inventory.jsonl` names every answered approval request of
  * the person among the draw's report cases, and no other (the claim's point 6): the approval cases
@@ -114,14 +113,9 @@ import { TREES_FILE } from "./trees";
  * What is read, and as of when (point 3). Live, S10 judged a request at its last opening or edit,
  * before the person's answer existed. Here each request is read as it stood at the judged moment:
  * the last `ask.opened` or `ask.edited` of the ask, by event id, strictly before the person's
- * answer, which is placed as S10's own `first_answer` places it (point 7, `AnswerLog`): the first
- * event after the ask's opening, in the log's order, whose actor is the person and that is either
- * an `ask.answered` of the ask, whatever answer it carries, or, for an ask that names one
- * document, an `artifact.approved` or `artifact.changes_requested` on that document at the
- * `version` the ask names. An ask that names several documents is answered by its `ask.answered`
- * only. Where that first event is an `ask.answered` whose answer is not the person's own (a
- * restored answer of another user, or none), S10's first answer holds no verdict, and the request
- * is a deviation, judged at no moment.
+ * answer, which is placed as S10's own `first_answer` places it (point 7) by the rule `AnswerLog`
+ * holds; where that answer is not the person's own, S10's first answer holds no verdict, and the
+ * request is a deviation, judged at no moment.
  *
  * The payload of the judged event is the request, as the log keeps it, with what the log's route
  * adds when it is read taken out. `GET /api/v1/events/log` serves each ask event's payload as the
@@ -183,37 +177,31 @@ import { TREES_FILE } from "./trees";
  * nowhere, because it carries answers, the person's answer to the judged request itself among
  * them wherever that request is a hit of its own query.
  *
- * Every ask among the hits is first decided by `reserve-ask.ts` as commit 651db8d5 decides it.
- * Before anything is read, the import closure of `reserve-ask.ts` in this checkout, the sha256 of
- * every file Bun loads to run it (`importClosureOf`; a type-only import, which Bun erases, loads
- * none), must be the one pinned here (`RESERVE_ASK_CLOSURE`). At this head the parts of those
- * files the decision calls equal 651db8d5's, as this stage's review confirmed, so the pinned
- * closure is the 651db8d5 decision, and any later change to a file of the closure fails this
- * check until a reviewed pull request moves the pin. Each ask is decided by a child process
- * (`spawnDecision`) run with neither `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its
- * environment, so outside the claim's read, and with `uncaught-exit.ts` preloaded: exit 0 keeps
- * the candidate, 1 holds it, and any other exit (2 for an error `reserve-ask.ts` catches, 70 for
- * one it does not) holds it too and is counted as an error, as S10 counts it. Every ask hit is
- * decided, those answered before the reserve's cut included, which S10 would not ask about and
- * which the reserve keeps. Until then no field of a candidate has been read: the first walk of the
- * log keeps, of an ask outside the inventory, only the id of its last event, and the candidates'
- * fields are read by a second walk that reads them only for the asks the reserve kept, so a held
- * candidate's fields are never read, kept or written. Any event of a kept candidate's ask after
- * the moment drops it (`later-event`), and the next hit is S10's to take: an event of an ask is an
- * `ask.` event whose payload's `id` is the ask, or any event whose payload's `ask_id` is (its
- * comments, deliveries, followers and document settlements). An ask with no event in the log
- * through the pin opened after it, so after the moment, and is dropped too, and so is one with an
- * event after the pin (below). Otherwise its fields are its last whole payload's, which no event
- * after the moment changed, and its issue's title as of the moment. S10's `neighbours` reads a
- * candidate's fields one after another, each only where the ones before it let the candidate
- * through (its state and its answer's user; its issue; its answer's time; its kind; its
- * documents' ids, names and versions, its answer's selected options and words, its question and
- * its issue's title), taking the hits in its own order, by rank, and stopping at its eighth
- * neighbour (`neighbourFault`); the first of those reads the log cannot give as of the moment
- * makes the request a deviation, naming the candidate and the field. The filters themselves are
- * S10's own code's, run over these fields. Each inventory line carries its request's counts: the
- * asks held, the asks `reserve-ask.ts` decided nothing on, those dropped by an event after the
- * moment, by where the event was seen, and those kept.
+ * Every ask among the hits is first decided by `reserve-ask.ts` as commit 651db8d5 decides it,
+ * outside the claim's read, by the decision `s10-decision.ts` pins and spawns, its closure
+ * checked before anything is read and again right before the first child is spawned. An ask it
+ * holds, or decides nothing on, is held, and the second counted as an error, as S10 counts it.
+ * Every ask hit is decided, those answered before the reserve's cut included, which S10 would not
+ * ask about and which the reserve keeps. Until then no field of a candidate has been read: the
+ * first walk of the log keeps, of an ask outside the inventory, only the id of its last event,
+ * and the candidates' fields are read by a second walk that reads them only for the asks the
+ * reserve kept, so a held candidate's fields are never read, kept or written. Any event of a kept
+ * candidate's ask after the moment drops it (`later-event`), and the next hit is S10's to take:
+ * an event of an ask is an `ask.` event whose payload's `id` is the ask, or any event whose
+ * payload's `ask_id` is (its comments, deliveries, followers and document settlements). An ask
+ * with no event in the log through the pin opened after it, so after the moment, and is dropped
+ * too, and so is one with an event after the pin (below). Otherwise its fields are its last whole
+ * payload's, which no event after the moment changed, and its issue's title as of the moment.
+ * S10's `neighbours` reads a candidate's fields one after another, each only where the ones
+ * before it let the candidate through (its state and its answer's user; its issue; its answer's
+ * time; its kind; its documents' ids, names and versions, its answer's selected options and
+ * words, its question and its issue's title), taking the hits in its own order, by rank, and
+ * stopping at its eighth neighbour (`neighbourFault`); the first of those reads the log cannot
+ * give as of the moment makes the request a deviation, naming the candidate and the field. The
+ * filters themselves are S10's own code's, run over these fields. Each inventory line carries its
+ * request's counts (the asks held, the asks `reserve-ask.ts` decided nothing on, those dropped by
+ * an event after the moment, by where the event was seen, and those kept) and the end of the drop
+ * scan its candidates were dropped by (`dropScanThrough`), as its request file does.
  *
  * The walks. The log is walked twice, each time through the build's pin, and each walk is refused
  * unless it reads as many events as the build read, which a build in the claim run records (a
@@ -225,12 +213,17 @@ import { TREES_FILE } from "./trees";
  * and an event between the pin and them can move a rank too, so once the searches are done the
  * log is read on from the pin to its newest event at that time, the drop scan, and of each of
  * those events nothing is read but the ask it is an event of: a candidate with any is dropped
- * (`later-event`, seen `after-pin`). The scan's last event id is recorded (`dropScanThrough`)
- * before any request file is written. A resume reads the scan through that id again; where it
- * runs any search its first run did not (a request whose document read was refused then and is
- * read now), it scans on from that id to the log's newest event, drops the candidates with an
- * event there too, and records the new end before any request file is written, and a resume that
- * runs no new search keeps the recorded end.
+ * (`later-event`, seen `after-pin`). The scan's last event id is recorded (`dropScanThrough`),
+ * in the same write of the stage record as the page records it covers (`dropScanPages`, each by
+ * the sha256 of its file as it stood when the scan ran, so every read it holds came before the
+ * scan), before any request file is written. Every run, a resume included, reads the scan
+ * through the recorded id again; where any page its searches use is not covered (a page read
+ * after the recorded scan, by a resume that searched a request whose document read was refused
+ * before, or by a run that stopped before its scan was recorded), it scans on from that id to the
+ * log's newest event, drops the candidates with an event there too, and records the new end with
+ * every page then archived covered, before any request file is written. A run whose every page is
+ * covered keeps the recorded end. A request file and its inventory line record the end of the scan
+ * their candidates were dropped by, so a file an earlier run wrote under an earlier end says so.
  *
  * The stage record. `s10-inputs.json` records the claim run and the sha256 of each of the build's
  * `snapshot.json`, `corpus.jsonl` and `trees.json` (one `BuildChain`, as the draw's own record
@@ -241,19 +234,20 @@ import { TREES_FILE } from "./trees";
  * and those files' bytes now (`chainRefusal`). It names each request file and each page record
  * with the sha256 of its bytes: a file is written beside its place, the record naming it is
  * written, and only then is the file moved into its place, so the record is what makes a file
- * this run's. It is written again once the drop scan is done, with `dropScanThrough`, and when
- * the run ends, with the counts, which are the sums of the inventory's lines, recomputed on every
- * run, and the sha256 of `inventory.jsonl`. A run into an `--out` holding another run's record, or
- * files of no record, is refused; a run into its own claim run's directory resumes it, and takes
- * only what its record names: every file the record names must be there with the bytes it names,
- * and every request file must still be the request this run judges, at the same moment and under
- * the same fact, or the run is refused, and so is any file the record does not name. Those bytes
- * are the ones its first run held to `assertNoAnswer` before it wrote them, under the same chain,
- * so they are not held to it again. A file written beside its place whose bytes the record names
- * is moved into it, and any other is removed unread. A resume takes each page record rather than
- * ask that page again, never writes a request file again, and works anew only on the requests
- * with no file, the deviations among them; one that writes nothing new keeps the record's
- * `finishedAt`, so its `s10-inputs.json` is byte for byte the one it resumed.
+ * this run's. It is written again once the drop scan is done, with `dropScanThrough` and
+ * `dropScanPages`, and when the run ends, with the counts, which are the sums of the inventory's
+ * lines, recomputed on every run, and the sha256 of `inventory.jsonl`. A run into an `--out`
+ * holding another run's record, or files of no record, is refused; a run into its own claim
+ * run's directory resumes it, and takes only what its record names: every file the record names
+ * must be there with the bytes it names, and every request file must still be the request this
+ * run judges, at the same moment and under the same fact, or the run is refused, and so is any
+ * file the record does not name. Those bytes are the ones its first run held to `assertNoAnswer`
+ * before it wrote them, under the same chain, so they are not held to it again. A file written
+ * beside its place whose bytes the record names is moved into it, and any other is removed
+ * unread. A resume takes each page record rather than ask that page again, never writes a request
+ * file again, and works anew only on the requests with no file, the deviations among them; one
+ * that writes nothing new keeps the record's `finishedAt`, so its `s10-inputs.json` is byte for
+ * byte the one it resumed.
  */
 
 const USAGE = `usage: bun scripts/approval-eval/s10-inputs.ts --corpus <build dir> \\
@@ -280,29 +274,6 @@ Environment:
 Exit status: 0 when the inputs were written, 1 when the inventory holds no request, 2 when the
 command could not run.`;
 
-/**
- * The import closure of `reserve-ask.ts` at this head, the decision point 4 (d) names: the sha256
- * of each file Bun loads to run it, by its path from this directory. A checkout whose closure
- * differs in any file, or loads a file more or less, is refused before anything is read.
- */
-export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
-  "claim.ts": "9cff3fec5d583a4803ae3d25d30ebeffad23d76eefcf864a3bdce76c4cc64173",
-  "corpus-io.ts": "3a15ed63b87a66b161b12e2957382b93b190354c81cc35fe5958add81ccc3fb1",
-  "dispatch-read.ts": "d1732d4c3d8a0d4e86496da5223e125335ea623df93f9249ad07ee30c03883d7",
-  "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
-  "reserve.ts": "0f77f64369a1227d7fe09201c19b6d9e77a6b130e26e7155643e2fee152e018c",
-  "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",
-};
-
-/** That command in this checkout, which is run for every ask among the search hits. */
-const RESERVE_ASK_PATH = join(import.meta.dir, "reserve-ask.ts");
-
-/** What each decision's child preloads, so an error it does not catch is not read as held. */
-const UNCAUGHT_EXIT_PATH = join(import.meta.dir, "uncaught-exit.ts");
-
-/** How many hits one search page asks for, as S10 asks. */
-const SEARCH_PAGE = 50;
-
 /** How many searches, document reads and decisions run at once. */
 const SEARCH_CONCURRENCY = 4;
 const DOCUMENT_CONCURRENCY = 8;
@@ -320,27 +291,6 @@ export const READ_TIME_FIELDS = [
   "anchor_artifact",
   "approval_artifact",
 ] as const;
-
-/** The inputs cannot be written as the registered text fixes them, so the command stops. */
-export class S10InputsError extends CannotRunError {
-  override readonly name = "S10InputsError";
-}
-
-/** How `reserve-ask.ts` decided one ask: kept, held, or an error, which S10 holds and counts. */
-export type ReserveVerdict = "kept" | "held" | "error";
-
-/** Decides one ask under the reserve, outside the claim's read. */
-export type ReserveDecision = (askId: string) => Promise<ReserveVerdict>;
-
-/**
- * The decision a run makes every candidate's with, and the sha256 its stage record names it by:
- * the digest of the pinned closure (`reserveAskDecision`), or a test's own, which must be a
- * sha256 as well.
- */
-export interface Decision {
-  sha256: string;
-  decide: ReserveDecision;
-}
 
 /** What a caller may hand the command beside its flags: a test's registration, root, decision. */
 export interface InputsOptions {
@@ -714,114 +664,6 @@ function walkValues(
   for (const [name, entry] of Object.entries(record)) walkValues(entry, name, visit);
 }
 
-/**
- * The sha256 of each file Bun loads to run `entry`, by its path from `entry`'s directory: `entry`
- * itself and every file it imports at run time, transitively, as Bun's transpiler reads the
- * imports (`scanImports`, which leaves out the type-only imports Bun erases). A built-in module
- * is no file and is left out.
- */
-export async function importClosureOf(entry: string): Promise<Record<string, string>> {
-  const root = dirname(resolve(entry));
-  const transpiler = new Bun.Transpiler({ loader: "ts" });
-  const files: Record<string, string> = {};
-  const waiting = [resolve(entry)];
-  for (let path = waiting.pop(); path !== undefined; path = waiting.pop()) {
-    const name = relative(root, path);
-    if (Object.hasOwn(files, name)) continue;
-    let bytes: Buffer;
-    try {
-      bytes = await readFile(path);
-    } catch {
-      throw new S10InputsError(`${path}, which ${entry} loads, could not be read`);
-    }
-    files[name] = sha256Of(bytes);
-    for (const imported of transpiler.scanImports(bytes.toString("utf8"))) {
-      let target: string;
-      try {
-        target = Bun.resolveSync(imported.path, dirname(path));
-      } catch {
-        throw new S10InputsError(`${path} imports ${imported.path}, which does not resolve`);
-      }
-      if (isAbsolute(target)) waiting.push(target);
-    }
-  }
-  const names = Object.keys(files).sort();
-  return Object.fromEntries(names.map((name) => [name, files[name] as string]));
-}
-
-/** The one sha256 of a closure: of its `<sha256>  <path>` lines, by path, as `sha256sum` prints. */
-export function closureDigestOf(closure: Readonly<Record<string, string>>): string {
-  const names = Object.keys(closure).sort();
-  return sha256Of(names.map((name) => `${closure[name]}  ${name}\n`).join(""));
-}
-
-/** The first file in which a closure is not the pinned one, worded for a refusal; null if none. */
-function closureRefusal(
-  found: Readonly<Record<string, string>>,
-  pinned: Readonly<Record<string, string>>
-): string | null {
-  for (const name of [...new Set([...Object.keys(pinned), ...Object.keys(found)])].sort()) {
-    const is = Object.hasOwn(found, name) ? found[name] : undefined;
-    const was = Object.hasOwn(pinned, name) ? pinned[name] : undefined;
-    if (is === was) continue;
-    if (is === undefined) return `it loads no ${name}, which the pin names`;
-    if (was === undefined) return `it loads ${name}, which the pin does not name`;
-    return `its ${name} has sha256 ${is}, and the pin names ${was}`;
-  }
-  return null;
-}
-
-/**
- * The decision point 4 (d) names: `reserve-ask.ts` as commit 651db8d5 decides, refused unless the
- * import closure of the `reserve-ask.ts` at `path` is `RESERVE_ASK_CLOSURE`, and named by that
- * closure's digest.
- */
-export async function reserveAskDecision(path: string = RESERVE_ASK_PATH): Promise<Decision> {
-  const closure = await importClosureOf(path);
-  const refusal = closureRefusal(closure, RESERVE_ASK_CLOSURE);
-  if (refusal !== null) {
-    throw new S10InputsError(
-      `${path} is not the decision the claim names, reserve-ask.ts at 651db8d5: ${refusal}. ` +
-        "A change to a file of its closure is refused until a reviewed pull request moves the pin"
-    );
-  }
-  return { sha256: closureDigestOf(closure), decide: spawnDecision(path, process.env) };
-}
-
-/**
- * Decides each ask by running the script at `path` for it, `--ask <ask id>`, in a child with
- * `env` less `APPROVAL_EVAL_RESERVE` and `APPROVAL_EVAL_CLAIM_RUN`, so outside the claim's read,
- * and with `uncaught-exit.ts` preloaded. Exit 0 keeps the ask, 1 holds it, and any other exit is
- * an error: `reserve-ask.ts` exits 2 on an error it catches, and the preload makes one it does not
- * exit 70 rather than 1. What the child prints is not kept: a held ask's facts are never written.
- */
-export function spawnDecision(
-  path: string,
-  env: Readonly<Record<string, string | undefined>>
-): ReserveDecision {
-  const outside = new Set<string>([RESERVE_VARIABLE, CLAIM_RUN_VARIABLE]);
-  const childEnv = Object.fromEntries(Object.entries(env).filter(([name]) => !outside.has(name)));
-  return async (askId) => {
-    const child = Bun.spawn(
-      [process.execPath, "--preload", UNCAUGHT_EXIT_PATH, path, "--ask", askId],
-      { env: childEnv, stdout: "ignore", stderr: "ignore" }
-    );
-    const exit = await child.exited;
-    return exit === 0 ? "kept" : exit === 1 ? "held" : "error";
-  };
-}
-
-/** How many files this process has begun to write, which names each one's partial file. */
-let begun = 0;
-
-/** Writes a file whole or not at all, so a resume never takes a half-written one for written. */
-async function writeWhole(path: string, text: string): Promise<void> {
-  begun += 1;
-  const partial = `${path}.${process.pid}.${begun}.partial`;
-  await writeFile(partial, text, "utf8");
-  await rename(partial, path);
-}
-
 /** The bytes of a file a stage before this one wrote, refused where it is not there. */
 async function stageBytesOf(path: string, flag: string): Promise<Buffer> {
   try {
@@ -884,293 +726,6 @@ async function claimDrawOf(
     report: slicesOf(slicesBytes.toString("utf8"), slicesFile).report,
     drawSha256: sha256Of(drawBytes),
     slicesSha256: sha256Of(slicesBytes),
-  };
-}
-
-/** A stage record of a run that has written nothing yet. */
-function emptyStage(chain: StageChain, startedAt: string): StageRecord {
-  return {
-    stage: "s10-inputs",
-    version: INPUTS_VERSION,
-    state: "started",
-    ...chain,
-    startedAt,
-    finishedAt: null,
-    dropScanThrough: null,
-    counts: null,
-    inventorySha256: null,
-    requests: {},
-    pages: {},
-  };
-}
-
-/**
- * Holds one directory of the stage to its record, before a resume takes anything from it: a file
- * written beside its place whose bytes the record names is moved into its place, every other is
- * removed unread, and then every file there must be one the record names, with the bytes it
- * names, and every file it names must be there.
- */
-async function holdToRecord(
-  directory: string,
-  recorded: Readonly<Record<string, string>>
-): Promise<void> {
-  const names = (await readdir(directory).catch((): string[] => [])).sort();
-  for (const name of names) {
-    if (!name.endsWith(".json.partial")) continue;
-    const key = name.slice(0, -".json.partial".length);
-    const partial = join(directory, name);
-    const bytes = await readFile(partial);
-    const committed = Object.hasOwn(recorded, key) && recorded[key] === sha256Of(bytes);
-    if (committed) await rename(partial, join(directory, `${key}.json`));
-    else await rm(partial, { force: true });
-  }
-  for (const name of await readdir(directory).catch((): string[] => [])) {
-    const key = /^([A-Za-z0-9-]+)\.json$/.exec(name)?.[1];
-    if (key === undefined || !Object.hasOwn(recorded, key)) {
-      throw new S10InputsError(
-        `${join(directory, name)} is a file the stage record does not name, so no run here can ` +
-          "show it is its own"
-      );
-    }
-  }
-  for (const [key, sha256] of Object.entries(recorded)) {
-    const path = join(directory, `${key}.json`);
-    const bytes = await readFile(path).catch(() => null);
-    if (bytes === null) {
-      throw new S10InputsError(
-        `the stage record names ${path}, which is not there: a resume never writes a file its ` +
-          "record names again"
-      );
-    }
-    if (sha256Of(bytes) !== sha256) {
-      throw new S10InputsError(
-        `${path} is not the file the stage record names: its sha256 is ${sha256Of(bytes)}, and ` +
-          `the record names ${sha256}`
-      );
-    }
-  }
-}
-
-/** The record a resume took, as its bytes were, and when the run that wrote it ended. */
-interface Resumed {
-  text: string;
-  finishedAt: string | null;
-}
-
-/**
- * The stage record and the files it names, written through one writer, so each write of the
- * record holds every file committed before it. A file is committed by writing it beside its
- * place, writing the record that names it, and moving it into its place.
- */
-class Stage {
-  readonly directory: string;
-  readonly record: StageRecord;
-  private readonly resumed: Resumed | null;
-  private saving: Promise<void> = Promise.resolve();
-
-  private constructor(directory: string, record: StageRecord, resumed: Resumed | null) {
-    this.directory = directory;
-    this.record = record;
-    this.resumed = resumed;
-  }
-
-  /**
-   * Takes `directory` for this run: a directory holding nothing is started, with a stage record
-   * naming the chain; one holding this chain's record is resumed, held to its record
-   * (`holdToRecord`); anything else is refused.
-   */
-  static async open(directory: string, chain: StageChain): Promise<Stage> {
-    await mkdir(directory, { recursive: true });
-    const recordPath = join(directory, STAGE_FILE);
-    const text = await readFile(recordPath, "utf8").catch(() => null);
-    if (text === null) {
-      const entries = await readdir(directory);
-      if (entries.length > 0) {
-        throw new S10InputsError(
-          `${directory} holds files and no ${STAGE_FILE}, so no run here can show they are its own`
-        );
-      }
-      const stage = new Stage(directory, emptyStage(chain, new Date().toISOString()), null);
-      await stage.save();
-      return stage;
-    }
-    const found = stageRecordOf(text, recordPath);
-    const difference = stageChainRefusal(found, chain);
-    if (difference !== null) {
-      throw new S10InputsError(
-        `${directory} holds another run's inputs: ${difference}. A resume takes only its own ` +
-          "claim run's directory, over the same build and draw"
-      );
-    }
-    const through = found.dropScanThrough;
-    if (through !== null && through < chain.throughEventId) {
-      throw new S10InputsError(`${recordPath} records a drop scan through no event from the pin`);
-    }
-    const own = [STAGE_FILE, INVENTORY_FILE, REQUESTS_DIRECTORY, PAGES_DIRECTORY];
-    for (const name of await readdir(directory)) {
-      if (name.endsWith(".partial")) await rm(join(directory, name), { force: true });
-      else if (!own.includes(name)) {
-        throw new S10InputsError(
-          `${join(directory, name)} is no file this command writes, so no run here can show it ` +
-            "is its own"
-        );
-      }
-    }
-    await holdToRecord(join(directory, REQUESTS_DIRECTORY), found.requests);
-    await holdToRecord(join(directory, PAGES_DIRECTORY), found.pages);
-    const record: StageRecord = {
-      ...emptyStage(chain, found.startedAt),
-      dropScanThrough: through,
-      requests: found.requests,
-      pages: found.pages,
-    };
-    const finishedAt = found.state === "written" ? found.finishedAt : null;
-    return new Stage(directory, record, { text, finishedAt });
-  }
-
-  /** The record's text as it stands. */
-  private text(): string {
-    return `${JSON.stringify(this.record, null, 2)}\n`;
-  }
-
-  /** Writes the record as it stands, after any write of it already under way. */
-  save(): Promise<void> {
-    this.saving = this.saving.then(() => writeWhole(join(this.directory, STAGE_FILE), this.text()));
-    return this.saving;
-  }
-
-  /** Commits one request file or page record file, and gives back the sha256 of its bytes. */
-  async commit(kind: "requests" | "pages", key: string, text: string): Promise<string> {
-    if (!FILE_KEY.test(key)) {
-      throw new S10InputsError(`the ask id or page ${key} cannot name a file of its own`);
-    }
-    const path =
-      kind === "requests" ? requestPath(this.directory, key) : pagePath(this.directory, key);
-    await mkdir(dirname(path), { recursive: true });
-    const partial = `${path}.partial`;
-    await writeFile(partial, text, "utf8");
-    const sha256 = sha256Of(text);
-    this.record[kind][key] = sha256;
-    await this.save();
-    await rename(partial, path);
-    return sha256;
-  }
-
-  /**
-   * Writes the record of a run that has ended, with its counts and the sha256 of its inventory. A
-   * resume of a written directory that wrote nothing new keeps the `finishedAt` of the run that
-   * wrote it, so the record's bytes are the ones it resumed.
-   */
-  async finish(counts: StageCounts, inventorySha256: string): Promise<void> {
-    this.record.state = "written";
-    this.record.counts = counts;
-    this.record.inventorySha256 = inventorySha256;
-    this.record.finishedAt = this.resumed?.finishedAt ?? null;
-    if (this.record.finishedAt === null || this.text() !== this.resumed?.text) {
-      this.record.finishedAt = new Date().toISOString();
-    }
-    await this.save();
-  }
-}
-
-/** One query's pages, by the offset each was asked at. */
-type QueryPages = ReadonlyArray<{ offset: number; page: PageRecord }>;
-
-/**
- * The search, as S10 asks it and once for each query and offset: every page its record names is
- * taken, and every other page is read now, named by the sha256 of its bytes and committed to the
- * stage before it is used. A body that is no search answer stops the run.
- */
-class Searches {
-  private readonly stage: Stage;
-  private readonly config: DispatchConfig;
-  private readonly pages = new Map<string, PageRecord>();
-  private readonly byRead = new Map<string, PageRecord>();
-  private readonly writing = new Map<string, Promise<unknown>>();
-  /** How many pages this run read, beside the ones it took from an earlier run. */
-  read = 0;
-
-  constructor(stage: Stage, config: DispatchConfig, pages: readonly PageRecord[]) {
-    this.stage = stage;
-    this.config = config;
-    for (const page of pages) {
-      this.pages.set(page.sha256, page);
-      for (const read of page.reads) this.byRead.set(`${read.offset}\n${read.query}`, page);
-    }
-  }
-
-  /** The page records `--out` holds, each held to the stage record already. */
-  static async archived(stage: Stage): Promise<PageRecord[]> {
-    const pages: PageRecord[] = [];
-    for (const key of Object.keys(stage.record.pages).sort()) {
-      const path = pagePath(stage.directory, key);
-      const record = pageRecordOf(await readFile(path, "utf8"), path);
-      if (record.sha256 !== key) {
-        throw new S10InputsError(`${path} records the page ${record.sha256}, not the one it names`);
-      }
-      pages.push(record);
-    }
-    return pages;
-  }
-
-  /** The pages of one query: its first, and its second where the first held a full page. */
-  async pagesOf(query: string): Promise<QueryPages> {
-    const first = await this.pageOf(query, 0);
-    const pages = [{ offset: 0, page: first }];
-    if (first.hits.length === SEARCH_PAGE) {
-      pages.push({ offset: SEARCH_PAGE, page: await this.pageOf(query, SEARCH_PAGE) });
-    }
-    return pages;
-  }
-
-  private async pageOf(query: string, offset: number): Promise<PageRecord> {
-    const key = `${offset}\n${query}`;
-    const known = this.byRead.get(key);
-    if (known !== undefined) return known;
-    const path =
-      `/api/v1/search/results?q=${encodeURIComponent(query)}` +
-      `&limit=${SEARCH_PAGE}&offset=${offset}`;
-    const bytes = await readBytes(path, this.config);
-    const readAt = new Date().toISOString();
-    const sha256 = sha256Of(bytes);
-    let body: unknown;
-    try {
-      body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-    } catch {
-      throw new S10InputsError(`GET ${path} answered no JSON`);
-    }
-    const results = recordOf(body)?.results;
-    if (!Array.isArray(results)) throw new S10InputsError(`GET ${path} answered no results`);
-    const hits = results.map((one) => pageHitOf(one, `GET ${path}`));
-    const page = this.pages.get(sha256) ?? { sha256, hits, reads: [] };
-    page.reads.push({ query, offset, readAt });
-    this.pages.set(sha256, page);
-    this.byRead.set(key, page);
-    this.read += 1;
-    // One commit of a page at a time, so two reads answered by the same bytes are both recorded.
-    const before = this.writing.get(sha256) ?? Promise.resolve();
-    const next = before.then(() =>
-      this.stage.commit("pages", sha256, `${JSON.stringify(page, null, 2)}\n`)
-    );
-    this.writing.set(sha256, next);
-    await next;
-    return page;
-  }
-}
-
-/** One of a request's queries, as its pages answered it. */
-function queryInputsOf(query: string, pages: QueryPages): QueryInputs {
-  const hits: QueryHit[] = [];
-  for (const { page } of pages) {
-    page.hits.forEach((hit, position) => {
-      if (hit.kind !== "ask") return;
-      hits.push({ id: hit.id, rank: hit.rank, page: page.sha256, position });
-    });
-  }
-  return {
-    query,
-    pages: pages.map(({ offset, page }) => ({ sha256: page.sha256, offset })),
-    hits,
   };
 }
 
@@ -1407,14 +962,21 @@ function guardOf(plan: Ready): AnswerGuard {
   };
 }
 
+/** A request's candidate counts and the end of the drop scan its candidates were dropped by. */
+interface Scanned {
+  counts: CandidateCounts;
+  dropScanThrough: number;
+}
+
 /**
  * A request's line: ready with its file's sha256, or a deviation with its reason, which a request
- * whose own inputs stood takes from a document or a candidate read after them.
+ * whose own inputs stood takes from a document or a candidate read after them; with its counts
+ * and scan end where it was searched.
  */
 function lineOf(
   plan: Ready | Deviation,
   sha256: string | null,
-  counts: CandidateCounts | null,
+  scanned: Scanned | null,
   reason: string | null = plan.state === "deviation" ? plan.reason : null
 ): InventoryLine {
   return {
@@ -1426,7 +988,8 @@ function lineOf(
     state: reason === null ? "ready" : "deviation",
     reason,
     requestSha256: sha256,
-    counts,
+    counts: scanned?.counts ?? null,
+    dropScanThrough: scanned?.dropScanThrough ?? null,
   };
 }
 
@@ -1436,7 +999,7 @@ interface Run {
   chain: StageChain;
   inventory: InventoryRequest[];
   stage: Stage;
-  decide: ReserveDecision;
+  decision: Decision;
 }
 
 /**
@@ -1489,7 +1052,7 @@ async function openRun(flags: Flags, options: InputsOptions): Promise<Run> {
   };
   const inventory = inventoryOf(corpus.byCaseId, draw.trees, draw.report);
   const stage = await Stage.open(directory, chain);
-  return { corpus, chain, inventory, stage, decide: decision.decide };
+  return { corpus, chain, inventory, stage, decision };
 }
 
 /** The first walk: nothing of any ask outside the inventory but the id of its last event. */
@@ -1507,14 +1070,14 @@ async function firstWalkOf(run: Run): Promise<InputsLog> {
  * A request file a resume takes, already held to the bytes its record names, held to this run's
  * reading too: the request this run judges, at that same moment and under the same fact. Those
  * bytes passed `assertNoAnswer` before its first run wrote them, under the same chain, so they
- * are not held to it again. Gives back the plan and the file's counts, null for a request the
- * fact holds.
+ * are not held to it again. Gives back the plan and the file's counts and scan end, null for a
+ * request the fact holds.
  */
 async function takenRequest(
   stage: Stage,
   askId: string,
   plan: Ready | Deviation | undefined
-): Promise<{ plan: Ready; counts: CandidateCounts | null }> {
+): Promise<{ plan: Ready; scanned: Scanned | null }> {
   const path = requestPath(stage.directory, askId);
   if (plan === undefined || plan.state !== "ready") {
     const reads = plan === undefined ? "holds no request" : "reads a deviation";
@@ -1529,7 +1092,9 @@ async function takenRequest(
   if (inputs.factHold !== plan.fact.holds) {
     throw new S10InputsError(`${path} records another legion_fact than this run reads`);
   }
-  return { plan, counts: inputs.counts };
+  const { counts, dropScanThrough } = inputs;
+  const scanned = counts === null || dropScanThrough === null ? null : { counts, dropScanThrough };
+  return { plan, scanned };
 }
 
 /**
@@ -1544,7 +1109,7 @@ async function pendingOf(
 ): Promise<Ready[]> {
   for (const [askId, sha256] of Object.entries(stage.record.requests)) {
     const taken = await takenRequest(stage, askId, plans.get(askId));
-    lines.set(askId, lineOf(taken.plan, sha256, taken.counts));
+    lines.set(askId, lineOf(taken.plan, sha256, taken.scanned));
   }
   const pending: Ready[] = [];
   for (const plan of plans.values()) {
@@ -1598,11 +1163,11 @@ async function readableOf(
   return readable;
 }
 
-/** The searches of the requests searched for neighbours, by ask id, and the pages read anew. */
+/** The searches of the requests searched for neighbours, by ask id, and the pages they use. */
 interface Searched {
   byAsk: Map<string, RequestSearch>;
-  /** The pages this run read, beside the ones it took from an earlier run. */
-  read: number;
+  /** The sha256 of each page the searches use, read in this run or taken from an earlier one. */
+  pages: Set<string>;
 }
 
 /** S10's two queries of each request searched for neighbours, each query once. */
@@ -1623,46 +1188,70 @@ async function searchedOf(
   });
   console.log(`queries           ${queries.size}, ${searches.read} pages read in this run`);
   const byAsk = new Map<string, RequestSearch>();
+  const pages = new Set<string>();
   for (const { plan } of searchable) {
     const { title, question } = plan.queries;
-    byAsk.set(plan.request.askId, {
+    const search = {
       title: queryInputsOf(title, answered.get(title) ?? []),
       question: queryInputsOf(question, answered.get(question) ?? []),
-    });
+    };
+    byAsk.set(plan.request.askId, search);
+    for (const page of [...search.title.pages, ...search.question.pages]) pages.add(page.sha256);
   }
-  return { byAsk, read: searches.read };
+  return { byAsk, pages };
 }
 
 /**
  * The drop scan, once the searches are done: an event of a candidate's ask between the pin and
- * the searches drops it too. Its end is recorded before any request file is written; a resume
- * reads through the recorded end, and on from it when it read any page its first run did not, and
- * records the new end.
+ * the searches drops it too. It reads through the recorded end, and on from it to the log's
+ * newest event where there is none, or where a page the searches use (`used`) is not one the
+ * recorded scan covers, as the page record's file stood then: a page read after that scan, in
+ * this run or in one that stopped before it recorded its scan. The new end is recorded with every
+ * page now archived covered, in one write of the stage record, before any request file is
+ * written. Gives back the asks with an event after the pin, and the scan's end.
  */
-async function afterPinOf(stage: Stage, pin: number, searchedAnew: boolean): Promise<Set<string>> {
+async function afterPinOf(
+  stage: Stage,
+  pin: number,
+  used: ReadonlySet<string>
+): Promise<{ asks: Set<string>; through: number }> {
   const recorded = stage.record.dropScanThrough;
-  const scan = await dropScanOf(pin, recorded, recorded === null || searchedAnew);
-  if (scan.through !== recorded) {
+  const covered = stage.record.dropScanPages ?? {};
+  const uncovered = [...used].filter(
+    (page) => !Object.hasOwn(covered, page) || covered[page] !== stage.record.pages[page]
+  );
+  const onward = recorded === null || uncovered.length > 0;
+  const scan = await dropScanOf(pin, recorded, onward);
+  if (onward) {
+    const archived = Object.entries(stage.record.pages).sort(([one], [other]) =>
+      one < other ? -1 : 1
+    );
     stage.record.dropScanThrough = scan.through;
+    stage.record.dropScanPages = Object.fromEntries(archived);
     await stage.save();
   }
   console.log(
     `drop scan         events ${pin} to ${scan.through}: ` +
-      `${counted(scan.asks.size, "ask")} with an event after the pin`
+      `${counted(scan.asks.size, "ask")} with an event after the pin` +
+      (recorded !== null && onward ? `, on from ${recorded} for ${uncovered.length} pages` : "")
   );
-  return scan.asks;
+  return scan;
 }
 
-/** Every ask among the hits, decided under the reserve before any field of it is read. */
+/**
+ * Every ask among the hits, decided under the reserve before any field of it is read, the
+ * decision confirmed (`Decision.confirm`) right before its first child is spawned.
+ */
 async function verdictsOf(
   searches: Iterable<RequestSearch>,
-  decide: ReserveDecision
+  decision: Decision
 ): Promise<Map<string, ReserveVerdict>> {
   const candidates = new Set<string>();
   for (const search of searches) for (const hit of hitsOf(search)) candidates.add(hit.id);
   const verdicts = new Map<string, ReserveVerdict>();
+  if (candidates.size > 0) await decision.confirm();
   await pool([...candidates], DECISION_CONCURRENCY, async (askId) => {
-    verdicts.set(askId, await decide(askId));
+    verdicts.set(askId, await decision.decide(askId));
   });
   console.log(`candidates        ${candidates.size} decided by reserve-ask.ts`);
   return verdicts;
@@ -1676,6 +1265,8 @@ interface Neighbourhood {
   log: InputsLog;
   candidates: CandidateLog;
   afterPin: ReadonlySet<string>;
+  /** The drop scan's end, null where no request was searched and no scan ran. */
+  scanThrough: number | null;
 }
 
 /**
@@ -1690,11 +1281,12 @@ async function neighbourhoodOf(
   searchable: readonly Readable[]
 ): Promise<Neighbourhood> {
   const searched = await searchedOf(run.stage, config, searchable);
-  const afterPin =
+  const scan =
     searchable.length === 0
-      ? new Set<string>()
-      : await afterPinOf(run.stage, run.chain.throughEventId, searched.read > 0);
-  const verdicts = await verdictsOf(searched.byAsk.values(), run.decide);
+      ? { asks: new Set<string>(), through: null }
+      : await afterPinOf(run.stage, run.chain.throughEventId, searched.pages);
+  const afterPin = scan.asks;
+  const verdicts = await verdictsOf(searched.byAsk.values(), run.decision);
   const kept = new Set(
     [...verdicts.entries()]
       .filter(([askId, verdict]) => verdict === "kept" && log.lastEventOf(askId) !== undefined)
@@ -1704,14 +1296,14 @@ async function neighbourhoodOf(
   const candidates = new CandidateLog(kept);
   if (kept.size > 0) await walkThroughPin(run.corpus, (event) => candidates.note(event));
   const person = run.chain.person;
-  return { person, searches: searched.byAsk, verdicts, log, candidates, afterPin };
+  const searches = searched.byAsk;
+  return { person, searches, verdicts, log, candidates, afterPin, scanThrough: scan.through };
 }
 
 /** One request's neighbours: each hit as of the judged moment, the counts, and the first fault. */
-interface Neighbours {
+interface Neighbours extends Scanned {
   search: RequestSearch;
   outcomes: Record<string, CandidateInputs>;
-  counts: CandidateCounts;
   /** The first field S10's `neighbours` reads that the log cannot give, and its candidate. */
   fault: { askId: string; field: string } | null;
 }
@@ -1719,7 +1311,7 @@ interface Neighbours {
 /** One searched request's neighbours, from its neighbourhood. */
 function neighboursOf(plan: Ready, hood: Neighbourhood): Neighbours {
   const search = hood.searches.get(plan.request.askId);
-  if (search === undefined) {
+  if (search === undefined || hood.scanThrough === null) {
     throw new S10InputsError(`the request ${plan.request.askId} was never searched`);
   }
   const hits = hitsOf(search);
@@ -1751,7 +1343,7 @@ function neighboursOf(plan: Ready, hood: Neighbourhood): Neighbours {
     openedAt: plan.openedAt,
     documents: new Set(plan.documents.map((document) => document.artifact_id)),
   });
-  return { search, outcomes, counts, fault };
+  return { search, outcomes, counts, dropScanThrough: hood.scanThrough, fault };
 }
 
 /**
@@ -1767,13 +1359,12 @@ async function writeRequests(
 ): Promise<void> {
   for (const { plan, documents } of readable) {
     const neighbours = plan.fact.holds ? null : neighboursOf(plan, hood);
-    const counts = neighbours?.counts ?? null;
     const fault = neighbours?.fault ?? null;
     if (fault !== null) {
       const reason =
         `a candidate: the log gives no ${fault.field} of the ask ${fault.askId} as of event ` +
         `${plan.judged.eventId}, which S10's neighbours reads`;
-      lines.set(plan.request.askId, lineOf(plan, null, counts, reason));
+      lines.set(plan.request.askId, lineOf(plan, null, neighbours, reason));
       continue;
     }
     const request: RequestInputs = {
@@ -1791,7 +1382,8 @@ async function writeRequests(
       factHold: plan.fact.holds,
       search: neighbours?.search ?? null,
       candidates: neighbours?.outcomes ?? null,
-      counts,
+      counts: neighbours?.counts ?? null,
+      dropScanThrough: neighbours?.dropScanThrough ?? null,
     };
     let text: string;
     try {
@@ -1801,11 +1393,11 @@ async function writeRequests(
       // Inputs that would carry the answer are not the request as it stood: the file is not
       // written, and the reason names the rule and none of the text that broke it.
       const reason = "its inputs would carry the answer";
-      lines.set(plan.request.askId, lineOf(plan, null, counts, reason));
+      lines.set(plan.request.askId, lineOf(plan, null, neighbours, reason));
       continue;
     }
     const sha256 = await stage.commit("requests", plan.request.askId, text);
-    lines.set(plan.request.askId, lineOf(plan, sha256, counts));
+    lines.set(plan.request.askId, lineOf(plan, sha256, neighbours));
   }
 }
 

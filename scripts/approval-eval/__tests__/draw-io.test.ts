@@ -367,42 +367,86 @@ describe("readDraw", () => {
     );
   });
 
-  test("stops the reading where neverDecideApplied disagrees with its rule and roots", async () => {
-    // One fact in three fields: what the draw says it applied, its rule, and its roots.
-    const disagreeing: Array<[boolean, DrawRule | null, BacklogRoots | null, string]> = [
-      [false, RULE, ROOTS, "of false beside a rule and backlog roots"],
-      [false, RULE, null, "of false beside a rule and no backlog roots"],
-      [false, null, ROOTS, "of false beside no rule and backlog roots"],
-      [true, null, ROOTS, "of true beside no rule and backlog roots"],
-      [true, RULE, null, "of true beside a rule and no backlog roots"],
-      [true, null, null, "of true beside no rule and no backlog roots"],
+  test("stops the reading where neverDecideApplied, rule, roots and count disagree", async () => {
+    // One fact in four fields: what the draw says it applied, its rule, its roots, and how many
+    // roots it read. Each row is the applied flag, those three, and the tail of the refusal.
+    type Row = [boolean, DrawRule | null, BacklogRoots | null, number | null, string];
+    const disagreeing: Row[] = [
+      [false, RULE, ROOTS, 1, "a rule, backlog roots and a count of them read"],
+      [false, RULE, null, 1, "a rule, no backlog roots and a count of them read"],
+      [false, null, ROOTS, 1, "no rule, backlog roots and a count of them read"],
+      [true, null, ROOTS, 1, "no rule, backlog roots and a count of them read"],
+      [true, RULE, null, 1, "a rule, no backlog roots and a count of them read"],
+      [true, null, null, 1, "no rule, no backlog roots and a count of them read"],
+      [true, null, null, null, "no rule, no backlog roots and no count of them read"],
+      // Only the count disagrees: a ruled draw that records no count, and an unruled one that
+      // records one, a count of none read among them.
+      [true, RULE, ROOTS, null, "a rule, backlog roots and no count of them read"],
+      [false, null, null, 1, "no rule, no backlog roots and a count of them read"],
+      [false, null, null, 0, "no rule, no backlog roots and a count of them read"],
     ];
-    for (const [neverDecideApplied, rule, backlogLegionRoots, words] of disagreeing) {
-      const path = await written(draw({ neverDecideApplied, rule, backlogLegionRoots }));
+    for (const [applied, rule, roots, read, words] of disagreeing) {
+      const path = await written(
+        draw({
+          neverDecideApplied: applied,
+          rule,
+          backlogLegionRoots: roots,
+          backlogLegionRootsRead: read,
+        })
+      );
       await expect(readDraw(path)).rejects.toThrow(CorpusError);
-      await expect(readDraw(path)).rejects.toThrow(`${path} holds a neverDecideApplied ${words}`);
+      await expect(readDraw(path)).rejects.toThrow(
+        `${path} holds a neverDecideApplied of ${applied} beside ${words}`
+      );
     }
-    // A rule the record does not hold at all is no rule either.
-    const absent = await written({ ...draw({ neverDecideApplied: true }), rule: undefined });
-    await expect(readDraw(absent)).rejects.toThrow(
-      `${absent} holds a neverDecideApplied of true beside no rule and backlog roots`
+    // A rule or a count the record does not hold at all is none either.
+    const noRule = await written({ ...draw({ neverDecideApplied: true }), rule: undefined });
+    await expect(readDraw(noRule)).rejects.toThrow(
+      `${noRule} holds a neverDecideApplied of true beside no rule, backlog roots and a count of ` +
+        "them read"
+    );
+    const noCount = await written({
+      ...draw({ neverDecideApplied: true }),
+      backlogLegionRootsRead: undefined,
+    });
+    await expect(readDraw(noCount)).rejects.toThrow(
+      `${noCount} holds a neverDecideApplied of true beside a rule, backlog roots and no ` +
+        "count of them read"
     );
   });
 
-  test("reads a draw whose neverDecideApplied agrees with the rule and the roots", async () => {
+  test("reads a draw whose neverDecideApplied agrees with its rule, roots and count", async () => {
+    // A ruled draw records all three; one that read no root records a count of none.
     expect(await readDraw(await written(draw({ neverDecideApplied: true })))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",
       roots: ROOTS.issues,
       neverDecideApplied: true,
     });
-    const unruled = draw({ neverDecideApplied: false, rule: null, backlogLegionRoots: null });
+    const none = draw({
+      neverDecideApplied: true,
+      backlogLegionRootsRead: 0,
+      backlogLegionRoots: { ...ROOTS, issues: [] },
+    });
+    expect(await readDraw(await written(none))).toEqual({
+      cut: "2026-10-01T00:00:00.000Z",
+      groupKey: "issue",
+      roots: [],
+      neverDecideApplied: true,
+    });
+    // A claim draw records none of the three.
+    const unruled = draw({
+      neverDecideApplied: false,
+      rule: null,
+      backlogLegionRoots: null,
+      backlogLegionRootsRead: null,
+    });
     expect(await readDraw(await written(unruled))).toEqual({
       cut: "2026-10-01T00:00:00.000Z",
       groupKey: "issue",
       neverDecideApplied: false,
     });
-    // A draw made before the field was recorded says nothing for its rule and roots to agree with.
+    // A draw made before the field was recorded says nothing for the three to agree with.
     const before = await readDraw(await written(draw({ rule: null })));
     expect(before).not.toHaveProperty("neverDecideApplied");
     expect(before?.roots).toEqual(ROOTS.issues);

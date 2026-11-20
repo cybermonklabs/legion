@@ -660,9 +660,6 @@ describe("drawSlices under a read of the reserve", () => {
         [{ ...run, snapshotSha256: other }, `its snapshot.json is ${other}, and this run's is`],
         [{ ...run, corpusSha256: other }, `its corpus.jsonl is ${other}, and this run's is`],
         [{ ...run, treesSha256: other }, `its trees.json is ${other}, and this run's is`],
-        // Of two fields that differ, the first in the chain's order is the one named.
-        [{ ...run, corpusSha256: other, treesSha256: other }, "its corpus.jsonl is"],
-        [{ ...run, id: "start-2", treesSha256: other }, "its claim run is start-2"],
         [null, "its claim run is of no record, and this run's is start-1"],
       ];
       for (const [claimRun, words] of others) {

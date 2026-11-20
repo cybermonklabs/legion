@@ -244,7 +244,7 @@ export interface DrawFacts {
   finalTestReference?: string;
   /**
    * Whether the draw applied the never-decide rule, where the draw records it, which is never
-   * other than whether it records the rule and the roots it was handed.
+   * other than whether it records the rule, the roots it was handed and how many it read.
    */
   neverDecideApplied?: boolean;
   /** The claim run and the build a draw under a registered read records. */
@@ -595,15 +595,16 @@ export function drawFactsOf(text: string, path: string): DrawFacts {
   if (applied !== undefined && typeof applied !== "boolean") {
     throw new CorpusError(`${path} holds a neverDecideApplied that is no boolean`);
   }
-  // One fact written in three fields: a draw that says it applied the rule records the rule and
-  // the roots, and one that says it applied none records neither.
-  const ruled = [record.rule, record.backlogLegionRoots].map(
+  // One fact written in four fields: a draw that says it applied the rule records the rule, the
+  // roots and how many it read, and one that says it applied none records none of them.
+  const ruled = [record.rule, record.backlogLegionRoots, record.backlogLegionRootsRead].map(
     (one) => one !== null && one !== undefined
   );
   if (applied !== undefined && ruled.some((one) => one !== applied)) {
     throw new CorpusError(
       `${path} holds a neverDecideApplied of ${applied} beside ` +
-        `${ruled[0] ? "a" : "no"} rule and ${ruled[1] ? "" : "no "}backlog roots`
+        `${ruled[0] ? "a" : "no"} rule, ${ruled[1] ? "" : "no "}backlog roots and ` +
+        `${ruled[2] ? "a" : "no"} count of them read`
     );
   }
   if (applied !== undefined) facts.neverDecideApplied = applied;

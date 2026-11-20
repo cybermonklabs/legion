@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { CorpusError, listOf, numberOf, recordOf, stringOf } from "./corpus-io";
 import type { DispatchEvent } from "./dispatch-read";
-import { BUILD_CHAIN_NAMES, type BuildChain, chainRefusal } from "./draw-io";
+import type { BuildChain } from "./draw-io";
 import { type AskDocument, askDocsOf, type LegionFact } from "./s10-mirror";
 
 /**
@@ -13,10 +13,11 @@ import { type AskDocument, askDocsOf, type LegionFact } from "./s10-mirror";
  * `s10-inputs.ts` writes the files under its `--out`, and `s10_judge.py` and `analyze.ts` read
  * them back: `inventory.jsonl` (`InventoryLine`, `inventoryLinesOf`), `requests/<ask id>.json`
  * (`RequestInputs`, `requestInputsOf`), `pages/<sha256>.json` (`PageRecord`, `pageRecordOf`) and
- * `s10-inputs.json` (`StageRecord`, `stageRecordOf`). A reader imports this module and never the
- * command, as `draw-io.ts` is to `draw.ts`. Every shape carries `INPUTS_VERSION` where its file
- * does, and a parser refuses a file of another version, or one that is not this shape, with a
- * `CorpusError` naming the file.
+ * `s10-inputs.json` (`StageRecord`, `stageRecordOf`). A reader written in TypeScript imports this
+ * module and never the command, as `draw-io.ts` is to `draw.ts`; `s10_judge.py` reads the same
+ * shapes, as these types and parsers state them. Every shape carries `INPUTS_VERSION` where its
+ * file does, and a parser refuses a file of another version, or one that is not this shape, with
+ * a `CorpusError` naming the file.
  *
  * Nothing here reads Dispatch or writes a file. The answer rule (`AnswerLog`) holds, of each ask
  * it is given, the statements and the first answer event in memory, and nothing of either is in
@@ -30,7 +31,7 @@ export const REQUESTS_DIRECTORY = "requests";
 export const PAGES_DIRECTORY = "pages";
 
 /** The version of the shapes the stage writes, which every reader checks. */
-export const INPUTS_VERSION = 3;
+export const INPUTS_VERSION = 4;
 
 /** The fields of an issue S10 reads, as Dispatch names them. */
 export const ISSUE_FIELDS = ["title", "status", "labels", "parent", "primary_artifact_id"] as const;
@@ -118,6 +119,11 @@ export interface InventoryLine {
    * for one its fact holds, which S10 searches for nothing.
    */
   counts: CandidateCounts | null;
+  /**
+   * The end of the drop scan the request's candidates were dropped by, as its file records it;
+   * null with `counts`.
+   */
+  dropScanThrough: number | null;
 }
 
 /** The issue of a request as of its judged moment, in Dispatch's own field names. */
@@ -197,6 +203,11 @@ export interface RequestInputs {
   search: RequestSearch | null;
   candidates: Record<string, CandidateInputs> | null;
   counts: CandidateCounts | null;
+  /**
+   * The end of the drop scan the candidates were dropped by (`StageRecord.dropScanThrough` when
+   * this file was written); null with `search`.
+   */
+  dropScanThrough: number | null;
 }
 
 /** One read a page answered: the query, its offset, and when it was read. */
@@ -224,11 +235,11 @@ export interface PageRecord {
 }
 
 /**
- * The chain a stage record holds, which a resume must match whole (`stageChainRefusal`): the
- * claim run and the build, as the draw's own record names them (`BuildChain`, `draw.ts`), the
- * read, this run's digest, the person and the pin, the sha256 of the draw's two files, and the
- * digest of the `reserve-ask.ts` closure that decided. The directories they were read from are
- * recorded and not compared, since their bytes are.
+ * The chain a stage record holds, which a resume must match whole: the claim run and the build,
+ * as the draw's own record names them (`BuildChain`, `draw.ts`), the read, this run's digest, the
+ * person and the pin, the sha256 of the draw's two files, and the digest of the decision's
+ * closure. The directories they were read from are recorded and not compared, since their bytes
+ * are.
  */
 export interface StageChain {
   claimRun: BuildChain;
@@ -237,37 +248,9 @@ export interface StageChain {
   person: string;
   throughEventId: number;
   draw: { drawSha256: string; slicesSha256: string };
-  /** The sha256 of the decision's closure (`s10-inputs.ts`), or of a test's own decision. */
+  /** The digest of the decision's pinned closure (`s10-decision.ts`), or of a test's own. */
   reserveAsk: string;
   directories: { build: string; draw: string };
-}
-
-/** The fields of a `StageChain` outside its claim run and draw, as a refusal names them. */
-export const STAGE_CHAIN_NAMES: Readonly<Partial<Record<keyof StageChain, string>>> = {
-  reference: "read",
-  runDigest: "run digest",
-  person: "person",
-  throughEventId: "pin",
-  reserveAsk: "reserve-ask.ts closure",
-};
-
-/** The fields of a `StageChain`'s draw, as a refusal names them. */
-export const DRAW_CHAIN_NAMES: Readonly<Record<keyof StageChain["draw"], string>> = {
-  drawSha256: "draw.json",
-  slicesSha256: "slices.json",
-};
-
-/**
- * The first field in which a stage record's chain is not `wanted`, worded as the tail of a
- * refusal, and null where it is the same chain: `chainRefusal` over the claim run and the build,
- * the read, digest, person, pin and decision, and the draw, in that order.
- */
-export function stageChainRefusal(found: StageChain, wanted: StageChain): string | null {
-  return (
-    chainRefusal(found.claimRun, wanted.claimRun, BUILD_CHAIN_NAMES) ??
-    chainRefusal(found, wanted, STAGE_CHAIN_NAMES) ??
-    chainRefusal(found.draw, wanted.draw, DRAW_CHAIN_NAMES)
-  );
 }
 
 /** The stage's counts: the inventory's, and the sums of its lines' candidate counts. */
@@ -290,10 +273,16 @@ export interface StageRecord extends StageChain {
   finishedAt: string | null;
   /**
    * The last event of the drop scan, which read on from the pin once the searches were done; a
-   * resume reads through it again, and on from it when it searches anything its first run did
-   * not. Null before the scan.
+   * run reads through it again, and on from it when a page its searches use is not one the scan
+   * covers. Null before the scan.
    */
   dropScanThrough: number | null;
+  /**
+   * The page records the recorded scan covers: each page then archived, by the sha256 of its
+   * page, with the sha256 of its file as it stood when the scan ran, so every read it holds came
+   * before the scan. Written in the same record write as `dropScanThrough`; null with it.
+   */
+  dropScanPages: Record<string, string> | null;
   counts: StageCounts | null;
   inventorySha256: string | null;
   /** The sha256 of each request file's bytes, by ask id. */
@@ -505,6 +494,14 @@ export function inventoryLinesOf(text: string, path: string): InventoryLine[] {
           `${requestSha256 === null ? "no" : "a"} request file`
       );
     }
+    const counts = record.counts === null ? null : countsOf(record.counts, where);
+    const dropScanThrough =
+      record.dropScanThrough === null
+        ? null
+        : wholeAt(record.dropScanThrough, where, "dropScanThrough");
+    if ((counts === null) !== (dropScanThrough === null)) {
+      throw new CorpusError(`${where} records candidate counts and a drop scan's end apart`);
+    }
     return {
       askId: textAt(record.askId, where, "askId"),
       issueKey,
@@ -514,7 +511,8 @@ export function inventoryLinesOf(text: string, path: string): InventoryLine[] {
       state,
       reason,
       requestSha256,
-      counts: record.counts === null ? null : countsOf(record.counts, where),
+      counts,
+      dropScanThrough,
     };
   });
 }
@@ -621,11 +619,13 @@ export function requestInputsOf(text: string, path: string): RequestInputs {
   if (record.factHold !== fact.holds) {
     throw new CorpusError(`${path} records a factHold that is not its fact's`);
   }
-  const searched = [record.search, record.candidates, record.counts].map((one) => one !== null);
+  const searched = [record.search, record.candidates, record.counts, record.dropScanThrough].map(
+    (one) => one !== null
+  );
   if (searched.some((one) => one === fact.holds)) {
     throw new CorpusError(
       `${path} is a request whose fact ${fact.holds ? "holds" : "does not hold"}, and its ` +
-        "search, candidates and counts are not what such a request carries"
+        "search, candidates, counts and drop scan's end are not what such a request carries"
     );
   }
   const search = record.search === null ? null : recordAt(record.search, path, "search");
@@ -670,6 +670,10 @@ export function requestInputsOf(text: string, path: string): RequestInputs {
             ])
           ),
     counts: record.counts === null ? null : countsOf(record.counts, path),
+    dropScanThrough:
+      record.dropScanThrough === null
+        ? null
+        : wholeAt(record.dropScanThrough, path, "dropScanThrough"),
   };
 }
 
@@ -752,6 +756,21 @@ export function stageRecordOf(text: string, path: string): StageRecord {
   const directories = recordAt(record.directories, path, "directories");
   const optional = <T>(value: unknown, read: (one: unknown) => T): T | null =>
     value === null ? null : read(value);
+  const dropScanThrough = optional(record.dropScanThrough, (one) =>
+    wholeAt(one, path, "dropScanThrough")
+  );
+  const dropScanPages = optional(record.dropScanPages, (one) => recordedFiles(one, path));
+  const pages = recordedFiles(record.pages, path);
+  if ((dropScanThrough === null) !== (dropScanPages === null)) {
+    throw new CorpusError(
+      `${path} records a drop scan's end without the pages it covers, or those without an end`
+    );
+  }
+  for (const page of Object.keys(dropScanPages ?? {})) {
+    if (!Object.hasOwn(pages, page)) {
+      throw new CorpusError(`${path} records a drop scan over a page ${page} it does not name`);
+    }
+  }
   return {
     stage: "s10-inputs",
     version: INPUTS_VERSION,
@@ -777,14 +796,13 @@ export function stageRecordOf(text: string, path: string): StageRecord {
     },
     startedAt: textAt(record.startedAt, path, "startedAt"),
     finishedAt: optional(record.finishedAt, (one) => textAt(one, path, "finishedAt")),
-    dropScanThrough: optional(record.dropScanThrough, (one) =>
-      wholeAt(one, path, "dropScanThrough")
-    ),
+    dropScanThrough,
+    dropScanPages,
     counts: optional(record.counts, (one) => stageCountsOf(one, path)),
     inventorySha256: optional(record.inventorySha256, (one) =>
       sha256At(one, path, "inventorySha256")
     ),
     requests: recordedFiles(record.requests, path),
-    pages: recordedFiles(record.pages, path),
+    pages,
   };
 }
