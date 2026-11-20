@@ -1,0 +1,5 @@
+kind: Fixed
+body: "A pod update round could replace a pod and delete its disk before the round's bound, open over a pod that a project's pause held, or be told to the controller as late before its bound. The sweep read the pause's holds of the pods once, at its start, and decided these acts later from that reading, after its walk and each earlier replacement had waited. Meanwhile a pause could take a pod, or the wake pacing could let a held launch out later, which moves the round's bound later. The daemon now reads the holds of the pod again, after the clock, for each of these acts: before it opens a round, before it tells the controller that a round is late, and both before and under the pod's launch turn when it replaces the pod."
+time: 2026-11-20T18:45:00.413045795Z
+custom:
+    Issue: pr4509

@@ -20,6 +20,27 @@ import (
 // pausedAt is the moment the pause tests begin their pause.
 var pausedAt = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 
+// standingPodHold is the hold that stands on issue's pod under project's pauses, and whether one
+// does, read through the read the daemon makes of one issue's holds (IssuePausePodHoldsSince):
+// a since later than every end and every let-out leaves the holds that stand alone. More than one
+// hold standing on one pod, or a read that fails, fails the test.
+func standingPodHold(t *testing.T, st *Store, project, issue string) (PausePodHold, bool) {
+	t.Helper()
+	holds, err := st.IssuePausePodHoldsSince(context.Background(), project, issue, time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("read the holds of %s's pod under %s's pauses: %v", issue, project, err)
+	}
+	holds = slices.DeleteFunc(holds, func(h PausePodHold) bool { return !h.EndedAt.IsZero() })
+	switch len(holds) {
+	case 0:
+		return PausePodHold{}, false
+	case 1:
+		return holds[0], true
+	}
+	t.Fatalf("%d holds stand on %s's pod under %s's pauses, want one at most: %+v", len(holds), issue, project, holds)
+	return PausePodHold{}, false
+}
+
 // seedPauseClaims is project legion as a pause finds it: an idle implementer of LEGION-208 and a
 // working tester of LEGION-209, which the pause stops; the architect of LEGION-208 an idle release
 // left released, a failed reviewer and a retired merger, which run nothing to stop; the project's
@@ -408,9 +429,9 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if opened, err := holdPod(st, pause, "LEGION-208", pausedAt.Add(time.Minute)); err != nil || opened {
 		t.Fatalf("hold LEGION-208's pod again = %t, %v; want the hold that stands kept", opened, err)
 	}
-	hold, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208")
-	if err != nil || !found || hold.Pause != pause.ID || hold.Project != "LEGION" || !hold.HeldAt.Equal(pausedAt) {
-		t.Fatalf("PausePodHoldOf = %+v, %t, %v; want pause %d's hold from %s", hold, found, err, pause.ID, pausedAt)
+	hold, found := standingPodHold(t, st, "LEGION", "LEGION-208")
+	if !found || hold.Pause != pause.ID || hold.Project != "LEGION" || !hold.HeldAt.Equal(pausedAt) {
+		t.Fatalf("the hold standing on LEGION-208's pod = %+v, %t; want pause %d's hold from %s", hold, found, pause.ID, pausedAt)
 	}
 	if holds, err := st.OpenPausePodHolds(ctx, "LEGION"); err != nil || len(holds) != 1 || holds[0].Issue != "LEGION-208" {
 		t.Fatalf("OpenPausePodHolds = %+v, %v; want LEGION-208's", holds, err)
@@ -418,11 +439,11 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if opened, err := holdPod(st, pause, "INFRA-5", pausedAt); err != nil || !opened {
 		t.Fatalf("hold INFRA-5's pod under LEGION's pause = %t, %v; want it held", opened, err)
 	}
-	if hold, found, err := st.PausePodHoldOf(ctx, "LEGION", "INFRA-5"); err != nil || !found || hold.Pause != pause.ID || hold.Project != "LEGION" {
-		t.Fatalf("LEGION's hold of INFRA-5's pod = %+v, %t, %v; want pause %d's", hold, found, err, pause.ID)
+	if hold, found := standingPodHold(t, st, "LEGION", "INFRA-5"); !found || hold.Pause != pause.ID || hold.Project != "LEGION" {
+		t.Fatalf("LEGION's hold of INFRA-5's pod = %+v, %t; want pause %d's", hold, found, pause.ID)
 	}
-	if _, found, err := st.PausePodHoldOf(ctx, "INFRA", "INFRA-5"); err != nil || found {
-		t.Fatalf("INFRA's hold of INFRA-5's pod = %t, %v; want none: the hold is LEGION's", found, err)
+	if _, found := standingPodHold(t, st, "INFRA", "INFRA-5"); found {
+		t.Fatalf("INFRA's hold of INFRA-5's pod = %t; want none: the hold is LEGION's", found)
 	}
 	if ended, err := st.EndPausePodHold(ctx, "INFRA", "INFRA-5", PausePodHoldDeleted, pausedAt.Add(time.Minute)); err != nil || ended {
 		t.Fatalf("INFRA's end of INFRA-5's hold = %t, %v; want nothing ended", ended, err)
@@ -437,8 +458,8 @@ func TestAPausePodHoldOpensOnceAndEnds(t *testing.T) {
 	if ended, err := st.EndPausePodHold(ctx, "LEGION", "LEGION-208", PausePodHoldReady, pausedAt.Add(time.Hour)); err != nil || ended {
 		t.Fatalf("end LEGION-208's hold again = %t, %v; want nothing left to end", ended, err)
 	}
-	if _, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208"); err != nil || found {
-		t.Fatalf("PausePodHoldOf after the end = %t, %v; want none", found, err)
+	if _, found := standingPodHold(t, st, "LEGION", "LEGION-208"); found {
+		t.Fatalf("a hold stands on LEGION-208's pod after the end = %t; want none", found)
 	}
 	var why string
 	if err := st.Pool().QueryRow(ctx, `select ended_why from project_pause_pod_holds where issue = 'LEGION-208'`).Scan(&why); err != nil || why != string(PausePodHoldReady) {
@@ -519,8 +540,8 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 	if r.err != nil || !r.ended {
 		t.Fatalf("the second writer's end = %t, %v; want it to end the hold the first committed", r.ended, r.err)
 	}
-	if _, found, err := st.PausePodHoldOf(ctx, "LEGION", "LEGION-208"); err != nil || found {
-		t.Fatalf("LEGION-208's hold after both writers = %t, %v; want it ended", found, err)
+	if _, found := standingPodHold(t, st, "LEGION", "LEGION-208"); found {
+		t.Fatalf("LEGION-208's hold after both writers = %t; want it ended", found)
 	}
 }
 

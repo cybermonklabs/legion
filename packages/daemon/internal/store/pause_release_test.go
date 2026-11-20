@@ -227,8 +227,8 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 					t.Fatalf("%s's stops ended stopped owing a launch %t = %d, want 1", role, owed, n)
 				}
 			}
-			if hold, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || !held || hold.Pause != pause.ID {
-				t.Fatalf("the pod's hold = %+v, %t, %v; want pause %d's", hold, held, err, pause.ID)
+			if hold, held := standingPodHold(t, st, "LEGION", rootIssue); !held || hold.Pause != pause.ID {
+				t.Fatalf("the pod's hold = %+v, %t; want pause %d's", hold, held, pause.ID)
 			}
 			wantBackstops := 0
 			if tc.backstop {
@@ -428,8 +428,8 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if err := st.CleanupReservedTree(ctx, "legion", rootIssue, lifecycle.Epoch, &countingReleaser{}); err != nil {
 		t.Fatalf("clean the tree up: %v", err)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", rootIssue); err != nil || held {
-		t.Fatalf("after the cleanup a hold stands = %t, %v; want it ended", held, err)
+	if _, held := standingPodHold(t, st, "LEGION", rootIssue); held {
+		t.Fatalf("after the cleanup a hold stands = %t; want it ended", held)
 	}
 	if n := pauseCount(t, st, `select count(*) from project_pause_pod_holds where issue = $1 and ended_why = 'deleted'`, rootIssue); n != 1 {
 		t.Fatalf("holds ended as deleted = %d, want 1", n)
@@ -465,12 +465,12 @@ func TestATreesCleanupEndsThePauseHoldsOfItsPods(t *testing.T) {
 	if err := st.CleanupReservedTree(ctx, "legion", other, operatorTree.Epoch, &countingReleaser{}); err != nil {
 		t.Fatalf("clean the tree %s up: %v", other, err)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", other); err != nil || held {
-		t.Fatalf("after the cleanup of %s its hold stands = %t, %v; want it ended", other, held, err)
+	if _, held := standingPodHold(t, st, "LEGION", other); held {
+		t.Fatalf("after the cleanup of %s its hold stands = %t; want it ended", other, held)
 	}
-	if _, held, err := st.PausePodHoldOf(ctx, "LEGION", recorded); err != nil || !held {
-		t.Fatalf("after the cleanup of %s the hold of %s = %t, %v; want it standing: OTHER's record of %s files no pod of this project under %s",
-			other, recorded, held, err, recorded, other)
+	if _, held := standingPodHold(t, st, "LEGION", recorded); !held {
+		t.Fatalf("after the cleanup of %s the hold of %s = %t; want it standing: OTHER's record of %s files no pod of this project under %s",
+			other, recorded, held, recorded, other)
 	}
 }
 
@@ -559,7 +559,8 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 // Decision 12 of dispatch://INFRA-3759, and the let-out of decision 14: the sweep's read of the
 // holds carries with each hold the latest let-out of a launch its own pause held for a role of the
 // pod, the greatest stuck clock of the issue's resumes that pause held, and reads a hold that ended
-// before since where that let-out came after it. A resume no pause held moves nothing.
+// before since where that let-out came after it. A resume no pause held moves nothing. The ask's
+// read of one issue's holds (IssuePausePodHoldsSince) is the sweep's read of that issue alone.
 func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -617,6 +618,21 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		}
 		if fmt.Sprint(got) != fmt.Sprint(tc.want) {
 			t.Fatalf("the let-outs of the holds read since the resume %+v = %v, want %v", tc.since, got, tc.want)
+		}
+		for _, issue := range []string{rootIssue, other} {
+			of, err := st.IssuePausePodHoldsSince(ctx, "LEGION", issue, resumedAt.Add(tc.since))
+			if err != nil {
+				t.Fatalf("read the holds of %s since the resume %+v: %v", issue, tc.since, err)
+			}
+			var want []PausePodHold
+			for _, hold := range holds {
+				if hold.Issue == issue {
+					want = append(want, hold)
+				}
+			}
+			if fmt.Sprint(of) != fmt.Sprint(want) {
+				t.Fatalf("the holds of %s read since the resume %+v = %+v, want the project's read of it, %+v", issue, tc.since, of, want)
+			}
 		}
 	}
 }

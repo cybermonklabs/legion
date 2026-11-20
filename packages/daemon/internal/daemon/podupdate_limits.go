@@ -25,7 +25,10 @@ import (
 // opens one: the gap is therefore the minute less what a sweep's own arrival wanders by, so two
 // sweeps a minute apart that arrive a little early or a little late open their round each,
 // while two sweeps of one burst — a sweep that ran long, and the one the ticker fires straight
-// after it — do not open two minutes' worth of rounds between them.
+// after it — do not open two minutes' worth of rounds between them. Both ends of the gap are
+// openings: it is read at the moment the walk reaches the issue it would open, against the
+// moment of this daemon's last opening before the sweep (podUpdateSweep.holds), and never at the
+// top of the sweep, which a wait in the walk puts before the opening it measures.
 const podUpdateOpeningGap = 50 * time.Second
 
 // podUpdateLimit is the limit of the project that held an issue's opening back at a sweep, as
@@ -70,28 +73,57 @@ func (a *podUpdateAllowance) take() {
 // podUpdateOpenings read them once before the walk. An issue whose round is one of them is that
 // opening posted again rather than a new one (reposts), and the walk reads it here rather than
 // taking the openings' own mutex at every issue.
+//
+// lastOpened is this daemon's last opening before this sweep, read with inFlight, and zero for a
+// daemon that has opened nothing since it booted. Each opening of the sweep is measured against
+// it (holds), and not against an opening of this same sweep: the per-minute limit is a budget for
+// the sweep, not a gap between the openings inside one.
 type podUpdateSweep struct {
-	slots    podUpdateAllowance
-	budget   podUpdateAllowance
-	inFlight map[string]string
-	waiting  []podUpdateHeld
-	inRound  []string
+	slots      podUpdateAllowance
+	budget     podUpdateAllowance
+	inFlight   map[string]string
+	lastOpened time.Time
+	waiting    []podUpdateHeld
+	inRound    []string
 }
 
-// holds is whether a limit of the project holds this issue's opening back, and records the issue
-// as waiting under the limit that did. Where both hold it back the limit on open rounds is the
-// one recorded: it is the one that will still hold the issue back at the next sweep, and the
-// one an operator reading the record has to weigh.
-func (sweep *podUpdateSweep) holds(issue string) bool {
+// holds is whether a limit of the project holds this issue's opening back at now, the clock as
+// the walk reaches the issue, and records the issue as waiting under the limit that did. Where
+// both hold it back the limit on open rounds is the one recorded: it is the one that will still
+// hold the issue back at the next sweep, and the one an operator reading the record has to weigh.
+//
+// The per-minute limit holds the opening back once the sweep's budget is spent, and while now is
+// podUpdateOpeningGap or less after this daemon's last opening. That gap is read here, at the
+// opening, rather than once at the top of the sweep: each opening is dated when it is made
+// (recordPodUpdateOpening), and the walk can wait before it reaches an issue — on a store write
+// for an issue before it, an ask or a notice it enqueues. Read at the top, the gap of a sweep
+// whose walk waited 10 seconds before its opening would be measured that much short at the next
+// tick, a minute later, which would then open nothing although its opening came a minute after
+// the last one, and the openings would stop following the one-minute tick.
+//
+// The gap that holds an issue back spends what is left of the sweep's budget. The waiting issues
+// open in the order of their keys, and the walk is in that order, so once the gap holds one issue
+// no issue after it may open at this sweep: the walk can wait between the two, and reach the
+// later one after the gap has passed. The issue the gap held opens at a later sweep, before every
+// issue after it, and a sweep whose walk reaches its first waiting issue within the gap opens
+// nothing.
+func (sweep *podUpdateSweep) holds(issue string, now time.Time) bool {
 	switch {
 	case sweep.slots.exhausted():
 		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateOpenRounds})
-	case sweep.budget.exhausted():
+	case sweep.budget.exhausted(), sweep.budget.limited && sweep.withinGap(now):
+		sweep.budget.left = 0
 		sweep.waiting = append(sweep.waiting, podUpdateHeld{issue: issue, limit: limitPodUpdateRoundsPerMinute})
 	default:
 		return false
 	}
 	return true
+}
+
+// withinGap is whether now is podUpdateOpeningGap or less after this daemon's last opening
+// before the sweep. A daemon that has opened nothing since it booted is within no gap.
+func (sweep *podUpdateSweep) withinGap(now time.Time) bool {
+	return !sweep.lastOpened.IsZero() && now.Sub(sweep.lastOpened) <= podUpdateOpeningGap
 }
 
 // charge takes one opening that reached a worker from both limits, and names the issue it was
@@ -156,10 +188,11 @@ func (sweep podUpdateSweep) held() []string {
 // (podUpdateSweep.reposts).
 //
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
-// than paced inside it, and nothing at all within podUpdateOpeningGap of the last opening.
-func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]supervise.Claim) podUpdateSweep {
+// than paced inside it. The gap after the last opening is weighed at each opening rather than
+// here (holds), so this hands the walk the last opening rather than reading the clock.
+func (s *supervision) beginPodUpdateSweep(byIssue map[string][]supervise.Claim) podUpdateSweep {
 	opened, inFlight := s.podUpdateOpenings(byIssue)
-	sweep := podUpdateSweep{inFlight: inFlight}
+	sweep := podUpdateSweep{inFlight: inFlight, lastOpened: opened}
 	if rounds := s.cfg.PodUpdateMaxOpenRounds; rounds != nil {
 		held := len(inFlight)
 		for _, group := range byIssue {
@@ -171,9 +204,6 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 	}
 	if perMinute := s.cfg.PodUpdateRoundsPerMinute; perMinute != nil {
 		sweep.budget = podUpdateAllowance{left: *perMinute, limited: true}
-		if !opened.IsZero() && now.Sub(opened) <= podUpdateOpeningGap {
-			sweep.budget.left = 0
-		}
 	}
 	return sweep
 }
@@ -216,11 +246,18 @@ func (s *supervision) podUpdateOpenings(byIssue map[string][]supervise.Claim) (t
 }
 
 // recordPodUpdateOpening charges one opening that reached a worker to this sweep and to this
-// daemon's record of its own openings. The time written is the sweep's own now, the one every
-// opening of the sweep shares: the per-minute limit is a budget for a sweep, not a gap between
-// the openings inside one, and the sweep that follows measures its gap from the sweep that
-// opened rather than from whatever the openings' own replacements took afterwards.
-func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string, now time.Time) {
+// daemon's record of its own openings, dated at the clock as the opening is made. The sweep's own
+// now, read at the top of the sweep, is no date for it: the walk can wait before it reaches the
+// issue, on any write it makes to the store for an issue before it — an ask or a notice it
+// enqueues, a message it writes on an issue, a told mark it makes — and an opening dated from the
+// top of such a sweep reads as older than it is, so the sweep after it would open another round
+// podUpdateOpeningGap or less after the real one. Nor is the date anything that comes after the
+// opening: the replacements the walk leaves are made after the walk (reconcilePodUpdates), so
+// what they wait out is no part of it. Where one sweep opens several rounds the last of them is
+// the date kept, which is the daemon's last opening the next sweep measures its gap from
+// (podUpdateSweep.holds); the per-minute limit stays a budget for the sweep, spent at it.
+func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round string) {
+	opened := s.plan.clock.Now()
 	sweep.charge(issue)
 	s.podUpdateMu.Lock()
 	defer s.podUpdateMu.Unlock()
@@ -228,7 +265,7 @@ func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round
 		s.podUpdateOpened = map[string]string{}
 	}
 	s.podUpdateOpened[issue] = round
-	s.podUpdateOpenedAt = now
+	s.podUpdateOpenedAt = opened
 }
 
 // recordPodUpdateSweep writes what this sweep decided under the project's two limits, whole and

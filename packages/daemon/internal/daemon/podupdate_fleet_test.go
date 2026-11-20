@@ -212,11 +212,12 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, records: records, clock: clock,
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
+	project := fleetProject(t, issues)
 	rig.s = &supervision{
-		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
+		cfg: config.Config{Project: project, PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: project, log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -227,6 +228,27 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		Dispatch: rig.handoffs,
 	}).Handler
 	return rig
+}
+
+// fleetProject is the project the rig's daemon runs, by its Dispatch key: the project of the
+// rig's issue keys, by the rule production's outbox writes by (claim.KeyOfProject). Its outbox
+// writes that project's rows, so every ask, notice and message the sweep makes for an issue of the
+// rig is a row written to the store, as it is for a daemon's own issue, and its sweep reads that
+// project's pause holds (podPauseHolds), as a daemon reads its own project's. A rig over the keys
+// of two projects has no such project and fails; a rig over no issue runs LEGION.
+func fleetProject(t *testing.T, issues []fleetIssue) string {
+	t.Helper()
+	project := "LEGION"
+	for i, issue := range issues {
+		of, _, _ := strings.Cut(issue.key, "-")
+		switch {
+		case i == 0:
+			project = of
+		case !claim.KeyOfProject(project, issue.key):
+			t.Fatalf("the fleet rig's issues %s and %s are of two projects, and its outbox writes the rows of one", issues[0].key, issue.key)
+		}
+	}
+	return project
 }
 
 // drifts scripts the runtime to answer reasons for every claim of issue, which is what one
@@ -241,10 +263,17 @@ func (r *fleetRig) drifts(issue string, reasons ...string) {
 }
 
 // tick is one orphan sweep over every claim the store holds, which is what the daemon's own tick
-// puts to the round. The claims of an issue podless says records no pod are read with none, as
-// every sweep between an operator's suspension and the next launch reads them (supervise's
-// letGo).
+// puts to the round (sweepClaims).
 func (r *fleetRig) tick() {
+	r.t.Helper()
+	r.s.reconcilePodUpdates(r.ctx, r.sweepClaims())
+}
+
+// sweepClaims is what one sweep is handed: every claim the store holds, with the claims of an
+// issue podless says records no pod read with none, as every sweep between an operator's
+// suspension and the next launch reads them (supervise's letGo). It is read on the test's own
+// goroutine, which is the one a failed read may stop.
+func (r *fleetRig) sweepClaims() []supervise.Claim {
 	r.t.Helper()
 	claims, err := r.sup.Claims(r.ctx)
 	if err != nil {
@@ -255,7 +284,7 @@ func (r *fleetRig) tick() {
 			claims[i].Locator = nil
 		}
 	}
-	r.s.reconcilePodUpdates(r.ctx, claims)
+	return claims
 }
 
 // podless makes every later sweep read the claims of issue as recording no pod, which is what a

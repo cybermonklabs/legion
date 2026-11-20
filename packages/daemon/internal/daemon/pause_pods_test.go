@@ -51,10 +51,16 @@ func TestTheResumesPassIsAFactOfItsOwnAppliedOnce(t *testing.T) {
 // (store's Pause, project_pauses), and answers its id.
 func openLegionPause(t *testing.T, pool *store.Pool, at time.Time) int64 {
 	t.Helper()
+	return openProjectPause(t, pool, "LEGION", at)
+}
+
+// openProjectPause is openLegionPause for the project whose Dispatch key is project.
+func openProjectPause(t *testing.T, pool *store.Pool, project string, at time.Time) int64 {
+	t.Helper()
 	var id int64
 	if err := pool.QueryRow(context.Background(), `insert into project_pauses (project, began_at, by_kind, reason)
-		values ('LEGION', $1, 'operator', 'the model provider is down') returning id`, at).Scan(&id); err != nil {
-		t.Fatalf("pause LEGION: %v", err)
+		values ($1, $2, 'operator', 'the model provider is down') returning id`, project, at).Scan(&id); err != nil {
+		t.Fatalf("pause %s: %v", project, err)
 	}
 	return id
 }
@@ -73,12 +79,19 @@ func endLegionPause(t *testing.T, pool *store.Pool, id int64, at time.Time) {
 // store.OpenPausePodHoldTx). pause is a pause of LEGION (openLegionPause).
 func holdLegionPod(t *testing.T, st *store.Store, pause int64, issue string, at time.Time) {
 	t.Helper()
+	holdProjectPod(t, st, pause, "LEGION", issue, at)
+}
+
+// holdProjectPod is holdLegionPod for a pause of the project whose Dispatch key is project
+// (openProjectPause).
+func holdProjectPod(t *testing.T, st *store.Store, pause int64, project, issue string, at time.Time) {
+	t.Helper()
 	ctx := context.Background()
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		if err := store.LockIssueForPause(ctx, tx, issue); err != nil {
 			return err
 		}
-		_, err := store.OpenPausePodHoldTx(ctx, tx, store.Pause{ID: pause, Project: "LEGION"}, issue, at)
+		_, err := store.OpenPausePodHoldTx(ctx, tx, store.Pause{ID: pause, Project: project}, issue, at)
 		return err
 	}); err != nil {
 		t.Fatalf("hold the pod of %s: %v", issue, err)

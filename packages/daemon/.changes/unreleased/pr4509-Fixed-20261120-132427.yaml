@@ -1,0 +1,5 @@
+kind: Fixed
+body: The ask of a pod update round tells its roles when the round ends, which a project's pause moves later by the time it held the pod. The daemon counted a hold that still stood only to the start of the sweep, so an ask the sweep wrote after a wait in its walk stated an end earlier than the round's. The ask now reads the clock and the pause's holds of its pod again when it is written, so a hold that stands counts to that moment and a hold that ended while the walk waited counts to its end, and the end an ask states is never later than the end at which the daemon replaces the pod and deletes its disk.
+time: 2026-11-20T13:24:27.703594Z
+custom:
+    Issue: pr4509

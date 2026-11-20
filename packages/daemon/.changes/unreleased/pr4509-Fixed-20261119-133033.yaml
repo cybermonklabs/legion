@@ -1,0 +1,5 @@
+kind: Fixed
+body: With `pod_update_rounds_per_minute` set, a sweep that waited in its walk before it opened a pod update round recorded the time the sweep started as the time of that opening, so the next sweep could open another round 50 seconds or less after the real opening. The wait was the told mark of a late round, which waited for a relaunching claim, or any write to the store for an issue the walk reached first. Each opening is now dated when the sweep makes it, and the 50 seconds are read as the walk reaches the issue it would open, against the daemon's last opening before the sweep. Once they hold an issue back, the sweep opens no issue after it, so the waiting issues still open in the order of their keys.
+time: 2026-11-19T13:30:33.373716494Z
+custom:
+    Issue: pr4509

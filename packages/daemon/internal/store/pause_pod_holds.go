@@ -148,20 +148,6 @@ func validPausePodHoldEnd(issue string, end PausePodHoldEnd) error {
 	return fmt.Errorf("end the pod hold of %s: %q is no reason a hold ends", issue, end)
 }
 
-// PausePodHoldOf is the hold that stands on issue's pod under project's pauses, and whether one
-// does. project is the Dispatch key.
-func (s *Store) PausePodHoldOf(ctx context.Context, project, issue string) (PausePodHold, bool, error) {
-	h, err := scanPausePodHold(s.pool.QueryRow(ctx, `select `+pausePodHoldColumns+` from project_pause_pod_holds
-		where project = $1 and issue = $2 and ended_at is null`, project, issue))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return PausePodHold{}, false, nil
-	}
-	if err != nil {
-		return PausePodHold{}, false, fmt.Errorf("read the pod hold of %s: %w", issue, err)
-	}
-	return h, true, nil
-}
-
 // OpenPausePodHolds is every hold standing on a pod of project, by issue: the pods the resume
 // ends the holds of where a role is live (decision 22), and the pods a project release names when
 // it refuses (departure 1). project is the Dispatch key.
@@ -186,13 +172,33 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 // let-out of the last launch its pause held for a role of the pod, so since is the opening of the
 // oldest round the sweep reads. project is the Dispatch key.
 func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
+	return s.pausePodHoldsSince(ctx, project, "", since)
+}
+
+// IssuePausePodHoldsSince is PausePodHoldsSince over the pod of one issue of project, by when each
+// hold began: what each act of an update round that a pause changes reads as it is made — the end
+// its ask states, its opening, its late-round notice and its pod's replacement (internal/daemon's
+// roundClockNow) — so the act counts each hold as it stands then, not as the sweep read it at its
+// top, before a walk that can wait. project is the Dispatch key.
+func (s *Store) IssuePausePodHoldsSince(ctx context.Context, project, issue string, since time.Time) ([]PausePodHold, error) {
+	return s.pausePodHoldsSince(ctx, project, issue, since)
+}
+
+// pausePodHoldsSince is the one statement of both reads above: issue "" reads the holds of every
+// issue of project.
+func (s *Store) pausePodHoldsSince(ctx context.Context, project, issue string, since time.Time) ([]PausePodHold, error) {
+	of := project
+	if issue != "" {
+		of = issue + " of " + project
+	}
 	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
 		from project_pause_pod_holds h
 		left join lateral (select max(r.clock_at) as let_out from pod_resumes r
 			where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
-		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2) order by h.issue, h.held_at`, project, since)
+		where h.project = $1 and ($3::text = '' or h.issue = $3) and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2)
+		order by h.issue, h.held_at`, project, since, issue)
 	if err != nil {
-		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", of, since.Format(time.RFC3339), err)
 	}
 	defer rows.Close()
 	var holds []PausePodHold
@@ -201,13 +207,13 @@ func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since ti
 		var end string
 		var ended, letOut *time.Time
 		if err := rows.Scan(&h.ID, &h.Pause, &h.Project, &h.Issue, &h.HeldAt, &ended, &end, &letOut); err != nil {
-			return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+			return nil, fmt.Errorf("read the pod holds of %s since %s: %w", of, since.Format(time.RFC3339), err)
 		}
 		h.End, h.EndedAt, h.LetOut = PausePodHoldEnd(end), orZero(ended), orZero(letOut)
 		holds = append(holds, h)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
+		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", of, since.Format(time.RFC3339), err)
 	}
 	return holds, nil
 }

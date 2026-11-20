@@ -1824,25 +1824,46 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// PodUpdateTold marks this claim's open update round as reported to the operator's side, so the
-// daemon's sweep (internal/daemon's reconcilePodUpdates) tells one round once however many ticks
-// find it still open. It is no event: the sweep is what decides a round is stalled, and the mark
-// is bookkeeping of that decision, as StartedBy is of the row running against the claim.
+// PodUpdateTold marks this claim's open update round as reported to the operator's side at at,
+// the moment the round was told, so the daemon's sweep (internal/daemon's reconcilePodUpdates)
+// tells one round once however many ticks find it still open. It is no event: the sweep is what
+// decides a round is stalled, and the mark is bookkeeping of that decision, as StartedBy is of
+// the row running against the claim.
+//
+// The lock is taken without waiting, as PublishUpdateAsk takes it. The sweep is the one caller,
+// and a decision in flight holds the lock — a Sandbox relaunch for minutes while the runtime
+// waits out the pod — so a call that waited would hold the whole sweep behind this one claim:
+// every later issue's round, the orphan reaping and the passes after it. Held, the call answers
+// ErrMachineBusy having marked nothing, and the sweep owes the mark and makes it at a later sweep
+// (internal/daemon's markUpdateTold), which is why the time is the caller's and not the clock's.
 //
 // It stamps nothing and reports false when the claim is no longer in round — the round ended, or
 // another opened — or when this round was already told: both are decisions already taken, not
-// faults, since the sweep posts over the same claims at every tick. A write the store refuses is
-// returned with false, and the sweep tells the round again at the next tick rather than lose the
-// notice. That is also why the write goes through putClaim and leaves nothing owed: the stamp is
-// taken back here, so there is no mark to make again, and the next tick's call writes the stamp
-// it makes then.
-func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
-	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
+// faults, since the sweep posts over the same claims at every tick. A write the store refuses
+// takes the stamp back and is returned with false, and the sweep owes that mark as it owes a busy
+// machine's, and makes it at a later sweep dated when the round was told, so the round is not
+// told again (internal/daemon's markUpdateTold). That is also why the write goes through putClaim
+// and leaves nothing owed here: the claim holds no stamp the store does not, and the mark is the
+// sweep's to make again, under its own time, rather than this machine's next decision's.
+func (m *Machine) PodUpdateTold(ctx context.Context, round string, at time.Time) (bool, error) {
+	if !m.mu.TryLock() {
+		return false, ErrMachineBusy
+	}
+	defer m.unlock()
+	if m.claim.UpdateRound != round || m.claim.UpdateToldAt != nil {
+		return false, nil
+	}
+	m.claim.UpdateToldAt = &at
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.UpdateToldAt = nil
+		return false, err
+	}
+	return true, nil
 }
 
-// ErrMachineBusy is PublishUpdateAsk finding the machine's lock held — a decision in flight, or
-// another locked section — so it published nothing and marked nothing. The caller asks again
-// later; nothing of the ask happened.
+// ErrMachineBusy is PublishUpdateAsk or PodUpdateTold finding the machine's lock held — a
+// decision in flight, or another locked section — so it published nothing and marked nothing.
+// The caller asks again later; nothing of the ask or the mark happened.
 var ErrMachineBusy = errors.New("the claim's machine is busy")
 
 // UpdateAskOutcome is what PublishUpdateAsk did with one ask of an update round.
@@ -1935,24 +1956,6 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	at := m.deps.Clock.Now()
 	m.claim.UpdateTaskedAt = &at
 	return UpdateAskDelivered, m.persist(context.WithoutCancel(ctx))
-}
-
-// markRound stamps mark, one of this claim's own update-round marks, at the clock, for round
-// (PodUpdateTold). It stamps nothing and reports false when the claim is not in round or the mark
-// is already set. A write the store refuses takes the stamp back and is returned with false.
-func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time) (bool, error) {
-	m.mu.Lock()
-	defer m.unlock()
-	if m.claim.UpdateRound != round || *mark != nil {
-		return false, nil
-	}
-	at := m.deps.Clock.Now()
-	*mark = &at
-	if err := m.putClaim(ctx); err != nil {
-		*mark = nil
-		return false, err
-	}
-	return true, nil
 }
 
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released
@@ -2307,7 +2310,7 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, markRound (PodUpdateTold), PublishUpdateAsk, StartedBy,
+// comes through, ReleaseUncertainLaunch, PodUpdateTold, PublishUpdateAsk, StartedBy,
 // ReadProcess and Retree; the sections that take mu without it are Claim, OnDurableState, Wait,
 // compaction and the two goroutine tails in delivery.go and secrets.go. It is that rule a section
 // added later has to keep, rather than this list of the sections there are now.

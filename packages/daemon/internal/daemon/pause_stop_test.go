@@ -30,6 +30,33 @@ import (
 // at generation 1, so its implementer is the open phase's worker and its tester is not.
 const pauseIssue = "LEGION-208"
 
+// standingPodHold is the hold that stands on issue's pod under project's pauses, and whether one
+// does, read through the read the update-round sweep makes of one issue's holds
+// (store.Store.IssuePausePodHoldsSince, roundClockNow): a since later than every end and every
+// let-out leaves the holds that stand alone. More than one hold standing on one pod, or a read that
+// fails, fails the test.
+func standingPodHold(t *testing.T, st *store.Store, project, issue string) (store.PausePodHold, bool) {
+	t.Helper()
+	holds, err := st.IssuePausePodHoldsSince(context.Background(), project, issue, time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("read the holds of %s's pod under %s's pauses: %v", issue, project, err)
+	}
+	var standing []store.PausePodHold
+	for _, h := range holds {
+		if h.EndedAt.IsZero() {
+			standing = append(standing, h)
+		}
+	}
+	switch len(standing) {
+	case 0:
+		return store.PausePodHold{}, false
+	case 1:
+		return standing[0], true
+	}
+	t.Fatalf("%d holds stand on %s's pod under %s's pauses, want one at most: %+v", len(standing), issue, project, standing)
+	return store.PausePodHold{}, false
+}
+
 // pauseOperator is the operator, who pauses and resumes in these tests.
 var pauseOperator = store.PauseActor{Kind: store.PauseByOperator}
 
@@ -305,8 +332,8 @@ func TestAPauseStopMadeAgainWritesItsRecordsOnce(t *testing.T) {
 	if got := r.count(`select count(*) from project_pause_pod_holds where issue = $1`, pauseIssue); got != 1 {
 		t.Fatalf("holds of %s's pod = %d, want the one the first stop opened", pauseIssue, got)
 	}
-	if _, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || found {
-		t.Fatalf("a hold of %s's pod stands = %t, %v; want the ended one alone", pauseIssue, found, err)
+	if _, found := standingPodHold(t, r.st, "LEGION", pauseIssue); found {
+		t.Fatalf("a hold of %s's pod stands = %t; want the ended one alone", pauseIssue, found)
 	}
 }
 
@@ -365,9 +392,9 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 		r := newPauseRig(t, claim.RoleImplementer, claim.RoleTester)
 		held := r.pauseLegion()
 		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != held.ID {
-			t.Fatalf("%s's hold = %+v, %t, %v; want the implementer's stop to hold the pod for pause %d with the tester live",
-				pauseIssue, hold, found, err, held.ID)
+		if hold, found := standingPodHold(t, r.st, "LEGION", pauseIssue); !found || hold.Pause != held.ID {
+			t.Fatalf("%s's hold = %+v, %t; want the implementer's stop to hold the pod for pause %d with the tester live",
+				pauseIssue, hold, found, held.ID)
 		}
 	})
 	t.Run("after the resume", func(t *testing.T) {
@@ -375,12 +402,12 @@ func TestAStopHoldsThePodWhileItsPauseStandsAndAfterTheResumeOnlyWithNoRoleLive(
 		held := r.pauseLegion()
 		r.resume()
 		r.mustStop(r.claim(claim.RoleImplementer, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || found {
-			t.Fatalf("%s's hold = %+v, %t, %v; want none: the stop ended after the resume, with the tester live", pauseIssue, hold, found, err)
+		if hold, found := standingPodHold(t, r.st, "LEGION", pauseIssue); found {
+			t.Fatalf("%s's hold = %+v, %t; want none: the stop ended after the resume, with the tester live", pauseIssue, hold, found)
 		}
 		r.mustStop(r.claim(claim.RoleTester, supervise.StateSuspended), supervise.PauseStop{Pause: held.ID})
-		if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != held.ID {
-			t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop, the pod's last live role's, to hold it", pauseIssue, hold, found, err)
+		if hold, found := standingPodHold(t, r.st, "LEGION", pauseIssue); !found || hold.Pause != held.ID {
+			t.Fatalf("%s's hold = %+v, %t; want the tester's stop, the pod's last live role's, to hold it", pauseIssue, hold, found)
 		}
 	})
 }
@@ -475,8 +502,8 @@ func TestTheBootOfAPausedProjectStopsALiveClaimOfAnotherProjectsIssue(t *testing
 		held.ID, string(foreign)).Scan(&project, &end); err != nil || project != "LEGION" || end != string(store.PauseStopStopped) {
 		t.Fatalf("the stop of %s = project %q ended %q, %v; want LEGION's stop ended stopped", foreign, project, end, err)
 	}
-	if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", other); err != nil || !found || hold.Pause != held.ID {
-		t.Fatalf("the hold of %s's pod = %+v, %t, %v; want pause %d's", other, hold, found, err, held.ID)
+	if hold, found := standingPodHold(t, r.st, "LEGION", other); !found || hold.Pause != held.ID {
+		t.Fatalf("the hold of %s's pod = %+v, %t; want pause %d's", other, hold, found, held.ID)
 	}
 }
 
@@ -550,9 +577,8 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 		t.Fatal("the tester's stop never finished after the implementer's committed")
 	}
 
-	hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue)
-	if err != nil || !found || hold.Pause != held.ID {
-		t.Fatalf("%s's hold = %+v, %t, %v; want the tester's stop to hold the pod for pause %d", pauseIssue, hold, found, err, held.ID)
+	if hold, found := standingPodHold(t, r.st, "LEGION", pauseIssue); !found || hold.Pause != held.ID {
+		t.Fatalf("%s's hold = %+v, %t; want the tester's stop to hold the pod for pause %d", pauseIssue, hold, found, held.ID)
 	}
 	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
 		if got := r.stops(held.ID, role); len(got) != 1 || got[0].end != store.PauseStopStopped {
@@ -650,8 +676,8 @@ func TestALateStopOfAPauseIsHeldByTheNextPauseAndLoggedByItsResume(t *testing.T)
 	if got := r.stops(earlier.ID, claim.RoleImplementer); len(got) != 1 || got[0] != (pauseStopRecord{end: store.PauseStopStopped, owed: true}) {
 		t.Fatalf("the earlier pause's stops = %+v, want its cancelled stop recorded stopped with the launch owed", got)
 	}
-	if hold, found, err := r.st.PausePodHoldOf(r.ctx, "LEGION", pauseIssue); err != nil || !found || hold.Pause != earlier.ID {
-		t.Fatalf("%s's hold = %+v, %t, %v; want the earlier pause's", pauseIssue, hold, found, err)
+	if hold, found := standingPodHold(t, r.st, "LEGION", pauseIssue); !found || hold.Pause != earlier.ID {
+		t.Fatalf("%s's hold = %+v, %t; want the earlier pause's", pauseIssue, hold, found)
 	}
 	if _, open := r.heldWakes(earlier.ID, claim.RoleImplementer); open != 1 {
 		t.Fatalf("the earlier pause's open held wakes = %d, want its owed launch's", open)

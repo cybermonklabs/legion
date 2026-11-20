@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'The pod update sweep no longer waits for a relaunching claim when it marks a late round as told to the controller. The relaunch holds the lock of that claim for minutes, and the sweep waited on it, which held back every other issue the sweep had still to reach and the orphan reaping after it. The mark is now taken without waiting: a claim whose machine is busy is marked at a later sweep. A told mark the store refuses is now made at a later sweep too; before this change, each later sweep told the round to the controller again. While this daemon continues to run, the round is not told again meanwhile.'
+time: 2026-11-19T13:47:32.71826265Z
+custom:
+    Issue: pr4509

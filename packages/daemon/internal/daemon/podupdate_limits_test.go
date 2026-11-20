@@ -884,13 +884,14 @@ func TestPodUpdateRoundsPerMinuteJitter(t *testing.T) {
 	rig.awaitRounds("two sweeps 50 seconds after the last opening", "LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4")
 }
 
-// A sweep's openings are dated from the sweep rather than from whatever its replacements took
-// afterwards. A replacement waits its pod out, which is minutes, and the sweep makes them after
-// it has walked the issues: dated from the end of the call, the openings of a slow sweep would
-// be read as made minutes after they were, every sweep behind a slow one would fall inside the
-// gap, and the fleet would be paced by how long its pods take to come back rather than by the
-// key the operator set. A restarted daemon is at the other end of the same question: it has no
-// record of what the daemon before it opened, so its first sweep opens as a first sweep does.
+// A sweep's openings are dated from when the sweep made them rather than from whatever its
+// replacements took afterwards. A replacement waits its pod out, which is minutes, and the sweep
+// makes them after it has walked the issues: dated from the end of the call, the openings of a
+// slow sweep would be read as made minutes after they were, every sweep behind a slow one would
+// fall inside the gap, and the fleet would be paced by how long its pods take to come back rather
+// than by the key the operator set. A restarted daemon is at the other end of the same question:
+// it has no record of what the daemon before it opened, so its first sweep opens as a first sweep
+// does.
 func TestPodUpdateRoundsPerMinuteSlowSweep(t *testing.T) {
 	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
