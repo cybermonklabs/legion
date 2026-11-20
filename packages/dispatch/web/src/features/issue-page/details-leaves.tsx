@@ -197,6 +197,7 @@ export function Row({
   glyph?: ReactNode;
   label?: ReactNode;
   row?: DetailsRow;
+  /** The row's `data-testid`, by which the page's tests and its browser tests find it. */
   testId?: string;
   valueRef?: Ref<HTMLDivElement>;
   wide?: boolean;

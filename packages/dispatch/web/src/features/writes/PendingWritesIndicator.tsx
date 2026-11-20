@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 
 import { apiErrorMessage } from "../../api/client";
 import {
@@ -95,14 +95,16 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
   const held = useRef<Node | null>(null);
   const heldRow = useRef<string | null>(null);
   const from = useRef<HTMLElement | null>(null);
+  // Forgets all three at once: a focus the reader takes out of the panel, and the hand-off below
+  // once it has read them.
+  const forget = useCallback(() => {
+    held.current = null;
+    heldRow.current = null;
+    from.current = null;
+  }, []);
   useEffect(() => {
     const inPanel = (target: EventTarget | null): target is Node =>
       target instanceof Node && panel.current?.contains(target) === true;
-    const forget = () => {
-      held.current = null;
-      heldRow.current = null;
-      from.current = null;
-    };
     // Where the pointer press under way began - in the panel or elsewhere - from its
     // `pointerdown` until its `click` has been dispatched, or until a key is pressed; null
     // between presses.
@@ -149,7 +151,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
       document.removeEventListener("click", clicked, true);
       document.removeEventListener("keydown", keyed, true);
     };
-  }, []);
+  }, [forget]);
   // React sends no blur for an element it takes off the page, and the browser moves the focus
   // with no event, so each commit looks: a layout effect, so the focus moves in the commit that
   // takes the element away.
@@ -161,9 +163,7 @@ function usePanelFocusReturn(): RefObject<HTMLElement | null> {
     const rowSelector = id === null ? null : `[data-pending-write="${CSS.escape(id)}"]`;
     const row = rowSelector === null ? null : box?.querySelector(rowSelector);
     const back = from.current;
-    held.current = null;
-    heldRow.current = null;
-    from.current = null;
+    forget();
     if (!focusOnDocument()) return;
     const controls = [
       ...(row?.querySelectorAll<HTMLElement>("button") ?? []),

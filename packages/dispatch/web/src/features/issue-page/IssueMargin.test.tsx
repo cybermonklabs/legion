@@ -255,10 +255,11 @@ function blocksReads(getReferences: Mock<typeof api.getReferences>, reference: s
   ).length;
 }
 
-/** How many times `titles` read the title of `blocker`, the Blocked by row's read of the titles
- *  of the issues this one waits on. */
-function titleReads(titles: Mock<typeof api.getReferenceTargets>, blocker: string): number {
-  return titles.mock.calls.filter(([refs]) => refs.includes(blocker)).length;
+/** How many times `titles` read the title of the issue at `address`: the Blocked by row's read
+ *  of the titles of the issues this one waits on, for a blocker's, and the Blocks row's read of
+ *  the titles of the issues that wait on it, for one of those. */
+function titleReads(titles: Mock<typeof api.getReferenceTargets>, address: string): number {
+  return titles.mock.calls.filter(([refs]) => refs.includes(address)).length;
 }
 
 /** The names read's answer (`getReferenceTargets`) for `refs`: each issue `titles` holds a title
@@ -2103,23 +2104,26 @@ test("closing References or Details takes an open Referenced by list, and its re
   }
 });
 
-// Details' reads of the titles of the issues this one waits on, of what waits on it, of what
-// references it, of the project's repository mappings and of the projects, whose gated steps a
-// top-level issue's approvals name, are each read again by the events that change them
-// (`api/event-refresh.ts`), so in Details a window focus past the app's 30 s staleness reads none
-// of them again. The reader's state keeps the app's defaults, so its second read shows the focus
-// was handled.
-test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Referenced by, repository mapping or project again", async () => {
+// Details' reads of the titles of the issues this one waits on, of what waits on it and the
+// titles of those, of what references it, of the project's repository mappings and of the
+// projects, whose gated steps a top-level issue's approvals name, are each read again by the
+// events that change them (`api/event-refresh.ts`), so in Details a window focus past the app's
+// 30 s staleness reads none of them again. The reader's state keeps the app's defaults, so its
+// second read shows the focus was handled.
+test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blocks' titles, Referenced by, repository mapping or project again", async () => {
   const user = userEvent.setup();
   const { getIssue, getMyState, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-3"], referenced_by_count: 3 });
   const blocker = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const waiter = buildDispatchReference({ key: "CORE-12", kind: "issue" });
   const titles = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] });
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
+  // Blocks is answered with one issue that waits on this one, whose title Blocks then reads, and
+  // the Referenced by list with nothing.
+  const getReferences = spyOn(api, "getReferences").mockImplementation(async (_to, options) => ({
+    edges: options?.kind === "blocked_by" ? [waitingEdge("CORE-12", "Wire the release")] : [],
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-  });
+  }));
   // The Referenced by list's read, which names no kind of reference (`referencesQuery`).
   const listReads = () =>
     getReferences.mock.calls.filter(([to, options]) => to === reference && options === undefined)
@@ -2132,6 +2136,7 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
     await waitFor(() => {
       expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
+      expect(titleReads(titles, waiter)).toBe(1);
       expect(listReads()).toBe(1);
       expect(api.listRepoProjects).toHaveBeenCalledTimes(1);
       expect(api.listProjects).toHaveBeenCalledTimes(1);
@@ -2146,6 +2151,10 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
     expect(
       blocksReads(getReferences, reference),
       "a window focus read what waits on the issue again"
+    ).toBe(1);
+    expect(
+      titleReads(titles, waiter),
+      "a window focus read the titles of the issues that wait on this one again"
     ).toBe(1);
     expect(listReads(), "a window focus read what references the issue again").toBe(1);
     expect(
@@ -2379,6 +2388,27 @@ test("a close made elsewhere shuts Add's open menu, so a reopen draws Add with i
   }
 });
 
+/** An issue with a value for every property Add lists but its parent, so Parent is the one entry
+ *  Add lists. */
+const orphan: IssueDetails = {
+  ...issue,
+  advances: [{ id: "PRI-7", inherited: false }],
+  assignee: "alice",
+  blocked_by: ["CORE-3"],
+  components: {
+    mode: "inherit",
+    ids: ["api"],
+    unknown: [],
+    reason: null,
+    inherited_from: "CORE-2",
+  },
+  labels: ["bug"],
+  parent: null,
+  repo: "acme/widgets",
+  resolved_repo: "acme/widgets",
+  route: "role:legion-controller-core",
+};
+
 // Add draws nothing once the issue has a value for every property it lists, and its menu shuts
 // then too: on an issue whose parent is its one empty property, another session sets a parent and
 // then takes it away again. Left open, the menu would come back drawn open, with the focus not in
@@ -2388,24 +2418,6 @@ test("a value set elsewhere for Add's last entry shuts its open menu, so Add com
   const { getIssue, restore } = stubIssueApi();
   // The Advances row reads the priorities, to name the one the issue advances.
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  const orphan: IssueDetails = {
-    ...issue,
-    advances: [{ id: "PRI-7", inherited: false }],
-    assignee: "alice",
-    blocked_by: ["CORE-3"],
-    components: {
-      mode: "inherit",
-      ids: ["api"],
-      unknown: [],
-      reason: null,
-      inherited_from: "CORE-2",
-    },
-    labels: ["bug"],
-    parent: null,
-    repo: "acme/widgets",
-    resolved_repo: "acme/widgets",
-    route: "role:legion-controller-core",
-  };
   getIssue.mockResolvedValue(orphan);
   const { queryClient, unmount } = renderDetails();
 
@@ -2418,6 +2430,43 @@ test("a value set elsewhere for Add's last entry shuts its open menu, so Add com
       change: "the parent",
       entries: [PROPERTY_LABELS.parent],
     });
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
+// Another session sets the last property Add lists, and Add goes with the focus its open menu
+// held, which went to the page's body: the menu's own closes keep Add drawn, and the close keeper
+// acts on a close alone. It goes to Development's heading, as every other hand-off of the section
+// ends.
+test("a value set elsewhere for Add's last entry hands the focus in its open menu to Development's heading", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  // The Advances row reads the priorities, to name the one the issue advances.
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  getIssue.mockResolvedValue(orphan);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    const menu = await screen.findByRole("menu", { name: CONTROL_LABELS.add });
+    const entry = within(menu).getByRole("menuitem", { name: PROPERTY_LABELS.parent });
+    await waitFor(() =>
+      expect(document.activeElement, "Add's menu opened with the focus off its first entry").toBe(
+        entry
+      )
+    );
+
+    drawIssue(getIssue, queryClient, { ...orphan, parent: "CORE-2" });
+    await waitFor(() => expect(addMenuControl(), "the parent left Add on the page").toBeNull());
+    expect(
+      document.activeElement,
+      "Add went with the focus in its menu, and the focus did not go to Development's heading"
+    ).toBe(screen.getByRole("button", { name: MARGIN_SECTION_NAMES.development }));
   } finally {
     unmount();
     priorities.mockRestore();
@@ -4443,10 +4492,13 @@ test("a route Dispatch refuses is said in the Messages go to row with Dispatch's
 });
 
 // A route save the reader stopped may have been saved: the row says so in the header's words for
-// a title or a route save, whose Retry is this row's too, rather than that the save failed.
-test("a route save the reader stopped says in its row that it may have been saved, not that it failed", async () => {
+// a title or a route save, whose Retry is this row's too, rather than that the save failed. A
+// closed issue's route line draws no Retry, since Dispatch refuses every route of a closed issue,
+// so once another session closes the issue the line says in Details' own sentence that the route
+// cannot be saved again, as the parent's and the repository's lines say.
+test("a route save the reader stopped says in its row that it may have been saved, not that it failed, and that the issue is closed once it is", async () => {
   const user = userEvent.setup();
-  const { patchIssue, restore } = stubIssueApi();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
   const route = "role:legion-controller-core";
   patchIssue.mockRejectedValue(
     new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
@@ -4469,6 +4521,17 @@ test("a route save the reader stopped says in its row that it may have been save
       within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry }),
       "the sentence names a Retry the row does not offer"
     ).not.toBeNull();
+
+    drawIssue(getIssue, queryClient, closedIssue);
+    expect(
+      within(rowAt("route")).getByRole("alert").textContent,
+      "the stopped save's line on a closed issue names a Retry the row does not draw"
+    ).toBe(
+      stoppedWriteNote("this change to the issue", "saved", {
+        anew: "The issue is closed, so the route cannot be saved again.",
+      })
+    );
+    expect(within(rowAt("route")).queryByRole("button", { name: CONTROL_LABELS.retry })).toBeNull();
   } finally {
     realClock();
     unmount();

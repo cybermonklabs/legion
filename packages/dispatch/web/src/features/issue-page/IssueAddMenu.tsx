@@ -16,6 +16,7 @@ import { labelsControlName } from "../issue/IssueLabels";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
 import { addPriorityControlName } from "../priorities/IssuePriorityLine";
 import { roveFocus } from "../shell/roving";
+import { useFocusHandOff } from "./details-error";
 import { blockedByControlName } from "./details-names";
 import type { IssueField } from "./IssueFieldForms";
 import { useMarginDrawer } from "./margin-slot";
@@ -59,6 +60,7 @@ import { USABLE_CONTROL_ATTRIBUTES, usableControl } from "./usable-control";
  */
 export function IssueAddMenu({
   drawerBox,
+  focusFallback,
   isClosed,
   issue,
   onOpenField,
@@ -67,6 +69,9 @@ export function IssueAddMenu({
   /** The Details drawer's `aside` the panel is placed in (`slots/details.tsx`), or `null` while
    *  the panel is in none. */
   drawerBox: HTMLElement | null;
+  /** Where the focus goes as Add leaves the page with the focus on it or in its menu:
+   *  Development's heading, where every other hand-off of the section ends. */
+  focusFallback: RefObject<HTMLElement | null>;
   isClosed: boolean;
   issue: IssueDetails;
   onOpenField: (field: IssueField) => void;
@@ -85,6 +90,19 @@ export function IssueAddMenu({
   const wrapper = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
+  // Add leaves the page once it has no entry to list, as when another session sets the last
+  // property it lists, and once the issue closes; a focus on Add or in its open menu would go
+  // with it to the page's body, since the menu's own closes keep Add drawn and the close keeper
+  // acts on a close alone (`useCloseFocusKeeper`). So it goes to `focusFallback`. On a close it
+  // has gone there before the keeper looks, which then leaves it where it is.
+  const handOff = useFocusHandOff(() => focusFallback.current);
+  const wrapperRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      wrapper.current = element;
+      return handOff(element);
+    },
+    [handOff]
+  );
   useEffect(() => {
     if (!open) return;
     // The menu opens with the focus on its first entry, so a reader on the keyboard is in it.
@@ -197,7 +215,7 @@ export function IssueAddMenu({
     return null;
   }
   return (
-    <div className="relative flex shrink-0" ref={wrapper}>
+    <div className="relative flex shrink-0" ref={wrapperRef}>
       <button
         aria-expanded={open}
         aria-haspopup="menu"

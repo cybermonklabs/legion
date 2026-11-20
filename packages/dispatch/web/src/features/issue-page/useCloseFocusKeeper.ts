@@ -14,9 +14,10 @@ function closeTook(element: Element): boolean {
  * That close disables some of Development's controls - the route's control and its editor's
  * box, the labels' control, the priority's line, the Repository row, the parent's editor's box,
  * each `disabled` on a closed issue - and takes others off the page - Set or Edit parent issue,
- * Blocked by's control, Add and its menu - and each takes the focus it held with it to the
- * page's body. No hand-off of the panel answers that, since each acts only as an element it
- * holds leaves the page or as an editor closes.
+ * Blocked by's control - and each takes the focus it held with it to the page's body. No hand-off
+ * of the panel answers that, since each acts only as an element it holds leaves the page or as an
+ * editor closes. Add and its menu go too, and hand their focus on themselves, as they do whenever
+ * Add leaves the page (`IssueAddMenu`).
  *
  * So the section notes the element the focus last went to in it (`onFocus`), which a focus
  * anywhere else forgets, as does the reader's leaving it (`onBlur`); and as the issue closes,

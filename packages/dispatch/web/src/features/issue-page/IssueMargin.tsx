@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, ReferenceTarget, UserState } from "../../api/types";
+import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -97,15 +97,16 @@ function closedStoppedNote(
     : undefined;
 }
 
+/** What a row of Details says where a names read of the issues it lists failed, as it draws those
+ *  issues by their keys alone: Blocked by's and Blocks' alike. */
+const TITLES_READ_FAILED = "Could not read the titles of these issues.";
+
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`: undefined while
  *  that read has not answered, where it failed holding no answer, and where it names nothing at
  *  the issue's address. */
-function issueTitleIn(
-  read: { readonly targets: readonly ReferenceTarget[] } | undefined,
-  key: string
-): string | undefined {
+function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
-  return read?.targets.find((target) => target.ref === reference)?.name;
+  return read?.targets?.find((target) => target.ref === reference)?.name;
 }
 
 /** What a names read under `queryKey` draws while it holds no answer (`placeholderData`): the
@@ -305,12 +306,14 @@ export function IssueMarginPanel({
   // What waits on this issue is the other direction of `blocked_by`: the references of that kind
   // that point at it. It is kept under the backlink panels' `["references", "to", <reference>]`,
   // so the event that starts or stops an issue waiting on this one reads it again
-  // (`api/event-refresh.ts`'s rule for `blocked_by`, which reaches every panel under that
-  // prefix), its age never does, and a window focus does only while its last read failed
-  // (`EVENT_FRESH`). It says which issues wait and not what they are called: the rename of one
-  // of them moves no `blocked_by`, and the panel the server names for it (`references_changed`)
-  // is read again by its exact key, which is not this one, so the title an edge carries here
-  // would stay the old one.
+  // (`api/event-refresh.ts`'s rule for a moved `child_of` or `blocked_by`, which reads again each
+  // panel under that prefix whose read passes its test: those of the new parent and of each new
+  // blocker the event names, this one where an issue starts waiting on it, and those that list an
+  // edge from the issue, this one where it stops). Its age never reads it again, and a window
+  // focus does only while its last read failed (`EVENT_FRESH`). It says which issues wait and not
+  // what they are called: the rename of one of them moves no `blocked_by`, and the panel the
+  // server names for it (`references_changed`) is read again by its exact key, which is not this
+  // one, so the title an edge carries here would stay the old one.
   const blocking = useQuery({
     enabled: readingDevelopment,
     queryFn: () => api.getReferences(issueReference, { kind: "blocked_by" }),
@@ -438,7 +441,8 @@ export function IssueMarginPanel({
     ) : null;
   // The keeper of Development's focus through a close made in another session, called after each
   // `useFocusHandOff` above so that in the commit that closes the issue a hand-off has moved its
-  // focus on before the keeper reads where the focus is.
+  // focus on before the keeper reads where the focus is; Add's own (`IssueAddMenu`) is a child's,
+  // whose layout effects run before the panel's.
   const developmentFocus = useCloseFocusKeeper(isClosed, developmentHeading);
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -614,7 +618,7 @@ export function IssueMarginPanel({
             <DetailsErrorLine
               error={blockerTitles.error}
               failure={blockerTitles.errorUpdateCount}
-              message="Could not read the titles of these issues."
+              message={TITLES_READ_FAILED}
               onRetry={retryRead(blockerTitles)}
               retryRef={titlesRetryLeft}
               retrying={blockerTitles.isFetching}
@@ -653,7 +657,7 @@ export function IssueMarginPanel({
                 <DetailsErrorLine
                   error={waitingTitles.error}
                   failure={waitingTitles.errorUpdateCount}
-                  message="Could not read the titles of these issues."
+                  message={TITLES_READ_FAILED}
                   onRetry={retryRead(waitingTitles)}
                   retryRef={blocksRetryLeft}
                   retrying={waitingTitles.isFetching}
@@ -772,6 +776,7 @@ export function IssueMarginPanel({
         <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
+            focusFallback={developmentHeading}
             isClosed={isClosed}
             issue={issue}
             onOpenField={onEditingField}

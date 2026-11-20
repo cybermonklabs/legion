@@ -1,12 +1,16 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { specArtifact } from "../margin/margin-fixture";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
+import { ReferencedBy } from "../refs/ReferencedBy";
+import { buildDispatchReference } from "../refs/routes";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
 
@@ -155,6 +159,39 @@ test.each(
       expect(reads.listComments).toHaveBeenCalledTimes(2);
       if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(2);
     });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Referenced by takes the new page's freshness from the drawer as the margin does
+// (`useNewIssuePageFreshness`), so a page with no drawer keeps the app's defaults for it too: the
+// same focus reads what references the record again. In Details it reads it no second time
+// (`IssueMargin.test.tsx`'s window-focus case).
+test("with no drawer, a focus past 30 s reads Referenced by's list again", async () => {
+  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+  });
+  restore = () => getReferences.mockRestore();
+  const client = appClient();
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <MarginSlotProvider drawer={undefined}>
+          <ReferencedBy reference={reference} />
+        </MarginSlotProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await waitFor(() => {
+      expect(getReferences).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    await focusPastStaleness(client);
+    await waitFor(() => expect(getReferences).toHaveBeenCalledTimes(2));
   } finally {
     view.unmount();
   }
