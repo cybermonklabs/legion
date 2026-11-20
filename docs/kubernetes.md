@@ -1550,7 +1550,8 @@ When the stop completes as the row runs, it makes the old tree's close rows due 
 Such a row releases nothing of the old tree itself: the deletes of the old tree's Sandboxes run on the close rows of the issues still in that tree, so the carried issue's lane, and its new tree's start on it, do not wait behind them.
 Nor does a start of the new tree launch anything while a claim of the issue still runs a process in another tree:
 the start suspends that claim itself, as the daemon and keeping its session, and waits on its backoff, charging nothing, until the claim has stopped (`stopElsewhere`).
-When that call stops the claim it makes the close rows of the tree it stood in due at once; a suspension held for a turn is instead picked up at the close row's next retry.
+When that call stops a claim and no other claim of the issue still runs, it makes the close rows of the tree it stood in due at once.
+If another claim still runs, `stopElsewhere` returns its wait before that wake; when it later finds the first claim already stopped, that tree's close rows retry at most 64 seconds on.
 Either stop is bounded where the old tree's close would have ended the turn, at the old root's linger expiry (`linger_hours`):
 a turn that ends within the linger ends on its own, and one still running at the expiry is stopped there.
 Once the old root no longer lingers (it was reopened, say), there is no close left to wait for, and the stop falls back to the stop timeout (`worker_stop_timeout_seconds`) from then (`carriedStopDeadline`):

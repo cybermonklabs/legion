@@ -2898,8 +2898,9 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 // stopCarried suspends machine's claim, as the daemon and keeping its session, while it runs a
 // process in a tree other than issue's, its stop bounded where that tree's close would have ended
 // the turn (carriedStopDeadline). It answers the claim as "token:state in tree T" while it still
-// runs there; stopped says this call made it run nothing. A suspension the claim holds for its turn
-// or its boot is no error: the caller waits on its backoff and asks again.
+// runs there; stopped says it ran when this call began and runs nothing when it returns. A
+// suspension the claim holds for its turn or its boot is no error: the caller waits on its backoff
+// and asks again.
 func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, issue record.Issue) (still string, stopped bool, err error) {
 	held := machine.Claim()
 	token := held.Token
@@ -2929,8 +2930,10 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 
 // stopInLeftTree handles a suspend or tree close that names a tree its issue has left. It stops a
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
-// until its machine is available, and otherwise finishes without acting. A stop this call completes
-// wakes the old tree's close rows; this row releases no tree resources itself.
+// until its machine is available, and otherwise finishes without acting. This row and a new-tree
+// start run on the issue's lifecycle lane, so the claim cannot be re-pointed between this check and
+// the suspension. A stop this call completes wakes the old tree's close rows; this row releases no
+// tree resources itself.
 func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {

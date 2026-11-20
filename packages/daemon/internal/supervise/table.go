@@ -401,9 +401,9 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name. Deadline, when set, ends a suspension held for a turn if the turn has not
-// ended by then (holdSuspension); without one, the hold waits for the turn's end. A later request
-// can only move a deadline earlier, and an operator's suspension takes the hold over.
+// suspension must name. For a daemon suspension, Deadline, when set, stops a hold at that moment
+// when its turn has not ended (holdSuspension); without one, the hold waits for the turn's end. An
+// operator suspension always uses the stop timeout from its arrival, whatever Deadline says.
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A

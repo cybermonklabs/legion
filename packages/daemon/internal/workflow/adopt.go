@@ -201,11 +201,10 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // itself, which is recorded under the Dispatch parent and held on the blockers child names
 // (intake.AdoptedChild, the release's own read of Dispatch). Each record is written as every
 // adopted record is (moveIntoTree): it takes its next generation, the fence every row of the old
-// tree already checks (its linger's close, its supervise rows, its issue suspend; a stop row still
-// stops a claim that stands in the old tree, the daemon outbox's stopInLeftTree), with no
-// linger, hold or Dispatch chain (record.Issue.Ancestry: a member waits in no line), no
-// hand-over fence and its generation's facts cleared. A todo record enters the tree's run
-// admitted, as an unrecorded todo child does (enterChild), so it starts its first phase at the
+// tree checks but its suspend and tree-close rows, with no linger, hold or Dispatch chain
+// (record.Issue.Ancestry: a member waits in no line), no hand-over fence and its generation's facts
+// cleared. A todo record enters the tree's run admitted, as an unrecorded todo child does
+// (enterChild), so it starts its first phase at the
 // slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: it is held at
 // phase.Admitted on the mirror's row, which the release's own read wrote before the adoption ran
 // (the mirror's intake.ChildAdoption arm), and StartUnblockedChildren starts it once nothing
@@ -238,13 +237,14 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // (Adopt), and the closed tree's member's, for the one issue a release names (AdoptMember). It
 // is written once here, so that the two routes cannot come to record one issue differently.
 //
-// The record takes its next generation, the fence every row of the old tree already checks, with
-// its hand-over fence deleted and its generation's facts cleared. Before that generation is
-// written, StopLeftTree queues the old tree's suspend for every role. A todo record enters the tree
-// admitted on the repository it was first recorded with (enterChild, RecordedFact,
-// recordedResolution), as an unrecorded todo child does, so it starts its first phase at the slot
-// the waiting line gives it, or is held at
-// admitted while an unfinished Dispatch issue holds it. Any other status is written as a parked
+// The record takes its next generation, the fence every row of the old tree checks but its suspend
+// and tree-close rows, with its hand-over fence deleted and its generation's facts cleared. Before
+// that generation is written, StopLeftTree queues the old tree's suspend for every role. A prior
+// old-tree stop can finish without acting, and the new generation can fence an old issue close.
+// A todo record enters the tree admitted on the repository it was first recorded with (enterChild,
+// RecordedFact, recordedResolution), as an unrecorded todo child does. It starts its first phase at
+// the slot the waiting line gives it, or is held at admitted while an unfinished Dispatch issue
+// holds it. Any other status is written as a parked
 // child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
 // (record.Issue.Ancestry: a member waits in no line).
 //
@@ -284,8 +284,10 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 }
 
 // StopLeftTree queues the old tree's suspend of every role left can hold. Every request names
-// left's tree and generation, so a run of the tree it enters does not read it. The outbox decides
-// whether a claim still stands in that tree when it executes the request.
+// left's tree and generation, so a run of the tree it enters does not read it. The rows remain
+// necessary because the new tree can be held before its first start while a prior old-tree stop
+// already finished without acting. The outbox decides whether a claim still stands in the old tree
+// when it executes the request.
 func (e *Engine) StopLeftTree(ctx context.Context, tx pgx.Tx, left record.Issue) error {
 	return e.everyClaim(ctx, tx, left, "suspend", fmt.Sprintf("%s left tree %s", left.Key, left.Tree), "")
 }

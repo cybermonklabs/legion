@@ -50,10 +50,11 @@ func suspend(m *Machine, ctx context.Context, ev Event) error {
 //     (TimerSuspend, suspendAtTimeout). The operator's suspension has one at the stop timeout from
 //     its arrival: an operator stopping the process — to drain the daemon, say — needs the stop
 //     bounded. The daemon's own suspension has none unless it names one
-//     (RequestSuspend.Deadline), and waits for the turn however long it takes. Asked again
-//     meanwhile, it is the same hold, under one rule: a request can only move the deadline
-//     earlier, and the operator's also takes the hold over, from then on the operator's. Until the
-//     deadline the agent keeps its process and its capability.
+//     (RequestSuspend.Deadline), and waits for the turn however long it takes: the tree's linger
+//     close or the child's close as done ends the process otherwise. Asked again meanwhile, it is
+//     the same hold, under one rule: a request can only move the deadline earlier, and the
+//     operator's also takes the hold over, from then on the operator's. Until the deadline the
+//     agent keeps its process and its capability.
 //   - A stop the runtime refuses keeps it held and tries again every probe interval (suspendHeld),
 //     so the deadline bounds the wait only while the runtime can stop the process. A claim
 //     whose turn ended stays idle meanwhile and is handed nothing (sendPending); a turn it starts
