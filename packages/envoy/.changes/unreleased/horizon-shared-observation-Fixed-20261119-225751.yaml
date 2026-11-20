@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  Readers that ask for the event log's safe horizon while an observation of it is in flight now share the one observation after it, however late each of them runs again. Before, a reader that ran again only after that next observation had ended found none in flight and started one of its own, so on a loaded machine every reader could run one, each costing a round trip to Postgres and a transaction id: 8 readers ran 8 observations where they should share 2.
+time: 2026-11-19T22:57:51Z
+custom:
+  Issue: horizon-shared-observation
