@@ -137,7 +137,7 @@ Brings up the whole local surface the airlock's checks run on, with no container
 runtime and no cluster, and prints the exports a check needs. It runs
 `dev-broker.sh` for Postgres, `dev-oidc-issuer`, the six built binaries and that
 script's own broker, and reads what it printed, rather than starting any of that a
-second time. On top it starts a `cmd/dev-airlock-stands` of its own (the stand-in
+second time. On top it starts a `cmd/dev-proxy-stands` of its own (the stand-in
 services S and T, the GitHub, Google and Microsoft endpoints and the AWS service,
 and the certificate authority they are signed by), which is a second such process:
 `dev-broker.sh` starts one too, for the GitHub its own `github-app` secrets mint
@@ -253,7 +253,7 @@ fixture and Google consumer boundary directly under fakes. It checks required in
 fake broker rules, store names and consumer results without starting a stack.
 
 The programs the checks drive are files, not text a run writes out. The three Go
-clients are subcommands of `cmd/dev-airlock-stands`, the binary `dev-broker.sh`
+clients are subcommands of `cmd/dev-proxy-stands`, the binary `dev-broker.sh`
 builds and `dev-airlock.sh` runs: `probe-private` is `k4`'s private-address probe,
 `probe-bound` is `k7`'s call to a bound host, and `load` is `k9`'s load driver and
 the plain tunnel its baseline goes through. CI compiles and vets all three with the
@@ -400,7 +400,7 @@ a hub that never drops the killed broker's connection fails line 6.
 ## backend-count.sh
 
 Counts, for each test it names, the runs that passed on each store backend: the test's
-own `aws` and `gcp` subtests (`onEachStore`, `cmd/agent-secrets/secret_kind_test.go`),
+own `aws` and `gcp` subtests (`onEachStore`, `cmd/cipher/secret_kind_test.go`),
 so a store or use change cannot pass on one backend alone.
 
 ```bash
@@ -418,7 +418,7 @@ cannot stand in for a new test's.
 `GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
-`./cmd/agent-secrets/` and `./internal/broker/api/`, as those tests' one run: the job's unit
+`./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step and its database-skips step skip them by name (`BACKEND_COUNT_TESTS` in
 `.github/scripts/ci_job_reads.py`).
 
@@ -438,7 +438,7 @@ packages/envoy/scripts/database-skips.sh --report REPORT.json [PACKAGE...]
 ```
 
 A `PACKAGE` is a pattern under `packages/envoy`, `./dir/` or `./dir/...`. With none it runs
-its default table, `./internal/broker/...` and `./cmd/broker/`, less the packages its
+its default table, `./internal/cipher/...` and `./cmd/cipherd/`, less the packages its
 `DEFAULT_EXCEPT` takes out of them: the race lane's packages under the broker's tree, of which the
 auth service's `natscallout`, which opens no database, is the one today (`DATABASE_SKIPS_PATTERN`
 in `.github/scripts/ci_job_reads.py`, which refuses the script when `DEFAULT_EXCEPT` says
@@ -454,7 +454,7 @@ run nor counted as a skip. `--report` reads a `go test -json` report instead and
 and refuses the four options that shape a run.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
-`./cmd/./broker/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
+`./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
 listed package, then `database_skips=N` and, for a run of its own, `go_test_exit=E`. The tests
 `EXPECTED_SKIPS` names in the script skip by their own design in every CI run, which sets the
 database variables and none of what those tests need (a corpus, a seeded database, a built
@@ -473,12 +473,12 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 
 `ci.yaml`'s `envoy-go` job runs it as "Count the database broker suites' skips", with
 `--timeout 20m`, the unit step's own `-timeout`, `--skip` of the one test of
-`./internal/broker/api/` that the job's "Count the store-form rows on each backend" runs
+`./internal/cipher/api/` that the job's "Count the store-form rows on each backend" runs
 (`backend-count.sh`, above), and a step limit of its own
 (`timeout-minutes: 30`) that its time budget counts, and `envoy-go-race-api` runs the
 Dispatch API through it as the second line above.
 `database-skips.test.sh` holds it to five controls, which `envoy-go` runs as "Test the database
-skip counter": a skip planted through a Go overlay in `./internal/broker/api/`, `./cmd/broker/`
+skip counter": a skip planted through a Go overlay in `./internal/cipher/api/`, `./cmd/cipherd/`
 and `./internal/dispatch/api/` is counted; either variable unset or empty is UNKNOWN; a report
 that shows no run (no test ran, only expected skips ran, or one package ran none) is UNKNOWN,
 a failed test fails, a race report filed under a passed subtest is printed, and a skip in a
@@ -490,7 +490,7 @@ a scratch Postgres named by both `BROKER_TEST_DATABASE_URL` and `DISPATCH_TEST_D
 ## aws-moto-check.sh
 
 Runs the built `agent-secrets` against moto's AWS, with no AWS account:
-`cmd/agent-secrets/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
+`cmd/cipher/secret_moto_test.go`'s `TestTheBuiltCLIAgainstMoto` (build tag
 `moto`), which creates IAM users `writer` and `nobody` in moto, writes them as profiles,
 turns moto's IAM checks on, and runs the secret forms under each source of the AWS SDK's
 own order: access keys in the environment, which outrank `AWS_PROFILE`; `AWS_PROFILE`;
@@ -520,7 +520,7 @@ How many theorems there are is written nowhere: this script and `k15` both count
 model to.
 
 ```bash
-packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/broker/airlock/lean
+packages/envoy/scripts/airlock-lean-axioms.sh packages/envoy/internal/cipher/proxyrules/lean
 ```
 
 It runs `lake env lean Axioms.lean` in that directory and writes what that printed to
@@ -568,7 +568,7 @@ from that wheel's own requirements.
 ## airlock-mutants.sh
 
 Proves that the airlock's differential fuzz test and the Lean proofs catch a defect
-in the decision code. Each file of `internal/broker/airlock/testdata/mutants` is one
+in the decision code. Each file of `internal/cipher/proxyrules/testdata/mutants` is one
 defect as a unified diff; for each, the script copies `packages/envoy` to a fresh
 directory under `$TMPDIR`, applies that one patch there, and requires the copy to
 fail — a `go-*.patch` under the comparison fuzz test over the committed seed corpus,
