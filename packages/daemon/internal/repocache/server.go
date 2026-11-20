@@ -502,7 +502,8 @@ func (c *cache) fetch(ctx context.Context) (time.Time, bool, error) {
 // resident without it, past the cache container's 4Gi default memory limit, and at 1.78 GiB with
 // it, taking 7m04s rather than 6m07s at one core (sjawhar/legion#2240). It writes no bitmap
 // either: the cache serves no git protocol and streams no `.bitmap`, so one costs time and memory
-// for nothing.
+// for nothing. FeedGitWithin puts these after the smaller pack settings every other git of the
+// cache gets (workspace's feedGit), so these win for the repack.
 var repackMemory = []string{
 	"-c", "pack.threads=1", "-c", "pack.windowMemory=256m", "-c", "pack.deltaCacheSize=64m",
 	"-c", "core.deltaBaseCacheLimit=64m", "-c", "core.packedGitLimit=512m", "-c", "core.packedGitWindowSize=64m",

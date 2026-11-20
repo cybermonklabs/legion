@@ -162,6 +162,60 @@ func TestProvisionFromAFeedMarksOriginAndTurnsOffTheAmbiguousRefWarningLeavingTh
 	}
 }
 
+// packWindows are the four pack settings every git of an issue pod is to read, written out here
+// rather than read from packWindowConfig, so that a key taken out of that list, or a value changed
+// in it, fails each test that holds a git to them.
+var packWindows = [][2]string{
+	{"core.packedGitWindowSize", "32m"},
+	{"core.packedGitLimit", "256m"},
+	{"pack.windowMemory", "64m"},
+	{"core.deltaBaseCacheLimit", "64m"},
+}
+
+// The shared clone's own configuration carries the four pack settings, for the one git of a pod
+// that reads nothing else: the shared public leak check's, which every push runs with every
+// GIT_CONFIG variable removed and GIT_CONFIG_NOSYSTEM set. After a provision from a feed, as
+// `workspace-init provision` does in a pod, a git in the issue's workspace under such an
+// environment (the fixtures': no GIT_CONFIG variable, GIT_CONFIG_NOSYSTEM=1,
+// GIT_CONFIG_GLOBAL=/dev/null) reads each of them from the local scope, the clone's own file. A
+// value a role changed there is set back at the next provision. The feed holds none of them,
+// since Fetch would refuse a feed whose configuration did (feedConfigKeys).
+func TestTheSharedCloneMapsPacksInSmallWindows(t *testing.T) {
+	run := newLocalRunner(t)
+	fetch := fetchRequest(t)
+	fed, err := Fetch(context.Background(), run, fetch)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	request := provisionRequest(t)
+	request.Source = FromFeed(fetch.Feed)
+	readsAll := func(t *testing.T, working Workspace) {
+		t.Helper()
+		for _, setting := range packWindows {
+			if output, code := gitConfigRead(t, working.Dir, "config", "--show-scope", "--get", setting[0]); output != "local\t"+setting[1]+"\n" || code != 0 {
+				t.Errorf("the issue's workspace %s reads %s as %q (exit %d), want %s from the clone's own configuration", working.Dir, setting[0], output, code, setting[1])
+			}
+		}
+	}
+	working, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	readsAll(t, working)
+	runSetup(t, working.Clone, "git", "--git-dir="+filepath.Join(working.Clone, ".git"), "config", "core.packedGitLimit", "32g")
+	again, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision again: %v", err)
+	}
+	readsAll(t, again)
+	for _, setting := range packWindows {
+		// git exits 1, printing nothing, for a key no configuration sets.
+		if output, code := gitConfigRead(t, fed.Feed, "--git-dir="+fed.Feed, "config", "--get", setting[0]); output != "" || code != 1 {
+			t.Errorf("the feed %s reads %s as %q (exit %d), want nothing and exit 1", fed.Feed, setting[0], output, code)
+		}
+	}
+}
+
 // gitConfigRead runs `git <args>` in dir under the fixtures' environment and returns what it
 // printed and its exit code. A git that could not run fails the test.
 func gitConfigRead(t *testing.T, dir string, args ...string) (string, int) {

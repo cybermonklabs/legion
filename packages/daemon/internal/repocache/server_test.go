@@ -882,7 +882,7 @@ func TestServeEndsWhenTheFirstCloneFails(t *testing.T) {
 	opts.Log = func(string) {}
 	ctx, cancel := context.WithTimeout(context.Background(), testTimeout)
 	defer cancel()
-	if err := Serve(ctx, opts); err == nil || !strings.Contains(err.Error(), "git -c gc.auto=0") {
+	if err := Serve(ctx, opts); err == nil || !strings.Contains(err.Error(), "-c gc.auto=0 -c maintenance.auto=false clone") {
 		t.Fatalf("Serve = %v, want the clone's failure", err)
 	}
 }

@@ -1667,14 +1667,17 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 // commit` of one role would run a program another planted, with the first role's credentials.
 // These are two of the settings that can do so, not all: a diff driver, a filter driver or a
 // signing program a role plants in the shared clone still runs in a sibling's git, and the roles
-// are no boundary against each other's code (docs/kubernetes.md).
-var gitConfigPairs = [][2]string{
+// are no boundary against each other's code (docs/kubernetes.md). Last come the four pack
+// settings of workspace.PackWindowConfig, so every git a role runs, the git jj runs for a push or a
+// fetch among them, maps packs in small windows whatever image the deployment runs; a role's own
+// `-c` still overrides one for its command.
+var gitConfigPairs = append([][2]string{
 	{"credential.https://github.com.helper", ""},
 	{"credential.https://github.com.helper", workspace.GitHubCredentialHelper},
 	{"credential.https://github.com.useHttpPath", "true"},
 	{"core.fsmonitor", ""},
 	{"core.hooksPath", "/dev/null"},
-}
+}, workspace.PackWindowConfig()...)
 
 // GitConfigPairs is gitConfigPairs, the git settings every process of a pod gets, for `legion
 // gh`, which hands the git gh runs a caller's GIT_CONFIG pair only where it is one of these, key

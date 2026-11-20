@@ -1264,6 +1264,19 @@ COPY --chmod=555 packages/daemon/docker/legion-testpg /usr/local/bin/legion-test
 # test database reads an empty file there. The final step refuses an image where it is anything
 # else.
 RUN install -m 0444 -o root -g root /dev/null /var/run/legion/testpg.log
+# /etc/gitconfig holds the four pack settings of every git in an issue pod or a repository cache
+# (packWindowConfig, packages/daemon/internal/workspace/config.go): pack data mapped 32 MiB at a
+# time up to 256 MiB, and 64 MiB each of pack-objects' window memory and of cached delta bases.
+# git's defaults map 1 GiB windows, and gVisor counts every window a process touched whole as the
+# pod's memory. This file is for provisioning's git in the init container: its runner removes the
+# role environment's GIT_CONFIG pairs, which carry the same four to every role's git, and the
+# shared clone's own configuration, which provisioning writes them into, does not hold them yet
+# when that git first clones it. A Dockerfile cannot read the Go list, so the values are written
+# out here, and the final step fails the build when the file holds any others.
+RUN /usr/bin/git config --system core.packedGitWindowSize 32m \
+    && /usr/bin/git config --system core.packedGitLimit 256m \
+    && /usr/bin/git config --system pack.windowMemory 64m \
+    && /usr/bin/git config --system core.deltaBaseCacheLimit 64m
 # Keep Debian's chromium package for its shared-library dependency closure, but make its vulnerable
 # executable unreachable and expose the pinned Chrome for Testing binary under the usual name.
 RUN rm -f /opt/codegraph/node /usr/bin/chromium /usr/lib/chromium/chromium \
@@ -1466,6 +1479,9 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and no file under /usr/lib/openssh or /usr/bin/ssh-agent
 # carries a setuid or setgid bit (the apt RUN drops the two openssh-client installs, ssh-keysign's and
 # ssh-agent's), so a rebuild of that layer that brings one back fails here.
+# /etc/gitconfig holds the four pack settings the runtime stage wrote, at their values: the step
+# prints `gitconfig: <key>=<value>` for each, as `git config --system --get` reads it, and fails on
+# any other value, a missing key included.
 # Then the `legion` on the image PATH is this one, it runs on this base, and it names the
 # commit the workflow built. git, jj and gh each resolve to Legion's own wrapper in
 # /opt/legion/bin and the step refuses any other path, and behind each one the real binary runs
@@ -1576,6 +1592,10 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     stat -c '%a %n' /usr/lib/openssh/ssh-keysign /usr/bin/ssh-agent; \
     setid="$(find /usr/lib/openssh /usr/bin/ssh-agent -perm /6000)"; echo "set-id bits: ${setid:-none}"; test -z "$setid"; \
     git="$(command -v git)"; echo "git: $git"; test "$git" = /opt/legion/bin/git; /usr/bin/git --version; \
+    for setting in core.packedGitWindowSize=32m core.packedGitLimit=256m pack.windowMemory=64m core.deltaBaseCacheLimit=64m; do \
+      key="${setting%%=*}"; value="$(/usr/bin/git config --system --get "$key" || true)"; \
+      echo "gitconfig: $key=$value"; test "$key=$value" = "$setting"; \
+    done; \
     jj="$(command -v jj)"; echo "jj: $jj"; test "$jj" = /opt/legion/bin/jj; /usr/local/bin/jj --version; \
     hook="$(stat -c '%u:%g %a' /opt/legion/githooks/pre-push)"; echo "pre-push hook: $hook"; \
     test "$hook" = "0:0 755"; test -x /opt/legion/githooks/pre-push; \
