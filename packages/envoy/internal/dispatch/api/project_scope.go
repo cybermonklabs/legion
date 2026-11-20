@@ -114,7 +114,10 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 //
 // A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
 // restricted member, or a credential that lists projects — as the read of the deployment's rows
-// is (withinReadScope): what it writes belongs to no project such a viewer could be held to.
+// is (withinReadScope): what it writes belongs to no project such a viewer could be held to. The
+// rows personsOwnAtTheBroker names end what is the caller's own at the secrets broker, so a
+// restricted member makes them as a full member does, and only a credential that lists projects is
+// refused them; the broker decides whose each grant or sign-in is, for every caller alike.
 // Every other row reaches its handler, whose loaders answer an object the viewer does not see as
 // missing (the file comment).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
@@ -122,14 +125,15 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		return handler
 	}
 	deployment := route.Scope == scopeDeployment
+	theirOwn := personsOwnAtTheBroker[route.Method+" "+route.Pattern]
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)
 		if !ok {
 			return
 		}
-		if deployment && !reader.Viewer.Open {
-			s.refuseDeploymentWrite(w, r, route, reader.Viewer.Restricted)
+		if deployment && !reader.Viewer.Open && !(theirOwn && len(reader.Viewer.Lists) == 0) {
+			s.refuseDeploymentWrite(w, r, route, reader.Viewer.Restricted && !theirOwn)
 			return
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
@@ -151,8 +155,9 @@ func (s *server) withCallerResolved(r *http.Request) *http.Request {
 
 // refuseDeploymentWrite names the row and why the caller may not write it: a restricted member
 // is 403 RESTRICTED_MEMBER, the refusal every write of the deployment a restricted member makes
-// answers (creating a project or a group among them), and a credential that lists projects is
-// 403 PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own.
+// answers (creating a project or a group among them) but the revokes of their own grants and
+// sign-ins (personsOwnAtTheBroker), and a credential that lists projects is 403
+// PROJECT_SCOPE_DEPLOYMENT, naming its list, which is the caller's own.
 func (s *server) refuseDeploymentWrite(w http.ResponseWriter, r *http.Request, route apiRoute, restricted bool) {
 	if restricted {
 		writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(

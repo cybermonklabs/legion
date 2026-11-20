@@ -66,7 +66,8 @@ const (
 	scopeSession writeScope = "session"
 	// scopeDeployment is a write that belongs to the deployment rather than to any project, so a
 	// viewer that is not open - a restricted member, or a credential that lists projects - is
-	// refused these by name (withinProjectScope).
+	// refused these by name (withinProjectScope), but for the rows personsOwnAtTheBroker names,
+	// which only a credential that lists projects is refused.
 	scopeDeployment writeScope = "deployment"
 	// scopeProjectInBody is a write that belongs to one project the request's body names rather
 	// than its path: the issue create, whose project comes from the body, or from the
@@ -241,6 +242,17 @@ var writeClasses = map[string]writeScope{
 	// The row that writes nothing and reads no row: the markdown round trip, which answers what
 	// a document write would store for the text it is given.
 	"POST /api/v1/markdown/round-trip": scopeNoWrite,
+}
+
+// personsOwnAtTheBroker are the rows of the deployment that end what is the calling person's own
+// at the secrets broker: a grant they approved or whose session they operate, and a sign-in of
+// theirs. A person ends their own whatever their member kind, so withinProjectScope lets a
+// restricted member make these as a full member does and refuses them only to a credential that
+// lists projects, as it always did; the broker decides whose each grant or sign-in is, and answers
+// anyone else's as it answers every caller (403 NOT_APPROVER, or an unknown sign-in id).
+var personsOwnAtTheBroker = map[string]bool{
+	"POST /api/v1/credential-grants/{id}/revoke": true,
+	"POST /api/v1/signins/{id}/revoke":           true,
 }
 
 // idRoute is what the id wildcards of one route's pattern name, which is what the prefix layer

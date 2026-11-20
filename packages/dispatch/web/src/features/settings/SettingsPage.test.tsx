@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -391,6 +391,78 @@ test("a restricted member's Settings asks no deployment read, and keeps their ow
     cleanup();
     getCredentialPending.mockRestore();
     getCredentialGrants.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});
+
+// A person ends their own sign-in and revokes their own grant whatever their member kind: Dispatch
+// takes a restricted member's revoke of either to the secrets broker, which decides whose each one
+// is, as it does a full member's. So their Settings offers Revoke on each, and a press sends it.
+test("a restricted member's Settings revokes their own grant and sign-in", async () => {
+  const user = userEvent.setup();
+  const unrelated = stubUnrelatedQueries();
+  unrelated.getSignIns.mockResolvedValue({
+    signins: [
+      {
+        created_at: "2026-09-30T00:00:00Z",
+        last_used_at: "2026-09-30T01:00:00Z",
+        machine: "outside-box",
+        signin_id: "signin-1",
+        thumbprint: "thumbprint-of-the-box-key",
+      },
+    ],
+  });
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
+    grants: [
+      {
+        approver: null,
+        created_at: "2026-09-30T00:00:00Z",
+        decided_by: null,
+        enrollment: {
+          kind: "session",
+          operator: "bob@outside.example",
+          runtime_id: "outside-box:4242:1",
+          slot: null,
+        },
+        expires_at: "2026-09-30T01:00:00Z",
+        grant_id: "grant-1",
+        granted: "automatic",
+        names: ["REEF_TOKEN"],
+        record_id: null,
+      },
+    ],
+  });
+  const revokeCredentialGrant = spyOn(api, "revokeCredentialGrant").mockResolvedValue(undefined);
+  const revokeSignIn = spyOn(api, "revokeSignIn").mockResolvedValue(undefined);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+
+  try {
+    renderPage({
+      event_head: "0",
+      kind: "user",
+      login: "bob@outside.example",
+      member_kind: "restricted",
+    });
+
+    const grants = within(await screen.findByRole("region", { name: "Live grants" }));
+    expect(await grants.findByText("REEF_TOKEN")).toBeDefined();
+    await user.click(grants.getByRole("button", { name: "Revoke" }));
+    await waitFor(() =>
+      expect(revokeCredentialGrant).toHaveBeenCalledWith("grant-1", keyedAttempt)
+    );
+
+    const signIns = within(screen.getByRole("region", { name: "Sign-ins" }));
+    expect(await signIns.findByText("outside-box")).toBeDefined();
+    await user.click(signIns.getByRole("button", { name: "Revoke" }));
+    await waitFor(() => expect(revokeSignIn).toHaveBeenCalledWith("signin-1", keyedAttempt));
+  } finally {
+    cleanup();
+    getCredentialGrants.mockRestore();
+    revokeCredentialGrant.mockRestore();
+    revokeSignIn.mockRestore();
+    confirm.mockRestore();
     for (const spy of Object.values(unrelated)) {
       spy.mockRestore();
     }
