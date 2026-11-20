@@ -1524,6 +1524,8 @@ dispatch_browser:
   - '.github/scripts/dispatch-browser-reading-row-durations.sh'
   - '.github/scripts/dispatch-browser-verdict.sh'
   - '.github/scripts/gh-read.sh'
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-file-stores-one-collection-rule-which-the-shard-jobs-wait-script-and-its-check-step-run
+  - 'packages/envoy/internal/tests3/one-collection.sh'
   # why: .github/ci-notes/ci.md#dispatch_browser-the-container-image-the-shard-and-alone-jobs-run-in-and
   - '.github/ci-images.yaml'
   - '.github/docker/browser.Dockerfile'
@@ -1643,6 +1645,9 @@ envoy_go:
   - 'packages/envoy/scripts/database-skips.sh'
   - 'packages/envoy/scripts/database-skips.test.sh'
   - 'packages/daemon/docker/legion-testpg'
+  # why: .github/ci-notes/ci.md#envoy_go-the-shard-jobs-file-store-steps-and-the-script-its-wait-step-runs-which-internaltests3-holds-to-their-bounds
+  - '.github/workflows/dispatch-browser.yaml'
+  - '.github/scripts/dispatch-browser-wait-for-store.sh'
   # why: .github/ci-notes/ci.md#envoy_go-the-three-jobs-whose-tag-steps-lean-on-this-jobs-untagged
   - '.github/workflows/ci-job-dispatch-memory.yaml'
   - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
@@ -2285,6 +2290,7 @@ envoy_smoke:
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
+  - '!packages/envoy/internal/tests3/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
@@ -2671,6 +2677,7 @@ envoy_go_race:
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
+  - '!packages/envoy/internal/tests3/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
@@ -3010,6 +3017,7 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testnats/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
+  - '!packages/envoy/internal/tests3/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'

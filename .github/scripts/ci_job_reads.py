@@ -957,6 +957,13 @@ RULES = {
                   "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
                   "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
           for g in envoy_go_files_but_infra()]],
+    f"{ENVOY}/internal/tests3/storesteps_test.go": reads(
+        (".github/workflows/dispatch-browser.yaml",
+         "internal/tests3/storesteps_test.go:109 os.ReadFile (workflow :68, ../../../..): "
+         "TestEveryWaitAndCheckOfTheScriptHasACase holds the shard job's file-store steps to their bounds"),
+        (".github/scripts/dispatch-browser-wait-for-store.sh",
+         "internal/tests3/storesteps_test.go:163 os.ReadFile (repository :67, ../../../..) reads the script the "
+         "shard job's wait step runs, which TestEveryWaitAndCheckOfTheScriptHasACase holds to its bounds")),
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
@@ -2194,6 +2201,9 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+# The shard job's step after its browser step, which runs the file store's one-collection
+# script's check over the whole run.
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
 # since the shard job's machine also runs the file store whose log that job collects.
 BROWSER_RECORD_STEP = "What the run left behind"
@@ -3104,8 +3114,8 @@ GATES = [
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
          f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         "before it started, which it grows one collection of before any write, makes a bucket in, "
+         "writes, reads back and deletes one object in, and checks no write grew"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's quarter of the lane's rows"),
         (".github/scripts/dispatch-browser-shard-record.sh",
@@ -3143,6 +3153,9 @@ GATES = [
         (".github/scripts/gh-read.sh",
          "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"dispatch-browser-wait-for-store.sh:56,72, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

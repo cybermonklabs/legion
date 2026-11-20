@@ -816,12 +816,12 @@ var dockerDriver = regexp.MustCompile(
 // package that imports an allowlisted rig passes and still starts that rig's container, as
 // cmd/listener's tests do through testpg.URL whenever DISPATCH_TEST_DATABASE_URL is unset. Direct
 // imports are the right scope today because that is the one such case with no opt-out (tests3's
-// one consumer, internal/dispatch/files, skips under DISPATCH_TEST_NO_CONTAINERS=1), and a
-// separate issue removes Postgres through testpg; widening this guard to walk go list -deps is
-// that issue's work, not this one's. internal/smoke's containers are behind the smoke build tag
-// and the rig's own behind natslive, so an untagged go list never sees their imports. The walk
-// does not go by tag: it reads every .go file, those included, and passes them because none
-// drives docker by hand.
+// own test and its one consumer, internal/dispatch/files, skip under
+// DISPATCH_TEST_NO_CONTAINERS=1), and a separate issue removes Postgres through testpg; widening
+// this guard to walk go list -deps is that issue's work, not this one's. internal/smoke's
+// containers are behind the smoke build tag and the rig's own behind natslive, so an untagged go
+// list never sees their imports. The walk does not go by tag: it reads every .go file, those
+// included, and passes them because none drives docker by hand.
 func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
 	t.Run("imports", func(t *testing.T) {
 		for _, finding := range containerImporters(t) {

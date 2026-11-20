@@ -536,6 +536,14 @@ fallen behind Playwright: those two jobs run in the image this repository builds
 now, which carries the browsers and their host packages, so all four files are
 gone (dispatch://INFRA-1443).
 
+## dispatch_browser: The file store's one-collection rule, which the shard job's wait script and its check step run
+
+The file store's one-collection rule: .github/scripts/dispatch-browser-wait-for-store.sh,
+which the shard job's step "Wait for the S3-compatible server" runs, runs its prepare and its
+check, and the step "Check that no write grew the file store" after the browser step runs its
+check again. internal/tests3 embeds the same file for the Go tests' server, which envoy_go's
+'packages/envoy/**' already selects.
+
 ## dispatch_browser: The container image the shard and alone jobs run in and
 
 The container image the shard and alone jobs run in and everything that decides
@@ -581,6 +589,13 @@ Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
 internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
 list, which packages/contracts holds goBlankPattern to: an edit of the list
 alone must start both jobs, or the side it disagrees with stays green.
+
+## envoy_go: The shard job's file-store steps and the script its wait step runs, which internal/tests3 holds to their bounds
+
+internal/tests3/storesteps_test.go holds the shard job's file-store steps in
+.github/workflows/dispatch-browser.yaml, and the script its wait step runs, to their bounds
+(its RULES entry in .github/scripts/ci_job_reads.py), so an edit of either file alone must
+start this job.
 
 ## envoy_go: The three jobs whose tag steps lean on this job's untagged
 

@@ -188,8 +188,13 @@ a go command compiles, so a go command here would fall out of check-ci-filters.s
 reduction and be counted as reading every Go file of the repository. For the same reason
 this job pins no `defaults.run.shell` and no step-level `shell:`. So every `run:` of this
 job is executed by `sh -e {0}`, not bash - measured in job 128496236572, whose every step
-logs that shell - and each one must stay POSIX. A script a step calls carries its own
-`#!/usr/bin/env bash` and is unaffected.
+logs that shell - and each one must stay POSIX. A script a step calls runs in the shell its
+own first line names, out of reach of that `-e`: the suite's, PostgreSQL's and the record's
+scripts carry `#!/usr/bin/env bash`. The file store's wait script and the one-collection.sh
+it runs carry `#!/bin/sh` and begin with `set -eu`, and packages/envoy's
+TestEveryWaitAndCheckOfTheScriptHasACase, which reads them as POSIX sh, refuses any other
+first line or first statement for them, and a `shell:` key or a `defaults.run.shell` for the
+file-store steps.
 
 The stacks' PostgreSQL binaries and this run's worker count are set on the browser step's
 own command line, where they have always been, rather than in an `env:`.
@@ -297,8 +302,27 @@ and the pull is counted at that 355 s: no step holds it, so no step
 budget can cut it and no step can read it again, and Docker's own retry ("Retrying in 5
 seconds" in that log) answers a failed read, not a slow one. The job's budget is the
 browser step's 540 s, the two download attempts' 120 s each, and the steps without a
-budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, rounded up to the 22 minutes
-of the shard job's `timeout-minutes`. The browser step's own budget is unchanged, and it still fires before the job's.
+budget at 219 - 5 - 45 + 355 = 524 s: 1,304 s, 21 min 44 s, which rounded up to 22 minutes
+until the file store's wait raised its count (below). The browser step's own budget is
+unchanged, and it still fires before the job's.
+
+THE FILE STORE'S TWO STEPS, AFTER THAT READING. "Wait for the S3-compatible server" runs
+one-collection.sh's prepare and check around its readiness object, and took 17.9 to 24.3 s
+on a dev box, against the 24 s above. Its first wait, for the S3 port, ends when the store
+answers, and its bound, 2 minutes, decides only a store that never does; the section on why
+the store's readiness wait writes, reads and deletes an object derives it. The job counts
+this step at that bound plus the step's own 24 s, 144 s in place of the 24 s above, so a
+store that answers in the bound's last second still fits: 524 - 24 + 144 = 644 s for the
+steps without a budget, and 540 + 120 + 120 + 644 = 1,424 s, 23 min 44 s, rounded up to the
+24 minutes of the shard job's `timeout-minutes`. "Check that no write grew the file store",
+after the browser step, is a read of the store's log, one request to its master and one
+`weed shell` command: under a second in each of CI's four shard legs when it was the log and
+the shell alone, and no row above. The second it can add is inside the 16 s between the
+1,424 s above and those 24 minutes. A store that stops answering holds neither step: each of
+their requests and waits has a bound that fails it by name (the heads of
+.github/scripts/dispatch-browser-wait-for-store.sh and
+packages/envoy/internal/tests3/one-collection.sh say which), and on a store that takes every
+connection and never answers the wait step fails 10 s into its first request.
 
 The rows behind those seconds were the suite of the head those runs measured. Listed
 again at this change's head, the suite holds 1,427 rows in 194 files, which is two
@@ -345,7 +369,7 @@ run-broker.sh serves from.
 
 The step budget note above does not count this step, which is new here. It copies one
 106 MB artifact on the runner's disk (141 ms for those bytes on a pod), and the 16 s
-that rounding up to 22 minutes leaves hold it.
+that rounding up to 24 minutes leaves hold it.
 
 ## Why the shard job makes the downloaded binaries executable
 
@@ -431,6 +455,47 @@ Dispatch server's own PutObject. A store that cannot take an object now fails he
 this step's name, with the log the "Start an S3-compatible server for uploaded files" step redirected -- which is what a job in a
 container has in place of `docker logs`.
 
+One collection is grown before anything is written, so that no write the run makes grows a
+collection: packages/envoy/internal/tests3/one-collection.sh says why a write must not, and it
+is the one implementation of the rule, which the Go tests' SeaweedFS container (tests3.Start)
+runs too. The wait script (.github/scripts/dispatch-browser-wait-for-store.sh) runs its
+`prepare` once the S3 port answers and before the first write, and its `check` after the
+readiness object; the step after the browser step runs `check` again over the whole run.
+
+Every request to the store has a bound, and every wait ends by its seconds. Each request goes
+through the script's s3, under curl's --max-time, and one the store took and did not answer
+within it fails the step at once, by name, rather than holding it to the job's 24 minutes: a
+store that is still starting refuses the connection at once instead, which the waits try again
+a second later. The store's answers come well inside 10 s. By the server's log of each of CI
+run 44425048628's four shard legs, the S3 port's first answer and prepare's first request to
+the master both came within 0.29 s of the gateway's start, and the bucket, the readiness
+object's write, read and delete and check's request all came within 0.07 s. In three starts
+with the store held to a tenth of a CPU on a dev box, the slowest answered request took
+0.29 s. So 10 s is a store that stopped answering, and one that takes every connection and
+never answers fails the step 10 s into its first request, inside the 144 s the shard job's
+budget gives this step. The object's write has 15 s, past the 10 s after which the filer
+answers 500 to a write that waits on storage being made, so that write is tried again and
+`check` names its growth. The waits count seconds, not tries, since a try can take its whole
+bound: the readiness wait's 60 tries of a 5 s bound held a store that never answered for
+361 s.
+
+The S3 port's wait ends when the store answers, so its bound decides only a store that never
+does, and it is this file's rule over the slowest start read: from the first line of the
+store's log, the master's start, to `Start Seaweed S3 API Server`, the port's opening. Over 77
+starts - every shard leg with a record archive in the last 30 merge-queue runs of ci.yaml (68,
+created 2026-11-20 05:31Z to 15:03Z), in its last 30 runs on main (4) and in run 44755108072
+(5); the alone job starts no store, and its legs' archives hold no store log - the port opened
+16.0 to 23.0 s after the master's start but once: 66.2 s, in run 44755108072's shard (1)
+(job 136354712539), whose wait, then 60 tries a second apart, gave up at 60.9 s, before the
+port opened. 66.2 s plus 15 per cent is 76.1 s, rounded up to the next whole minute: 2
+minutes, which is also the rule's floor. The readiness object's wait keeps its 60 s: it starts
+once prepare has seen the volume server registered. With prepare's own bounds
+(one-collection.sh's head says how), the step ends by its own name within 11 minutes on any
+store, before the job's 24. The script is POSIX sh, as this job's
+own steps are, and packages/envoy's TestEveryWaitAndCheckOfTheScriptHasACase
+(internal/tests3/storesteps_test.go) parses it, and the two store steps around it, as POSIX
+shell and holds every request and every wait of theirs to a bound.
+
 ## Why the shard job calls Playwright directly, and what its browser step's budget is
 
 `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
@@ -473,6 +538,14 @@ all under the sharded head's 419 s, so the pooled maximum the rule reads is stil
 The file store the "Start an S3-compatible server for uploaded files" step started. Set here, not written to $GITHUB_ENV, which
 every later step would inherit, and which check-ci-filters.sh treats as reaching a
 job's go commands unseen.
+
+## Why the file store is checked again after the browser step
+
+The file store's `check` again, over the whole run: no write of the suite grew storage, and
+the one collection is still the store's only one
+(packages/envoy/internal/tests3/one-collection.sh). After a failed suite as after a green one,
+since a write that grew storage is what a failed upload row then needs said by name, and only
+when the step that waits for the store passed, since without it there is nothing to check.
 
 ## Why the shard job's blob upload is always, and takes one directory
 
