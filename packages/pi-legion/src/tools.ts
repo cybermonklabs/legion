@@ -433,9 +433,8 @@ export function createLegionTool(deps: {
     // sentence after them, "A status that you wrote … read_record shows it.", is the daemon's
     // record.StatusNotTakenYet (both in packages/daemon/internal/record/project.go). Two tests
     // hold the two copies together. The daemon's TestTheEndChildRuleGolden writes both texts to
-    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and the tools.test.ts case "the
-    // legion tool's description carries the daemon's rules for ending a child and its
-    // not-taken-yet sentence, word for word" holds this description to that file.
+    // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
+    // description to that file.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,

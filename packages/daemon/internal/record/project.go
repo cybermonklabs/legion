@@ -70,9 +70,8 @@ func OutOfWorkflow(status string) bool {
 // (prompts/go/architect-common.md). The legion tool's description carries these words
 // (packages/pi-legion/src/tools.ts), and two tests hold the two copies together.
 // TestTheEndChildRuleGolden in internal/api writes this constant and StatusNotTakenYet to
-// packages/contracts/fixtures/daemon-api/end-child-rule.json. The case "the legion tool's
-// description carries the daemon's rules for ending a child and its not-taken-yet sentence, word
-// for word" in packages/pi-legion/src/tools.test.ts holds the description to that file.
+// packages/contracts/fixtures/daemon-api/end-child-rule.json, and
+// packages/pi-legion/src/tools.test.ts holds the description to that file.
 const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
 	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
