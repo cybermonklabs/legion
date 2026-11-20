@@ -326,7 +326,24 @@
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
-#      nothing would say so.
+#      nothing would say so,
+#  22. a step of a job of ci.yaml or of a workflow it calls, of a local composite action such a
+#      job uses, or of a shell script of this repository one of those runs, that installs from the
+#      network other than through .github/scripts/network-install.sh, naming the job, the file,
+#      the step and the install: apt, apt-get or aptitude with a verb that reads a mirror, a pip,
+#      pipx, uv or `python -m pip` install, an npm, pnpm, yarn or bun install or add, a gem,
+#      cargo, snap or brew install, a `docker pull`, Playwright's browser download, a go command
+#      that names a fetch (`go mod download`, `go get`, `go install` or `go run` of a module at a
+#      version), any wget, and a curl or a wget piped into a shell, each found in the pipelines
+#      .github/scripts/shell_commands.py reads off the step, looked through sudo, env, timeout,
+#      nice, ionice, nohup, setsid, stdbuf, xargs, command and an interpreter's `-c`; and a job or
+#      a step whose timeout-minutes ends before the installs it runs through network-install.sh
+#      can all fail by name, read off that script's own `--bounds`. Every such job is on ci-ok's
+#      path or is pr-title, and an install that waits without a bound of its own fails the job for
+#      a cause outside its change: the daemon-go job of run 44665181416 waited in `sudo apt-get
+#      update` until its 70-minute limit. network-install.sh bounds each attempt, tries it three
+#      times and fails by name. ci_workflow_rules.check_network_installs says what it leaves alone
+#      and why.
 #
 # Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
 # in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
@@ -469,10 +486,11 @@ esac
 export CI_FILTERS_MODE="${1:-check}"
 
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
-# and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
+# and no go command (ci_workflow_rules.py: rules 10 to 14 and 22 above, the workspace one
 # given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
-# model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
+# one reading .github/workflows itself, rule 22 reading each command through shell_commands.py)
+# and the path model (workflow_paths.py) sit beside this script in the repository it checks. The
+# engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
 # PYTHONDONTWRITEBYTECODE keeps the imports from leaving a __pycache__ in the tree.

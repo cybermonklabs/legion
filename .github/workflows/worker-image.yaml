@@ -103,7 +103,9 @@ jobs:
     # .github/scripts/check-image-trigger-paths.sh admits this call-mode term.
     if: ${{ inputs.attest_digest == '' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # why: .github/ci-notes/worker-image.md#the-builds-limit-held-to-the-installs-it-runs
+    # 1,265 s + 2,485 s = 3,750 s -> 63 min.
+    timeout-minutes: 63
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of the
@@ -216,6 +218,9 @@ jobs:
 
       - name: Build and push
         id: build
+        # why: .github/ci-notes/worker-image.md#the-builds-limit-held-to-the-installs-it-runs
+        # 1,183 s + 2,485 s = 3,668 s -> 62 min.
+        timeout-minutes: 62
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           # provenance: false below only stops the attestation attaching to the pushed image: the

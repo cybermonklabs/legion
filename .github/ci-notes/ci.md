@@ -2261,3 +2261,40 @@ check run on the head but this job's own to what this job concluded, so one verd
 at the end of every attempt (ci-ok-reconcile.sh says what it passes over and why a refusal
 only warns). `job.status` is this job's conclusion, and `always()` is what runs the step
 after the verdict, the "Judge every job of this run" step, failed.
+
+## The runner's own pulls of a job's service and container images
+
+Before a job's first step the runner pulls each image the job's `services:` and `container:` name,
+with `docker pull` and no timeout of its own; actions/runner tries a pull again only after a
+non-zero exit, so a registry that answers and then all but stops holds the pull, and a workflow can
+give that pull no bound of its own. The job's limit is its one bound. Rule 22 of
+`.github/scripts/check-ci-filters.sh` therefore counts each such pull at 180 s, what a healthy pull
+takes (PULL_SECONDS, in `.github/scripts/ci_network_installs.py`, says how it was measured), before
+the job's installs, and refuses a job whose limit leaves no room for them. The required jobs with
+such pulls, each one image:
+
+| Workflow | Job | Image (ghcr.io/cybermonklabs/legion/ci@sha256:…) |
+| --- | --- | --- |
+| ci-job-broker-multiprocess.yaml | broker-multiprocess | 2358fcba (Postgres) |
+| ci-job-daemon-go.yaml | daemon-go | 2358fcba (Postgres) |
+| ci-job-dispatch-memory.yaml | dispatch-memory | 2358fcba (Postgres) |
+| ci-job-dispatch-multiprocess.yaml | dispatch-multiprocess | 2358fcba (Postgres) |
+| ci-job-dispatch-two-builds.yaml | dispatch-two-builds, dispatch-two-builds-same | 2358fcba (Postgres) |
+| ci-job-envoy-go.yaml | envoy-go | 2358fcba (Postgres) |
+| ci-job-envoy-go-claim-model.yaml | envoy-go-claim-model | 2358fcba (Postgres) |
+| ci-job-envoy-go-docs-finalizers.yaml | envoy-go-docs-finalizers | 2358fcba (Postgres) |
+| ci-job-envoy-go-race.yaml | envoy-go-race | 2358fcba (Postgres) |
+| ci-job-envoy-go-race-api.yaml | envoy-go-race-api | 2358fcba (Postgres) |
+| ci-job-envoy-go-race-docs.yaml | envoy-go-race-docs | 2358fcba (Postgres) |
+| ci-job-envoy-session-stall.yaml | envoy-session-stall | 2358fcba (Postgres) |
+| ci-job-pi-envoy.yaml | pi-envoy | 5498ba57 (NATS) |
+| ci-job-pi-legion.yaml | pi-legion | 5498ba57 (NATS) |
+| ci-job-sessions-script.yaml | sessions-script | 2358fcba (Postgres) |
+| dispatch-browser.yaml | shard, alone | 69c3a316 (the job's container) |
+| docs-site.yaml | build | 2358fcba (Postgres) |
+
+Each limit is held to what rule 22 sums: up to each step that installs, the runner's pulls, the
+bounds of every step before it (its own limit, or its installs and its go tests' own `-timeout`
+where it sets none) and the step's own installs at their worst case. One limit ended before that
+sum: pi-envoy's ten minutes, now 23 for its 1,095 s. daemon-go's 70 minutes hold its 1,945 s. Each
+is derived in its own note (`ci-job-daemon-go.md`, `ci-job-pi-envoy.md`).

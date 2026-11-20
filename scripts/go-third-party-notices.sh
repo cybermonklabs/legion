@@ -6,6 +6,7 @@
 #
 #   scripts/go-third-party-notices.sh <out> <package>...
 #   scripts/go-third-party-notices.sh --install   # only build go-licenses, for an early image layer
+#   scripts/go-third-party-notices.sh --tool      # print the go-licenses package@version it builds
 #
 # The modules are read with go-licenses (GO_LICENSES_VERSION below), which takes as a module's
 # license file the nearest one whose license it can identify. It fails, writing nothing, when a
@@ -13,13 +14,26 @@
 # repository's own modules (every module `go list -m` names from here) are left out: they are this
 # repository's code.
 #
+# go-licenses is fetched by .github/scripts/go-fetch.sh, under network-install.sh's bound for go, and
+# built from the module cache with the network off, so its compile is never timed as a wait on the
+# network (go-fetch.sh's header says why). A caller that fetched it already says so with
+# GO_LICENSES_FETCHED=1, and the fetch here is skipped: a Dockerfile's RUN, which has no checkout to
+# find go-fetch.sh in (`go-fetch.sh "$(go-third-party-notices.sh --tool)"`), and each later RUN of
+# the image, whose layer holds the built tool (check-ci-filters.sh's rule 22 reads the variable, and
+# counts the fetch only where nothing sets it).
+#
 # POSIX sh, so it runs in the golang:*-alpine build stages as well as on a runner.
 set -eu
 
 GO_LICENSES_VERSION=v2.0.1
+GO_LICENSES="github.com/google/go-licenses/v2@$GO_LICENSES_VERSION"
 
+if [ "${1-}" = --tool ]; then
+  echo "$GO_LICENSES"
+  exit 0
+fi
 if [ "${1-}" != --install ] && [ "$#" -lt 2 ]; then
-  echo "usage: scripts/go-third-party-notices.sh <out> <package>... | --install" >&2
+  echo "usage: scripts/go-third-party-notices.sh <out> <package>... | --install | --tool" >&2
   exit 2
 fi
 
@@ -37,8 +51,11 @@ go_version="$("$go_cmd" env GOVERSION)"
 tool_dir="${XDG_CACHE_HOME:-$HOME/.cache}/legion/go-licenses-$GO_LICENSES_VERSION-$go_version"
 tool="$tool_dir/go-licenses"
 if [ ! -x "$tool" ]; then
+  if [ -z "${GO_LICENSES_FETCHED:-}" ]; then
+    "$(dirname "$0")/../.github/scripts/go-fetch.sh" "$GO_LICENSES"
+  fi
   (cd / && GOOS='' GOARCH='' GOFLAGS='' GOBIN="$tool_dir" \
-    "$go_cmd" install "github.com/google/go-licenses/v2@$GO_LICENSES_VERSION")
+    GOPROXY="file://$("$go_cmd" env GOMODCACHE)/cache/download" "$go_cmd" install "$GO_LICENSES")
 fi
 if [ "$1" = --install ]; then
   exit 0

@@ -23,7 +23,9 @@ on:
 jobs:
   pi-envoy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci-job-pi-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
+    # 180 s + 2 x 245 s + 425 s = 1,095 s, under 1,380 s.
+    timeout-minutes: 23
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -48,10 +50,13 @@ jobs:
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
-      # on GitHub Actions without a tmux.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
-      - run: bun install --frozen-lockfile
+      # on GitHub Actions without a tmux. .github/scripts/runner-tmux.sh uses the runner image's
+      # tmux, reading no network, and says how an image without one gets it; daemon-go runs the
+      # same script.
+      - name: Use the runner image's tmux
+        run: .github/scripts/runner-tmux.sh
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-envoy
         run: bun run build
         working-directory: packages/contracts

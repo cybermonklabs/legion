@@ -11,15 +11,14 @@
 #
 #   packages/envoy/scripts/build-dispatch-build.sh --commit <sha|tag> --out <dir>
 #   packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>
-#   packages/envoy/scripts/build-dispatch-build.sh --commit <sha|tag> --resolve
-#   packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve
 #
 # --previous-release builds the newest legion-envoy-v* tag that is an ancestor of
 # `git merge-base HEAD origin/main`: the release production ran before this branch. --commit HEAD
 # builds the current branch the same way. Put <dir> under $TMPDIR. <dir> must be absent or empty,
-# or hold a complete build of the same commit, which the script then leaves as it is. --resolve
-# builds nothing: it makes the same refusals and prints the full sha it would build, so a caller
-# can key a cache of <dir> by it before the build (CI's dispatch-two-builds job).
+# or hold a complete build of the same commit, which the script then leaves as it is. The commit is
+# resolved, and refused, by resolve-dispatch-build.sh beside this script, which prints the full sha
+# this script would build and builds nothing, so a caller can key a cache of <dir> by it before the
+# build (CI's dispatch-two-builds job).
 #
 # <dir> then holds:
 #   src/                              the commit's archive, where the parts were built
@@ -31,7 +30,8 @@
 #   text/testdata/                    the commit's reference-form fixtures
 #   COMMIT                            the full sha, written last: a directory with it is complete
 #
-# The refusals: a commit that is not an ancestor of HEAD, and a commit older than the release
+# The refusals, which resolve-dispatch-build.sh makes: a commit that is not an ancestor of HEAD, and
+# a commit older than the release
 # legion-envoy-v30.11.0, the oldest build either two-build test can run as the earlier side. That
 # release carries migration 0117, from which two builds share one database, and migration
 # 20261111210103, after which a project must name a default assignee, which an older build does not
@@ -41,7 +41,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: %s (--commit <sha|tag> | --previous-release) (--out <dir> | --resolve)\n' "$0" >&2
+  printf 'usage: %s (--commit <sha|tag> | --previous-release) --out <dir>\n' "$0" >&2
   exit 2
 }
 
@@ -54,23 +54,17 @@ note() {
   printf 'build-dispatch-build: %s\n' "$*" >&2
 }
 
-commit=
-previous_release=
-resolve=
+which=()
 out=
 while (($# > 0)); do
   case "$1" in
   --commit)
     (($# >= 2)) || usage
-    commit=$2
+    which+=(--commit "$2")
     shift 2
     ;;
   --previous-release)
-    previous_release=1
-    shift
-    ;;
-  --resolve)
-    resolve=1
+    which+=(--previous-release)
     shift
     ;;
   --out)
@@ -81,44 +75,17 @@ while (($# > 0)); do
   *) usage ;;
   esac
 done
-[[ -n "$out" && -z "$resolve" || -z "$out" && -n "$resolve" ]] || usage
-[[ -n "$commit" && -z "$previous_release" || -z "$commit" && -n "$previous_release" ]] || usage
+[[ -n "$out" && ${#which[@]} -gt 0 ]] || usage
 
-required=(git)
-[[ -n "$resolve" ]] || required+=(tar go bun)
-for command in "${required[@]}"; do
+for command in git tar go bun; do
   command -v "$command" >/dev/null || fail "the command $command is necessary. Install it and run this script again."
 done
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
 readonly root
-readonly release_floor=legion-envoy-v30.11.0
 
-if [[ -n "$previous_release" ]]; then
-  git -C "$root" rev-parse --verify --quiet origin/main >/dev/null ||
-    fail "this repository has no origin/main. Fetch origin/main and its tags, then run this script again."
-  base=$(git -C "$root" merge-base HEAD origin/main) || fail "HEAD and origin/main have no merge base."
-  mapfile -t tags < <(git -C "$root" tag --list 'legion-envoy-v*' --sort=-v:refname --merged "$base")
-  ((${#tags[@]} > 0)) ||
-    fail "no legion-envoy-v* tag is an ancestor of the merge base $base of HEAD and origin/main. Fetch the tags, then run this script again."
-  commit=${tags[0]}
-  note "the previous release is $commit (the newest legion-envoy-v* tag in the history of $base)"
-fi
-
-sha=$(git -C "$root" rev-parse --verify --quiet "$commit^{commit}") ||
-  fail "$commit is not a commit of this repository."
-git -C "$root" merge-base --is-ancestor "$sha" HEAD ||
-  fail "$commit ($sha) is not an ancestor of HEAD. Give a commit in the history of HEAD."
-
-floor_sha=$(git -C "$root" rev-parse --verify --quiet "$release_floor^{commit}") ||
-  fail "this repository has no tag $release_floor, the oldest release a build of this script may be. Fetch the tags, then run this script again."
-git -C "$root" merge-base --is-ancestor "$floor_sha" "$sha" ||
-  fail "$commit ($sha) is older than the release $release_floor. The two-build tests need that release or later as the earlier build: it shares one database with this tree's build and writes the default assignee every project now requires (migration 20261111210103), serves on the socket the browser harness holds for it, and signs cookies with that run's shared dev sign-in key."
-
-if [[ -n "$resolve" ]]; then
-  printf '%s\n' "$sha"
-  exit 0
-fi
+sha=$("$root/packages/envoy/scripts/resolve-dispatch-build.sh" "${which[@]}") || exit
+commit=${which[1]:-$sha}
 
 mkdir -p -- "$out"
 out=$(cd -- "$out" && pwd -P)
@@ -137,8 +104,11 @@ readonly src=$out/src
 
 # The JavaScript parts: the install, the Go contracts the server compiles (regenerated, never the
 # copy in the tree) and the contracts bundle, then the web app and the command. The install, the
-# codegen and the web app are in the order the commit's image build makes them.
-(cd -- "$src" && bun install --frozen-lockfile) || fail "bun install --frozen-lockfile failed in the archive of $sha."
+# codegen and the web app are in the order the commit's image build makes them. The install reads
+# the npm registry for any package the job's own install did not leave in Bun's cache, so it runs
+# under .github/scripts/network-install.sh's bound for bun, as every install of a required job does.
+(cd -- "$src" && "$root/.github/scripts/network-install.sh" bun -- bun install --frozen-lockfile) ||
+  fail "bun install --frozen-lockfile failed in the archive of $sha."
 (cd -- "$src/packages/contracts" && bun run gen:go && bun run build) ||
   fail "the contracts build (gen:go, build) of $sha failed."
 (cd -- "$src/packages/dispatch" && bun run build:web) || fail "the web build (bun run build:web) of $sha failed."

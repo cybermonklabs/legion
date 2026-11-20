@@ -123,6 +123,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
+      network_install_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
@@ -328,6 +329,7 @@ jobs:
       check_bun_workspace_manifests_test: ${{ needs.changes.outputs.check_bun_workspace_manifests_test }}
       check_zod_version_test: ${{ needs.changes.outputs.check_zod_version_test }}
       check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
+      network_install_test: ${{ needs.changes.outputs.network_install_test }}
       check_gitleaks_version_test: ${{ needs.changes.outputs.check_gitleaks_version_test }}
       workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
       check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}

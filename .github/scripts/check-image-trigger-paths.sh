@@ -196,6 +196,7 @@ import shlex
 import sys
 from pathlib import Path
 
+import dockerfile_reader
 import yaml
 from workflow_paths import (Filter, PathsFilter, UniqueKeyLoader, events, glob_regex, unread_filter_patterns,
                             unread_patterns, walk)
@@ -374,24 +375,6 @@ def dockerignore_filter(path: str | None):
         return dropped
 
     return ignored
-
-
-def joined_lines(text: str):
-    """(line number, instruction) with Dockerfile continuations joined and comments dropped."""
-    pending, start = "", 0
-    for number, raw in enumerate(text.splitlines(), start=1):
-        stripped = raw.strip()
-        if not pending:
-            start = number
-        if stripped.startswith("#"):
-            continue
-        if stripped.endswith("\\"):
-            pending += stripped[:-1] + " "
-            continue
-        yield start, (pending + stripped).strip()
-        pending = ""
-    if pending:
-        yield start, pending.strip()
 
 
 class Unreadable(ValueError):
@@ -1771,8 +1754,10 @@ for workflow, job_name, step, context, dockerfile, _ in builds:
             continue
         computed_matches[entry] = True
         inputs.append((f"{entry[2]} (computed into this build's inputs)", [entry[2]]))
-    for line, instruction in joined_lines(Path(dockerfile).read_text()):
-        command = instruction.split(maxsplit=1)[0].upper() if instruction else ""
+    # dockerfile_reader.py is the one reader of a Dockerfile's syntax, which rule 22 of
+    # check-ci-filters.sh reads Dockerfiles with too.
+    for line, command, arguments in dockerfile_reader.instructions(Path(dockerfile).read_text()):
+        instruction = f"{command} {arguments}"
         try:
             if command in {"COPY", "ADD"}:
                 sources = copy_sources(instruction)

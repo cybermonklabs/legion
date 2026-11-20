@@ -44,6 +44,10 @@ on:
       - ".bun-version"
       - ".dockerignore"
       - ".github/workflows/worker-image.yaml"
+      # Bind-mounted into each RUN of worker.Dockerfile that installs, so a change to either is a
+      # change of those RUNs and builds the image again.
+      - ".github/scripts/network-install.sh"
+      - ".github/scripts/go-fetch.sh"
   workflow_dispatch:
 
 # why: .github/ci-notes/release.md#why-the-workflow-level-permissions-block-is-empty-and-the-four-stages-a-release-waits-for

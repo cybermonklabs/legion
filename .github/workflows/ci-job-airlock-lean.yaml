@@ -64,8 +64,13 @@ jobs:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
       - uses: ./.github/actions/install-elan
+      # The toolchain lean-toolchain names, installed under network-install.sh's bound for elan
+      # before lake runs: with the cache missed, elan would otherwise download it inside `lake
+      # build` with no bound of its own (a toolchain host that answers and then trickles held such a
+      # build past this job's 20 minutes), and with the cache restored this finds it installed.
       - name: Build the Lean model
         run: |
+          "$GITHUB_WORKSPACE/.github/scripts/network-install.sh" elan -- elan toolchain install "$(cat lean-toolchain)"
           lake build
           test -x .lake/build/bin/airlock-model
         working-directory: packages/envoy/internal/broker/airlock/lean

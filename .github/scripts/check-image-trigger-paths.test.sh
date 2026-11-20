@@ -3,8 +3,8 @@
 # file the build reads, and the check must fail loud on a build it cannot read.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
-# script and the path model it imports (workflow_paths.py) into it, so the code under test is the
-# file CI runs.
+# script, the path model it imports (workflow_paths.py) and the Dockerfile reader it imports
+# (dockerfile_reader.py) into it, so the code under test is the file CI runs.
 #
 # Run from anywhere: .github/scripts/check-image-trigger-paths.test.sh
 # CI runs it in ci.yaml's test job.
@@ -32,6 +32,7 @@ fixture() {
     "$root/packages/app/src/deep" "$root/packages/app/dist" "$root/packages/other"
   ln -s "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
+  ln -s "$script_dir/dockerfile_reader.py" "$root/.github/scripts/dockerfile_reader.py"
   echo '{}' > "$root/package.json"
   echo 'export {};' > "$root/packages/app/src/index.ts"
   echo 'export {};' > "$root/packages/app/src/deep/nested.ts"

@@ -50,10 +50,17 @@ jobs:
 
       # actionlint 1.7.12, the copy .github/ci-images.yaml's actionlint row names, with
       # .github/actionlint.yaml; its shellcheck reads each inline run: body at warning severity.
+      # The runner holds no copy of the image, so it is pulled first under network-install.sh's
+      # bound for docker, and the run below reads that copy and pulls nothing (--pull=never): a
+      # registry that answers and then all but stops fails the pull by name instead of holding
+      # the job until its limit.
+      - name: Pull the actionlint image
+        if: ${{ !cancelled() }}
+        run: .github/scripts/network-install.sh docker -- docker pull ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
       - name: Check every workflow file with actionlint
         if: ${{ !cancelled() }}
         run: >-
-          docker run --rm -e SHELLCHECK_OPTS=--severity=warning -v "$PWD:/repo" -w /repo
+          docker run --rm --pull=never -e SHELLCHECK_OPTS=--severity=warning -v "$PWD:/repo" -w /repo
           ghcr.io/cybermonklabs/legion/ci@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
           -verbose -format '{{range $err := .}}::error file={{$err.Filepath}},line={{$err.Line}},col={{$err.Column}}::{{$err.Filepath}}:{{$err.Line}}:{{$err.Column}}: {{$err.Message}} [{{$err.Kind}}]\n{{end}}'
 

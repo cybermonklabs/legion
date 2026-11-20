@@ -2731,10 +2731,12 @@ def check() -> int:
     documents = workflow_documents(problems)
     document = documents[WORKFLOW]
     import ci_job_reads as data  # imported here so its at() citations land in this module's CITED
-    # The rules of ci.yaml that read no filter and no go command's closure, in a module of their
-    # own. It is imported here, not at the top, because it imports this module's constants and
-    # helpers: by the time main() runs, this module is loaded whole.
+    # The rules of ci.yaml that read no filter and no go command's closure, in modules of their
+    # own: ci_workflow_rules, and ci_network_installs, rule 22's reading of the network installs a
+    # required job runs. They are imported here, not at the top, because they import this module's
+    # constants and helpers: by the time main() runs, this module is loaded whole.
     import ci_workflow_rules as rules
+    import ci_network_installs
 
     # The filters, and the text of .github/ci-filters.yaml they were read from, which rule 17 and
     # the listed blocks read below: one read of the file serves all three.
@@ -2751,6 +2753,7 @@ def check() -> int:
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    ci_network_installs.check_network_installs(documents, problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)
     # Rule 9's first direction, over the repository's files alone: it needs no closure, so a
     # mistyped path is named even when the go work below cannot run. Its second direction is

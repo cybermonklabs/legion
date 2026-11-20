@@ -322,17 +322,21 @@ def setup_bun(job, workflow=""):
     )
 
 
-def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No .npmrc anywhere, and one Bun configuration file,
+def bun_job(job, workflow="", install_step="Install dependencies"):
+    """setup_bun and a frozen `bun install`, which runs under .github/scripts/network-install.sh's
+    bound for bun. No .npmrc anywhere, and one Bun configuration file,
     packages/dispatch/bunfig.toml, which holds `[test]` alone and so changes no install: an
-    install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
-    install = at(job, "bun install --frozen-lockfile", workflow)
+    install runs at the repository root, and Bun reads bunfig.toml from the working directory.
+    `install_step` is the name of the job's step that installs, which every job but
+    proof-sdk-offline calls "Install dependencies"."""
+    install = at(job, install_step, workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-60)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:52-60 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
+        (".github/scripts/network-install.sh", f"{install} runs the install through it, under its bound for bun"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -355,6 +359,30 @@ def install_jj(job):
         (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:44,63 source it: ci_tools_fetch installs "
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
+    )
+
+
+def install_zsh(job):
+    """The zsh .github/actions/install-zsh installs from Ubuntu's two pinned packages: the action,
+    and the helper whose bounded fetch reads a package the Actions cache lacks."""
+    return reads(
+        (".github/actions/install-zsh/**", at(job, "./.github/actions/install-zsh")),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-zsh/action.yml:53 sources it, and :72's "
+                                        "ci_tools_curl fetches a package the cache lacks"),
+    )
+
+
+# The step of daemon-go and pi-envoy that uses the runner image's tmux.
+RUNNER_TMUX_STEP = "Use the runner image's tmux"
+
+
+def runner_tmux(job):
+    """The step that uses the runner image's tmux: the script it runs, which installs Ubuntu's tmux
+    through .github/scripts/network-install.sh where the image has none."""
+    return reads(
+        (".github/scripts/runner-tmux.sh", at(job, RUNNER_TMUX_STEP)),
+        (".github/scripts/network-install.sh",
+         f"{at(job, RUNNER_TMUX_STEP)}: runner-tmux.sh installs Ubuntu's tmux through it where the runner image has none"),
     )
 
 
@@ -2232,7 +2260,6 @@ EDITED_MIGRATIONS_SCRIPT = "\n".join([
     '"$RUNNER_TEMP/edited-migrations" --base "$base"',
 ])
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
-BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
@@ -2341,6 +2368,9 @@ SCRIPT_TEST_GATES = [
     harness("check_gh_version_test", "Test the gh version check", f"{SCRIPTS}/check-gh-version.test.sh", [
         (f"{SCRIPTS}/check-gh-version.sh", "the script under test"),
     ]),
+    harness("network_install_test", "Test the bound on network installs", f"{SCRIPTS}/network-install.test.sh", [
+        (f"{SCRIPTS}/network-install.sh", "the script under test, which network-install.test.sh:17 runs"),
+    ]),
     harness("check_gitleaks_version_test", "Test the gitleaks version check",
             f"{SCRIPTS}/check-gitleaks-version.test.sh", [
         (f"{SCRIPTS}/check-gitleaks-version.sh",
@@ -2354,6 +2384,8 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/check-image-trigger-paths.test.sh", [
         (f"{SCRIPTS}/check-image-trigger-paths.sh", "the script under test"),
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
+        (f"{SCRIPTS}/dockerfile_reader.py", "check-image-trigger-paths.test.sh:35 symlinks in the Dockerfile reader the "
+                                            "script imports"),
     ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
@@ -2521,6 +2553,12 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+        (f"{SCRIPTS}/ci_network_installs.py", "rule 22, which the fixtures link in beside it"),
+        (f"{SCRIPTS}/shell_commands.py", "the shell reader rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/dockerfile_reader.py", "the Dockerfile reader rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/script_paths.py", "the resolver of a script's path rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/network_commands.py", "the reader of what a command fetches rule 22 imports, linked in beside it"),
+        (f"{SCRIPTS}/network-install.sh", "rule 22 reads its bounds with `--bounds`, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
@@ -2651,9 +2689,12 @@ GATES = [
         (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
                                         "reads the uv row's two sources"),
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
+        (".github/scripts/network-install.sh",
+         f"{at('daemon-go', 'Pull the NATS test container images')}: the action runs each pull through it"),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + runner_tmux("daemon-go")
+      + setup_go("daemon-go", f"{DAEMON}/go.mod")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2939,7 +2980,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + runner_tmux("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -3012,7 +3053,7 @@ GATES = [
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
                          "(check-ts-filters.sh measures it)")
-      + bun_job("dispatch-ui")),
+      + install_zsh("dispatch-ui") + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
@@ -3170,7 +3211,7 @@ GATES = [
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
         (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
-    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
+    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + install_zsh("claude-envoy") + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
@@ -3246,6 +3287,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
+        (".github/scripts/network-install.sh", f"{at('envoy-go', 'Pull test container images')}: the action runs each pull through it"),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go', DATABASE_SKIPS_STEP)} runs it, and "
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
@@ -3399,6 +3441,8 @@ GATES = [
     ], reads=reads(
         (f"{INFRA}/**", f"{at('envoy-infra-go', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
         (".github/actions/pull-test-images/**", at("envoy-infra-go", "Pull the NATS and Postgres test container images")),
+        (".github/scripts/network-install.sh",
+         f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: the action runs each pull through it"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
@@ -3595,6 +3639,9 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-smoke", "Pull test container images")),
+        (".github/scripts/network-install.sh", f"{at('envoy-smoke', 'Pull test container images')}: the action runs each pull through it"),
+        (".github/scripts/go-fetch.sh", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)}: packages/envoy/docker/Dockerfile's "
+                                        "go-licenses RUN bind-mounts it and fetches the tool with it"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-smoke', 'Pull test container images')}: const HubImage"),
         (".github/actions/install-pulumi/**", at("envoy-smoke", "./.github/actions/install-pulumi")),
         (".github/actions/install-docker-plugin/**",
@@ -3610,8 +3657,8 @@ GATES = [
         (".github/scripts/disk_watch.py",
          f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
          f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
-        (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
-                                       f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
+        (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`); its RUN "
+                                       "instructions that install bind-mount .github/scripts/network-install.sh"),
         (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
                           "decides which of the files below reach any COPY of that Dockerfile"),
         (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),
@@ -3726,6 +3773,26 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
+        (".github/scripts/ci_network_installs.py", "check-ci-filters.sh's rule 22, which ci_filter_coverage.main() runs"),
+        (".github/scripts/shell_commands.py", "ci_network_installs.py's rule 22 finds each command a step runs with it"),
+        (".github/scripts/dockerfile_reader.py", "ci_network_installs.py's rule 22 reads each Dockerfile a job builds "
+                                                 "with it"),
+        (".github/scripts/script_paths.py", "ci_network_installs.py's rule 22 resolves the repository path a command "
+                                            "word names with it"),
+        (".github/scripts/network_commands.py", "ci_network_installs.py's rule 22 reads what each command fetches "
+                                                "with it"),
+        (".github/scripts/network-install.sh", "ci_network_installs.py's rule 22 runs it with `--bounds` to hold "
+                                               "each job's limits to the worst case of the installs it runs through it"),
+        (".github/actions/**", "ci_network_installs.py's rule 22 reads every local action a job of ci.yaml or of a "
+                               "workflow it calls uses, and every action those use"),
+        ("**/*.sh", "ci_network_installs.py's rule 22 reads each shell script of this repository a job's step, or "
+                    "a script it runs, runs, wherever it lives"),
+        ("packages/envoy/docker/Dockerfile", "ci_network_installs.py's rule 22 reads the Dockerfile envoy-smoke builds"),
+        ("packages/envoy/infra/host/heldportwrapper/Dockerfile",
+         "ci_network_installs.py's rule 22 reads the Dockerfile envoy-smoke builds second"),
+        ("packages/daemon/docker/worker.Dockerfile", "ci_network_installs.py's rule 22 reads the Dockerfile worker-image builds"),
+        (".github/docker/browser.Dockerfile",
+         "ci_network_installs.py's rule 22 reads the recipe browser-image builds, and hashes it (PINNED_RECIPES)"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                               "check-workflow-files.sh imports its repeated-key test"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
@@ -3766,7 +3833,7 @@ GATES = [
          f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
          f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
          f"are that step's arguments"),
-    ) + bun_job("proof-sdk-offline")),
+    ) + bun_job("proof-sdk-offline", install_step="Frozen install behind the proxy, cold")),
 
     # The ci-images job: the image copy, the package mode of the image gate, which reads
     # ghcr.io, and the tool copy, which fills the second source of every tool install. These are

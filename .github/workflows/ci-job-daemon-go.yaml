@@ -76,6 +76,9 @@ jobs:
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
     # push runs).
+    # It holds the waits on the network too, each failing by name before the job's limit:
+    # why: .github/ci-notes/ci-job-daemon-go.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 180 s + 490 s + 1,275 s = 1,945 s, under 4,200 s.
     timeout-minutes: 70
     services:
       postgres:
@@ -133,9 +136,11 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176). .github/scripts/runner-tmux.sh
+      # uses the runner image's tmux, reading no network, and says how an image without one gets
+      # it; pi-envoy runs the same script.
+      - name: Use the runner image's tmux
+        run: .github/scripts/runner-tmux.sh
 
       # The workspace and boundary tests drive a real jj, the one the worker image ships (its
       # working-copy filters are among what they plant), and the daemon resolves jj at boot and

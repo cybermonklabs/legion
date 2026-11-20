@@ -233,8 +233,21 @@ WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
 # python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
 # node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
+# Every install of this file that reads the network runs through .github/scripts/network-install.sh,
+# bind-mounted for its RUN alone (the image keeps no copy), under the bound of its kind, and every
+# download a curl makes carries a --max-time twice the slowest green run of its RUN: a mirror, a
+# registry or a release host that answers and then all but stops fails the build by name instead of
+# holding the job that builds it until its limit (check-ci-filters.sh's rule 22 reads this file;
+# each kind's bound is measured in network-install.sh's header). An apt install runs its download
+# alone under that bound (--download-only), and the install from it unwrapped (--no-download):
+# unpacking is no wait on the network, and a bound that ended it while dpkg wrote would leave every
+# later attempt failing on `dpkg was interrupted`, as worker-image run 44765474341 did.
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -- jq python3 make g++ \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -253,7 +266,8 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh bun-image -- bun install --frozen-lockfile
 # The playwright-core of the Playwright packages/dispatch locks, copied to /out/playwright-core:
 # the webkit-check stage launches this Playwright's WebKit. The install above uses Bun's isolated
 # linker, so playwright-core is not hoisted at /repo/node_modules, and
@@ -275,7 +289,8 @@ RUN --mount=type=bind,source=packages/daemon/docker/resolve-playwright-core.mjs,
 # (.github/scripts/check-bun-workspace-manifests.sh).
 WORKDIR /opt/omp-plugins
 COPY packages/daemon/docker/omp-plugins/package.json packages/daemon/docker/omp-plugins/bun.lock ./
-RUN bun install --frozen-lockfile --ignore-scripts
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh bun -- bun install --frozen-lockfile --ignore-scripts
 # CodeGraph CLI (@colbymchenry/codegraph), installed the same way, from the committed lockfile at
 # packages/daemon/docker/codegraph, a project of its own. `bin.codegraph` in the main npm package
 # is a thin `#!/usr/bin/env node` launcher shim that locates and execs the per-platform
@@ -291,8 +306,9 @@ RUN bun install --frozen-lockfile --ignore-scripts
 # LICENSE.
 WORKDIR /opt/codegraph-cli
 COPY packages/daemon/docker/codegraph/package.json packages/daemon/docker/codegraph/bun.lock ./
-RUN mkdir -p /out \
-    && bun install --frozen-lockfile --ignore-scripts \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    mkdir -p /out \
+    && network-install.sh bun -- bun install --frozen-lockfile --ignore-scripts \
     && cp -a node_modules/@colbymchenry/codegraph-linux-x64 /out/codegraph \
     && /out/codegraph/bin/codegraph --version \
     && /out/codegraph/node --version > /out/codegraph-node-version
@@ -366,11 +382,16 @@ ARG MISE_SHA256
 ARG JJ_TOOL
 ARG GH_TOOL
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -- ca-certificates curl \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
+# --max-time 60: this RUN took 4.3 s at its slowest of 40 green builds (job 136246740734).
 RUN set -eu; \
     t=/tmp/mise; mkdir -p "$t"; \
-    curl -fsSLo "$t/mise.tar.gz" \
+    curl -fsSL --max-time 60 -o "$t/mise.tar.gz" \
       "https://github.com/jdx/mise/releases/download/${MISE_VERSION}/mise-${MISE_VERSION}-linux-x64.tar.gz"; \
     printf '%s  %s\n' "$MISE_SHA256" "$t/mise.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
@@ -424,18 +445,30 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # the ARG block): Alpine's repository serves only its branch's current version of a package, so a
 # pinned version stops resolving at the next update. The base image's digest is the pin.
 # hadolint ignore=DL3018
-RUN apk add --no-cache git
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh apk -- apk add --no-cache git
 # The notices stage's Go part: go-licenses (pinned in go-third-party-notices.sh) is built in a layer of
 # its own, before the module files, so neither a source change nor a dependency bump rebuilds it.
+# Each go tool here is fetched by go-fetch.sh under network-install.sh's bound for go, and built
+# from the module cache with the network off (GOPROXY a file:// proxy of the cache), held by the
+# build step's own limit: a bound around the compile would time the compile as a wait on the
+# network, as gopls's 74 s of compile under the 120 s bound did (go-fetch.sh's header says why).
 COPY scripts/go-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
+    go-fetch.sh "$(go-third-party-notices.sh --tool)" \
+    && GO_LICENSES_FETCHED=1 GOPROXY="file://$(go env GOMODCACHE)/cache/download" go-third-party-notices.sh --install
 # gopls, in a layer of its own before the module files for the same reason: `go install pkg@version`
 # builds the module at that tag with its own go.mod, whatever this checkout's go.work says, so the
 # binary changes only with GOPLS_VERSION (or GO_VERSION), never with a commit.
 ARG GOPLS_VERSION
-RUN set -eu; \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
+    set -eu; \
     mkdir -p /out; \
-    CGO_ENABLED=0 GOBIN=/out go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
+    go-fetch.sh "golang.org/x/tools/gopls@v${GOPLS_VERSION}"; \
+    CGO_ENABLED=0 GOBIN=/out GOPROXY="file://$(go env GOMODCACHE)/cache/download" \
+      go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}"
 # The module files and their download, in a layer above every source COPY, so a commit rebuilds
 # neither. GOMODCACHE moves to /gomodcache here, after the gopls and go-licenses layers. That
 # keeps the modules of those two tools out of this cache. The runtime stage ships
@@ -457,7 +490,8 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # a 404 from the file proxy and falls through to the public proxy, while the `.info`, `.mod` and
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
-RUN go mod download \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh go -- go mod download \
     && find /gomodcache/cache/download \( -path '*/@v/list' -o -name '@latest' \) -delete
 COPY packages/daemon packages/daemon
 COPY packages/envoy packages/envoy
@@ -465,7 +499,7 @@ WORKDIR /src/packages/daemon
 # The licenses of the Go modules `legion` and `agent-secrets` compile in, with the build's CGO_ENABLED
 # (which decides them, with the GOARCH this stage builds for); fails the build when one's license
 # cannot be determined.
-RUN mkdir -p /out && CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
+RUN mkdir -p /out && GO_LICENSES_FETCHED=1 CGO_ENABLED=0 go-third-party-notices.sh /out/go-notices \
     ./cmd/legion github.com/sjawhar/envoy/cmd/agent-secrets
 # Declared here, after the dependency layers, so a new commit re-runs only the compile.
 ARG LEGION_REVISION
@@ -547,20 +581,27 @@ ARG YQ_SHA256
 ARG GO_VERSION
 ARG GO_SHA256
 # hadolint ignore=DL3008
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -- ca-certificates curl unzip xz-utils \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
 COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker/language-servers/package-lock.json /opt/language-servers/
-RUN set -eu; \
+# --max-time 120 on each download: this RUN took 43.2 s at its slowest of 40 green builds (job
+# 136004778019), seven downloads and npm ci together.
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -eu; \
     t=/tmp/toolchain; mkdir -p "$t" /out/bin /opt/node; \
-    curl -fsSLo "$t/uv.tar.gz" \
+    curl -fsSL --max-time 120 -o "$t/uv.tar.gz" \
       "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"; \
-    curl -fsSLo "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
-    curl -fsSLo "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
-    curl -fsSLo "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
-    curl -fsSLo "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
-    curl -fsSLo "$t/yq" \
+    curl -fsSL --max-time 120 -o "$t/node.tar.xz" "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    curl -fsSL --max-time 120 -o "$t/awscli.zip" "https://awscli.amazonaws.com/awscli-exe-linux-x86_64-${AWS_CLI_VERSION}.zip"; \
+    curl -fsSL --max-time 120 -o "$t/go.tar.gz" "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz"; \
+    curl -fsSL --max-time 120 -o "$t/kubectl" "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl"; \
+    curl -fsSL --max-time 120 -o "$t/yq" \
       "https://github.com/mikefarah/yq/releases/download/v${YQ_VERSION}/yq_linux_amd64"; \
-    curl -fsSLo "$t/chromium.zip" \
+    curl -fsSL --max-time 120 -o "$t/chromium.zip" \
       "https://storage.googleapis.com/chrome-for-testing-public/${CHROMIUM_VERSION}/linux64/chrome-linux64.zip"; \
     printf '%s  %s\n' "$UV_SHA256" "$t/uv.tar.gz" "$NODE_SHA256" "$t/node.tar.xz" \
       "$AWS_CLI_SHA256" "$t/awscli.zip" "$GO_SHA256" "$t/go.tar.gz" \
@@ -576,7 +617,7 @@ RUN set -eu; \
     for shim in pnpm pnpx yarn yarnpkg; do \
       ln -s "/opt/node/lib/node_modules/corepack/dist/$shim.js" "/out/bin/$shim"; \
     done; \
-    (cd /opt/language-servers && PATH="/opt/node/bin:$PATH" npm ci --ignore-scripts --omit=dev --no-audit --no-fund); \
+    (cd /opt/language-servers && PATH="/opt/node/bin:$PATH" network-install.sh npm -- npm ci --ignore-scripts --omit=dev --no-audit --no-fund); \
     for tool in typescript-language-server tsc tsserver pyright pyright-langserver; do \
       ln -s "/opt/language-servers/node_modules/.bin/$tool" "/out/bin/$tool"; \
     done; \
@@ -630,14 +671,18 @@ RUN set -eu; \
 # LICENSE and its bundled CPython's LICENSE.txt go to the notices stage.
 ARG GCLOUD_VERSION
 ARG GCLOUD_SHA256
-RUN set -eu; \
+# --max-time 120 on the download, and install.sh's read of the component list under
+# network-install.sh's bound for gcloud: this RUN took 30.2 s at its slowest of 40 green builds (job
+# 136124064333).
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    set -eu; \
     t=/tmp/gcloud; mkdir -p "$t"; export CLOUDSDK_CONFIG="$t/config"; \
-    curl -fsSLo "$t/sdk.tar.gz" \
+    curl -fsSL --max-time 120 -o "$t/sdk.tar.gz" \
       "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-x86_64.tar.gz"; \
     printf '%s  %s\n' "$GCLOUD_SHA256" "$t/sdk.tar.gz" > "$t/SHA256SUMS"; \
     sha256sum --check --strict "$t/SHA256SUMS"; \
     tar -xzf "$t/sdk.tar.gz" -C /opt --no-same-owner; \
-    /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false; \
+    network-install.sh gcloud -- /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false --command-completion false; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation component_manager/disable_update_check true; \
     /opt/google-cloud-sdk/bin/gcloud config set --installation core/custom_ca_certs_file /etc/ssl/certs/ca-certificates.crt; \
     sdkpython=/opt/google-cloud-sdk/platform/bundledpythonunix/bin/python3; \
@@ -674,11 +719,12 @@ RUN set -eu; \
 # AZURE_CLI_PYTHON_VERSION, so a bump of its minor reads the new directory.
 ARG AZURE_CLI_PYTHON_VERSION
 RUN --mount=type=bind,source=packages/daemon/docker/azure-cli/requirements.txt,target=/tmp/azure-cli/requirements.txt \
+    --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
     set -eu; \
     py="python${AZURE_CLI_PYTHON_VERSION%.*}"; \
     scratch="$(mktemp -d)"; export HOME="$scratch" UV_CACHE_DIR="$scratch/uv-cache"; \
-    UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python /out/bin/uv venv --python "cpython-${AZURE_CLI_PYTHON_VERSION}-linux-x86_64-gnu" /opt/azure-cli/env; \
-    /out/bin/uv pip install --python /opt/azure-cli/env/bin/python --require-hashes --only-binary :all: --no-deps \
+    UV_PYTHON_INSTALL_DIR=/opt/azure-cli/python network-install.sh uv -- /out/bin/uv venv --python "cpython-${AZURE_CLI_PYTHON_VERSION}-linux-x86_64-gnu" /opt/azure-cli/env; \
+    network-install.sh uv -- /out/bin/uv pip install --python /opt/azure-cli/env/bin/python --require-hashes --only-binary :all: --no-deps \
       --compile-bytecode --no-cache -r /tmp/azure-cli/requirements.txt; \
     rm -rf /opt/azure-cli/python/.lock /opt/azure-cli/python/.temp /opt/azure-cli/python/.gitignore "$scratch"; \
     chmod -R a+rX,go-w /opt/azure-cli; \
@@ -846,10 +892,20 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # listens on loopback with ssl off. The `find … -xtype l -delete` clears the hash link the
 # certificate left behind in the trust directory, which would otherwise dangle.
 ARG PGDG_KEY_SHA256
+# The key's curl carries --max-time 60: this RUN, both updates and both installs with it, took
+# 28.3 s at its slowest, in the 4 of 40 green builds that ran it (job 136243259140). That figure is
+# no bound of the installs, whose unpacking is no network wait: each install runs its download alone
+# under network-install.sh's apt bound (--download-only; the second downloaded 471 packages, 442 MB,
+# in 21 s in worker-image run 44765474341) and then installs from it unwrapped (--no-download), held
+# by the build step's limit alone. Wrapping the whole install there let the bound end dpkg mid-way,
+# and the next attempt failed on `dpkg was interrupted`.
 # hadolint ignore=DL3008
-RUN install -d -m 0755 /etc/apt/keyrings \
-    && apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
-    && curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    install -d -m 0755 /etc/apt/keyrings \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only ca-certificates curl \
+    && apt-get install -y --no-install-recommends --no-download ca-certificates curl \
+    && curl -fsSL --max-time 60 -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     && printf '%s  %s\n' "$PGDG_KEY_SHA256" /etc/apt/keyrings/pgdg.asc > /tmp/pgdg-key.sha256 \
     && sha256sum --check --strict /tmp/pgdg-key.sha256 \
     && rm -f /tmp/pgdg-key.sha256 \
@@ -858,8 +914,8 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && printf '%s\n' 'Package: *' 'Pin: origin apt.postgresql.org' 'Pin-Priority: 100' '' \
       'Package: postgresql* libpq5' 'Pin: origin apt.postgresql.org' 'Pin-Priority: 600' \
       > /etc/apt/preferences.d/pgdg \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends bind9-dnsutils busybox ca-certificates chromium curl gcc git \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && set -- bind9-dnsutils busybox ca-certificates chromium curl gcc git \
       gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base gstreamer1.0-plugins-good jq \
       libatk-bridge2.0-0t64 libatk1.0-0t64 libatomic1 libavif16 libc6-dev libcairo2 libdbus-1-3 libdrm2 \
       libegl1 libenchant-2-2 libepoxy0 libevdev2 libevent-2.1-7t64 libfontconfig1 libfreetype6 libgbm1 \
@@ -871,6 +927,8 @@ RUN install -d -m 0755 /etc/apt/keyrings \
       libxcomposite1 libxdamage1 libxkbcommon0 libxml2 libxslt1.1 netcat-openbsd openssh-client \
       postgresql-18 postgresql-18-pgvector postgresql-client-18 python3 python3-yaml redis-tools socat sqlite3 \
       tmux unzip util-linux wget \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/* /var/lib/postgresql /etc/postgresql \
       /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
     && find /etc/ssl/certs -xtype l -delete \
@@ -944,7 +1002,9 @@ COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # of each other and left sequential rather than backgrounded: this whole RUN is the cached layer
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
-# secondary rate limit for a build-time saving that doesn't matter on a layer this cold.
+# secondary rate limit for a build-time saving that doesn't matter on a layer this cold. Each read
+# carries --max-time 60: this whole RUN, its twenty-two reads with it, took 7.4 s at its slowest of
+# 40 green builds (job 136021737782); twice that, rounded up to the minute, is 60 s for each read.
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; \
     omp_tag="v${omp_pin##*@}"; \
@@ -959,7 +1019,7 @@ RUN set -eu; \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
-    fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
+    fetch() { curl -fsSL --max-time 60 "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
     fetch "$omp_repo" "$omp_tag" LICENSE omp-LICENSE; \
     fetch "$omp_repo" "$omp_tag" packages/coding-agent/THIRD-PARTY-NOTICES.txt omp-coding-agent-THIRD-PARTY-NOTICES.txt; \
@@ -977,17 +1037,17 @@ RUN set -eu; \
     fetch golang/go "go${GO_VERSION}" LICENSE go-LICENSE; \
     fetch golang/tools "gopls/v${GOPLS_VERSION}" LICENSE gopls-LICENSE; \
     crates() { \
-      curl -fsSIo /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
+      curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
       printf '%s links Rust crates whose license texts its release does not ship. They are the packages listed in\nhttps://github.com/%s/blob/%s/Cargo.lock, the lockfile of the release this image installs; the\nlicense of each is published with it on crates.io.\n' "$3" "$1" "$2" > "/in/$4"; \
     }; \
     crates "$jj_repo" "$jj_tag" jj jj-crates; \
     crates astral-sh/uv "$UV_VERSION" uv uv-crates; \
     crates jdx/mise "${MISE_VERSION}" mise mise-crates; \
-    curl -fsSIo /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
     printf 'gopls links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/golang/tools/blob/gopls/v%s/gopls/go.mod, the module file of the release this image builds; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$GOPLS_VERSION" > /in/gopls-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
     printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules
 # GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
 # read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared

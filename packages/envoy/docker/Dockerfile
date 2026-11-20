@@ -59,7 +59,12 @@ COPY docs/site/package.json docs/site/package.json
 # source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
 # the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
 # copies out of this stage.
-RUN bun install --frozen-lockfile --ignore-scripts \
+# Every install below that reads the network runs through .github/scripts/network-install.sh,
+# bind-mounted for its RUN alone (the image keeps no copy), under the bound of its kind: a registry,
+# a module proxy or a mirror that answers and then all but stops fails the build by name instead
+# of holding the job that builds it until its limit (check-ci-filters.sh's rule 22 reads this file).
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh bun -- bun install --frozen-lockfile --ignore-scripts \
     --filter './' \
     --filter './packages/dispatch' \
     --filter './packages/contracts' \
@@ -93,11 +98,18 @@ ENV GOPROXY=https://proxy.golang.org|direct
 
 # The image's third-party notices: go-licenses (pinned in go-third-party-notices.sh) is built in a
 # layer of its own, before the module files, so neither a source change nor a dependency bump
-# rebuilds it.
+# rebuilds it. It is fetched by go-fetch.sh under network-install.sh's bound for go, and built from
+# the module cache with the network off (GOPROXY a file:// proxy of the cache), held by the build
+# step's own limit: a bound around the compile would time the compile as a wait on the network, as
+# gopls's 74 s of compile under the 120 s bound did (go-fetch.sh's header says why).
 COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    --mount=type=bind,source=.github/scripts/go-fetch.sh,target=/usr/local/bin/go-fetch.sh \
+    go-fetch.sh "$(go-third-party-notices.sh --tool)" \
+    && GO_LICENSES_FETCHED=1 GOPROXY="file://$(go env GOMODCACHE)/cache/download" go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
-RUN go mod download
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh go -- go mod download
 
 # The whole module, so a binary that imports a new package of it builds here with no edit to this
 # file, as the worker image's `COPY packages/envoy packages/envoy` builds agent-secrets. The root
@@ -115,7 +127,7 @@ COPY --from=web /repo/packages/envoy/listenerwire/envelope_generated.go ./listen
 # module's or a package's license cannot be determined.
 COPY --from=web /repo/packages/dispatch/web/dist/THIRD_PARTY_NOTICES.txt /tmp/dispatch-web-notices
 RUN mkdir -p /out \
-    && CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
+    && GO_LICENSES_FETCHED=1 CGO_ENABLED=0 go-third-party-notices.sh /tmp/go-notices \
       ./cmd/listener ./cmd/dispatch ./cmd/broker ./cmd/agent-secrets \
     && assemble-third-party-notices.sh /out/THIRD_PARTY_NOTICES \
       "Third-party software in the Legion Envoy image, with the license of each piece. Legion's own code is under the Apache License 2.0. The Debian packages the image installs carry their terms in /usr/share/doc/<package>/copyright." \
@@ -147,7 +159,14 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dca
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+# apt-get update carries --error-on=any, so a mirror it could not read fails it (with the mirror's
+# words, which network-install.sh reads as a network fault) rather than exiting 0. Only the
+# packages' download (--download-only) runs under network-install.sh's bound; the install from it
+# (--no-download) runs unwrapped, so no bound can end it while dpkg writes.
+RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
+    network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only ca-certificates curl \
+    && apt-get install -y --no-install-recommends --no-download ca-certificates curl && rm -rf /var/lib/apt/lists/* \
     && groupadd -r envoy && useradd -r -g envoy envoy \
     && mkdir -p /home/envoy/.local/share/dispatch \
     && chown -R envoy:envoy /home/envoy

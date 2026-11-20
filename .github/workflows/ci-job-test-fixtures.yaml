@@ -32,7 +32,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Typecheck the shared test fixtures
         run: bun run typecheck
         working-directory: packages/test-fixtures

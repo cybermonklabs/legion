@@ -865,6 +865,10 @@ ci_tools_blob_url() {
 # or an address of another scheme, is printed as its own status, which no caller reads as a
 # copy, beside a refusal that names it. A request the service did not answer at all reads 000.
 # The first request puts `-q` first, for the reason ci_tools__curl_held gives.
+# Each request carries --max-time 60, the bound ci_tools_ghcr_token gives its own request, which
+# reads no body either, so a package or a store that answers and then all but stops reads 000 at
+# the minute instead of holding the job until its limit (check-ci-filters.sh's rule 22 refuses a
+# curl of another host with no bound of its own).
 ci_tools_registry_head() {
   if [ "$#" -lt 3 ]; then
     ci_tools__error "ci_tools_registry_head takes a token, a headers file and a URL, and this call gave $#"
@@ -873,7 +877,7 @@ ci_tools_registry_head() {
   local token=$1 headers=$2 url=$3 answer status location
   shift 3
   answer=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -q -sS -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
+    curl -q -sS --max-time 60 -o /dev/null -D "$headers" -w '%{http_code} %{redirect_url}' -I -H @- "$@" "$url") ||
     answer=000
   status=${answer%% *}
   case $status in
@@ -884,8 +888,8 @@ ci_tools_registry_head() {
       elif ! ci_tools__store_address "$location"; then
         ci_tools__error "a HEAD of $url answered $status, a redirect to $(ci_tools__redirect_target "$location"), which this run does not follow: it reads a store at an https address alone"
       else
-        status=$(curl -sS --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" -w '%{http_code}' \
-          -I -L "$@" "$location") || status=000
+        status=$(curl -sS --max-time 60 --proto "$(ci_tools__store_proto)" -o /dev/null -D "$headers" \
+          -w '%{http_code}' -I -L "$@" "$location") || status=000
       fi
       ;;
   esac

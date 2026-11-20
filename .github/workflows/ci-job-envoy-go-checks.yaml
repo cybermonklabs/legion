@@ -110,7 +110,8 @@ jobs:
           fi
           echo "The spec-check action read $COUNT statements."
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

@@ -8,10 +8,11 @@
 # and refuses that archive, naming it, before helm reads it when its sha256 is not b209c627…58cc1,
 # the digest the chart index at https://nats-io.github.io/k8s/helm/charts/ and the GitHub release
 # both publish (the value INFRA-549 records). It renders it with `helm template --skip-tests` (helm
-# v3.20.2 through go run) and nats-values.yaml, with each image pinned to the digest a registry
-# manifest read gives its tag, and refuses a render that holds a kind the load-test Role cannot
-# write or an image not pinned by digest. The output keeps the placeholders __NAMESPACE__,
-# __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
+# v3.20.2, which go install fetches and builds under .github/scripts/network-install.sh's bound for
+# go) and nats-values.yaml, with each image pinned to the digest a registry manifest read gives its
+# tag, and refuses a render that holds a kind the load-test Role cannot write or an image not
+# pinned by digest. The output keeps the placeholders __NAMESPACE__, __STORAGE_CLASS__ and
+# __RUN_ID__, which cluster.sh fills.
 #
 # --out FILE writes FILE instead of manifests/nats.yaml. --pin-from FILE takes each image's digest
 # from FILE (an earlier render) instead of the registry: cluster.test.sh re-renders that way and
@@ -92,7 +93,14 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+# helm comes from its module at the pinned version, outside any module of this repository as `go
+# run` of it did. go-fetch.sh fetches it through the module proxy under network-install.sh's bound
+# for go, so a proxy that stalls fails this script by name; the build then reads only the module
+# cache (GOPROXY a file:// proxy of it), so the bound never times its compile, and the render runs
+# the binary that built.
+"$here/../../../../.github/scripts/go-fetch.sh" "$HELM"
+(cd -- "$tmp" && GOBIN="$tmp/bin" GOPROXY="file://$(go env GOMODCACHE)/cache/download" go install "$HELM")
+(cd -- "$tmp" && "$tmp/bin/helm" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 
 while read -r kind; do

@@ -134,7 +134,7 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # The same install again, over the cache and the node_modules the step above left: the
       # requirement is that no install reaches those hosts, warm or cold.
@@ -143,7 +143,7 @@ jobs:
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # The verdict, read off the proxy's log: every refusal it wrote while the two installs
       # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and

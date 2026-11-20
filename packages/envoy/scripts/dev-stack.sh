@@ -703,7 +703,10 @@ echo "dev-stack: starting broker..." >&2
 start_broker "$BROKER_LOG"
 BROKER_PID=$started_pid
 await broker "$BROKER_PID" "$BROKER_LOG" "$BROKER_LOG" 'its bound address' broker_addr_in
-BROKER_URL="http://$awaited"
+# The broker binds 127.0.0.1 (BROKER_LISTEN_ADDR above), so its URL is that host and the port its
+# own listening line names: written out, a request to it is plainly one to this runner's own
+# server, which check-ci-filters.sh's rule 22 reads as no wait on the network.
+BROKER_URL="http://127.0.0.1:${awaited##*:}"
 until_true "the broker's health check" curl -sf "$BROKER_URL/healthz"
 echo "dev-stack: broker $BROKER_URL" >&2
 callout_after_first_broker

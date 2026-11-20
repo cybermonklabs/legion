@@ -99,7 +99,8 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for pi-legion
         run: bun run build
         working-directory: packages/contracts

@@ -86,6 +86,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_gh_version_test: check-gh-version.test.sh and what it tests."
         type: string
         required: true
+      network_install_test:
+        description: "ci.yaml's needs.changes.outputs.network_install_test: network-install.test.sh and what it tests."
+        type: string
+        required: true
       check_gitleaks_version_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_gitleaks_version_test:
@@ -287,7 +291,7 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # The very command release.yaml's claude_envoy_build runs, so a pull request whose source
       # that job would refuse fails this job, and with it the required ci-ok, instead of merging
@@ -365,6 +369,10 @@ jobs:
       - name: Test the gh version check
         if: inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true'
         run: .github/scripts/check-gh-version.test.sh
+
+      - name: Test the bound on network installs
+        if: inputs.changes-result != 'success' || inputs.network_install_test == 'true'
+        run: .github/scripts/network-install.test.sh
 
       - name: Test the gitleaks version check
         if: inputs.changes-result != 'success' || inputs.check_gitleaks_version_test == 'true'

@@ -188,10 +188,14 @@ bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
-  # version CI's service and Cloud SQL run
-  docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  # version CI's service and Cloud SQL run. It is pulled under network-install.sh's bound for docker
+  # (a registry that answers and then all but stops fails the run by name), and the run then pulls
+  # nothing (--pull=never).
+  pg_image=ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
+  "$root/.github/scripts/network-install.sh" docker -- docker pull "$pg_image" >/dev/null
+  docker run -d --pull=never --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
-    -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+    -e POSTGRES_DB=legion -p 127.0.0.1::5432 "$pg_image" >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
   # socket while nothing listens on 5432 yet, and a daemon that connects then is reset.
   for i in $(seq 1 40); do

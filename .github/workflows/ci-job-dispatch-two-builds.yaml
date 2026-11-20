@@ -115,11 +115,12 @@ jobs:
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Resolve the previous build's commit
         id: previous
         run: |
-          commit=$(packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve)
+          commit=$(packages/envoy/scripts/resolve-dispatch-build.sh --previous-release)
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       # The cache saves the build when the job ends in success and found none under this key.
       - name: Cache the previous build
@@ -146,7 +147,7 @@ jobs:
       # cache entry is written once and restored after that.
       - name: Resolve the first-rollout build's commit
         run: |
-          resolved=$(packages/envoy/scripts/build-dispatch-build.sh --commit legion-envoy-v30.20.2 --resolve)
+          resolved=$(packages/envoy/scripts/resolve-dispatch-build.sh --commit legion-envoy-v30.20.2)
           if [[ "$resolved" != "$FIRST_ROLLOUT_COMMIT" ]]; then
             echo "::error::The tag legion-envoy-v30.20.2 names commit $resolved. FIRST_ROLLOUT_COMMIT pins the first-rollout build to commit $FIRST_ROLLOUT_COMMIT, and firstRolloutRelease in packages/envoy/cmd/dispatch/twobuild_harness_test.go holds the same commit. Move the tag back to $FIRST_ROLLOUT_COMMIT, or change the pin in both places."
             exit 1
@@ -164,6 +165,20 @@ jobs:
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$FIRST_ROLLOUT_COMMIT" --out "$DISPATCH_FIRST_ROLLOUT_BUILD"
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      - name: Install Playwright Chromium
+        # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no
+        # package this image lacks, and this job's one spec runs headless Chromium and compares no
+        # screenshot, so the font packages `--with-deps` brought are not needed either. The
+        # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
+        # with the apt work gone this step's removal of the runner image's chrome-stable apt
+        # source goes with it. The download runs under .github/scripts/network-install.sh's bound
+        # for playwright, and the 5-minute budget is that step's, for the same download. It runs
+        # before the two-build Go tests, whose -timeout is 30 minutes: after them, the job's 45
+        # minutes could end a stalled download before it failed by name (check-ci-filters.sh's
+        # rule 22 sums every step's bound before an install, and refused it there).
+        timeout-minutes: 5
+        run: '"$GITHUB_WORKSPACE/.github/scripts/network-install.sh" playwright -- bunx playwright install chromium'
+        working-directory: packages/dispatch
       # Only what the twobuild tag adds: envoy-go's unit step runs ./cmd/dispatch's untagged tests,
       # so the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
       # source at run time. The assignment is a line of its own: under bash -e it carries the
@@ -195,16 +210,6 @@ jobs:
         # and starts in seconds.
         run: go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
-      - name: Install Playwright Chromium
-        # No apt in this step: Playwright's `chromium` entry in its ubuntu24.04-x64 table adds no
-        # package this image lacks, and this job's one spec runs headless Chromium and compares no
-        # screenshot, so the font packages `--with-deps` brought are not needed either. The
-        # dispatch-browser-multiprocess job's step of the same name measured both and says so, and
-        # with the apt work gone this step's removal of the runner image's chrome-stable apt
-        # source goes with it. The 4-minute budget is that step's, for the same download.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
-        working-directory: packages/dispatch
       # The stack's connection limit, read outside the browser steps, where
       # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS), as
       # dispatch-browser.yaml's multiprocess job reads it, for the reason that job's head gives:
@@ -339,7 +344,8 @@ jobs:
           cache: false
       - uses: ./.github/actions/setup-bun
       # The current build's CLI runs from the tree (`bun packages/envoy-client/bin/dispatch.ts`).
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       # No cache: the head is a new commit in every run.
       - name: Build this tree as the previous build
         env:

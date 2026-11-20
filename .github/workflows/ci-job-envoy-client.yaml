@@ -23,13 +23,16 @@ on:
 jobs:
   envoy-client:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci-job-envoy-client.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
+    # 156 s + 2 x 425 s = 1,006 s -> 17 min.
+    timeout-minutes: 17
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Build contracts for Envoy client
         run: bun run build
         working-directory: packages/contracts
@@ -41,9 +44,10 @@ jobs:
         # pulls the image here, and does not call .github/actions/pull-test-images: that action
         # reads a Go `const` line, and this image is a TypeScript constant
         # (packages/envoy-client/src/__tests__/nats-server.ts:9-10). The registry is this
-        # repository's own, so a failed pull is a fault of this repository. Show it, do not retry
-        # it.
-        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+        # repository's own, so a failed pull is a fault of this repository and is shown:
+        # network-install.sh tries again only an attempt that its bound for docker cut, and fails
+        # any other at once, with docker's own error above its own.
+        run: .github/scripts/network-install.sh docker -- docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves
       # its temporary directory behind is how 7,063 of them gathered on a shared development
       # machine, measured on 2026-11-07, which is the count this step keeps at zero. The suites

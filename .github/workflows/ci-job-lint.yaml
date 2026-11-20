@@ -148,14 +148,14 @@ jobs:
         uses: ./.github/actions/setup-bun
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
 
       # The frozen install above does not refuse a workspace `version` the lockfile does not hold.
       # --lockfile-only writes the lockfile the manifests imply and installs nothing, so a
       # difference here is what a reader's own `bun install` would write.
       - name: Check bun.lock agrees with the workspace manifests
         run: |
-          bun install --lockfile-only
+          .github/scripts/network-install.sh bun -- bun install --lockfile-only
           if ! git diff --exit-code bun.lock; then
             echo "::error file=bun.lock::bun.lock disagrees with the workspace manifests; run bun install and commit bun.lock, and after a forward merge of main take one side's bun.lock whole before installing"
             exit 1

@@ -72,11 +72,13 @@ name: CI caches
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs is the
 # record of their restores and saves.
 #
-# One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
-# content of the Lean toolchain the model names rather than a Go version. Two others that were
-# no Go family went with the jobs that read them - the Playwright browsers and the .deb files of
-# the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
-# jobs run in the image this repository builds, which carries the browsers and their host
+# Two entries here are no Go family. One is the elan home the airlock-lean job restores, whose key
+# is the content of the Lean toolchain the model names rather than a Go version. The other is
+# zsh-debs, Ubuntu's two zsh packages that .github/actions/install-zsh installs in the
+# claude-envoy and dispatch-ui jobs, keyed on the hash of that action, which pins them. Two others
+# that were no Go family went with the jobs that read them - the Playwright browsers and the .deb
+# files of the apt list the browser suite installed - because dispatch-browser.yaml's shard and
+# alone jobs run in the image this repository builds, which carries the browsers and their host
 # packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
 # restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
 # with them.
@@ -558,3 +560,38 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+
+  # The zsh-debs entry ci.yaml's claude-envoy and dispatch-ui jobs restore: the two Ubuntu packages
+  # .github/actions/install-zsh pins, which it then installs with `dpkg -i` and no `apt-get
+  # update`. The key is the runner's architecture, since the packages are arm64's, and the hash of
+  # that action, since the action holds the pins, so the entry is refreshed when a pin moves and at
+  # no other time. The action with `install: 'false'` fetches the two files into
+  # $RUNNER_TEMP/zsh-debs and holds each to its pin, which is the whole of what is saved. It runs
+  # on ubuntu-24.04-arm, the runner both readers run on.
+  zsh-debs:
+    runs-on: ubuntu-24.04-arm
+    # Two downloads of 5 MB on a miss, each inside the action's own bound of about two minutes;
+    # a run that finds the key costs the checkout alone.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: zsh-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/zsh-debs
+          key: zsh-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/install-zsh/action.yml') }}
+          lookup-only: true
+
+      - if: steps.zsh-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/install-zsh
+        with:
+          install: 'false'
+
+      - if: steps.zsh-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/zsh-debs
+          key: zsh-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/install-zsh/action.yml') }}

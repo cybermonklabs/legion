@@ -54,6 +54,7 @@ on:
       - '.github/actions/setup-bun/**'
       - '.github/ci-tools.yaml'
       - '.github/scripts/ci-tools.sh'
+      - '.github/scripts/network-install.sh'
       # ci-filters.yaml's *go_workspace:
       - 'go.work'
       - 'go.work.sum'

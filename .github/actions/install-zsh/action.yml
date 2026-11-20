@@ -1,0 +1,92 @@
+name: Install zsh
+description: >-
+  Puts Ubuntu's zsh on an arm64 runner without `apt-get update`. The ubuntu-24.04-arm image holds
+  no zsh, and the step this action replaces, `sudo apt-get update && sudo apt-get install -y
+  --no-install-recommends zsh`, read 15.2 MB of package lists on every run to install the same two
+  packages (job 136050671528 of run 44664541053: `The following NEW packages will be installed:
+  zsh zsh-common`). Those two are pinned below: the files of Ubuntu 24.04's own release pocket,
+  whose index is frozen and signed, with the sha256 its signed Packages index gives each
+  (dists/noble/InRelease, signed on 2024-04-25, then main/binary-arm64/Packages.gz).
+
+  The two files live in $RUNNER_TEMP/zsh-debs, the directory the caller's actions/cache/restore
+  restores under a key that hashes this file, which .github/workflows/ci-caches.yaml fills on
+  every push to main. A file the cache restored is held to its pin and read from no network; a
+  file that is missing, or whose bytes are not the pinned ones, is fetched from ports.ubuntu.com
+  through ci_tools_curl (.github/scripts/ci-tools.sh), the bounded and retried fetch every pinned
+  download of this repository makes: 60 s an attempt, and no new attempt after 60 s of them. A
+  fetch that fails, or bytes that are not the pin, fail the step by name and install nothing.
+  `dpkg -i` then installs the two files, which reads no network.
+
+  Where the runner already has a zsh (a later image that ships one), the step says so and fetches
+  nothing. The pins are for an arm64 runner, the machine of both jobs that run this, and any other
+  machine without a zsh is refused by name.
+inputs:
+  install:
+    description: >-
+      'true' (the default) installs zsh. 'false' fetches and checks the two files into
+      $RUNNER_TEMP/zsh-debs and installs nothing: .github/workflows/ci-caches.yaml fills the
+      cache with them so.
+    required: false
+    default: 'true'
+runs:
+  using: composite
+  steps:
+    - name: Install zsh
+      shell: bash
+      env:
+        INSTALL: ${{ inputs.install }}
+      run: |
+        set -euo pipefail
+        if [ "$INSTALL" = true ] && command -v zsh > /dev/null; then
+          echo "this runner already has a zsh, so nothing is fetched: $(zsh --version)"
+          exit 0
+        fi
+        machine=$(uname -m)
+        case "$machine" in
+          aarch64 | arm64) ;;
+          *)
+            echo "::error::install-zsh: this action pins Ubuntu's arm64 zsh packages alone, and this runner is $machine" >&2
+            exit 1
+            ;;
+        esac
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        dir="$RUNNER_TEMP/zsh-debs"
+        pool=http://ports.ubuntu.com/ubuntu-ports/pool/main/z/zsh
+        mkdir -p "$dir"
+        files=()
+        while read -r name digest; do
+          file="$dir/$name"
+          files+=("$file")
+          cached="The cache held no copy of it either."
+          if [ -e "$file" ]; then
+            if printf '%s  %s\n' "$digest" "$file" | sha256sum --check --status; then
+              echo "$name: the Actions cache's copy, which is the pinned bytes"
+              continue
+            fi
+            cached="The cache's copy was no good either: its sha256 is not the pinned $digest, so it was set aside."
+            echo "$name: the Actions cache's copy is not the pinned bytes, so it is fetched again"
+          fi
+          rm -f -- "$file"
+          status=0
+          ci_tools_curl "$file" 60 "$pool/$name" || status=$?
+          if [ "$status" -ne 0 ]; then
+            rm -f -- "$file"
+            echo "::error::install-zsh: $pool/$name did not serve the package (curl exit $status, after the bounded retries of ci_tools_curl), so zsh is not installed. $cached" >&2
+            exit 1
+          fi
+          if ! printf '%s  %s\n' "$digest" "$file" | sha256sum --check --status; then
+            rm -f -- "$file"
+            echo "::error::install-zsh: $pool/$name served bytes whose sha256 is not the pinned $digest, so zsh is not installed" >&2
+            exit 1
+          fi
+          echo "$name: fetched from $pool and held to its pin"
+        done <<'PINS'
+        zsh-common_5.9-6ubuntu2_all.deb 56d160585b417af0cc04d7372f74a3b734609d7cc43ef8ea6e92bfdfc27f77c3
+        zsh_5.9-6ubuntu2_arm64.deb 3793dc77fa48800593cbef52339c6b3259faa845b0c2220bd64ea84861e548f6
+        PINS
+        if [ "$INSTALL" != true ]; then
+          exit 0
+        fi
+        sudo dpkg -i "${files[@]}"
+        zsh --version

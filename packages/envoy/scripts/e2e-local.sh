@@ -372,15 +372,18 @@ PORT="${E2E_PORT:-0}" \
 listener_pid=$!
 
 # wait_for_listener returns once the listener this script started logs the address it is bound to,
-# and sets listener_url from it; it fails the moment that process is gone, as it is when E2E_PORT
-# is already in use.
+# and sets listener_url from that address's port; it fails the moment that process is gone, as it is
+# when E2E_PORT is already in use. The host is written out as 127.0.0.1: the listener binds loopback
+# (ENVOY_LISTEN_HOST is unset here), and a listener on every interface logs [::] and serves
+# 127.0.0.1 too, so every request below is plainly one to this runner's own server, which
+# check-ci-filters.sh's rule 22 reads as no wait on the network.
 wait_for_listener() {
   local deadline=$((SECONDS + 30))
   local addr
   while ((SECONDS < deadline)); do
     addr="$(jq -Rnr '[inputs | fromjson? | select(.msg == "envoy-listener listening") | .addr][0] // empty' "$listener_log_file")"
     if [[ -n "$addr" ]]; then
-      listener_url="http://${addr}"
+      listener_url="http://127.0.0.1:${addr##*:}"
       return 0
     fi
     if ! kill -0 "$listener_pid" 2>/dev/null; then

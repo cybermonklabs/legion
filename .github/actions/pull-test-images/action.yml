@@ -7,7 +7,11 @@ description: >-
   ghcr.io/cybermonklabs/legion/ci, a registry this repository publishes, so a failed pull is a fault of
   this repository and must be seen. The action reads each image from the Go string constant that
   declares it (testnats.Image and testnats.HubImage, tests3.Image), so the tests and the pull
-  never name two images.
+  never name two images. Each pull runs under .github/scripts/network-install.sh's bound for docker:
+  docker ends a wait for a registry's headers by itself, but not a wait for a body that trickles,
+  so a registry that answers and then all but stops would otherwise hold the job until its limit.
+  Each input's lines are pulled in a loop over those lines, so check-ci-filters.sh's rule 22
+  counts one pull per line the calling step gives, and holds the job's limit to all of them.
 inputs:
   consts:
     description: >-
@@ -15,7 +19,10 @@ inputs:
       constant in it whose value is an image, as `packages/envoy/internal/testnats/nats.go Image`.
     required: true
   images:
-    description: More images to pull, one per line, as a job's build reads from a Dockerfile.
+    description: >-
+      More images to pull, one per line: the FROM images of the Dockerfiles the job builds after
+      this step, the same bytes. check-ci-filters.sh's rule 22 fails a list that leaves out a FROM
+      image of those builds, or names one none of them uses.
     required: false
     default: ""
 runs:
@@ -28,17 +35,17 @@ runs:
         CONSTS: ${{ inputs.consts }}
         IMAGES: ${{ inputs.images }}
       run: |
-        images=()
+        pulled=0
         while read -r file name; do
           [ -n "$file" ] || continue
           image=$(sed -n "s/^const $name = \"\(.*\)\"\$/\1/p" "$file")
           [ -n "$image" ] || { echo "::error::no const $name in $file"; exit 1; }
-          images+=("$image")
+          "$GITHUB_ACTION_PATH/../../scripts/network-install.sh" docker -- docker pull "$image"
+          pulled=$((pulled + 1))
         done <<<"$CONSTS"
         while read -r image; do
-          [ -z "$image" ] || images+=("$image")
+          [ -n "$image" ] || continue
+          "$GITHUB_ACTION_PATH/../../scripts/network-install.sh" docker -- docker pull "$image"
+          pulled=$((pulled + 1))
         done <<<"$IMAGES"
-        [ "${#images[@]}" -gt 0 ] || { echo "::error::no image to pull"; exit 1; }
-        for image in "${images[@]}"; do
-          docker pull "$image"
-        done
+        [ "$pulled" -gt 0 ] || { echo "::error::no image to pull"; exit 1; }

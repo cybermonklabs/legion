@@ -202,11 +202,14 @@ header_value() {
 
 # push_blob <row> <file> <digest> <what these bytes are>: one blob of the copy, in the two steps
 # the registry API takes. The upload's location may be absolute or path-only, and it may already
-# carry a query, so the digest is appended with the separator that location needs.
+# carry a query, so the digest is appended with the separator that location needs. Each request
+# of the copy (these two and the manifest's in push_copy) carries the row's own max_time, the bound
+# its fetch of the same bytes was read under, so a package that answers and then all but stops
+# fails this row by name instead of holding the ci-images job until its limit.
 push_blob() {
   local row=$1 file=$2 digest=$3 what=$4 status location separator
   status=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
+    curl -sS --max-time "$max_time" -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
       -H @- -H 'Content-Length: 0' "$registry_url/blobs/uploads/") || status=000
   if [ "$status" != 202 ]; then
     error "$row: the upload of the $what started with POST $registry_url/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
@@ -226,7 +229,7 @@ push_blob() {
     *) separator='?' ;;
   esac
   status=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+    curl -sS --max-time "$max_time" -X PUT -o /dev/null -w '%{http_code}' \
       -H @- -H 'Content-Type: application/octet-stream' \
       --data-binary "@$file" "${location}${separator}digest=sha256:$digest") || status=000
   if [ "$status" != 201 ]; then
@@ -296,7 +299,7 @@ with open(path, "w") as handle:
     handle.write(json.dumps(document, separators=(",", ":")))
 PY
   status=$(printf 'Authorization: Bearer %s' "$token" |
-    curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+    curl -sS --max-time "$max_time" -X PUT -o /dev/null -w '%{http_code}' \
       -H @- -H "Content-Type: $MANIFEST_TYPE" \
       --data-binary "@$document" "$registry_url/manifests/$tag") || status=000
   if [ "$status" != 201 ]; then

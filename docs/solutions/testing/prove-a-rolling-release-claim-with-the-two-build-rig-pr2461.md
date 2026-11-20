@@ -16,7 +16,7 @@ related_issues:
 # Prove a rolling-release claim with the two-build rig
 
 - A claim that Dispatch's previous release and this head can share one database and one NATS during a roll is proven on real processes of both builds, with the rig this repository already has, not with a pair of pods or a hand-built old binary.
-- Build the previous release with `bash packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>` (`--resolve` prints the tag and commit without building). Then run `DISPATCH_PREVIOUS_BUILD=<dir> go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch` from `packages/envoy`, and the browser direction from `packages/dispatch` with `DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web bun run e2e:multiprocess -- cross-build.multiprocess`.
+- Build the previous release with `bash packages/envoy/scripts/build-dispatch-build.sh --previous-release --out <dir>` (`bash packages/envoy/scripts/resolve-dispatch-build.sh --previous-release` prints the tag and commit without building). Then run `DISPATCH_PREVIOUS_BUILD=<dir> go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch` from `packages/envoy`, and the browser direction from `packages/dispatch` with `DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web bun run e2e:multiprocess -- cross-build.multiprocess`.
 - The script resolves the newest `legion-envoy-v*` tag in the base's history, so resolve it again after every merge of main: the previous release moves.
 - Add a new compatibility case as a test under the `twobuild` tag, so CI's `dispatch-two-builds` job runs it on every change that job's filter selects.
 

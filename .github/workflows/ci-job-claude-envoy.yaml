@@ -30,7 +30,9 @@ on:
 jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 10
+    # why: .github/ci-notes/ci-job-claude-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
+    # 217 s + 2 x 425 s = 1,067 s -> 18 min.
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +42,8 @@ jobs:
       # endpoint and Dispatch, and refuses on GitHub Actions without one. The pin is read from
       # .claude-code-pin, the repository's one copy of it (.github/actions/install-claude-code).
       - uses: ./.github/actions/install-claude-code
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Lint Claude Envoy plugin
         run: bun run lint
         working-directory: packages/claude-envoy
@@ -58,9 +61,14 @@ jobs:
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
       # tests/send-arguments.test.ts runs envoy-send's printed resend command under bash and under
       # zsh, whose EQUALS option reads a bare `=word` as a path, and fails the zsh row on CI where
-      # zsh is missing; the runner image has no zsh.
-      - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
+      # zsh is missing; the runner image has no zsh. .github/actions/install-zsh installs Ubuntu's
+      # two zsh packages from the pinned files this cache holds (.github/workflows/ci-caches.yaml
+      # fills it), with no `apt-get update`, and fetches a file the cache lacks under a bound.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/zsh-debs
+          key: zsh-debs-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/actions/install-zsh/action.yml') }}
+      - uses: ./.github/actions/install-zsh
       - name: Test Claude Envoy plugin
         run: bun run test
         working-directory: packages/claude-envoy

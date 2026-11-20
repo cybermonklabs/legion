@@ -927,7 +927,8 @@ packages/envoy/scripts/build-dispatch-build.sh --commit <sha|tag> --out <dir>
 
 `--previous-release` builds the newest `legion-envoy-v*` tag that is an ancestor of
 `git merge-base HEAD origin/main`, so it needs `origin/main` and the tags fetched. `--commit HEAD`
-builds the current branch the same way. The script refuses a commit that is not an ancestor of
+builds the current branch the same way. `resolve-dispatch-build.sh` beside it resolves the commit
+and makes the refusals: it refuses a commit that is not an ancestor of
 `HEAD`, and a commit older than the release `legion-envoy-v30.11.0`, the oldest build either test
 can run as the earlier side: that release carries migration 0117, from which two builds share one
 database, and migration 20261111210103, after which every project it creates must name a default
@@ -940,12 +941,15 @@ hold a complete build of the same commit, which the script leaves as it is. It t
 the commit, and `COMMIT`, the full sha, written last. Point `DISPATCH_PREVIOUS_BUILD` at `<dir>` to
 run the two-build test.
 
-`--resolve` in place of `--out <dir>` builds nothing: it makes the same refusals and prints the full
-sha the script would build, which CI's `dispatch-two-builds` job (`.github/workflows/ci.yaml`) keys
-its cache of the build by before it builds.
+`resolve-dispatch-build.sh` alone builds nothing: it makes the same refusals and prints the full
+sha `build-dispatch-build.sh` would build, which CI's `dispatch-two-builds` job
+(`.github/workflows/ci-job-dispatch-two-builds.yaml`) keys its cache of the build by before it
+builds. It is a script of its own, not a mode of the build script, so a step that resolves runs no
+script that installs: `.github/scripts/check-ci-filters.sh`'s rule 22 counts the build script's
+bounded `bun install` against each step that runs that script, whatever its arguments.
 
 ```bash
-packages/envoy/scripts/build-dispatch-build.sh --previous-release --resolve
+packages/envoy/scripts/resolve-dispatch-build.sh --previous-release
 ```
 
 ## Measuring the related-item check on a project's duplicates

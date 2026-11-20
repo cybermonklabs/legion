@@ -116,7 +116,8 @@ jobs:
             ~/.cache/go-build
           key: go-docs-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-{1}-', runner.os, runner.arch) || '' }}
-      - run: bun install --frozen-lockfile
+      - name: Install dependencies
+        run: .github/scripts/network-install.sh bun -- bun install --frozen-lockfile
       - name: Typecheck the docs site
         run: bun run typecheck
         working-directory: docs/site
@@ -138,8 +139,10 @@ jobs:
         # (docs/site/media/README.md), and fonts-liberation and fonts-noto-color-emoji are on
         # the image already. With the apt call goes this step's removal of the runner image's
         # chrome-stable apt source, which it carried only because that source's index
-        # intermittently failed `apt-get update` and took `--with-deps` down with it.
-        run: bunx playwright install chromium
+        # intermittently failed `apt-get update` and took `--with-deps` down with it. The download
+        # runs under .github/scripts/network-install.sh's bound for playwright: Playwright's own wait
+        # is a socket's idle time, which a host that answers and then trickles never reaches.
+        run: '"$GITHUB_WORKSPACE/.github/scripts/network-install.sh" playwright -- bunx playwright install chromium'
         working-directory: docs/site
       # The service with crash safety off (fsync, full_page_writes, synchronous_commit), as the
       # e2e harness's own Postgres runs (packages/dispatch/e2e/harness-postgres.ts), so no commit

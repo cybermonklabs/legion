@@ -3286,8 +3286,13 @@ run_replay_logged() { go_on "replay $1" run_replay "$@"; }
 
 # zstd_compress: stdin to stdout as zstd (level 19), through the zstandard wheel at a pinned
 # version; the worker image carries no zstd command.
+# zstandard comes from PyPI into uv's cache under network-install.sh's bound for uv, so an index
+# that stalls fails the run by name; the compression then runs from that cache with uv's --offline,
+# so no try of the fetch reads the stream twice.
 zstd_compress() {
-  uv run -q --with zstandard==0.23.0 --no-project python3 -c \
+  "$REPO_DIR/.github/scripts/network-install.sh" uv -- \
+    uv run -q --with zstandard==0.23.0 --no-project python3 -c 'import zstandard' </dev/null >&2
+  uv run -q --offline --with zstandard==0.23.0 --no-project python3 -c \
     'import sys, zstandard; zstandard.ZstdCompressor(level=19, threads=-1).copy_stream(sys.stdin.buffer, sys.stdout.buffer)'
 }
 
