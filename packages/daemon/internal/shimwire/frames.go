@@ -1538,6 +1538,15 @@ func (f LauncherHello) Validate() error {
 	return nil
 }
 
+// Validate refuses a launcher start the launcher cannot act on: one with no id, no generation or
+// no argv, or with a file name that is not a plain file name. A start that names its session by
+// its id alone (ResumeSession) is refused too when it also names a file (ResumeFile), which is two
+// sessions to resume, when the id is not a single path element (it holds `/` or NUL), which no
+// session file name ends in, or when its argv does not hold exactly one element
+// `--resume=<ResumeSession>`: the launcher resumes the file it finds for the id by replacing that
+// one element with the file's path, and with none or two there is nothing certain to replace. The
+// daemon is the frame's only sender, so each of these is a bug of the daemon's, which the refusal
+// names.
 func (f LauncherStart) Validate() error {
 	switch {
 	case f.ID == "":
@@ -1550,6 +1559,24 @@ func (f LauncherStart) Validate() error {
 	for name := range f.Files {
 		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\x00") {
 			return fmt.Errorf("%w: launcher_start file name %q is not a plain file name", ErrMalformedFrame, name)
+		}
+	}
+	if f.ResumeSession != "" {
+		if f.ResumeFile != "" {
+			return fmt.Errorf("%w: launcher_start names both resumeFile and resumeSession", ErrMalformedFrame)
+		}
+		if strings.ContainsAny(f.ResumeSession, "/\x00") {
+			return fmt.Errorf("%w: launcher_start resumeSession %q is not a single path element", ErrMalformedFrame, f.ResumeSession)
+		}
+		resume := "--resume=" + f.ResumeSession
+		held := 0
+		for _, arg := range f.Argv {
+			if arg == resume {
+				held++
+			}
+		}
+		if held != 1 {
+			return fmt.Errorf("%w: launcher_start argv holds %s %d times, want it exactly once for resumeSession", ErrMalformedFrame, resume, held)
 		}
 	}
 	return nil
