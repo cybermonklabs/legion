@@ -666,7 +666,7 @@ reached nothing. Every answer's body is read inside its attempt, so a 2xx settle
 body is read whole. From "may have landed", only such a 2xx or a final refusal settles the write.
 A 2xx that is no answer of Dispatch settles nothing from either state: one whose body is empty or
 not typed JSON (a captive portal's 200 page; every Dispatch write answers JSON, or a bodiless 204
-or 205), whatever the process knows. Every other end — a 3xx, a page something in Dispatch's place
+or 205). Every other end — a 3xx, a page something in Dispatch's place
 wrote, a refusal Dispatch's auth made before its keyed layer ran (a 401, `403 READ_ONLY_TOKEN`, a
 second `401 BROKER_TOKEN_NOT_ACTIVE`), a credential that cannot present, no route to the end, the
 deadline, the caller's stop, or no attempt or time left, a 5xx included — is

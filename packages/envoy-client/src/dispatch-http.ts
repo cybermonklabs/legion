@@ -182,19 +182,18 @@ export class DispatchGatewayError extends DispatchServiceError {
 
 /**
  * A write that ended, once an attempt of it may have landed (write-outcome.ts), with anything but
- * Dispatch's own 2xx read whole or a refusal Dispatch's keyed layer judged for its key, so it may
- * or may not have taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off
- * with no attempt or time left; a page something in Dispatch's place wrote, a 2xx that is no
- * answer of Dispatch's, a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a
- * credential that could not present, or that would present as another identity than the attempts
- * before it; or no answer at all: its last attempt cut off for silence, the call's deadline or the
- * caller's stop. This is deliberately no `DispatchServiceError`, which a caller reads as a refusal
- * Dispatch decided. `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key`
- * every attempt of the write carried, each attempt that may have landed as one identity: a
- * resend under it, as that identity, is answered from what Dispatch stored, never written twice.
- * Where the call saw Dispatch's keyed
- * layer judge the write (`keyed`), the message says Dispatch finishes an attempt it received, and
- * that a resend is a new command's, under a new key, so the write is to be read back first.
+ * Dispatch's own 2xx read whole or a final refusal Dispatch decided, so it may or may not have
+ * taken effect: a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT` or a body that broke off with no attempt
+ * or time left; a page something in Dispatch's place wrote, a 2xx that is no answer of Dispatch's,
+ * a 3xx or a refusal Dispatch's auth made before the keyed layer ran; a credential that could not
+ * present, or that would present as another identity than the attempts before it; or no answer at
+ * all: its last attempt cut off for silence, the call's deadline or the caller's stop. This is
+ * deliberately no `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
+ * `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key` every attempt of the
+ * write carried, each attempt that may have landed as one identity: a resend under it, as that
+ * identity, is answered from what Dispatch stored, never written twice. The message always says
+ * Dispatch finishes an attempt it received, and that a resend is a new command's, under a new key,
+ * so the write is to be read back first.
  */
 export class DispatchWriteUnsettledError extends Error {
   override readonly name = "DispatchWriteUnsettledError";
