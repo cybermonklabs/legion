@@ -413,7 +413,7 @@ func TestLauncherProcess(t *testing.T) {
 	go func() { _, _ = io.Copy(io.Discard, os.Stdin); cancel() }()
 	err := Run(ctx, Config{
 		Connect: os.Getenv("LEGION_LAUNCHER_TEST_ADDRESS"), PrivateDir: os.Getenv("LEGION_LAUNCHER_TEST_PRIVATE"),
-		Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
+		Token: os.Getenv("LEGION_LAUNCHER_TEST_TOKEN"), Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", Stderr: os.Stderr,
 	})
 	if err != nil && ctx.Err() == nil {
 		t.Fatal(err)
@@ -423,7 +423,8 @@ func TestLauncherProcess(t *testing.T) {
 // processRig is a launcher in a process of its own, and kill its SIGKILL.
 func processRig(t *testing.T) (g *rig, kill func()) {
 	t.Helper()
-	listener := listenForLauncher(t, "launcher-token")
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -431,7 +432,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 	}
 	command := exec.Command(self, "-test.run=^TestLauncherProcess$")
 	command.Env = append(os.Environ(), launcherProcessEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+private)
+		"LEGION_LAUNCHER_TEST_PRIVATE="+private, "LEGION_LAUNCHER_TEST_TOKEN="+token)
 	// The launcher's output goes to a file rather than a pipe: its child inherits it, and a pipe
 	// would hold the launcher's Wait open for as long as the child outlives the launcher.
 	output, err := os.Create(filepath.Join(t.TempDir(), "launcher.log"))
@@ -458,7 +459,7 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 		<-exited
 	}
 	t.Cleanup(kill)
-	g = &rig{t: t, listener: listener, private: private, result: make(chan error, 1), stderr: &lockedBuffer{}}
+	g = &rig{t: t, listener: listener, token: token, private: private, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	g.accept()
 	return g, kill
 }

@@ -67,9 +67,12 @@ func TestLauncherChild(t *testing.T) {
 type rig struct {
 	t        *testing.T
 	listener *daemonEnd
-	private  string
-	cancel   context.CancelFunc
-	result   chan error
+	// token is this rig's own launcher token (ownToken): its launcher's hellos carry it, and no
+	// other rig's do.
+	token   string
+	private string
+	cancel  context.CancelFunc
+	result  chan error
 	// roleConn is the daemon end of the role's current connection, which accept replaces.
 	*roleConn
 	// stderr is what the launcher and its children wrote to Config.Stderr.
@@ -113,11 +116,12 @@ func shortTempDir(t *testing.T) string {
 // in for the Cloud SQL connector, besides the fields every rig's launcher is given.
 func newSessionRig(t *testing.T, cfg Config) *rig {
 	t.Helper()
-	listener := listenForLauncher(t, "launcher-token")
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(t, token)
 	private := shortTempDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	g := &rig{t: t, listener: listener, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
-	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-legion-208"
+	g := &rig{t: t, listener: listener, token: token, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
+	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), token, "legion-legion-legion-208"
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
 	go func() {
 		err := Run(ctx, cfg)
@@ -144,7 +148,7 @@ func (g *rig) accept() shimwire.LauncherState {
 		hello = g.hello
 	}
 	conn := acceptRole(g.t, g.listener)
-	if conn.hello.Token != "launcher-token" || conn.hello.Role != "tester" || conn.hello.PodUID != "pod-1" {
+	if conn.hello.Token != g.token || conn.hello.Role != "tester" || conn.hello.PodUID != "pod-1" {
 		g.t.Fatalf("hello = %#v", conn.hello)
 	}
 	if hello.LauncherID != "" && conn.hello.LauncherID != hello.LauncherID {
@@ -585,14 +589,14 @@ func newWorkspace(t *testing.T) string {
 	return dir
 }
 
-// roleToken is the launcher token a roles directory holds for role.
-func roleToken(role string) string { return "launcher-token-" + role }
-
 // fleet is one multi-role launcher under test — an issue pod's one container, which serves every
 // resident role — and the daemon end of every role's connection.
 type fleet struct {
 	t        *testing.T
 	listener *daemonEnd
+	// tokens is each role's launcher token, the one its roles directory holds, of this fleet's own
+	// (ownToken): no other rig's launcher carries one.
+	tokens map[string]string
 	// rolesDir is the container-level per-role root, home the directory each role's own home
 	// overlay covers, and fixed the root its own directories are bound back under.
 	rolesDir, home, fixed string
@@ -601,6 +605,9 @@ type fleet struct {
 	stderr                *lockedBuffer
 	conns                 map[string]*roleConn
 }
+
+// token is the launcher token the fleet's roles directory holds for role.
+func (f *fleet) token(role string) string { return f.tokens[role] }
 
 // newFleet is newFleetOf of a launcher that carries no fields of its own but its stop grace.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
@@ -641,7 +648,7 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
 		fixed: filepath.Join(scratch, "fixed"), result: make(chan error, 1), stderr: &lockedBuffer{},
-		conns: map[string]*roleConn{},
+		conns: map[string]*roleConn{}, tokens: map[string]string{},
 	}
 	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir, RoleAgentSecretsDir} {
 		if err := os.MkdirAll(filepath.Join(f.fixed, name), 0o755); err != nil {
@@ -653,21 +660,20 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 			t.Fatal(err)
 		}
 	}
+	tokens := make([]string, 0, len(roles))
 	for _, role := range roles {
 		for _, name := range []string{RoleLauncherDir, RoleGHDir, RolePrivateDir, RoleStateDir, RoleAgentSecretsDir} {
 			if err := os.MkdirAll(filepath.Join(f.rolesDir, role, name), 0o755); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := os.WriteFile(filepath.Join(f.rolesDir, role, RoleLauncherDir, LauncherTokenFile), []byte(roleToken(role)+"\n"), 0o400); err != nil {
+		f.tokens[role] = ownToken("launcher-token-" + role)
+		tokens = append(tokens, f.tokens[role])
+		if err := os.WriteFile(filepath.Join(f.rolesDir, role, RoleLauncherDir, LauncherTokenFile), []byte(f.tokens[role]+"\n"), 0o400); err != nil {
 			t.Fatal(err)
 		}
 	}
 	useRoleLayout(t, f.home, filepath.Join(scratch, "home-mounts"), f.fixed)
-	tokens := make([]string, 0, len(roles))
-	for _, role := range roles {
-		tokens = append(tokens, roleToken(role))
-	}
 	listener := listenForLauncher(t, tokens...)
 	f.listener = listener
 	ctx, cancel := context.WithCancel(context.Background())
@@ -765,7 +771,7 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	f := newFleet(t, 2*time.Second, "tester", "reviewer")
 	for _, role := range []string{"tester", "reviewer"} {
 		hello := f.role(role).hello
-		if hello.Token != roleToken(role) || hello.Sandbox != "legion-legion-legion-208" || hello.PodUID != "pod-1" {
+		if hello.Token != f.token(role) || hello.Sandbox != "legion-legion-legion-208" || hello.PodUID != "pod-1" {
 			t.Fatalf("role %s hello = %#v, want its own token for this sandbox and pod", role, hello)
 		}
 	}
@@ -776,7 +782,7 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	first := f.role("tester").hello.LauncherID
 	_ = f.role("tester").conn.Close()
 	again := acceptRole(t, f.listener)
-	if again.hello.Role != "tester" || again.hello.LauncherID != first || again.hello.Token != roleToken("tester") {
+	if again.hello.Role != "tester" || again.hello.LauncherID != first || again.hello.Token != f.token("tester") {
 		t.Fatalf("the reconnect hello is %#v, want tester as launcher %s again", again.hello, first)
 	}
 	again.acknowledge()

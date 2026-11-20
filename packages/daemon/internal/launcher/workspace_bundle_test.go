@@ -572,7 +572,8 @@ func (f *bundleFixture) at() string {
 // whatever opened before it (daemonEnd).
 func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 	f.t.Helper()
-	end := listenFor(f.t, shimHello("boot"))
+	bootToken := ownToken("boot")
+	end := listenFor(f.t, shimHello(bootToken))
 	if f.aheadOfTheShim != nil {
 		f.aheadOfTheShim(end.Addr().String())
 	}
@@ -584,7 +585,7 @@ func (f *bundleFixture) bundleWorkspaceOne() shimwire.WorkspaceBundle {
 		// The wrapped process is a plain `cat`: the shim bridges its stdio and answers the
 		// bundle frame itself, so nothing of Oh My Pi is needed to prove the save.
 		_, err := shim.Run(ctx, shim.Config{
-			Network: "tcp", Address: end.Addr().String(), BootToken: "boot",
+			Network: "tcp", Address: end.Addr().String(), BootToken: bootToken,
 			Argv: []string{"/bin/sh", "-c", "exec cat"},
 			Env:  append(f.env, "LEGION_WORKSPACE="+f.ws),
 		})
