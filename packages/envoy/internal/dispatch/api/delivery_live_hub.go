@@ -291,12 +291,28 @@ func (h *deliveryHub) dropLocked(conn deliveryLiveConn, id string) {
 	}
 }
 
-// leaveLocked takes sub out of its view, and drops the view it leaves without a sub.
+// leaveLocked takes sub out of its view, and drops the view it leaves without a sub, and with the
+// last view of its reader what g holds of that reader (forgetReaderLocked).
 func (g *hubGeneration) leaveLocked(sub *deliverySub) {
 	delete(sub.view.subs, sub)
 	if len(sub.view.subs) == 0 && g.views[sub.view.spec.key] == sub.view {
 		delete(g.views, sub.view.spec.key)
+		g.forgetReaderLocked(sub.view.spec.viewer)
 	}
+}
+
+// forgetReaderLocked drops the unfetchable count and the verdict last sent of the reader whose part
+// of a view key is viewer once no view of g is that reader's, so a generation keeps nothing of a
+// reader whose pages have all gone, however many come and go while it runs. A reader that comes
+// back is one g never saw: its first read sets its verdict silently again (recompute).
+func (g *hubGeneration) forgetReaderLocked(viewer string) {
+	for _, view := range g.views {
+		if view.spec.viewer == viewer {
+			return
+		}
+	}
+	delete(g.unfetchable, viewer)
+	delete(g.sent, viewer)
 }
 
 // The channels the delivery hub listens on. delivery_changes carries no payload and is notified as
