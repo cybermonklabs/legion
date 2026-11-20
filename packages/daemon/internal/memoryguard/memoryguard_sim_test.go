@@ -91,17 +91,18 @@ import (
 // never pass. Readings come the interval apart, most of them 0 to 10 ms late, some 10 to 60 ms and
 // some 60 to 220 ms, as a throttled pod's do. A killed process exits at its kill and frees what it
 // holds. In half the seeds, by draws of their own (planLate), the last two to five of the six by
-// their forks are late growers: they start instead at the stay's first kill or 1 to 150 ms after
-// it, each running the grow program from its start, at 9 MiB, and step first 250 to 500 ms after
-// it, the grow program's sleep after its first block, so the guard reads none of them before that
-// kill (the architect's decision of 2026-11-20T08:13Z, item 2: the simulation missed r2's shape, so
-// its model lacked them). In a quarter of the seeds, by draws of their own (planRise), the agent
-// grows at or after the stay's first kill by what keeps the reading 1 to 30 MiB at or above the
-// mark once every grower has ended, as a rise of Oh My Pi's own does: the guard then ends the
-// probe's parent while its sleeping forks live, and they live on as orphans. A run ends once every
-// grower has ended and three readings have passed since then and since the guard's last kill, so a
-// kill after the growers have ended is judged at the readings after it. Where every seed runs, the
-// test fails if no seed ends the parent so, since rule orphan would then check nothing.
+// their forks are late growers: they start instead at the later of the stay's first kill and the
+// last fork in the band, or 1 to 150 ms after it (startLate), each running the grow program from
+// its start, at 9 MiB, and step first 250 to 500 ms after it, the grow program's sleep after its
+// first block, so the guard reads none of them before that kill (the architect's decision of
+// 2026-11-20T08:13Z, item 2: the simulation missed r2's shape, so its model lacked them). In a
+// quarter of the seeds, by draws of their own (planRise), the agent grows 0 to 300 ms after that
+// later instant by what keeps the reading 1 to 30 MiB at or above the mark once every grower has
+// ended, as a rise of Oh My Pi's own does: the guard then ends the probe's parent while its
+// sleeping forks live, and they live on as orphans. A run ends once every grower has ended and
+// three readings have passed since then and since the guard's last kill, so a kill after the
+// growers have ended is judged at the readings after it. Where every seed runs, the test fails if
+// no seed ends the parent so, since rule orphan would then check nothing.
 func TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants(t *testing.T) {
 	failed := map[string][]uint64{}
 	ran, orphaned := 0, 0
@@ -328,11 +329,7 @@ func (s *simRun) schedule() {
 		}
 		exec := fork + s.uniform(time.Millisecond, 120*time.Millisecond)
 		s.events = append(s.events, simEvent{at: fork, pid: pid, kind: simFork}, simEvent{at: exec, pid: pid, kind: simExec})
-		for at := exec + s.uniform(20*time.Millisecond, 200*time.Millisecond); at < 8*time.Second; at += s.uniform(60*time.Millisecond, 500*time.Millisecond) {
-			start := max(exec, at-s.uniform(time.Millisecond, 30*time.Millisecond))
-			by := (8 + s.rng.Uint64N(5)) * mib
-			s.events = append(s.events, simEvent{at: start, pid: pid, kind: simStepStart}, simEvent{at: at, pid: pid, kind: simStepEnd, by: by})
-		}
+		s.events = appendSteps(s.events, s.rng, pid, exec, s.uniform(20*time.Millisecond, 200*time.Millisecond))
 	}
 	slices.SortStableFunc(s.events, func(x, y simEvent) int { return cmp.Compare(x.at, y.at) })
 }
@@ -341,14 +338,13 @@ func (s *simRun) schedule() {
 // item 2, on `8g-latepool-r2` at 28732f65, where five of six growers were first read after the
 // stay's first kill), by a stream of draws of the seed's own, so that a seed without them runs as
 // it did: in half the seeds, the last two to five of the six by their forks do not fork in the band
-// but start at the stay's first kill or 1 to 150 ms after it (startLate). Each is a child of the
-// parent that runs the grow program from its start, at 9 MiB, as r2's growers, subprocesses started
-// after the band's last reading, did, so its first read is not a fork's read. The program sleeps
-// 250 ms after its first block, so its first step lands 250 to 500 ms after its start, as r2's
-// did, and it then steps as the others do.
+// but start at the later of the stay's first kill and the last fork in the band, or 1 to 150 ms
+// after it (startLate). Each is a child of the parent that runs the grow program from its start, at
+// 9 MiB, as r2's growers, subprocesses started after the band's last reading, did, so its first
+// read is not a fork's read. The program sleeps 250 ms after its first block, so its first step
+// lands 250 to 500 ms after its start, as r2's did, and it then steps as the others do.
 func (s *simRun) planLate(seed uint64) {
 	rng := rand.New(rand.NewPCG(seed, 0x6c617465))
-	uniform := func(lo, hi time.Duration) time.Duration { return lo + time.Duration(rng.Int64N(int64(hi-lo))) }
 	if rng.IntN(2) == 0 {
 		return
 	}
@@ -363,7 +359,7 @@ func (s *simRun) planLate(seed uint64) {
 	starts := make([]time.Duration, len(late))
 	for j := range starts {
 		if rng.IntN(2) == 0 {
-			starts[j] = uniform(time.Millisecond, 150*time.Millisecond)
+			starts[j] = uniformIn(rng, time.Millisecond, 150*time.Millisecond)
 		}
 	}
 	slices.Sort(starts)
@@ -371,11 +367,7 @@ func (s *simRun) planLate(seed uint64) {
 		p, start := s.procs[pid], starts[j]
 		p.fp.args, p.fp.anon = growArgs, simGrowerBase
 		s.late = append(s.late, simEvent{at: start, pid: pid, kind: simStart})
-		for at := start + uniform(250*time.Millisecond, 500*time.Millisecond); at < 8*time.Second; at += uniform(60*time.Millisecond, 500*time.Millisecond) {
-			step := max(start, at-uniform(time.Millisecond, 30*time.Millisecond))
-			by := (8 + rng.Uint64N(5)) * mib
-			s.late = append(s.late, simEvent{at: step, pid: pid, kind: simStepStart}, simEvent{at: at, pid: pid, kind: simStepEnd, by: by})
-		}
+		s.late = appendSteps(s.late, rng, pid, start, uniformIn(rng, 250*time.Millisecond, 500*time.Millisecond))
 	}
 }
 
@@ -402,9 +394,10 @@ func (s *simRun) startLate(at time.Duration) {
 // a process read as a fork stays one, its parent gone or not, until its executable or arguments
 // differ from what that read found), by a stream of draws of the seed's own, so that it draws
 // nothing from the run's other draws: in a quarter of the seeds, the agent, which the guard may not
-// end, grows 0 to 300 ms after the stay's first kill (startLate) by what keeps the reading 1 to 30
-// MiB at or above the mark once every grower has ended. The guard then ends the probe's parent while
-// its sleeping forks live, and they live on as orphans that still run the parent's program.
+// end, grows 0 to 300 ms after the later of the stay's first kill and the last fork in the band
+// (startLate) by what keeps the reading 1 to 30 MiB at or above the mark once every grower has
+// ended. The guard then ends the probe's parent while its sleeping forks live, and they live on as
+// orphans that still run the parent's program.
 func (s *simRun) planRise(seed uint64) {
 	rng := rand.New(rand.NewPCG(seed, 0x6f727068))
 	if rng.IntN(4) != 0 {
@@ -415,9 +408,25 @@ func (s *simRun) planRise(seed uint64) {
 	s.late = append(s.late, simEvent{at: at, pid: 100, kind: simRise, by: below + (1+rng.Uint64N(30))*mib})
 }
 
-// uniform is a duration drawn evenly from [lo, hi).
-func (s *simRun) uniform(lo, hi time.Duration) time.Duration {
-	return lo + time.Duration(s.rng.Int64N(int64(hi-lo)))
+// uniform is a duration drawn evenly from [lo, hi) by the run's draws.
+func (s *simRun) uniform(lo, hi time.Duration) time.Duration { return uniformIn(s.rng, lo, hi) }
+
+// uniformIn is a duration drawn evenly from [lo, hi) by rng.
+func uniformIn(rng *rand.Rand, lo, hi time.Duration) time.Duration {
+	return lo + time.Duration(rng.Int64N(int64(hi-lo)))
+}
+
+// appendSteps appends to events the steps of the grower pid until 8 s of the model's time: the
+// first lands firstGap after from, and each next 60 to 500 ms after the one before; each is under
+// way 1 to 30 ms before it lands, never before from, and grows 8 to 12 MiB. It draws them from rng
+// in that order, for schedule from the run's draws and for planLate from the late growers' own.
+func appendSteps(events []simEvent, rng *rand.Rand, pid int, from, firstGap time.Duration) []simEvent {
+	for at := from + firstGap; at < 8*time.Second; at += uniformIn(rng, 60*time.Millisecond, 500*time.Millisecond) {
+		start := max(from, at-uniformIn(rng, time.Millisecond, 30*time.Millisecond))
+		by := (8 + rng.Uint64N(5)) * mib
+		events = append(events, simEvent{at: start, pid: pid, kind: simStepStart}, simEvent{at: at, pid: pid, kind: simStepEnd, by: by})
+	}
+	return events
 }
 
 // op is one of the guard's operations, which takes d of the model's time: every change of a grower
