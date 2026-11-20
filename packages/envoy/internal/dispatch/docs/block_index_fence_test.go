@@ -737,7 +737,11 @@ func requireTheUploadIsFenced(t *testing.T, database *store.Store, service *Serv
 			if _, _, err := lockArtifactOwner(joined, tx, document); err != nil {
 				return 0, fmt.Errorf("take the document's owner: %w", err)
 			}
-			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice)
+			precondition, err := replacementPrecondition(joined, service, document)
+			if err != nil {
+				return 0, fmt.Errorf("read the document's token: %w", err)
+			}
+			stored, err := service.ReplaceText(joined, document, "- alpha\n- gamma\n", alice, precondition)
 			if err != nil {
 				return 0, fmt.Errorf("replace the document's text: %w", err)
 			}

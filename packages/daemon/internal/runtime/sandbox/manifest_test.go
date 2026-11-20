@@ -221,8 +221,9 @@ func TestARequestBelowItsLimitRendersABurstablePod(t *testing.T) {
 const resumeSession = ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/2026-09-23T12-00-00-000Z_0198.jsonl"
 
 // manifestCases are the Sandboxes the goldens pin: the root; a worker; a resume; the root enrolled
-// with the secrets broker; the root of a microVM project whose block names the metadata endpoint;
-// the project controller's pod, launched fresh and resuming; and a worker on Claude Code, a case of
+// with the secrets broker; the root of a microVM project whose block names the metadata endpoint,
+// and the same root with keep_volume on, whose Sandbox owns its kept volume; the project
+// controller's pod, launched fresh and resuming; and a worker on Claude Code, a case of
 // its own so every Oh My Pi one keeps pinning that pod unchanged by the Claude backend. The Claude
 // worker's Sandbox is the Oh My Pi worker's byte for byte: its lane is the launcher's start command
 // (launcherCommand), which TestAClaudeLaunchCarriesItsMCPDocumentAsALauncherFile holds, so a pod
@@ -244,6 +245,9 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 			URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour,
 		}},
 		"root-microvm": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()}},
+		// root-microvm-kept is root-microvm with keep_volume on: the one case whose issue Sandbox
+		// owns a claim template, its kept volume (TestOnlyAMicroVMPodKeepsItsVolume).
+		"root-microvm-kept": {spec: rootSpec(t), sandbox: SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}},
 		// root-exchange-identity is root-enrolled with agent_secrets.exchange_audience set: the
 		// one case whose pod carries an identity the broker's exchange trades
 		// (TestAnEnrolledPodCarriesAnIdentityItCanTrade).
@@ -253,9 +257,9 @@ func manifestCases(t *testing.T) map[string]manifestCase {
 
 // manifestCase is one Sandbox the goldens pin: its launch's spec, and what the case sets on the
 // runtime beside goldenOptions — agentSecrets, the enrollment, for root-enrolled and
-// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm alone. The tests
-// that build every case's manifest on one shared runtime apply each case to it first (apply), so
-// every other case runs unenrolled and in gVisor.
+// root-exchange-identity alone, and sandbox, the sandbox block, for root-microvm and
+// root-microvm-kept alone. The tests that build every case's manifest on one shared runtime apply
+// each case to it first (apply), so every other case runs unenrolled and in gVisor.
 type manifestCase struct {
 	spec         runtime.SpawnSpec
 	agentSecrets *AgentSecrets
@@ -349,9 +353,10 @@ func checkGolden(t *testing.T, name string, manifest any) {
 // TestTheProbePodCarriesNoGKEExtendedDurationAnnotation): Karpenter's own, which protects a pod on
 // an AWS cluster, and the Cluster Autoscaler's, which GKE Autopilot honours; GKE ignores
 // Karpenter's, so a pod on Autopilot without the second can be evicted mid-turn by consolidation or
-// a node upgrade. Each carries, beside them and as the only other annotation of its template, the
-// configuration it was built from, its own kind's in its own sandbox (podShapeAnnotation): the one
-// record an update round reads a pod's drift from (podShapeDrift), written here and nowhere else.
+// a node upgrade. Each carries, beside them, the configuration it was built from, its own kind's
+// in its own sandbox (podShapeAnnotation): the one record an update round reads a pod's drift from
+// (podShapeDrift), written here and nowhere else; and, under a configured leak check setting, the
+// checker it was built under (leakCheckerAnnotation), which a launch keeping the pod tells its role.
 func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.T) {
 	r, err := configure(goldenOptions())
 	if err != nil {
@@ -368,6 +373,7 @@ func TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction(t *testing.
 				doNotDisruptAnnotation: "true",
 				safeToEvictAnnotation:  "false",
 				podShapeAnnotation:     podShape(r, l.kind, l.microVM),
+				leakCheckerAnnotation:  testLeakCheck.ManifestSHA256,
 			}
 			if got := r.podTemplate(l).Metadata.Annotations; !maps.Equal(got, want) {
 				t.Errorf("pod annotations = %v, want exactly %v", got, want)
@@ -466,16 +472,24 @@ func containerNamed(t *testing.T, pod corev1.PodSpec, name string) corev1.Contai
 	return corev1.Container{}
 }
 
-// podDisk is the claim template of an issue pod's own disk: its issue volume is a generic
-// ephemeral volume, which Kubernetes creates with the pod and deletes with the pod, never a claim
-// that outlived an earlier pod (INFRA-80).
-func podDisk(t *testing.T, pod corev1.PodSpec) *corev1.PersistentVolumeClaimTemplate {
+// podDiskSource is where an issue pod's disk, its issue volume, comes from, either source
+// issuePod.disk gives: a generic ephemeral volume of the pod's own, or the claim of the kept
+// volume its Sandbox owns.
+func podDiskSource(t *testing.T, pod corev1.PodSpec) corev1.VolumeSource {
 	t.Helper()
 	at := slices.IndexFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == issueVolume })
 	if at < 0 {
 		t.Fatalf("the pod's volumes %+v carry no %s volume", pod.Volumes, issueVolume)
 	}
-	disk := pod.Volumes[at].VolumeSource
+	return pod.Volumes[at].VolumeSource
+}
+
+// podDisk is the claim template of an issue pod's own disk: its issue volume is a generic
+// ephemeral volume, which Kubernetes creates with the pod and deletes with the pod, never a claim
+// that outlived an earlier pod (INFRA-80).
+func podDisk(t *testing.T, pod corev1.PodSpec) *corev1.PersistentVolumeClaimTemplate {
+	t.Helper()
+	disk := podDiskSource(t, pod)
 	if disk.PersistentVolumeClaim != nil {
 		t.Fatalf("the pod's %s volume is the claim %s, want an ephemeral volume of its own", issueVolume, disk.PersistentVolumeClaim.ClaimName)
 	}
@@ -1407,16 +1421,17 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 
 // runtimeOwned and the composed names together, with the exchange identity's two where the
 // deployment names an exchange audience (Runtime.specOwned), are exactly what the worker container
-// is told by the runtime itself, a tree agent's, a Claude Code worker's and the controller's
-// together: every name mainEnvironment sets with Env empty and no secret of the spec's, every
-// optional value configured — the tree agent works a repository the project names, so it is told
-// the issue key it stamps its commits with — under an enrollment that names an exchange audience
-// and under one that names none, which tells no role either exchange variable. A name added to
-// the environment and in no set is one a spec could override; a name left in one of them that
-// the environment no longer sets is one a spec is refused for nothing. The sets are kept apart by
-// what an operator may do with a name, not by who writes the value the container carries: a
-// composed name reaches the container with the operator's own value inside it (roleOperatorEnv),
-// and every launch has a role, so the spend attributes are in every one of these environments.
+// is told by the runtime itself, a tree agent's, a resumed tree agent's, a Claude Code worker's and
+// the controller's together: every name mainEnvironment sets with Env empty and no secret of the
+// spec's, every optional value configured — the tree agent works a repository the project names,
+// so it is told the issue key it stamps its commits with — under an enrollment that names an
+// exchange audience and under one that names none, which tells no role either exchange variable.
+// A name added to the environment and in no set is one a spec could override; a name left in one
+// of them that the environment no longer sets is one a spec is refused for nothing. The sets are
+// kept apart by what an operator may do with a name, not by who writes the value the container
+// carries: a composed name reaches the container with the operator's own value inside it
+// (roleOperatorEnv), and every launch has a role, so the spend attributes are in every one of
+// these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	for name, agentSecrets := range map[string]*AgentSecrets{
 		"the exchange identity on":  exchangeEnrolled(),
@@ -1433,8 +1448,12 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			}
 			stamping := workerSpec(t)
 			stamping.IssueTrailer = stamping.Issue
+			// The resumed tree agent is told what holds it to the session it resumes, which no fresh
+			// launch is told (runtime.SessionExclusiveVariable).
+			resuming := stamping
+			resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 			told := map[string]bool{}
-			for _, spec := range []runtime.SpawnSpec{stamping, claudeWorkerSpec(t), controllerSpec(t)} {
+			for _, spec := range []runtime.SpawnSpec{stamping, resuming, claudeWorkerSpec(t), controllerSpec(t)} {
 				spec.Env, spec.Secrets = nil, nil
 				for name := range envOf(workerOf(t, r, spec)) {
 					told[name] = true
@@ -2224,7 +2243,8 @@ func TestEveryLegionPodAsksNothingOfItsPlacementBeyondThePool(t *testing.T) {
 // operator's StorageClass, a microVM pod's the microVM block's, at the operator's size, and
 // carries no metadata: the pinned CRD declares ephemeral.volumeClaimTemplate.metadata a bare object
 // with no properties, so a label set there would be pruned by the API server without a word
-// (TestManifestMatchesTheSandboxCRD).
+// (TestManifestMatchesTheSandboxCRD). The one exception is a microVM pod under keep_volume, whose
+// Sandbox owns its kept volume (TestOnlyAMicroVMPodKeepsItsVolume), so its case is left out here.
 func TestAnIssuePodOwnsItsDiskAndItsSandboxOwnsNoVolume(t *testing.T) {
 	opts := goldenOptions()
 	r, err := configure(opts)
@@ -2240,6 +2260,9 @@ func TestAnIssuePodOwnsItsDiskAndItsSandboxOwnsNoVolume(t *testing.T) {
 			}
 			if l.kind == (controllerPod{}) {
 				t.Skip("the controller's Sandbox owns its volume")
+			}
+			if keptVolume(issuePod{}, tc.sandbox.MicroVM) {
+				t.Skip("a microVM pod's Sandbox owns its kept volume (TestOnlyAMicroVMPodKeepsItsVolume)")
 			}
 			if got := r.sandboxManifest(l).Spec.VolumeClaimTemplates; len(got) != 0 {
 				t.Errorf("the issue's Sandbox owns %+v, want no volume claim template: its pod owns its disk", got)
@@ -2285,7 +2308,7 @@ func TestTheControllersClaimTemplateCarriesItsProjectAndRoleAlone(t *testing.T) 
 				t.Fatal(err)
 			}
 			if l.kind != (controllerPod{}) {
-				t.Skip("an issue's Sandbox owns no claim template")
+				t.Skip("an issue's Sandbox owns no claim template, or its kept volume's (TestOnlyAMicroVMPodKeepsItsVolume)")
 			}
 			templates := r.sandboxManifest(l).Spec.VolumeClaimTemplates
 			if len(templates) != 1 || templates[0].Metadata.Name != issueVolume {
@@ -2317,6 +2340,13 @@ func testMicroVM() *MicroVM {
 	}
 }
 
+// keptMicroVM is testMicroVM with keep_volume on.
+func keptMicroVM() *MicroVM {
+	block := testMicroVM()
+	block.KeepVolume = true
+	return block
+}
+
 // sandboxRuntime is the runtime of goldenOptions under the sandbox block, with edits applied.
 func sandboxRuntime(t *testing.T, block SandboxConfig, edits ...func(*Options)) *Runtime {
 	t.Helper()
@@ -2337,7 +2367,7 @@ func sandboxRuntime(t *testing.T, block SandboxConfig, edits ...func(*Options)) 
 func sandboxOf(c config.SandboxConfig) SandboxConfig {
 	block := SandboxConfig{Type: SandboxType(c.Type), CanaryIssues: c.CanaryIssues}
 	if m := c.MicroVM; m != nil {
-		block.MicroVM = &MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass}
+		block.MicroVM = &MicroVM{ComputeClass: m.ComputeClass, StorageClass: m.StorageClass, KeepVolume: m.KeepVolume}
 		if endpoint := m.Metadata; endpoint != nil {
 			block.MicroVM.Metadata = &MetadataEndpoint{WorkloadPool: endpoint.WorkloadPool, IdentityProvider: endpoint.IdentityProvider}
 		}
@@ -2626,8 +2656,157 @@ func TestAMicroVMPodTakesTheMicroVMStorageClassOrTheDaemons(t *testing.T) {
 	})
 }
 
-// A microVM pod carries the two stop-eviction annotations a gVisor pod does, and its kind's pod
-// shape in a microVM as the only other one
+// runtime.kubernetes.sandbox.microvm.keep_volume is a row of the key table whose default is
+// `false`. A microvm block without the key settles false, and `keep_volume: true` settles true. The
+// loader refuses a value that is not a boolean with a line that names the key (config's
+// readMicroVM).
+func TestTheMicroVMKeepVolumeKey(t *testing.T) {
+	const key = "runtime.kubernetes.sandbox.microvm.keep_volume"
+	var row *config.ConfigNestedKey
+	for _, entry := range config.ConfigReference() {
+		for i, nested := range entry.Nested {
+			if nested.Path+"."+nested.Name == key {
+				row = &entry.Nested[i]
+			}
+		}
+	}
+	switch {
+	case row == nil:
+		t.Errorf("the config reference has no row for %s", key)
+	case row.Default != "`false`":
+		t.Errorf("the config reference gives %s the default %q, want `false`", key, row.Default)
+	}
+	load := func(t *testing.T, lines string) (config.Config, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "legion.yaml")
+		if err := os.WriteFile(path, []byte(microVMProjectFile+lines), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return config.LoadForValidation(path, func(string) string { return "" })
+	}
+	for _, tc := range []struct {
+		name, lines string
+		want        bool
+	}{
+		{name: "no key", want: false},
+		{name: "keep_volume: true", lines: "        keep_volume: true\n", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := load(t, tc.lines)
+			if err != nil {
+				t.Fatalf("LoadForValidation: %v", err)
+			}
+			if got := cfg.Runtime.Kubernetes.Sandbox.MicroVM.KeepVolume; got != tc.want {
+				t.Errorf("%s settled %v, want %v", key, got, tc.want)
+			}
+		})
+	}
+	t.Run("keep_volume: maybe", func(t *testing.T) {
+		_, err := load(t, "        keep_volume: maybe\n")
+		if want := key + " must be true or false"; err == nil || err.Error() != want {
+			t.Errorf("LoadForValidation error = %v, want %q", err, want)
+		}
+	})
+}
+
+// keep_volume keeps the volume of an issue pod that runs in a microVM, by either route to one, and
+// of no other pod. The pod's Sandbox owns one claim template, named `issue`, labelled with the
+// project, the issue and legion.dev/volume=kept and with no tree. It is on the microvm block's
+// StorageClass at issue_volume's size, ReadWriteOnce, and the pod mounts at /legion the claim Agent
+// Sandbox makes from it (IssueClaimName). A gVisor issue pod keeps the ephemeral volume of its own,
+// and a gVisor project with no canary renders the root's Sandbox of a project with no sandbox
+// block, byte for byte. The controller's Sandbox is the one of today in every case. The stored
+// side reads the kept Sandbox as kept, decoded and as the API server holds it, and every other
+// Sandbox, the controller's `issue` template included, as not kept. With the setting off, a
+// microVM project's root is the root-microvm golden byte for byte.
+func TestOnlyAMicroVMPodKeepsItsVolume(t *testing.T) {
+	opts := goldenOptions()
+	specs := map[string]runtime.SpawnSpec{"LEGION-208": rootSpec(t), "LEGION-209": childSpec(t)}
+	for name, tc := range map[string]struct {
+		block SandboxConfig
+		// kept are the issues whose pods keep their volume.
+		kept []string
+	}{
+		"a gvisor project with no canary": {SandboxConfig{Type: SandboxGVisor, MicroVM: keptMicroVM()}, nil},
+		"a gvisor project whose canary is LEGION-209": {
+			SandboxConfig{Type: SandboxGVisor, CanaryIssues: []string{"LEGION-209"}, MicroVM: keptMicroVM()}, []string{"LEGION-209"},
+		},
+		"a microvm project whose canary is LEGION-209": {
+			SandboxConfig{Type: SandboxMicroVM, CanaryIssues: []string{"LEGION-209"}, MicroVM: keptMicroVM()}, []string{"LEGION-208"},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := sandboxRuntime(t, tc.block)
+			for issue, spec := range specs {
+				l := launchOf(t, r, spec)
+				manifest := r.sandboxManifest(l)
+				templates := manifest.Spec.VolumeClaimTemplates
+				pod := r.podTemplate(l).Spec
+				kept := slices.Contains(tc.kept, issue)
+				if decoded, stored := keptReadings(t, manifest); decoded != kept || stored != kept {
+					t.Errorf("%s's Sandbox reads as kept %v decoded and %v stored, want %v", issue, decoded, stored, kept)
+				}
+				if !kept {
+					if len(templates) != 0 {
+						t.Errorf("%s's Sandbox owns %+v, want no claim template: its pod owns its disk", issue, templates)
+					}
+					podDisk(t, pod)
+					continue
+				}
+				if len(templates) != 1 || templates[0].Metadata.Name != issueVolume {
+					t.Fatalf("%s's Sandbox owns %+v, want the one %s template of its kept volume", issue, templates, issueVolume)
+				}
+				labels := map[string]string{labelProject: testProject, labelIssue: issue, labelVolume: volumeKept}
+				if got := templates[0].Metadata.Labels; !maps.Equal(got, labels) {
+					t.Errorf("%s's claim template carries %v, want exactly %v and no tree", issue, got, labels)
+				}
+				storageClass := testMicroVMStorageClass
+				want := corev1.PersistentVolumeClaimSpec{
+					AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					StorageClassName: &storageClass,
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{corev1.ResourceStorage: opts.IssueVolume},
+					},
+				}
+				if got := templates[0].Spec; !reflect.DeepEqual(got, want) {
+					t.Errorf("%s's kept claim is %+v, want %+v", issue, got, want)
+				}
+				if mount := mountHolding(containerNamed(t, pod, l.kind.container()), TreeRoot); mount == nil || mount.Name != issueVolume || mount.MountPath != TreeRoot {
+					t.Errorf("%s's pod mounts %+v at %s, want its %s volume", issue, mount, TreeRoot, issueVolume)
+				}
+				disk := podDiskSource(t, pod)
+				if disk.PersistentVolumeClaim == nil || disk.PersistentVolumeClaim.ClaimName != IssueClaimName(spec.Claim) || disk.Ephemeral != nil {
+					t.Errorf("%s's pod's %s volume is %+v, want the claim %s alone", issue, issueVolume, disk, IssueClaimName(spec.Claim))
+				}
+			}
+			if len(tc.block.CanaryIssues) == 0 {
+				checkGolden(t, "root", manifestOf(t, r, rootSpec(t)))
+			}
+			checkGolden(t, "controller", manifestOf(t, r, controllerSpec(t)))
+			if decoded, stored := keptReadings(t, r.sandboxManifest(launchOf(t, r, controllerSpec(t)))); decoded || stored {
+				t.Errorf("the controller's Sandbox reads as kept %v decoded and %v stored, want neither", decoded, stored)
+			}
+		})
+	}
+	t.Run("keep_volume false", func(t *testing.T) {
+		r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: testMicroVM()})
+		checkGolden(t, "root-microvm", manifestOf(t, r, rootSpec(t)))
+	})
+}
+
+// keptReadings are how the stored side reads s: decoded (ownsKeptVolume), and as the API server
+// holds it, without a decode (storedOwnsKeptVolume).
+func keptReadings(t *testing.T, s sandbox) (decoded, stored bool) {
+	t.Helper()
+	u, err := encodeSandbox(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ownsKeptVolume(&s), storedOwnsKeptVolume(u)
+}
+
+// A microVM pod carries the two stop-eviction annotations a gVisor pod does, its kind's pod
+// shape in a microVM, and the checker it was built under
 // (TestEveryIssueAndControllerPodIsProtectedFromAutoscalerEviction): the sandbox it runs in changes
 // nothing of what asks the autoscaler to leave its node alone.
 func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
@@ -2636,7 +2815,8 @@ func TestAMicroVMPodKeepsTheStopEvictionAnnotations(t *testing.T) {
 	if got := renderedSandbox(t, template); got != SandboxMicroVM {
 		t.Fatalf("the pod runs in %s, want a microVM", got)
 	}
-	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM())}
+	want := map[string]string{doNotDisruptAnnotation: "true", safeToEvictAnnotation: "false", podShapeAnnotation: podShape(r, issuePod{}, testMicroVM()),
+		leakCheckerAnnotation: testLeakCheck.ManifestSHA256}
 	if got := template.Metadata.Annotations; !maps.Equal(got, want) {
 		t.Errorf("the microVM pod's annotations are %v, want exactly %v", got, want)
 	}
@@ -3124,5 +3304,51 @@ func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
 	}
 	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
 		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
+	}
+}
+
+// A launch that resumes a recorded Oh My Pi session, a worker's or the controller's, is told
+// OMP_SESSION_EXCLUSIVE=1 once in its start command, which holds its Oh My Pi to that session: a
+// resume of a session another live process still holds exits rather than moving the role onto a
+// session id the daemon never recorded. A fresh launch is told nothing of it, and neither is a
+// Claude Code role that resumes its transcript. The variable is the start command's alone: no
+// container of the pod carries it, so a resume changes nothing of the pod it relaunches in.
+func TestOnlyAResumedOhMyPiLaunchIsHeldToItsSession(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed := workerSpec(t)
+	resumed.Generation, resumed.BootToken, resumed.ResumeSessionFile = 2, "boot-g2", resumeSession
+	controllerResumed := controllerSpec(t)
+	controllerResumed.Generation, controllerResumed.BootToken, controllerResumed.ResumeSessionFile = 2, "boot-g2", controllerSession
+	for name, tc := range map[string]struct {
+		spec runtime.SpawnSpec
+		want []string
+	}{
+		"a resumed Oh My Pi worker":    {resumed, []string{"1"}},
+		"the resumed controller":       {controllerResumed, []string{"1"}},
+		"a fresh Oh My Pi worker":      {workerSpec(t), nil},
+		"the fresh controller":         {controllerSpec(t), nil},
+		"a resumed Claude Code worker": {claudeResumeSpec(t), nil},
+	} {
+		l := launchOf(t, r, tc.spec)
+		var values []string
+		for _, entry := range launcherCommand(l, r).Env {
+			if variable, value, _ := strings.Cut(entry, "="); variable == "OMP_SESSION_EXCLUSIVE" {
+				values = append(values, value)
+			}
+		}
+		if !slices.Equal(values, tc.want) {
+			t.Errorf("%s's start command sets OMP_SESSION_EXCLUSIVE to %q, want %q", name, values, tc.want)
+		}
+		pod := r.podTemplate(l).Spec
+		for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
+			for _, v := range c.Env {
+				if v.Name == "OMP_SESSION_EXCLUSIVE" {
+					t.Errorf("%s's pod container %s carries OMP_SESSION_EXCLUSIVE=%q, want it in the start command alone", name, c.Name, v.Value)
+				}
+			}
+		}
 	}
 }

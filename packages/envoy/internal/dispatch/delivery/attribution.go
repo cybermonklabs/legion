@@ -256,8 +256,8 @@ const attributionCandidateBound = 25
 // so the text reads as the list at the top of this file reads. The two link sources compare
 // URLs lowercased on both sides: GitHub's owner and repository names are case-insensitive, its
 // answers spell them as their owners do (`Acme/Widgets`), and Dispatch stores an issue's GitHub
-// link lowercased (canonicalRepo) or as a person typed it (issue_external_links_url_lower serves
-// the comparison).
+// link lowercased (refs.ExternalRepo) or as a person typed it (issue_external_links_url_lower
+// serves the comparison).
 func attributionCandidates(c attributionColumns) string {
 	return `select s.key, s.source, s.rank, s.n from (
 		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n

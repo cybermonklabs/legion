@@ -1096,8 +1096,8 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	}
 	// q is capped as `dispatch search` caps it, counted after trimming so a query the command
 	// sends is never refused here, and a project must be a key (an empty one searches every
-	// project). Both ride in the URL; packages/contracts/AGENTS.md "Search limits" says what keeps
-	// it short.
+	// project). Both ride in the URL; the URL budget in SEARCH_QUERY_MAX's doc comment
+	// (packages/contracts/src/dispatch-tools.ts) says what keeps it short.
 	if length := itemblocks.Units16(searchText); length > contracts.SearchQueryMax {
 		tooLong := capExceededError("q", length, contracts.SearchQueryMax)
 		writeError(w, tooLong.code, tooLong.status, tooLong.message+"; "+contracts.SearchQueryHint)

@@ -55,11 +55,17 @@ func issueKeyOfClaim(claim string) string {
 }
 
 // responsiblePerson is whose Inbox lists a request req's enrollment e made for a shared
-// human-tier secret, as a canonical login, in this order: the person the session acts for (a
-// person's sign-in, or the person who approved its machine login); for a fleet machine's own
-// session, the person its account's BROKER_VM_EXCHANGE_ACCOUNTS entry names; for a pod, assignee,
-// the person its claim's issue is assigned to. "" when none names a person, and then the request
-// is listed for everyone signed in, as it was before, so no request waits where nobody sees it.
+// human-tier secret, as a canonical login, in this order: the person the session acts for,
+// req.Operator (a person's sign-in, the person who approved its machine login, or, for a person's
+// pod, the person its login carried while BROKER_POD_OPERATORS still maps the pod's account to
+// that person, which requester reads at each request); for a fleet machine's own session, the
+// person its account's BROKER_VM_EXCHANGE_ACCOUNTS entry names; for a pod, assignee, the person
+// its claim's issue is assigned to. "" when none names a person, and then the request is listed
+// for everyone signed in, as it was before, so no request waits where nobody sees it. A person's
+// pod has no claim. So after the setting drops its account, or maps it to another person, a
+// request it makes is everyone's. Create calls this once, as it makes the request, and stores the
+// answer (credential_requests.notify), so a request made before such a change keeps the Inbox it
+// was listed in.
 func (m *Machine) responsiblePerson(e enrollmentRow, req policy.Requester, assignee string) string {
 	person := req.Operator
 	if person == "" {

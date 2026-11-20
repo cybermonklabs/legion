@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -228,6 +228,10 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // (supervise.ErrCompactNotEnded), or the claim lost its process under the compaction
 // (supervise.ErrCompactProcessGone). Neither gave the claim back, so neither is answered as a
 // compaction that did not run.
+//
+// While the project is paused, a claim that is not the project's controller is refused
+// PROJECT_PAUSED at both doors before anything is asked of it, and nothing of it changes
+// (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (CompactResponse, bool) {
 	if c := m.Claim(); s.backend != nil && runtime.Of(s.backend(c.Role)) == runtime.BackendClaude {
 		writeFailure(w, http.StatusConflict, claimNotOnOmp, fmt.Sprintf(
@@ -238,6 +242,11 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	if s.stopped(w, "compact") {
+		return CompactResponse{}, false
+	}
+	// A compaction sends the claim's task again once it ends, which is a turn the pause holds
+	// for every claim but the controller's.
+	if s.refusedWhilePaused(w, r, "compact", m.View().Claim) {
 		return CompactResponse{}, false
 	}
 	switch err := m.Compact(ctx, compactInstructions); {
@@ -317,16 +326,15 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 
 // boundReason is a compaction's reason cut to reasonBound bytes, on a rune boundary so the cut
 // leaves no partial character behind, with an ellipsis where it cut so a reader sees that the
-// sentence did not end there.
+// sentence did not end there. The reason is Oh My Pi's or the transport's, so redact.Bytes reads it
+// whole through the URL rule before the cut: a cut made first could end inside a URL's userinfo,
+// before its "@", and leave the start of a user name where the rule no longer finds it.
 func boundReason(text string) string {
-	if len(text) <= reasonBound {
-		return text
+	kept, cut := redact.Bytes(text, reasonBound)
+	if cut {
+		return kept + "…"
 	}
-	cut := reasonBound
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + "…"
+	return kept
 }
 
 // refuseState is the refusal the machine answered a compaction with, in the words of the state

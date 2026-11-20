@@ -54,7 +54,8 @@ hours the stream still holds shows no receipts.
 ## Consumer delivery
 
 `createConsumerDelivery` (`@legion/envoy-client/consumer-delivery`) is a session's side of the
-listener's relay of its durable consumer ("Session consumers" in `packages/envoy/AGENTS.md`). A
+listener's relay of its durable consumer (the "Session consumers" item of "Runtime shape" in
+`packages/envoy/docs/architecture.md`). A
 host makes one per session, subscribes its `subject` (`notifications.envoy.deliver.<session id>`)
 before it registers, passes `registration()` as the registration's `delivery` field, and gives the
 registration's answer and the topics it carried to `answered`, which returns `consumer`, the one
@@ -159,12 +160,18 @@ listener's warning returns, so a reword reaches both languages from one place.
 `natsConnectionOptions({ servers, name, credential })` (`@legion/envoy-client/nats-connection`) is
 the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
 builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
-a plugin dials only with these options), reconnecting forever 2 s apart, and a ping every 10 s
-(`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
-(`NATS_MAX_PINGS_OUT`). So a
+a plugin dials only with these options), a dial timeout of 10 s (`NATS_DIAL_TIMEOUT_MS`),
+reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`) with the connection
+dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 52 s when that redial also hangs on nats.js's 20 s dial timeout and the 2 s wait; nats.js's
-default 120 s interval left a frozen path for up to 6 minutes. A failed connect is logged as
+within 42 s when that redial also hangs for its 10 s timeout and the 2 s wait; nats.js's
+default 120 s interval left a frozen path for up to 6 minutes. A plugin opens its connection with
+`connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
+lookup, every address and every server, which nats.js times one at a time), and a failed dial
+dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
+unless no redial can cure the failure. A server that closes a dial during its handshake, as
+nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
+(`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
 `nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them
@@ -226,7 +233,7 @@ the trade all of it but the connection's share, 8 s or half the bound.
 The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
-at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
+at its dial timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
 only a transport that finished connecting, so the socket keeps the process alive and a channel
 server never exits on SIGTERM. Its stale-connection close (two unanswered pings) flushes the
 transport before it destroys the socket, and behind data a dead path never acknowledged that flush

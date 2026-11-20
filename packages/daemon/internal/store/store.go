@@ -67,6 +67,8 @@ type Store struct {
 
 // Open connects to dsn and waits for the server to answer, so a daemon that
 // gets a Store has a database and one that does not is told where it failed.
+// Its pool is PoolConfig's, so every connection runs the store's text rule, and a dsn whose exec
+// mode the rule cannot run in is refused here, before any connection is opened.
 // Every connection of the pool carries the idle bound (idleBound) unless dsn names a value of
 // its own, so a deployment can raise or lower it without a release.
 //
@@ -80,7 +82,7 @@ type Store struct {
 // startup parameter is what the server ends up running with (measured on PostgreSQL 18.6,
 // 2026-11-12). A deployment that wants another value writes it as its own DSN key.
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	config, err := pgxpool.ParseConfig(dsn)
+	config, err := PoolConfig(dsn)
 	if err != nil {
 		return nil, ConnectError(dsn, err)
 	}
@@ -99,6 +101,37 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, ConnectError(dsn, err)
 	}
 	return &Store{pool: pool}, nil
+}
+
+// PoolConfig is dsn as pgxpool parses it, with the store's codec rule on every connection the pool
+// opens (registerStorableCodecs, its AfterConnect). Open builds the daemon's pool with it, and a
+// test that builds a pool of its own does too (testpg.ClonePool), so what the test writes passes
+// the rule the daemon's writes pass.
+//
+// It refuses a dsn whose default_query_exec_mode is exec or simple_protocol. The codec rule picks
+// the text rule or the JSON rule by the type of each parameter, and pgx learns that type from the
+// server only in the three other modes: cache_statement (pgx's default), cache_describe and
+// describe_exec. In exec and simple_protocol pgx encodes each argument with no parameter type, so
+// a jsonb argument would get the text rule and keep a \u0000 escape the server refuses. A daemon
+// that cannot keep the rule does not start.
+func PoolConfig(dsn string) (*pgxpool.Config, error) {
+	config, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, err
+	}
+	var mode string
+	switch config.ConnConfig.DefaultQueryExecMode {
+	case pgx.QueryExecModeExec:
+		mode = "exec"
+	case pgx.QueryExecModeSimpleProtocol:
+		mode = "simple_protocol"
+	default:
+		config.AfterConnect = registerStorableCodecs
+		return config, nil
+	}
+	return nil, fmt.Errorf("default_query_exec_mode=%s is refused: the store's text rule needs the type "+
+		"of each parameter, which pgx learns from the server only in cache_statement, cache_describe "+
+		"and describe_exec", mode)
 }
 
 // ConnectError is a failure to reach the Postgres dsn names as an operator reads it: the address

@@ -13,7 +13,8 @@ import { boardMoveMutationKey } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssuePriority } from "../../api/types";
 import type { BoardMoveVariables } from "../project/board-moves";
-import { type Shape, shape } from "../writes/write-storage";
+import { type Shape, shape } from "../writes/tab-storage";
+import type { KeyedPress } from "../writes/useKeyedWrite";
 import {
   defineWriteKind,
   isLive,
@@ -203,18 +204,21 @@ function pickIn(
 }
 
 /** A move of a card on a project's board (`useBoardMoves`): a mutation of its board's scope,
- *  whose variables name the issue and its change (`BoardMoveVariables`, `moveChange`). */
+ *  whose variables are the press its keyed write made (`KeyedPress`), which holds the issue and
+ *  its change (`BoardMoveVariables`, `moveChange`). */
 type BoardMove = Mutation;
 
 /** The key every board move carries (`boardMoveMutationKey`), whatever its project. */
 const boardMoves = boardMoveMutationKey("").slice(0, 1);
 
-/** What `move` changes, as its variables name it: the issue (`key`) and its change (`input`);
- *  undefined where they name no issue. */
+/** What `move` changes, as its press names it: the issue (`key`) and its change (`input`) of the
+ *  variables the press holds; undefined where they name no issue. */
 function moveChange(
   move: BoardMove
 ): { readonly input: unknown; readonly issueKey: string } | undefined {
-  const variables = move.state.variables;
+  const press = move.state.variables;
+  if (typeof press !== "object" || press === null) return undefined;
+  const variables = (press as Partial<KeyedPress<unknown>>).variables;
   if (typeof variables !== "object" || variables === null) return undefined;
   const { input, key } = variables as { readonly [name in keyof BoardMoveVariables]?: unknown };
   return typeof key === "string" ? { input, issueKey: key } : undefined;

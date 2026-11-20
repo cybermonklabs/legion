@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a file pasted, which user-event has no form for
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
@@ -10,13 +11,17 @@ import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
 import type {
+  Agent,
   Anchor,
   Artifact,
   ArtifactVersionText,
   AskSnooze,
+  Comment,
   DisplayTree,
   InboxRow,
   IssueDetails,
+  Message,
+  MessageRead,
   MyReplyRow,
   MyReplyThreadRow,
   Version,
@@ -26,7 +31,7 @@ import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { plannerAgentRow } from "../threads/replies-fixture";
+import { agentRow, plannerAgentRow } from "../threads/replies-fixture";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
@@ -1208,7 +1213,7 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
   const client = createQueryClient();
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   seed(client);
-  const view = render(
+  const tree = (row: MyReplyRow) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <DocumentRuntime.Provider value={fake.runtime}>
@@ -1216,7 +1221,7 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
             <ReadingPane
               onAnswered={() => {}}
               onSnoozeLive={() => {}}
-              row={{ kind: "thread", thread }}
+              row={{ kind: "thread", thread: row }}
               viewer="alice"
             />
           </MarginProvider>
@@ -1224,7 +1229,14 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { client, runtime: fake, view };
+  const view = render(tree(thread));
+  return {
+    client,
+    /** The column moved to another row, as the Inbox moves it: the same column, drawn again. */
+    rerender: (row: MyReplyRow) => view.rerender(tree(row)),
+    runtime: fake,
+    view,
+  };
 }
 
 /** Which of the column's four thread bodies is drawn. */
@@ -1362,5 +1374,302 @@ test("an orphaned anchor falls back to the thread alone, with its quote", async 
     realClock();
     view.unmount();
     listArtifactComments.mockRestore();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// One column for one thread after another: a write made in one thread's body is that thread's,
+// and the next thread is drawn with none of it.
+// ---------------------------------------------------------------------------------------------
+
+// The column draws a card for one ask's thread after another. An answer Dispatch refused on the
+// first is that ask's: the next ask's card, drawn at once from the thread read it already holds,
+// shows no refusal of it, so no Retry that would answer the first ask from the second's screen,
+// and the Retry it does show is of its own answer, to its own ask.
+test("the next ask's card shows no answer refused on the ask before it, and its Retry answers its own ask", async () => {
+  const first = issueAsk({ id: "ask-x" });
+  const next = issueAsk({
+    id: "ask-y",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  const getAsk = mockAskReads([first, next]);
+  const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(
+    new ApiError(400, { error: "Dispatch refused this answer." })
+  );
+  const user = userEvent.setup();
+  const { rerender, view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "ask",
+      ref: "/issues/CORE-1/asks/ask-x",
+      thread_id: "ask-x",
+      unread: false,
+    }),
+    // The second ask's thread is read already, as it is once the reader has been on its row, so
+    // the column draws its card at once, with no skeleton between the two.
+    (client) => client.setQueryData(["ask-thread", next.id], { ask: next, ...next.thread })
+  );
+  try {
+    const card = await screen.findByTestId("ask-ask-x");
+    await user.click(within(card).getByLabelText("Your answer"));
+    await user.paste("JSON");
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
+    expect((await within(card).findByRole("alert")).textContent).toContain(
+      "Could not save your answer."
+    );
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        kind: "ask",
+        ref: "/issues/CORE-2/asks/ask-y",
+        thread_id: "ask-y",
+        unread: false,
+      })
+    );
+    const nextCard = screen.getByTestId("ask-ask-y");
+    expect(within(nextCard).queryByRole("alert")).toBeNull();
+
+    await user.click(within(nextCard).getByLabelText("Your answer"));
+    await user.paste("YAML");
+    await user.click(within(nextCard).getByRole("button", { name: "Answer" }));
+    await user.click(await within(nextCard).findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(3));
+    expect(answerAsk.mock.calls.map(([askId]) => askId)).toEqual(["ask-x", "ask-y", "ask-y"]);
+  } finally {
+    view.unmount();
+    answerAsk.mockRestore();
+    getAsk.mockRestore();
+  }
+});
+
+/** A thread's root comment on `issueKey`, as the issue's comments read answers it. */
+function rootComment(id: string, issueKey: string): Comment {
+  return {
+    anchor: null,
+    answers: null,
+    artifact_id: null,
+    ask_id: null,
+    author: { id: "bob", kind: "user" },
+    body: "The retry budget is too small.",
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    edited_at: null,
+    id,
+    issue_key: issueKey,
+    mentions: [],
+    reply_block: null,
+    reply_to: null,
+    resolved: false,
+    resolved_at: null,
+    resolved_by: null,
+    suggestion: null,
+    turn: null,
+  };
+}
+
+/** A picture pasted into a reply. */
+const shot = new File(["bytes"], "shot.png", { type: "image/png" });
+
+// The column draws a reply box for one comment thread after another. An upload Dispatch refused
+// in the first thread's box is that thread's: the next thread's box, drawn at once from the
+// comments already read, shows no refusal of it, so no Retry that would upload the file to the
+// first thread's issue, and the Retry it does show is of its own upload, to its own issue.
+test("the next thread's reply box shows no upload refused in the thread before it, and its Retry uploads to its own issue", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    new ApiError(413, { code: "FILE_TOO_LARGE", error: "That file is too large." })
+  );
+  const { rerender, view } = renderThread(
+    threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false }),
+    (client) => {
+      client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+      // The second thread's comments are read already, as they are once the reader has been on
+      // its row, so the column draws its box at once, with no skeleton between the two.
+      client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+    }
+  );
+  try {
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(await screen.findByRole("textbox", { name: "Reply" }), {
+      clipboardData: { files: [shot] },
+    });
+    await within(screen.getByTestId("inbox-pane")).findByRole("alert");
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        ref: "/issues/CORE-2?comment=comment-9",
+        thread_id: "comment-9",
+        unread: false,
+      })
+    );
+    const pane = screen.getByTestId("inbox-pane");
+    expect(pane.querySelector('[data-inbox-thread="comment-9"]')).not.toBeNull();
+    expect(within(pane).queryByRole("alert")).toBeNull();
+
+    // user-event's paste carries text, never the file this field uploads.
+    fireEvent.paste(within(pane).getByRole("textbox", { name: "Reply" }), {
+      clipboardData: { files: [shot] },
+    });
+    await userEvent.setup().click(await within(pane).findByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(3));
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([
+      { issue: "CORE-1" },
+      { issue: "CORE-2" },
+      { issue: "CORE-2" },
+    ]);
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// Text typed in a thread's reply box and not sent is that thread's. The column draws the next
+// thread's box without it, and back on the first thread its box holds the text again.
+test("text typed and not sent in a thread's reply box waits there for the reader's return, and never shows in another thread's", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const first = threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, unread: false });
+  const { rerender, view } = renderThread(first, (client) => {
+    client.setQueryData(["comments", "CORE-1"], [rootComment("comment-1", "CORE-1")]);
+    // The second thread's comments are read already, as they are once the reader has been on
+    // its row, so the column draws its box at once, with no skeleton between the two.
+    client.setQueryData(["comments", "CORE-2"], [rootComment("comment-9", "CORE-2")]);
+  });
+  try {
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("textbox", { name: "Reply" }));
+    await user.paste("Half a reply");
+
+    rerender(
+      threadRow({
+        issue: { key: "CORE-2", title: "Other issue" },
+        ref: "/issues/CORE-2?comment=comment-9",
+        thread_id: "comment-9",
+        unread: false,
+      })
+    );
+    const pane = screen.getByTestId("inbox-pane");
+    expect(pane.querySelector('[data-inbox-thread="comment-9"]')).not.toBeNull();
+    expect(within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value).toBe(
+      ""
+    );
+
+    rerender(first);
+    expect(pane.querySelector('[data-inbox-thread="comment-1"]')).not.toBeNull();
+    expect(within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Reply" }).value).toBe(
+      "Half a reply"
+    );
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+/** The Planner session, live, which takes a Send. */
+const planner: Agent = {
+  capabilities: ["steer", "btw"],
+  dir: "/work",
+  host: "box",
+  last_activity: "2026-10-12T00:00:00Z",
+  last_seen: Date.now(),
+  machine_id: "box",
+  open_asks: 0,
+  roles: [],
+  session_id: "planner",
+  state: "live",
+  title: "Planner",
+};
+
+/** A message `id` the reader sent the Planner, answered by the session's `reply`. */
+function plannerExchange(id: string, reply: string): MessageRead {
+  const sent: Message = {
+    author: { id: "alice", kind: "user" },
+    body: `Question ${id}`,
+    broadcast_id: null,
+    created_at: "2026-10-12T00:00:00Z",
+    deliveries: [],
+    id,
+    in_reply_to: null,
+    issue_key: null,
+    reply_block: null,
+    target: "session:planner",
+  };
+  return {
+    message: sent,
+    replies: [
+      {
+        ...sent,
+        author: { id: "planner", kind: "session" },
+        body: `Answer ${reply}`,
+        created_at: "2026-10-12T01:00:00Z",
+        id: reply,
+        in_reply_to: id,
+      },
+    ],
+  };
+}
+
+// The column draws an Agent row's thread box for one thread after another, and two threads can be
+// one session's. A reply Dispatch refused in the first is that thread's: the next thread's box
+// shows none of it - no draft, no refusal, no pending turn, no Retry that would send it as a reply
+// there - and what that box sends is its own reply, under its own thread's newest message.
+test("the next Agent thread of a session shows nothing of a reply refused in the thread before it", async () => {
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([
+    plannerExchange("message-1", "reply-1"),
+    plannerExchange("message-2", "reply-2"),
+  ]);
+  const createAgentMessage = spyOn(api, "createAgentMessage")
+    .mockRejectedValueOnce(
+      new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused the message" })
+    )
+    .mockResolvedValue({} as never);
+  const first = plannerAgentRow();
+  const { rerender, view } = renderThread(first);
+  try {
+    const user = userEvent.setup();
+    const pane = await screen.findByTestId("inbox-pane");
+    await user.click(await within(pane).findByRole("textbox", { name: "Comment" }));
+    await user.paste("Reply meant for the first");
+    await user.click(within(pane).getByRole("button", { name: "Send" }));
+    await within(pane).findByText("Couldn't send — Dispatch refused the message");
+
+    rerender(
+      agentRow("message-2", {
+        ...first,
+        reply: { ...first.reply, id: "reply-2" },
+        thread_id: "message-2",
+        unread_reply_ids: ["reply-2"],
+      })
+    );
+    expect(pane.querySelector('[data-inbox-thread="message-2"]')).not.toBeNull();
+    const next = within(pane).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
+    expect(next.value).toBe("");
+    expect(within(pane).queryByRole("alert")).toBeNull();
+    expect(within(pane).queryByTestId("agent-send-held")).toBeNull();
+
+    await user.click(next);
+    await user.paste("Reply for the second");
+    await user.click(within(pane).getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(2));
+    expect(
+      createAgentMessage.mock.calls.map(([sessionId, input]) => [
+        sessionId,
+        input.in_reply_to,
+        input.body,
+      ])
+    ).toEqual([
+      ["planner", "reply-1", "Reply meant for the first"],
+      ["planner", "reply-2", "Reply for the second"],
+    ]);
+  } finally {
+    view.unmount();
+    listAgents.mockRestore();
+    listAgentMessages.mockRestore();
+    createAgentMessage.mockRestore();
   }
 });

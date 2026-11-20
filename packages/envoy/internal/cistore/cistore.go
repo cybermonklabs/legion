@@ -123,6 +123,22 @@ type Suite struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	ObservedAt string `json:"observed_at"`
+	// RunCount is display only: the latest_check_runs_count GitHub's check_suite event gave
+	// (contracts.CIObservation.CheckRunCount), kept only while the suite is not completed
+	// (recordSuite), so a count of 0 is written as 0 and a count never given is absent. The line
+	// that names a head the listener holds names it (logHeldLocked); Hash and settlementReady do
+	// not read it, and a completed suite's record bytes are what they were before the field. A
+	// listener or a Dispatch writer of an earlier release drops it at its next write of the record,
+	// as State.Schema says of a field it does not know.
+	RunCount *int `json:"run_count,omitempty"`
+}
+
+// sameAs reports whether s and other hold the same suite state, the run count compared by value:
+// == would compare the two counts' pointers, which two observations of one count never share.
+func (s Suite) sameAs(other Suite) bool {
+	count, otherCount := s.RunCount, other.RunCount
+	s.RunCount, other.RunCount = nil, nil
+	return s == other && (count == otherCount || count != nil && otherCount != nil && *count == *otherCount)
 }
 
 // Status is the newest terminal commit status of one context on a commit (recordStatus). A status
@@ -801,7 +817,9 @@ func (s *Store) RecordSuite(ctx context.Context, observation contracts.CIObserva
 }
 
 // recordSuite is the one body both forms of RecordSuite share, and reports whether the
-// observation changed the head's record.
+// observation changed the head's record. It keeps the observation's run count only for a suite
+// that is not completed (Suite.RunCount), so a completed suite is written as it was before the
+// count, and an observation that repeats the stored suite, its count included, changes nothing.
 func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	return s.update(ctx, observation.Owner, observation.Repo, observation.Number, observation.SHA, "", func(st *State) bool {
 		if st.Suites == nil {
@@ -814,8 +832,11 @@ func (s *Store) recordSuite(ctx context.Context, observation contracts.CIObserva
 			Conclusion: observation.Conclusion,
 			ObservedAt: observation.ObservedAt,
 		}
+		if observation.Status != "completed" {
+			next.RunCount = observation.CheckRunCount
+		}
 		if current, ok := st.Suites[observation.SuiteID]; ok {
-			if !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status) || current == next {
+			if !observationMayReplace(observation.ObservedAt, current.ObservedAt, observation.Status, current.Status) || current.sameAs(next) {
 				return false
 			}
 		}
@@ -1103,14 +1124,7 @@ func settlementReady(st State) bool {
 	if st.Overflowed || !terminal(st) {
 		return false
 	}
-	hasCheckRunID := false
-	for _, check := range st.Checks {
-		if check.CheckRunID > 0 {
-			hasCheckRunID = true
-			break
-		}
-	}
-	if !hasCheckRunID {
+	if !hasCheckRunID(st) {
 		return false
 	}
 	for _, suite := range st.Suites {
@@ -1119,6 +1133,17 @@ func settlementReady(st State) bool {
 		}
 	}
 	return true
+}
+
+// hasCheckRunID reports whether one of st's checks has a run id; a record whose checks have none
+// does not settle (settlementReady), and its held line names it (logHeldLocked).
+func hasCheckRunID(st State) bool {
+	for _, check := range st.Checks {
+		if check.CheckRunID > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func terminal(st State) bool {

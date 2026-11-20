@@ -281,6 +281,9 @@ export default function legionExtension(pi: PiApi): void {
   // (@legion/pi-shared/fallback-cooldown): the two waits come from this worker's own environment
   // with the specification's defaults, as the stall limits do, and the state is kept in the
   // transcript so a relaunched worker comes back with its due time and its doubling levels.
+  // When the return is made is `ModelFallback.maybeRestore`'s to say; its timer runs on the pane's
+  // own host timer, as the phase reminder's does, and the runner itself checks that the pane is
+  // still on the session whose state it holds when the timer fires.
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
@@ -288,6 +291,15 @@ export default function legionExtension(pi: PiApi): void {
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
     log: logger,
+    armTimer: (callback, delayMs) => {
+      if (paneContext === undefined) return false;
+      paneContext.setTimeout(callback, delayMs);
+      return true;
+    },
+    paneContext: async () =>
+      paneContext !== undefined && (await modelFallbackSession(paneContext))
+        ? paneContext
+        : undefined,
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved
@@ -621,7 +633,8 @@ export default function legionExtension(pi: PiApi): void {
     // Every Legion session watches its own tool calls; a subagent's instance returned above.
     armStallWatch(session);
     // The controller registers through the controller session and gets the `legion` tool's
-    // controller operations (`read_state`, `set_status`), each minting its own controller grant.
+    // controller operations (`OPERATIONS.controller` in `src/tools.ts`); each but `read_state`
+    // mints its own controller grant.
     if (session.kind === "controller") {
       await controllerSession.handleSessionStart(context);
       // The controller reports no activity — the daemon releases no pod of its — so it has no
@@ -729,8 +742,13 @@ export default function legionExtension(pi: PiApi): void {
   // earlier recreation saved not counting, and the run saves it on the branch. An Envoy card,
   // sent with triggerTurn, starts its turn with neither the recovery nor before_agent_start, so
   // its branch keeps the saved copy.
+  //
+  // It is also one of the triggers of the model fallback's return, the one for the first request
+  // of a run a prompt starts; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the
+  // rule.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
+    if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
     if (recreatedNotice === undefined) return undefined;
     const branch = context.sessionManager.getBranch?.() ?? [];
     if (branchHoldsWorkspaceRecreatedNotice(branch, recreatedNotice.id)) return undefined;
@@ -756,9 +774,8 @@ export default function legionExtension(pi: PiApi): void {
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
   });
-  // Every provider request of this session passes here, so this is where the session goes back
-  // on the model it fell back from: the host checks its own restore only when a new prompt
-  // arrives, which a long unattended tool loop never reaches (src/model-fallback.ts).
+  // Every provider request of this session passes here, which makes it one of the triggers of the
+  // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process
@@ -781,7 +798,10 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // A turn that has settled: a content filter the host did not walk is walked here, a clean turn
-  // puts the model's wait back to the base, and any other provider failure leaves it alone.
+  // puts the model's wait back to the base, and any other provider failure leaves it alone. It
+  // makes no return: a turn's end can be followed at once by a continuation that reads its model,
+  // so a return the timer found the pane too busy for is made at the timer's first firing on an
+  // idle pane (`ModelFallback.maybeRestore`).
   pi.on("agent_end", async (event, context) => {
     if (!(await modelFallbackSession(context))) return;
     await modelFallback.turnSettled(event, context);
@@ -819,10 +839,12 @@ export default function legionExtension(pi: PiApi): void {
   // message for a `/skill:`), but it is an inbound event, as its Envoy card was: the record
   // envoy.ts keeps of the turns it sent in says which message that is, whichever of the two
   // extensions asks first. A turn that record misses falls through to `inboundKind` and counts as
-  // an assignment; the phase-stall section of `packages/pi-legion/AGENTS.md` says which turns it
-  // misses. The `legion` tool's successful `handoff_complete`, and a successful backward move,
-  // close the phase (`onPhaseCompleted`, below). Every message, classified or not, says a turn is
-  // running and leaves every armed reminder timer stale.
+  // an assignment, which opens even a closed phase: a typed turn the host starts under a new
+  // session id, and, on a host without `sendUserInput`, a turn sent in after the run's last queue
+  // poll and before its `agent_end`, which the dashboard then shows twice. The `legion` tool's
+  // successful `handoff_complete`, and a successful backward move, close the phase
+  // (`onPhaseCompleted`, below). Every message, classified or not, says a turn is running and
+  // leaves every armed reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();

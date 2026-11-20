@@ -37,7 +37,7 @@ mkdir -p "$work" "$evidence/model-gateway"
 : >"$soft_failures"
 # The merger starved during merge-held and was never served again.
 printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' 2026-09-30T12:00:10Z 4242 /x merger/1 timeout no-key >"$evidence/model-gateway/hawk-token.calls"
-stop_pid() { :; }; run_processes() { :; }; collect_transcripts() { :; }; github_cleanup() { :; }
+stop_pid() { :; }; stop_marked_processes() { :; }; collect_transcripts() { :; }; github_cleanup() { :; }
 ${helperGuard}
 first_soft_check=
 first_soft_since=

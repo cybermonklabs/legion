@@ -524,6 +524,7 @@ func (r *storeWriterRig) approvalHandBack() storeWriter {
 			created(t, "write the version that moves the approval request to its agent", dispatchRequest(t, r.handler, http.MethodPost,
 				"/api/v1/issues/"+r.issue+"/artifacts", map[string]any{
 					"name": "spec.md", "content": "# Spec\n\nWhat the writers write, as " + session + " reads it.\n",
+					"precondition": uploadBase(t, r.handler, r.spec),
 				}, "alice"))
 			actor := model.Actor{Kind: "session", ID: session}
 			return storeWriterRun{

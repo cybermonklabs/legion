@@ -31,9 +31,10 @@ type Client interface {
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
 	// ArtifactSlugs is the slug of every document and file the issue holds.
 	ArtifactSlugs(ctx context.Context, key string) ([]string, error)
-	// UploadArtifact writes a markdown document on the issue under name, as the next version of
-	// the document of that name when the issue holds one, and answers the slug Dispatch filed it
-	// under.
+	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
+	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
+	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
+	// issue lists no document under (messageArtifact).
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
@@ -173,8 +174,8 @@ func CarriesLegionLabel(labels []string) bool {
 
 // IssueSummary is one issue from Dispatch's project list. Rank is Dispatch's fractional key;
 // callers preserve the list's order when filtering. HandedOver is resolved once here, at the
-// client boundary, from the raw labels Dispatch's list route answers: every other reader of an
-// IssueSummary acts on this bool, never on a label list of its own.
+// client boundary, from the raw labels Dispatch's list route answers, and every decision acts on
+// this bool; Labels is the raw list itself, whose one reader is the copy of Dispatch's issues.
 type IssueSummary struct {
 	Key        string
 	Title      string
@@ -182,6 +183,10 @@ type IssueSummary struct {
 	Parent     *string
 	Rank       string
 	HandedOver bool
+	// Labels is the issue's labels as the listing answers them, in Dispatch's order. The copy of
+	// Dispatch's issues writes them with the rest of the summary (blockers.Observed, or the Issue
+	// a release reads from the summary), and no decision reads them: a decision reads HandedOver.
+	Labels []string
 	// LastSeq is how far Dispatch's own event log for the issue has run. A record whose applied
 	// sequence is behind it has events still to come on the stream, which carry the actor this
 	// snapshot does not.
@@ -200,15 +205,15 @@ type IssueSummary struct {
 }
 
 // Issue is the summary as an Issue, for a reader that has only Dispatch's listing of the issue:
-// every field the listing carries, the claim from its holder (Claim.Holder's `<kind>:<id>`). A
-// summary carries no project, no labels beyond the hand-over and no primary document, so those are
-// empty.
+// every field the listing carries, its labels among them, the claim from its holder
+// (Claim.Holder's `<kind>:<id>`). A summary carries no project and no primary document, so those
+// are empty.
 func (s IssueSummary) Issue() Issue {
 	var claim *Claim
 	if kind, id, ok := strings.Cut(s.ClaimedBy, ":"); ok {
 		claim = &Claim{Kind: kind, ID: id}
 	}
-	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, HandedOver: s.HandedOver,
+	return Issue{Key: s.Key, Title: s.Title, Status: s.Status, Parent: s.Parent, Rank: s.Rank, Labels: s.Labels, HandedOver: s.HandedOver,
 		LastSeq: s.LastSeq, ResolvedRepo: s.ResolvedRepo, BlockedBy: s.BlockedBy, Claim: claim, ClaimUnread: s.ClaimUnread}
 }
 

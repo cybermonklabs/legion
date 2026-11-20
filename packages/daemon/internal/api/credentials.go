@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -45,11 +46,15 @@ type Failure struct {
 // tells it, since the code is in hand here and the writer would otherwise read the body back.
 type refusalNoter interface{ noteRefusal(code string) }
 
+// writeFailure writes the refusal of code with message. The message passes the URL rule
+// (redact.URLCredentials): a refusal can quote a far side's error, a Dispatch or GitHub transport
+// error that names the URL it asked (dispatch_url's user name, a redirect's query), and the answer
+// goes to an agent.
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
 	if noter, ok := w.(refusalNoter); ok {
 		noter.noteRefusal(code)
 	}
-	writeJSON(w, status, Failure{Code: code, Error: message})
+	writeJSON(w, status, Failure{Code: code, Error: redact.URLCredentials(message)})
 }
 
 // requireFailureFields refuses the first field that is blank, by its wire name, in the Failure
@@ -82,7 +87,8 @@ func (s *server) grant(w http.ResponseWriter, r *http.Request) {
 	case !s.operatorAuthorized(r):
 		writeFailure(w, http.StatusForbidden, "INVALID_OPERATOR_TOKEN", invalidOperatorToken)
 	default:
-		s.mintControllerGrant(w)
+		grant, err := s.grants.MintOperatorController()
+		s.writeControllerGrant(w, grant, err)
 	}
 }
 
@@ -121,7 +127,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		return nil, false, err
 	}
 	for _, current := range claims {
-		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
+		if !current.HoldsSession(sessionID) || current.Tree != tree || current.Issue != issue {
 			continue
 		}
 		m, _, ok := s.authenticated(current.Token, secret)

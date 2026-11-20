@@ -183,11 +183,11 @@ type wakeCountingTrees struct {
 	takes int
 }
 
-func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
+func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, token claim.Token, kind string, at time.Time, mark int64) (bool, error) {
 	w.mu.Lock()
 	w.takes++
 	w.mu.Unlock()
-	return w.outboxTrees.TakePodWake(ctx, project, issue, role, kind, at)
+	return w.outboxTrees.TakePodWake(ctx, project, issue, token, kind, at, mark)
 }
 
 func (w *wakeCountingTrees) taken() int {
@@ -232,7 +232,7 @@ func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
 	if got := rig.machine.Claim(); !got.Released() {
 		t.Errorf("the claim after the ask = %s by %s, want it still released", got.State, got.SuspendedBy)
 	}
-	if _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+	if _, _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
 		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)
 	}
 }

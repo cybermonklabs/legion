@@ -1,8 +1,36 @@
 // Oh My Pi in `--mode rpc`, as a Legion pane runs it, for the dispatch-session-settings driver:
 // one process per `Omp`, its RPC requests by id, and what an `/effort` prompt prints.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import type { FileSink, Subprocess } from "bun";
 import { fail, type Rig, sleep, until } from "./session-settings-common";
+
+/** The run's mark, LEGION_E2E_RUN, which dispatch-session-settings.sh exports before it starts
+ *  this driver, and which every Oh My Pi the driver starts carries. It throws when the driver was
+ *  started without it: an Oh My Pi given an empty mark carries none, and the rig's stop_omp, which
+ *  signals a pid only while it carries the run's mark, would leave it running. */
+function runMark(): string {
+  const mark = process.env.LEGION_E2E_RUN ?? "";
+  if (mark === "") {
+    throw new Error(
+      "LEGION_E2E_RUN is not set: dispatch-session-settings.sh exports it before it starts this driver, and the rig stops only an Oh My Pi that carries it"
+    );
+  }
+  return mark;
+}
+
+/** PID's start time (stat field 22, past the last `) ` of the whole file), or "" once it has gone:
+ *  the rig's cleanup holds each signal to it (record_start and stop_pid, lib/process-tree.sh). */
+function startOf(pid: number): string {
+  try {
+    return (
+      readFileSync(`/proc/${pid}/stat`, "utf8")
+        .replace(/^[\s\S]*\) /, "")
+        .split(" ")[19] ?? ""
+    );
+  } catch {
+    return "";
+  }
+}
 
 export interface RpcEvent {
   readonly type?: string;
@@ -71,6 +99,9 @@ export class Omp {
       ENVOY_TOKEN_FILE: rig.envoyTokenFile,
       ENVOY_URL: rig.envoyUrl,
       HOME: rig.home,
+      // The run's mark, which the rig's teardown checks a pid for before it signals it (stop_omp,
+      // dispatch-session-settings.sh; run_marks, lib/process-tree.sh).
+      LEGION_E2E_RUN: runMark(),
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       PI_CODING_AGENT_DIR: rig.agentDir,
       TMPDIR: rig.tmp,
@@ -83,7 +114,8 @@ export class Omp {
       stdout: "pipe",
     });
     this.pid = this.#proc.pid;
-    appendFileSync(rig.pidFile, `${this.pid}\n`);
+    // Its pid and its start, read now, while it is this driver's child and not yet waited for.
+    appendFileSync(rig.pidFile, `${this.pid} ${startOf(this.pid)}\n`);
     void this.#proc.exited.then(() => {
       this.#exited = true;
     });
