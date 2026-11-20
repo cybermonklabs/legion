@@ -184,9 +184,14 @@ const RefreshOutcome = z.object({
 })
 /** Tests only: the file the answers hook writes its own timing to, `{ began, printed, ended }` in
  *  ms after its process started (when its code began, when it printed or found nothing to print,
- *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up.
+ *  and when it exits), so a test can hold the hook to its deadline rather than to bun's start-up,
+ *  and `refresher`, the pid of the refresher it started (null when it started none), so a test
+ *  waits on that process's end rather than on a scan of every process on the machine.
  *  Unset, as Claude Code runs it, the hook writes nothing. */
 const ANSWERS_TIMING_FILE = "ENVOY_ANSWERS_TIMING_FILE"
+/** The pid of the refresher this hook process started, for `ANSWERS_TIMING_FILE`; null when it
+ *  started none. */
+let startedRefresher: number | null = null
 
 const DISPATCH_HOST_LINE = "export DISPATCH_HOST=claude"
 /** What an overlay export line starts with: the one line of the env file this hook replaces
@@ -452,12 +457,12 @@ async function refreshedAnswers(
   }
   const lock = join(directory, REFRESH_LOCK)
   if (!refreshLockHeld(lock)) {
-    Bun.spawn([process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      detached: true,
-    }).unref()
+    const refresher = Bun.spawn(
+      [process.execPath, Bun.main, "answers-refresh", session, cwd, "--host", HOST],
+      { stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true },
+    )
+    refresher.unref()
+    startedRefresher = refresher.pid
   }
   const file = join(directory, REFRESH_OUTCOME)
   for (;;) {
@@ -570,7 +575,10 @@ async function answers(text: string): Promise<never> {
   const timingFile = process.env[ANSWERS_TIMING_FILE]
   if (timingFile !== undefined) {
     try {
-      writeFileSync(timingFile, JSON.stringify({ began, printed, ended: performance.now() }))
+      writeFileSync(
+        timingFile,
+        JSON.stringify({ began, printed, ended: performance.now(), refresher: startedRefresher }),
+      )
     } catch {
       // The tests' seam only: a path it cannot write never changes what the hook printed or its exit.
     }
