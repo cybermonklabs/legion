@@ -369,13 +369,19 @@ func (w *sqlWalker) readDynamicExecution(raw json.RawMessage) {
 	}
 }
 
+// readDynamicField reads a statement whose field name holds a query built at run time when the
+// statement has one. OPEN and RETURN QUERY carry dynquery only in their EXECUTE forms; a static
+// OPEN … FOR SELECT or RETURN QUERY SELECT has none, and its query is an ordinary expression the
+// walk reads like any other, so it is no dynamic SQL.
 func (w *sqlWalker) readDynamicField(raw json.RawMessage, name string) {
 	fields, ok := objectFields(raw)
 	if !ok {
 		w.add(DynamicSQL, "unreadable execute")
 		return
 	}
-	w.readDynamicExpression(fields[name])
+	if query, present := fields[name]; present && string(query) != "null" {
+		w.readDynamicExpression(query)
+	}
 	for field, value := range fields {
 		if field != name {
 			w.walkPLValue(value)

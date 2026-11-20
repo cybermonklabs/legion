@@ -12,6 +12,10 @@ func TestAnalyzeReadsNestedDynamicSQL(t *testing.T) {
 		{"for execute is dynamic", `do $$ declare query text := 'select 1'; record record; begin for record in execute query loop end loop; end $$`, Finding{Kind: DynamicSQL, Name: "execute"}},
 		{"open execute is dynamic", `do $$ declare query text := 'select 1'; cursor refcursor; begin open cursor for execute query; end $$`, Finding{Kind: DynamicSQL, Name: "execute"}},
 		{"return query execute is dynamic", `create function f() returns setof integer language plpgsql as $$ declare query text := 'select 1'; begin return query execute query; end $$`, Finding{Kind: DynamicSQL, Name: "execute"}},
+		{"static open is not dynamic", `do $$ declare cursor refcursor; begin open cursor for select 1; end $$`, Finding{}},
+		{"static return query is not dynamic", `create function f() returns setof integer language plpgsql as $$ begin return query select 1; end $$`, Finding{}},
+		{"static open that draws is read", `do $$ declare cursor refcursor; begin open cursor for select nextval('events_id_seq'); end $$`, Finding{Kind: SequenceCall, Name: "nextval"}},
+		{"static return query that draws is read", `create function f() returns setof bigint language plpgsql as $$ begin return query select nextval('events_id_seq'); end $$`, Finding{Kind: SequenceCall, Name: "nextval"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			analysis, err := Analyze(row.sql)
