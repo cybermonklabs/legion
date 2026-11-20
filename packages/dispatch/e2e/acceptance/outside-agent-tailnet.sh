@@ -473,10 +473,10 @@ case $peer_kind in
     [ -n "$peer_problem" ] || [ -d "$plugin_dir/dist" ] ||
       peer_problem="OUTSIDE_PEER_PLUGIN_DIR names $plugin_dir, which holds no built plugin (dist/)"
     ;;
-  probe)
-    [ "$allow_http" = 1 ] ||
-      peer_problem="${peer_problem:+$peer_problem; }OUTSIDE_PEER=probe, the scripted peer, is for a local stack alone (OUTSIDE_ALLOW_HTTP=1)"
-    ;;
+  # The scripted peer is P4's control: it answers with no model in the loop, so a model peer's
+  # failure where it passes is the model's. Its own PASS proves no model turn, so the gate reads it
+  # UNKNOWN (below).
+  probe) ;;
   *) peer_problem="OUTSIDE_PEER must be omp or probe, not $peer_kind" ;;
 esac
 # peer_text: what the peer has been shown so far: its pane, or the scripted peer's log.
@@ -991,6 +991,8 @@ EOF
       row P4 "$want" "the $peer_kind peer was shown the public side's $late after it was sent; $got" FAIL
     elif [ -n "$unseen" ]; then
       row P4 "$want" "PASS as the public leg read it, unproven here: the $peer_kind peer's view never showed its $unseen of nonce $exchange; $got" UNKNOWN
+    elif [ "$peer_kind" = probe ]; then
+      row P4 "$want" "$got; the scripted control peer was shown the $lags after they were sent: the path passes with no model in the loop, and the gate needs the model peer (OUTSIDE_PEER=omp)" UNKNOWN
     else
       row P4 "$want" "$got; the $peer_kind peer was shown the $lags after they were sent" PASS
     fi
