@@ -6,10 +6,15 @@
  * Every client process in that smoke reaches the listener through a proxy of its own, so the
  * smoke reads what each client sent and what the listener answered it without instrumenting any
  * client code: the Oh My Pi extension and the Claude Code channel server run exactly as they
- * ship. Each request and its answer is appended to `--log` as one JSON line:
+ * ship. Each request and its answer is appended to `--log` as one JSON line once the listener has
+ * answered:
  *
  *   {"seq":1,"label":"omp-a","at":1761,"method":"POST","path":"/v1/roles/set","status":409,
  *    "request":{...},"response":{...},"ms":3}
+ *
+ * and the same line without `status`, `response` and `ms` is appended to `<log>.arrived` as the
+ * request arrives, before it is forwarded, so a reader can tell a request the listener has not
+ * answered yet from one that never came (`claims_answered` in clients.sh).
  *
  * Usage: bun listener-proxy.ts --port <n> --upstream <url> --log <file> --label <name>
  */
@@ -61,6 +66,10 @@ function record(entry: Record<string, unknown>): void {
   appendFileSync(options.log, `${JSON.stringify(entry)}\n`);
 }
 
+function recordArrival(entry: Record<string, unknown>): void {
+  appendFileSync(`${options.log}.arrived`, `${JSON.stringify(entry)}\n`);
+}
+
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: options.port,
@@ -83,6 +92,7 @@ const server = Bun.serve({
       query: url.search,
       request: logBody(body),
     };
+    recordArrival(entry);
     let answer: Response;
     try {
       answer = await fetch(`${options.upstream}${url.pathname}${url.search}`, {

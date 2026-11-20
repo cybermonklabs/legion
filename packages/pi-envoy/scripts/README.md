@@ -163,10 +163,44 @@ claim is kept while its holder's session reads short of `gone`, which is what le
 other row's holder in its role. The rows still read the listener's own word for each outcome — a claim
 granted, a `409`, or the lookup's `404` — which reads the same whether a standing claim lapsed
 where it stood or a pass had already removed it, and a row whose claimant must be refused is
-decided inside the window, its holder having answered for the claim immediately before. A row
-that waits the window out waits for the listener to say so, never for a sleep.
+decided inside the window, its holder having answered for the claim immediately before. No
+process start sits between that answer and the claim, since a client's start on a loaded machine
+can outlast the ten seconds: the holder answers once the claimant's process is up and right
+before each claim the row needs refused. A Claude Code channel server claims as it boots, so its
+holder answers once that server's proxy is up and right before its process starts, and then on
+every pass until it has claimed, or, where the row needs it refused again and again as its
+heartbeat asks, until its start has ended. Before it reads a refusal, each such row reads how old
+the holder's last answer was at each claim it needs refused, off the two proxies' logs, and fails
+naming the window where a claim was not inside it. In the Claude Code `/clear` handoff (A5
+scenario 2) nothing renews the holder's claim once it has answered for the last time before the
+`/clear`, so the claims read are every claim the second process made before the holder's handoff
+read the role record. That read is not on the wire, so the row reads them up to the first request
+the holder sends after it: its first claim under the new id, whatever predecessor it names. The
+channel server makes that claim only after the read
+(`packages/claude-envoy/src/envoy-channel-server.ts`): `restoreRole` reads the record (`:1517`)
+before it sends the handoff claim (`:1528`), run by `transferRole` (`:1726`) after the first
+registration of the new id (`:1725`), and `reassertRole` (`:1618`) claims on the heartbeat only
+once the handoff has returned (`:1842`, `:1856`). Where the holder made no such claim, the row
+reads up to its second registration of the new id, that heartbeat's (`:1847`), and where it sent
+only one, up to the listener's answer to it. A claim granted before that request took the role
+while the handoff was still on its way to the read, and
+the row fails naming the window; a client that claimed under the new id before its read and then
+stalled past the window would be read as inside it, and that order is the row's limit. The same
+row's first check reads the role, then the window at every claim of the second process up to that
+read, and only then who holds the role, since that process asks again on every heartbeat between
+the two rows. A row that waits the window out waits for the listener to say so, never for a sleep.
 
-Eighteen rows are printed, each with its outcome:
+Nineteen rows are printed, each with its outcome. A row that starts from where an earlier row of
+its scenario left the role (the release after the Oh My Pi takeover, the move and the holder's
+exit in A5 scenario 1, and the `/clear` handoff of A5 scenario 2) first reads which session and
+which process hold the role, so where the earlier row failed, the later one fails naming where the
+role is, or the window where A5 scenario 2's holder lapsed between the rows, and not on a claim
+that was never made:
+
+- **the clients' command channel**, one row — `send` in `role-takeover/clients.sh`, which every
+  other row drives its clients through, ends on an answer that is not `ok`, naming the client's
+  refusal, so no row reads its outcome off a command a client refused. The row asks an Oh My Pi
+  client for an op it does not have and reads `send`'s exit status and message.
 
 - **row 1**, twice — a claim under the id that holds the role is granted because nobody renewed
   the standing claim inside the live window: an Oh My Pi plugin reload, and a Claude Code channel
@@ -331,16 +365,25 @@ because no client in the checkout can be made to send them (`old_register`, `old
 
 The clients themselves, in the third sourced file `smoke-role-takeover.sh` brings in, beside the
 Bun drivers it starts: a recording proxy and a process per client (`start_proxy`, `start_omp`,
-`start_claude`), the stdin and stdout one command is sent and answered over (`client_fifo`,
-`client_ready`, `send`), the readers of each client's proxy log — the claims it made
-(`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
-`claim_count`), the registrations it sent (`instance_id`, `registered_at`,
-`first_registered_at`), the requests of either kind (`claim_writes`), its deregistration
-(`delete_answer`) and its hand-backs (`release_status`, `release_instance`, `released`) — and the
-two ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`). It is sourced,
-never run: it starts no process of its own, and it reads the scratch directory, the driver
-directory, the checkout, the listener and natsd URLs, the Oh My Pi client's windows, the two
-client timeouts and the run id that the smoke sets.
+`start_claude`, which is `launch_claude`, a start not waited for, and then `claude_started`, which
+waits until the channel server answers a tool, since the listener has the session's registration
+before the server's start ends and the server answers every tool "still starting" until then:
+`claude_answers_tools`), the stdin and stdout one command is sent and answered over
+(`client_fifo`, `client_ready`, `post` and `answer_to` for a command read back later, and `send`,
+which posts one and waits until `has_answered`),
+the readers of each client's proxy log — the claims it made (`claim_status`, `claim_holder`,
+`first_claim_status`, `first_claim_holder`, `first_claim_arrived_at`, `made_claim`,
+`claims_answered`, `claim_count`), the registrations it sent (`instance_id`, `registered_at`,
+`first_registered_at`, `first_registration_answered_at`), the requests of either kind
+(`claim_writes`), its deregistration (`delete_answer`), its hand-backs (`release_status`,
+`release_instance`, `released`) and how old a holder's renewal was when one claim, or each claim
+before a moment, was weighed against it (`renewal_age`) — and the
+ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`, and the two loops
+that renew again and again while a channel server `launch_claude` started boots:
+`renew_claude_until_claimed`, until it has claimed, and `renew_claude_until_started`, until its
+start has ended). It is sourced, never run: it starts no process of its own, and it reads the
+scratch directory, the driver directory, the checkout, the listener and natsd URLs, the Oh My Pi
+client's windows, the two client timeouts and the run id that the smoke sets.
 
 ## skill-scenarios/rig.sh
 
