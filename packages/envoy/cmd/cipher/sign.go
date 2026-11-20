@@ -23,8 +23,7 @@ import (
 func cmdSign(args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, map[string]bool{"method": true, "url": true, "enrollment": true})
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets sign: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "sign")
 	}
 	flags := newFlagSet("sign", stderr)
 	method := flags.String("method", "", "HTTP method of the call")
@@ -82,5 +81,5 @@ func fileModeKeyForSign() (*ecdsa.PrivateKey, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, errors.New("--enrollment works only with a key dir; the helper signs only its own enrollment")
 	}
-	return loadKey(path)
+	return loadKey(path, keyDirFile(keyFile))
 }

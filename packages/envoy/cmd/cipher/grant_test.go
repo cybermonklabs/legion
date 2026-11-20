@@ -69,7 +69,7 @@ func TestGrantListNamesTheApproverAndTheDecider(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			row := grantRow(tc.grant)
+			row := grantRow(cipheraddr.New("https://broker.example"), tc.grant)
 			if len(row) != len(grantColumns) {
 				t.Fatalf("the row has %d cells for %d columns: %v under %v", len(row), len(grantColumns), row, grantColumns)
 			}

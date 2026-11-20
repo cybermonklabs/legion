@@ -199,9 +199,11 @@ const airlockBuildLifetime = time.Hour
 // wgetrcFor skip a file they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
-	// a "." or a ".." would make this run tidy or write somewhere else entirely.
+	// a "." or a ".." would make this run tidy or write somewhere else entirely. A grant id that
+	// is no path element is not printed: it is the broker's text, which beside an address that
+	// carries a credential can repeat it.
 	if grantID == "" || grantID == "." || grantID == ".." || grantID != filepath.Base(grantID) {
-		return airlockFiles{}, fmt.Errorf("the grant id %q is not a single path element, so its airlock files have nowhere to go", grantID)
+		return airlockFiles{}, errors.New("the grant id the broker answered is not a single path element (not printed), so its airlock files have nowhere to go")
 	}
 	// Before the tidy, which removes directories under the root, and before anything is
 	// written there: a root this user does not hold is one this run neither sweeps nor writes

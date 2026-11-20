@@ -703,7 +703,7 @@ func TestAPendingRequestWithoutABrokerPageNamesItsApproverAlone(t *testing.T) {
 		{"a person", &person, "waiting for ada@example.com to approve it on the secrets broker"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := waitingOn(row.approver, "", false); got != row.want {
+			if got := waitingOn(cipheraddr.New("https://broker.example"), row.approver, "", false); got != row.want {
 				t.Errorf("waitingOn = %q, want %q", got, row.want)
 			}
 		})
@@ -1277,8 +1277,8 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	writePendingMarker(t, keyDir, 0)
 
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit != 1 || !strings.Contains(stderr, "enrollment.pending is there and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
-		strings.Contains(stderr, "no broker identity for this process") {
+	if exit != 1 || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
+		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
 	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {

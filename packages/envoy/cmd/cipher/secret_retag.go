@@ -301,7 +301,7 @@ func rereadRetag(s *secretSession, stdout, stderr io.Writer, form, name, secretT
 		return 1
 	}
 	if r.Told && r.Type != secretType {
-		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag's `broker: serving %s` line says it serves %s as %s\n", form, s.storeName(), s.src.brokerAt(), name, typeName(r.Type), typeName(secretType), name, name, name, typeName(secretType))
+		fmt.Fprintf(stderr, "agent-secrets %s: the retag in %s stands, but %s serves %s as %s, not %s: it still sees the old tags. Run this retag again to ask it to reread them, and store no value in %s until a retag's `broker: serving %s` line says it serves %s as %s\n", form, s.storeName(), s.src.brokerAt(), name, servedTypeName(s, r.Type), typeName(secretType), name, name, name, typeName(secretType))
 		return 1
 	}
 	return 0
@@ -313,4 +313,14 @@ func typeName(secretType string) string {
 		return "a stored secret"
 	}
 	return secretType
+}
+
+// servedTypeName is t, the type the broker's reread answer says it serves a secret as, as a line
+// names it: "a stored secret" for none (typeName), and otherwise the broker's text as its address
+// lets its answer print (Settings.words).
+func servedTypeName(s *secretSession, t string) string {
+	if t == "" {
+		return typeName(t)
+	}
+	return s.settings.words(t)
 }

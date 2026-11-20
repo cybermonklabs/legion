@@ -39,6 +39,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/googleidentity"
@@ -52,11 +53,14 @@ const (
 	testGCPPrefix  = "projects/100000000001/secrets/agent-secrets-"
 )
 
+// gcpTestSettings are a GCP broker's settings, as the clean address https://broker.example
+// answered them (Settings.answeredBy), so a refusal a test calls directly names their fields.
 func gcpTestSettings() Settings {
 	return Settings{
 		Store: secrets.StoreGCP, SecretsPrefix: testGCPPrefix,
 		KMSKeyName: testKMSKeyName, GCPProject: testGCPProject,
 		SecretTypeTag: true,
+		answeredBy:    cipheraddr.New("https://broker.example"),
 	}
 }
 
@@ -366,19 +370,36 @@ func startFakeSecretManager(t *testing.T, f *fakeSecretManager) {
 	go server.Serve(lis)
 	t.Cleanup(server.Stop)
 
+	useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+}
+
+// replaceGCPDial leaves the rest of t with gcpClientDial as dial, and puts the real one back after:
+// the one way a test points the Secret Manager client at a stand-in.
+func replaceGCPDial(t *testing.T, dial func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error)) {
+	t.Helper()
 	restore := gcpClientDial
-	gcpClientDial = func(ctx context.Context, creds *google.Credentials) (*secretmanager.Client, error) {
-		dial := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	gcpClientDial = dial
+	t.Cleanup(func() { gcpClientDial = restore })
+}
+
+// useGCPDialTo leaves the rest of t with gcpClientDial building its client on a connection to
+// target dialed with opts (replaceGCPDial). A client built on a connection dialed here ignores the
+// client's own dial options, so the interceptor that words every failure is installed on the
+// connection itself, as the real dial installs it, and each call carries the bearer token of the
+// credentials it signs in with (bearerOf).
+func useGCPDialTo(t *testing.T, target string, opts ...grpc.DialOption) {
+	t.Helper()
+	replaceGCPDial(t, func(ctx context.Context, creds *google.Credentials, interceptor grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+		dial := append(slices.Clip(opts), grpc.WithChainUnaryInterceptor(interceptor))
 		if creds != nil && creds.TokenSource != nil {
 			dial = append(dial, grpc.WithPerRPCCredentials(bearerOf{creds.TokenSource}))
 		}
-		conn, err := grpc.NewClient(lis.Addr().String(), dial...)
+		conn, err := grpc.NewClient(target, dial...)
 		if err != nil {
 			return nil, err
 		}
 		return secretmanager.NewClient(ctx, option.WithGRPCConn(conn))
-	}
-	t.Cleanup(func() { gcpClientDial = restore })
+	})
 }
 
 // bearerOf hands each call the access token source answers, as the real client does; the fake
@@ -550,7 +571,7 @@ func useCloudPlatformToken(t *testing.T) {
 			return "", err
 		}
 		if token.AccessToken == cloudPlatformToken {
-			return "", errors.New("read the Google sign-in's email: 401 Unauthorized: Request is missing required authentication credential")
+			return "", errors.New("read the Google sign-in's email from " + googleUserinfoURL + ": the server answered HTTP 401 UNAUTHENTICATED")
 		}
 		return restoreUserinfo(context.Background(), creds)
 	}
@@ -872,7 +893,7 @@ func TestGCPSecretWriteUnderAMachineIdentityRunsUnderIt(t *testing.T) {
 			gcloud := useGcloud(t, "ada@example.com")
 			useGCPIdentity(t, kind, machineEmail)
 			bearer := "Bearer fake"
-			identity := fmt.Sprintf("the credentials file GOOGLE_APPLICATION_CREDENTIALS names (%s): %s", os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"), machineEmail)
+			identity := "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: " + machineEmail
 			if kind == "" {
 				bearer = "Bearer " + stubTokenPrefix + "ada@example.com"
 				identity = "the active gcloud account (gcloud configuration default): ada@example.com"
@@ -1125,8 +1146,8 @@ func TestGCPSecretGcloudLoginIsTheOneGcloudUses(t *testing.T) {
 			startSecretBrokerWith(t, gcpTestSettings(), alwaysServed)
 
 			_, stderr, code := runSecret("list")
-			if code != 1 || !strings.Contains(stderr, "CLOUDSDK_CORE_ACCOUNT names linus@example.com") {
-				t.Fatalf("exit %d, stderr %q; want 1 naming the account CLOUDSDK_CORE_ACCOUNT names", code, stderr)
+			if code != 1 || !strings.Contains(stderr, "CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed;") || strings.Contains(stderr, "linus@example.com") {
+				t.Fatalf("exit %d, stderr %q; want 1 naming CLOUDSDK_CORE_ACCOUNT, never the account it names", code, stderr)
 			}
 			for _, account := range accounts {
 				if !strings.Contains(stderr, account) {
@@ -1835,8 +1856,8 @@ func TestGCPSecretRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		}},
 		{"lent token", "the access token in CLOUDSDK_AUTH_ACCESS_TOKEN: principal unknown", lent, func(t *testing.T) { t.Setenv("CLOUDSDK_AUTH_ACCESS_TOKEN", "lent-token") }},
-		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", file, useCredentialsFile},
-		{"credentials file, an account exported", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names (", fileAccount, func(t *testing.T) {
+		{"credentials file", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: gac@example.iam.gserviceaccount.com", file, useCredentialsFile},
+		{"credentials file, an account exported", "the credentials file GOOGLE_APPLICATION_CREDENTIALS names: gac@example.iam.gserviceaccount.com", fileAccount, func(t *testing.T) {
 			useCredentialsFile(t)
 			t.Setenv("CLOUDSDK_CORE_ACCOUNT", "grace@example.com")
 		}},

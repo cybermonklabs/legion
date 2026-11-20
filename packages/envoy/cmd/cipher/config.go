@@ -148,7 +148,9 @@ func loadClientConfig() error {
 		case !ok:
 			return fmt.Errorf("%s line %d is not KEY=value", path, n)
 		case !slices.Contains(clientConfigKeys, key):
-			return fmt.Errorf("%s line %d sets %q, which this file does not take; it takes %s", path, n, key, strings.Join(clientConfigKeys, ", "))
+			// The key is not printed: a token pasted into the file as a line of its own reads as
+			// a key up to its first '='.
+			return fmt.Errorf("%s line %d sets a key this file does not take (not printed); it takes %s", path, n, strings.Join(clientConfigKeys, ", "))
 		}
 		settings[key] = strings.TrimSpace(value)
 	}

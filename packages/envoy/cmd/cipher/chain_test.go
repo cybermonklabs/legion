@@ -975,7 +975,8 @@ func TestTheChainSkipsAbsenceAndStopsOnABrokenSource(t *testing.T) {
 // TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead: the broker's unauthenticated settings
 // choose the audience the machine mints its Google identity token for, so the first audience the
 // machine reads is kept beside its session, and a later read naming another is refused before any
-// token is minted for it, naming both audiences and the file that keeps the first.
+// token is minted for it, naming both audiences and the file that keeps the first, by where the
+// machine cache is and never by its path, since the cache holds the machine session's key.pem.
 func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 	binary := chainBinary(t)
 	broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
@@ -992,8 +993,9 @@ func TestTheMachineMintsOnlyForTheGoogleAudienceItFirstRead(t *testing.T) {
 	broker.setSettings(storeSettings("gcp", "https://victim.example"))
 	broker.endEnrollment("machine-enrollment-1")
 	code, stdout, stderr := r.use()
-	if code != 1 || stdout != "" || !strings.Contains(stderr, `"https://victim.example"`) || !strings.Contains(stderr, `"agent-secrets-vm"`) || !strings.Contains(stderr, kept) {
-		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming both audiences and %s", code, stdout, stderr, kept)
+	named := "google-exchange-audience in the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
+	if code != 1 || stdout != "" || !strings.Contains(stderr, `"https://victim.example"`) || !strings.Contains(stderr, `"agent-secrets-vm"`) || !strings.Contains(stderr, named) || strings.Contains(stderr, kept) {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want exit 1 naming both audiences and %s, never %s", code, stdout, stderr, named, kept)
 	}
 	if n := metadata.metadataIdentityRequests(); n != 1 {
 		t.Fatalf("the metadata server minted %d identity tokens; want only the first use's", n)
@@ -1163,7 +1165,7 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 	}{
 		{name: "key dir", setup: func(t *testing.T, r *chainRig) string {
 			writeSessionFiles(t, r.keyDir(), "launcher-enrollment")
-			return "key-dir: " + r.keyDir() + "\n"
+			return "key-dir: $XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)\n"
 		}},
 		{name: "sign-in", setup: func(t *testing.T, r *chainRig) string {
 			writeSignInFixture(t, r, "ada@example.com")
@@ -1184,7 +1186,7 @@ func TestIdentitySourceNamesTheSourceItWouldUse(t *testing.T) {
 		}},
 		{name: "machine cache", setup: func(t *testing.T, r *chainRig) string {
 			r.writeMachineCacheFixture("cached-enrollment")
-			return "machine: the cached enrollment in " + r.machineCache() + "\n"
+			return "machine: the cached enrollment in the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)\n"
 		}},
 		{name: "sign-in and a helper that says not a session", setup: func(t *testing.T, r *chainRig) string {
 			writeSignInFixture(t, r, "ada@example.com")

@@ -18,11 +18,17 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// narrowingFlags names each field of a narrowing (policy.NarrowingError's Field) by the flag that
-// gives it.
-var narrowingFlags = map[string]string{"owner": "--github-owner", "repositories": "--github-repo"}
+// narrowingRules is each field of a narrowing (policy.NarrowingError's Field) as its refusal says
+// it: the flag that gives it and the rule its value broke, and never the value, which
+// policy.ParseGitHubNarrowing's Reason quotes ("not %q"). A flag's value is where a person who
+// pasted a credential in the wrong place puts it (valueNotPrinted).
+var narrowingRules = map[string]string{
+	"owner":        "--github-owner names one GitHub login " + valueNotPrinted,
+	"repositories": fmt.Sprintf("--github-repo names at least one and at most %d of the owner's repositories, each by its name alone, in ASCII letters, digits, '.', '-' and '_' %s", secrets.MaxNarrowedRepositories, valueNotPrinted),
+}
 
 // githubNarrowing is the narrowing the flags ask for, nil when they ask for none, checked and in
 // its canonical form by policy.ParseGitHubNarrowing, the broker's own parser, so a narrowing the
@@ -45,7 +51,10 @@ func githubNarrowing(owner string, ownerSet bool, repositories []string, readOnl
 	}
 	parsed, refusal := policy.ParseGitHubNarrowing(owner, repositories, readOnly)
 	if refusal != nil {
-		return nil, fmt.Errorf("%s %s", narrowingFlags[refusal.Field], refusal.Reason)
+		if rule, ok := narrowingRules[refusal.Field]; ok {
+			return nil, errors.New(rule)
+		}
+		return nil, errors.New("the GitHub narrowing flags do not parse " + valueNotPrinted)
 	}
 	return &GitHubNarrowing{Owner: parsed.Owner, Repositories: parsed.Repositories, ReadOnly: parsed.ReadOnly}, nil
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/tlsalert/tlsalerttest"
 )
 
 // TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe: as a session's forms print it, a
@@ -56,6 +57,8 @@ func TestASourceNamesTheBrokerAndTheStoreItsSettingsDescribe(t *testing.T) {
 			"the broker AGENT_SECRETS_URL names (vault)", "vault"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			// The settings are base's answer, as client.Settings marks them (Settings.answeredBy).
+			row.settings.answeredBy = cipheraddr.New(row.base)
 			src := brokerSource(cipheraddr.New(row.base)).withSettings(row.settings)
 			if got := src.String(); got != row.source {
 				t.Fatalf("source %q, want %q", got, row.source)
@@ -252,7 +255,7 @@ func TestAnIDThatWouldNotNameOnePathSegmentIsRefusedByName(t *testing.T) {
 	defer broker.Close()
 	for _, id := range []string{"req%zz", "a b", "a/b", "req%25zz"} {
 		_, stderr, exit := runAgentSecrets(t, binary, broker.URL, keyDir, nil, "status", id)
-		want := "agent-secrets status: " + strconv.Quote(id) + " is not a request id\n"
+		want := "agent-secrets status: not a request id (the argument is not printed: it holds a character a call's path would change)\n"
 		if exit == 0 || stderr != want {
 			t.Errorf("status %q: exit %d, stderr %q; want exactly %q, with no trailer since nothing was sent", id, exit, stderr, want)
 		}
@@ -630,6 +633,9 @@ func TestEveryUnreachableFailureIsClassified(t *testing.T) {
 		{"an HTTP answer to HTTPS", tls.RecordHeaderError{Msg: "first record does not look like a TLS handshake"}, answered, ""},
 		{"an HTTP answer to HTTPS, as net/http reports it", http.ErrSchemeMismatch, answered, ""},
 		{"an untrusted certificate", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}, answered, ""},
+		{"a TLS alert the broker sent, over TCP", tlsalerttest.Get(t, tlsalerttest.Remote(t)), answered, ""},
+		{"a TLS alert this client sent on a record it could not take, over TCP", tlsalerttest.Get(t, tlsalerttest.Local(t)), answered, ""},
+		{"a TLS alert over QUIC", tls.AlertError(40), answered, ""},
 		{"EOF after the request", io.EOF, answered, ""},
 		{"a reset after the request", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}, answered, ""},
 		{"an error none of these covers", errors.New("something unforeseen"), "the request to the broker at secrets.internal.example failed", "answered"},

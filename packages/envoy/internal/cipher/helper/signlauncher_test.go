@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proof"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // TestSignLauncherRefusedInsideASessionAndSignsOutside: sign-launcher answers a process inside a
@@ -97,19 +96,45 @@ func TestSignLauncherSignsOnlyTheOperatorRoutesOfThisHelpersBroker(t *testing.T)
 	}
 }
 
-// TestSignLauncherRefusalNamesNoCredentialTheCallersURLCarries: a caller whose AGENT_SECRETS_URL
-// differs from the helper's gets a BAD_REQUEST naming both URLs, and the CLI prints it as is, so
-// a caller's URL with user info or a query prints as redact.NotPrinted.
-func TestSignLauncherRefusalNamesNoCredentialTheCallersURLCarries(t *testing.T) {
+// TestSignLauncherRefusalPrintsNothingTheCallerSent: a sign-launcher call that is none of the
+// helper's operator routes is refused BAD_REQUEST naming the check it failed, and the CLI prints
+// the refusal as it is, so it holds nothing the caller sent: a caller's AGENT_SECRETS_URL with a
+// user, a password or a query, the id a person typed to `machine revoke` or `grant revoke`, or
+// the method itself. Control: the refusal names this helper's broker, so the check sees a URL.
+func TestSignLauncherRefusalPrintsNothingTheCallerSent(t *testing.T) {
 	r := startRig(t, "")
-	got := r.call(t, Request{Op: "sign-launcher", Method: "GET", URL: "https://" + "tokuser9f3:hunter2pw@elsewhere.test/v1/operator/grants?token=qtok77"})
-	if got.Code != CodeBadRequest || !strings.Contains(got.Error, "not GET "+redact.NotPrinted) {
-		t.Fatalf("%+v, want BAD_REQUEST naming the URL as not printed", got)
-	}
-	for _, secret := range []string{"tokuser9f3", "hunter2pw", "qtok77"} {
-		if strings.Contains(got.Error, secret) {
-			t.Fatalf("refusal %q names %q", got.Error, secret)
-		}
+	typed := "hunter2pw" + "-typedid-" + "7c1e5a"
+	broker := r.srv.Broker.URL.Raw()
+	const elsewhere = "the call is to another address than this helper's broker"
+	const route = "the call's method and route are none of them"
+	for _, row := range []struct {
+		name, want string
+		req        Request
+	}{
+		{"a caller's URL with a user, a password and a query", elsewhere,
+			Request{Op: "sign-launcher", Method: "GET", URL: "https://tokuser9f3:" + typed + "@elsewhere.test/v1/operator/grants?token=qtok77"}},
+		{"a typed id at another broker", elsewhere,
+			Request{Op: "sign-launcher", Method: http.MethodPost, URL: "https://elsewhere.test/v1/operator/grants/" + typed + "/revoke"}},
+		{"a typed id under the wrong method", route,
+			Request{Op: "sign-launcher", Method: http.MethodGet, URL: broker + "/v1/operator/machines/" + typed + "/revoke"}},
+		{"a method the caller sent", route, Request{Op: "sign-launcher", Method: typed, URL: broker + "/v1/operator/grants"}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			got := r.call(t, row.req)
+			if got.OK || got.Code != CodeBadRequest || got.Proof != "" {
+				t.Fatalf("%+v, want BAD_REQUEST and no proof", got)
+			}
+			for _, want := range []string{row.want, "GET " + broker + "/v1/operator/grants"} {
+				if !strings.Contains(got.Error, want) {
+					t.Errorf("refusal %q does not say %q", got.Error, want)
+				}
+			}
+			for _, secret := range []string{"tokuser9f3", typed, "qtok77", "elsewhere.test"} {
+				if strings.Contains(got.Error, secret) {
+					t.Errorf("refusal %q names %q", got.Error, secret)
+				}
+			}
+		})
 	}
 }
 

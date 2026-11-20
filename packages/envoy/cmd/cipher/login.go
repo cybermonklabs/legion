@@ -42,8 +42,7 @@ func cmdLogin(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets login: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "login")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -91,7 +90,7 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(stderr, "To sign in, open %s and type the code %s\n", authorization.VerificationURI, authorization.UserCode)
+	fmt.Fprintln(stderr, signInPrompt(authorization.VerificationURI, authorization.UserCode))
 	signedIn, err := flow.Wait(ctx, authorization)
 	if err != nil {
 		return err
@@ -126,10 +125,20 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := cipherclient.SignIns(homeGetenv).Write(record); err != nil {
 		return err
 	}
-	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the record
-	// keeps it as it came. The person is the one Google's identity token names.
-	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, redact.OneLine(record.EnrollmentID))
+	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
+	// (cipheraddr.Address.Words); the record keeps it as it came. The person is the one Google's
+	// identity token names.
+	fmt.Fprintf(stdout, "%s is signed in on this machine (enrollment %s)\n", record.Person, idWords(base, record.EnrollmentID))
 	return nil
+}
+
+// signInPrompt is the line that tells a person where to sign in and what to type there: the
+// issuer's verification page and user code, both the issuer's text. The page prints as
+// internal/redact's URL prints it - whole where it is a plain http(s) URL, redact.NotPrinted
+// otherwise, so a page that carries a user, a password or a query does not print - and the code
+// on one line (redact.OneLine), so a line break in it cannot start a line of its own.
+func signInPrompt(page, code string) string {
+	return "To sign in, open " + redact.URL(page) + " and type the code " + redact.OneLine(code)
 }
 
 // keyPEM is a key as the bytes a record keeps, failing nothing: a key this process just made

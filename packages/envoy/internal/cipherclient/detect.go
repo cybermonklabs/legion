@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // credentialsFileVar is the variable Google's own libraries read a credentials file from.
@@ -71,6 +72,11 @@ func DetectMachineIdentity(ctx context.Context, audience string) (Source, []Skip
 // externalAccountFor is the external_account credential GOOGLE_APPLICATION_CREDENTIALS names,
 // acting as the service account its service_account_impersonation_url names, for audience; or nil
 // and why not. A file the variable names that cannot be read, or that is not JSON, is an error.
+//
+// The file holds a credential, so nothing here prints its path - for a person who pasted the
+// credential itself into the variable, the path is the credential - or any of its content: a
+// read error prints the system's reason alone (redact.File), a file that does not parse fixed
+// text, and a credential of another kind its kind only where it is one Google's libraries name.
 func externalAccountFor(audience string) (Source, string, error) {
 	file := os.Getenv(credentialsFileVar)
 	if file == "" {
@@ -78,23 +84,35 @@ func externalAccountFor(audience string) (Source, string, error) {
 	}
 	data, err := os.ReadFile(file)
 	if err != nil {
-		return nil, "", fmt.Errorf("read the credentials file %s names (%s): %w", credentialsFileVar, file, err)
+		return nil, "", fmt.Errorf("read the credentials file %s names: %w", credentialsFileVar, redact.File(err))
 	}
 	var head struct {
 		Type          string `json:"type"`
 		Impersonation string `json:"service_account_impersonation_url"`
 	}
-	if err := json.Unmarshal(data, &head); err != nil {
-		return nil, "", fmt.Errorf("read the credentials file %s names (%s): %w", credentialsFileVar, file, err)
+	if json.Unmarshal(data, &head) != nil {
+		return nil, "", fmt.Errorf("the credentials file %s names is not JSON", credentialsFileVar)
 	}
 	if head.Type != string(google.ExternalAccount) || head.Impersonation == "" {
-		return nil, fmt.Sprintf("the credentials file %s names (%s) is a %q credential, not an external_account with a service account to act as", credentialsFileVar, file, head.Type), nil
+		kind := "another kind of"
+		if credentialKinds[head.Type] {
+			kind = fmt.Sprintf("a %q", head.Type)
+		}
+		return nil, fmt.Sprintf("the credentials file %s names is %s credential, not an external_account with a service account to act as", credentialsFileVar, kind), nil
 	}
 	account := impersonatedAccount(head.Impersonation)
 	if account == "" {
-		return nil, "", fmt.Errorf("the credentials file %s names (%s) has a service_account_impersonation_url that names no service account", credentialsFileVar, file)
+		return nil, "", fmt.Errorf("the credentials file %s names has a service_account_impersonation_url that names no service account", credentialsFileVar)
 	}
 	return &ExternalAccountIdentity{CredentialsJSON: data, ServiceAccount: account, Audience: audience, HTTP: HTTPClient()}, "", nil
+}
+
+// credentialKinds are the credential types Google's libraries read (golang.org/x/oauth2/google's
+// CredentialsType), the only `type` a message about a credentials file names.
+var credentialKinds = map[string]bool{
+	string(google.ServiceAccount): true, string(google.AuthorizedUser): true, string(google.ExternalAccount): true,
+	string(google.ExternalAccountAuthorizedUser): true, string(google.ImpersonatedServiceAccount): true,
+	string(google.GDCHServiceAccount): true,
 }
 
 // impersonatedAccount is the service account a service_account_impersonation_url acts as: its
@@ -128,29 +146,84 @@ type ExternalAccountIdentity struct {
 	IAMCredentialsURL string
 }
 
+// Describe names the identity in every trade's log line and error: the audience, the broker's
+// Google exchange audience, as internal/redact's allow-list prints a URL, and by what it is where
+// that withholds it, since it is text a broker's settings answer wrote; and the account where it
+// is a service account's email or unique id (ServiceAccountWords), else by the credentials file
+// that names it, since the file is a credential's place.
 func (e *ExternalAccountIdentity) Describe() string {
-	return "a Google identity token for " + e.Audience + " minted as " + e.ServiceAccount + " through the external_account credential " + credentialsFileVar + " names"
+	audience := "the Google exchange audience the broker names"
+	if redact.Clean(e.Audience) {
+		audience = e.Audience
+	}
+	return "a Google identity token for " + audience + " minted as " + e.account() + " through the external_account credential " + credentialsFileVar + " names"
+}
+
+// account is the service account the identity acts as, as a message names it.
+func (e *ExternalAccountIdentity) account() string {
+	return ServiceAccountWords(e.ServiceAccount, credentialsFileVar)
 }
 
 // Token mints the service account's access token with the credentials file's own exchange and
-// spends it on one generateIdToken. Every error names the step that failed and never a token.
+// spends it on one generateIdToken. Every error names the step that failed and never a token, a
+// part of the file or a library's text: x/oauth2's errors quote the file's fields and the body of
+// the security token service's answer (externalAccountFailure).
 func (e *ExternalAccountIdentity) Token(ctx context.Context) (string, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*poolTimeout)
 	defer cancel()
 	if e.HTTP != nil {
 		ctx = context.WithValue(ctx, oauth2.HTTPClient, e.HTTP)
 	}
+	answered := &statusOf{}
+	ctx = withStatusOf(ctx, answered)
 	creds, err := google.CredentialsFromJSONWithType(ctx, e.CredentialsJSON, google.ExternalAccount, poolScope)
 	if err != nil {
-		return "", "", fmt.Errorf("read the external_account credential %s names: %w", credentialsFileVar, err)
+		return "", "", fmt.Errorf("the external_account credential %s names is not one this client reads", credentialsFileVar)
 	}
 	access, err := creds.TokenSource.Token()
 	if err != nil {
-		return "", "", fmt.Errorf("mint %s's access token with the external_account credential %s names: %w", e.ServiceAccount, credentialsFileVar, err)
+		return "", "", fmt.Errorf("mint an access token as %s with the external_account credential %s names: %s", e.account(), credentialsFileVar, externalAccountFailure(e.CredentialsJSON, answered, err))
 	}
-	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.Audience, access.AccessToken)
+	token, err := generateIDToken(ctx, e.HTTP, e.IAMCredentialsURL, e.ServiceAccount, e.account(), e.Audience, access.AccessToken)
 	if err != nil {
 		return "", "", err
 	}
 	return token, oauthwire.SubjectTokenTypeGoogle, nil
+}
+
+// externalAccountFailure is why an external_account credential's token source failed, err, in
+// words of this client's own: x/oauth2 quotes the credential file's fields, the path its
+// credential_source names (without wrapping the file call's error) and the body of a refusal. A
+// subject token file the credential names that cannot be read prints as the file call's reason
+// (redact.File), the file read again here for it; a refusal names the service that answered - the
+// security token service, IAM Credentials, the token service the credential names (token_url),
+// or else the subject token source its credential_source names (a url, or AWS's metadata) - and
+// the status and registered code its answer carried (redact.Answered); any other failure prints
+// as its class (redact.Class).
+func externalAccountFailure(credential []byte, answered *statusOf, err error) string {
+	var fields struct {
+		TokenURL string `json:"token_url"`
+		Source   struct {
+			File string `json:"file"`
+		} `json:"credential_source"`
+	}
+	parsed := json.Unmarshal(credential, &fields) == nil
+	if parsed && fields.Source.File != "" {
+		if _, readErr := os.ReadFile(fields.Source.File); readErr != nil {
+			return "read the subject token file its credential_source names: " + redact.File(readErr).Error()
+		}
+	}
+	if answered.status/100 <= 2 {
+		return redact.Class(err).Error()
+	}
+	service := "the subject token source its credential_source names"
+	switch tokenURL, _ := url.Parse(fields.TokenURL); {
+	case answered.host == "sts.googleapis.com":
+		service = "Google's security token service"
+	case answered.host == "iamcredentials.googleapis.com":
+		service = "IAM Credentials"
+	case parsed && tokenURL != nil && answered.host == tokenURL.Host:
+		service = "the token service the credential names"
+	}
+	return service + ": " + redact.Answered(answered.status, answered.answer())
 }

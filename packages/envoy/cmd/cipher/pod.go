@@ -20,10 +20,8 @@ package main
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -140,10 +138,8 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	var result struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// The decoder's words quote the answer, so they print as the address lets the broker's
-		// own words print (cipheraddr.Address.Words).
-		return "", false, fmt.Errorf("decode enrollment response: %s", c.baseURL.Words(err.Error()))
+	if err := c.decode(raw, &result, "decode enrollment response"); err != nil {
+		return "", false, err
 	}
 	if result.EnrollmentID == "" {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
@@ -300,9 +296,9 @@ func enrolPod(service, tokenFile, out string, base cipheraddr.Address, prefix st
 	// the token file are named.
 	fmt.Fprintf(stderr, "%s --pod: enrolled; keep this lease alive with: AGENT_SECRETS_KEY_DIR=%s agent-secrets renew --pod-token-file %s\n",
 		prefix, shellWord(out), shellWord(tokenFile))
-	// The enrollment is the broker's, so it prints on one line (redact.OneLine); the file
-	// above keeps it as it came.
-	fmt.Fprintln(stdout, redact.OneLine(enrollmentID))
+	// The enrollment is the broker's, so it prints as the broker's address lets its answer print
+	// (cipheraddr.Address.Words); the file above keeps it as it came.
+	fmt.Fprintln(stdout, idWords(base, enrollmentID))
 	return 0
 }
 
@@ -342,9 +338,8 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	var result struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// As CreatePodEnrollment's decoder error: the answer's words, through Words.
-		return "", fmt.Errorf("decode token login response: %s", c.baseURL.Words(err.Error()))
+	if err := c.decode(raw, &result, "decode token login response"); err != nil {
+		return "", err
 	}
 	if result.CredentialID == "" {
 		return "", errors.New("the broker's token login answered no credential_id")
@@ -362,7 +357,7 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	}
 	path := filepath.Join(dir, keyFile)
 	if exists(path) {
-		return loadOutKey(path)
+		return loadKey(path, outKeyFile)
 	}
 	key, err := proof.NewKey()
 	if err != nil {
@@ -378,39 +373,15 @@ func enrollSessionKey(dir string) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// outKeyFile is how a message of enroll --pod names the session key it keeps: by the flag that
-// names its directory, since the key's path is the path of a file that holds a credential.
+// outKeyFile is how every message names the session key in the directory keygen's and enroll
+// --pod's --out names: by the flag that names its directory, since the key's path is the path of
+// a file that holds a credential. main.go's loadKey reads it under this name, keygen and
+// enrollSessionKey write it under it, and outDir names the directory itself.
 const outKeyFile = "key.pem in " + outDir
 
-// outDir is the key directory as a message names it.
+// outDir is the directory keygen's and enroll --pod's --out (or AGENT_SECRETS_KEY_DIR) names, as
+// a message names it.
 const outDir = "the directory --out (or AGENT_SECRETS_KEY_DIR) names"
-
-// loadOutKey is loadKey for the key.pem in the directory --out names, saying outKeyFile where
-// loadKey says the key's path: the system's reason it cannot be read prints through redact.File,
-// and content that is no PEM file, no PKCS#8 key or no ECDSA key is refused in this function's
-// own fixed text, never in the parser's words about the key's bytes. It parses the key itself
-// rather than through main.go's parseKeyPEM, so what it prints depends on no other function's
-// wrapping. It merges with main.go's loadKey once the open agent-secrets stack, which owns
-// main.go, has landed.
-func loadOutKey(path string) (*ecdsa.PrivateKey, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", outKeyFile, redact.File(err))
-	}
-	block, _ := pem.Decode(data)
-	if block == nil {
-		return nil, errors.New(outKeyFile + ": not a PEM file")
-	}
-	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, errors.New(outKeyFile + ": not a PKCS#8 private key")
-	}
-	key, ok := parsed.(*ecdsa.PrivateKey)
-	if !ok {
-		return nil, errors.New(outKeyFile + ": not an ECDSA private key")
-	}
-	return key, nil
-}
 
 // enrollLockFile is the lock a pod's self-enrollment is serialized on, in the key dir it writes.
 // A pod can run `enroll --pod` more than once over one directory, so two runs can overlap;

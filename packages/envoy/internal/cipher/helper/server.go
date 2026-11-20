@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
-	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Server answers the helper socket. PeerOf is a field so tests can present a chosen pid.
@@ -828,7 +827,7 @@ func (s *Server) signLauncher(peer *Peer, pid int, method, url string) Response 
 	}
 	if !operatorRoute(s.Broker.URL.Raw(), method, url) {
 		peer.Close()
-		return Response{Code: CodeBadRequest, Error: fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; not %[2]s %[3]s", s.Broker.URL, method, redact.URL(url))}
+		return Response{Code: CodeBadRequest, Error: s.operatorRouteRefusal(url)}
 	}
 	sess, unknown := s.Registry.RootOrUnknown(pid)
 	if sess != nil {
@@ -880,6 +879,21 @@ func operatorRoute(broker, method, url string) bool {
 		}
 	}
 	return false
+}
+
+// operatorRouteRefusal is the refusal of a sign-launcher call to url that is not one of the four
+// operator routes under this helper's broker (operatorRoute). It names the routes the helper
+// signs and which check the call failed - another address than the broker's, or a method and
+// route that are none of the four - and never the method or the url the caller sent: the url ends
+// in the id a person typed to `machine revoke` or `grant revoke`, which is where a credential
+// pasted in the wrong place lands, the caller's AGENT_SECRETS_URL can carry a user, a password or
+// a query, and the CLI prints this text as it is.
+func (s *Server) operatorRouteRefusal(url string) string {
+	failed := "the call's method and route are none of them"
+	if !strings.HasPrefix(url, s.Broker.URL.Raw()) {
+		failed = "the call is to another address than this helper's broker (AGENT_SECRETS_URL may name another broker than the helper serves)"
+	}
+	return fmt.Sprintf("sign-launcher signs only GET %[1]s/v1/operator/machines, POST %[1]s/v1/operator/machines/{id}/revoke, GET %[1]s/v1/operator/grants and POST %[1]s/v1/operator/grants/{id}/revoke; %[2]s (the call's method and URL are not printed: the URL can end in an id a person typed)", s.Broker.URL, failed)
 }
 
 // pathSegment reports whether seg is one path segment naming something: no '/', '?' or '#', and

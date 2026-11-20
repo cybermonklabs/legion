@@ -15,7 +15,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,6 +25,8 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // printedSecret stands for a credential in a place it does not belong. No printed text holds it.
@@ -184,12 +185,9 @@ func TestARefusedSettingIsNamedAndNotEchoed(t *testing.T) {
 // name, with the failure's class rather than go-oidc's or net/http's own text, which repeats the
 // URL. A plain issuer that answers nothing prints whole, with its class: the control.
 func TestAnIssuerThatCarriesACredentialIsNotPrinted(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
+	// A port held refused for the whole test (testport.Refused), not one a closed listener freed,
+	// which another process on the machine can take.
+	closed := testport.Refused(t)
 	for _, issuer := range []string{
 		"http://tokuser9f3:" + printedSecret + "@" + closed,
 		"http://" + printedSecret + "@" + closed,
@@ -314,16 +312,12 @@ func TestDiscoveryGoesThroughTheClientEveryOtherCallDoes(t *testing.T) {
 // ended in, and unwraps to it, not as the 302 that sent it there. A discovery the issuer answered
 // 404 prints that status, and its error still unwraps to go-oidc's own: the control.
 func TestARedirectedDiscoveryPrintsWhereItEnded(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
+	// A port held refused for the whole test (testport.Refused), not one a closed listener freed.
+	closed := testport.Refused(t)
 	redirected := newRawServer(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "http://"+closed+"/.well-known/openid-configuration", http.StatusFound)
 	})
-	_, err = exampleFlow(redirected).Start(context.Background())
+	_, err := exampleFlow(redirected).Start(context.Background())
 	if err == nil {
 		t.Fatal("Start read a discovery document from a port that is closed")
 	}
@@ -421,12 +415,10 @@ func TestADiscoveryWhoseBodyFailsPrintsTheReadFailure(t *testing.T) {
 // with a user name, a password and a query, nor of an issuer that carries a credential. A plain
 // issuer prints whole: the control.
 func TestAnIssuerWhoseEndpointsRefuseTheConnectionPrintsTheClass(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	closed := listener.Addr().String()
-	listener.Close()
+	// A socket held bound and never listening until the test ends (testport.Refused): every dial
+	// to it is refused, and no other process on the machine can take the port meanwhile, as one
+	// could take a port a closed listener freed.
+	closed := testport.Refused(t)
 	endpoint := "http://tokuser9f3:" + printedSecret + "@" + closed
 	// The document names as its issuer the one the request asked for, user name and password
 	// included, as an issuer that echoes its caller would.

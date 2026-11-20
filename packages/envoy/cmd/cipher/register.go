@@ -59,8 +59,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if !*doExec && len(command) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets register: unexpected argument %q\n", command[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "register")
 	}
 
 	// --exec looks its command up before it asks the helper anything, so a command that is not on

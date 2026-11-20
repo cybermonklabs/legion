@@ -51,12 +51,13 @@ const (
 // ErrNoSignIn is a machine where nobody has signed in.
 var ErrNoSignIn = errors.New("nobody is signed in on this machine; " + Hint(FailureNoSignIn))
 
-// signInStoreName is the sign-in store as a message names it. A record holds a refresh token and
-// a box key, so the store is a credential file's place, and no message names its path - the
-// value of SignInDirVar, or of XDG_STATE_HOME or HOME - nor quotes a record: a file call's error
-// prints its system reason alone (redact.File), and a record that does not parse prints as fixed
-// text, since encoding/json's and time's errors quote the value they could not read.
-const signInStoreName = "the sign-in store (" + SignInDirVar + ", or $XDG_STATE_HOME/agent-secrets/signins where it is unset)"
+// SignInStoreName is the sign-in store as a message names it, agent-secrets' chain refusal among
+// them. A record holds a refresh token and a box key, so the store is a credential file's place,
+// and no message names its path - the value of SignInDirVar, or of XDG_STATE_HOME or HOME - nor
+// quotes a record: a file call's error prints its system reason alone (redact.File), and a record
+// that does not parse prints as fixed text, since encoding/json's and time's errors quote the
+// value they could not read.
+const SignInStoreName = "the sign-in store (" + SignInDirVar + ", or $XDG_STATE_HOME/agent-secrets/signins where it is unset)"
 
 // SignInRecord is one person's sign-in on this machine as it is kept on disk.
 type SignInRecord struct {
@@ -119,17 +120,17 @@ func (s SignInStore) Path(person string) string {
 // that person's record and leaves every other person's alone.
 func (s SignInStore) Write(record SignInRecord) error {
 	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-		return fmt.Errorf("make %s: %w", signInStoreName, redact.File(err))
+		return fmt.Errorf("make %s: %w", SignInStoreName, redact.File(err))
 	}
 	if err := os.Chmod(s.Dir, 0o700); err != nil {
-		return fmt.Errorf("hold %s to this person's own user: %w", signInStoreName, redact.File(err))
+		return fmt.Errorf("hold %s to this person's own user: %w", SignInStoreName, redact.File(err))
 	}
 	raw, err := json.MarshalIndent(record, "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := writeFileAtomic(s.Path(record.Person), append(raw, '\n'), 0o600); err != nil {
-		return fmt.Errorf("keep %s's sign-in in %s: %w", record.Person, signInStoreName, redact.File(err))
+		return fmt.Errorf("keep %s's sign-in in %s: %w", record.Person, SignInStoreName, redact.File(err))
 	}
 	return nil
 }
@@ -138,14 +139,14 @@ func (s SignInStore) Write(record SignInRecord) error {
 func (s SignInStore) Read(path string) (SignInRecord, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return SignInRecord{}, fmt.Errorf("read a sign-in in %s: %w", signInStoreName, redact.File(err))
+		return SignInRecord{}, fmt.Errorf("read a sign-in in %s: %w", SignInStoreName, redact.File(err))
 	}
 	var record SignInRecord
 	if json.Unmarshal(raw, &record) != nil {
-		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s is not a sign-in record", signInStoreName), FailureNoSignIn)
+		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s is not a sign-in record", SignInStoreName), FailureNoSignIn)
 	}
 	if record.Person == "" || record.RefreshToken == "" || record.BoxKey == "" {
-		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s names no person, no refresh token or no box key", signInStoreName), FailureNoSignIn)
+		return SignInRecord{}, WithHint(fmt.Errorf("a sign-in in %s names no person, no refresh token or no box key", SignInStoreName), FailureNoSignIn)
 	}
 	record.path = path
 	return record, nil
@@ -159,7 +160,7 @@ func (s SignInStore) List() ([]SignInRecord, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", signInStoreName, redact.File(err))
+		return nil, fmt.Errorf("read %s: %w", SignInStoreName, redact.File(err))
 	}
 	var records []SignInRecord
 	for _, entry := range entries {

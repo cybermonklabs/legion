@@ -20,6 +20,7 @@ package main
 
 import (
 	"cmp"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -81,6 +82,25 @@ func keyDir() string {
 	}
 	return filepath.Dir(helper.DefaultSocket(os.Getenv))
 }
+
+// keyDirName is how a message names the key dir (keyDir): AGENT_SECRETS_KEY_DIR where that is set,
+// else its default's own expression as helper.DefaultSocket resolves it - under XDG_RUNTIME_DIR,
+// or under /run/user/$UID where that is unset too - never the directory's path. The key dir holds
+// key.pem, and a setting meant for a credential's place is where a person who pasted the
+// credential puts it.
+func keyDirName() string {
+	switch {
+	case os.Getenv("AGENT_SECRETS_KEY_DIR") != "":
+		return "AGENT_SECRETS_KEY_DIR"
+	case os.Getenv("XDG_RUNTIME_DIR") != "":
+		return "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
+	default:
+		return "/run/user/$UID/agent-secrets (AGENT_SECRETS_KEY_DIR and XDG_RUNTIME_DIR are unset)"
+	}
+}
+
+// keyDirFile is how a message names the file name in the key dir: name in keyDirName.
+func keyDirFile(name string) string { return name + " in " + keyDirName() }
 
 // brokerBaseURL is the broker's address as brokerURLVar gives it (clientGetenv: the environment,
 // else the settings file), without the slashes it ends in (cipherclient.WithoutTrailingSlashes,
@@ -172,7 +192,9 @@ func launcherKeyDir(dir string) bool {
 	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
 }
 
-// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait.
+// enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait. A value that is
+// no duration of zero or more is refused naming the variable and its rule, never the value, which
+// the environment holds whatever was put there.
 func enrollWait() (time.Duration, error) {
 	v := os.Getenv("AGENT_SECRETS_ENROLL_WAIT")
 	if v == "" {
@@ -180,7 +202,7 @@ func enrollWait() (time.Duration, error) {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d < 0 {
-		return 0, fmt.Errorf("AGENT_SECRETS_ENROLL_WAIT=%q is not a duration such as 20s", v)
+		return 0, errors.New("AGENT_SECRETS_ENROLL_WAIT is not a Go duration of zero or more, such as 20s")
 	}
 	return d, nil
 }
@@ -241,8 +263,7 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 		return exitUsage(err)
 	}
 	if len(positional) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets identity: unexpected argument %q\n", positional[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "identity")
 	}
 	if *source {
 		return identitySource(stdout, stderr)

@@ -458,7 +458,7 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
 		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"}, nil,
-			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
+			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, which outranks AWS_PROFILE",
 			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
 		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile}, nil,
@@ -819,10 +819,10 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 }
 
 // TestSecretCreateAndRetagRefuseShape: `--shape` is a flag of no form of this CLI. A create that
-// names it is refused by the flag reader itself, exiting 2 with the reader's own words, before
-// the store is called and before standard input is read — the value is never asked for, so a
-// writer who typed the old flag loses nothing — and a retag that names it is refused the same
-// way, leaving the secret's tags as they were.
+// names it is refused by the flag reader itself, exiting 2 with the reader's refusal of an
+// argument that is no flag, before the store is called and before standard input is read — the
+// value is never asked for, so a writer who typed the old flag loses nothing — and a retag that
+// names it is refused the same way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", policytest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
@@ -834,7 +834,7 @@ func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
 			{"retag", "API_KEY", "--shape", "none"},
 		} {
 			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, "flag provided but not defined: -shape") {
+			if code != exitUsageError || !strings.Contains(stderr, "an argument that is not a flag of this form (not printed)") {
 				t.Fatalf("%v: exit %d stderr %q; want %d naming the flag the reader does not define", args, code, stderr, exitUsageError)
 			}
 		}
@@ -995,7 +995,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, stderr %q; want 1", args, code, stderr)
 		}
-		for _, want := range []string{accessDenied, "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
+		for _, want := range []string{"Secrets Manager TagResource: AWS refused it: AccessDeniedException (missing permission: secretsmanager:TagResource; AWS's message is not printed)", "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("%v: stderr %q must contain %q", args, stderr, want)
 			}
@@ -1008,7 +1008,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		t.Fatalf("tags = %v, want OWNED_KEY's owner unchanged", tags)
 	}
 	_, stderr, code := runSecret("retag", "OWNED_KEY", "--tier", "agent")
-	if code != 1 || !strings.Contains(stderr, accessDenied) || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
+	if code != 1 || !strings.Contains(stderr, "Secrets Manager TagResource: AWS refused it: AccessDeniedException") || strings.Contains(stderr, "is not authorized to perform") || !strings.Contains(stderr, "the store refused the AWS SDK's default credential chain: "+adaSignIn) || strings.Contains(stderr, "administrator") {
 		t.Fatalf("an owned secret's refused retag: exit %d, stderr %q; want 1 with AWS's refusal alone", code, stderr)
 	}
 	if rereads, _ := broker.recorded(); len(rereads) != 0 {

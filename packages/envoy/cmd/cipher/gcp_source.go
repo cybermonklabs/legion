@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // gcpSource is one Google credential source, in the order newGCPBackend tries them.
@@ -46,10 +48,7 @@ func (s gcpSource) name() string {
 	case sourceChosenGcloud:
 		return "CLOUDSDK_ACTIVE_CONFIG_NAME and CLOUDSDK_CORE_ACCOUNT"
 	case sourceWellKnownFile:
-		if path := wellKnownCredentialsFile(); path != "" {
-			return "the well-known credentials file " + path
-		}
-		return "the well-known credentials file"
+		return wellKnownCredentialsName()
 	case sourceActiveGcloud:
 		return "the active gcloud account"
 	case sourceMetadata:
@@ -87,6 +86,23 @@ func wellKnownCredentialsFile() string {
 		return ""
 	}
 	return filepath.Join(dir, "application_default_credentials.json")
+}
+
+// wellKnownCredentialsName is the well-known credentials file as a message names it: by the
+// setting or default its directory comes from, never by its path. The file holds a credential,
+// and CLOUDSDK_CONFIG, the setting that names its directory, is where a person who pasted the
+// credential itself puts it: a value that is no directory (too long a name, or a file) is not
+// absent, so the file is read, and its refusal would otherwise print the value.
+func wellKnownCredentialsName() string {
+	const file = "the well-known credentials file (application_default_credentials.json in "
+	switch {
+	case os.Getenv("CLOUDSDK_CONFIG") != "":
+		return file + "the directory CLOUDSDK_CONFIG names)"
+	case runtime.GOOS == "windows":
+		return file + `%APPDATA%\gcloud)`
+	default:
+		return file + "$HOME/.config/gcloud)"
+	}
 }
 
 // gcloudConfigurations is the name of every gcloud configuration gcloudConfigDir holds
@@ -127,11 +143,13 @@ func gcloudConfigurationList() string {
 // callback), so a person's empty configuration would read as the machine's: measured on a
 // developer's Compute Engine VM on 2026-11-15, where `config list --configuration=<name>` for a
 // person's configuration named the VM's account and `config configurations describe <name>` named
-// none. A file it cannot read is an error.
+// none. A file it cannot read is an error, with the system's reason alone (redact.File): the name
+// is one this machine holds (newGCPBackend refuses any other first), and the path is gcloud's
+// directory's.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))
 	if err != nil {
-		return "", fmt.Errorf("read the gcloud configuration %s: %w", name, err)
+		return "", fmt.Errorf("read the gcloud configuration %s: %w", name, redact.File(err))
 	}
 	section, account := "", ""
 	for _, line := range strings.Split(string(data), "\n") {

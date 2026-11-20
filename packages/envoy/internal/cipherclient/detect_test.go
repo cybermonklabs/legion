@@ -163,8 +163,10 @@ func TestMachineIdentityIsFoundWithNoSetting(t *testing.T) {
 		t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", path)
 		metadata := startDetectMetadata(t)
 		source, _, err := DetectMachineIdentity(context.Background(), testAudience)
-		if err == nil || source != nil || !strings.Contains(err.Error(), path) {
-			t.Fatalf("DetectMachineIdentity = %#v, %v; want an error naming %s, which is present but broken", source, err, path)
+		// The error names the variable and not its value: the file holds a credential, and for a
+		// person who pasted the credential itself into the variable its path is the credential.
+		if err == nil || source != nil || !strings.Contains(err.Error(), "GOOGLE_APPLICATION_CREDENTIALS") || strings.Contains(err.Error(), path) {
+			t.Fatalf("DetectMachineIdentity = %#v, %v; want an error naming GOOGLE_APPLICATION_CREDENTIALS, which is present but broken, and not its path", source, err)
 		}
 		if n := metadata.requests.Load(); n != 0 {
 			t.Fatalf("the metadata server saw %d requests; a broken credentials file stops before it", n)
