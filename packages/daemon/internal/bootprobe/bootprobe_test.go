@@ -209,6 +209,93 @@ func TestRunReturnsARefusalAfterACapacityWait(t *testing.T) {
 	}
 }
 
+// rateLimited is an attempt GitHub's rate limit refused, to run again at until, the start having
+// waited waited for the limit so far: the wait outcome of the start's App calls (internal/daemon's
+// appAttempt).
+func rateLimited(until time.Time, waited time.Duration) Outcome {
+	return Outcome{RateLimit: `403 (Retry-After "", X-RateLimit-Remaining "0", X-RateLimit-Reset "1790000000", X-RateLimit-Resource "core")`,
+		Until: until, Waited: waited, Detail: "GitHub App bot identity lookup failed (403)"}
+}
+
+// rateLimitWaitLine is the line Run logs for each wait for GitHub's rate limit.
+const rateLimitWaitLine = "boot probe waits out GitHub's rate limit; it runs again at the time GitHub names"
+
+// A wait for GitHub's rate limit says nothing about the probed thing, so it counts against no
+// attempt budget: under a budget of two attempts, a transient failure, three rate-limit waits and
+// then a pass is a pass. Each wait lasts until the time its outcome names and is one line naming
+// the probe, that time, the wait, the total waited, the limit and the detail, never a transient
+// failure. The wait and the total are logged to a tenth of a second.
+func TestRunWaitsOutARateLimitOutsideItsAttemptBudget(t *testing.T) {
+	const wait = 100 * time.Millisecond
+	attempts := 0
+	var untils []time.Time
+	attempt := func(context.Context) Outcome {
+		attempts++
+		switch attempts {
+		case 1:
+			return transient("GitHub answered 502")
+		case 2, 3, 4:
+			until := time.Now().Add(wait)
+			untils = append(untils, until)
+			return rateLimited(until, time.Duration(attempts-1)*wait)
+		}
+		if since := time.Since(untils[len(untils)-1]); since < 0 {
+			t.Errorf("attempt %d ran %s before the time its wait named", attempts, -since)
+		}
+		return passed
+	}
+	var logged bytes.Buffer
+
+	if err := Run(context.Background(), "GitHub App tokens mint", quick(2), logger(&logged), attempt); err != nil {
+		t.Fatalf("Run = %v, want the pass after a transient failure and three rate-limit waits under a bound of two attempts", err)
+	}
+	if attempts != 5 {
+		t.Errorf("attempts = %d, want a transient failure, three rate-limit waits and the pass", attempts)
+	}
+	if got := strings.Count(logged.String(), "failed transiently"); got != 1 {
+		t.Errorf("logged %d transient failures, want the one:\n%s", got, logged.String())
+	}
+	lines := regexp.MustCompile(`(?m)^.*`+regexp.QuoteMeta(rateLimitWaitLine)+`.*$`).FindAllString(logged.String(), -1)
+	if len(lines) != 3 {
+		t.Fatalf("logged %d rate-limit waits, want 3:\n%s", len(lines), logged.String())
+	}
+	for index, line := range lines {
+		for _, want := range []string{
+			`probe="GitHub App tokens mint"`,
+			"until=" + untils[index].UTC().Format(time.RFC3339) + " ",
+			" wait=",
+			" waited=" + (time.Duration(index+1) * wait).String() + " ",
+			`limit="403 (Retry-After \"\", X-RateLimit-Remaining \"0\", X-RateLimit-Reset \"1790000000\", X-RateLimit-Resource \"core\")"`,
+			`detail="GitHub App bot identity lookup failed (403)"`,
+		} {
+			if !strings.Contains(line, want) {
+				t.Errorf("rate-limit wait %d = %s, want it to hold %s", index+1, line, want)
+			}
+		}
+	}
+}
+
+// A stop that arrives while the probe waits out GitHub's rate limit ends the wait at once, with
+// the abandoned-probe error wrapping the cancellation, and runs no other attempt.
+func TestRunEndsARateLimitWaitWhenItsContextEnds(t *testing.T) {
+	p := &plan{outcomes: []Outcome{rateLimited(time.Now().Add(time.Minute), time.Minute)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	started := time.Now()
+
+	err := Run(ctx, "GitHub App tokens mint", quick(6), logger(&bytes.Buffer{}), p.attempt)
+
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "the GitHub App tokens mint probe was abandoned") {
+		t.Fatalf("Run = %v, want the abandoned-probe error wrapping the cancellation", err)
+	}
+	if took := time.Since(started); took > time.Second {
+		t.Errorf("Run returned %s after it started, want soon after the stop, not at the minute's end", took)
+	}
+	if p.attempts != 1 {
+		t.Errorf("attempts = %d, want the one before the stop", p.attempts)
+	}
+}
+
 // The OK line is the wire between the image's `legion probe-image` and the daemon's probe
 // Sandbox: the session-storage mark, the extensions mark, the agent-models mark, the capabilities
 // mark, the model-fallback mark, then the contract last.

@@ -419,12 +419,13 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// It is built at every rate, the pacing off included, where it grants every request: one
 	// gate to hand the machines and the refresh pass, and one place that reads a rate of zero.
 	refreshGate := supervise.NewRefreshGate(cfg.WorkerWakesPerMinute)
-	// The mapping read waits out an unreachable Dispatch without limit, and the App mint waits out
-	// GitHub's transient failures within appMintRetry; a repository whose installation read fails
-	// is left out and read again, and one whose default-branch read GitHub's rate limit refuses is
-	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
-	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
-	// probe: the work after them has a budget of its own.
+	// The mapping read waits out an unreachable Dispatch without limit, and the App logins read
+	// and the App mint wait out GitHub's transient failures within appMintRetry and its rate limit
+	// until the time GitHub names, within the start's own bound (startRateLimits); a repository
+	// whose installation read fails is left out and read again, and one whose default-branch read
+	// GitHub's rate limit refuses is served on the default branch the daemon holds or waited out
+	// (nameMapping), never a refused boot. The boot budget bounds none of them, as it does not
+	// bound the plugin gate or the image probe: the work after them has a budget of its own.
 	workflow, err := openWorkflow(ctx, cfg, st, plan.project, plan.dispatchToken, plan.hookPrompts, plan.repositories, log, o.workflowTokens, o.githubAPI, reserveWake)
 	if err != nil {
 		st.Close()
