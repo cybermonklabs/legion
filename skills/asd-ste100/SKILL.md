@@ -1,6 +1,6 @@
 ---
 name: asd-ste100
-description: "Use when English text must be read with no human to resolve ambiguity (tool descriptions, error messages, agent instructions, system prompts, status reports), reads as dense or easy to misparse, or needs an STE100 or plain-language rewrite. Not for creative or marketing copy."
+description: "Use when English must be read with no human to disambiguate it (tool descriptions, error messages, agent instructions, system prompts, status reports), reads as dense, hedged or easy to misparse, or needs an STE100, plain-language or controlled-language rewrite. Not for creative or marketing copy."
 ---
 
 # Simplified Technical English (ASD-STE100)
@@ -10,7 +10,7 @@ description: "Use when English text must be read with no human to resolve ambigu
 Pick a mode before you rewrite. If the user does not name one, infer it from the text type.
 
 - **Strict**: procedures, error messages, tool and function descriptions, instructions to an agent, safety text, and anywhere a wrong reading has a cost. Apply every rule below.
-- **STE-flavored**: READMEs, PR descriptions, changelogs, explanatory prose. Apply the structural rules in full; treat the lexical rules as advice, since prose needs some range of words.
+- **STE-flavored**: READMEs, PR descriptions, changelogs, explanatory prose. Apply the structural rules in full; treat the lexical rules as advice, since prose needs some range of words. In practice, keep the sentence length caps, active voice, simple tenses, no phrasal verbs, no semicolons, no nominalization and no marketing adjectives, and drop the one-word-one-meaning lockdown.
 
 ## Structural rules
 
@@ -30,16 +30,16 @@ Pick a mode before you rewrite. If the user does not name one, infer it from the
 
 ## Lexical rules
 
-These come from ASD's dictionary of about 900 approved words, which ASD does not let others reproduce, so this skill does not hold it. Apply them as a direction, and never claim dictionary compliance. Where exact approved wording matters, get the standard from https://www.asd-ste100.org/ and check word by word.
+These come from ASD's dictionary of about 900 approved words, which ASD does not let others reproduce, so this skill does not hold it. Instead, apply the underlying principle: pick the plainest, most common word available and use it the same way every time. Apply the lexical rules as a direction of travel, and never claim dictionary compliance you cannot verify. Where exact approved wording matters, get the standard from https://www.asd-ste100.org/ and check word by word.
 
 - One word, one meaning: one term for one thing or action through the whole text.
-- One part of speech per word: "Apply oil to the valve", not "Oil the valve".
+- One part of speech per word: "Apply oil to the valve", not "Oil the valve". Prefer the noun form when both read equally well.
 - Verb, not noun (Rule 3.7): "Analyze the log", not "Perform an analysis of the log".
 - Keep necessary technical terms, and define each once if it is not common English.
 
 ## Simple tenses
 
-Use the infinitive, imperative, simple present, simple past, simple future, and the past participle as an adjective: "we received the report", not "we have received the report". Where a compound form carries information the simple form cannot ("the job has completed" as current state, or the hedge in "may have failed"), keep it. When the tense rule and the modality rule conflict, modality wins.
+Use the infinitive, imperative, simple present, simple past, simple future, and the past participle as an adjective: "we received the report", not "we have received the report". Use an "-ing" form only as a technical noun or as part of a technical noun, not as a verb form. Where a compound form carries information the simple form cannot ("the job has completed" as current state, or the hedge in "may have failed"), keep it and flag the departure, as Output says. When the tense rule and the modality rule conflict, modality wins.
 
 ## Scan checklist
 
@@ -57,17 +57,17 @@ Scan for all six before you rewrite:
 1. Pick the mode.
 2. Read the text once for meaning before you change anything.
 3. Walk it sentence by sentence, and flag each break of the rules and each checklist habit. In STE-flavored mode, flag the lexical rules but do not enforce them.
-4. Rewrite each flagged sentence with the same meaning. Keep every hedge ("may", "could", "is likely to") at its strength, and add no cause, frequency or mechanism the source did not state. Where a rewrite would drop a safety condition, a scope qualifier or a number, keep the longer form.
+4. Rewrite each flagged sentence with the same meaning. Keep every hedge ("may", "could", "is likely to") at its strength, and add no fact the source did not state, such as a cause, a frequency or a mechanism. Where a rewrite would drop a safety condition, a scope qualifier or a number, keep the longer form.
 5. Stop when each sentence has one reading, not when it is shortest.
 6. If the text already complies, say so and change nothing.
 
-Read `skill://asd-ste100/examples/before-after.md` when you want worked rewrites of agent output, each with what was flagged and what was kept.
+Read `skill://asd-ste100/examples/before-after.md` before you rewrite a tool description, an error message, an instruction to an agent or README prose: it holds one worked rewrite of each, with what was flagged and what was kept.
 
 ## Output
 
-By default, print the rewritten text and nothing else: no preamble, mode, count, summary or offer. If step 4 kept a longer form on purpose, add one line after the text, `Kept as-is:`, naming the phrase and the precision it keeps.
+By default, print the rewritten text and nothing else: no preamble, mode, count, summary or offer. If you kept a longer form on purpose (step 4, or a compound tense under Simple tenses), add one line after the text, `Kept as-is:`, naming the phrase and the precision it keeps.
 
-When the user asks for the reasoning ("show the diff", "which rules did it break", "before/after"), print this table instead, then one line on what you did not simplify and why:
+When the user asks for the reasoning ("show the diff", "which rules did it break", "before/after"), print this table instead, then one line on what you did not simplify and why, and one line that says the lexical rules were applied as a direction of travel, not checked against ASD's dictionary:
 
 ```markdown
 | Rule violated | Original | Simplified |
@@ -78,4 +78,10 @@ When the user asks for the reasoning ("show the diff", "which rules did it break
 Mode: Strict. 7 violations found.
 ```
 
-STE fixes the form of a text, not its substance. If the text has nothing to say, say so rather than polish it.
+In either form, if a domain term that is not common English must stay, end with one line that suggests a one-line glossary entry for it.
+
+## Boundaries
+
+- Do not simplify creative, marketing or persuasive copy where voice and nuance are the point.
+- Do not guarantee an aerospace- or defense-grade STE-compliant document. This skill is a general-purpose clarity tool inspired by STE, not a certified STE authoring tool.
+- STE fixes the form of a text, not its substance. If the text has nothing to say, say so rather than polish it.
