@@ -39,27 +39,32 @@ export type TemporaryDirectoryOptions = {
   root?: string;
 };
 
-/** Where {@link memoryRoot} looks, for a test that judges files of its own. */
+/** What {@link memoryRoot} takes. */
 export type MemoryRootOptions = {
-  /** The mount table it reads, `/proc/self/mountinfo` by default. */
+  /** The bytes the tmpfs must have free, 0 by default: see {@link memoryRoot}. */
+  need?: number;
+  /** The mount table it reads, `/proc/self/mountinfo` by default, for a test of its own. */
   mountinfo?: string;
-  /** The mount point it judges, `/dev/shm` by default. */
+  /** The mount point it judges, `/dev/shm` by default, for a test of its own. */
   at?: string;
 };
 
 /**
  * `/dev/shm` where `mountinfo` shows a tmpfs mounted there read-write and without `noexec`, this
- * process may write and search it, and it has `need` bytes free; else `tmpdir()`, and `tmpdir()`
+ * process may write in and search it, and it has `need` bytes free; else `tmpdir()`, and `tmpdir()`
  * when it cannot read `mountinfo`. The last mount at `/dev/shm` in the file is the one a process
  * sees. A suite that makes or removes many directory entries inside one row's or hook's time passes
  * it as `root`: on a disk other programs share, one creation can take milliseconds, and the suite's
  * time then follows what those programs do. `noexec` is refused because a suite may write programs
- * into its directory and run them. `need` is the most the caller's suite holds there at once, times
- * the runs of it that may share the host: a tmpfs is often small (a Kubernetes pod's `/dev/shm` is
- * 64 MiB), it keeps what a stopped run never removed, and a write past its end fails with ENOSPC.
+ * into its directory and run them. A caller that holds much there passes `need`: the most one run
+ * of its suite holds at once, times the runs that may share the host. A tmpfs is often small (a
+ * Kubernetes pod's `/dev/shm` is 64 MiB), keeps what a stopped run never removed, and fails a write
+ * past its end with ENOSPC; a tmpfs page holds one file's data however short, so the count of files
+ * kept at once sets that most, not their size.
  */
-export function memoryRoot(need: number, options: MemoryRootOptions = {}): string {
+export function memoryRoot(options: MemoryRootOptions = {}): string {
   const at = options.at ?? "/dev/shm";
+  const need = options.need ?? 0;
   let text: string;
   try {
     text = readFileSync(options.mountinfo ?? "/proc/self/mountinfo", "utf8");

@@ -27,7 +27,7 @@
 
 import { test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -393,13 +393,17 @@ const eachRunner = [
  *  once per process, so a directory reserved in its own body would belong to the first file. */
 export function reachFixtures() {
   // The rows write about 3,600 entries here, the target files and the three result files of each
-  // `driveEach` run, and the removal hook removes them inside its 60 s. On a disk other programs
-  // share one creation took up to 84 ms, so the directory is on tmpfs where the host has one that
-  // allows exec, which the `curl` and `sleep` the rows write here need, and that has room for six
-  // runs at once: one run of outside-path-reach-input.test.ts held 10.7 MiB and 11.9 MiB of tmpfs
-  // at its peak (two readings, 2026-11-19 and 2026-11-20), so 12 MiB a run. A Kubernetes pod's
-  // 64 MiB `/dev/shm` has less, and the runs there use `tmpdir()`.
-  const scratch = temporaryDirectory("outside-path-reach", { root: memoryRoot(6 * 12 * 2 ** 20) });
+  // `driveEach` run, and the removal hook removes what is left inside its 60 s. On a disk other
+  // programs share one creation took up to 84 ms, so the directory is on tmpfs where the host has
+  // one that allows exec, which the `curl` and `sleep` the rows write here need, and that has room
+  // for six runs at once (the loaded runs of docs/testing.md). tmpfs charges a page for each file
+  // that holds data, so `driveEach` removes its results once read: with them kept to the end, one
+  // run of outside-path-reach-input.test.ts held 10.7 MiB of tmpfs at once; with them removed, 6.9
+  // MiB, and one run of all four files 7.3 MiB (statvfs read every 2 ms, 2026-11-20). So 8 MiB a
+  // run, 48 MiB for six, which a 64 MiB `/dev/shm` (a Legion role's, Docker's default) holds.
+  const scratch = temporaryDirectory("outside-path-reach", {
+    root: memoryRoot({ need: 6 * 8 * 2 ** 20 }),
+  });
 
   /** The environment every run of the script starts with, whether `drive` or `driveEach` starts
    *  it: HOME `home`, PATH the host's unless `path` names another, TMPDIR this process's, the
@@ -487,7 +491,7 @@ export function reachFixtures() {
    *  starts one child for its runs holds the loop once, where a child of its own for each run held
    *  it once for each, and waited behind every other row's spawns before each.
    *  A run started here differs from one `drive` starts in four ways, none of which the script
-   *  reads or traps: it inherits SHLVL, PWD and `_` from the runner's bash, where `drive`'s run
+   *  reads or traps: it inherits SHLVL and PWD from the runner's bash, where `drive`'s run
    *  sets its own, so under bash 5.2 its SHLVL is 2, not 1; it is a background job of a
    *  non-interactive shell, which bash 3.2 starts with SIGINT and SIGQUIT ignored, where `drive`'s
    *  run has them as the test process gives them (bash 5.2 restores them at the `exec`); the runs
@@ -531,23 +535,29 @@ export function reachFixtures() {
     );
     const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
     if (code !== 0) throw new Error(`the runner of ${runs.length} runs exited ${code}:\n${stderr}`);
-    return runs.map((_, n) => {
-      try {
-        const exit = readFileSync(join(out, `${n}.code`), "utf8");
-        if (!/^\d+$/.test(exit)) throw new Error(`it left no exit code (${JSON.stringify(exit)})`);
-        return {
-          code: Number(exit),
-          stdout: readFileSync(join(out, `${n}.out`), "utf8"),
-          stderr: readFileSync(join(out, `${n}.err`), "utf8"),
-        };
-      } catch (error) {
-        // The runner exits 0 whatever became of a run, and a redirect it could not make is named
-        // only on its own stderr.
-        throw new Error(
-          `run ${n} of ${runs.length}: ${(error as Error).message}; the runner's stderr:\n${stderr}`
-        );
-      }
-    });
+    try {
+      return runs.map((_, n) => {
+        try {
+          const exit = readFileSync(join(out, `${n}.code`), "utf8");
+          if (!/^\d+$/.test(exit))
+            throw new Error(`it left no exit code (${JSON.stringify(exit)})`);
+          return {
+            code: Number(exit),
+            stdout: readFileSync(join(out, `${n}.out`), "utf8"),
+            stderr: readFileSync(join(out, `${n}.err`), "utf8"),
+          };
+        } catch (error) {
+          // The runner exits 0 whatever became of a run, and a redirect it could not make is
+          // named only on its own stderr.
+          throw new Error(
+            `run ${n} of ${runs.length}: ${(error as Error).message}; the runner's stderr:\n${stderr}`
+          );
+        }
+      });
+    } finally {
+      // Each result file holds a page of tmpfs until it goes: see `scratch`.
+      rmSync(out, { recursive: true, force: true });
+    }
   }
 
   /** A target file holding `lines`, under the run's scratch directory. */

@@ -149,22 +149,23 @@ function mountAt(at: string, options: string, type = "tmpfs", id = 32): string {
   return `${id} 28 0:26 / ${at} ${options} shared:3 - ${type} ${type} rw`;
 }
 
-// Each row judges a directory of its own as the mount, so the room and the permissions it reads
-// are the row's, whatever the host's /dev/shm holds.
+// Each row stands a directory of its own in for /dev/shm (`at`), so the room and the permissions it
+// reads are the row's, whatever the host's /dev/shm holds.
 
-test("names the mount where it is a writable tmpfs that allows exec and has the room needed", () => {
+test("names /dev/shm where it is a writable tmpfs that allows exec", () => {
   const at = makeDirectory("mount");
   expect({
-    alone: memoryRoot(1, { mountinfo: mountinfo(mountAt(at, "rw,nosuid,nodev")), at }),
+    alone: memoryRoot({ mountinfo: mountinfo(mountAt(at, "rw,nosuid,nodev")), at }),
     // The last mount at a path is the one a process sees.
-    overNoexec: memoryRoot(1, {
+    overNoexec: memoryRoot({
       mountinfo: mountinfo(mountAt(at, "rw,noexec"), mountAt(at, "rw,nosuid,nodev", "tmpfs", 40)),
       at,
     }),
-  }).toEqual({ alone: at, overNoexec: at });
+    withRoom: memoryRoot({ need: 1, mountinfo: mountinfo(mountAt(at, "rw")), at }),
+  }).toEqual({ alone: at, overNoexec: at, withRoom: at });
 });
 
-test("names tmpdir() where the mount is noexec, read-only, not a tmpfs or not mounted", () => {
+test("names tmpdir() where /dev/shm is noexec, read-only, not a tmpfs or not mounted", () => {
   const at = makeDirectory("mount");
   const cases = {
     noexec: mountinfo(mountAt(at, "rw,noexec")),
@@ -176,7 +177,7 @@ test("names tmpdir() where the mount is noexec, read-only, not a tmpfs or not mo
   };
   expect(
     Object.fromEntries(
-      Object.entries(cases).map(([name, file]) => [name, memoryRoot(1, { mountinfo: file, at })])
+      Object.entries(cases).map(([name, file]) => [name, memoryRoot({ mountinfo: file, at })])
     )
   ).toEqual(Object.fromEntries(Object.keys(cases).map((name) => [name, tmpdir()])));
 });
@@ -185,9 +186,8 @@ test("names tmpdir() where the tmpfs has less room than the caller needs", () =>
   const at = makeDirectory("mount");
   const { blocks, bsize } = statfsSync(at);
   // More than the whole filesystem holds, so more than it has free whatever else writes there.
-  expect(memoryRoot(blocks * bsize + 1, { mountinfo: mountinfo(mountAt(at, "rw")), at })).toBe(
-    tmpdir()
-  );
+  const need = blocks * bsize + 1;
+  expect(memoryRoot({ need, mountinfo: mountinfo(mountAt(at, "rw")), at })).toBe(tmpdir());
 });
 
 // Root may write in and search any directory whatever its mode, so as root the row proves nothing.
@@ -198,7 +198,7 @@ test.skipIf(process.getuid?.() === 0)(
     chmodSync(unwritable, 0o555);
     const unsearchable = makeDirectory("unsearchable");
     chmodSync(unsearchable, 0o666);
-    const judged = (at: string) => memoryRoot(1, { mountinfo: mountinfo(mountAt(at, "rw")), at });
+    const judged = (at: string) => memoryRoot({ mountinfo: mountinfo(mountAt(at, "rw")), at });
     expect({ unwritable: judged(unwritable), unsearchable: judged(unsearchable) }).toEqual({
       unwritable: tmpdir(),
       unsearchable: tmpdir(),

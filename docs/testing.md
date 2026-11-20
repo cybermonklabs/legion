@@ -81,16 +81,18 @@ itself, whose tests import its sources by relative path.
   whose `afterAll` puts the name back and removes the root. Anything staged under that root is
   staged in a hook too, since the name holds the caller's value until that `beforeAll` has run.
   Both forms take `root`, the directory the temporary one is made in, for a test that needs another
-  filesystem, such as `/dev/shm` for a rename that must cross one. `memoryRoot(need)` names
+  filesystem, such as `/dev/shm` for a rename that must cross one. `memoryRoot({ need })` names
   `/dev/shm` where it is a tmpfs that allows exec, this process may write in and search it, and it
-  has `need` bytes free, else `tmpdir()`: a suite that makes or removes many entries inside one
-  row's or hook's time takes it as `root`, so a busy shared disk does not set that time. `need` is
-  the most the suite holds there at once, times the runs of it that may share the host, because a
-  tmpfs is often small (a Kubernetes pod's is 64 MiB), keeps what a stopped run never removed, and
-  fails a write past its end with ENOSPC. Both remove a tree a test left read-only: the removal
-  chmods `u+rwX` down the tree first, following no symlink out of it and leaving a file's own mode
-  alone, because `rmSync` alone fails on the 0555 directories and 0444 files a Go module cache
-  writes, and because a file in such a tree can be a hard link to one outside it.
+  has `need` bytes free (0 unless given), else `tmpdir()`: a suite that makes or removes many
+  entries inside one row's or hook's time takes it as `root`, so a busy shared disk does not set
+  that time. A suite that holds much there gives `need`: the most one run holds at once, times the
+  runs that may share the host, because a tmpfs is often small (a Kubernetes pod's is 64 MiB),
+  keeps what a stopped run never removed, and fails a write past its end with ENOSPC. tmpfs charges
+  a page for each file that holds data, so a suite that removes files it has read holds less.
+  Both remove a tree a test left read-only: the removal chmods `u+rwX` down the tree first,
+  following no symlink out of it and leaving a file's own mode alone, because `rmSync` alone fails
+  on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a
+  tree can be a hard link to one outside it.
 
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
