@@ -27,8 +27,10 @@ export interface FailedRead {
    *  drawn as the reads settle, it goes to this line's Retry before any other's, since a question
    *  the issue's read does not hold comes from this read alone. */
   readonly bringsQuestions: boolean;
-  /** How many times the read has failed (TanStack Query's `errorUpdateCount`), which keys the
-   *  line's alert, so a second failure is said again. */
+  /** Which failure of the read the line says, which keys the line's alert, so a second failure
+   *  is said again: a read's own `errorUpdateCount` (TanStack Query's), and for the names the
+   *  count of their reads' failures since every one of them last answered
+   *  (`NamesFailure.failure`), which is no read's own. */
   readonly failure: number;
   /** Tells the read from every other read of the outline: its line's React key. */
   readonly key: string;

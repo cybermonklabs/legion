@@ -17,8 +17,10 @@ export const FAILED_READ_RETRY = "[data-failed-read] button";
 export const FailedLineLeaves = createContext<(() => void) | undefined>(undefined);
 
 export interface FailedReadLineProps {
-  /** Which failure the line says: a read's `errorUpdateCount`. Where it is not given, the line
-   *  counts the failures it sees itself: each run it saw end while it stayed drawn failed again. */
+  /** Which failure the line says, which keys its alert: a read's `errorUpdateCount`, or for the
+   *  names the count of their reads' failures since every one of them last answered
+   *  (`NamesFailure.failure`), which is no read's own. Where it is not given, the line counts
+   *  the failures it sees itself: each run it saw end while it stayed drawn failed again. */
   failure?: number;
   /** What the view says of the read that failed, in the page's words. */
   message: string;
