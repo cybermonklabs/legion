@@ -889,7 +889,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// does not hold. The record a retry of the same id is compared with keeps the frame as
 	// received: body was marshalled from it above, and the change is made to this call's copy of
 	// the frame with its argv copied (resumeArgv), so the caller's frame is not changed either.
-	if command.ResumeFile == "" && command.ResumeSession != "" {
+	if command.ResumeSession != "" {
 		file, err := sessionByID(ctx, env, command.ResumeSession, clientURL)
 		if err != nil {
 			return abandon(err)

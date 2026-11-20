@@ -2578,10 +2578,12 @@ func resume(m *Machine, ctx context.Context, ev Event) error {
 // than launched into the hold's refusal at start, which charges each launch to its budget and
 // fails the claim within it (acceptance of #4220). It asks the names start holds: those the record
 // gives (holdRecorded), and for a claim that records no file those a resume by the id runs under
-// (holdByID). Its remedy is a new session, `legion claims forget-session`, then the resume. A
-// store that does not answer is no refusal: the resume goes on, and start asks again at the probe
-// interval, charging nothing, as before. A claim recording no session resumes as before, and so
-// does one holding its session, which costs no store call once admitted (R9).
+// (holdByID), as start will for an Oh My Pi claim, so an operator's resume is refused where the
+// launch would be; start sends a Claude Code claim with a session and no file straight to the
+// forget (startFresh) and asks no hold. Its remedy is a new session, `legion claims forget-session`,
+// then the resume. A store that does not answer is no refusal: the resume goes on, and start asks
+// again at the probe interval, charging nothing, as before. A claim recording no session resumes as
+// before, and so does one holding its session, which costs no store call once admitted (R9).
 func (m *Machine) resumeRefusal(ctx context.Context, request string) error {
 	if m.claim.Session == "" {
 		return nil

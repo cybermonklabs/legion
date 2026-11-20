@@ -1167,15 +1167,14 @@ func (f ClaimFailed) namedIssue() (string, bool) { return f.Issue, true }
 // said it. It is told on the issue, to its architect and to the controller, because a worker that
 // silently lost its memory looks like one that is merely slow.
 //
-// Cause is why the claim forgot the session, as a supervise.SessionLoss value; empty reads as
-// gone (supervise.SessionLossGone). Session is the session the claim forgot
-// (supervise.AbandonedSession.Session), which the workflow names in the words of a cause whose
-// message does not quote Detail.
+// Cause is why the claim forgot the session; empty reads as gone (supervise.SessionLossGone).
+// Session is the session the claim forgot (supervise.AbandonedSession.Session), which the
+// workflow names in the words of a cause whose message does not quote Detail.
 type SessionLost struct {
 	Issue   string
 	Role    claim.Role
 	Detail  string
-	Cause   string
+	Cause   supervise.SessionLoss
 	Session string
 }
 

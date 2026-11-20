@@ -2109,7 +2109,7 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 // reports once however often the fact is applied.
 func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.SessionLoss, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-lost:%s:%d", c.Token, c.Generation),
-		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: string(cause), Session: c.Abandoned.Session},
+		intake.SessionLost{Issue: c.Issue, Role: c.Role, Detail: detail, Cause: cause, Session: c.Abandoned.Session},
 		"apply a claim's lost session")
 }
 

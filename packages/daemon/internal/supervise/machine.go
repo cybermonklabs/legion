@@ -1306,7 +1306,7 @@ type Machine struct {
 	sessionFrom uint64
 	// lostCause is the cause of the forget the launch made last (startFresh), kept from that
 	// forget until the claim's first ready after it (ready), and "" at every other moment. Every
-	// launch until that ready is built with it (spawnSpec's sessionLost, Claim.SessionLost): the
+	// launch until that ready is built with it (spawnSpec reads it into Claim.SessionLost): the
 	// retry of a fresh spawn that failed, and a relaunch of the fresh agent before its ready, such
 	// as the stale-plugin relaunch that resumes its new file, so the agent that comes up is told
 	// in its own prompt that it does not continue the session the claim forgot. The session is
@@ -2779,7 +2779,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.leftPodRoundAt(loc)
 			m.armBoot()
 			m.log.Info("supervise: launched", "generation", m.claim.Generation, "incarnation", loc.Incarnation,
-				"resumed", way != resumeNone, "resumedBy", string(way))
+				"resumed", way != wayNone, "resumedBy", string(way))
 			return m.persist(starting)
 		}
 		if starting.Err() != nil {
@@ -3006,17 +3006,17 @@ func (m *Machine) backOff(ctx context.Context) error {
 type resumeWay string
 
 const (
-	// resumeByFile is a Resume of the session file the claim records.
-	resumeByFile resumeWay = "file"
-	// resumeByID is a Resume of the session the claim records, by its id alone, which the pod's
+	// wayFile is a Resume of the session file the claim records.
+	wayFile resumeWay = "file"
+	// wayID is a Resume of the session the claim records, by its id alone, which the pod's
 	// launcher found in its session table or the tmux runtime in the pane's sessions directory.
-	resumeByID resumeWay = "id"
-	// resumeByAgentLookup is a Resume of that session through a pod launcher that cannot look a
+	wayID resumeWay = "id"
+	// wayAgentLookup is a Resume of that session through a pod launcher that cannot look a
 	// session up by its id, whose agent's own command resolves the id (runtime.SpawnSpec's
 	// ResumeByAgent): Oh My Pi's own lookup.
-	resumeByAgentLookup resumeWay = "agent-lookup"
-	// resumeNone is a Spawn, which resumes nothing.
-	resumeNone resumeWay = "none"
+	wayAgentLookup resumeWay = "agent-lookup"
+	// wayNone is a Spawn, which resumes nothing.
+	wayNone resumeWay = "none"
 )
 
 // start launches the claim's process for this try, and answers how it began it (resumeWay):
@@ -3055,26 +3055,26 @@ const (
 // is named for (holdByID). One another claim holds is refused here, as a launch failure the caller
 // charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, resumeWay, error) {
-	spec, err := m.spawnSpec(ctx, token, m.lostCause, false)
+	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
-		return runtime.Locator{}, resumeNone, err
+		return runtime.Locator{}, wayNone, err
 	}
 	switch {
 	case m.claim.SessionFile == "" && m.claim.Session == "":
 		loc, err := m.spawn(ctx, spec)
-		return loc, resumeNone, err
+		return loc, wayNone, err
 	case m.claim.SessionFile == "" && runtime.Of(spec.Backend) == runtime.BackendClaude:
 		return m.startFresh(ctx, token, SessionLossClaudeNoFile, nil)
 	case m.claim.SessionFile == "":
 		return m.resumeByID(ctx, token, spec)
 	}
 	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
-		return runtime.Locator{}, resumeByFile, err
+		return runtime.Locator{}, wayFile, err
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if !errors.Is(err, runtime.ErrSessionFileMissing) {
-		return loc, resumeByFile, err
+		return loc, wayFile, err
 	}
 	return m.startFresh(ctx, token, SessionLossGone, err)
 }
@@ -3108,7 +3108,7 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, res
 // leaves the mark as it is, for that start's registration or a forget to clear.
 func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.SpawnSpec) (runtime.Locator, resumeWay, error) {
 	if err := m.holdByID(ctx, m.claim.Session); err != nil {
-		return runtime.Locator{}, resumeByID, err
+		return runtime.Locator{}, wayID, err
 	}
 	spec.ResumeSession = m.claim.Session
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
@@ -3116,21 +3116,21 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 	case errors.Is(err, runtime.ErrSessionFileMissing):
 		return m.startFresh(ctx, token, SessionLossGone, err)
 	case !errors.Is(err, runtime.ErrSessionLookupUnavailable):
-		return loc, resumeByID, err
+		return loc, wayID, err
 	case m.claim.AgentResumeGeneration != 0:
 		return m.startFresh(ctx, token, SessionLossNotResumedByID, err)
 	}
-	spec, err = m.spawnSpec(ctx, token, m.lostCause, true)
+	spec, err = m.spawnSpec(ctx, token, true)
 	if err != nil {
-		return runtime.Locator{}, resumeByAgentLookup, err
+		return runtime.Locator{}, wayAgentLookup, err
 	}
 	spec.ResumeSession, spec.ResumeByAgent = m.claim.Session, true
 	loc, err = m.deps.Runtime.Resume(ctx, m.previous, spec)
 	if err != nil {
-		return loc, resumeByAgentLookup, err
+		return loc, wayAgentLookup, err
 	}
 	m.claim.AgentResumeGeneration = m.claim.Generation
-	return loc, resumeByAgentLookup, nil
+	return loc, wayAgentLookup, nil
 }
 
 // spawnSpec is the launch's spec: what the daemon builds for this claim, with what only the
@@ -3139,16 +3139,17 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 //
 // Two things about this launch are not the claim's own state, and each is set on the copy handed
 // to the builder and never on the claim the machine keeps, which is the claim it persists.
-// sessionLost is the cause of the forget this launch follows (startFresh, Machine.lostCause),
-// which the spec builder turns into a sentence in the agent's own prompt, and "" for a launch that
-// follows none. byAgent marks the copy with the claim's generation (Claim.AgentResumeGeneration):
-// the launch has Oh My Pi resume the session by its id itself (resumeByID), and the builder adds
-// the sentence that the workspace may have been recreated. The claim the machine keeps is marked
-// only once that start has succeeded, after its build, and each later try moves the generation
-// before it builds, so no other build finds the mark equal to the generation.
-func (m *Machine) spawnSpec(ctx context.Context, token string, sessionLost SessionLoss, byAgent bool) (runtime.SpawnSpec, error) {
+// spawnSpec reads SessionLost from the machine (Machine.lostCause): the cause of the forget this
+// launch follows (startFresh), which the spec builder turns into a sentence in the agent's own
+// prompt, and "" for a launch that follows none. byAgent marks the copy with the claim's
+// generation (Claim.AgentResumeGeneration): the launch has Oh My Pi resume the session by its id
+// itself (resumeByID), and the builder adds the sentence that the workspace may have been
+// recreated. The claim the machine keeps is marked only once that start has succeeded, after its
+// build, and each later try moves the generation before it builds, so no other build finds the
+// mark equal to the generation.
+func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (runtime.SpawnSpec, error) {
 	building := m.claim
-	building.SessionLost = sessionLost
+	building.SessionLost = m.lostCause
 	if byAgent {
 		building.AgentResumeGeneration = m.claim.Generation
 	}
@@ -3185,12 +3186,12 @@ func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLos
 	if m.deps.SessionLost != nil {
 		m.deps.SessionLost(m.current(), cause, detail)
 	}
-	spec, err := m.spawnSpec(ctx, token, cause, false)
+	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
-		return runtime.Locator{}, resumeNone, err
+		return runtime.Locator{}, wayNone, err
 	}
 	loc, err := m.spawn(ctx, spec)
-	return loc, resumeNone, err
+	return loc, wayNone, err
 }
 
 // forgetWords is what a forget of session for cause says (startFresh): its warning line, the
