@@ -121,13 +121,15 @@ type Importer struct {
 	ended endedFlights
 
 	// afterFlightTaken runs in Sync once a caller holds the flight it waits
-	// on, joined or started, and afterSyncRefusal once it has refused a flight
-	// whose head lookup came before its call, before it looks again. Nothing in
-	// production sets either; the package's test of late refusers waits on the
-	// first rather than sleeping for its callers to join, and holds a refuser
-	// on the second.
+	// on, joined or started; afterSyncRefusal once it has refused a flight
+	// whose head lookup came before its call, before it looks again; and
+	// afterCalledAt once it has stamped its call, before it looks for a
+	// flight. Nothing in production sets any of them; the package's tests of
+	// late refusers wait on the first rather than sleeping for their callers
+	// to join, and hold a caller on the other two.
 	afterFlightTaken func()
 	afterSyncRefusal func()
+	afterCalledAt    func()
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -272,13 +274,20 @@ func (i *Importer) Sync(ctx context.Context, project, repo string) (model.Archit
 	if err := i.owner.Err(); err != nil {
 		return model.ArchitectureSource{}, err
 	}
+	key := project + "\x00" + repo
+	// The key is entered before the call is stamped, so a flight that looks
+	// the head up after this call's stamp, and so is fresh for it, finds the
+	// entry held open when it ends, whoever started it and whether its
+	// starter is still there.
+	i.ended.enter(key)
+	defer i.ended.leave(key)
 	// calledAt is stamped once, before any join: what a flight has to be
 	// newer than is the moment this caller asked, not the moment it last
 	// looked.
 	calledAt := time.Now()
-	key := project + "\x00" + repo
-	i.ended.enter(key)
-	defer i.ended.leave(key)
+	if i.afterCalledAt != nil {
+		i.afterCalledAt()
+	}
 	for {
 		// A flight this caller starts hands back the newest flight of the
 		// source to have ended, when its head lookup came no earlier than

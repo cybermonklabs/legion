@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,63 @@ func recordedKeys(process *Importer) int {
 	process.ended.mu.Lock()
 	defer process.ended.mu.Unlock()
 	return len(process.ended.byKey)
+}
+
+// A call holds its key's entry open from before it stamps its call, so a flight whose starter
+// hung up, which looks the head up after the call's stamp and ends before the call looks for a
+// flight, is still recorded and answers the call. The starter's flight is held at its
+// installation lookup, which comes before its head lookup, and the starter hangs up, so no call
+// of the key holds the entry. A later call stamps its call and is held there (afterCalledAt).
+// The flight is released, looks the head up and ends. The later call, released, takes that
+// flight's answer: one head lookup in all, where a call that enters the key only after its stamp
+// finds nothing recorded and makes a second.
+func TestACallTakesAFlightThatLookedAfterItsStampThoughThatFlightsStarterHungUp(t *testing.T) {
+	rig := newRefusersRig(t, 0)
+	installation := rig.holdNextInstallation(t)
+	var stamped atomic.Int32
+	laterStamped, held := make(chan struct{}), make(chan struct{})
+	releaseLater := sync.OnceFunc(func() { close(held) })
+	// Cleanups run last registered first: a test that fails while the later call is held lets it
+	// go before Close waits for the flights.
+	t.Cleanup(releaseLater)
+	rig.process.afterCalledAt = func() {
+		if stamped.Add(1) == 2 {
+			close(laterStamped)
+			<-held
+		}
+	}
+
+	starterCtx, hangUp := context.WithCancel(context.Background())
+	starter := make(chan syncAnswer, 1)
+	go func() {
+		source, err := rig.process.Sync(starterCtx, "CORE", archRepo)
+		starter <- syncAnswer{source: source, err: err}
+	}()
+	receiveBeforeTheDeadline(t, "the starter's flight to reach its installation lookup", installation.arrived)
+	hangUp()
+	if answer := receiveBeforeTheDeadline(t, "the starter's answer once it hung up", starter); !errors.Is(answer.err, context.Canceled) {
+		t.Fatalf("the starter that hung up answered %+v (err %v); want context.Canceled", answer.source, answer.err)
+	}
+
+	later := make(chan syncAnswer, 1)
+	rig.syncOf(archRepo, later)
+	receiveBeforeTheDeadline(t, "the later call to stamp its call", laterStamped)
+	installation.release()
+	// A barrier on the flight's end: singleflight hands this call the answer of the flight still
+	// in flight under the key, or runs it alone when none is, so once it answers, the starter's
+	// flight has ended and recorded itself, and nothing is in flight under the key.
+	receiveBeforeTheDeadline(t, "the starter's flight to end",
+		rig.process.syncs.DoChan("CORE\x00"+archRepo, func() (any, error) { return nil, nil }))
+	releaseLater()
+	answer := receiveBeforeTheDeadline(t, "the later call's answer", later)
+
+	t.Logf("head lookups=%d later commit=%s err=%v", rig.lookups.Load(), commitOf(answer), answer.err)
+	if answer.err != nil || commitOf(answer) != commitOne {
+		t.Fatalf("the later call answered commit %s (err %v); want %s, the starter's flight's", commitOf(answer), answer.err, commitOne)
+	}
+	if got := rig.lookups.Load(); got != 1 {
+		t.Fatalf("the starter's flight and the later call made %d head lookups, want 1: the flight's, which looked the head up after the later call's stamp", got)
+	}
 }
 
 // The record hands a call an ended flight by the rule Sync holds every answer to,

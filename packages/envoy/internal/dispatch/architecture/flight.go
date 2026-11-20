@@ -115,9 +115,10 @@ func (f *syncFlight) servedAt() time.Time {
 // the record never holds more entries than there are calls running, whatever
 // error a flight ended with and whatever key a caller names, a key that names
 // no source among them. No caller loses by the drop: a flight is fresh only
-// for a call made before its head lookup, and a call that is still running
-// holds its key's entry open. A flight that ends once every call of its key
-// has left is recorded nowhere. Its zero value is ready.
+// for a call made before its head lookup, and a call holds its key's entry
+// open from before it stamps its call until it returns (Sync). A flight that
+// ends once every call of its key has left is recorded nowhere. Its zero value
+// is ready.
 type endedFlights struct {
 	mu    sync.Mutex
 	byKey map[string]*keyFlights

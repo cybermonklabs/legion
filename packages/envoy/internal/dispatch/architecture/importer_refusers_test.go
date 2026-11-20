@@ -38,7 +38,8 @@ func receiveBeforeTheDeadline[T any](t *testing.T, what string, ch <-chan T) T {
 
 // refusersRig is one importer on archRepo's moving branch, which counts GitHub's head lookups
 // and, through the importer's two test hooks, the flights its callers take and the flights they
-// refuse. The caller of the refusal numbered heldRefusal waits there until releaseLate.
+// refuse. The caller of the refusal numbered heldRefusal waits there until releaseLate. The next
+// installation lookup can be held too (holdNextInstallation).
 type refusersRig struct {
 	branch   *movingBranch
 	database *store.Store
@@ -50,6 +51,26 @@ type refusersRig struct {
 	heldRefusal int32
 	late        chan struct{}
 	releaseLate func()
+	// installation is the hold the next installation lookup stops at, or nil.
+	installation atomic.Pointer[installationHold]
+}
+
+// installationHold is one installation lookup held open: arrived closes when it arrives, and
+// release lets it answer.
+type installationHold struct {
+	arrived chan struct{}
+	release func()
+	opened  chan struct{}
+}
+
+// holdNextInstallation holds the next installation lookup, a flight's first GitHub call, which
+// comes before its head lookup, until the returned hold's release.
+func (rig *refusersRig) holdNextInstallation(t *testing.T) *installationHold {
+	hold := &installationHold{arrived: make(chan struct{}), opened: make(chan struct{})}
+	hold.release = sync.OnceFunc(func() { close(hold.opened) })
+	t.Cleanup(hold.release)
+	rig.installation.Store(hold)
+	return hold
 }
 
 // newRefusersRig seeds CORE's source from archRepo, at commitOne with commitTwo to push, and
@@ -65,6 +86,16 @@ func newRefusersRig(t *testing.T, held int32) *refusersRig {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		rig.lookups.Add(1)
+		inner.ServeHTTP(w, r)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
+		if hold := rig.installation.Swap(nil); hold != nil {
+			close(hold.arrived)
+			select {
+			case <-hold.opened:
+			case <-r.Context().Done():
+			}
+		}
 		inner.ServeHTTP(w, r)
 	})
 	mux.Handle("/", inner)
