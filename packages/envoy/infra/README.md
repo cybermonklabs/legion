@@ -3886,7 +3886,7 @@ credential-free session user holding `SessionPermissions`, are checked against r
 as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
 lane queue groups, and the session user's refusal of a consumer create, in
-`core/permissions_live_test.go` under the `natslive` tag; `AGENTS.md` in this directory gives the
+`core/permissions_live_test.go` under the `natslive` tag; "Changing the module", below, gives the
 command that runs it.
 
 `ListenerHostPermissions(machineID)` is the grant of a listener's own NATS user, one no session
@@ -3949,5 +3949,35 @@ calls too), and its grant adds none of those calls, so the server refuses it the
 
 ## Changing the module
 
-`AGENTS.md` in this directory covers the module's own `go.work`, the rules every component follows,
-and how to run the unit and live tests.
+`AGENTS.md` in this directory gives the rules every change and every component follows. Run each
+go command from `packages/envoy/infra`, whose own `go.work` binds this module and `packages/envoy`;
+`./...` from `packages/envoy` does not reach this module.
+
+```bash
+gofmt -l .
+go vet -tags pulumilive,natslive ./...
+go test ./...                                   # unit tests
+go test -count=1 -run '<name>' ./gcp/           # one test
+go test -count=1 -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
+go test -count=1 -tags pulumilive -v -timeout 15m ./host/
+```
+
+The unit tests need no Pulumi CLI and no Docker. The `gcp` ones run the rendered shell scripts
+under `/bin/sh` (`ENVOY_TEST_SHELL=bash` runs them under bash) and need `curl`, `jq`, `openssl`,
+`blkid`, `mkfs.ext4` and GNU `cmp` on the machine; without one they fail, they do not skip.
+
+The `natslive` tests run a real nats-server: those of `core` and `seed` from the published NATS
+images, on Docker, and those of `gcp` from helm and the NATS tools they `go install` first, which
+takes minutes on a cold cache.
+
+The `pulumilive` tests need the `pulumi` CLI, `ENVOY_SMOKE_HELD_PORT_IMAGE` and
+`ENVOY_INFRA_DOCKER_PLUGIN`; without them a test fails and prints the commands that build both.
+Keep `-count=1`: the test cache cannot see a rebuilt image behind a fixed tag.
+
+CI runs the unit and `natslive` tests in `.github/workflows/ci-job-envoy-infra-go.yaml` at the
+repository root, and the `pulumilive` tests in the `envoy-smoke` job (`ci-job-envoy-smoke.yaml`).
+
+A plugin release is cut by a commit that changes a file in a package directory that
+`go list -deps ./cmd/...` reaches, Envoy's own packages included, or another input of the build
+that the "Determine next version" step of `.github/workflows/release-envoy-infra.yaml` lists. A
+commit to this README or to `docs/` cuts none.

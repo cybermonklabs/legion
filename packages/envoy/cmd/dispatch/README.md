@@ -4,6 +4,7 @@ Go binary serving the Dispatch dashboard and API.
 People sign in through a Cognito sign-in pool or with Google directly, where the `DISPATCH_SIGNIN_*` settings configure one, and are named by lowercase email;
 the web app's GitHub reads go to GitHub as the GitHub App.
 Dispatch keeps application state in Postgres.
+Its subcommands (`census`, `settings`, `routes`, `openapi`, `rebuild-refs`, `backfill-files` and others) are the `subcommands` table in `cmd/dispatch/subcommands.go`, and an argument it does not know is refused with every one named.
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
 A blank line separates list items.
@@ -5514,11 +5515,25 @@ go vet ./...
 
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
 
-The real-process memory tests (`memory_test.go` and every other file built under the `memory` tag) start real Dispatch servers and read their resident memory from `/proc`, so the commands above run none of them.
-CI's `dispatch-memory` job runs only the tests the tag adds, by the `-run` list `.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch` reads off the source, so a test added under the tag needs no edit there;
-its step runs them under `-timeout 90m` and records the time they took (`.github/workflows/ci-job-dispatch-memory.yaml`).
-Those tests alone take about an hour, so a local run of the whole package, which runs its untagged tests beside them, needs a longer deadline:
+`./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
+
+Three suites build only under a tag, and the commands above run none of them.
+A claim about two processes, or two builds, on one database needs evidence from them.
+Each needs `DISPATCH_TEST_DATABASE_URL`.
 
 ```sh
-go test -tags memory -count=1 -timeout 3h ./cmd/dispatch
+go test -tags memory -count=1 -timeout 3h ./cmd/dispatch         # resident memory of real servers
+go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
+bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
+bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
+DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
+  go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
 ```
+
+"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
+
+The real-process memory tests (`memory_test.go` and every other file built under the `memory` tag) start real Dispatch servers and read their resident memory from `/proc`.
+CI's `dispatch-memory` job runs only the tests the tag adds, by the `-run` list `.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch` reads off the source, so a test added under the tag needs no edit there;
+its step runs them under `-timeout 90m` and records the time they took (`.github/workflows/ci-job-dispatch-memory.yaml`).
+Those tests alone take about an hour, so a local run of the whole package under the tag, which runs its untagged tests beside them, takes the 3-hour deadline above.

@@ -428,7 +428,9 @@ jobs:
       # from the pull request the run's own event carries, so it takes effect at the next push,
       # reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
       # trigger, which would start a run that joins the concurrency group above and cancels the
-      # pull request's run in progress.
+      # pull request's run in progress. Take the label off once the run it was added for passes,
+      # since every later push would run the slow suites again, unless a `ci_check` of the issue
+      # names one of them, which reads `skipped` on a pull request without the label.
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_go || 'false' }}
       # envoy-go's fast half (the format and generated-code checks, the shell-script tests and
       # the build of the envoy commands), split out so it comes back on every push: no `full-ci`
@@ -1748,23 +1750,23 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :40 loads the script by path, and the script imports the engine, which imports
+              # :42 loads the script by path, and the script imports the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # One case reads the two step lines the reader exists for, out of the files that
-              # hold them.
-              - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
-              - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
-              # Another reads the two steps that run database-skips.sh, each with its own arguments.
-              - '.github/workflows/ci-job-envoy-go.yaml'
-              - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+              # Its cases read every workflow a job of ci.yaml calls.
+              - '.github/workflows/ci-job-*.yaml'
+              - '.github/workflows/browser-image.yaml'
+              - '.github/workflows/dispatch-browser.yaml'
+              - '.github/workflows/docs-site.yaml'
+              - '.github/workflows/worker-image.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
               # edits one runs it and is told to read the script again, and it imports
               # ci_job_reads.py to hold each such script to this gate's declared reads.
               - 'packages/envoy/scripts/database-skips.sh'
+              - 'packages/envoy/scripts/backend-count.sh'
               - '.github/scripts/ci_job_reads.py'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
@@ -6165,9 +6167,9 @@ jobs:
     # whatever their `if:`: its workflow-level block (the build's packages: write, and the
     # actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
     # and attestations: write. That `attest` job runs whenever the build pushed, whatever the
-    # event, a pull request's run included, because the two-push order AGENTS.md describes has
-    # a pull request's run push the image the rows then pin (browser-image.yaml's `attest` job
-    # says why).
+    # event, a pull request's run included, because the two-push order .github/ci-images.yaml's
+    # header describes has a pull request's run push the image the rows then pin
+    # (browser-image.yaml's `attest` job says why).
     permissions:
       contents: read
       packages: write
