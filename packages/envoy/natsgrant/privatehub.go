@@ -18,9 +18,9 @@ const (
 	// TagList.Add), so this value is lowercase and has no space to trim. The hub writer renders it,
 	// and the auth service decides its private-hub admission rules on it. A hub rendered private
 	// whose tags, so normalized, do not hold it, the entry missing or misspelled, reads to the auth
-	// service as one without private-project support: none of those rules apply there, so
-	// Dispatch's hub-admission proof fails on that hub, and every connection the rules exist to
-	// admit, narrow or refuse is decided as on any other hub.
+	// service as one without private-project support: Dispatch's hub-admission proof fails there,
+	// and the auth service refuses there the credentials that only a hub rendered private may
+	// admit, Dispatch's own included once a project is private.
 	PrivateProjectsServerTag = "envoy-private-projects"
 
 	// HubAdmissionAudience is the audience of the projected Kubernetes ServiceAccount token
@@ -37,16 +37,16 @@ const (
 	// PrivacyRequiredSuffix is the suffix a listener built in required privacy mode puts at the end
 	// of the NATS client name of every connection its credential opens; its leading space keeps it
 	// a word of its own. That is each of the listener's bus clients (the stream client, the role
-	// lane and the session consumers, two of which internal/bus names itself) and the renewal probe
-	// natscred dials with a later token, whose name must keep the suffix last: today's probe name,
-	// the connection's name then " probe", does not, and changes before the auth service applies
-	// this rule. internal/bus and natscred cannot import this package, so the listener passes the
-	// suffix in. nats-server copies a client name unchanged into the authorization request
-	// (server/auth_callout.go, ConnectOptions.Name in fillConnectOpts and ClientInformation.Name in
-	// fillClientInfo). On a request carrying PrivateProjectsServerTag the auth service refuses a
-	// connection it would answer with a listener's grant, Dispatch's listener's included, whose
-	// client name does not end with this exact suffix. The name is the client's own claim: it keeps
-	// an older or all-public listener build off a private hub, and proves nothing about who holds
-	// a listener's credential.
+	// lane and the session consumers, all three of which internal/bus names today) and the renewal
+	// probe natscred dials with a later token, whose name must keep the suffix last: today's probe
+	// name, the connection's name then " probe", does not, and changes before the auth service
+	// applies this rule. internal/bus and natscred cannot import this package, so the listener
+	// passes the suffix in. nats-server copies a client name unchanged into the authorization
+	// request (server/auth_callout.go, ConnectOptions.Name in fillConnectOpts and
+	// ClientInformation.Name in fillClientInfo). On a request carrying PrivateProjectsServerTag the
+	// auth service refuses a connection it would answer with a listener's grant, Dispatch's
+	// listener's included, whose client name does not end with this exact suffix. The name is the
+	// client's own claim: it keeps an older or all-public listener build off a private hub, and
+	// proves nothing about who holds a listener's credential.
 	PrivacyRequiredSuffix = " privacy-required"
 )
