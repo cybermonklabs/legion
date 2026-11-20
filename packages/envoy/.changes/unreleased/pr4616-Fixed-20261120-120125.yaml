@@ -14,3 +14,6 @@ body: |-
   a list of strings now fails discovery, as one whose `revocation_endpoint` is not a string
   already did. A sign-in started while the process made its first refresh no longer races with
   that refresh.
+time: 2026-11-20T12:01:25Z
+custom:
+    Issue: pr4616
