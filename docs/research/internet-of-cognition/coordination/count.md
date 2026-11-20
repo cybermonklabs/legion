@@ -68,6 +68,26 @@ The three classes overlap, so the script applies them in one fixed order and the
 
 Where a text cites more than one reference, the first by position that names an issue decides the class [c-method-3].
 
+Beside the classes, the count reads who cited whose record [c-cited-session-all-1].
+This is no fourth class.
+It is not applied in the fixed order, and it reads no tree, so an instance counts in it whether the record it cites is in the acting row's own tree or in another.
+It reads the instances that reach the classes, those whose first reference names an issue the deployment held and a record whose author the feed names, and it compares the row's `actor`, its kind and its id, with the cited record's author, its kind and its id [c-cited-session-all-1]:
+
+- a session cited a record another session wrote, when the two ids differ;
+
+- a session cited a record it wrote itself, when the two ids are the same;
+
+- a session cited a record a person wrote;
+
+- a person cited a record a session wrote;
+
+- a person cited a record a person wrote.
+
+A sixth part, other, holds an actor or an author of a third kind, such as `system`, and a session citing a session where the feed names no id for one of them; it reads 0 in every type [c-cited-session-types-1].
+The parts add up: beside the instances that cite no record, cite an issue the deployment did not hold or cite a record whose author the feed does not name, they make up every instance [c-cited-session-all-1].
+The first part is the coordination that crosses a session boundary, whatever the tree.
+The class across sessions differs from it twice: it leaves out every citation inside the acting row's own tree, and it takes in a session citing its own record in another tree.
+
 ## The counts of comments and messages
 
 The denominator is the records read in the window: 30186 `comment.created` and `message.created` rows of INFRA [c-denominator-1].
@@ -96,21 +116,30 @@ The count first committed in this tree read the tree live, at about 07:35Z on 20
 1702 of them cite no record at all, because their only match is a commit or a quotation [c-class-unclassed-1].
 15 cite an issue this deployment does not hold, and 63 cite a record whose author the feed does not name [c-class-unclassed-1].
 
+Read whatever the tree, 9922 of the 11702 instances cite a held record whose author the feed names: 5987 are a session citing a record another session wrote, 3797 a session citing a record it wrote itself, 136 a session citing a person's record and 2 a person citing a session's record, and none is a person citing a person's record [c-cited-session-types-1].
+
 ## The other written acts
 
 Each of the other types carries its own denominator, the rows of that type read in the window.
 
 Of the 736 `message.answered` rows, the replies to a message, 115 are instances: 112 carry a `dispatch://` reference, one a commit and three a quotation, and 2 are between an agent and a person, 4 inside one tree, 89 across sessions and 20 in no class [c-acts-message-answered-1].
+Read whatever the tree, 95 of the 115 cite a held record whose author the feed names: 47 a session citing a record another session wrote, 46 a session citing its own, 2 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 Of the 1930 `ask.opened` rows, 557 are instances: 544 carry a reference, 29 a commit and 4 a quotation, and 23 are between an agent and a person, 267 inside one tree, 244 across sessions and 23 in no class [c-acts-ask-opened-1].
+Read whatever the tree, 534 of the 557 cite a held record whose author the feed names: 314 a session citing a record another session wrote, 197 a session citing its own, 23 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 Of the 1198 `ask.answered` rows, 664 carry the text of an answer, and none of them is an instance [c-acts-ask-answered-0].
+So none of them cites a record of any author either [c-cited-session-types-1].
 
 Of the 744 `ask.resolved` rows, 173 are instances: 172 carry a reference, 5 a commit and one a quotation, and 29 are between an agent and a person, 51 inside one tree, 90 across sessions and 3 in no class [c-acts-ask-resolved-1].
+Read whatever the tree, 170 of the 173 cite a held record whose author the feed names: 93 a session citing a record another session wrote, 48 a session citing its own, 29 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 Of the 1128 `ask.edited` rows, each read for what it adds to the ask before it, 70 are instances: 68 add a reference and 3 a commit, and 9 are between an agent and a person, 10 inside one tree, 45 across sessions and 6 in no class [c-acts-ask-edited-1].
+Read whatever the tree, 64 of the 70 cite a held record whose author the feed names: 44 a session citing a record another session wrote, 11 a session citing its own, 9 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 All seven types together are 35922 records read, and 12617 of them are instances: 10909 carry a reference, 5501 a commit and 71 a quotation, and 201 are between an agent and a person, 6639 inside one tree, 3945 across sessions and 1832 in no class [c-acts-all-1].
+Read whatever the tree, 10785 of the 12617 instances cite a held record whose author the feed names: 6485 are a session citing a record another session wrote, 4099 a session citing a record it wrote itself, 199 a session citing a person's record and 2 a person citing a session's record, and none is a person citing a person's record [c-cited-session-all-1].
+So a session cites a record another session wrote in 6485 of these instances, where the class across sessions, which reads only the citations of another tree, holds 3945 [c-cited-session-all-1] [c-acts-all-1].
 
 ## Documents, read version by version
 
@@ -120,10 +149,12 @@ A version is an instance when any of the three is new in it, and its cited recor
 Of the 30660 `artifact.version` rows of INFRA in the window, 29709 are versions of a document, and each was read beside the version before it; the other 951 are versions of an uploaded file, which are not read [c-docs-versions-1].
 6920 of the 29709 add a reference, a commit or a quotation the version before did not hold: 6063 a reference, 818 a commit and 425 a quotation [c-docs-versions-1].
 330 of them are between an agent and a person, 2770 inside one tree, 2847 across sessions and 973 in no class [c-docs-versions-1].
+Read whatever the tree, 5947 of the 6920 cite a held record whose author the feed names: 3732 a session citing a record another session wrote, 1885 a session citing its own, 330 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 The first versions of the documents created in the window are a line of their own, since everything in a first version is new [c-method-6].
 Of the 7191 `artifact.created` rows, 5467 are documents, each read whole, and 1724 are uploaded files and images, which are not read [c-docs-first-1].
 4235 of the 5467 are instances: 3540 carry a reference, 1623 a commit and 193 a quotation, and 54 are between an agent and a person, 3013 inside one tree, 385 across sessions and 783 in no class [c-docs-first-1].
+Read whatever the tree, 3452 of the 4235 cite a held record whose author the feed names: 2582 a session citing a record another session wrote, 816 a session citing its own, 54 a session citing a person's, and a person wrote none of them [c-cited-session-types-1].
 
 ## The classes, type by type
 

@@ -44,12 +44,36 @@ which is resolved when it is unique); a `/artifact/<slug>` reference from the au
 document's first version; and a bare issue reference or a `/spec` reference from the issue's
 creator.
 
+Beside the classes, every count the output carries (the top-level one, each type of
+`written_acts_r4`, `all_bodied_records` and the two lines of documents) holds
+`by_cited_author`: who cited whose record, whatever the tree, read from the acting row's
+`actor`, its kind and its id, and the cited record's author, its kind and its id, the id
+read from the same row as the kind (of a document's authors, the first).  It is no class
+and is not applied in the fixed order: it reads the instances whose cited issue is held and
+whose cited record's author the feed names, which are the ones the three classes and
+`unclassed.other` hold, so its figures sum to those four.  Its keys are
+
+  session_cites_another_session   a session cites a record a different session wrote (the
+                                  actor's id differs from the author's id);
+  session_cites_its_own           a session cites a record it wrote itself (the two ids are
+                                  the same);
+  session_cites_a_person          a session cites a record a person wrote;
+  person_cites_a_session          a person cites a record a session wrote;
+  person_cites_a_person           a person cites a record a person wrote;
+  other                           the actor or the author is of another kind, such as
+                                  `system`, or a session cites a session and the feed names
+                                  no id for one of them.
+
+So `session_cites_another_session` is coordination that crosses a session boundary,
+whether the cited record is in the acting row's own tree or in another; the class
+`across_sessions`, read only after `inside_one_tree`, counts only those in another tree.
+
 The record types read, and where each keeps its text
 ----------------------------------------------------
   comment.created, message.created   payload.body.  The top-level fields of the output
                                      (`denominator_records_read`, `instances`, `by_pattern`,
-                                     `classes`, `unclassed`) count these two alone, as the
-                                     first version of this count did.
+                                     `classes`, `unclassed`, `by_cited_author`) count these
+                                     two alone, as the first version of this count did.
   message.answered                   payload.body: the reply's own text.  A reply is not a
                                      message.created row; payload.reply_body is a copy of
                                      the message it answers and is not read.
@@ -307,9 +331,10 @@ def main():
         return t_from <= row["created_at"] < t_to
 
     # ---- one pass over the whole feed, ascending by id
-    rec_author = {}     # record uuid -> author kind, over rows written before `to`
-    art_author = {}     # "<KEY>/<slug>" -> author kind, over rows written before `to`
-    issue_author = {}   # issue key -> creator kind, over rows written before `to`
+    # each author map holds (kind, id), over rows written before `to`
+    rec_author = {}     # record uuid -> its author
+    art_author = {}     # "<KEY>/<slug>" -> the first author of its first version
+    issue_author = {}   # issue key -> its creator
     held = set()        # issue keys with an issue.created row written before `to`
     parent_at = {}      # issue key -> its parent at `to`
     rows = []           # the window's comments and messages of the project
@@ -336,19 +361,19 @@ def main():
             if row["created_at"] < t_to:
                 if kind in ("comment.created", "message.created", "ask.opened"):
                     rid = payload.get("id")
-                    author = (payload.get("author") or {}).get("kind")
-                    if rid and author:
-                        rec_author[rid] = author
+                    author = payload.get("author") or {}
+                    if rid and author.get("kind"):
+                        rec_author[rid] = (author["kind"], author.get("id"))
                 elif kind == "artifact.created":
                     art = payload.get("artifact") or {}
                     versions = art.get("versions") or []
                     authors = (versions[0].get("authors") if versions else None) or []
                     if art.get("ref_key") and authors:
-                        art_author[art["ref_key"]] = authors[0].get("kind")
+                        art_author[art["ref_key"]] = (authors[0].get("kind"), authors[0].get("id"))
                 elif kind == "issue.created" and payload.get("key"):
                     created_by = payload.get("created_by") or {}
                     if created_by.get("kind"):
-                        issue_author[payload["key"]] = created_by["kind"]
+                        issue_author[payload["key"]] = (created_by["kind"], created_by.get("id"))
                     held.add(payload["key"])
                     parent_at[payload["key"]] = payload.get("parent")
                 elif kind in ("child.added", "child.removed") and payload.get("child_key"):
@@ -365,7 +390,8 @@ def main():
             if row.get("project") != project:
                 continue
             types[kind] += 1
-            actor_kind = (row.get("actor") or {}).get("kind")
+            actor = row.get("actor") or {}
+            actor_kind, actor_id = actor.get("kind"), actor.get("id")
             if kind in ("artifact.approved", "artifact.changes_requested"):
                 reviews["%s %s %s" % (kind, payload.get("name"), actor_kind)] += 1
             if kind == "result.recorded":
@@ -377,11 +403,12 @@ def main():
                     {
                         "issue_key": row.get("issue_key"),
                         "actor_kind": actor_kind,
+                        "actor_id": actor_id,
                         "body": payload.get("body") or "",
                     }
                 )
             elif kind in extra:
-                rec = {"issue_key": row.get("issue_key"), "actor_kind": actor_kind}
+                rec = {"issue_key": row.get("issue_key"), "actor_kind": actor_kind, "actor_id": actor_id}
                 if kind == "message.answered":
                     rec["body"] = payload.get("body") or ""
                 elif kind == "ask.opened":
@@ -401,6 +428,7 @@ def main():
                     doc_versions[(payload.get("artifact_id"), version.get("number"))] = {
                         "issue_key": row.get("issue_key"),
                         "actor_kind": actor_kind,
+                        "actor_id": actor_id,
                     }
                 else:
                     file_versions["text" if mime.startswith("text/") else "binary"] += 1
@@ -411,6 +439,7 @@ def main():
                     doc_created[(art.get("id"), first.get("number") or 1)] = {
                         "issue_key": row.get("issue_key"),
                         "actor_kind": actor_kind,
+                        "actor_id": actor_id,
                     }
                 else:
                     mime = first.get("mime") or ""
@@ -446,11 +475,15 @@ def main():
             cited_key, cited_author = author_of(ref)
             if cited_key:
                 break
+        # an author is (kind, id), or None when the feed names none
+        author_kind, author_id = cited_author or (None, None)
         return {
             "issue_key": rec["issue_key"],
             "actor_kind": rec["actor_kind"],
+            "actor_id": rec["actor_id"],
             "cited_key": cited_key,
-            "cited_author": cited_author,
+            "cited_author": author_kind,
+            "cited_author_id": author_id,
         }
 
     # ---- the trees, by walking child_of to the root as it stood at the window's end
@@ -469,13 +502,31 @@ def main():
             key = parent_at[key]
         return key
 
+    def cited_author_of(inst):
+        """Who cites whose record: the actor beside the cited record's author, whatever the tree."""
+        actor, cited = inst["actor_kind"], inst["cited_author"]
+        if actor == "session" and cited == "session":
+            if not (inst["actor_id"] and inst["cited_author_id"]):
+                return "other"
+            if inst["actor_id"] == inst["cited_author_id"]:
+                return "session_cites_its_own"
+            return "session_cites_another_session"
+        if actor == "session" and cited == "user":
+            return "session_cites_a_person"
+        if actor == "user" and cited == "session":
+            return "person_cites_a_session"
+        if actor == "user" and cited == "user":
+            return "person_cites_a_person"
+        return "other"
+
     def classify(insts):
-        """The classes of `insts`, in a fixed order."""
+        """The classes of `insts`, in a fixed order, and who cites whose record beside them."""
         for inst in insts:
             for key in (inst["issue_key"], inst["cited_key"]):
                 if key and key not in roots:
                     roots[key] = root_of(key)
         classes = Counter()
+        cited_by = Counter()
         for inst in insts:
             actor_is_person = inst["actor_kind"] == "user"
             cited_key = inst["cited_key"]
@@ -489,6 +540,8 @@ def main():
             if inst["cited_author"] is None:
                 classes["cited_author_unknown"] += 1
                 continue
+            # by_cited_author reads every instance that reaches the classes, before their order
+            cited_by[cited_author_of(inst)] += 1
             if actor_is_person != cited_is_person:
                 classes["between_an_agent_and_a_person"] += 1
             elif inst["issue_key"] and roots.get(inst["issue_key"]) == roots[cited_key]:
@@ -497,10 +550,10 @@ def main():
                 classes["across_sessions"] += 1
             else:
                 classes["unclassed"] += 1
-        return classes
+        return classes, cited_by
 
     def section(denominator, insts, patterns):
-        cls = classify(insts)
+        cls, cited_by = classify(insts)
         return {
             "denominator_records_read": denominator,
             "instances": len(insts),
@@ -519,6 +572,14 @@ def main():
                 "cited_record_not_held": cls["cited_record_not_held"],
                 "cited_author_unknown": cls["cited_author_unknown"],
                 "other": cls["unclassed"],
+            },
+            "by_cited_author": {
+                "session_cites_another_session": cited_by["session_cites_another_session"],
+                "session_cites_its_own": cited_by["session_cites_its_own"],
+                "session_cites_a_person": cited_by["session_cites_a_person"],
+                "person_cites_a_session": cited_by["person_cites_a_session"],
+                "person_cites_a_person": cited_by["person_cites_a_person"],
+                "other": cited_by["other"],
             },
         }
 
@@ -684,6 +745,7 @@ def main():
                 "by_pattern": dict(sorted(by_pattern.items())),
                 "classes": comments_and_messages["classes"],
                 "unclassed": comments_and_messages["unclassed"],
+                "by_cited_author": comments_and_messages["by_cited_author"],
                 "issues_resolved": issues_resolved,
                 "handoff_sample": {
                     "issues": sample,

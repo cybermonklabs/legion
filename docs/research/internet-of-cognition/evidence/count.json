@@ -7,7 +7,7 @@
   "project": "INFRA"
  },
  "feed": {
-  "events_read": 667296,
+  "events_read": 822602,
   "first_event_id_in_window": 103048,
   "last_event_id_in_window": 402993
  },
@@ -88,6 +88,14 @@
   "cited_author_unknown": 63,
   "other": 0
  },
+ "by_cited_author": {
+  "session_cites_another_session": 5987,
+  "session_cites_its_own": 3797,
+  "session_cites_a_person": 136,
+  "person_cites_a_session": 2,
+  "person_cites_a_person": 0,
+  "other": 0
+ },
  "issues_resolved": 2469,
  "handoff_sample": {
   "issues": [
@@ -132,6 +140,14 @@
      "cited_record_not_held": 0,
      "cited_author_unknown": 17,
      "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 47,
+     "session_cites_its_own": 46,
+     "session_cites_a_person": 2,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
     }
    },
    "ask.opened": {
@@ -152,6 +168,14 @@
      "no_cited_record": 17,
      "cited_record_not_held": 1,
      "cited_author_unknown": 5,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 314,
+     "session_cites_its_own": 197,
+     "session_cites_a_person": 23,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
      "other": 0
     }
    },
@@ -174,6 +198,14 @@
      "cited_record_not_held": 0,
      "cited_author_unknown": 0,
      "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 0,
+     "session_cites_its_own": 0,
+     "session_cites_a_person": 0,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
     }
    },
    "ask.resolved": {
@@ -194,6 +226,14 @@
      "no_cited_record": 1,
      "cited_record_not_held": 0,
      "cited_author_unknown": 2,
+     "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 93,
+     "session_cites_its_own": 48,
+     "session_cites_a_person": 29,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
      "other": 0
     }
    },
@@ -216,6 +256,14 @@
      "cited_record_not_held": 0,
      "cited_author_unknown": 2,
      "other": 0
+    },
+    "by_cited_author": {
+     "session_cites_another_session": 44,
+     "session_cites_its_own": 11,
+     "session_cites_a_person": 9,
+     "person_cites_a_session": 0,
+     "person_cites_a_person": 0,
+     "other": 0
     }
    }
   },
@@ -236,6 +284,14 @@
     "no_cited_record": 1727,
     "cited_record_not_held": 16,
     "cited_author_unknown": 89,
+    "other": 0
+   },
+   "by_cited_author": {
+    "session_cites_another_session": 6485,
+    "session_cites_its_own": 4099,
+    "session_cites_a_person": 199,
+    "person_cites_a_session": 2,
+    "person_cites_a_person": 0,
     "other": 0
    },
    "types": [
@@ -274,6 +330,14 @@
    "cited_author_unknown": 88,
    "other": 0
   },
+  "by_cited_author": {
+   "session_cites_another_session": 3732,
+   "session_cites_its_own": 1885,
+   "session_cites_a_person": 330,
+   "person_cites_a_session": 0,
+   "person_cites_a_person": 0,
+   "other": 0
+  },
   "new_items": {
    "dispatch_reference": 14231,
    "commit_sha": 1039,
@@ -307,6 +371,14 @@
    "no_cited_record": 743,
    "cited_record_not_held": 0,
    "cited_author_unknown": 40,
+   "other": 0
+  },
+  "by_cited_author": {
+   "session_cites_another_session": 2582,
+   "session_cites_its_own": 816,
+   "session_cites_a_person": 54,
+   "person_cites_a_session": 0,
+   "person_cites_a_person": 0,
    "other": 0
   },
   "new_items": {
