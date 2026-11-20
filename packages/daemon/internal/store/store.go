@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 // migrateLock is the advisory lock two daemons migrating the same database take
@@ -125,16 +126,21 @@ func ConnectError(dsn string, err error) error {
 //     answer the next attempt gets again: a refused password (28P01), a connection pg_hba.conf
 //     does not admit (28000), a database that does not exist (3D000).
 //   - A *pgconn.ParseConfigError is a DSN pgx cannot read, which no attempt changes.
-//   - A TLS failure — a certificate the client cannot verify, an alert, a peer that does not
-//     answer in TLS — is not tried again. It is read before the network types because one error
-//     carries the failure at each address pgx tried: with sslmode=verify-full at localhost, the
-//     certificate refused at 127.0.0.1 came beside a *net.OpError for the dial to ::1.
-//   - A *net.OpError (a refused connection, a reset), a *net.DNSError (a host name that does not
-//     resolve), io.EOF and io.ErrUnexpectedEOF (a connection closed before an answer), and a
-//     timeout — context.DeadlineExceeded, or an error pgconn.Timeout reads as one — are no answer,
-//     and can clear. context.DeadlineExceeded is the attempt's own deadline: through Ping,
-//     pgxpool's Acquire returns the plain context error when the deadline passes before the
-//     connection answers, which pgconn.Timeout does not read.
+//   - A TLS failure is not tried again: a certificate the client cannot verify, a peer that does
+//     not answer in TLS (tls.RecordHeaderError), and an alert of the handshake, one the server
+//     sent or one the client sent itself (tlsalert.In, which reads the *net.OpError crypto/tls
+//     returns an alert as by its Op). Through pgx v5.13.0 on Open's path, a server that demands a
+//     client certificate and one that speaks only TLS 1.1 each gave a "remote error", and a
+//     handshake message of a type TLS does not define gave a "local error". It is read before the
+//     network types because an alert arrives as a *net.OpError, and because one error carries the
+//     failure at each address pgx tried: with sslmode=verify-full at localhost, the certificate
+//     refused at 127.0.0.1 came beside a *net.OpError for the dial to ::1.
+//   - A *net.OpError that is no alert (a refused connection, a reset), a *net.DNSError (a host
+//     name that does not resolve), io.EOF and io.ErrUnexpectedEOF (a connection closed before an
+//     answer), and a timeout — context.DeadlineExceeded, or an error pgconn.Timeout reads as one —
+//     are no answer, and can clear. context.DeadlineExceeded is the attempt's own deadline:
+//     through Ping, pgxpool's Acquire returns the plain context error when the deadline passes
+//     before the connection answers, which pgconn.Timeout does not read.
 //
 // Every other error cannot clear, a stop of the caller (context.Canceled) among them. The rule
 // supervise's writeOwed reads a claim write by is not this one: it owes every *pgconn.ConnectError
@@ -157,11 +163,10 @@ func OpenRetryable(err error) bool {
 		authority  x509.UnknownAuthorityError
 		hostname   x509.HostnameError
 		invalid    x509.CertificateInvalidError
-		alert      tls.AlertError
 		header     tls.RecordHeaderError
 	)
 	if errors.As(err, &unverified) || errors.As(err, &authority) || errors.As(err, &hostname) ||
-		errors.As(err, &invalid) || errors.As(err, &alert) || errors.As(err, &header) {
+		errors.As(err, &invalid) || errors.As(err, &header) || tlsalert.In(err) {
 		return false
 	}
 	var (

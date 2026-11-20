@@ -207,18 +207,24 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
 fi
 
 # The Postgres both paths name, read once from the DSN with urllib.parse, so no step reads
-# $pgport, which CI never sets (its service is localhost:5432, ci-job-daemon-go.yaml). The user,
-# the password and the database come back percent-encoded, as a DSN spells them, for the two steps
-# that write a DSN of their own. The DSN reaches python3 in its environment, never in its
-# arguments, which /proc/<pid>/cmdline shows.
+# $pgport, which CI never sets (its service is localhost:5432, ci-job-daemon-go.yaml). The host
+# comes back twice: bare, for the proxy's socket.create_connection (step 2), and in the address,
+# host:port, that step 1's DSN writes and its grep reads, with a host that holds a colon in
+# brackets, since urlsplit's hostname drops an IPv6 host's brackets and the daemon's refusal names
+# the host as net.JoinHostPort writes it (internal/store's target). The user, the password and the
+# database come back percent-encoded, as a DSN spells them, for the two steps that write a DSN of
+# their own. The DSN reaches python3 in its environment, never in its arguments, which
+# /proc/<pid>/cmdline shows.
 pg=$(DSN=$LEGION_E2E_PG_DSN python3 -c '
 import os, sys, urllib.parse as p
 dsn = p.urlsplit(os.environ["DSN"])
 parts = [p.quote(p.unquote(part or ""), safe="") for part in (dsn.username, dsn.password, dsn.path[1:])]
 if not dsn.hostname or not all(parts):
     sys.exit("LEGION_E2E_PG_DSN must name a host, a user, a password and a database: steps 1 and 2 write DSNs of them")
-print(dsn.hostname, dsn.port or 5432, *parts, sep="\n")')
-{ read -r pg_host; read -r pg_port; read -r pg_user; read -r pg_password; read -r pg_database; } <<<"$pg"
+port = dsn.port or 5432
+address = f"[{dsn.hostname}]:{port}" if ":" in dsn.hostname else f"{dsn.hostname}:{port}"
+print(dsn.hostname, port, address, *parts, sep="\n")')
+{ read -r pg_host; read -r pg_port; read -r pg_address; read -r pg_user; read -r pg_password; read -r pg_database; } <<<"$pg"
 # The two logins steps 1 and 2 write into a DSN, the server's own and one with a wrong password.
 # Each is a variable of its own because the pre-push leak guard refuses a line that writes a URL
 # with a password in its userinfo, a test's included.
@@ -304,13 +310,13 @@ EOF
 #    check passwords, so the answer is 28P01, which the start never tries again: only a connection
 #    error is (step 2). The DSN carries its own wrong password so both halves of that assertion
 #    mean something wherever this runs.
-sed "s#^postgres_dsn: .*#postgres_dsn: postgres://$wrong_login@$pg_host:$pg_port/$pg_database#" \
+sed "s#^postgres_dsn: .*#postgres_dsn: postgres://$wrong_login@$pg_address/$pg_database#" \
   "$work/legion.yaml" >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
   echo "expected refusal"
   exit 1
 fi
-grep -qF "$pg_host:$pg_port" "$work/refusal.log" || {
+grep -qF "$pg_address" "$work/refusal.log" || {
   echo "the refusal does not name the host that refused the password"
   exit 1
 }

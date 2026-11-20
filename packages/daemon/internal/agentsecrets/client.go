@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -308,28 +310,27 @@ func (c *Client) serviceToken() (string, error) {
 // the daemon's own side rather than a broker out of reach: a TLS handshake that failed — a
 // certificate that does not verify (crypto/tls wraps a missing or wrong trust root, a host name
 // that does not match and an expired certificate alike as *tls.CertificateVerificationError), an
-// answer that is not TLS at all, or an alert the far side sent — and a host name that does not
-// resolve. Nothing the daemon waits for fixes one of these: its trust store, its broker URL or its
-// resolver has to change, so the login takes the long schedule, as the daemon's Dispatch client
-// keeps the same certificate shapes out of the class it waits out (transportFailure,
-// internal/dispatch). Every other transport failure — a refused or reset connection, a timeout, an
-// unreachable network, a resolver that failed for any other reason — is the broker out of reach,
-// which the next seconds may fix.
+// answer that is not TLS at all, or an alert, the far side's or one this client sent itself on an
+// answer it could not take — and a host name that does not resolve. Nothing the daemon waits for
+// fixes one of these: its trust store, its broker URL or its resolver has to change, so the login
+// takes the long schedule, as the daemon's Dispatch client keeps the same certificate and alert
+// shapes out of the class it waits out (transportFailure, internal/dispatch). Every other
+// transport failure — a refused or reset connection, a timeout, an unreachable network, a
+// resolver that failed for any other reason — is the broker out of reach, which the next seconds
+// may fix.
 //
 // Two shapes are read as the standard library leaves them. net/http answers a plain-HTTP port with
 // http.ErrSchemeMismatch in place of the tls.RecordHeaderError it read (net/http/client.go), so
-// both of those are read here. An alert the far side sends over TCP arrives as a *net.OpError
-// whose Op is "remote error", holding crypto/tls's own unexported alert type (crypto/tls/conn.go);
-// tls.AlertError is the QUIC transport's shape, which this client never speaks, so the alert is
-// read by that Op.
+// both of those are read here. An alert over TCP arrives as a *net.OpError whose Op is "remote
+// error" when the far side sent it and "local error" when this client did, holding crypto/tls's
+// own unexported alert type (crypto/tls/conn.go), so the alert is read by that Op, through the
+// daemon's one reading of it (tlsalert.In).
 func daemonSideFault(err error) bool {
 	var verify *tls.CertificateVerificationError
 	var record tls.RecordHeaderError
-	var remote *net.OpError
 	var dns *net.DNSError
 	return errors.As(err, &verify) || errors.As(err, &record) || errors.Is(err, http.ErrSchemeMismatch) ||
-		(errors.As(err, &remote) && remote.Op == "remote error") ||
-		(errors.As(err, &dns) && dns.IsNotFound)
+		tlsalert.In(err) || (errors.As(err, &dns) && dns.IsNotFound)
 }
 
 // LoginStatus reports the login as LoginState describes it, from one snapshot.

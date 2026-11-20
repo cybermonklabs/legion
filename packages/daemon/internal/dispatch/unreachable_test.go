@@ -2,7 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -47,13 +50,13 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 	}
 }
 
-// transportFailure's three shapes, each reproduced against a real server rather than a synthetic
-// error: a certificate the client does not trust and an https:// URL pointed at a plain-HTTP port
-// both stay loud refusals no wait fixes, exactly like the certificate case; a dial the network
-// refuses is wrapped as a TransientError, exactly what a real outage produces, so Unreachable
-// rides it out. dispatchBase's scheme check (internal/config) catches a scheme that is not http
-// or https at load time, but not a correct https:// whose port serves plain HTTP, which only a
-// real connection attempt reveals.
+// transportFailure's four shapes, each reproduced against a real server rather than a synthetic
+// error: a certificate the client does not trust, a TLS alert that ends the handshake, and an
+// https:// URL pointed at a plain-HTTP port all stay loud refusals no wait fixes; a dial the
+// network refuses is wrapped as a TransientError, exactly what a real outage produces, so
+// Unreachable rides it out. dispatchBase's scheme check (internal/config) catches a scheme that
+// is not http or https at load time, but not a correct https:// whose port serves plain HTTP,
+// which only a real connection attempt reveals.
 func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 	for _, testCase := range []struct {
 		name          string
@@ -70,6 +73,26 @@ func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 				t.Cleanup(server.Close)
 				// The default client trusts no certificate the test server minted for itself.
 				return New(server.URL, "test-token")
+			},
+			wantTransient: false,
+		},
+		{
+			name: "a TLS alert: a front door that demands a client certificate the client does not hold",
+			client: func(t *testing.T) *HTTPClient {
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}))
+				server.Config.ErrorLog = log.New(io.Discard, "", 0)
+				// Pinned to TLS 1.2, where the server's alert ends the handshake itself; at TLS 1.3
+				// the server decides once the client's handshake is done, and the client meets the
+				// alert at whichever write or read reaches it first.
+				server.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert, MaxVersion: tls.VersionTLS12}
+				server.StartTLS()
+				t.Cleanup(server.Close)
+				client := New(server.URL, "test-token")
+				// The client trusts the server's certificate, so the alert is all that fails.
+				client.httpClient = server.Client()
+				return client
 			},
 			wantTransient: false,
 		},

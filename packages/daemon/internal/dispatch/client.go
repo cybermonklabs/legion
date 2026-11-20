@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 const requestTimeout = 10 * time.Second
@@ -547,15 +549,17 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // never an outage: a certificate Go's client refuses to trust (a wrong or missing CA, a hostname
 // mismatch, an expired or otherwise invalid certificate — crypto/tls wraps every one of these as
 // *tls.CertificateVerificationError, never a bare x509 error, since httpClient sets no
-// VerifyPeerCertificate or VerifyConnection of its own), or an https:// dispatch_url pointed at a
-// plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's scheme check (internal/config)
-// catches a typo in the scheme itself before boot, but not a correct https:// whose port serves
-// plain HTTP. Left wrapped, either would satisfy Unreachable exactly like a dial refused or reset
-// would, and a boot gate would retry a certificate or scheme problem forever instead of refusing
-// loud.
+// VerifyPeerCertificate or VerifyConnection of its own), an alert that ends the TLS handshake (a
+// front door that demands a client certificate, say, or speaks no TLS version the client does;
+// crypto/tls returns it as a *net.OpError, read by tlsalert.In), or an https:// dispatch_url
+// pointed at a plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's scheme check
+// (internal/config) catches a typo in the scheme itself before boot, but not a correct https://
+// whose port serves plain HTTP. Left wrapped, each would satisfy Unreachable exactly like a dial
+// refused or reset would, and a boot gate would retry a certificate, TLS or scheme problem forever
+// instead of refusing loud.
 func transportFailure(err error) error {
 	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
+	if errors.As(err, &certErr) || tlsalert.In(err) {
 		return err
 	}
 	if errors.Is(err, http.ErrSchemeMismatch) {

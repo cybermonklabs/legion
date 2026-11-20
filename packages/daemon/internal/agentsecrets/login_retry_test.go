@@ -196,16 +196,17 @@ func withoutTime(groups []string, a slog.Attr) slog.Attr {
 	return a
 }
 
-// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the nine classes a failed token
+// TestEachFailedLoginLogsItsClassItsScheduleAndItsCause drives the ten classes a failed token
 // login falls in, each against a real server or a real resolver rather than a planted error, as
 // internal/dispatch/unreachable_test.go drives transportFailure's own shapes.
 //
-// The four long-retry rows are what changed: a TLS handshake that fails and a name that does not
-// resolve are faults on the daemon's own side, which asking again in seconds only repeats, so
-// they now wait the schedule a refusal waits instead of the pod renewer's. The five short-retry
-// rows — a refused connection, a connection reset after it was accepted, a timeout, a DNS failure
-// that is not "not found", and a 5xx — are the behaviour this client already had, and are new
-// coverage of it rather than proof of a change.
+// The five long-retry rows are what changed: a TLS handshake that fails, an alert the far side
+// sent or the daemon sent itself included, and a name that does not resolve are faults on the
+// daemon's own side, which asking again in seconds only repeats, so they now wait the schedule a
+// refusal waits instead of the pod renewer's. The five short-retry rows — a refused connection, a
+// connection reset after it was accepted, a timeout, a DNS failure that is not "not found", and a
+// 5xx — are the behaviour this client already had, and are new coverage of it rather than proof
+// of a change.
 //
 // Each row reads the whole log the login wrote, not a line of it: one failed login is one line,
 // and a second line per failure would be a regression an operator sees.
@@ -255,6 +256,25 @@ func TestEachFailedLoginLogsItsClassItsScheduleAndItsCause(t *testing.T) {
 					c.ClientAuth, c.MaxVersion = tls.RequireAnyClientCert, tls.VersionTLS12
 				})
 				return server.URL, server.Client(), fixed(failedCall(server.URL, "remote error: tls: handshake failure"))
+			},
+		},
+		{
+			name:     "a TLS alert the daemon sends itself",
+			class:    "daemon-side-fault",
+			schedule: "long",
+			rig: func(t *testing.T) (string, *http.Client, func() string) {
+				// A front door whose first TLS record holds a handshake message of a type no
+				// version of TLS defines (255, of length 0): the client answers it with an
+				// unexpected_message alert of its own, which no wait fixes any more than the far
+				// side's.
+				address := listening(t, func(conn net.Conn) {
+					defer conn.Close()
+					if _, err := conn.Write([]byte{22, 3, 3, 0, 4, 255, 0, 0, 0}); err == nil {
+						_, _ = io.Copy(io.Discard, conn)
+					}
+				})
+				brokerURL := "https://" + address
+				return brokerURL, &http.Client{}, fixed(failedCall(brokerURL, "local error: tls: unexpected message"))
 			},
 		},
 		{

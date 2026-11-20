@@ -889,6 +889,7 @@ jobs:
               - 'packages/daemon/internal/store/**'
               - 'packages/daemon/internal/stream/*'
               - 'packages/daemon/internal/supervise/*'
+              - 'packages/daemon/internal/tlsalert/*'
               - 'packages/daemon/internal/treelifecycle/*'
               - 'packages/daemon/internal/wait/*'
               - 'packages/daemon/internal/wakepace/*'
@@ -1063,7 +1064,7 @@ jobs:
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
               # the two plugin manifests it copies with jq into the plugins its home holds
-              # (stage1-skeleton.sh:261-262).
+              # (stage1-skeleton.sh:267-268).
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/loopback-dsn.sh'
@@ -4510,6 +4511,7 @@ jobs:
               - 'packages/daemon/internal/store/**'
               - 'packages/daemon/internal/stream/*'
               - 'packages/daemon/internal/supervise/*'
+              - 'packages/daemon/internal/tlsalert/*'
               - 'packages/daemon/internal/treelifecycle/*'
               - 'packages/daemon/internal/wait/*'
               - 'packages/daemon/internal/wakepace/*'

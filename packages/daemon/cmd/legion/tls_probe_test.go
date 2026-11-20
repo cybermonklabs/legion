@@ -1369,7 +1369,10 @@ func TestTLSProbeExits75NamingAClientThatNeverAnswersAtAReachedSite(t *testing.T
 // c-slow-probe-passes case (4): a run its own limit ends at a site no earlier run reached fails the
 // probe as before, since the network may not reach that site: here the first client's run at the
 // control, which no positive control reaches. A compromised site no run reached is the same, and an
-// earlier client's refusal there makes such a run one with no verdict.
+// earlier client's refusal there makes such a run one with no verdict. The run's own limit ended it
+// also where the probe's deadline passes while the limit's stop is still under way, since the run
+// records which of the two fired first when it fires: such a run is unavailable too, and never one
+// with no verdict.
 func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	omp := imageOmp(t)
 	img := inImage(t, thisBinarysContract, omp)
@@ -1397,6 +1400,19 @@ func TestTLSProbeFailsAClientWhoseLimitPassesAtASiteNoRunReached(t *testing.T) {
 	node = shTLSClient("node", dir, tlsAnswers, nodeAnswer)
 	if _, noVerdict, err := probeTLSClients(context.Background(), []tlsClient{node, aws}, nil); err != nil || len(noVerdict) != 1 || !strings.HasPrefix(noVerdict[0], "aws emSign: its 2s limit ended it after ") {
 		t.Errorf("probeTLSClients() with emSign reached by node's refusal = %v, runs with no verdict %q; want aws's emSign run alone with no verdict", err, noVerdict)
+	}
+
+	// A command at the control that answers its limit's SIGTERM, at 1 s, with an exit of its own
+	// half a second later, while the probe's deadline passes at 1.2 s, in between.
+	stopped := shTLSClient("node", t.TempDir(), `trap '/bin/sleep 0.5; exit 1' TERM; /bin/sleep 30 & wait`, nodeAnswer)
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+	outcome := stopped.probe(ctx, controlTLSSite, tlsRunTerms{})
+	if ctx.Err() == nil {
+		t.Fatalf("the run returned %+v before the probe's deadline; the row needs the deadline to pass while the limit's stop is under way", outcome)
+	}
+	if outcome.status != tlsNetworkUnavailable || !strings.HasPrefix(outcome.detail, "its 1s limit ended it after ") || !strings.HasSuffix(outcome.detail, ": exit status 1") {
+		t.Errorf("a run its 1s limit stopped, which exited after the probe's deadline = %+v, want unavailable naming its 1s limit", outcome)
 	}
 }
 

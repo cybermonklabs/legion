@@ -323,6 +323,11 @@ const (
 	tlsSignalEnded
 )
 
+// errTLSRunLimit is the cause a run's own limit gives its command's context when it passes
+// (tlsCommandClient.run). The context keeps the cause of whichever end fired first, so the run
+// tells its limit from the probe's deadline by that record, and never by the text of an error.
+var errTLSRunLimit = errors.New("the TLS run's own limit passed")
+
 // tlsCommandRun is one run of a client's command: what it printed (run says which streams), the
 // run's error, how long it took, the limit it ran within, and what ended it.
 type tlsCommandRun struct {
@@ -377,13 +382,18 @@ func (r tlsCommandRun) outcome(terms tlsRunTerms, accepted, refused bool, detail
 // group of its own (procgroup.Configure), so a stop reaches every process the client started, and
 // a child holding the output pipe does not hold the run open past the stop. What ended the run is
 // read from the run itself, never from the text of an error: whether the end of the command's
-// context signalled its group (killed), whether the probe's ctx has ended, and how the command
-// ended (procgroup.Ended). A command that exited 0 while something it started still held its
-// output past the stop answered exec.ErrWaitDelay, and its exit is its answer.
+// context signalled its group (killed), which end that context recorded as its cause when the end
+// fired (errTLSRunLimit for the run's own limit, context.DeadlineExceeded for the probe's
+// deadline), and how the command ended (procgroup.Ended). The cause is read, and not whether the
+// probe's ctx has ended by the time the command is gone, because a stop can take up to
+// procgroup.StopGrace and procgroup.WaitDelay after the end that sent it: a probe's deadline that
+// passes in that time does not make a run its own limit stopped one the deadline stopped. A
+// command that exited 0 while something it started still held its output past the stop answered
+// exec.ErrWaitDelay, and its exit is its answer.
 func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Duration) tlsCommandRun {
 	program, args, env := c.commandLine(site)
 	started := time.Now()
-	commandCtx, cancel := context.WithTimeout(ctx, limit)
+	commandCtx, cancel := context.WithTimeoutCause(ctx, limit, errTLSRunLimit)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, program, args...)
 	cmd.Env = env
@@ -396,14 +406,17 @@ func (c tlsCommandClient) run(ctx context.Context, site tlsSite, limit time.Dura
 	cmd.Stderr = &output
 	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
+	// Read before the deferred cancel, which ends a context nothing else ended with a cause of its
+	// own, context.Canceled.
+	cause := context.Cause(commandCtx)
 	r := tlsCommandRun{output: output.String(), elapsed: time.Since(started), limit: limit}
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		r.err = err
 	}
 	switch {
-	case killed() && ctx.Err() == nil:
+	case killed() && errors.Is(cause, errTLSRunLimit):
 		r.ending = tlsLimitEnded
-	case errors.Is(ctx.Err(), context.DeadlineExceeded) && (killed() || cmd.Process == nil):
+	case errors.Is(cause, context.DeadlineExceeded) && (killed() || cmd.Process == nil):
 		r.ending = tlsDeadlineEnded
 	case procgroup.Ended(r.err).Signal != "":
 		r.ending = tlsSignalEnded

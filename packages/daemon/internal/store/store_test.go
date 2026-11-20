@@ -156,7 +156,8 @@ func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
 // reads it (c-boot-db-retry case 4): no answer — a refused connection, a reset, a connection
 // closed before an answer, an attempt's own deadline, a host name that does not resolve — and the
 // codes that tell a client to try again later can clear at the next attempt; every other answer,
-// a DSN pgx cannot parse, a certificate the client cannot verify and a stop of the caller cannot.
+// a DSN pgx cannot parse, a TLS failure (a certificate the client cannot verify, an alert of the
+// handshake, the server's or the client's own) and a stop of the caller cannot.
 //
 // It needs no database: each row is a listener of its own, or an address nothing listens on. Each
 // row also holds the type its error carries, measured against PostgreSQL 18.6 through pgx on
@@ -173,6 +174,11 @@ func TestOpenRetryableReadsEachConnectionErrorOfR3(t *testing.T) {
 	}
 	answering := func(code, message string) func(*testing.T) string {
 		return at(func(t *testing.T) string { return refusingBackend(t, code, message) })
+	}
+	// clientCertificateDemanded is a server that demands a certificate of the client, which pgx has
+	// none of: under TLS 1.3 the server sends its alert once it reads the client's answer.
+	clientCertificateDemanded := func(t *testing.T) string {
+		return tlsBackend(t, func(config *tls.Config) { config.ClientAuth = tls.RequireAnyClientCert })
 	}
 	for _, row := range []struct {
 		name string
@@ -207,9 +213,36 @@ func TestOpenRetryableReadsEachConnectionErrorOfR3(t *testing.T) {
 			// Two hosts, as localhost is two addresses, 127.0.0.1 and ::1: pgx tries each, and its
 			// error carries the refused certificate at the first beside the refused dial at the
 			// second, so the row holds that a TLS failure is read before the network's.
-			return "postgres://legion@" + tlsBackend(t) + ",127.0.0.1:1/legion?sslmode=verify-full"
+			return "postgres://legion@" + tlsBackend(t, nil) + ",127.0.0.1:1/legion?sslmode=verify-full"
 		}, carries: func(err error) bool {
 			return carriesType[*tls.CertificateVerificationError](err) && carriesType[*net.OpError](err)
+		}, want: false},
+		// Over TCP, Go's TLS client returns an alert the server sent as a *net.OpError whose Op is
+		// "remote error", and one it sent itself as a *net.OpError whose Op is "local error"
+		// (crypto/tls/conn.go): each row holds the Op pgx v5.13.0 returned on Open's path.
+		{name: "a server that demands a client certificate, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a server that speaks only TLS 1.1, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + tlsBackend(t, func(config *tls.Config) {
+				config.MinVersion, config.MaxVersion = tls.VersionTLS10, tls.VersionTLS11
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a handshake message of a type TLS does not define, which the client alerts", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + sslBackend(t, func(conn net.Conn) {
+				// One handshake record (22, TLS 1.2, 4 bytes) holding a handshake message of type
+				// 255, which no version of TLS defines, and of length 0.
+				if _, err := conn.Write([]byte{22, 3, 3, 0, 4, 255, 0, 0, 0}); err == nil {
+					_, _ = io.Copy(io.Discard, conn)
+				}
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("local error"), want: false},
+		{name: "a server that demands a client certificate, after a refused dial", dsn: func(t *testing.T) string {
+			// The refused dial comes first in the error, so the row holds that the alert is read
+			// wherever it stands, and not only at the chain's first *net.OpError.
+			return "postgres://legion@127.0.0.1:1," + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: func(err error) bool {
+			return carriesOp("dial")(err) && carriesOp("remote error")(err)
 		}, want: false},
 		{name: "a caller that stopped", dsn: func(*testing.T) string { return refused }, cancelled: true,
 			carries: carriesError(context.Canceled), want: false},
@@ -256,6 +289,24 @@ func carriesCode(code string) func(error) bool {
 		var pgErr *pgconn.PgError
 		return errors.As(err, &pgErr) && pgErr.Code == code
 	}
+}
+
+// carriesOp is whether an error carries, anywhere in its chain, a *net.OpError whose Op is op.
+func carriesOp(op string) func(error) bool {
+	var carries func(error) bool
+	carries = func(err error) bool {
+		if opErr, ok := err.(*net.OpError); ok && opErr.Op == op {
+			return true
+		}
+		switch err := err.(type) {
+		case interface{ Unwrap() error }:
+			return carries(err.Unwrap())
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(err.Unwrap(), carries)
+		}
+		return false
+	}
+	return carries
 }
 
 // fakePostgres listens on 127.0.0.1 for the test, hands each connection it accepts to serve, and
@@ -319,11 +370,10 @@ func refusingBackend(t *testing.T, code, message string) string {
 	})
 }
 
-// tlsBackend answers each connection's SSLRequest with S and then completes a TLS handshake with a
-// self-signed certificate no client can verify.
-func tlsBackend(t *testing.T) string {
+// sslBackend answers each connection's SSLRequest with S, as a server that speaks TLS does, and
+// then hands the connection to serve.
+func sslBackend(t *testing.T, serve func(net.Conn)) string {
 	t.Helper()
-	config := &tls.Config{Certificates: []tls.Certificate{selfSignedCertificate(t)}}
 	return fakePostgres(t, func(conn net.Conn) {
 		defer conn.Close()
 		startup, err := pgproto3.NewBackend(conn, conn).ReceiveStartupMessage()
@@ -336,7 +386,23 @@ func tlsBackend(t *testing.T) string {
 		if _, err := conn.Write([]byte("S")); err != nil {
 			return
 		}
+		serve(conn)
+	})
+}
+
+// tlsBackend answers each connection's SSLRequest with S and then serves a TLS handshake with a
+// self-signed certificate no client can verify, under the settings tune makes (nil makes none).
+// Whatever the handshake ends in, the server reads the connection to its end, so its close sends
+// no reset that could overtake the alert it sent.
+func tlsBackend(t *testing.T, tune func(*tls.Config)) string {
+	t.Helper()
+	config := &tls.Config{Certificates: []tls.Certificate{selfSignedCertificate(t)}}
+	if tune != nil {
+		tune(config)
+	}
+	return sslBackend(t, func(conn net.Conn) {
 		_ = tls.Server(conn, config).Handshake()
+		_, _ = io.Copy(io.Discard, conn)
 	})
 }
 
