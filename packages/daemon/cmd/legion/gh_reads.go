@@ -166,8 +166,7 @@ func ghAPIReadValue(option, value string) bool {
 	case "-X", "--method":
 		return value == "GET"
 	case "-H", "--header":
-		name, _, _ := strings.Cut(value, ":")
-		return !ghMethodOverrideHeaders[strings.ToLower(strings.TrimSpace(name))]
+		return !ghMethodOverrideHeaders[ghHeaderName(value)]
 	}
 	return true
 }
@@ -176,6 +175,14 @@ func ghAPIReadValue(option, value string) bool {
 // request's method in place of the one it was sent with. This cannot know that GitHub reads none
 // of them, so a call that sets one is guarded whole.
 var ghMethodOverrideHeaders = map[string]bool{"x-http-method-override": true, "x-http-method": true, "x-method-override": true}
+
+// ghHeaderName is the name of the request header value sets, as gh's -H/--header takes one,
+// `<name>:<value>`: the text before the first colon, trimmed and lowercased, as
+// ghMethodOverrideHeaders names a header.
+func ghHeaderName(value string) string {
+	name, _, _ := strings.Cut(value, ":")
+	return strings.ToLower(strings.TrimSpace(name))
+}
 
 // ghReadOptions are a read grammar's options from two lists of spellings, each separated by
 // spaces: values, the options that take a value, which are true, and switches, the options that
@@ -224,6 +231,86 @@ func ghWritesNothing(argv, path []string) bool {
 	}
 	options, listed := ghReadLeaves[strings.Join(path, " ")]
 	return listed && ghReadGrammar(argv[len(path):], options, false)
+}
+
+// ghGraphQLReadOptions are the options a `gh api graphql` query may be given (ghGraphQLQueryRead),
+// each spelling keyed as ghReadOptions keys one: -f/--raw-field, -F/--field, -H/--header, -q/--jq
+// and -t/--template, each taking a value, and the switches --paginate and --slurp.
+var ghGraphQLReadOptions = ghReadOptions("-f --raw-field -F --field -H --header -q --jq -t --template", "--paginate --slurp")
+
+// ghGraphQLQueryRead says whether argv, a call as typed, is a query of GitHub's GraphQL API that
+// writes nothing, which R4 of dispatch://INFRA-3399 lets run with GH_CONFIG_DIR's directory where
+// it names only owners the bundle holds no directory for, as it lets a call ghWritesNothing admits
+// (selectors.dir). It is no rule of the guard's: ghWritesNothing admits no `gh api graphql`, so the
+// guard reads such a call whole.
+//
+// gh sends a call to its GraphQL API where the endpoint is exactly the word `graphql` (cli/cli
+// v2.98.0 pkg/cmd/api/api.go, `isGraphQL := opts.RequestPath == "graphql"`), as a POST of its
+// fields, the query among them. So argv begins with `api graphql`, no word before them, and every
+// word after them is one of the options api.go's NewCmdApi defines that leave the request that
+// POST, its value in the next word: -f/--raw-field and -F/--field, -H/--header naming no method
+// override (ghMethodOverrideHeaders) and no Content-Length, which gh sets as the length of the
+// body it sends (pkg/cmd/api/http.go), -q/--jq and -t/--template; or one of the switches
+// --paginate and --slurp. No --input, whose file gh sends as the body, no -X/--method, no
+// --hostname, no value joined to its option, no `--` and no other option.
+//
+// Every field is key=value, its key the text before the first `=`. gh's parseFields
+// (pkg/cmd/api/fields.go) reads a `[` or a `]` in a key as nesting, and sets the request's query
+// from any key whose first named part it reads as `query`: `query[]`, `query[x]`, `query]x` and
+// `[query]` among them. Each part it reads is text of the key, so exactly one field's key is
+// exactly `query`, and no other key holds the word. That field is raw (-f/--raw-field), since gh
+// rewrites a typed field's value after this read it (magicFieldValue): it fills `{owner}`,
+// `{repo}` and `{branch}`, and `:owner`, `:repo` and `:branch`, from the working directory's
+// repository (fillPlaceholders), and reads a value beginning with `@` from a file or standard
+// input, which no typed field's value here does.
+//
+// The query's text holds neither `mutation` nor `subscription`, in any case and wherever it
+// stands, in a string, in a comment and inside a longer name (`viewerSubscription`) among them: a
+// GraphQL document runs a mutation or a subscription only through that keyword, so a text holding
+// neither word runs neither, whatever a parser makes of the rest of it. The rule reads no GraphQL
+// syntax because GitHub's lexer ends a block string at other quotes than the GraphQL
+// specification's: graphql-ruby's BLOCK_STRING_REGEXP (lib/graphql/language/lexer.rb) closes one
+// at an escaped `\"""` followed by a fourth quote, which the specification reads as text of the
+// string, so a lexer written to the specification took for string text a mutation GitHub runs, as
+// the review of cybermonklabs/legion#4035 measured at c13c4a67.
+func ghGraphQLQueryRead(argv []string) bool {
+	if len(argv) < 2 || argv[0] != "api" || argv[1] != "graphql" {
+		return false
+	}
+	query, queries := "", 0
+	for i := 2; i < len(argv); i++ {
+		option := argv[i]
+		takesValue, named := ghGraphQLReadOptions[option]
+		if !named {
+			return false
+		}
+		if !takesValue {
+			continue
+		}
+		if i++; i == len(argv) {
+			return false
+		}
+		value := argv[i]
+		switch option {
+		case "-f", "--raw-field", "-F", "--field":
+			key, text, valued := strings.Cut(value, "=")
+			typed := option == "-F" || option == "--field"
+			switch {
+			case !valued, typed && strings.HasPrefix(text, "@"):
+				return false
+			case key == "query" && !typed:
+				query, queries = text, queries+1
+			case strings.Contains(key, "query"):
+				return false
+			}
+		case "-H", "--header":
+			if name := ghHeaderName(value); ghMethodOverrideHeaders[name] || name == "content-length" {
+				return false
+			}
+		}
+	}
+	lower := strings.ToLower(query)
+	return queries == 1 && !strings.Contains(lower, "mutation") && !strings.Contains(lower, "subscription")
 }
 
 // ghReadGrammar says whether args, the words of a call after its leaf's path, are in the read

@@ -1,0 +1,17 @@
+{
+  "code": "PROJECT_NOT_PAUSED",
+  "error": "the project is not paused: its last pause (pause 7, by the operator since 2026-11-15T09:00:00Z: the model provider is refusing every turn) ended 2026-11-15T09:41:30Z by the controller (session ses_controller); this resume changed nothing",
+  "lastPause": {
+    "id": 7,
+    "since": "2026-11-15T09:00:00Z",
+    "by": {
+      "kind": "operator"
+    },
+    "reason": "the model provider is refusing every turn",
+    "endedAt": "2026-11-15T09:41:30Z",
+    "endedBy": {
+      "kind": "controller",
+      "session": "ses_controller"
+    }
+  }
+}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 )
 
 type unsupportedOutboxPayload struct{}
@@ -53,10 +54,16 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: TreeStalledNotice, Reason: "LEGION-208 has stopped. The tree has been quiet for 7.0 hours."},
 		ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect,
 			Reason: ArchitectTookNothing.Words() + ": the task of phase entry 1 was first queued to the architect's claim of LEGION-208"},
+		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
+			Reason: "the model provider is down"}},
+		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
 		ControllerNotice{Kind: IntakeGaveUpNotice, Count: 3, GiveUps: []NoticeGiveUp{
 			{ID: 41, Consumer: "legion-go-LEGION-dispatch", Subject: "notifications.dispatch.issue.LEGION-208.issue.updated"},
 			{ID: 42, Consumer: "legion-go-LEGION-wake", Subject: "notifications.legion.LEGION.wake"}}},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
+		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakePause, Pause: 7},
 		GateSeed{ArtifactID: "artifact-208", Version: 4},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
@@ -152,7 +159,7 @@ func TestEveryStatusRowKindHasAConstructorThatSetsIt(t *testing.T) {
 		if write.Kind != kind {
 			t.Fatalf("the constructor of %q built a write of kind %q, want it to set its own kind", kind, write.Kind)
 		}
-		if err := validateOutboxPayload(write); err != nil {
+		if err := validateOutboxPayload("LEGION-208", write); err != nil {
 			t.Fatalf("the write the constructor of %q built was refused: %v", kind, err)
 		}
 	}
@@ -267,6 +274,83 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	}
 }
 
+// Every kind the lanes run is decided here as held by a project's pause or not (decision 9 of
+// dispatch://INFRA-3759), and the decision is the one list the outbox's claim reads (pauseHolds):
+// a kind added to a lane, a new lane's among them (OutboxLanes), fails this test until somebody
+// writes it below, held or not. "every row" is a kind the pause holds whole, "op start" the
+// supervise kind, whose start alone launches a role, and "" a kind that runs through the pause: a
+// stop, a write to Dispatch, a controller's notice.
+func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
+	decided := map[OutboxKind]string{
+		OutboxKindSupervise:         "op start",
+		OutboxKindNotice:            "every row",
+		OutboxKindHookPrompt:        "every row",
+		OutboxKindRoleMessage:       "every row",
+		OutboxKindUpdateAsk:         "every row",
+		OutboxKindMergeQueueRemoval: "every row",
+		// A merge forward's message goes to one role of the issue and wakes a released one, as a
+		// hook prompt does (main's dispatch://INFRA-4374).
+		OutboxKindMergeForward:       "every row",
+		OutboxKindCheckWake:          "every row",
+		OutboxKindCheckLook:          "every row",
+		OutboxKindCheckBound:         "every row",
+		OutboxKindControllerNotice:   "",
+		OutboxKindDispatchStatus:     "",
+		OutboxKindDispatchMessage:    "",
+		OutboxKindGateSeed:           "",
+		OutboxKindLingerClose:        "",
+		OutboxKindIssueSuspend:       "",
+		OutboxKindWorkspaceRemove:    "",
+		OutboxKindIssueBranch:        "",
+		OutboxKindIssueBundle:        "",
+		OutboxKindIssueRelease:       "",
+		OutboxKindGatedStepsPublish:  "",
+		OutboxKindClaimRelease:       "",
+		OutboxKindDesignGatesPublish: "",
+		OutboxKindMergeQueueRead:     "",
+		// A conflict's second read reads the pull request from GitHub and starts no turn; the merge
+		// forward its fact queues is held.
+		OutboxKindConflictConfirm: "",
+		// The role-holders publication writes Dispatch the sessions that hold an issue's roles and
+		// starts no turn, and a pause's stops change those holders, which Dispatch should show.
+		OutboxKindRoleHoldersPublish: "",
+		// A step record writes Dispatch one start or one end of a step of an issue
+		// (cybermonklabs/legion#4400) and starts no turn, so the pause lets it run as it does a
+		// status write.
+		OutboxKindStepRecord: "",
+		// A plan record writes Dispatch the plan one run of an issue carries out (main's plan
+		// ratings, contract 168) and starts no turn, so the pause lets it run as a step record.
+		OutboxKindPlanRecord: "",
+	}
+	for _, lane := range OutboxLanes() {
+		for _, kind := range LaneKinds(lane) {
+			if _, ok := decided[kind]; !ok {
+				t.Errorf("%s runs on the %s lane and nobody decided whether a project's pause holds it: add it to pauseHolds or to this test as not held", kind, lane)
+			}
+		}
+	}
+	listed := map[OutboxKind]string{}
+	for _, hold := range pauseHolds {
+		if _, twice := listed[hold.kind]; twice {
+			t.Errorf("pauseHolds names %s twice", hold.kind)
+		}
+		listed[hold.kind] = "every row"
+		if hold.op != "" {
+			listed[hold.kind] = "op " + string(hold.op)
+		}
+	}
+	for kind, want := range decided {
+		if got := listed[kind]; got != want {
+			t.Errorf("a project's pause holds %s as %q, want %q", kind, got, want)
+		}
+	}
+	for kind := range listed {
+		if _, ok := decided[kind]; !ok {
+			t.Errorf("pauseHolds names %s, which this test decides nothing of", kind)
+		}
+	}
+}
+
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -316,6 +400,28 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an update-stalled notice with no round", payload: ControllerNotice{Kind: UpdateStalledNotice, Update: &UpdateStalled{Waiting: []UpdateWaiting{{Claim: "legion-LEGION-208-tester", State: "working"}}}}, reason: "requires its round and the claims it waits on"},
 		{name: "a slot-free wake carrying held issues", payload: ControllerNotice{Kind: SlotFreeNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldDesignGate, HeldBy: []string{"LEGION-208"}}}}, reason: "carries held issues only when it is a tick"},
 		{name: "a triage notice carrying held issues", payload: ControllerNotice{Kind: TriageNotice, Held: []HeldIssue{{Issue: "LEGION-209", Reason: HeldUnclassified}}}, reason: "carries held issues only when it is a tick"},
+		{name: "a project-paused notice for an architect", payload: Notice{Kind: ProjectPausedNotice}, reason: "unknown notice kind"},
+		{name: "a project-resumed notice for an architect", payload: Notice{Kind: ProjectResumedNotice}, reason: "unknown notice kind"},
+		{name: "an architect's notice carrying a project pause", payload: Notice{Kind: "held", Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "only the controller's project-paused and project-resumed notices do"},
+		{name: "a project-paused notice carrying no pause", payload: ControllerNotice{Kind: ProjectPausedNotice}, reason: "carries a project pause only when it is"},
+		{name: "a project-resumed notice carrying no pause", payload: ControllerNotice{Kind: ProjectResumedNotice}, reason: "carries a project pause only when it is"},
+		{name: "a tick carrying a project pause", payload: ControllerNotice{Kind: TickNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now}}, reason: "carries a project pause only when it is"},
+		{name: "a project-paused notice of no pause", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "names its pause and when it was acted on"},
+		{name: "a project-paused notice of no moment", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, Reason: "down"}}, reason: "names its pause and when it was acted on"},
+		{name: "a project-paused notice with no reason", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: " \n"}}, reason: "names the reason the project was paused"},
+		{name: "a project-resumed notice with a reason", payload: ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "fixed"}}, reason: "carries no reason; only a project-paused notice does"},
+		{name: "a project-paused notice with its reason beside its pause", payload: ControllerNotice{Kind: ProjectPausedNotice, Reason: "down", Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now, Reason: "down"}}, reason: "carries its reason in its pause"},
+		{name: "a pause by the controller with no session", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByController}, At: now, Reason: "down"}}, reason: "names the controller's session"},
+		{name: "a pause by the operator with a session", payload: ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator, Session: "session-1"}, At: now}}, reason: "names no session"},
+		{name: "a pause by someone else", payload: ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: "reviewer"}, At: now, Reason: "down"}}, reason: "is by the controller or the operator"},
+		{name: "a pause's stop of no pause", payload: SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3}, reason: "names its pause and the role it stops"},
+		{name: "a pause's stop of no role", payload: SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Generation: 3, Pause: 7}, reason: "names its pause and the role it stops"},
+		{name: "a pause's stop of the controller", payload: SuperviseRequest{Op: "pause_stop", Role: claim.RoleController, Pause: 7}, reason: "names its pause and the role it stops"},
+		{name: "a suspend naming a pause", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7}, reason: "only a pause's stop and a start name one"},
+		{name: "a start naming a negative pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Pause: -7}, reason: "only a pause's stop and a start name one"},
+		{name: "a suspend naming a wake kind", payload: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, WakeKind: pods.WakeChecks}, reason: "only a start names one"},
+		{name: "a start naming no wake kind of the pods", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: "listener_ready"}, reason: "only a start names one"},
+		{name: "a pause's launch naming no pause", payload: SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, WakeKind: pods.WakePause}, reason: "names the pause that owed it"},
 		{name: "an intake-gave-up notice counting none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, GiveUps: noticeGiveUps(1)}, reason: "counts one give-up or more"},
 		{name: "an intake-gave-up notice naming none", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 1}, reason: "names between 1 and 1 of them, not 0"},
 		{name: "an intake-gave-up notice naming 101", payload: ControllerNotice{Kind: IntakeGaveUpNotice, Count: 150, GiveUps: noticeGiveUps(101)}, reason: "names between 1 and 100 of them, not 101"},
@@ -386,6 +492,63 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 			_, err := NewOutboxRow("LEGION-208", tc.payload, now)
 			if err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("NewOutboxRow error = %v, want %q", err, tc.reason)
+			}
+		})
+	}
+}
+
+// A pause's stop of a claim of another project's issue is keyed by the project, which the outbox
+// of the project's own daemon serves, and names the claim's issue in its payload: it round-trips
+// through Postgres and that daemon lists it. A row may carry that issue only so: on a pause's stop
+// keyed by its project, never beside a row of an issue key, never naming something that is no
+// issue key, and never on another op; and a pause's stop keyed by its project must carry it.
+func TestAPauseStopKeyedByItsProjectNamesItsClaimsIssue(t *testing.T) {
+	now := time.Date(2026, 11, 16, 9, 0, 0, 0, time.UTC)
+	stop := SuperviseRequest{Op: "pause_stop", Tree: "OTHER-5", Role: claim.RoleArchitect, Generation: 1, Pause: 7, Issue: "OTHER-5"}
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	row, err := NewOutboxRow("LEGION", stop, now)
+	if err != nil {
+		t.Fatalf("NewOutboxRow of the stop keyed by LEGION: %v", err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.Enqueue(ctx, tx, row))
+	})
+	var due []OutboxRow
+	inTx(t, st, func(tx pgx.Tx) {
+		due, err = records.DueRows(ctx, tx, "LEGION", "", nil, now)
+		must(t, err)
+	})
+	if len(due) != 1 || due[0].Issue != "LEGION" {
+		t.Fatalf("LEGION's due rows = %+v, want the stop keyed by LEGION", due)
+	}
+	got, err := DecodeOutboxPayload(due[0])
+	if err != nil || !reflect.DeepEqual(got, stop) {
+		t.Fatalf("the stop decodes as %#v, %v; want %#v", got, err, stop)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		issue   string
+		payload SuperviseRequest
+	}{
+		{"beside a row of an issue key", "LEGION-208", stop},
+		{"naming no issue key", "LEGION", SuperviseRequest{Op: "pause_stop", Role: claim.RoleArchitect, Pause: 7, Issue: "other-5"}},
+		{"on a start", "LEGION", SuperviseRequest{Op: "start", Tree: "OTHER-5", Role: claim.RoleArchitect, Issue: "OTHER-5"}},
+		{"missing from a stop keyed by the project", "LEGION", SuperviseRequest{Op: "pause_stop", Tree: "OTHER-5", Role: claim.RoleArchitect, Pause: 7}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := NewOutboxRow(tc.issue, tc.payload, now); err == nil || !strings.Contains(err.Error(), "issue") {
+				t.Fatalf("NewOutboxRow(%q, %+v) = %v, want it refused for the issue it names", tc.issue, tc.payload, err)
+			}
+			encoded, err := json.Marshal(tc.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored := OutboxRow{Kind: OutboxKindSupervise, Issue: tc.issue, Payload: encoded}
+			if _, err := DecodeOutboxPayload(stored); err == nil {
+				t.Fatalf("the decode of a stored %+v keyed by %q passed, want it refused", tc.payload, tc.issue)
 			}
 		})
 	}

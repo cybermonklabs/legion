@@ -247,6 +247,31 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 	}
 }
 
+// A refusal of GitHub's longer than refusalBodyBytes whose bound falls inside a URL's user name,
+// before its "@", is refused with a cause that holds no part of that user name: the read knows its
+// bound cut the body and drops the run it stopped inside before the URL rule reads it. A cut made
+// first leaves the user name's start where the rule reads it as the URL's host.
+func TestARefusalCutInsideAURLsUserNameIsRefusedWithNoPartOfIt(t *testing.T) {
+	cutAt := "https://" + plantedToken[:8]
+	answer := strings.Repeat(" ", refusalBodyBytes-len(cutAt)) + "https://" + plantedToken + "@codeload.example/legacy.tar.gz"
+	if !strings.HasSuffix(answer[:refusalBodyBytes], cutAt) {
+		t.Fatalf("the answer's first %d bytes end %q, not inside the user name", refusalBodyBytes, answer[refusalBodyBytes-len(cutAt):refusalBodyBytes])
+	}
+	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(answer))
+	})
+	var mints atomic.Int32
+	_, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
+	want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d", RefusalPrefix, theTag, http.StatusForbidden)
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("the refused read = %v, want a cause beginning %q", err, want)
+	}
+	if part := partOf(err.Error(), plantedToken); part != "" {
+		t.Fatalf("the cause %q holds %q of the URL's user name", err, part)
+	}
+}
+
 // A 401 is GitHub no longer taking the token the read was made with: the read calls Forget once,
 // so the next mint is a new token, and the read is not kept. Any other refusal forgets nothing.
 func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {

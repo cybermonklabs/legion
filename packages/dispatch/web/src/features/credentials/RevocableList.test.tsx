@@ -82,6 +82,7 @@ const sections: Section[] = [
             expires_at: "2026-10-10T12:00:00Z",
             host: "devbox.example.com",
             issued_at: "2026-10-03T12:00:00Z",
+            person: null,
             service: null,
             subject: null,
           },

@@ -27,8 +27,10 @@ const (
 // (no subject): one a person approved through a machine-login code. Carried answers what a login
 // of the caller's own account launched, and such a login names no account; the pods it enrols
 // carry nothing in any case (carryPrincipal). Any other launcher credential is answered, with the
-// rows its own login launched alone: a service's token login, and a machine's or a person's
-// sign-in whose login names an account, which is answered whatever pods it launched, usually none.
+// rows its own login launched alone: a service's token login; a person's pod login
+// (PersonPodLogin), live or stale, whose own pod carries nothing, since it enrols under no
+// session name, so its answer is empty; and a machine's or a person's sign-in whose login names
+// an account, which is answered whatever pods it launched, usually none.
 var ErrServiceLoginRequired = errors.New("only a launcher credential whose login names an account may ask which of its enrollments carry something for a session")
 
 // CheckCarriedCaller is Carried's check of who asks, ErrServiceLoginRequired for a credential whose

@@ -6886,7 +6886,7 @@ func TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes(t 
 }
 
 // Every string a report carries is kept whole at its bound in runes and cut at one rune more, to
-// the bound with an ellipsis in place of its last rune (cutRunes, bound). The other cases cut
+// the bound with an ellipsis in place of its last rune (redact.Runes, bound). The other cases cut
 // strings at three times their bound or more and read only that the result is within it
 // (TestAReportOfAVolumeHoldingThousandsOfDirectoriesIsOneTheConnectionTakes,
 // TestDirectoriesReadInPartAreBoundedInTheReportAndTheLog), with which a cut at the bound itself

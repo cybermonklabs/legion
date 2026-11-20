@@ -11,6 +11,23 @@
 // the pod's own processes (the commands cmd/legion's podLogs names) takes it whole, through
 // Writer: such a log mixes a far side's error with what an agent wrote (a tool call's summary),
 // and a link of an agent's that loses its query in that log keeps it everywhere else.
+//
+// A far side's text that is cut to a bound is cut here, by Runes, Bytes or Tail, which give the
+// whole text through URLCredentials before they cut it, or by Read, for a text a bounded read cut
+// already. A far side is anything outside the process that writes the text: an HTTP answer, a
+// child process's output, a frame from the daemon or the agent, a kubelet's message, an error that
+// wraps any of those. The order is the point: a cut made before the rule can stop inside a URL's
+// userinfo or its query and leave a part of either where the rule no longer finds it. Every such
+// cut in the legion binary, the daemon's and the pod's commands alike, is one of theirs but those
+// named here, each of which says where it cuts why it keeps no part of a URL's credential: the
+// role log's cut just after a byte that ends a URL (the launcher's logLineCut); the sandbox's
+// drop of the head a cut log read starts inside, up to its first newline or else its first byte
+// that ends a URL (dropCutHead, which readLog and lastBytes share), and readLog's drop of the line
+// its read bound stopped inside; storetext.LogWhole's parts of a text the rule has read whole; a
+// detail whose own rules have masked every userinfo before its cut (capabilities' cleanDetail);
+// and the volume deleter's standard error and its reply, the words of legion's own subcommand
+// about the paths it removes (the launcher's saidBuffer and readReply). So what is cut and how is
+// read from their callers and those rather than from every way Go shortens a string.
 package redact
 
 import (

@@ -405,7 +405,8 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 	if s.refuseIfStaleController(w, r, stored) {
 		return
 	}
-	s.mintControllerGrant(w, stored.Session)
+	grant, err := s.grants.MintController(req.SessionID)
+	s.writeControllerGrant(w, grant, err)
 }
 
 // controllerSessionRegistered is the one authentication of a controller session against its
@@ -464,17 +465,10 @@ func (s *server) refuseIfStaleControllerSession(w http.ResponseWriter, r *http.R
 	return s.refuseIfStaleController(w, r, record)
 }
 
-// mintControllerGrant answers a controller grant for a caller its route has authorised: session,
-// the controller session the route authenticated, or "" for the operator's bearer, whose grant
-// names no session.
-func (s *server) mintControllerGrant(w http.ResponseWriter, session string) {
-	var grant credential.Grant
-	var err error
-	if session == "" {
-		grant, err = s.grants.MintController()
-	} else {
-		grant, err = s.grants.MintControllerSession(session)
-	}
+// writeControllerGrant answers the controller grant a route minted for a caller it has authorised:
+// the operator's bearer (grant's empty form) or the registered controller session
+// (controllerSessionGrant), or the failure of that mint.
+func (s *server) writeControllerGrant(w http.ResponseWriter, grant credential.Grant, err error) {
 	if err != nil {
 		s.log.Error("api: mint controller grant", "error", err)
 		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")

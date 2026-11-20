@@ -28,6 +28,7 @@ import (
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -228,6 +229,12 @@ func pluginsLine(cfg config.Config) string {
 // such line. Then one line per deployment capability the file alone leaves open, in the words
 // boot logs it with
 // (capabilities.Deployment.OpenFromConfiguration): a report, so the exit stays 0.
+// Then, when the file sets what turns the project's pause off (pause.Unavailable: runtime: tmux,
+// an idle release of 0 minutes, or a wake pacing of 0), one line `pause unavailable: <setting>`,
+// and the exit stays 0: such a daemon answers every pause PAUSE_UNAVAILABLE naming that setting,
+// and this is where an operator reads it before a pause is needed (decision 21 of
+// dispatch://INFRA-3759). It is a line rather than a capability row, which every controller tick
+// of every tmux daemon would report open.
 // Then, under either runtime, the intake handler limit's line, but only when
 // worker_rpc_timeout_seconds derived a limit above intake's ten-minute floor
 // (daemon.IntakeHandlerLimitLine): a check of a file that leaves the floor in place says nothing
@@ -279,6 +286,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	deployment := daemon.Deployment(cfg)
 	for _, gap := range deployment.OpenFromConfiguration() {
 		fmt.Fprintln(stdout, gap.OpenLine())
+	}
+	if setting, unavailable := pause.Unavailable(cfg); unavailable {
+		fmt.Fprintln(stdout, "pause unavailable: "+string(setting))
 	}
 	if line, derived := daemon.IntakeHandlerLimitLine(cfg); derived {
 		fmt.Fprintln(stdout, line)
@@ -537,7 +547,7 @@ func stopLegion(configPath string, stdout, stderr io.Writer) int {
 func newStateCommand(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "state",
-		Short: "print the daemon's state: admission, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag, the intake's open give-ups (--json for all of it)",
+		Short: "print the daemon's state: admission, the project's pause, issues, pending Dispatch status writes, claims nothing will wake, served repositories without Dispatch's webhook App, the durable consumers' lag, the intake's open give-ups (--json for all of it)",
 		Args:  configOnly,
 	}
 	c := newOperatorCall(cmd, "file holding the operator bearer the daemon's operator_token_file names; with it the claims nothing will wake name who suspended each", stdout, stderr)
@@ -580,6 +590,13 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	fmt.Fprintf(stdout, "admission: %d issues hold a slot, cap %d, %d waiting; %d live trees; %d issues\n",
 		len(state.Admission.Active), state.Admission.Cap, len(state.Admission.Waiting),
 		len(state.Admission.Trees), len(state.Issues))
+	// The project's pause: a paused line while it stands, a last-pause line while the project runs
+	// after one has ended, and neither before any pause, as the state carries one key at most.
+	for _, line := range []string{pausedSummary(state.Paused), lastPauseSummary(state.LastPause)} {
+		if line != "" {
+			fmt.Fprintln(stdout, line)
+		}
+	}
 	for _, line := range waitingLineLines(state.Admission.Waiting, state.Issues) {
 		fmt.Fprintln(stdout, line)
 	}

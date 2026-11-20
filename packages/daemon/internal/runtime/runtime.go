@@ -241,13 +241,15 @@ type WorkspaceBundler interface {
 
 // SavedWorkspaceBundle answers the bundle an issue's last release saved for the pod of podUID,
 // created at podCreated, to restore, and what that ask did to the bundle. It is the other half
-// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore), handed
-// to the runtime so that the runtime, which alone knows when a replacement pod's launcher is up,
-// can carry the saved work back into the new workspace before any role of that pod starts.
+// of WorkspaceBundler: the save's own store (store.Store.TakeWorkspaceBundleForRestore, bound to
+// the daemon's project where the daemon wires it), handed to the runtime so that the runtime,
+// which alone knows when a replacement pod's launcher is up, can carry the saved work back into
+// the new workspace before any role of that pod starts.
 //
 // WorkspaceBundleNone is nothing to send and nothing recorded: an issue never released, one
 // whose restore the launcher confirmed, one whose release a wake cancelled, one whose bundle has
-// had its one attempt already, and the pod the work was taken off asking for its own workspace's
+// had its one attempt already, one the daemon's project does not record, whose bundle another
+// project's daemon saved, and the pod the work was taken off asking for its own workspace's
 // work back. The runtime calls this at every start of every role, and a release stops the roles
 // of the pod it is releasing, so a role relaunched in that pod before the teardown deletes it is
 // one of those calls; the store knows that pod by the uid the save recorded
@@ -291,8 +293,9 @@ type WorkspaceBundleRestored func(ctx context.Context, issue string, release int
 // launcher cannot name another role, issue or pod.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so the import is acyclic, and a second copy of the report would
-// be one more shape to keep in step for no reader that needs it.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so the
+// import is acyclic, and a second copy of the report would be one more shape to keep in step for
+// no reader that needs it.
 //
 // An error, a store that did not answer among them, is returned to the session, which logs it
 // and drops the report: nothing acknowledges the frame, so the launcher does not send it again,
@@ -308,9 +311,10 @@ type MemoryGuardKilled func(ctx context.Context, issue string, token claim.Token
 // roles container a new counting line for the daemon's notice bounds, is inside the report.
 //
 // It takes the wire's own frame rather than a shape of this package's: shimwire imports nothing
-// of the daemon's own packages, so this import is acyclic, and a third near-copy of the report —
-// the wire's, the runtime's and the record's — would be three shapes to keep in step where two
-// are already the price of a durable notice.
+// of the daemon's own packages but internal/redact, which imports nothing of the daemon's, so
+// this import is acyclic, and a third near-copy of the report — the wire's, the runtime's and the
+// record's — would be three shapes to keep in step where two are already the price of a durable
+// notice.
 //
 // A store that does not answer is logged and the report is dropped there. The launcher cannot
 // hold it again once the daemon has read it, and it is not asked to: the trimmer sweeps on, and
@@ -650,13 +654,13 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. The URL rule (redact.URLCredentials)
-// reads the joined text before the cut, so a URL the cut falls inside has lost its userinfo and
-// its query already: a cut made first could end inside a URL's userinfo, before its "@", and
-// leave the start of a user name or a password where the rule the claim keeps the value under
-// (storetext.FarSideText) reads it as the URL's host. Both the runtime that observes a pod and
-// any test that asserts on the field build the value here, so one rule decides what a claim and
-// a notice carry.
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
 func PodEnd(reason, message string) string {
 	if reason == "" {
 		return ""
@@ -665,12 +669,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
-	end = redact.URLCredentials(end)
-	runes := []rune(end)
-	if len(runes) <= PodEndRunes {
-		return end
-	}
-	return string(runes[:PodEndRunes-1]) + "…"
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

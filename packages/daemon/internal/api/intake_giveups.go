@@ -149,10 +149,10 @@ func (s *server) intakeDiscard(w http.ResponseWriter, r *http.Request) {
 }
 
 // giveUpController redeems the controller door's grant and answers who the record keeps as the
-// caller: `controller session <id>` for a grant the controller's registered session minted, and
-// the operator for a controller grant the operator's bearer minted, since that grant names no
-// session (credential.Grant.Session). Every grant that is not a controller's — a phase worker's,
-// an architect's — is refused.
+// caller: the operator for a controller grant the operator's bearer minted (credential.Grant's
+// Operator), and `controller session <id>` for one the controller's registered session minted
+// (its Session). Every grant that is not a controller's — a phase worker's, an architect's — is
+// refused.
 func (s *server) giveUpController(w http.ResponseWriter, r *http.Request, grantID string) (string, bool) {
 	if !requireFailureFields(w, field{"grantId", grantID}) {
 		return "", false
@@ -165,7 +165,7 @@ func (s *server) giveUpController(w http.ResponseWriter, r *http.Request, grantI
 		writeFailure(w, http.StatusForbidden, "CONTROLLER_REQUIRED", "a give-up's replay or discard requires a controller grant")
 		return "", false
 	}
-	if grant.Session == "" {
+	if grant.Operator {
 		return operatorCaller, true
 	}
 	return "controller session " + grant.Session, true

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
@@ -40,7 +41,8 @@ func compareTurnOutcomes(a, b TurnOutcome) int {
 
 // maxRefusalMessage bounds, in runes, the provider's message a report carries. The message reaches
 // the claim's failure, which is read back in notices and in every state answer, so a provider that
-// returns a page of diagnostics leaves a sentence rather than a page in the store.
+// returns a page of diagnostics leaves a sentence rather than a page in the store. A message past
+// the bound keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
 const maxRefusalMessage = 500
 
 // turnOutcomeWindow is how many reports a claim keeps: the launch failure limit
@@ -58,15 +60,11 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // late report and an in-order one leave the same answer.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
-// (storetext.FarSideText) before it is cut: the window in memory is the window the store holds,
-// and the cut cannot leave half a credential.
+// (storetext.FarSideText) before it is cut: storetext.Text makes it valid, and redact.Runes gives
+// it whole through the URL rule before the cut, so the window in memory is the window the store
+// holds, and the cut cannot leave half a credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
-	o.Message = storetext.FarSideText(o.Message)
-	if len(o.Message) > maxRefusalMessage {
-		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
-			o.Message = string(runes[:maxRefusalMessage]) + "…"
-		}
-	}
+	o.Message = redact.Runes(storetext.Text(o.Message), maxRefusalMessage)
 	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
 	if found {
 		m.claim.TurnOutcomes[at] = o

@@ -516,6 +516,23 @@ type EntrySweep struct{}
 
 func (EntrySweep) namedIssue() (string, bool) { return "", false }
 
+// ProjectResumed is the resume of the daemon's project's pause, applied as a synthetic fact once
+// the resume has committed and never decoded from an event (internal/daemon's
+// projectPause.Resumed, decision 22 of dispatch://INFRA-3759). It is the resume's one admission
+// pass: the pause held every promotion, and the pass runs now rather than at the next fact or
+// tick. Admission promotes on it as on every fact that is not a Dispatch issue
+// (admit.Admission.applyFact); the workflow engine and the blockers mirror do nothing for it.
+// Unlike the controller's tick, which queues a tick notice, it queues none: a slot its pass leaves
+// free wakes the controller as any fact's pass does (admit.Admission.wakeForFreeSlot), and
+// nothing else.
+//
+// It carries nothing, as EntrySweep carries nothing: the pass reads the whole project. Its event
+// is keyed on the pause the resume ended (internal/daemon's applyResumePass), so a resume applies
+// its pass once.
+type ProjectResumed struct{}
+
+func (ProjectResumed) namedIssue() (string, bool) { return "", false }
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string
