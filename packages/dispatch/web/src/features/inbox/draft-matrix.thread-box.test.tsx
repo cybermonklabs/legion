@@ -55,7 +55,7 @@
  * `draft-matrix.thread-box.coverage.ts`, which holds each census item this file answers for to a
  * test above or to one of them.
  */
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
 import type { MutationKey, QueryClient } from "@tanstack/react-query";
 import { act, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
@@ -85,9 +85,16 @@ import type {
   MyReplyThreadRow,
 } from "../../api/types";
 import type { SentRequest } from "../conversation/send-request";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow } from "../threads/replies-fixture";
 import { installInboxApiMocks } from "./inbox-fixture";
 import { threadSendKey } from "./ThreadBody";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 installInboxApiMocks();
 

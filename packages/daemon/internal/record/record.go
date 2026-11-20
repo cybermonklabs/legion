@@ -386,7 +386,7 @@ const (
 	// AnsweredByAsk is a person's answer, resolution or reply on the ask the root waits on.
 	AnsweredByAsk Answer = "ask"
 	// AnsweredByRetraction is Dispatch's settlement retracting the last ask of the root's wait still
-	// with the person, whose decision block left the spec: no person can answer it any more.
+	// with the person, whose ask block left the spec: no person can answer it any more.
 	AnsweredByRetraction Answer = "retracted"
 	// AnsweredByClosed is a close, by anyone who is not a person, of the last ask of the root's wait
 	// still with the person: the question is gone, so nobody will answer it.
@@ -1392,9 +1392,9 @@ const (
 )
 
 // DesignStep names one document of the root issue, and a deployment's design gate is the list of
-// steps it holds the tree's work on. DesignStepDecisions names the issue's decisions document,
-// DesignStepCriteria its Verification document, and DesignStepSpec its primary document. The
-// record keeps one DesignGate for each step a deployment gates, keyed by the issue and the step.
+// steps it holds the tree's work on. DesignStepCriteria names the issue's Verification document,
+// and DesignStepSpec its primary document. The record keeps one DesignGate for each step a
+// deployment gates, keyed by the issue and the step.
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
@@ -1403,8 +1403,6 @@ const (
 type DesignStep string
 
 const (
-	// DesignStepDecisions is the root issue's decisions document.
-	DesignStepDecisions DesignStep = "decisions"
 	// DesignStepCriteria is the root issue's Verification document.
 	DesignStepCriteria DesignStep = "criteria"
 	// DesignStepSpec is the root issue's primary document, the one document the gate held before a
@@ -1412,9 +1410,10 @@ const (
 	DesignStepSpec DesignStep = "spec"
 )
 
-// DesignSteps is every step, in the order a deployment that gates all three takes them: the
-// decisions first, then the criteria they are judged by, then the spec built on both.
-var DesignSteps = []DesignStep{DesignStepDecisions, DesignStepCriteria, DesignStepSpec}
+// DesignSteps is every step, in the order a deployment that gates both takes them: the criteria
+// first, then the spec they judge. The `decisions` step is gone, since a person's decisions are
+// nodes of the spec (`gates.design` refuses it by name, config's readDesignSteps).
+var DesignSteps = []DesignStep{DesignStepCriteria, DesignStepSpec}
 
 // OrSpec is step itself, and DesignStepSpec when step is empty. A fact, a request or a row built
 // with no step is of the spec step: spec is the step every deployment requires — `root-issues`
@@ -1428,22 +1427,20 @@ func (step DesignStep) OrSpec() DesignStep {
 	return step
 }
 
-// Valid says whether step is one of the three steps. The stored column admits those three names
-// alone, so a value this refuses is one no record can hold.
+// Valid says whether step is one of DesignSteps. The stored columns admit `decisions` as well, a
+// step this refuses: the store keeps the rows an earlier release wrote of it and hands none of them
+// to a reader (Postgres.GatesOf).
 func (step DesignStep) Valid() bool {
 	return slices.Contains(DesignSteps, step)
 }
 
 // Document is the document of its issue the step records, as a refusal or a task names it: the
-// words the architect's own guide uses for the three (skill://legion-architect/references/
+// words the architect's own guide uses for the steps (skill://legion-architect/references/
 // design-gate.md, "Which steps are gated"). The caller supplies the possessive it needs - the
 // issue's, or the architect's own.
 func (step DesignStep) Document() string {
-	switch step {
-	case DesignStepCriteria:
+	if step == DesignStepCriteria {
 		return "Verification document"
-	case DesignStepDecisions:
-		return "decisions document"
 	}
 	return "primary document"
 }
@@ -1459,10 +1456,10 @@ func StepNames(steps []DesignStep) []string {
 	return names
 }
 
-// StepWords is the three step names as a refusal spells them: each quoted, the last after "or".
+// StepWords is the step names as a refusal spells them: each quoted, the last after "or".
 // Every refusal of a value that is not one of them - the `gates.design` list a config file names,
-// the step list a daemon answers the controller with - says this, so no refusal spells the three
-// names of its own.
+// the step list a daemon answers the controller with - says this, so no refusal spells the names
+// of its own.
 func StepWords() string {
 	quoted := StepNames(DesignSteps)
 	for i, name := range quoted {

@@ -169,7 +169,7 @@ func (s *server) relatedOtherProjects(
 			// The answer carries the shape a read gives it, with the display tree of its text
 			// where the request asked for the trees and without one where it did not. Which of
 			// them it is does not follow from the path. This leg runs for a write that asks a
-			// person a question - an ask create, a new decision block - and for the POST form
+			// person a question - an ask create, a new ask block - and for the POST form
 			// of the related route, which writes nothing and is the read `dispatch related`
 			// makes; the GET form of that route, which the dashboard reads under
 			// `Dispatch-Trees: 1`, runs the one-project leg of the same check. So the header

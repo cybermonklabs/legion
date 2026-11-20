@@ -105,14 +105,16 @@ func paragraphNode(id, body string) *pmdoc.Node {
 // closedSpec is a spec whose paragraph cites CORE-2, beside an ask block no settlement has indexed.
 const closedSpec = "Ship it after dispatch://CORE-2.\n\n:::ask{#region urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
 
-// An issue's close, its final sweep and the repair write ask blocks' states into the issue's
-// documents and write no version, so such a document is live ahead of its latest version until
-// the settlement that saves those states writes the next one. Meanwhile its windows are written
-// from that version's own rendering (windowDocument), and a version behind only in ask states is
-// matched whole: every block of it takes the id the live document gives it, an untyped block
-// included, and the ask block holds the version's text of it, not the state the sweep wrote.
+// While another build serves (serveTwoBuilds), an issue's close, its final sweep and the repair
+// write ask blocks' states into the issue's documents and write no version, so such a document is
+// live ahead of its latest version until the settlement that saves those states writes the next
+// one. Meanwhile its windows are written from that version's own rendering (windowDocument), and a
+// version behind only in ask states is matched whole: every block of it takes the id the live
+// document gives it, an untyped block included, and the ask block holds the version's text of it,
+// not the state the sweep wrote.
 func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *testing.T) {
 	database, service := blockIndexService(t)
+	serveTwoBuilds(t, database)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", closedSpec, "")
 	if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = 'CORE-1'`); err != nil {

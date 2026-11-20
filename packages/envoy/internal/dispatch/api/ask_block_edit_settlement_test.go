@@ -566,9 +566,7 @@ func TestRetractedBlockAskSurvivesTheNextDocumentSettlement(t *testing.T) {
 	if resolved.Code != http.StatusOK {
 		t.Fatalf("retract block ask: status=%d body=%s", resolved.Code, resolved.Body.String())
 	}
-	if markdown := documentMarkdown(t, handler, issue.PrimaryArtifactID); !strings.Contains(markdown, `state="resolved"`) {
-		t.Fatalf("the retract did not write the block's state:\n%s", markdown)
-	}
+	requireLiveText(t, handler, issue.PrimaryArtifactID, `#decision state="resolved"`)
 
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-retract")
 

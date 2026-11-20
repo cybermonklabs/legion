@@ -16,12 +16,15 @@ import "slices"
 // the ids land where Update keeps elements. live is compared with its anchor marks stripped, which
 // the markdown never holds, with every untyped block's id masked, and with a typed block's id
 // masked too where next names none for it, along with the whole of that block's server state,
-// which an upload resets (unchangedAttrs). An id goes only to unchanged content at its paired
-// position, never onto other content: a moved, swapped, retyped or edited block, every block
-// holding a change, and every block a moved block passes, which the alignment pairs with a changed
-// neighbour, still take a fresh id from EnsureBlockIDs. An id next names anywhere is not carried,
-// nor is one no ask row or anchor could store (storedBlockID). A repeat live carries may be
-// carried to both holders, and EnsureBlockIDs keeps it for the first, as it would have.
+// which an upload resets (unchangedAttrs). An id goes to unchanged content at its paired
+// position, and to an untyped container the alignment keeps at that position though its contents
+// changed, whose identity is that place rather than what it holds (carryKept). It goes onto
+// nothing else: a changed block holding inline content - an edited, moved, swapped or retyped
+// paragraph, heading or code block, and every one a moved block passes, which the alignment pairs
+// with a changed neighbour - and every block the alignment pairs with nothing still take a fresh
+// id from EnsureBlockIDs. An id next names anywhere is not carried, nor is one no ask row or
+// anchor could store (storedBlockID). A repeat live carries may be carried to both holders, and
+// EnsureBlockIDs keeps it for the first, as it would have.
 func carryBlockIDs(next, live *Node) {
 	if next == nil || live == nil {
 		return
@@ -41,9 +44,10 @@ type blockIDCarrier struct {
 // (unchangedEnds), whose ids are carried, and then the middle, where a text run advances past a
 // text run, a same-kind element at the left or right end is kept (by the larger child equality
 // factor when both are), and a run of children neither end keeps is replaced. A kept pair that is
-// unchanged carries its ids; one that changed carries none for itself, and its children are paired
-// in turn. What is left unpaired takes fresh ids. The ends are found before any id is carried, and
-// an id lands only on a child a pass has already taken, so nothing carried is compared again.
+// unchanged carries its ids; one that changed carries its own where carryKept's rule carries it,
+// and its children are paired in turn. What is left unpaired takes fresh ids. The ends are found
+// before any id is carried, and an id lands only on a child a pass has already taken, so nothing
+// carried is compared again.
 func (c blockIDCarrier) carryChildren(next, live []*Node) {
 	nextChildren := normalizePNodeContent(next)
 	liveChildren := normalizePNodeContent(live)
@@ -101,10 +105,25 @@ func (c blockIDCarrier) carryChildren(next, live []*Node) {
 }
 
 // carryKept carries ids for a pair of blocks updateChildren keeps, one for the other: all of them
-// when the pair is unchanged, and otherwise those of its unchanged descendants. A changed typed
-// block whose id next does not name as live's is another block, however alike, so nothing in it
-// is carried; an unchanged one takes live's id whether it names one or not, as every unchanged
-// block does.
+// when the pair is unchanged, and otherwise the block's own id and those of its unchanged
+// descendants.
+//
+// An untyped container keeps its id though its contents changed, because its identity is its
+// place in the tree and not what it holds: a list that gains, loses or alters an item is still
+// that list, so carrying its id states what is true, where a fresh one would assert that a new
+// list exists where none does and reparent every untouched sibling onto it. That place is what
+// the call site has established, so it is not weighed again here: carryChildren comes here only
+// for the pair it keeps at one position of one parent, whose kinds match (sameChildKind), and a
+// container it pairs with nothing - another kind in that place, one under another parent, one
+// live never held - reaches EnsureBlockIDs instead and is minted a fresh id there.
+//
+// A changed block holding inline content (isTextblock) still takes a fresh id. A paragraph, a
+// heading or a code block is its text, so one whose text changed is other content, and carrying
+// the id onto it would move an anchor or a reference keyed on what live said onto text that says
+// something else. A changed typed block whose id next does not name as live's is another block,
+// however alike, so nothing in it is carried; the schema owns its identity, and the attributes it
+// carries say what it is. An unchanged one takes live's id whether it names one or not, as every
+// unchanged block does.
 func (c blockIDCarrier) carryKept(next, live *Node) {
 	if unchangedNode(next, live) {
 		c.carryUnchanged(next, live)
@@ -115,6 +134,8 @@ func (c blockIDCarrier) carryKept(next, live *Node) {
 		if liveID, _ := storedBlockID(live); !named || nextID != liveID {
 			return
 		}
+	} else if !isTextblock(next.Type) {
+		c.carryID(next, live)
 	}
 	c.carryChildren(next.Children, live.Children)
 }

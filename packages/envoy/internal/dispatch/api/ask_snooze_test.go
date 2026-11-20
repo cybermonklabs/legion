@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // inboxSnoozes reads one login's inbox as the id -> snoozed_until map the SPA partitions from.
@@ -382,4 +385,83 @@ func TestAskSnoozeRefusesBadInputAndACredentialWithoutThePersonScope(t *testing.
 	if response := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/me/asks/CORE-1/snooze", nil, "alice"); response.Code != http.StatusBadRequest {
 		t.Fatalf("un-snooze a non-uuid ask: status=%d body=%s, want 400", response.Code, response.Body.String())
 	}
+}
+
+// TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing races two snoozes of one Inbox row
+// (dispatch://INFRA-1152 R6): the row holds the first moment; a second snooze moves it to another
+// and has not committed when a third, snoozing it back to the first, starts its statement. The
+// third reads the row the second leaves once it commits, so it moves the row back and states its
+// tuple under its event, and the row and the person's current snoozed tuple both say the first
+// moment. A read of the row from the third's snapshot would find the first moment there, take the
+// snooze for one that moves nothing and state no tuple, leaving the row at the first moment and
+// the current tuple at the second. The interleaving is forced rather than hoped for: the test
+// holds the second snooze open - the row moved and marked and its tuple stated, as putAskSnooze
+// writes them - and sends the third on a server of one connection, whose backend it reads queued
+// behind that hold before the hold commits.
+func TestTwoSnoozesOfOneRowLeaveItAndItsTupleAgreeing(t *testing.T) {
+	ctx := context.Background()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	issue := createInteractionIssue(t, handler, "SNZR", "Racing snoozes", "A spec")
+	ask := createPersonAsk(t, handler, issue.Key, "bob", "Should we ship?")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	first := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	second := first.Add(24 * time.Hour)
+	snooze := func(server http.Handler, until time.Time) *httptest.ResponseRecorder {
+		return dispatchRequest(t, server, http.MethodPut, "/api/v1/me/asks/"+ask.ID+"/snooze",
+			map[string]any{"snoozed_until": until.Format(time.RFC3339)}, "alice")
+	}
+	if response := snooze(handler, first); response.Code != http.StatusOK {
+		t.Fatalf("snooze to %s: status=%d body=%s", first, response.Code, response.Body.String())
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the second snooze: %v", err)
+	}
+	defer func() { _ = holder.Rollback(context.Background()) }()
+	if _, err := holder.Exec(ctx, `
+		update user_ask_snooze set snoozed_until = $3, tuples_stored_at = $3 where login = $1 and ask_id = $2::uuid
+	`, "alice", ask.ID, second); err != nil {
+		t.Fatalf("hold the second snooze: %v", err)
+	}
+	if err := graphstore.FromPerson(ctx, holder, time.Now().UTC(), []graphstore.Tuple{
+		personMark(alice, graphstore.TupleSnoozed, graphstore.KindAsk, ask.ID, second, true, graphstore.NoEvent),
+	}); err != nil {
+		t.Fatalf("state the second snooze's tuple: %v", err)
+	}
+
+	one := storetest.SingleConnection(t, database)
+	sender := deps
+	sender.Store = one
+	server := http.NewServeMux()
+	t.Cleanup(Register(server, t.Context(), sender).Wait)
+	conn, err := one.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the third snooze's connection: %v", err)
+	}
+	backend := conn.Conn().PgConn().PID()
+	conn.Release()
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- snooze(server, first) }()
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, backend, answered, storeStepWait); early {
+		t.Fatalf("the third snooze answered %d before the second committed: %s", answer.Code, answer.Body.String())
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the second snooze: %v", err)
+	}
+	var back *httptest.ResponseRecorder
+	select {
+	case back = <-answered:
+	case <-time.After(storeStepWait):
+		t.Fatalf("the third snooze did not answer within %s of the second's commit", storeStepWait)
+	}
+	if back.Code != http.StatusOK {
+		t.Fatalf("snooze back to %s: status=%d body=%s", first, back.Code, back.Body.String())
+	}
+	stored := storedMarks(t, database, `select snoozed_until, tuples_stored_at from user_ask_snooze where login = 'alice' and ask_id = $1::uuid`, ask.ID)
+	if !stored.Equal(first) {
+		t.Errorf("the row holds %s after the snooze back, want %s", stored, first)
+	}
+	requireMarkMatchesRow(t, database, graphstore.TupleSnoozed, graphstore.KindAsk+":"+ask.ID,
+		newestEventOf(t, database, "user_state.updated", "alice"), stored)
 }

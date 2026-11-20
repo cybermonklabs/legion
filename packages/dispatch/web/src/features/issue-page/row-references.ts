@@ -1,6 +1,7 @@
+import { isPartyRoute } from "../refs/party-references";
 import {
   buildReferencePath,
-  type DispatchReferenceRoute,
+  type PagedReferenceRoute,
   parseNodeReference,
   shortForm,
 } from "../refs/routes";
@@ -31,6 +32,14 @@ const TITLE_MAX = 60;
  * the grammar the web shares with the server, name no issue, and are drawn as the words they
  * are. A short reference the read answered ambiguous links nothing either and is drawn as
  * written (`useKnownAmbiguousReferences`).
+ *
+ * A party - an agent's session, a role or a person - is never asked for: the graph holds no node
+ * for one, so the batched read refuses the whole request that names one (`INVALID_REFERENCE`).
+ * A row links one from its address alone, as every other sink of a reference does
+ * (`referenceHref`): an agent to its live view and a role to its agents list
+ * (`buildReferencePath`), and a person to nothing, since no page shows one (R5). A party's link
+ * keeps the words its writer wrote, since a row has no read to name it by, which is how every
+ * renderer draws a party whose name has not resolved.
  */
 
 /** One reference in a text, where it stands and what it names. */
@@ -40,7 +49,8 @@ export interface RowReference {
   readonly path: string;
   /** The reference as the batched read is asked for it. */
   readonly reference: string;
-  readonly route: DispatchReferenceRoute;
+  /** What it names: anything a page shows, so never a person. */
+  readonly route: PagedReferenceRoute;
   readonly start: number;
 }
 
@@ -149,7 +159,9 @@ export function citedReferences(text: string): string[] {
   const { needs, references } = readingOf(text, undefined).reading;
   const cited = new Set<string>();
   for (const found of references) {
-    if (found.form === "address" && found.reference !== undefined) cited.add(found.reference);
+    if (found.form !== "address" || found.reference === undefined) continue;
+    if (found.route !== undefined && isPartyRoute(found.route)) continue;
+    cited.add(found.reference);
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
@@ -172,12 +184,13 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
 /** The references of `text` a row links, in the order it holds them: every address that names
- *  something, and each bare key among `issues`. A `#id` is left as written: its question map is
- *  a read of its own, one per document, which a row does not make. A reference in `ambiguous` -
- *  one the batched read answered that two or more targets carry the short id of, which the page
- *  publishes (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text
- *  it is and links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): a link would draw
- *  it as its short form, which names no one target. */
+ *  something a page shows, which is every node, an agent and a role but never a person, and each
+ *  bare key among `issues`. A `#id` is left as written: its question map is a read of its own,
+ *  one per document, which a row does not make. A reference in `ambiguous` - one the batched
+ *  read answered that two or more targets carry the short id of, which the page publishes
+ *  (`useKnownAmbiguousReferences`) - is left out too, so the row draws it as the text it is and
+ *  links nothing, as the tree's chip draws it (`NodeChip.ambiguous`): a link would draw it as its
+ *  short form, which names no one target. */
 export function rowReferences(
   text: string,
   issues: readonly string[],
@@ -186,7 +199,10 @@ export function rowReferences(
   if (text === "") return [];
   const read = readingOf(text, issues);
   read.linked ??= read.reading.references.flatMap((one) =>
-    one.form === "question" || one.reference === undefined || one.route === undefined
+    one.form === "question" ||
+    one.reference === undefined ||
+    one.route === undefined ||
+    one.route.kind === "person"
       ? []
       : [
           {
@@ -257,11 +273,12 @@ function nameAnchor(
 /**
  * The row's own link pass over words a reading painted into `root` (`RowText.tsx`): every
  * reference its text holds outside a link and outside code becomes a link to its target, named
- * from `names`, and a link an earlier pass made takes the name the read has brought since. A
- * reference in `ambiguous` links nothing (`rowReferences`), and a link an earlier pass made for
- * one the read has answered ambiguous since is put back as the words it was made over, so it is
- * drawn as written. Out of the tab order, as everything inside a row is (R9). Run again after
- * every paint and whenever `names` or `ambiguous` changes; it finds nothing to do twice.
+ * from `names` (a party's by the words its writer wrote, which the read names nothing for), and
+ * a link an earlier pass made takes the name the read has brought since. A reference in
+ * `ambiguous` links nothing (`rowReferences`), and a link an earlier pass made for one the read
+ * has answered ambiguous since is put back as the words it was made over, so it is drawn as
+ * written. Out of the tab order, as everything inside a row is (R9). Run again after every paint
+ * and whenever `names` or `ambiguous` changes; it finds nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
@@ -275,7 +292,8 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameAnchor(anchor, { reference, route }, names);
+    if (route !== undefined && !isPartyRoute(route))
+      nameAnchor(anchor, { reference, route }, names);
   }
   const issues = knownIssueKeys(names);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -294,11 +312,14 @@ export function linkRowReferences(
     for (const one of found) {
       pieces.push(value.slice(at, one.start));
       const anchor = document.createElement("a");
+      const written = value.slice(one.start, one.end);
       anchor.setAttribute("href", one.path);
       anchor.setAttribute(ROW_REFERENCE, one.reference);
-      anchor.setAttribute(ROW_WRITTEN, value.slice(one.start, one.end));
+      anchor.setAttribute(ROW_WRITTEN, written);
       anchor.tabIndex = -1;
-      nameAnchor(anchor, one, names);
+      // A party has no name the batched read brings, so its link keeps its writer's words.
+      if (isPartyRoute(one.route)) anchor.textContent = written;
+      else nameAnchor(anchor, one, names);
       pieces.push(anchor);
       at = one.end;
     }

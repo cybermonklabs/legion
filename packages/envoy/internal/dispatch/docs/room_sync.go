@@ -521,7 +521,8 @@ func queueAnnounceDocumentChange(b *store.WriteBatch, room, processID string) {
 const announceDocumentRemovedStatement = `select pg_notify('` + documentRemovedChannel + `', $1::text)`
 
 // AnnounceDocumentRemoved tells every envoy-dispatch process to close its room of artifactID, the
-// document whose row tx has just deleted. The removal's transaction is package api's
+// document whose row tx has just deleted, or just retired (RetireDocument), whose row stays and
+// whose socket is refused from then on. The removal's transaction is package api's
 // (removeArtifact), so this is the seam it sends through: a package function taking that
 // transaction, as the other document work a removal or an upload runs inside its own transaction
 // is (MoveApprovalAsk, WriteAskResolution, RecordTaskProgress). It needs no room and no state of

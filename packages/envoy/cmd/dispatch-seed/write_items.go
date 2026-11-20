@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -48,8 +50,39 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 	// batches the indexed items are written in.
 	return r.inBatches(ctx, "asks", len(r.plan.asks), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("ask")
+		var questionCited []graphstore.UncausedTuple
 		followers := make([][]any, 0, to-from)
+		followerNodes := make([]graphstore.Node, 0, to-from)
+		followed := map[string]struct{}{}
 		opened := make([][]any, 0, to-from)
+		// Each ask's node goes in before any row of the batch, in its project, as the server's
+		// ask create writes it; the seed records no event of it here, so it takes the sentinel.
+		// The owner lock of every ask of the batch comes first, in owner key order, as the
+		// store's lock order has it: the window write below takes each ask's owner lock
+		// (refs.WriteItemWindows), which a batch holding the asks' nodes would otherwise take
+		// after them.
+		nodes := make([]graphstore.Node, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
+		for index := from; index < to; index++ {
+			ask := r.plan.asks[index]
+			nodes = append(nodes, graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt))
+			var issueKey, artifactID *string
+			if ask.Issue >= 0 {
+				issueKey = &r.plan.issues[ask.Issue].Key
+			}
+			if ask.Document >= 0 {
+				artifactID = &r.plan.documents[ask.Document].ID
+			}
+			if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
+				owners = append(owners, *owner)
+			}
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the asks' owners: %w", err)
+		}
+		if err := writeItemNodes(ctx, tx, nodes); err != nil {
+			return fmt.Errorf("the asks' nodes: %w", err)
+		}
 		for index := from; index < to; index++ {
 			ask := r.plan.asks[index]
 			mention := ""
@@ -107,10 +140,12 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				}
 				answerJSON = string(encoded)
 			}
+			// The row says in its own insert that the store holds what the seed states of the
+			// ask, as the server's ask create does (asks.tuples_stored_at), at its created_at.
 			if _, err := tx.Exec(ctx, `
 				insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency,
-				                  anchor, state, answer, resolution, created_at, kind, block_id, block_artifact_id)
-				values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, false, 'med', $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, 'question', $12, $13)
+				                  anchor, state, answer, resolution, created_at, kind, block_id, block_artifact_id, tuples_stored_at)
+				values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, false, 'med', $7::jsonb, $8, $9::jsonb, $10::jsonb, $11, 'question', $12, $13, $11)
 			`, ask.ID, issueKey, artifactID, seedActor, question, string(optionsJSON), anchor, ask.State,
 				answerJSON, resolution, ask.CreatedAt, blockID, blockArtifact); err != nil {
 				return fmt.Errorf("ask %s: %w", ask.ID, err)
@@ -118,6 +153,11 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			mentions.add(ask.ID, text.Refs(text.ExtractAt(question, serverURL)), ask.CreatedAt)
 			if index < r.sizes.AskFollowers {
 				followers = append(followers, []any{ask.ID, ask.Follower, ask.CreatedAt})
+				if _, written := followed[ask.Follower]; !written {
+					followed[ask.Follower] = struct{}{}
+					followerNodes = append(followerNodes,
+						graphstore.SessionNode(ask.Follower, seedAuthor, ask.CreatedAt, graphstore.NoEvent))
+				}
 			}
 			opening := model.Ask{
 				ID:              ask.ID,
@@ -149,7 +189,13 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			// and runs the plan's statements at once, as a batch of their own, the way a writer
 			// that queues no write phase indexes an item it wrote (refs.IndexItem). The parts
 			// are read through a reader of the ask's own (refs.NewReader), as every other write
-			// of an ask reads them.
+			// of an ask reads them. A write of the parts alone reconciles the question's own
+			// references after them and settles the ask's row of the forms queue there
+			// (refs.Replacement.SettlingForms). They are planned as the server's ask create plans
+			// them, with the ask's citations (refs.PlanItemReplace) under the node this batch wrote
+			// (refs.WrittenItem), so a row they insert holds tuples_stored with the tuple it says
+			// the store holds, against the rows the ask holds: none, its row having just been
+			// inserted. Those citations are stated with the mention rows' at the end of the batch.
 			partIndex, err := refs.ReadItemIndex(ctx, tx, refs.ItemAsk, ask.ID)
 			if err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
@@ -159,17 +205,48 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
+			questionRefs, err := refs.PlanItemReplace(ctx, tx,
+				refs.WrittenItem(graphstore.AskNode(ask.ID, r.itemProject(ask.Issue, ask.Document), nil, seedAuthor, ask.CreatedAt)),
+				refs.ItemAsk, stored.ID, text.Refs(reader.Mentions(stored.Question)), ask.CreatedAt)
+			if err != nil {
+				return fmt.Errorf("index the references of ask %s: %w", ask.ID, err)
+			}
+			questionRefs = questionRefs.SettlingForms()
+			questionCited = append(questionCited, questionRefs.Cited().Tuples...)
 			if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-				parts.Queue(b)
+				if err := parts.Queue(b); err != nil {
+					return err
+				}
+				questionRefs.Queue(b)
 				return nil
 			}); err != nil {
 				return fmt.Errorf("index the parts of ask %s: %w", ask.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, parts.Stated()); err != nil {
+				return fmt.Errorf("state the parts of ask %s: %w", ask.ID, err)
 			}
 			// The index records the parts and leaves their windows to the block-index tick's
 			// window arm (refs.queueRecordIndexed), so the seed writes them here as that arm
 			// would: a seeded database a server has to window is one it would rewrite.
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemAsk, stored.ID); err != nil {
 				return fmt.Errorf("write the windows of ask %s: %w", ask.ID, err)
+			}
+			// Who asked takes part in the ask's thread and keeps its row, and who answered
+			// replies in it, as the server's create and answer record them (inboxwrite.Record):
+			// the row holds its marker from the insert, at the moment its answer is dated, so the
+			// trigger user_threads_ask passes both by. The seed appends no event of its own.
+			project := r.itemProject(ask.Issue, ask.Document)
+			if err := inboxwrite.Record(ctx, tx, inboxwrite.Opened(ask.ID, seedAuthor, ask.CreatedAt, issueKey, artifactID, project), graphstore.NoEvent); err != nil {
+				return fmt.Errorf("record ask %s in its thread: %w", ask.ID, err)
+			}
+			if answer != nil {
+				answered := inboxwrite.Write{
+					Arm: inboxwrite.Replies, NodeKind: graphstore.KindAsk, NodeID: ask.ID,
+					Author: model.Actor{Kind: "user", ID: answer.User}, Who: seedAuthor, At: answer.At,
+					IssueKey: issueKey, ArtifactID: artifactID, Project: project,
+				}
+				if err := inboxwrite.Record(ctx, tx, answered, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record the answer of ask %s in its thread: %w", ask.ID, err)
+				}
 			}
 			// The event is owned by the ask's own owner and dated at the ask, as one appended
 			// with the ask is, and it is published (`notify` false, `published_at` set) like
@@ -179,6 +256,9 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 				"ask.opened", seedActor, payload, false, ask.CreatedAt, ask.CreatedAt,
 			})
 		}
+		if err := writeFollowerNodes(ctx, tx, followerNodes); err != nil {
+			return err
+		}
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"ask_followers"},
 			[]string{"ask_id", "session_id", "since"}, pgx.CopyFromRows(followers)); err != nil {
 			return fmt.Errorf("ask followers: %w", err)
@@ -186,8 +266,65 @@ func (r *seedRun) writeAsks(ctx context.Context) error {
 		if _, err := tx.CopyFrom(ctx, pgx.Identifier{"events"}, eventColumns, pgx.CopyFromRows(opened)); err != nil {
 			return fmt.Errorf("ask opening events: %w", err)
 		}
-		return mentions.write(ctx, tx)
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: append(questionCited, cited...)})
 	})
+}
+
+// writeItemNodes writes the nodes of the asks one batch copies, before any row of the batch, each
+// in its project (seedRun.itemProject), at the sentinel, as every write of the seed's is. The rows
+// carry no foreign key into the store, so where they fall beside this moves no lock of the store's
+// order. A message batch writes its nodes with the facts it states of them in its own
+// graphstore.Write (writeMessages), since the messages rows it inserts name those nodes.
+func writeItemNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	return graphstore.Write(ctx, tx, nodes, nil)
+}
+
+// stateAtSentinel appends what one of the seed's index passes states in the node and tuple store
+// - an item's block nodes, their part_of and links (refs.IndexItem, refs.PlanAskParts), and the
+// citations its refs rows are the projection of (mentionRows) - at the sentinel, as every write of
+// the seed's is: the seed appends no event of its own. Each pass is stated before the next one of
+// the same item runs, so a later pass compares against what the earlier one stated, as two writes
+// of the server's do.
+func stateAtSentinel(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused) error {
+	return graphstore.Caused(ctx, tx, written, graphstore.NoEvent)
+}
+
+// itemProject is the project of an item of the plan: its issue's, or its document's where it
+// belongs to no issue.
+func (r *seedRun) itemProject(issue, document int) string {
+	if issue >= 0 {
+		return r.plan.projects[r.plan.issues[issue].Project].Key
+	}
+	if document >= 0 {
+		return r.plan.projects[r.plan.documents[document].Project].Key
+	}
+	return ""
+}
+
+// writeFollowerNodes writes the session nodes of the followers one ask batch copies. A session
+// that follows an ask is a node of the store from the write that adds it (asks.Follow), and the
+// batch's copy of the follower rows reaches no asks.Follow: so the batch writes each follower's
+// node beside that copy, at the sentinel, as every write of the seed's is. A follower an earlier
+// batch wrote is written again, so each node restates its session (graphstore.Node's Restates):
+// the seed owns no session's state or visibility, so a node written again keeps the ones the
+// store holds, and a node the store does not hold yet is made as graphstore.SessionNode states
+// it. Without it a seeded ask's followed_by edges would answer no node in any read, and the
+// census would report every follower. The nodes go in one graphstore.Write, which takes their
+// rows in ascending (kind, id) and appends their base attributes after them; the follower rows
+// carry no foreign key into the store, so where the copy falls beside this moves no lock of the
+// store's order.
+func writeFollowerNodes(ctx context.Context, tx pgx.Tx, nodes []graphstore.Node) error {
+	for index := range nodes {
+		nodes[index].Restates = true
+	}
+	if err := graphstore.Write(ctx, tx, nodes, nil); err != nil {
+		return fmt.Errorf("the ask followers' nodes: %w", err)
+	}
+	return nil
 }
 
 // askAnswer is the answer an answered ask holds, in the shape the answer route writes
@@ -213,7 +350,18 @@ func (r *seedRun) askAnswer(ask askPlan, options []model.AskOption) model.AskAns
 // A reply names the block it answers in replies_to_block, as the create route writes it
 // (api/reply_blocks.go): a block of the comment it replies to, or the part of the ask it answers,
 // whose node id starts `ask/`. The view reads the two as edges to a comment_block and to an
-// ask_block, telling them apart by that prefix.
+// ask_block, telling them apart by that prefix. What a comment answers is stated in the store as
+// the server's comment write states it (graphstore.CommentPointerFacts), and its row says so in
+// tuples_stored, so the view answers those edges from the tuples.
+//
+// Who wrote a comment is written as the server's comment write writes it (api/comment_create.go).
+// The row holds the author as the model encodes it, which is the value the comment's node holds
+// as made_by, and the batch states what graphstore.Authored states of each comment
+// (graphstore.AuthorFacts): the author's node, the comment's authored_by tuple to it and the
+// aliases the server proved of the author (commentStoreWrite). The store census holds each
+// comment row to its node and its authored_by, so a seeded comment answers it as a comment the
+// server wrote does. seedActor's display name is a key no model.Actor carries, so a row holding
+// seedActor would disagree with its own node.
 func (r *seedRun) writeComments(ctx context.Context) error {
 	var hasAnswers bool
 	if err := r.database.Pool.QueryRow(ctx, `select exists (
@@ -224,14 +372,38 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 	}
 	columns := "id, issue_key, artifact_id, author, body, anchor, reply_to, resolved, created_at, ask_id, replies_to_block, edited_at"
 	parameters := "$1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11, $12"
-	argumentCount := 12
+	next := 13
 	if hasAnswers {
 		columns += ", answers"
-		parameters += ", $13"
-		argumentCount++
+		parameters += fmt.Sprintf(", $%d", next)
+		next++
 	}
+	// The address of the comment's own node, which the batch writes before its first row, and
+	// whether the batch stated its pointers there.
+	columns += ", node_kind, node_address, tuples_stored"
+	parameters += fmt.Sprintf(", $%d, $%d, $%d", next, next+1, next+2)
 	insert := "insert into comments (" + columns + ") values (" + parameters + ")"
+	author, err := json.Marshal(seedAuthor)
+	if err != nil {
+		return fmt.Errorf("encode the comments' author: %w", err)
+	}
+	// AuthorFacts states nothing of an author that names nobody, so a comment of such an author
+	// would name an author on its row and hold no authored_by. The seed refuses that author once,
+	// before its first batch, and commentStoreWrite relies on it.
+	if _, _, ok := graphstore.AuthorOf(seedAuthor); !ok {
+		return fmt.Errorf("the seed's author %s names nobody the store can name", seedAuthor.ID)
+	}
 	return r.inBatches(ctx, "comments", len(r.plan.comments), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
+		// The nodes the batch's rows project, their author's node, and what each of them
+		// states, written before any row names one: the composite foreign key on
+		// (node_kind, node_address) is checked inside the statement that writes the row, so a
+		// node written after it would be too late. The seed appends no event of its own, so
+		// all of it takes the sentinel. Each row then says in its own insert whether its
+		// pointers are stated (tuples_stored), as the server's comment write does.
+		nodes, tuples, pointersStored := r.commentStoreWrite(from, to, hasAnswers)
+		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+			return fmt.Errorf("write the comment nodes of %d to %d: %w", from, to, err)
+		}
 		mentions := newMentionRows("comment")
 		for index := from; index < to; index++ {
 			comment := r.plan.comments[index]
@@ -240,7 +412,7 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				mention = r.plan.mentionText(comment.MentionTo, comment.MentionNth)
 			}
 			body := r.plan.itemBody(r.random, comment.Blocks, mention, itemBodyBytes)
-			var issueKey, artifactID, anchor, repliesTo, askID *string
+			var issueKey, artifactID, anchor *string
 			var editedAt any
 			if comment.Issue >= 0 {
 				issueKey = &r.plan.issues[comment.Issue].Key
@@ -257,31 +429,17 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				value := anchorJSON(document.ID, block, document.Versions, r.plan.vocabulary.phrase(r.random, 4))
 				anchor = &value
 			}
-			if comment.RepliesTo >= 0 {
-				node := "comment/" + r.plan.comments[comment.RepliesTo].ID + "#b1"
-				repliesTo = &node
-			}
-			if comment.Ask >= 0 {
-				askID = &r.plan.asks[comment.Ask].ID
-			}
-			if comment.AskPart {
-				node := "ask/" + r.plan.asks[comment.Ask].ID + "#" + askQuestionBlock
-				repliesTo = &node
-			}
-			var replyTo *string
-			if comment.ReplyTo >= 0 {
-				replyTo = &r.plan.comments[comment.ReplyTo].ID
-			}
-			answers := replyTo
-			if comment.RepliesTo >= 0 {
-				answers = &r.plan.comments[comment.RepliesTo].ID
-			}
+			pointers := r.commentPointers(comment, hasAnswers)
 			if comment.Edited {
 				editedAt = comment.CreatedAt.Add(time.Hour)
 			}
-			arguments := [...]any{comment.ID, issueKey, artifactID, seedActor, body, anchor, replyTo, index%5 == 0,
-				comment.CreatedAt, askID, repliesTo, editedAt, answers}
-			if _, err := tx.Exec(ctx, insert, arguments[:argumentCount]...); err != nil {
+			arguments := []any{comment.ID, issueKey, artifactID, author, body, anchor, textOrNull(pointers.ReplyTo), index%5 == 0,
+				comment.CreatedAt, textOrNull(pointers.AskID), textOrNull(pointers.RepliesToBlock), editedAt}
+			if hasAnswers {
+				arguments = append(arguments, textOrNull(pointers.Answers))
+			}
+			arguments = append(arguments, graphstore.KindComment, comment.ID, pointersStored[index-from])
+			if _, err := tx.Exec(ctx, insert, arguments...); err != nil {
 				return fmt.Errorf("comment %s: %w", comment.ID, err)
 			}
 			if comment.Edited {
@@ -289,9 +447,11 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				// stored body second is the order the write and the edit ran in, and it leaves
 				// the dropped block with a null position.
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, longer, serverURL,
 					comment.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index comment %s before its edit: %w", comment.ID, err)
+				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+					return fmt.Errorf("state comment %s before its edit: %w", comment.ID, err)
 				}
 			}
 			at := comment.CreatedAt
@@ -299,19 +459,133 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 				at = comment.CreatedAt.Add(time.Hour)
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, at,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemComment, comment.ID, body, serverURL, at,
 				located, nil); err != nil {
 				return fmt.Errorf("index comment %s: %w", comment.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+				return fmt.Errorf("state comment %s: %w", comment.ID, err)
 			}
 			// The windows the index no longer writes, as the tick's window arm writes them
 			// (refs.WriteItemWindows): one set, over the body the comment is left holding.
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemComment, comment.ID); err != nil {
 				return fmt.Errorf("write the windows of comment %s: %w", comment.ID, err)
 			}
+			// Who wrote it takes part in its thread and keeps the thread's row, and the comment
+			// reaches everyone else in that thread, as the server's comment write records it
+			// (inboxwrite.Record): the row holds its marker from its insert, so the trigger
+			// user_threads_comment passes it by. A comment whose pointers the batch could not state
+			// is the trigger's, as it is the server's. The seed appends no event of its own.
+			if pointersStored[index-from] {
+				written := inboxwrite.Comment(comment.ID, seedAuthor, comment.CreatedAt, issueKey, artifactID,
+					r.itemProject(comment.Issue, comment.Document))
+				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record comment %s in its thread: %w", comment.ID, err)
+				}
+			}
 			mentions.add(comment.ID, text.Refs(located), comment.CreatedAt)
 		}
-		return mentions.write(ctx, tx)
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
+			return err
+		}
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
+}
+
+// commentStoreWrite is what the comments from..to are in the node and tuple store: each
+// comment's node - project-visible, live, made by the seed's author at the row's own time - and
+// the artifact the comment is anchored to and the artifact that owns it, each stated only where
+// the comment has one (graphstore.CommentFacts), what the comment answers
+// (graphstore.CommentPointerFacts, over the pointers its row holds, commentPointers), and who
+// wrote the comment. The node write states the two base attributes every node carries
+// (graphstore.Write). All of it is drawn from the plan alone, so the batch can state it before it
+// writes a row. pointersStored says, for each comment from from on, whether its pointers are
+// stated, which is what its row's tuples_stored holds.
+//
+// Who wrote a comment is what graphstore.AuthorFacts states of it, which is what
+// graphstore.Authored writes for a comment of the server's: the comment's authored_by tuple and
+// the aliases the server proved of its author go among the comment's own tuples, and the
+// author's node goes among the batch's nodes once, as AuthorFacts makes it for the batch's first
+// comment. The batch's one graphstore.Write then takes every node row before it appends a tuple,
+// which is the store's lock order. Every batch writes the author's node again, so it restates the
+// author (graphstore.Node's Restates), as the backfill's comment write does: no comment owns its
+// author's state or visibility, so a later batch keeps the ones the store holds, and only the
+// first batch makes the author's node, at the time of the first comment the seed writes, as
+// Authored makes it at the first comment that names it. writeComments refused an author that
+// names nobody before its first batch, so every comment here names one.
+func (r *seedRun) commentStoreWrite(from, to int, hasAnswers bool) (nodes []graphstore.Node, tuples []graphstore.Tuple, pointersStored []bool) {
+	nodes = make([]graphstore.Node, 0, to-from+1)
+	tuples = make([]graphstore.Tuple, 0, 7*(to-from))
+	pointersStored = make([]bool, 0, to-from)
+	var authors []graphstore.Node
+	for index := from; index < to; index++ {
+		comment := r.plan.comments[index]
+		// A seeded comment is anchored only to the document it belongs to, which is the
+		// document whose address its row's artifact_id names.
+		anchor, owner := "", ""
+		if comment.Document >= 0 {
+			owner = r.plan.documents[comment.Document].RefKey
+			if comment.Anchored {
+				anchor = owner
+			}
+		}
+		var node graphstore.Node
+		node, tuples = graphstore.CommentFacts(tuples, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent, anchor, owner,
+			r.itemProject(comment.Issue, comment.Document), nil)
+		nodes = append(nodes, node)
+		var stored bool
+		tuples, stored = graphstore.CommentPointerFacts(tuples, comment.ID, r.commentPointers(comment, hasAnswers),
+			seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		pointersStored = append(pointersStored, stored)
+		made, facts, _ := graphstore.AuthorFacts(graphstore.KindComment, comment.ID, seedAuthor, comment.CreatedAt, graphstore.NoEvent)
+		if index == from {
+			authors = made
+		}
+		tuples = append(tuples, facts...)
+	}
+	for index := range authors {
+		authors[index].Restates = true
+	}
+	nodes = append(nodes, authors...)
+	return nodes, tuples, pointersStored
+}
+
+// commentPointers is what comment's row holds of what it answers, as writeComments writes it: the
+// comment it replies to, the ask its thread hangs under, the block it names - the first block of
+// the comment it replies to by block, or the question of its ask - and the comment it answers,
+// which is the one whose block it names where it names one and else the one it replies to, as the
+// create route keeps the comment a reply names (api's threadHeadOf). On a schema whose comments
+// carry no answers column (hasAnswers) the row holds none, so neither does this.
+func (r *seedRun) commentPointers(comment commentPlan, hasAnswers bool) graphstore.CommentPointers {
+	var pointers graphstore.CommentPointers
+	if comment.ReplyTo >= 0 {
+		pointers.ReplyTo = r.plan.comments[comment.ReplyTo].ID
+	}
+	if comment.Ask >= 0 {
+		pointers.AskID = r.plan.asks[comment.Ask].ID
+	}
+	if comment.RepliesTo >= 0 {
+		pointers.RepliesToBlock = "comment/" + r.plan.comments[comment.RepliesTo].ID + "#b1"
+	}
+	if comment.AskPart {
+		pointers.RepliesToBlock = "ask/" + r.plan.asks[comment.Ask].ID + "#" + askQuestionBlock
+	}
+	if hasAnswers {
+		pointers.Answers = pointers.ReplyTo
+		if comment.RepliesTo >= 0 {
+			pointers.Answers = r.plan.comments[comment.RepliesTo].ID
+		}
+	}
+	return pointers
+}
+
+// textOrNull is value as a nullable column takes it: null for "", which is how CommentPointers
+// spells a column the row holds null in.
+func textOrNull(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 // writeMessages writes the issue threads and indexes each message's blocks. Every fiftieth
@@ -321,66 +595,126 @@ func (r *seedRun) writeComments(ctx context.Context) error {
 func (r *seedRun) writeMessages(ctx context.Context) error {
 	return r.inBatches(ctx, "messages", len(r.plan.messages), batchItems, func(ctx context.Context, tx pgx.Tx, from, to int) error {
 		mentions := newMentionRows("message")
+		// Each message's node goes in before any row of the batch, in its issue's project, as the
+		// server's message create writes it; every seeded message is on an issue. Beside it go
+		// its pointers (graphstore.MessageFacts) and who wrote it, which graphstore.AuthorFacts
+		// states as graphstore.Authored does for a message of the server's, the author's node
+		// once, as commentStoreWrite gives a batch of comments theirs. Each row then names its
+		// node in its insert, as the server's does. The issues' owner locks come first, as for
+		// the asks (writeAsks): the window write takes them.
+		nodes := make([]graphstore.Node, 0, to-from+1)
+		tuples := make([]graphstore.Tuple, 0, 3*(to-from))
+		var authors []graphstore.Node
+		rows := make([]graphstore.MessageRow, 0, to-from)
+		projected := make([]bool, 0, to-from)
+		owners := make([]store.Owner, 0, to-from)
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
+			row := graphstore.MessageRow{ID: message.ID, IssueKey: r.plan.issues[message.Issue].Key}
+			if message.InReplyTo >= 0 {
+				row.InReplyTo = r.plan.messages[message.InReplyTo].ID
+			}
+			if message.RepliesTo >= 0 {
+				row.RepliesToBlock = "message/" + r.plan.messages[message.RepliesTo].ID + "#b1"
+			}
+			nodes = append(nodes, graphstore.MessageNode(message.ID, r.itemProject(message.Issue, -1), nil, seedAuthor, message.CreatedAt))
+			var stated bool
+			nodes, tuples, stated = graphstore.MessageFacts(nodes, tuples, row, seedAuthor, message.CreatedAt, graphstore.NoEvent)
+			if stated {
+				made, facts, _ := graphstore.AuthorFacts(graphstore.KindMessage, message.ID, seedAuthor, message.CreatedAt, graphstore.NoEvent)
+				if authors == nil {
+					authors = made
+				}
+				tuples = append(tuples, facts...)
+			}
+			rows = append(rows, row)
+			projected = append(projected, stated)
+			owners = append(owners, store.IssueOwner(row.IssueKey))
+		}
+		if err := store.LockOwners(ctx, tx, owners...); err != nil {
+			return fmt.Errorf("the messages' owners: %w", err)
+		}
+		if err := graphstore.Write(ctx, tx, append(nodes, authors...), tuples); err != nil {
+			return fmt.Errorf("the messages' nodes: %w", err)
+		}
+		for index := from; index < to; index++ {
+			message := r.plan.messages[index]
+			row := rows[index-from]
 			mention := ""
 			if message.MentionTo >= 0 {
 				mention = r.plan.mentionText(message.MentionTo, message.MentionNth)
 			}
 			body := r.plan.itemBody(r.random, message.Blocks, mention, itemBodyBytes)
-			var inReplyTo, repliesTo *string
-			if message.InReplyTo >= 0 {
-				inReplyTo = &r.plan.messages[message.InReplyTo].ID
+			var inReplyTo, repliesTo, nodeKind, nodeAddress *string
+			if row.InReplyTo != "" {
+				inReplyTo = &row.InReplyTo
 			}
-			if message.RepliesTo >= 0 {
-				node := "message/" + r.plan.messages[message.RepliesTo].ID + "#b1"
-				repliesTo = &node
+			if row.RepliesToBlock != "" {
+				repliesTo = &row.RepliesToBlock
+			}
+			if projected[index-from] {
+				kind := graphstore.KindMessage
+				nodeKind, nodeAddress = &kind, &row.ID
 			}
 			if _, err := tx.Exec(ctx, `
-				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block)
-				values ($1, $2, $3::jsonb, $4, $5, $6, $7)
-			`, message.ID, r.plan.issues[message.Issue].Key, seedActor, body, message.CreatedAt,
-				inReplyTo, repliesTo); err != nil {
+				insert into messages (id, issue_key, author, body, created_at, in_reply_to, replies_to_block, node_kind, node_address)
+				values ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9)
+			`, message.ID, row.IssueKey, seedActor, body, message.CreatedAt,
+				inReplyTo, repliesTo, nodeKind, nodeAddress); err != nil {
 				return fmt.Errorf("message %s: %w", message.ID, err)
 			}
 			if message.Reindexed {
 				longer := body + "\n\n" + r.plan.vocabulary.phrase(r.random, 12) + "."
-				if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer,
+				if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, longer, serverURL,
 					message.CreatedAt, text.ExtractAt(longer, serverURL), nil); err != nil {
 					return fmt.Errorf("index message %s under the older parser: %w", message.ID, err)
+				} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+					return fmt.Errorf("state message %s under the older parser: %w", message.ID, err)
 				}
 			}
 			located := text.ExtractAt(body, serverURL)
-			if _, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body,
+			if _, indexed, err := refs.IndexItem(ctx, tx, refs.ItemMessage, message.ID, body, serverURL,
 				message.CreatedAt, located, nil); err != nil {
 				return fmt.Errorf("index message %s: %w", message.ID, err)
+			} else if err := stateAtSentinel(ctx, tx, indexed); err != nil {
+				return fmt.Errorf("state message %s: %w", message.ID, err)
 			}
 			if _, err := refs.WriteItemWindows(ctx, tx, refs.ItemMessage, message.ID); err != nil {
 				return fmt.Errorf("write the windows of message %s: %w", message.ID, err)
 			}
+			// Who wrote it takes part in its thread and keeps the thread's row, and the message
+			// reaches everyone else in that thread, as the server's message write records it
+			// (inboxwrite.Record): the row names its node from its insert, so the trigger
+			// user_threads_message passes it by. A message whose row names no node is the
+			// trigger's, as it is the server's.
+			if projected[index-from] {
+				written := inboxwrite.Message(message.ID, seedAuthor, message.CreatedAt, &row.IssueKey,
+					r.itemProject(message.Issue, -1))
+				if err := inboxwrite.Record(ctx, tx, written, graphstore.NoEvent); err != nil {
+					return fmt.Errorf("record message %s in its thread: %w", message.ID, err)
+				}
+			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}
-		if err := mentions.write(ctx, tx); err != nil {
+		if from == 0 && to > 0 {
+			r.addSessionMention(mentions)
+		}
+		cited, err := mentions.write(ctx, tx)
+		if err != nil {
 			return err
 		}
-		return r.writeSessionMention(ctx, tx, from, to)
+		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
 }
 
-// writeSessionMention writes the one mention whose target is a session. `session` is a node kind
-// refs/graph.go's nodeLoaders resolves, but text/refs.go's grammar names no session, so no body
-// can write this row: a build that addressed sessions would write it, and the backlink count
-// reads `refs` for every kind the loaders name, so the data set holds one.
-func (r *seedRun) writeSessionMention(ctx context.Context, tx pgx.Tx, from, to int) error {
-	if from > 0 || to == 0 {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `
-		insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-		values ('message', $1, 'session', $2, $3)
-		on conflict do nothing
-	`, r.plan.messages[0].ID, r.plan.sessions[0], r.plan.messages[0].CreatedAt)
-	return err
+// addSessionMention adds the one mention whose target is a session, out of the first message, to
+// the first batch's mentions. `session` is a node kind refs/graph.go's nodeRegistry resolves, but
+// text/refs.go's grammar names no session, so no body can write this row: a build that addressed
+// sessions would write it, and the backlink count reads `refs` for every kind the registry
+// resolves, so the data set holds one. It is the first message's citation like any other.
+func (r *seedRun) addSessionMention(mentions *mentionRows) {
+	mentions.addTarget(r.plan.messages[0].ID, refs.Target{Kind: graphstore.KindSession, ID: r.plan.sessions[0]},
+		r.plan.messages[0].CreatedAt)
 }
 
 // mentionRows collects the `refs` rows one batch of items writes. The targets are read out of
@@ -402,34 +736,62 @@ func newMentionRows(kind string) *mentionRows {
 // the body is scanned once.
 func (m *mentionRows) add(id string, mentioned []text.Ref, at time.Time) {
 	for _, ref := range mentioned {
-		target, ok := refs.TargetOf(ref)
-		if !ok {
-			continue
+		if target, ok := refs.TargetOf(ref); ok {
+			m.addTarget(id, target, at)
 		}
-		key := [3]string{id, target.Kind, target.ID}
-		if _, held := m.seen[key]; held {
-			continue
-		}
-		m.seen[key] = struct{}{}
-		m.ids = append(m.ids, id)
-		m.kinds = append(m.kinds, target.Kind)
-		m.targets = append(m.targets, target.ID)
-		m.times = append(m.times, at)
 	}
 }
 
-func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) error {
-	if len(m.ids) == 0 {
-		return nil
+// addTarget collects the one row of the item id that names target, once.
+func (m *mentionRows) addTarget(id string, target refs.Target, at time.Time) {
+	key := [3]string{id, target.Kind, target.ID}
+	if _, held := m.seen[key]; held {
+		return
 	}
-	_, err := tx.Exec(ctx, `
-		insert into refs (from_kind, from_id, to_kind, to_id, created_at)
-		select $1, r.id, r.kind, r.target, r.at
+	m.seen[key] = struct{}{}
+	m.ids = append(m.ids, id)
+	m.kinds = append(m.kinds, target.Kind)
+	m.targets = append(m.targets, target.ID)
+	m.times = append(m.times, at)
+}
+
+// write inserts the rows and answers the citation the server's own writer of an item's refs rows
+// states beside each row it inserts (refs.replaceRefs): a `mentions` tuple, of the row's own kind,
+// out of the item's node to the row's far end, dated by the row and made by the seed's author. The
+// batch wrote every item's node before its rows, so each row is a citation of the store's and says
+// so in its own insert (refs.tuples_stored), but for a far end past the store's address bound,
+// which is no tuple and holds false.
+func (m *mentionRows) write(ctx context.Context, tx pgx.Tx) ([]graphstore.UncausedTuple, error) {
+	if len(m.ids) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, created_at, tuples_stored)
+		select $1, r.id, r.kind, r.target, r.at, octet_length(r.target) <= $6
 		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[]) as r (id, kind, target, at)
 		on conflict (from_kind, from_id, to_kind, to_id) do nothing
-	`, m.kind, m.ids, m.kinds, m.targets, m.times)
+		returning from_id, kind, to_kind, to_id, created_at, tuples_stored
+	`, m.kind, m.ids, m.kinds, m.targets, m.times, graphstore.MaxAddressBytes)
 	if err != nil {
-		return fmt.Errorf("write %s mentions: %w", m.kind, err)
+		return nil, fmt.Errorf("write %s mentions: %w", m.kind, err)
 	}
-	return nil
+	var cited []graphstore.UncausedTuple
+	for rows.Next() {
+		var tuple graphstore.Tuple
+		var stored bool
+		if err := rows.Scan(&tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID, &tuple.At, &stored); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the %s mentions written: %w", m.kind, err)
+		}
+		if !stored {
+			continue
+		}
+		tuple.FromKind, tuple.Who, tuple.SourceEvent, tuple.Asserted = m.kind, seedAuthor, graphstore.NoEvent, true
+		cited = append(cited, graphstore.UncausedTuple{Tuple: tuple})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("write %s mentions: %w", m.kind, err)
+	}
+	return cited, nil
 }

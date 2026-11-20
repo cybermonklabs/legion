@@ -326,13 +326,23 @@
 #      not exactly .github/ci-filters.yaml, naming the file, the job and the step. Every rule
 #      above reads that file, so a filter written into a workflow's own text instead is read by
 #      none of them: it would gate its job on patterns no coverage rule here has seen, and
-#      nothing would say so.
+#      nothing would say so,
+#  22. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
+#      of the `lane_files="..."` that .github/scripts/dispatch-browser-shard-suite.sh, the script
+#      its shard job's browser step runs, sets in its `references)` arm, read as a path from the
+#      working directory of the step that runs the script - that .github/ci-filters.yaml's
+#      dispatch_references filter does not match, naming the entry and the path: that filter
+#      starts the job calling the lane, so a spec file it misses is a change to the lane's own rows
+#      that starts no run of them. A script with no such arm, with two, or with one that lists no
+#      file, a dispatch-browser.yaml that runs the script from no step or from two directories,
+#      and a filters file without that filter, fail too, rather than holding the filter to
+#      nothing.
 #
-# Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
-# in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
-# is read once per run, and a run that cannot read it stops there, naming the file and whether it
-# is absent or there and refusing the open: every job is selected by a filter of it, so a run that
-# read none would hold every filter to nothing.
+# Rules 1, 6, 9, 17 and 22 name .github/ci-filters.yaml in their refusals, the file the filters
+# are in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That
+# file is read once per run, and a run that cannot read it stops there, naming the file and
+# whether it is absent or there and refusing the open: every job is selected by a filter of it, so
+# a run that read none would hold every filter to nothing.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -419,9 +429,18 @@
 # directory and under this machine's own GOMODCACHE and GOPROXY (`go env GOROOT`), and runs
 # every go command with that toolchain's own binary under GOTOOLCHAIN=local.
 #
-# EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
-# its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
-# it to the job's go commands and other step reads. The RULES and the static reads are kept by
+# EXCLUDED leaves worker_image and browser_image to check-image-trigger-paths.sh, which proves
+# each covers every file its image build reads. It holds dispatch_references to no job's reads
+# (rule 22 holds it to the references lane's spec files alone): that filter gates ci.yaml's
+# dispatch-references job, a pull-request preview of the reference rows that ci-ok does not need
+# (CI_OK_EXEMPT), and it names less than the job reads on purpose, since the dispatch_browser
+# gate's job runs those rows on the merge queue's full lane and that filter is held to every
+# read. EXCLUDED also skips the go-command claims of a job its filters alone gate, and those of
+# the jobs of a workflow that job is the first to call; dispatch-browser.yaml's first caller is
+# the dispatch_browser gate's dispatch-browser job, so the binaries job the dispatch-references
+# call reaches too is read under that gate. envoy_smoke is a gate whose image inputs are that
+# check's: this one holds it to the job's go commands and other step reads. The RULES and the
+# static reads are kept by
 # hand: this check proves the filters cover them, not that they are complete, so a change that
 # makes a test read a new file through `..` or start a new go command adds it to ci_job_reads.py.
 #

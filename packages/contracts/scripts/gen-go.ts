@@ -29,6 +29,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_TITLE_MAX,
+  KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
@@ -367,6 +368,11 @@ const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
 
 // ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
 // from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
@@ -1085,12 +1091,13 @@ ${keep}
 // renderers below read. `x-ordered` marks an object whose keys carry their declaration order and
 // `x-go-type` names the Go type holding such an object; an object without `x-ordered` is a plain
 // map, keyed by its property names. `x-go-constants` names the Go constant of each value of a
-// string enum.
+// string enum. `default` is the value a field holds where the manifest names none.
 type BlockProp = {
   description?: string;
   type?: "object" | "array" | "string" | "integer" | "boolean";
   $ref?: string;
   const?: string;
+  default?: unknown;
   enum?: string[];
   items?: BlockProp;
   anyOf?: BlockProp[];
@@ -1146,7 +1153,9 @@ function blockGoType(prop: BlockProp): string {
     case "integer":
       return "int";
     case "boolean":
-      return "bool";
+      // A flag true by default is held as a pointer: an absent one then reads as its default,
+      // and a false one is written back rather than dropped as the zero value `omitempty` drops.
+      return prop.default === true ? "*bool" : "bool";
     case "array":
       if (!prop.items) throw new Error("a block schema array has no items");
       return `[]${blockGoType(prop.items)}`;

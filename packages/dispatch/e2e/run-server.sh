@@ -101,7 +101,7 @@ else
 fi
 
 # This process's own web dist, sign-in and embedder, read before the sweep below: web/dist and
-# dev sign-in with a cookie key of its own unless two-process mode or DISPATCH_E2E_SIGNIN gave
+# dev sign-in with the harness's one cookie key unless two-process mode or DISPATCH_E2E_SIGNIN gave
 # it others (above). The dev embedder is the development embedder of the server, which hashes a
 # text's words into a vector in the process, so meaning search answers with no AWS or Azure
 # account. It is off unless DISPATCH_E2E_EMBEDDER=1 asks for it, and it goes only with dev
@@ -124,9 +124,14 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
       signin_env+=(DISPATCH_DEV_EMBEDDER=1)
       dev_embedder=1
     fi
-    if [ -n "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-}" ]; then
-      signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
-    fi
+    # The cookie key is the run's DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY where it gives one, as
+    # two-process mode does, and otherwise the harness's fixed `e2e-dev-signin`. A second build
+    # served over the same database - the base build a check boots beside this one - must share
+    # this server's key set, since a server process refuses to start beside a live one whose keys
+    # it does not hold (processes.Register), so the key is one every caller of the harness can
+    # name. It is as public as the agent bearer e2e-token below: dev sign-in already mints any
+    # person's cookie for any loopback peer.
+    signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-e2e-dev-signin}")
     ;;
   oidc)
     : "${DISPATCH_E2E_SIGNIN_ISSUER_PORT:?DISPATCH_E2E_SIGNIN_ISSUER_PORT must name the dev OIDC issuer (e2e/run-signin-issuer.sh) DISPATCH_E2E_SIGNIN=oidc signs in at}"
@@ -339,6 +344,26 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The events outbox publishes through NATS, and this rig has none, so the server runs with
+# DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
+# reach one would log a reconnect loop for every run. The publisher is the only writer of what a
+# delivery states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's
+# and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
+# so a driver that proves those writes starts a NATS of its own (`go build
+# github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
+# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
+# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
+# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
+# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
+# variable a shell exported is still swept below, and a caller that names none gets exactly the
+# server every spec has always run against.
+nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
+if [ -n "$nats_urls" ]; then
+  nats_env=(NATS_URLS="$nats_urls")
+else
+  nats_env=(DISPATCH_NATS_DISABLED=1)
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -350,9 +375,9 @@ done
 # throwaway App credentials: a fresh RSA key per run (nothing secret to
 # commit) beside a fake client id. Identity is the production cookie: the server
 # mints it for the email a test names at its dev sign-in route
-# (DISPATCH_DEV_SIGNIN=1) with a signing key it generates for this process
-# alone, or in two-process mode derives from the shared key above, so no
-# signing key is passed and nothing reaches the caller's persistent data dir;
+# (DISPATCH_DEV_SIGNIN=1) with a signing key it derives from the shared key
+# above, so no signing key is passed and nothing reaches the caller's persistent
+# data dir;
 # under DISPATCH_E2E_SIGNIN=oidc it mints it at /auth/callback, signed with the
 # run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every
@@ -373,11 +398,26 @@ cd "$(dirname "$0")/../../envoy"
 # whole process group and the skill-scenarios rig the whole process tree, but a caller that
 # signals the one pid it started (`kill $!`) needs that pid to be the server. One binary per
 # checkout, built under a lock so two harnesses, or two-process mode's two servers, starting at
-# once serialise: Go rewrites it only when the source changed, and a running server keeps the
-# inode it started from. The port is chosen only after the build, and held-port.py execs `env`,
-# which execs the server, so the pid a caller started is still the server's.
+# once serialise: Go rewrites it only when the source or the commit it is stamped with changed,
+# and a running server keeps the inode it started from. The port is chosen only after the build,
+# and held-port.py execs `env`, which execs the server, so the pid a caller started is still the
+# server's.
+#
+# The build is stamped with this checkout's commit, `git rev-parse HEAD`, through the flag the
+# image build stamps with (-ldflags "-X main.buildCommit=<sha>", packages/envoy/docker/Dockerfile).
+# An unstamped server serves an empty commit: processes.Live reads two unstamped builds as one
+# fleet, and no build announcement is written while one is live, so a two-build run of them would
+# prove nothing about two builds. Where git names no commit for the checkout, this script builds
+# nothing rather than an unstamped server. The CI steps that build ./dispatch-e2e ahead of the
+# boot pass the same flag with the same commit, so this build finds their binary current and
+# links nothing.
 if [ -z "$server_bin" ]; then
-  flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
+  build_commit="$(git rev-parse HEAD)" || build_commit=""
+  if ! [[ "$build_commit" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "run-server.sh: git rev-parse HEAD in $PWD gave '$build_commit', not a 40-character commit sha; the server this script builds is stamped with its checkout's commit, and it builds no unstamped one" >&2
+    exit 1
+  fi
+  flock ./.dispatch-e2e.lock go build -ldflags "-X main.buildCommit=$build_commit" -o ./dispatch-e2e ./cmd/dispatch
   server_bin=./dispatch-e2e
 fi
 exec "${listen[@]}" env \
@@ -393,7 +433,7 @@ exec "${listen[@]}" env \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_NATS_DISABLED=1 \
+  "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \

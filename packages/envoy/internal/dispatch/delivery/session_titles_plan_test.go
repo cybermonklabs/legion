@@ -230,7 +230,7 @@ func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T
 	if len(want) != 1 || want[0] != fmt.Sprint(titledPlanSession, titledPlanName) {
 		t.Fatalf("the `distinct on` shape of the rule answered %v; want the one session that stamped a title", want)
 	}
-	if got := sessionTitleRows(t, ctx, pool, resolveSessionTitlesQuery); !slices.Equal(got, want) {
+	if got := sessionTitleRows(t, ctx, pool, ResolveSessionTitlesQuery); !slices.Equal(got, want) {
 		t.Fatalf("the session titles read answered\n%v\nwant the rows the `distinct on` shape of the same rule answered\n%v", got, want)
 	}
 }
@@ -255,7 +255,7 @@ func TestBothShapesOfTheCorrectedSessionTitlesRuleAnswerTheSameRows(t *testing.T
 // whole history this read walks by design.
 func TestTheSessionTitlesReadEventsThroughTheSessionActorIndex(t *testing.T) {
 	pool, ctx := newSessionTitlesPlanFixture(t)
-	plan, root, raw := analyzedTitlePlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
+	plan, root, raw := analyzedTitlePlan(t, ctx, pool, ResolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if unkeyed := explaintest.ScansWithoutIndexCond(t, plan); len(unkeyed) > 0 {
 		t.Errorf("the session titles read reads %v, which no index serves:\n%s", unkeyed, plan)
 	}

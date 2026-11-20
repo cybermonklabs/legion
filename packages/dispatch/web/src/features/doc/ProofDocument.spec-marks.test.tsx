@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -19,7 +19,14 @@ import type {
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 
@@ -42,34 +49,60 @@ function version(number: number): Version {
 
 const spec: Artifact = { ...artifact, versions: [1, 2, 3, 4].map(version) };
 
+// One decision whose `shaped` tie to p-plan was written by event 10, and p-plan's text changed in
+// a version event 12 wrote, after the tie.
 const decisions: IssueDecisions = {
-  decisions: [
+  decisions: [],
+  document: null,
+  entries: [
     {
-      asks: [],
-      block_id: "d-1",
+      answer: null,
+      answer_state: null,
+      answered_at: null,
+      answered_by: null,
       changed_at: "2026-10-04T00:00:00Z",
       changed_version: 3,
-      heading: "Ship in two steps",
+      decided_by: { id: "session-1", kind: "session" },
+      declined: false,
+      declined_note: null,
+      document: {
+        artifact_id: "choices-id",
+        block: "CORE-1/choices-md#d-1",
+        block_id: "d-1",
+        ref: "dispatch://CORE-1/artifact/choices-md",
+      },
       kept: null,
+      kept_by: null,
+      kept_text_sum: null,
       kind: "agent",
-      links: [
+      multiple: null,
+      node: { id: "CORE-1/choices-md#d-1", kind: "block" },
+      options: null,
+      question: null,
+      readings: [],
+      ref: "dispatch://CORE-1/artifact/choices-md#b-d-1",
+      replaced: false,
+      resolution: null,
+      selected: null,
+      shaped: [
         {
           created_at: "2026-10-01T00:00:00Z",
           created_version: 1,
-          from_block: "d-1-para",
+          event: 10,
+          from_block: "d-1",
           stale: true,
+          text_changed_event: 12,
           to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
         },
       ],
-      ref: "dispatch://CORE-1/artifact/decisions-md#b-d-1",
-      replaced: false,
-      text: "Ship it in two steps.",
+      text: ":::decision{#d-1}\nShip it in two steps.\n:::\n",
       text_sha256: "sum-d-1",
-      unsure: false,
+      uncertainty: null,
+      uncertainty_reason: null,
+      urgency: null,
       waiting_review: true,
     },
   ],
-  document: "dispatch://CORE-1/artifact/decisions-md",
   open_questions: [],
 };
 

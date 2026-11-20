@@ -46,7 +46,7 @@ func TestLoadPrimaryDocumentAuthorsReadsEveryIssueOfABatchInOneQuery(t *testing.
 // One query reads the recipients of a whole batch's replies, keyed by the comment each replies
 // under, each marked with where the read found it: two threads give two entries, a legacy nested
 // reply finds its thread's root, a comment with no row gives none, and a cyclic reply_to chain
-// ends at the depth bound rather than spinning, with the authors of the comments the walk visited.
+// ends on the rows the walk visited rather than spinning, with the authors of those comments.
 // A session that wrote in the thread is marked from it, one the thread's document credits alone
 // is not, and one that is both is marked from the thread, which is what tells the destinations
 // which rows to leave out on an issue a session claims (addAuthorRoutes).

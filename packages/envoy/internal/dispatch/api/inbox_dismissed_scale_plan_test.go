@@ -214,7 +214,7 @@ func dismissedScaleStatements(shape *dismissedScaleShape) []dismissedScaleExplai
 // ever sent, with one lateral per dismissed root scanning that whole CTE again. It is a14's
 // negative control - put the per-root Agent count back and the Dismissed pages go far above their
 // bound - so it is spelled out rather than built from the live constants, which no longer hold it.
-const dismissedScaleControlAgentCount = `
+var dismissedScaleControlAgentCount = `
 	with recursive` + unreadDirectRepliesCTE + `,
 	one_off_replies as (
 		select dt.root_id, dt.session_id, dt.id as reply_id, dt.created_at, dt.author

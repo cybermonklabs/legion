@@ -11,7 +11,6 @@ import {
   badgePrimary,
   borderDefault,
   dangerText,
-  highlightRing,
   inputClasses,
   linkHoverText,
   linkText,
@@ -152,12 +151,10 @@ function References({ references }: { references: IssueReferences }): ReactNode 
 
 function ArtifactRow({
   artifact,
-  highlighted,
   isClosed,
   issueKey,
 }: {
   artifact: Artifact;
-  highlighted: boolean;
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
@@ -168,9 +165,7 @@ function ArtifactRow({
   // squeezing the name to nothing.
   return (
     <li
-      className={`flex flex-wrap items-center gap-3 border-b py-3 last:border-b-0 ${borderDefault} ${
-        highlighted ? `rounded-xl px-3 ${highlightRing}` : ""
-      }`}
+      className={`flex flex-wrap items-center gap-3 border-b py-3 last:border-b-0 ${borderDefault}`}
       data-testid={`artifact-${artifact.slug}`}
     >
       <span className={`shrink-0 ${textSecondaryOnSurface}`}>{kindIcon(artifact.kind)}</span>
@@ -240,7 +235,6 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
   const { pathname } = useLocation();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
-  const highlightedSlug = route?.kind === "artifact" ? route.slug : undefined;
   const [filter, setFilter] = useState("");
   // One sentence covers every control of the strip: a closed issue takes neither a new document
   // nor an upload, and both controls are described by this line.
@@ -353,7 +347,6 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             {visibleArtifacts.map((artifact) => (
               <ArtifactRow
                 artifact={artifact}
-                highlighted={artifact.slug === highlightedSlug}
                 isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}

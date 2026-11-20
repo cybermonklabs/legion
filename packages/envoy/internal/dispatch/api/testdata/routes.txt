@@ -1,6 +1,8 @@
 GET /api/v1 public
 GET /api/v1/agents any
+GET /api/v1/agents/known any
 GET /api/v1/agents/{session_id}/answers any
+GET /api/v1/agents/{session_id}/artifacts any
 POST /api/v1/agents/{session_id}/artifacts any
 GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
@@ -78,6 +80,7 @@ POST /api/v1/going/requests any
 GET /api/v1/going/requests/{id}/stream any
 GET /api/v1/handoffs/{id} any
 GET /api/v1/inbox any
+GET /api/v1/inbox/comparison any
 GET /api/v1/issues any
 POST /api/v1/issues any
 GET /api/v1/issues/resolve any
@@ -136,6 +139,7 @@ DELETE /api/v1/me/asks/{id}/snooze any
 PUT /api/v1/me/asks/{id}/snooze any
 GET /api/v1/me/documents/{id}/read any
 PUT /api/v1/me/documents/{id}/read any
+GET /api/v1/me/inbox any
 POST /api/v1/me/inbox/dismiss any
 POST /api/v1/me/inbox/read any
 PUT /api/v1/me/issues/{key}/state any
@@ -149,6 +153,7 @@ POST /api/v1/messages/{id}/deliveries/{attempt}/accept bearer
 POST /api/v1/messages/{id}/reply bearer
 GET /api/v1/near-copy-checks any
 GET /api/v1/near-copy-checks/{id} any
+GET /api/v1/people/{login}/nodes any
 GET /api/v1/priorities any
 POST /api/v1/priorities any
 DELETE /api/v1/priorities/{id} any

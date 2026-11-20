@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // removeArtifact removes a document of an issue that is still untouched: one made by typing a
@@ -38,11 +41,30 @@ import (
 // which refuses the removal, or waits for this transaction and then meets the row that has gone.
 //
 // The rows go in one transaction: first the rows the artifact's own delete would leave behind or
-// be refused by (artifactRemovalClears) and the reference rows package refs keeps for the
-// document (refs.ForgetDocument), then the artifact row, which cascades the keys that do
-// cascade. The artifact.removed event is appended after them and outlives the document: an issue
-// document's events are the issue's (events_one_owner, ownerForArtifact), so that row carries no
-// artifact id.
+// be refused by (artifactRemovalClears and removeArtifactThreads) and the reference rows package
+// refs keeps for the document (refs.ForgetDocument), then the artifact row, which cascades the keys
+// that do cascade. The artifact.removed event is appended after them and outlives the document: an
+// issue document's events are the issue's (events_one_owner, ownerForArtifact), so that row
+// carries no artifact id. The retraction of every mark an Inbox row of the document held is
+// appended under that event.
+//
+// The document's node is stated gone before its row goes, in the store's order (node, row, event,
+// facts), and the state tuple is appended in the batch that appends the artifact.removed event
+// with the marks' retraction (appendEventThen). The node
+// is addressed by the document's ref_key, which a later document of the same issue and slug takes
+// again: that document's create finds the node gone and states it live under its own event,
+// rather than finding a live node that states nothing and keeps this document's cause. A node
+// keeps its made_at and made_by over its life, as every node of the store does, so a document a
+// build before this one created, where the store holds no node at its address yet, first gets the
+// node its create would have written - live, made by its creator at its created_at, at the
+// sentinel, as the backfill writes it (graphcensus's backfillObjectNodes) - and only then is it
+// stated gone, by the person who removed it, at the time this transaction reads from the
+// database's clock under the owner lock it holds, before its first write (graphstore.StatementTime),
+// and past that first node's: later than every statement about the address, so a document made
+// there next is dated later still. Where the
+// store holds a node already, live or gone, no first node is written: a live one is stated gone,
+// and a gone one (an earlier document's, whose address a build before this one took again) is
+// left as it is, rather than moved live at a created_at that may predate its gone statement.
 //
 // The room is closed on every process that holds one, through the room-sync notification this
 // transaction sends before it commits (docs.AnnounceDocumentRemoved): a room left open on
@@ -85,17 +107,62 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, refusal)
 		return
 	}
+	// What the document's node write reads - whether the store holds the node, and the time its
+	// gone statement takes - is read here, under the locks and before the first write, so no read
+	// of it runs while the transaction holds an id (#2468's write phase). The time is past every
+	// statement the store holds about the address, and past the first node a missing one is
+	// given below, which is dated at the document's creation.
+	fits := graphstore.AddressFits(artifact.RefKey)
+	var held bool
+	var removedAt time.Time
+	if fits {
+		var err error
+		if _, held, err = graphstore.ReadNode(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if removedAt, err = graphstore.StatementTime(r.Context(), tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !held && !removedAt.After(artifact.CreatedAt) {
+			removedAt = artifact.CreatedAt.Add(time.Microsecond)
+		}
+	}
 	for _, clear := range artifactRemovalClears(artifact) {
 		if _, err := tx.Exec(r.Context(), clear.statement, clear.args...); err != nil {
 			s.writeHandlerError(w, fmt.Errorf("clear the %s of the removed document: %w", clear.what, err))
 			return
 		}
 	}
+	marks, err := removeArtifactThreads(r.Context(), tx, artifact.ID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// What package refs holds for the document: its own mentions, the index it is owed and the
 	// backoff its own mentions were deferred under, through that package's own statements.
 	if err := refs.ForgetDocument(r.Context(), tx, artifact.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// The document's node, stated gone before its row goes; its state tuple waits for the event.
+	var goneNode graphstore.Uncaused
+	if fits {
+		if !held {
+			made := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), artifact.CreatedBy, artifact.CreatedAt)
+			if err := graphstore.Write(r.Context(), tx, []graphstore.Node{made}, nil); err != nil {
+				s.writeHandlerError(w, fmt.Errorf("write the node of the removed document %s: %w", artifact.ID, err))
+				return
+			}
+		}
+		gone := graphstore.ArtifactNode(artifact.RefKey, artifact.Project, deref(artifact.SessionID), actor, removedAt)
+		gone.State = graphstore.StateGone
+		var err error
+		if goneNode, err = graphstore.WriteUncaused(r.Context(), tx, []graphstore.Node{gone}, nil); err != nil {
+			s.writeHandlerError(w, fmt.Errorf("state the node of the removed document %s gone: %w", artifact.ID, err))
+			return
+		}
 	}
 	if _, err := tx.Exec(r.Context(), `delete from artifacts where id = $1`, artifact.ID); err != nil {
 		s.writeHandlerError(w, fmt.Errorf("remove the document %s: %w", artifact.ID, err))
@@ -108,9 +175,23 @@ func (s *server) removeArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, ownerForArtifact(artifact).event(
+	// The event, the gone statement it causes and the retraction of the marks of the Inbox rows
+	// the removal deleted (removeArtifactThreads), in one batch: each mark ends under that event,
+	// from its row's own person, at the moment of the delete, which made a person node too.
+	for index := range marks {
+		marks[index].Who, marks[index].SourceEvent = actor, graphstore.LatestEvent
+	}
+	event, err := s.appendEventThen(r.Context(), tx, ownerForArtifact(artifact).event(
 		"artifact.removed", actor, map[string]any{"artifact": artifact},
-	))
+	), func(b *store.WriteBatch) error {
+		if err := graphstore.QueueCaused(b, goneNode, graphstore.LatestEvent); err != nil {
+			return err
+		}
+		if len(marks) == 0 {
+			return nil
+		}
+		return graphstore.QueueFromPerson(b, marks[0].At, marks)
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -303,11 +384,12 @@ type artifactClear struct {
 // tables say in their own migrations (20261101182447_document_search.up.sql,
 // 20261028195714_doc_compaction_owed.up.sql), and artifact_versions was 27.5 GB in production
 // against a census limit of one GiB. The keys that do cascade are left to the artifact row's own
-// delete, and the reference rows, which carry no key either, to package refs
-// (refs.ForgetDocument). document_search_backfill's one row is not cleared, though it carries an
-// artifact_id: that id is the search fill's keyset cursor, a position in the fill and not a row of
-// the document, and the boot's fill reads that row every time, so deleting it when the cursor
-// named the removed document left no Dispatch process able to start (dispatch://INFRA-4018).
+// delete, the reference rows, which carry no key either, to package refs (refs.ForgetDocument),
+// and the document's Inbox rows, whose marks the removal retracts, to removeArtifactThreads.
+// document_search_backfill's one row is not cleared, though it carries an artifact_id: that id is
+// the search fill's keyset cursor, a position in the fill and not a row of the document, and the
+// boot's fill reads that row every time, so deleting it when the cursor named the removed
+// document left no Dispatch process able to start (dispatch://INFRA-4018).
 //
 // Five more keys to artifacts(id) carry no cascade - asks.artifact_id, asks.block_artifact_id,
 // comments.artifact_id, events.artifact_id and artifact_reviews.artifact_id - and no statement
@@ -331,6 +413,43 @@ func artifactRemovalClears(artifact model.Artifact) []artifactClear {
 		{what: "search rows", statement: `delete from document_search where artifact_id = $1`, args: id},
 		{what: "compaction owed", statement: `delete from doc_compaction_owed where artifact_id = $1`, args: id},
 		{what: "search terms owed", statement: `delete from search_term_queue where artifact_id = $1`, args: id},
-		{what: "inbox threads", statement: `delete from user_threads where artifact_id = $1`, args: id},
 	}
+}
+
+// removeArtifactThreads deletes the user_threads rows of the document's threads, which no foreign
+// key reaches either, and answers the retraction of each mark those rows held
+// (api/read_marks.go): read_through to the thread's root, and dismissed where the row was
+// dismissed, each from the row's own person at the moment of the delete. The caller appends them
+// under its event, as the writer who ended them (graphstore.FromPerson). A row needs a comment or
+// an ask on the document, which the untouched test refuses the removal for (artifactIsUntouched),
+// so the delete meets none unless that test let one through, and then the row's marks still end
+// with it rather than outlive the row they stood for.
+func removeArtifactThreads(ctx context.Context, tx pgx.Tx, artifactID string) ([]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, `
+		delete from user_threads where artifact_id = $1
+		returning login, kind, thread_id::text, dismissed_at is not null, now()
+	`, artifactID)
+	if err != nil {
+		return nil, fmt.Errorf("clear the inbox threads of the removed document: %w", err)
+	}
+	defer rows.Close()
+	var marks []graphstore.Tuple
+	for rows.Next() {
+		var login, kind, thread string
+		var dismissed bool
+		var at time.Time
+		if err := rows.Scan(&login, &kind, &thread, &dismissed, &at); err != nil {
+			return nil, fmt.Errorf("read an inbox thread of the removed document: %w", err)
+		}
+		ended := graphstore.Tuple{
+			FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleReadThrough,
+			ToKind: kind, ToID: thread, At: at, Asserted: false,
+		}
+		marks = append(marks, ended)
+		if dismissed {
+			ended.Kind = graphstore.TupleDismissed
+			marks = append(marks, ended)
+		}
+	}
+	return marks, rows.Err()
 }

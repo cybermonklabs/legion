@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -37,8 +37,15 @@ import type {
 import type { ConnectionCallbacks } from "../doc/connection";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { IssuePage } from "./IssuePage";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue = {
   route_status: null,
@@ -1190,6 +1197,7 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
     document: null,
+    entries: [],
     open_questions: [],
   });
   const view = renderIssuePage("/issues/CORE-1/spec");
@@ -1820,6 +1828,57 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
   }
 });
 
+// A document renamed to a slug-shaped name keeps the slug its first name gave it, and a reference
+// written with its current name links to the page at that name: the page finds the document as
+// the link did (`artifactAtAddress`), rather than answering that the issue holds no such artifact.
+test("IssuePage opens a document at its current name when its slug kept an earlier one", async () => {
+  const documentArtifact = {
+    created_at: "2026-09-09T01:00:00Z",
+    created_by: { id: "alice", kind: "user" as const },
+    id: "artifact-notes",
+    issue_key: "CORE-1",
+    project: "CORE",
+    kind: "doc" as const,
+    name: "launch-notes",
+    primary: false,
+    ref_key: "CORE-1/notes-md",
+    session_id: null,
+    slug: "notes-md",
+    versions: [
+      {
+        authors: [{ id: "alice", kind: "user" as const }],
+        created_at: "2026-09-09T01:00:00Z",
+        mime: "text/markdown",
+        named: false,
+        number: 1,
+        sha256: "notes-sha",
+        size: 10,
+        summary: null,
+      },
+    ],
+  };
+  const restore = stubIssuePage({ ...issue, artifacts: [...issue.artifacts, documentArtifact] });
+  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({ ...documentArtifact });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "# Notes",
+    version: 1,
+    token: "sha256:notes",
+  });
+  const view = renderIssuePage("/issues/CORE-1/artifacts/launch-notes");
+
+  try {
+    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    expect(screen.getByRole("heading", { name: "launch-notes" })).not.toBeNull();
+    expect(screen.queryByText("No artifact launch-notes on CORE-1.")).toBeNull();
+    await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-notes"));
+  } finally {
+    view.unmount();
+    getArtifact.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage hides the Artifacts panel after switching to Spec", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -2106,7 +2165,7 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
   });
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria", "spec"],
+    gated_steps: ["criteria", "spec"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2123,12 +2182,12 @@ test("IssuePage draws a gated root issue's steps where the header's one chip sat
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria", "spec"]);
+    ).toEqual(["criteria", "spec"]);
     // The primary document keeps today's chip and its review actions, inside its own step.
     expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
-    // The two steps nobody has written say so, rather than borrowing the spec's state.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The step nobody has written says so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     // The steps take the chip's place when one of them holds the primary document: the row
     // draws one approval area, not both, so it carries one pair of controls.
     expect(
@@ -2152,11 +2211,11 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       },
     ],
   });
-  // A deployment may gate the decisions and the Verification document and not the spec; the
-  // spec still has an approval to answer, and only the header's own chip can answer it.
+  // A deployment may gate the Verification document and not the spec; the spec still has an
+  // approval to answer, and only the header's own chip can answer it.
   const gated: Project = {
     created_at: "2026-09-09T00:00:00Z",
-    gated_steps: ["decisions", "criteria"],
+    gated_steps: ["criteria"],
     open_asks: 0,
     key: "CORE",
     name: "Core",
@@ -2172,9 +2231,9 @@ test("IssuePage keeps the primary document's chip when no gated step reviews it"
       Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
         step.getAttribute("data-approval-step")
       )
-    ).toEqual(["decisions", "criteria"]);
-    // Neither step holds the primary document, so neither carries its state or its actions.
-    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    ).toEqual(["criteria"]);
+    // The step holds no primary document, so it carries neither its state nor its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(1);
     expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
     // The primary document's own chip stays in the state row, with both of its controls.
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();

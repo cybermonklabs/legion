@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -760,5 +762,99 @@ func TestColdReadCacheEvictsTheLeastRecentlyReadDocument(t *testing.T) {
 	}
 	if cacheHas(service, artifactIDs[2]) {
 		t.Fatal("an entry heavier than a quarter-budget was cached, want the budget/eighth rule to reject it")
+	}
+}
+
+// historyDecodeCountingStore counts each read of a document's whole stored history a read of it
+// can make: a cold read's fold (LoadDocument), and a room's or a socket admission's load (Load).
+type historyDecodeCountingStore struct {
+	VersionedStore
+	folds, loads atomic.Int64
+}
+
+func (s *historyDecodeCountingStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
+	s.folds.Add(1)
+	return s.VersionedStore.LoadDocument(ctx, room)
+}
+
+func (s *historyDecodeCountingStore) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
+	s.loads.Add(1)
+	return s.VersionedStore.Load(ctx, room)
+}
+
+// The text an agent reads takes the server-owned attributes off each ask block, and reads each
+// ask block's answer from the store, on the tree of the read that served the text (TextWithAsks):
+// for a document no room holds, the tree the cold read folded, which the read cache keeps beside
+// its rendering for a document holding an ask block. So the first read of a stored state folds its
+// history once and loads it no other way, every later read of that state, with its blocks or
+// without, decodes nothing, and each read carries the answer in its asks. The cached read is the
+// document's text even where its stored history no longer decodes - an update below the head,
+// whose row the stamp does not name, replaced by bytes no load decodes - so the read serves the
+// text and its answer still, and fails no room.
+func TestAnAgentsTextReadOfAColdDocumentReadsItsAsksOnTheCachedRead(t *testing.T) {
+	database := storetest.Open(t)
+	persistence := &historyDecodeCountingStore{VersionedStore: NewPgVersioned(database)}
+	artifactID := createDocument(t, database, "before")
+	service := newReadCacheService(t, database, persistence)
+	seedServiceText(t, service, artifactID, "Context\n\n:::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n")
+	settleCurrentGeneration(t, service, artifactID)
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	at := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, At: at})
+	change.Who, change.At = alice, at
+	settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, alice, change)
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "replace", Find: "Context", With: "Context, edited"}}, alice, nil); err != nil {
+		t.Fatalf("edit the document: %v", err)
+	}
+	if err := service.Evict(context.Background(), artifactID); err != nil {
+		t.Fatalf("evict the room: %v", err)
+	}
+	waitForNoLiveDocument(t, service, artifactID)
+	persistence.folds.Store(0)
+	persistence.loads.Store(0)
+
+	const answered = `#ask-1 state="answered" answered_by="alice" answered_at="2026-11-17T09:00:00Z" selected=["Yes"]` + "\n"
+	read := func(what string, withBlocks bool) {
+		t.Helper()
+		text, err := service.TextWithAsks(context.Background(), artifactID, withBlocks)
+		if err != nil {
+			t.Fatalf("%s: read the text with its asks: %v", what, err)
+		}
+		requireNoAskServerAttributes(t, artifactID, text.Markdown)
+		if asks := askLines(text.Asks); !strings.Contains(text.Markdown, "Context, edited") || asks != answered || text.Token == "" || withBlocks != (len(text.Blocks) > 0) {
+			t.Fatalf("%s: the text reads %q with token %q, %d blocks and the asks %q, want the edit and the answer %s", what, text.Markdown, text.Token, len(text.Blocks), asks, answered)
+		}
+	}
+	read("the first cold read", false)
+	if folds, loads := persistence.folds.Load(), persistence.loads.Load(); folds != 1 || loads != 0 {
+		t.Fatalf("the first cold read folded the history %d times and loaded it %d times, want one fold and no other load", folds, loads)
+	}
+	read("a second read", false)
+	read("a read with its blocks", true)
+	if folds, loads := persistence.folds.Load(), persistence.loads.Load(); folds != 1 || loads != 0 {
+		t.Fatalf("after the reads of the cached state the history was folded %d times and loaded %d times, want the first read's one fold alone", folds, loads)
+	}
+
+	stamp := readStamp(t, NewPgVersioned(database), artifactID)
+	corrupted, err := database.Pool.Exec(context.Background(), `
+		update doc_updates set update = '\xff'::bytea
+		where artifact_id = $1 and version = (select min(version) from doc_updates where artifact_id = $1) and version < $2
+	`, artifactID, stamp.Version)
+	if err != nil || corrupted.RowsAffected() != 1 {
+		t.Fatalf("corrupt the first stored update below the head: %v (%d rows)", err, corrupted.RowsAffected())
+	}
+	if _, err := NewPgVersioned(database).LoadDocument(context.Background(), artifactID); !errors.Is(err, ErrDocumentUnloadable) {
+		t.Fatalf("load the corrupted history: %v, want ErrDocumentUnloadable", err)
+	}
+	if after := readStamp(t, NewPgVersioned(database), artifactID); after != stamp {
+		t.Fatalf("the stamp moved from %+v to %+v, want the head's row as it was", stamp, after)
+	}
+	read("a read of the cached state over a history that no longer decodes", false)
+	read("a read with its blocks over a history that no longer decodes", true)
+	if service.roomFailed(artifactID) {
+		t.Fatal("a read over the history that no longer decodes failed the room")
+	}
+	if folds, loads := persistence.folds.Load(), persistence.loads.Load(); folds != 1 || loads != 0 {
+		t.Fatalf("the reads over the history that no longer decodes folded it %d times and loaded it %d times, want none beyond the first read's fold", folds, loads)
 	}
 }

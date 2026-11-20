@@ -15,6 +15,8 @@ export interface WalkRoute {
 export const walkRoutes = [
   { page: "InboxPage", path: "/" },
   { page: "AnswersPage", path: "/answers" },
+  // The comparison's page, which this branch deletes with the comparison before a release.
+  { page: "ComparisonPage", path: "/inbox/comparison" },
   { page: "AgentsPage", path: "/agents" },
   { page: "BroadcastsPage", path: "/agents/broadcasts" },
   { page: "BroadcastPage", path: "/agents/broadcasts/:id" },
@@ -37,6 +39,7 @@ export const walkRoutes = [
   { page: "SettingsPage", path: "/settings" },
   { page: "DeliveryPage", path: "/delivery" },
   { page: "PipelinePage", path: "/pipeline" },
+  { page: "PersonPage", path: "/people/:login" },
   { page: "NotFoundPage", path: "*" },
 ] as const satisfies readonly WalkRoute[];
 

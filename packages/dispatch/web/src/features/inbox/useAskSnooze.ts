@@ -2,13 +2,20 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { api, askSnoozeRequest } from "../../api/client";
-import { inboxQuery } from "../../api/queries";
+import { inboxQuery, meInboxQuery } from "../../api/queries";
 import { holdBackReads } from "../../api/query-client";
 import type { InboxRow } from "../../api/types";
 import { snoozeWritten } from "../../api/write-events";
 import { refusedByDispatch, SendStoppedError } from "../writes/keyed-write";
 import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
+import {
+  cancelMeInbox,
+  invalidateMeInbox,
+  meInboxSnapshot,
+  patchMeInboxAsks,
+  restoreMeInbox,
+} from "./one-read-cache";
 
 export interface AskSnoozeWrite {
   /** The server's reason after a refused save, or what one the reader stopped may have done and
@@ -38,10 +45,11 @@ interface AskSnoozePress {
 }
 
 /**
- * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once,
- * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
- * refuses, and the list refetches once the save settles - the same shape as the issue field
- * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ * The one way the SPA writes a row's snooze. The new moment lands on every inbox cache at once -
+ * the Inbox read and, behind its opt-in, the one read (`one-read-cache.ts`) - so the row drops
+ * into `Later` (or climbs back out) on the click, rolls back if the server refuses, and the list
+ * refetches once the save settles - the same shape as the issue field writes, without their
+ * cross-surface caches: a snooze is on the ask and shows nowhere else.
  *
  * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
  * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
@@ -52,11 +60,12 @@ interface AskSnoozePress {
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
-  // The row says why its snooze was refused, where the reader pressed it. A read of the Inbox
-  // asked while the snooze is out waits until Dispatch has taken it (its answer or the viewer's
-  // snooze event): Dispatch can answer it before, with the row's moment from before the press.
+  // The row says why its snooze was refused, where the reader pressed it. A read of the Inbox,
+  // or behind its opt-in of the one read, asked while the snooze is out waits until Dispatch has
+  // taken it (its answer or the viewer's snooze event): Dispatch can answer it before, with the
+  // row's moment from before the press.
   const mutation = useKeyedWrite({
-    holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey] }),
+    holds: () => ({ endsOn: snoozeWritten, keys: [inboxKey, meInboxQuery().queryKey] }),
     // A snooze is a `PUT`, and bringing the row back a `DELETE`.
     method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
     write: (press: AskSnoozePress, bounds) =>
@@ -66,22 +75,29 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     inline: true,
     label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
     onMutate: async (press) => {
-      await queryClient.cancelQueries({ queryKey: inboxKey });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxKey }),
+        cancelMeInbox(queryClient),
+      ]);
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+      const oneRead = meInboxSnapshot(queryClient);
+      const snoozed = (row: InboxRow): InboxRow =>
+        row.id === press.askId ? { ...row, snoozed_until: press.until } : row;
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) =>
-          row.id === press.askId ? { ...row, snoozed_until: press.until } : row
-        )
+        current?.map(snoozed)
       );
-      return previous;
+      patchMeInboxAsks(queryClient, snoozed);
+      return { inbox: previous, oneRead };
     },
     onError: (_error, _press, previous) => {
-      for (const [key, data] of previous ?? []) {
+      for (const [key, data] of previous?.inbox ?? []) {
         queryClient.setQueryData(key, data);
       }
+      restoreMeInbox(queryClient, previous?.oneRead);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
+      invalidateMeInbox(queryClient);
     },
   });
   return {
@@ -127,10 +143,11 @@ export interface AskSnoozeManyWrite {
  * and tried until Dispatch decides it, so a transport failure is tried again rather than counted a
  * refusal, and each settles on its own: a refusal rolls back that row alone - to the moment it had
  * before, not to null, which would un-snooze a row that was already deferred - and the ones the
- * server took stay where they landed. A read of the Inbox asked while the set is out waits until
- * the last of them is decided, or until as many snooze events as asks have come, as the single
- * snooze's does; an ask Dispatch refused with no earlier attempt of its snooze that may have
- * landed unseen publishes no event, and the hold waits for none of it.
+ * server took stay where they landed. A read of the Inbox, or behind its opt-in of the one read,
+ * asked while the set is out waits until the last of them is decided, or until as many snooze
+ * events as asks have come, as the single snooze's does; an ask Dispatch refused with no earlier
+ * attempt of its snooze that may have landed unseen publishes no event, and the hold waits for
+ * none of it.
  */
 export function useAskSnoozeMany(): AskSnoozeManyWrite {
   const queryClient = useQueryClient();
@@ -149,19 +166,29 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
       const release = holdBackReads(queryClient, {
         endsOn: snoozeWritten,
         events: ids.length,
-        keys: [inboxKey],
+        keys: [inboxKey, meInboxQuery().queryKey],
       });
       let failed: AskSnoozeFailure[];
       // How many of the asks Dispatch refused with no earlier attempt of their snooze that may
       // have landed unseen (`refusedByDispatch`), which publish no event.
       let refusals = 0;
       try {
-        await queryClient.cancelQueries({ queryKey: inboxKey });
+        await Promise.all([
+          queryClient.cancelQueries({ queryKey: inboxKey }),
+          cancelMeInbox(queryClient),
+        ]);
         const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
+        // What each marked row of the one read held before, as each Inbox read's rows are kept.
+        const oneReadBefore = new Map<string, string | null | undefined>();
         const marked = new Set(ids);
         queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
           current?.map((row) => (marked.has(row.id) ? { ...row, snoozed_until: until } : row))
         );
+        patchMeInboxAsks(queryClient, (row) => {
+          if (!marked.has(row.id)) return row;
+          oneReadBefore.set(row.id, row.snoozed_until);
+          return { ...row, snoozed_until: until };
+        });
         const results = await Promise.allSettled(
           writeOf.map(({ id, request }) =>
             writes.run({
@@ -200,11 +227,17 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
             )
           );
         }
+        if (refused.size > 0) {
+          patchMeInboxAsks(queryClient, (row) =>
+            refused.has(row.id) ? { ...row, snoozed_until: oneReadBefore.get(row.id) ?? null } : row
+          );
+        }
       } finally {
         // Whatever happens above: a hold left on would keep every read of the Inbox waiting.
         release(refusals);
       }
       void queryClient.invalidateQueries({ queryKey: inboxKey });
+      invalidateMeInbox(queryClient);
       setPending((count) => count - 1);
       return { failed };
     },

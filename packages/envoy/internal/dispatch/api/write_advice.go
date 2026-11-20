@@ -547,7 +547,7 @@ type editBlocks struct {
 	DecisionBlockChecks []decisionBlockCheck `json:"decision_block_checks,omitempty"`
 }
 
-// decisionBlockCheck is one added decision block's related-item check: the block, its
+// decisionBlockCheck is one added ask block's related-item check: the block, its
 // question, and the check's result.
 type decisionBlockCheck struct {
 	BlockID     string             `json:"block_id"`
@@ -677,16 +677,21 @@ func (s *server) supersededApprovalAdvice(
 // asks the architect, where a reader told a gate that is not there stops working.
 //
 // The order is the issue's key and then the order a gate runs the steps in ($2,
-// model.GatedStepsKnown), the order the issue read lists an issue's own gates in.
+// model.GatedStepsKnown), the order the issue read lists an issue's own gates in. A row of a step
+// outside that list, the retired `decisions` step a daemon of the release before wrote, is left
+// out, and a project's stored list of that step alone reads as [spec], as every read of a stored
+// list does (gatedStepsWithout).
 func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID string) ([]supersededApprovalGate, error) {
+	// kept for one release: design-gate-rows
 	rows, err := q.Query(ctx, `
 		select g.issue, g.step
 		from design_gates g
 		join issues i on i.key = g.issue
 		join projects p on p.key = i.project_key
-		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any(p.gated_steps)
+		where g.artifact_id = $1 and not (i.status = any($3::text[])) and g.step = any($2::text[])
+		  and (g.step = any(p.gated_steps) or (g.step = $4 and p.gated_steps = array[$5]::text[]))
 		order by g.issue, array_position($2::text[], g.step)
-	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow)
+	`, artifactID, model.GatedStepsKnown, model.IssueStatusesOutOfWorkflow, model.GatedStepSpec, retiredDecisionsStep)
 	if err != nil {
 		return nil, fmt.Errorf("read the design gates this document records: %w", err)
 	}
@@ -918,7 +923,7 @@ var typedOpening = regexp.MustCompile(`:{3,}[A-Za-z0-9_-]+\{`)
 func readDocumentBlocks(markdown string) *documentBlocks {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		slog.Warn("dispatch: decision block count failed", "error", err)
+		slog.Warn("dispatch: ask block count failed", "error", err)
 		return nil
 	}
 	return documentBlocksOf(tree)

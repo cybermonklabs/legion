@@ -92,20 +92,23 @@ wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
-Approval is pinned to the spec version: any new version closes the gate until it is approved,
-except the version a human's own answer to a decision block writes when that answer is the whole
-change since the version they approved, and a version whose text is exactly the text of the
-version they approved with no decision block in it decided since, such as an accidental edit
-undone exactly: Dispatch records an `approved` review in their name at that version, the daemon
-reopens the gate and sends `design-approved`, and you request nothing. When the spec does not
-read Approved at such a version, request approval as after any change.
-Each step records its own document: the `spec` step the issue's primary document, the `criteria`
-step its Verification document, and the `decisions` step its decisions document. So
-`register_gate` names the step and that step's own document, by id and version, one call for each
-step your addressing line names; a call naming another of the issue's documents is refused
-(`GATE_STEP_DOCUMENT_MISMATCH`). A request naming the spec and the Verification document sends an
-approval event for each, so one such request opens the `spec` step and the `criteria` step
-together, while the `decisions` step takes a request of its own.
+Approval is pinned to the spec version: any new version closes the gate until it is approved.
+A person's answer to an ask block writes no version, since Dispatch holds the answer on the ask,
+so it leaves the gate as it stands. Dispatch carries the approval to a new version in two cases.
+The first is a version whose text is exactly the text of the version they approved, with no ask
+block in it decided since, such as an accidental edit undone exactly. The second is a version
+whose every change is one Dispatch carries an approval over: a reading added, changed or removed
+inside a decision or an answered ask, a server-owned attribute of an ask block, or the write of
+Dispatch's decisions step, which moves answered asks and decisions into the spec's `## Decisions`
+part. In both cases Dispatch records an `approved` review in their name at that version, the
+daemon reopens the gate and sends `design-approved`, and you request nothing.
+When the spec does not read Approved at such a version, request approval as after any change.
+Each step records its own document: the `spec` step the issue's primary document, and the
+`criteria` step its Verification document. So `register_gate` names the step and that step's own
+document, by id and version, one call for each step your addressing line names; a call naming
+another of the issue's documents is refused (`GATE_STEP_DOCUMENT_MISMATCH`). A request naming the
+spec and the Verification document sends an approval event for each, so one such request opens
+the `spec` step and the `criteria` step together.
 A `design-approved`, `design-changes-requested` or `carried-gate-opened` notice names a version
 and a reason, never the step it is of, so when your addressing line names more than one step,
 read `gatedSteps` in your own issue record (the `legion` tool's `read_record`) to see which step
@@ -173,13 +176,12 @@ this tree touches or depends on is fixed in this tree's own pull request, any ot
 goes to the controller, which gives it to the tree that owns that code, and a problem that needs a
 decision is a `dispatch ask`
 (`skill://legion-worker/references/findings.md`). A product, scope, or design decision the human
-must make, yours, one a worker escalated or one a child's architect sent you, is a decision block
-you write in the root spec; after approval its new version closes the gate until the human answers.
-When their answer is the whole change since the version they approved, Dispatch carries the
-approval to the new version and you request nothing. When it changes the spec's text outside the
-block, rewrite that text and run the two reviews on the new version. Then request approval again
-with a `--summary` of one sentence naming what changed since the earlier approval and one
-sentence with both reviews' results. A to-do only a human can do is a `dispatch ask`.
+must make, yours, one a worker escalated or one a child's architect sent you, is an ask block you
+write in the root spec; after approval its new version closes the gate. The human's answer writes
+no version and carries no approval. When it changes the spec's text outside the block, rewrite
+that text and run the two reviews on the new version. Then request approval again with a
+`--summary` of one sentence naming what changed since the earlier approval and one sentence with
+both reviews' results. A to-do only a human can do is a `dispatch ask`.
 
 The merge is the close: once a pull request merges while its issue awaits the merge, the daemon
 writes `done`, and the tester's production check follows in its own session, on the pull

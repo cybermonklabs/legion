@@ -35,6 +35,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/agents/known": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/<session id> reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than id and session, no id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits; session is the session the request acts for, as on every route. */
+    get: operations["getApiV1AgentsKnown"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/agents/{session_id}/answers": {
     parameters: {
       query?: never;
@@ -59,7 +76,8 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** @description The newest 100 files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. An older file is not listed and is still read by its slug. A reference picker lists them under the session, each addressed dispatch://agent/<session_id>/artifact/<slug>. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does. */
+    get: operations["getApiV1AgentsBySessionIdArtifacts"];
     put?: never;
     /** @description Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/<session_id>/<slug>, addressed dispatch://agent/<session_id>/artifact/<slug>. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (<>"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route. */
     post: operations["postApiV1AgentsBySessionIdArtifacts"];
@@ -187,8 +205,25 @@ export interface paths {
     delete: operations["deleteApiV1ArtifactsById"];
     options?: never;
     head?: never;
-    /** @description Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT. */
+    /** @description Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, a name whose slug is a decisions document's, on an issue's document that is not one, 409 DECISIONS_ARE_NODES (a later upload of that name would find it), the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT. */
     patch: operations["patchApiV1ArtifactsById"];
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/_test/ask-attributes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Test hook: read the attributes each ask block of a document holds in this process's live tree. */
+    get: operations["getApiV1ArtifactsByIdTestAskAttributes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
     trace?: never;
   };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -356,7 +391,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
+    /** @description Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. Until the decisions step retires it, the block may also be a section heading of an issue's decisions document an earlier release stored, outside `## Replaced`, whose sum is that of the section's markdown from the heading to its last block; that Keep writes the decision_keeps row, which the conversion carries onto the section's decision node. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a retired decisions document, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody. */
     post: operations["postApiV1ArtifactsByIdBlocksByBlockIdKeep"];
     delete?: never;
     options?: never;
@@ -374,7 +409,7 @@ export interface paths {
     /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
-    /** @description Comment on a document or one of its quotes. */
+    /** @description Comment on a document or one of its quotes. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1ArtifactsByIdComments"];
     delete?: never;
     options?: never;
@@ -391,7 +426,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. */
+    /** @description Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken. */
     post: operations["postApiV1ArtifactsByIdEdits"];
     delete?: never;
     options?: never;
@@ -526,7 +561,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
+    /** @description A document's canonical markdown, its whole-document token, its version and its asks. The markdown holds no server-owned attribute on any ask block (state, answered_by, answered_at, selected, answer, invalid, copied_from, copied_from_document), whatever the live document or its stored versions hold, so the text uploads back unchanged; a version's own text (GET /api/v1/artifacts/{id}/versions/{number}) keeps the stored bytes. asks answers each ask block of the markdown in document order, read from the ask that answers for it, under the names those attributes carried: {block_id, state?, answered_by?, answered_at?, selected?, answer?, copied_from?, copied_from_document?}. state is the ask's, a copy's source's (copied_from naming the source ask and copied_from_document its document's dispatch:// address), resolved for a block of a closed issue's document no settlement has indexed, and absent for any other block no ask indexes yet, a question nobody has opened; who answered, when, the options chosen and the words stand on an answered ask alone. A document with no ask block answers no asks member, as the release before answered every document. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from, so their byte ranges index the markdown served: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -1323,6 +1358,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/inbox/comparison": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The gate of the one read (GET /api/v1/me/inbox) over the three reads it replaces: the newest run of `envoy-dispatch inbox-compare`, read from its stored row alone, as counts - {run: {id, ran_at, difference_count (the rows an old read answered and the one read did not), people_checked (every person the database holds), people_uncovered (those the run did not reach), shapes (each corpus shape the gate requires, {shape, rows}), missing_shapes, met (no difference, nobody uncovered and every shape held)}}, or {run: null} before any run. It answers nobody's rows. The comparison runs in the branch alone, over a test database, and is deleted with this route before a release. */
+    get: operations["getApiV1InboxComparison"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues": {
     parameters: {
       query?: never;
@@ -1386,7 +1438,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version. */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1437,7 +1489,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
     post: operations["postApiV1IssuesByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -1452,7 +1504,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description An issue document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -1559,7 +1611,7 @@ export interface paths {
     /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. A comment's author carries proven: true when the write's credential proved it (a browser's person, a broker-issued token's session), and no proven when the request only named it. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
-    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
+    /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/<session id> names a session and dispatch://role/<token> names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/<login>, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT. */
     post: operations["postApiV1IssuesByKeyComments"];
     delete?: never;
     options?: never;
@@ -1591,7 +1643,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since. */
+    /** @description The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text. */
     get: operations["getApiV1IssuesByKeyDecisions"];
     put?: never;
     post?: never;
@@ -1609,7 +1661,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. An entry of the retired step decisions, which a daemon of the release before still publishes, is taken and dropped, so the issue's stored row of that step goes with the set it replaces. A body without gates, a step that is none of these, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
     put: operations["putApiV1IssuesByKeyDesignGates"];
     post?: never;
     delete?: never;
@@ -2135,6 +2187,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/inbox": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}. */
+    get: operations["getApiV1MeInbox"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/inbox/dismiss": {
     parameters: {
       query?: never;
@@ -2373,6 +2442,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/people/{login}/nodes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets. */
+    get: operations["getApiV1PeopleByLoginNodes"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/priorities": {
     parameters: {
       query?: never;
@@ -2574,7 +2660,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2625,7 +2711,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. */
+    /** @description Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it. */
     post: operations["postApiV1ProjectsByKeyArtifactsBySlugEdits"];
     delete?: never;
     options?: never;
@@ -2657,7 +2743,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
+    /** @description A project document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2726,7 +2812,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
+    /** @description Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. The retired step decisions, which a page of the release before still sends, is taken and stored nowhere: the list is stored without it, and a list of decisions alone is stored as [spec]. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH. */
     put: operations["putApiV1ProjectsByKeyGatedSteps"];
     post?: never;
     delete?: never;
@@ -2864,7 +2950,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered. */
+    /** @description Count the related-item checks recorded when an issue, an ask or a new ask block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered. */
     get: operations["getApiV1RelatedChecks"];
     put?: never;
     post?: never;
@@ -2915,7 +3001,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all ten: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. ?kind= is younger than that path, so a build serving it but released before ?kind= answers either route 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for: sending ?kind= there buys no refusal, and a client that must know the rows are narrowed reads each result's own kind. This route still reads all ten, so a page served by an earlier release that sends one of the six here is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2949,7 +3035,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all ten members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. ?kind= is younger than this path, so a build serving it but released before ?kind= answers both routes 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for; a client that must know the rows are narrowed reads each result's own kind. GET /api/v1/search still reads all ten, so a page served by an earlier release that sends one of the six there is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
@@ -3141,6 +3227,23 @@ export interface paths {
     /** @description Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none. */
     get: operations["getApiV1Whoami"];
     put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/writes/_test/fail-between/{writer}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back. */
+    put: operations["putApiV1WritesTestFailBetweenByWriter"];
     post?: never;
     delete?: never;
     options?: never;
@@ -3378,7 +3481,7 @@ export interface components {
     };
     ArchitectureTree: {
       components: components["schemas"]["ArchitectureComponentRead"][] | null;
-      not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
+      not_architectural: components["schemas"]["ArchitectureTreeNoneRead"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
       totals: components["schemas"]["ArchitectureTreeTotals"];
@@ -3420,6 +3523,19 @@ export interface components {
       inherited_from: null | string;
       key: string;
       reason: string;
+      status: string;
+      title: string;
+    };
+    ArchitectureTreeNoneRead: {
+      inherited_from: null | string;
+      key: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       status: string;
       title: string;
     };
@@ -3562,6 +3678,7 @@ export interface components {
       version: number;
     };
     ArtifactText: {
+      asks?: components["schemas"]["TextAsk"][];
       blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
@@ -3633,6 +3750,11 @@ export interface components {
       at: string;
       id?: string;
       selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
       text: null | string;
       /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
       text_tree?: {
@@ -4422,6 +4544,67 @@ export interface components {
       question: string;
       suggestions: components["schemas"]["Suggestions"] | null;
     };
+    DecisionEntry: {
+      answer: null | string;
+      answer_state: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      answer_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      answered_at: null | string;
+      answered_by: null | string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_version: number;
+      decided_by: components["schemas"]["DecisionEntryNode"] | null;
+      declined: boolean;
+      declined_note: null | string;
+      document: components["schemas"]["DecisionEntryDocument"] | null;
+      kept: components["schemas"]["DecisionKeep"] | null;
+      kept_by: null | string;
+      kept_text_sum: null | string;
+      kind: string;
+      multiple: null | boolean;
+      node: components["schemas"]["DecisionEntryNode"];
+      options: components["schemas"]["AskOption"][] | null;
+      question: null | string;
+      readings: components["schemas"]["DecisionReading"][] | null;
+      ref: string;
+      replaced: boolean;
+      resolution: components["schemas"]["AskResolution"] | null;
+      selected: string[] | null;
+      selected_trees?: ({
+        type: string;
+      } & {
+        [key: string]: unknown;
+      })[];
+      shaped: components["schemas"]["DecisionLink"][] | null;
+      text: string;
+      text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      uncertainty: null | string;
+      uncertainty_reason: null | string;
+      urgency: null | string;
+      waiting_review: boolean;
+    };
+    DecisionEntryDocument: {
+      artifact_id: string;
+      block: string;
+      block_id: string;
+      ref: string;
+    };
+    DecisionEntryNode: {
+      id: string;
+      kind: string;
+    };
     DecisionKeep: {
       artifact_id: string;
       block_id: string;
@@ -4434,9 +4617,20 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       created_version: number;
+      event?: number;
       from_block: string;
       stale: boolean;
+      /** Format: date-time */
+      text_changed_at?: string;
+      text_changed_event?: number;
       to: components["schemas"]["GraphNode"];
+    };
+    DecisionReading: {
+      artifact_id: null | string;
+      authored_by: components["schemas"]["DecisionEntryNode"] | null;
+      block_id: string;
+      node: components["schemas"]["DecisionEntryNode"];
+      text: null | string;
     };
     DecisionResponse: {
       credential_id: null | string;
@@ -4895,6 +5089,7 @@ export interface components {
       block?: string;
       find?: string;
       index?: unknown;
+      into?: string;
       markdown?: string;
       occurrence?: number;
       op: string;
@@ -4990,19 +5185,25 @@ export interface components {
       method: string;
       pattern: string;
     };
-    GraphEdge: {
+    GraphEdgeWithTrees: {
       block?: components["schemas"]["GraphNode"];
       /** Format: date-time */
       created_at: string;
       direction: string;
-      excerpt?: components["schemas"]["GraphExcerpt"];
+      excerpt?: components["schemas"]["GraphExcerptWithTrees"];
       kind: string;
       node: components["schemas"]["GraphNode"];
       source_seq: null | number;
     };
-    GraphExcerpt: {
+    GraphExcerptWithTrees: {
       block_id?: string;
       text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     GraphNode: {
       block_id?: string;
@@ -5056,7 +5257,7 @@ export interface components {
       };
     };
     GraphReferences: {
-      edges: components["schemas"]["GraphEdge"][] | null;
+      edges: components["schemas"]["GraphEdgeWithTrees"][] | null;
       node: components["schemas"]["GraphNodeRead"];
       unknown_kinds?: string[];
     };
@@ -5065,6 +5266,13 @@ export interface components {
       body: string;
       /** Format: date-time */
       created_at: string;
+      field_trees?: {
+        [key: string]: {
+          type: string;
+        } & {
+          [key: string]: unknown;
+        };
+      };
       id: string;
       issue_key: string;
       phase: string;
@@ -5081,6 +5289,25 @@ export interface components {
     };
     HoldPersistenceInput: {
       duration: string;
+    };
+    InboxComparisonResponse: {
+      run: components["schemas"]["InboxComparisonRun"] | null;
+    };
+    InboxComparisonRun: {
+      difference_count: number;
+      /** Format: int64 */
+      id: number;
+      met: boolean;
+      missing_shapes: string[] | null;
+      people_checked: number;
+      people_uncovered: number;
+      /** Format: date-time */
+      ran_at: string;
+      shapes: components["schemas"]["InboxComparisonShape"][] | null;
+    };
+    InboxComparisonShape: {
+      rows: number;
+      shape: string;
     };
     InboxDismissRequest: {
       artifact?: string;
@@ -5326,6 +5553,7 @@ export interface components {
     IssueDecisions: {
       decisions: components["schemas"]["Decision"][] | null;
       document: null | string;
+      entries: components["schemas"]["DecisionEntry"][] | null;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
     IssueDesignGate: {
@@ -5353,6 +5581,12 @@ export interface components {
       /** Format: date-time */
       closed_at: null | string;
       components: components["schemas"]["IssueComponents"];
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      components_reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
@@ -5561,6 +5795,13 @@ export interface components {
     KeepDecisionInput: {
       text_sha256: string;
     };
+    KnownSession: {
+      session_id: string;
+      title: null | string;
+    };
+    KnownSessions: {
+      sessions: components["schemas"]["KnownSession"][] | null;
+    };
     LauncherCredentialResp: {
       approved_by: string;
       credential_id: string;
@@ -5651,6 +5892,13 @@ export interface components {
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
     };
+    LiveAskAttributes: {
+      blocks: {
+        [key: string]: {
+          [key: string]: unknown;
+        };
+      } | null;
+    };
     LiveWritePauseState: {
       parked: boolean;
     };
@@ -5662,6 +5910,66 @@ export interface components {
     };
     MarkdownRoundTripResponse: {
       markdown: string;
+    };
+    MeInboxAgent: {
+      anchor?: components["schemas"]["Anchor"];
+      conversation: components["schemas"]["MessageRead"];
+      /** Format: date-time */
+      dismissed_at?: string;
+      document?: components["schemas"]["OpenAskDocument"];
+      issue?: components["schemas"]["OpenAskIssue"];
+      kind: string;
+      priority?: number;
+      project?: string;
+      /** Format: date-time */
+      read_through?: string;
+      ref: string;
+      reply: components["schemas"]["MyReplyReply"];
+      session?: components["schemas"]["MyReplySession"];
+      subject: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      subject_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      thread_id: string;
+      unread: boolean;
+      unread_count: number;
+      unread_reply_ids?: string[];
+      version?: number;
+    };
+    MeInboxEntry: {
+      agent?: components["schemas"]["MeInboxAgent"];
+      ask?: components["schemas"]["InboxRow"];
+      /** Format: date-time */
+      moment: string;
+      node: components["schemas"]["MeInboxNode"];
+      relations: components["schemas"]["MeInboxRelation"][] | null;
+      thread?: components["schemas"]["MyReplyRow"];
+    };
+    MeInboxNode: {
+      id: string;
+      kind: string;
+    };
+    MeInboxRelation: {
+      /** Format: date-time */
+      at: string;
+      /** @enum {string} */
+      direction: "inbound" | "outbound";
+      kind: string;
+    };
+    MeInboxResponse: {
+      /** Format: date-time */
+      as_of: string;
+      entries: components["schemas"]["MeInboxEntry"][] | null;
+      /** Format: int64 */
+      horizon: number;
+      limit: number;
+      next_cursor?: string;
+      offset: number;
+      person: string;
+      total: number;
     };
     MessageDelivery: {
       accepted_as: null | string;
@@ -5814,6 +6122,12 @@ export interface components {
       reply: components["schemas"]["MyReplyReply"];
       session?: components["schemas"]["MyReplySession"];
       subject: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      subject_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       thread_id: string;
       unread: boolean;
       unread_count: number;
@@ -5957,6 +6271,28 @@ export interface components {
       rank?: components["schemas"]["IssueRankInput"] | null;
       title?: null | string;
     };
+    PersonNode: {
+      /** Format: date-time */
+      created_at: string;
+      first_line: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      first_line_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      href: string;
+      id: string;
+      kind: string;
+      relations: string[] | null;
+    };
+    PersonNodes: {
+      limit: number;
+      offset: number;
+      person: string;
+      rows: components["schemas"]["PersonNode"][] | null;
+      total: number;
+    };
     PersonSignInResp: {
       /** Format: date-time */
       created_at: string;
@@ -6050,6 +6386,12 @@ export interface components {
     };
     PriorityRow: {
       description: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
       /** Format: date-time */
       made_at: string;
@@ -6620,6 +6962,17 @@ export interface components {
     TestHookOK: {
       ok: boolean;
     };
+    TextAsk: {
+      answer?: string;
+      answered_at?: string;
+      answered_by?: string;
+      block_id: string;
+      copied_from?: string;
+      copied_from_document?: string;
+      selected?: string[];
+      /** @enum {string} */
+      state?: "open" | "answered" | "resolved";
+    };
     ThreadReadInput: {
       read_through: null | string;
     };
@@ -6847,6 +7200,39 @@ export interface operations {
       };
     };
   };
+  getApiV1AgentsKnown: {
+    parameters: {
+      query?: {
+        id?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["KnownSessions"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1AgentsBySessionIdAnswers: {
     parameters: {
       query?: {
@@ -6870,6 +7256,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SessionAnswersResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1AgentsBySessionIdArtifacts: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        session_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7277,6 +7697,40 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdTestAskAttributes: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LiveAskAttributes"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10042,6 +10496,38 @@ export interface operations {
       };
     };
   };
+  getApiV1InboxComparison: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["InboxComparisonResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Issues: {
     parameters: {
       query?: {
@@ -12280,6 +12766,44 @@ export interface operations {
       };
     };
   };
+  getApiV1MeInbox: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        kind?: string;
+        state?: "unread" | "inbox" | "dismissed";
+        cursor?: string;
+        issue?: string;
+        artifact?: string;
+        project?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MeInboxResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1MeInboxDismiss: {
     parameters: {
       query?: {
@@ -12791,6 +13315,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["NearCopyCheck"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1PeopleByLoginNodes: {
+    parameters: {
+      query?: {
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        login: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PersonNodes"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -14319,6 +14879,7 @@ export interface operations {
         keywords_only?: boolean;
         limit?: number;
         offset?: number;
+        kind?: ("issue" | "document" | "comment" | "ask" | "message")[];
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -14788,6 +15349,40 @@ export interface operations {
       };
     };
   };
+  putApiV1WritesTestFailBetweenByWriter: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        writer: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TestHookOK"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1WritesTestSlow: {
     parameters: {
       query?: {
@@ -14850,6 +15445,7 @@ export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeC
 export type ArchitectureTreeIssue = components["schemas"]["ArchitectureTreeIssue"];
 export type ArchitectureTreeIssueRef = components["schemas"]["ArchitectureTreeIssueRef"];
 export type ArchitectureTreeNone = components["schemas"]["ArchitectureTreeNone"];
+export type ArchitectureTreeNoneRead = components["schemas"]["ArchitectureTreeNoneRead"];
 export type ArchitectureTreeRetired = components["schemas"]["ArchitectureTreeRetired"];
 export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSource"];
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
@@ -14949,8 +15545,12 @@ export type CredentialSession = components["schemas"]["CredentialSession"];
 export type DashboardBuilds = components["schemas"]["DashboardBuilds"];
 export type Decision = components["schemas"]["Decision"];
 export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
+export type DecisionEntry = components["schemas"]["DecisionEntry"];
+export type DecisionEntryDocument = components["schemas"]["DecisionEntryDocument"];
+export type DecisionEntryNode = components["schemas"]["DecisionEntryNode"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
+export type DecisionReading = components["schemas"]["DecisionReading"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
 export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
@@ -15017,8 +15617,8 @@ export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
-export type GraphEdge = components["schemas"]["GraphEdge"];
-export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
+export type GraphEdgeWithTrees = components["schemas"]["GraphEdgeWithTrees"];
+export type GraphExcerptWithTrees = components["schemas"]["GraphExcerptWithTrees"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
 export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
@@ -15026,6 +15626,9 @@ export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
+export type InboxComparisonResponse = components["schemas"]["InboxComparisonResponse"];
+export type InboxComparisonRun = components["schemas"]["InboxComparisonRun"];
+export type InboxComparisonShape = components["schemas"]["InboxComparisonShape"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
 export type InboxIssue = components["schemas"]["InboxIssue"];
@@ -15070,6 +15673,8 @@ export type ItemBlock = components["schemas"]["ItemBlock"];
 export type ItemBlocks = components["schemas"]["ItemBlocks"];
 export type JsonArtifactUpload = components["schemas"]["JsonArtifactUpload"];
 export type KeepDecisionInput = components["schemas"]["KeepDecisionInput"];
+export type KnownSession = components["schemas"]["KnownSession"];
+export type KnownSessions = components["schemas"]["KnownSessions"];
 export type LauncherCredentialResp = components["schemas"]["LauncherCredentialResp"];
 export type LauncherCredentialsResponse = components["schemas"]["LauncherCredentialsResponse"];
 export type LeadTime = components["schemas"]["LeadTime"];
@@ -15080,10 +15685,16 @@ export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
+export type LiveAskAttributes = components["schemas"]["LiveAskAttributes"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
 export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
 export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
+export type MeInboxAgent = components["schemas"]["MeInboxAgent"];
+export type MeInboxEntry = components["schemas"]["MeInboxEntry"];
+export type MeInboxNode = components["schemas"]["MeInboxNode"];
+export type MeInboxRelation = components["schemas"]["MeInboxRelation"];
+export type MeInboxResponse = components["schemas"]["MeInboxResponse"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
@@ -15114,6 +15725,8 @@ export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
 export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
+export type PersonNode = components["schemas"]["PersonNode"];
+export type PersonNodes = components["schemas"]["PersonNodes"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
@@ -15195,6 +15808,7 @@ export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGa
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
+export type TextAsk = components["schemas"]["TextAsk"];
 export type ThreadReadInput = components["schemas"]["ThreadReadInput"];
 export type TimeToRestore = components["schemas"]["TimeToRestore"];
 export type TmuxPlace = components["schemas"]["TmuxPlace"];

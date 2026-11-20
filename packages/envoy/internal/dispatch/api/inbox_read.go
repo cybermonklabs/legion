@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -139,26 +142,32 @@ const inboxReadLockThreads = `
 	for no key update`
 
 // inboxReadMarkThreads moves the caller's mark on every Reply thread it was given, and answers
-// the project of each row it moved. Every row it reaches is one inboxReadLockThreads has just
-// taken, so the order its own plan scans them in decides nothing. read_through is cast by
-// Postgres from the caller's own text rather than bound as a parsed time, and stored as no
-// later than now, exactly as putThreadRead stores one mark: a mark never moves back, and a time
-// carrying nanoseconds is not truncated a microsecond short of the write it means to cover.
+// each row it moved in the shape every mark statement of these two routes answers
+// (writeInboxThreadMarks): its project, its thread and the thread root's kind, the read mark it now
+// holds, the moment of the mark the statement wrote, here that read mark again, and whether it
+// moved that read mark, which every row it answers did. Every row it reaches is one
+// inboxReadLockThreads has just taken, so the order its own plan scans them in decides nothing.
+// read_through is cast by Postgres from the caller's own text rather than bound as a parsed time,
+// and stored as no later than now, exactly as putThreadRead stores one mark: a mark never moves
+// back, and a time carrying nanoseconds is not truncated a microsecond short of the write it means
+// to cover.
 const inboxReadMarkThreads = `
 	update user_threads set read_through = least($2::text::timestamptz, now())
 	where login = $1 and thread_id = any($3::uuid[])
 	  and read_through < least($2::text::timestamptz, now())
-	returning project_key`
+	returning project_key, thread_id::text, kind, read_through, read_through, true`
 
 // inboxReadMarkAgentReplies writes the agent replies this request reads, by id, as
 // putUserAgentState writes the ones a view showed: the ids are sorted before the insert so two
 // writes lock new rows in one order, a reply the session's own read mark has already passed gets
 // no row (the prune below would delete it again), and a row already there is left alone. No
 // session's user_agent_read.read_through moves, so a reply in the live conversation that this
-// request did not mark stays unread.
+// request did not mark stays unread. Each row it writes is marked at the moment of the reading
+// ($4 says whether the caller's marks fit the store, markFits), and answered with that moment,
+// which its reply_read tuple states.
 const inboxReadMarkAgentReplies = `
-	insert into user_agent_reply_read (login, session_id, reply_id)
-	select $1, wanted.session_id, wanted.reply_id
+	insert into user_agent_reply_read (login, session_id, reply_id, tuples_stored_at)
+	select $1, wanted.session_id, wanted.reply_id, case when $4::boolean then now() end
 	from unnest($2::text[], $3::uuid[]) with ordinality as wanted(session_id, reply_id, position)
 	where not exists (
 		select 1 from messages
@@ -167,7 +176,7 @@ const inboxReadMarkAgentReplies = `
 	)
 	order by wanted.position
 	on conflict do nothing
-	returning session_id, reply_id::text`
+	returning session_id, reply_id::text, now()`
 
 // inboxReadStatementTimeout bounds every statement of the mark-all's transaction. One request
 // marking the acceptance seed - 600 unread Reply threads and 20 Agent threads for one login -
@@ -432,14 +441,17 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 //     before the first append.
 //
 // Step 2 comes before the caller's rows because that is the order a session's reply takes those
-// two in. Postgres fires a table's row triggers in name order, so on messages
-// user_agent_thread_dismissed_clear (migration 20261105093507) runs before user_threads_message
-// (0095, attached by 0097) on an issue message, and on an Agent thread's reply it is the only
-// one of the two that runs at all: that other trigger returns at once for a message with no
-// issue key, and an Agent thread's messages carry none. So a session's reply takes the thread's
-// root - the row the clear trigger locks before its delete - before any row of this caller's it
-// reaches. A dismiss that took the caller's rows first and the root second would be the opposite
-// order, and the two would meet each holding what the other waits for.
+// two in. Its writer, inboxwrite.Record, takes the thread's root `for key share` and clears the
+// root's Agent dismissals before it takes any user_threads row of the thread (Record's step 2,
+// below). An older build's reply does the same through its triggers: Postgres fires a table's row
+// triggers in name order, so on messages user_agent_thread_dismissed_clear (migration
+// 20261105093507) runs before user_threads_message (0095, attached by 0097) on an issue message,
+// and on an Agent thread's reply it is the only one of the two that runs at all: that other
+// trigger returns at once for a message with no issue key, and an Agent thread's messages carry
+// none. So a session's reply takes the thread's root - the row the clear locks before its delete -
+// before any row of this caller's it reaches. A dismiss that took the caller's rows first and the
+// root second would be the opposite order, and the two would meet each holding what the other
+// waits for.
 //
 // PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
 // ordinary writer is (below), and not by this list: it takes its one thread's owner lock
@@ -471,14 +483,87 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // ones the update moves, so a second press waits for the first over rows it would have skipped.
 //
 // An ordinary writer is ordered by the owner instead. A comment, an answer or an issue message
-// takes its issue's or document's owner lock (store.LockOwner) before its trigger moves the
-// user_threads rows of everyone in the thread; that exclusive lock conflicts with the shared one
-// taken here, and every row such a trigger moves belongs to a thread on the owner it holds,
-// which is an owner this transaction holds too, since it locks the owner of every
-// thread it marks. One of the two therefore waits at the owner while holding nothing the other
-// wants, whichever order the writer itself reaches the project in: a block ask's answer appends
-// an anchor refresh, and so takes the project, before its own update moves those rows, and it
-// is ordered all the same.
+// takes its issue's or document's owner lock (store.LockOwner) before it moves the user_threads
+// rows of everyone in the thread; that exclusive lock conflicts with the shared one taken here,
+// and every row such a write moves belongs to a thread on the owner it holds, which is an owner
+// this transaction holds too, since it locks the owner of every thread it marks. One of the two
+// therefore waits at the owner while holding nothing the other wants, whichever order the writer
+// itself reaches the project in: a block ask's answer appends an anchor refresh, and so takes the
+// project, before its own update moves those rows, and it is ordered all the same.
+//
+// The rows such a write moves are moved by the one writer of a thread, inboxwrite's record
+// (inboxwrite.PlanRecord and Recording.Queue), which every comment, message, ask and answer write
+// of this release plans in its read phase and queues right after its event, under the owner lock
+// it took first, and for a write an older build makes by the triggers of 0095-0097. The record
+// takes them in this order: the participates_in tuples of the write, and of what an answer's ask
+// still owes the store; then every user_threads row of the thread, `for no key update`, in
+// ascending login order, in one pass (queueThreadLock), which holds the row of every person the
+// write is about to deliver to; only then the delivered_to tuple of each of those people, through
+// graphstore.QueueToPerson; then the move of their rows; and last the writer's own row. The
+// backfill marks a row under that same lock, so no delivery falls on both sides of a row's mark
+// (D4). Two writes into one thread queue at their owner lock before either reaches this pass, so
+// the pass orders nothing between writers; it is what holds a mark to the deliveries around it.
+// The delivered_to an ask's create appends to the person the ask waits on, with its
+// participation, and the ones a move of that person appends (inboxwrite.QueueMoveWaiting) take
+// no user_threads row first: neither moves a row, and the mark counts only the deliveries a reply
+// caused (P13).
+//
+// Who an ask waits on (asks.AskedOfPersonExpression) is read from three rows, and each write that
+// decides a delivery by it holds the locks those rows are written under, so the delivered person
+// is the one that expression names once every such write has committed. The ask's asked_of and
+// its issue's assignee are written under the owner's lock, which every create and every move of
+// an ask on that owner takes first. The project's default is written under the project's owner
+// lock, taken exclusive, which putProjectDefaultAssignee takes first, as its owner. A write that
+// reads the default to deliver an ask - a create that falls through to it, an issue's assignee
+// cleared, a reopen restoring its withdrawn asks, a settlement that opens an ask or restores one
+// it retracted - takes that project's owner lock shared (inboxwrite.HoldDefault) after its own
+// owner's, the order events.Broker.LockOwners takes an issue's owner and a project's, and before
+// it reads who the ask waits on and before any asks row, node or tuple it writes. Then a move of
+// who asks wait on (inboxwrite.QueueMoveWaiting) locks the asks rows it moves `for no key
+// update`, in ascending id, right after its event and before the person nodes and tuples it
+// writes, and reads who each ask waits on, and whom its delivery stands to, in the statement after
+// that lock, so a move it waited for is read as it committed. Every write locking several asks
+// rows takes them in that ascending id order: the close's withdrawal and the reopen's restore
+// (readOpenIssueAsks, prepareRestoration), a settlement's (docs' loadAskBlocks) and the move. A
+// snooze's foreign key takes its ask `for key share`, which no move waits on.
+//
+// The node and tuple store (internal/dispatch/graphstore) adds five invariants rather than a
+// sequence of its own. Its writers do not all run their steps in one order - one learns its
+// event id before it has a node to write, another writes the node first and moves source_event
+// later - so a numbered step would be false for some of them, while each of these holds for
+// every writer:
+//
+//  1. the owner's lock comes first, through store.LockOwner (store/ownerlock.go) or
+//     lockArtifactOwner (docs/service.go), as it does for every other writer above: the advisory
+//     lock, taken before the read phase reads what the write phase writes, and so before any
+//     row of the store is taken. The owner's row is taken later, in the write phase, where an
+//     event the writer appends takes it; while an earlier build, which serialises on the row,
+//     is in the fleet, the row is taken right after the advisory lock (store.LockOwners);
+//  2. a node's graph_nodes row is written before any projection row whose foreign key names it
+//     (document_blocks, block_refs and comments, migration 20261109022248), so the write that
+//     makes a node and the write that points at it never meet in the opposite order;
+//  3. the event is appended before the tuples whose cause it is, so a tuple's source_event
+//     names a row the log already holds;
+//  4. a graph_nodes write touching several nodes takes them in ascending (kind, id)
+//     (graphstore.writeNodes), so two such writes cannot each hold what the other waits for;
+//  5. a writer under the revision fence (R23 of this change: the version write, the
+//     block index reconciliation tick and the backfill) takes the document's owner lock, through
+//     lockArtifactOwner or events.LockOwnerRows, then the document's document_block_versions row
+//     `for no key update` (indexOwedDocument, refs.standsAtVersion, graphcensus's
+//     lockBlockDocuments, and a document settlement's lockSettlementFence, which takes it before
+//     the asks the settlement opens are followed), before it writes a node, a tuple or a
+//     projection row, so two passes over one document queue at the fence and the one that loses
+//     it has written nothing.
+//
+// Appending a tuple locks no row of another table: graph_tuples has no foreign key and nothing
+// updates or deletes a tuple, so where the append falls in a writer's sequence moves no lock,
+// and invariant 3 is about which rows exist, not about which are held. The one exception is the
+// erase (`envoy-dispatch erase`, R1 and R5 of this change), which deletes a node's
+// tuples and its node row, and takes this same order to do it: the lock of every owner it writes
+// under, then the node row, then the rest (grapherase's lockInStoreOrder). A writer owning no
+// issue and no document - an operator's own write, a session-addressed event - takes no owner
+// lock at all, and invariant 1 says nothing about it. graphstore's
+// TestEveryStoreWriteTakesOneLockOrder reads this list and fails if these five are not in it.
 func (s *server) markInboxReadThreads(
 	ctx context.Context, actor model.Actor, readThrough string, scope inboxReadScope,
 ) (int, []model.Event, error) {
@@ -488,7 +573,11 @@ func (s *server) markInboxReadThreads(
 		return 0, nil, err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local statement_timeout = '"+inboxReadStatementTimeout+"'"); err != nil {
+	// The statement bound, set for this transaction alone as `set local` sets it, and the
+	// transaction's now() beside it, which the events this route appends and the marks they cause
+	// are dated at (commitInboxMarks): one statement, before the first lock.
+	var at time.Time
+	if err := tx.QueryRow(ctx, `select set_config('statement_timeout', $1, true), now()`, inboxReadStatementTimeout).Scan(new(string), &at); err != nil {
 		return 0, nil, fmt.Errorf("bound the mark-all's statements: %w", err)
 	}
 	read, err := readInboxReadThreads(ctx, tx, actor, login,
@@ -500,7 +589,7 @@ func (s *server) markInboxReadThreads(
 		return 0, nil, err
 	}
 
-	events := []model.Event{}
+	events := []inboxEvent{}
 	marked := 0
 	if len(read.threads) > 0 {
 		projects, err := writeInboxThreadMarks(ctx, tx, login, read.threads, inboxReadMarkThreads, []any{readThrough})
@@ -510,23 +599,42 @@ func (s *server) markInboxReadThreads(
 		marked += projects.marked
 		for _, project := range projects.keys {
 			// One event per project, naming no thread: the viewer's other tabs and devices
-			// refetch the list, which is what a thread's own mark asks of them too.
-			events = append(events, projectOwner(project).event(
-				"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login},
-			))
+			// refetch the list, which is what a thread's own mark asks of them too. It causes the
+			// read_through of each thread the mark moved in that project.
+			var marks []graphstore.Tuple
+			for _, thread := range projects.threads[project] {
+				marks = append(marks, personMark(actor, graphstore.TupleReadThrough, thread.kind, thread.id,
+					thread.readThrough, true, graphstore.NoEvent))
+			}
+			events = append(events, inboxEvent{
+				event: projectOwner(project).event(
+					"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login},
+				),
+				marks: marks,
+			})
 		}
 	}
 	if len(read.replies) > 0 {
-		sessions, roots, err := s.markInboxReadAgentReplies(ctx, tx, login, read)
+		replies, err := s.markInboxReadAgentReplies(ctx, tx, actor, login, read)
 		if err != nil {
 			return 0, nil, err
 		}
-		marked += roots
-		for _, session := range sessions {
-			events = append(events, userAgentStateEvent(actor, session))
+		marked += replies.roots
+		for _, session := range replies.sessions {
+			events = append(events, inboxEvent{event: userAgentStateEvent(actor, session), marks: replies.marks[session]})
 		}
 	}
-	return s.commitInboxMarks(ctx, tx, marked, events)
+	return s.commitInboxMarks(ctx, tx, failpoint.InboxRead, at, marked, events)
+}
+
+// inboxEvent is one event a write route over these rows appends, with the marks it causes: the
+// tuples from the caller's person node of what the route wrote that the event announces - each
+// Reply thread's for its project's event, each Agent thread's and reply's for its session's
+// (api/read_marks.go). Their source_event is the event's own, which commitInboxMarks fills once it
+// has appended it.
+type inboxEvent struct {
+	event model.Event
+	marks []graphstore.Tuple
 }
 
 // commitInboxMarks ends both write routes over these rows. A request that changed nothing
@@ -534,24 +642,49 @@ func (s *server) markInboxReadThreads(
 // each event would refetch the list in every tab the viewer has open. A request that changed
 // something takes the project of every event it appends - step 6 of the lock order above, in one
 // sorted order after the rows it wrote and before the first append, an agent reply's event naming
-// no owner and so taking no lock here - appends them and commits. It answers the count its caller
-// answers, 0 when nothing changed, and the events to publish once the transaction has committed.
+// no owner and so taking no lock here - and then appends them, each followed by the marks it
+// causes, in one statement under that event (graphstore.QueueFromPerson), which takes no row lock
+// but the person's node, `do nothing` where the store holds it, all in one batch, and commits.
+// Every mark is dated at, the transaction's now(), which the events carry too. It answers the
+// count its caller answers, 0 when nothing changed, and the events to publish once the
+// transaction has committed. writer names the route to the seam a test injects a failure
+// through between the rows the route wrote and the marks (failpoint.InboxRead,
+// failpoint.InboxDismiss), decided before the batch is sent and queued before the first mark.
 func (s *server) commitInboxMarks(
-	ctx context.Context, tx pgx.Tx, changed int, events []model.Event,
+	ctx context.Context, tx pgx.Tx, writer string, at time.Time, changed int, events []inboxEvent,
 ) (int, []model.Event, error) {
 	if len(events) == 0 {
 		return 0, nil, tx.Rollback(ctx)
 	}
-	if err := s.deps.Events.LockOwners(ctx, tx, events...); err != nil {
+	owners := make([]model.Event, len(events))
+	for index, event := range events {
+		owners[index] = event.event
+	}
+	if err := s.deps.Events.LockOwners(ctx, tx, owners...); err != nil {
 		return 0, nil, fmt.Errorf("lock the changed threads' projects: %w", err)
 	}
-	appended := make([]model.Event, 0, len(events))
-	for _, event := range events {
-		written, err := s.appendEvent(ctx, tx, event)
-		if err != nil {
-			return 0, nil, err
+	fails := failpoint.Planned(ctx, writer)
+	appended := make([]model.Event, len(events))
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		for index, event := range events {
+			if err := s.deps.Events.QueueAppend(b, event.event, func(written model.Event) { appended[index] = written }); err != nil {
+				return err
+			}
+			if index == 0 {
+				failpoint.Queue(b, fails)
+			}
+			marks := make([]graphstore.Tuple, len(event.marks))
+			for position, mark := range event.marks {
+				mark.SourceEvent = graphstore.LatestEvent
+				marks[position] = mark
+			}
+			if err := graphstore.QueueFromPerson(b, at, marks); err != nil {
+				return fmt.Errorf("state the inbox's marks: %w", err)
+			}
 		}
-		appended = append(appended, written)
+		return nil
+	}); err != nil {
+		return 0, nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, nil, err
@@ -699,27 +832,43 @@ func lockInboxReadOwners(ctx context.Context, tx pgx.Tx, read inboxReadThreads) 
 	return nil
 }
 
-// inboxReadMarked is what one mark statement moved: how many rows, and the distinct projects they
-// belong to, sorted, which is one event each.
+// inboxReadMarked is what one mark statement moved: how many rows, the distinct projects they
+// belong to, sorted, which is one event each, and the rows themselves by project, which are the
+// marks those events cause.
 type inboxReadMarked struct {
-	marked int
-	keys   []string
+	marked  int
+	keys    []string
+	threads map[string][]inboxMarkedThread
+}
+
+// inboxMarkedThread is one row a mark statement moved, as every such statement answers it: its
+// thread and the kind of the thread's root, which is the far end of the mark's tuple, the read
+// mark the row now holds, the moment of the mark the statement wrote - the read mark itself for
+// the mark-all, the dismissal for a dismissal, the moment of the write for a restore
+// (api/inbox_dismiss.go) - and whether the statement moved the row's read mark, which is where a
+// read_through tuple is stated.
+type inboxMarkedThread struct {
+	id, kind    string
+	readThrough time.Time
+	at          time.Time
+	readMoved   bool
 }
 
 // writeInboxThreadMarks takes the caller's rows in thread_id order, runs one mark statement over
-// them and reads back the project of every row it changed. A row the statement leaves alone - a
-// thread already read past the mark, one already dismissed, one that carries no dismissal under a
-// restore - is locked with the rest, since what orders two requests must be the rows they named
-// rather than the rows one of them happens to move, and it is not among those answered.
+// them and reads back every row it changed. A row the statement leaves alone - a thread already
+// read past the mark, one already dismissed, one that carries no dismissal under a restore - is
+// locked with the rest, since what orders two requests must be the rows they named rather than the
+// rows one of them happens to move, and it is not among those answered.
 //
 // Every statement it runs binds the caller ($1), the mark it stores when it stores one, the rows,
 // and last whatever the statement checks those rows against (inboxMarkArgs), so mark carries that
 // one parameter or none - a restore stores none - and seen the dismissal's versions or none: the
-// mark-all checks no version and binds neither (api/inbox_dismiss.go).
+// mark-all checks no version and binds neither (api/inbox_dismiss.go). Every one of them answers
+// each row it moved as inboxMarkedThread reads it, after its project.
 func writeInboxThreadMarks(
 	ctx context.Context, tx pgx.Tx, login string, threads []string, query string, mark []any, seen ...any,
 ) (inboxReadMarked, error) {
-	moved := inboxReadMarked{}
+	moved := inboxReadMarked{threads: map[string][]inboxMarkedThread{}}
 	// Step 3 of that order: the update below locks what its plan reaches in the order it
 	// reaches it, which is not one order across two presses (markInboxReadThreads).
 	if _, err := tx.Exec(ctx, inboxReadLockThreads, login, threads); err != nil {
@@ -730,19 +879,19 @@ func writeInboxThreadMarks(
 		return moved, err
 	}
 	defer rows.Close()
-	projects := map[string]struct{}{}
 	for rows.Next() {
 		var project string
-		if err := rows.Scan(&project); err != nil {
+		var thread inboxMarkedThread
+		if err := rows.Scan(&project, &thread.id, &thread.kind, &thread.readThrough, &thread.at, &thread.readMoved); err != nil {
 			return moved, err
 		}
 		moved.marked++
-		projects[project] = struct{}{}
+		moved.threads[project] = append(moved.threads[project], thread)
 	}
 	if err := rows.Err(); err != nil {
 		return moved, err
 	}
-	moved.keys = slices.Sorted(maps.Keys(projects))
+	moved.keys = slices.Sorted(maps.Keys(moved.threads))
 	return moved, nil
 }
 
@@ -753,39 +902,58 @@ func inboxMarkArgs(login string, mark []any, rows []string, seen ...any) []any {
 	return append(append(append([]any{login}, mark...), rows), seen...)
 }
 
+// inboxReadReplies is what the agent-reply write did: the sessions whose insert wrote a row,
+// sorted, which is one event each, how many agent threads those rows belong to, which the answer
+// counts, and by session the marks those events cause - the reply_read of each row it wrote, and
+// the retraction of each dead row its prune deleted.
+type inboxReadReplies struct {
+	sessions []string
+	roots    int
+	marks    map[string][]graphstore.Tuple
+}
+
 // markInboxReadAgentReplies writes the agent replies by id and prunes what the sessions' own read
-// marks already cover. It answers the sessions whose insert wrote a row, sorted, which is one
-// event each, and how many agent threads those rows belong to, which the answer counts.
+// marks already cover, and answers what it did (inboxReadReplies).
 func (s *server) markInboxReadAgentReplies(
-	ctx context.Context, tx pgx.Tx, login string, read inboxReadThreads,
-) ([]string, int, error) {
-	rows, err := tx.Query(ctx, inboxReadMarkAgentReplies, login, read.sessions, read.replies)
+	ctx context.Context, tx pgx.Tx, actor model.Actor, login string, read inboxReadThreads,
+) (inboxReadReplies, error) {
+	written := inboxReadReplies{marks: map[string][]graphstore.Tuple{}}
+	rows, err := tx.Query(ctx, inboxReadMarkAgentReplies, login, read.sessions, read.replies, markFits(actor))
 	if err != nil {
-		return nil, 0, fmt.Errorf("mark the inbox's agent replies read: %w", err)
+		return written, fmt.Errorf("mark the inbox's agent replies read: %w", err)
 	}
-	defer rows.Close()
-	sessions, roots := map[string]struct{}{}, map[string]struct{}{}
+	roots := map[string]struct{}{}
 	for rows.Next() {
 		var session, reply string
-		if err := rows.Scan(&session, &reply); err != nil {
-			return nil, 0, fmt.Errorf("scan a marked agent reply: %w", err)
+		var at time.Time
+		if err := rows.Scan(&session, &reply, &at); err != nil {
+			rows.Close()
+			return written, fmt.Errorf("scan a marked agent reply: %w", err)
 		}
-		sessions[session] = struct{}{}
+		written.marks[session] = append(written.marks[session],
+			personMark(actor, graphstore.TupleReplyRead, graphstore.KindMessage, reply, at, true, graphstore.NoEvent))
 		roots[read.roots[reply]] = struct{}{}
 	}
+	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("mark the inbox's agent replies read: %w", err)
+		return written, fmt.Errorf("mark the inbox's agent replies read: %w", err)
 	}
-	touched := slices.Sorted(maps.Keys(sessions))
-	if len(touched) > 0 {
+	written.sessions = slices.Sorted(maps.Keys(written.marks))
+	written.roots = len(roots)
+	if len(written.sessions) > 0 {
 		// Step 5 of the lock order above: the dead rows, taken in one order before the delete
 		// reaches them, as putUserAgentState takes them. Nothing this request writes is ever
 		// dead (the insert above skips what the mark covers), so this clears only what an older
 		// write left behind; why the statement locks them in that order is written on
-		// pruneAgentReplies (api/state.go).
-		if _, err := tx.Exec(ctx, pruneAgentReplies, login, touched); err != nil {
-			return nil, 0, fmt.Errorf("prune the agent replies the read marks cover: %w", err)
+		// pruneAgentReplies (api/state.go). Each row it deletes is a reply_read its session's
+		// event retracts.
+		pruned, err := prunedAgentReplies(ctx, tx, actor, login, written.sessions)
+		if err != nil {
+			return written, fmt.Errorf("prune the agent replies the read marks cover: %w", err)
+		}
+		for session, retracted := range pruned {
+			written.marks[session] = append(written.marks[session], retracted...)
 		}
 	}
-	return touched, len(roots), nil
+	return written, nil
 }

@@ -108,6 +108,31 @@ func TestMyRepliesListsACommentThreadASessionRepliedIn(t *testing.T) {
 	}
 }
 
+// A Reply row's subject and its reply's first line are cut at 160 runes where no reference crosses
+// the cut (refs.FirstLine): a key or a link the bound falls inside is left out whole, rather than
+// shown as `CORE-12`, a working link to another issue, or as a link's opening drawn raw.
+func TestMyRepliesCutsNoReferenceInHalf(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Long lines", "A spec")
+	// 152 runes, so a reference after it starts before the cut at 159 and ends after it.
+	lead := strings.Repeat("x", 151) + " "
+	root := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": lead + "CORE-1234 decides it.\nOr wait.",
+	}, "alice")
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": lead + "[the spec](dispatch://" + issue.Key + "/spec) agrees.", "reply_to": root.ID,
+	})
+
+	row := replyRow(t, getMyReplies(t, handler, "alice", ""), root.ID)
+	want := strings.Repeat("x", 151) + "…"
+	if row.Subject != want {
+		t.Fatalf("subject = %q, want %q: the key the cut falls inside left out whole", row.Subject, want)
+	}
+	if row.Reply.FirstLine != want {
+		t.Fatalf("reply's first line = %q, want %q: the link the cut falls inside left out whole", row.Reply.FirstLine, want)
+	}
+}
+
 // What the page leaves out and what it keeps: an open ask the Inbox lists in Waiting on you is
 // left out, since its row there already shows the reply, and that is an open ask on an open issue
 // assigned to the caller; an open ask on a closed issue, which the Inbox hides, stays; so do an
@@ -507,8 +532,12 @@ func TestMarkThreadReadRacingASessionReply(t *testing.T) {
 // appends that event before the answer moves Alice's row (docs/anchor_refresh.go's refreshAnchors,
 // then ask_transitions.go's update asks): the mark takes the issue before Alice's row, so it never
 // holds the row the answer's trigger waits on while waiting for the event lock the answer holds.
+// The answer writes its block's attributes only while another build serves, for that build's
+// pages (docs.KeepAskBlockInStep; on a fleet of one build an answer changes no byte of the
+// document), so the test registers a process of each of two builds.
 func TestMarkThreadReadRacingABlockAskAnswerThatRefreshesAnAnchor(t *testing.T) {
 	handler, database := blockAskHandler(t)
+	registerTwoBuilds(t, database)
 	issue, askID := seedBlockAsk(t, handler, "Block race", "decision", transportAsk, "Which transport?")
 	anchored := createThreadComment(t, handler, issue.Key, map[string]any{
 		"body": "Say which.", "anchor": map[string]any{"artifact": "spec", "quote": "Which transport"},

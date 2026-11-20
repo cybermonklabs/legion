@@ -14,6 +14,7 @@ import (
 
 	ygws "github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -345,7 +346,9 @@ func TestApplyOperationRetypesAParagraphInPlace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render retyped paragraph: %v", err)
 	}
-	want := ":::ask{#" + blockID + " urgency=\"high\" multiple=\"true\" state=\"open\"}\nWhich transport should we expose?\n:::\n"
+	// A server attribute has no written default, so the retyped block's markdown holds no answer
+	// state: an ask's state is its node's, never its block's.
+	want := ":::ask{#" + blockID + " urgency=\"high\" multiple=\"true\"}\nWhich transport should we expose?\n:::\n"
 	if got != want {
 		t.Fatalf("retyped markdown = %q, want %q", got, want)
 	}
@@ -375,24 +378,38 @@ func TestApplyOperationLabelsInvalidRetypeFields(t *testing.T) {
 	}
 }
 
-func TestSetBlockAttributesWritesTypedBlockState(t *testing.T) {
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	seedServiceText(t, service, artifactID, ":::ask{#ask-1 multiple=\"false\" state=\"open\" urgency=\"med\"}\nShip it?\n:::\n")
-	actor := model.Actor{Kind: "user", ID: "alice"}
-
-	err := joinedSetBlockAttributes(service, artifactID, "ask-1", map[string]any{
-		"answer":      "Yes.",
-		"answered_at": "2026-09-12T13:20:00Z",
-		"answered_by": "alice",
-		"selected":    []string{"Yes"},
-		"state":       "answered",
-	}, actor)
-
-	if err != nil {
-		t.Fatalf("write ask state: %v", err)
+// The answer route's write into an ask's block (KeepAskBlockInStep) puts the ask's state and
+// answer into the block while another build serves, whose pages read them there, as the release
+// before wrote them; on a fleet of one build it writes nothing, and the answer, held on the ask's
+// node and its row, changes no byte of the document.
+func TestKeepAskBlockInStepWritesTheAnswerOnlyWhileAnotherBuildServes(t *testing.T) {
+	const block = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\"}\nShip it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
+	for _, twoBuilds := range []bool{false, true} {
+		name := "a fleet of one build"
+		if twoBuilds {
+			name = "two builds serving"
+		}
+		t.Run(name, func(t *testing.T) {
+			service, artifactID := newTestService(t)
+			service.settle = time.Hour
+			seedServiceText(t, service, artifactID, block)
+			settleCurrentGeneration(t, service, artifactID)
+			if twoBuilds {
+				serveTwoBuilds(t, service.store)
+			}
+			alice := model.Actor{Kind: "user", ID: "alice"}
+			words := "Yes."
+			at := time.Date(2026, 9, 12, 13, 20, 0, 0, time.UTC)
+			change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"Yes"}, Text: &words, At: at})
+			change.Who, change.At = alice, at
+			settleAskAs(t, service, artifactID, "ask-1", blockAskOn(t, service, artifactID, "ask-1").ID, alice, change)
+			want := block
+			if twoBuilds {
+				want = strings.Replace(block, `multiple="false"}`, `multiple="false" state="answered" answered_by="alice" answered_at="2026-09-12T13:20:00Z" selected="[&#x22;Yes&#x22;]" answer="Yes."}`, 1)
+			}
+			waitForDocumentText(t, service, artifactID, want)
+		})
 	}
-	waitForDocumentText(t, service, artifactID, ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-12T13:20:00Z\" selected=\"[&#x22;Yes&#x22;]\" answer=\"Yes.\"}\nShip it?\n:::\n")
 }
 
 func TestApplyOpsRejectsAmbiguousTargetWithoutChangingDocument(t *testing.T) {
@@ -784,7 +801,9 @@ func TestApplyOperationExplainsRenderedQuoteMatching(t *testing.T) {
 	}
 }
 
-const askFixture = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich transport?\n:::\n"
+// askFixture is an open ask's block as a document holds it: no attribute of the block holds the
+// ask's state, which its node and its asks row hold.
+const askFixture = ":::ask{#decision urgency=\"high\" multiple=\"false\"}\nWhich transport?\n:::\n"
 
 func TestApplyOperationDeletesABlockByID(t *testing.T) {
 	tree, err := parseInput("# Title\n\n" + askFixture + "\n1. only\n\nAfter.\n")
@@ -2152,7 +2171,7 @@ func TestApplyOperationReplaceWritesBlocksInsideTheBlockThatHoldsThem(t *testing
 			markdown: ask,
 			find:     "Which one?",
 			with:     "Which one?\n\n- one\n- two",
-			want:     ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich one?\n\n- one\n- two\n:::\n",
+			want:     ":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich one?\n\n- one\n- two\n:::\n",
 		},
 		{
 			name:     "the lines of a list inside a code block",
@@ -3473,32 +3492,28 @@ func TestApplyOpsMovingAnOpenAskBlockKeepsItsAsk(t *testing.T) {
 	}
 }
 
+// Moving an answered ask's block keeps its answer: the ask stays answered, with no retraction,
+// reopen or repair, and the asks member an agent reads beside the text answers the block at its
+// new place (TextWithAsks). The ask is answered as the answer route answers it, on its node and its
+// row alone (asks.Settle): no byte of the document holds the answer, so
+// the document reads the same before and after it.
 func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 	service, artifactID, askID, settle, askEvents := blockAskHarness(t)
-	// Answer the ask the way the answer handler does: the row first, then the block's
-	// server-owned attributes.
 	answeredAt := time.Date(2026, 9, 15, 17, 37, 34, 0, time.UTC)
-	answerJSON, err := json.Marshal(model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: answeredAt})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.store.Pool.Exec(context.Background(), `update asks set state = 'answered', answer = $2 where id = $1`, askID, answerJSON); err != nil {
-		t.Fatalf("answer indexed ask: %v", err)
-	}
-	if err := joinedSetBlockAttributes(service, artifactID, "decision", map[string]any{
-		"state": "answered", "answered_by": "alice", "answered_at": answeredAt.Format(time.RFC3339Nano), "selected": []string{"REST"},
-	}, model.Actor{Kind: "user", ID: "alice"}); err != nil {
-		t.Fatalf("write answered attributes: %v", err)
-	}
-	const answeredAsk = ":::ask{#decision urgency=\"high\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-15T17:37:34Z\" selected=\"[&#x22;REST&#x22;]\"}\nWhich transport?\n:::\n"
-	waitForDocumentText(t, service, artifactID, answeredAsk+"\nContext ends with no drift.\n")
+	change := asks.Answered(model.AskAnswer{User: "alice", Selected: []string{"REST"}, At: answeredAt})
+	change.Who, change.At = model.Actor{Kind: "user", ID: "alice"}, answeredAt
+	settleTheDocumentsAsk(t, service, artifactID, change)
+	const answered = `#decision state="answered" answered_by="alice" answered_at="2026-09-15T17:37:34Z" selected=["REST"]` + "\n"
 	settle()
+	waitForDocumentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n")
+	waitForAgentText(t, service, artifactID, askFixture+"\nContext ends with no drift.\n", answered)
 
 	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "move", Block: "decision", After: "no drift."}}, editingSession, nil); err != nil {
 		t.Fatalf("move ask block: %v", err)
 	}
-	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+answeredAsk)
+	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture)
 	settle()
+	waitForAgentText(t, service, artifactID, "Context ends with no drift.\n\n"+askFixture, answered)
 	if state, _ := askRowState(t, service, askID); state != "answered" {
 		t.Fatalf("moved ask state = %q, want answered", state)
 	}
@@ -3506,10 +3521,28 @@ func TestApplyOpsMovingAnAnsweredAskBlockKeepsItsAnswer(t *testing.T) {
 		t.Fatalf("ask events after move = %d, want no retract, reopen, or repair", got)
 	}
 
-	// Deleting the answered block leaves the answered row as the record; a resolved row
+	// An agent cannot take the person's answered decision out of the document: its delete is
+	// refused, and the document and its versions stay as they were.
+	before, err := service.Text(context.Background(), artifactID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions := latestVersionNumber(t, service, artifactID)
+	var kept *ErrAnsweredAskKept
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil); !errors.As(err, &kept) ||
+		len(kept.Asks) != 1 || kept.Asks[0].Question != "Which transport?" || kept.Asks[0].RetypedTo != "" {
+		t.Fatalf("an agent's delete of the answered ask block = %v, want it refused as the answered ask kept", err)
+	}
+	if after, err := service.Text(context.Background(), artifactID); err != nil || after != before {
+		t.Fatalf("the refused delete left the document %q (%v), want it as it was, %q", after, err, before)
+	}
+	if after := latestVersionNumber(t, service, artifactID); after != versions {
+		t.Fatalf("the refused delete left the document at version %d, want %d", after, versions)
+	}
+	// The person's own delete is taken, and leaves the answered row as the record; a resolved row
 	// carrying an answer is what the asks table forbids, and settlement must not fail on it.
-	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil); err != nil {
-		t.Fatalf("delete answered ask block: %v", err)
+	if _, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
+		t.Fatalf("the person's delete of the answered ask block: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "Context ends with no drift.\n")
 	settle()
@@ -3563,7 +3596,7 @@ func TestAnEditCannotDropAnOpenAskBlockAndTheEditorsRemovalRetractsIt(t *testing
 // did not touch that block is not the write that lost it. The refusal names the batch's own block
 // alone, and a batch that drops a block of its own whose ask is not that row is taken.
 func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
-	const second = ":::ask{#second urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich store?\n:::\n"
+	const second = ":::ask{#second urgency=\"high\" multiple=\"false\"}\nWhich store?\n:::\n"
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, askFixture+"\n"+second+"\nContext ends with no drift.\n")
@@ -3579,7 +3612,7 @@ func TestAnEditIsRefusedForTheOpenAsksOfTheBlocksItDropsItself(t *testing.T) {
 
 	var invalidAsk *ErrInvalidAskBlock
 	_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "delete", Block: "decision"}}, editingSession, nil)
-	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open decision block decision,") {
+	if !errors.As(err, &invalidAsk) || !strings.Contains(err.Error(), "the open ask block decision,") {
 		t.Fatalf("delete of the open ask block = %v, want it refused for the block it drops", err)
 	}
 	if strings.Contains(err.Error(), "gone") {

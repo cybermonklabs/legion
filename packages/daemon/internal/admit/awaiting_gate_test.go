@@ -1144,7 +1144,7 @@ func TestAPersonsReplyOnTheRequestAnswersAQuestionWait(t *testing.T) {
 	assertResumed(t, pool, "ask-approval")
 }
 
-// Round 18 outside-whole P1-1: the architect's edit replaces its question's decision block with
+// Round 18 outside-whole P1-1: the architect's edit replaces its question's ask block with
 // another, so Dispatch opens the new ask and settlement retracts the old one. The root keeps
 // waiting, on the new ask.
 func TestARetractionThatOpensAnotherAskKeepsTheRootWaiting(t *testing.T) {

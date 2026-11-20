@@ -3,10 +3,12 @@ import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
+import { nextOffsetPage } from "../../api/queries";
+import type { MyAnswerRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { ShowMore } from "../../components/ShowMore";
 import {
   borderDefault,
   card,
@@ -53,10 +55,11 @@ function AnswerRow({
   onChange: () => void;
   row: MyAnswerRow;
 }): ReactNode {
-  // Every text of the row is the ask's: its question, the answer written on it, and a reply in
-  // its thread, which takes the ask's scope (`refs.ScopeOf`). So a `#id` in any of them resolves
-  // against the document the server scopes the ask to, read once for the row.
-  const source = textSourceOf("ask", row.ask_id);
+  // Every text of the row is the ask's: its question, the labels of the options an answer chose,
+  // the answer written on it, and a reply in its thread, which takes the ask's scope
+  // (`refs.ScopeOf`). So a `#id` in any of them resolves against the document the server scopes
+  // the ask to, read once for the row.
+  const source = textSourceOf("ask", row.ask_id, row.owner.issue?.key);
   const changeable =
     row.kind === "answer" &&
     row.current &&
@@ -76,15 +79,26 @@ function AnswerRow({
         lines={2}
         markdown={row.question}
         source={source}
+        surface="answers-subject"
         tree={row.question_tree}
       />
       {row.kind === "answer" && row.answer !== undefined ? (
         <div className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
           {(row.answer.selected ?? []).length === 0 ? null : (
             <div className="flex flex-wrap gap-1.5">
-              {(row.answer.selected ?? []).map((label) => (
+              {(row.answer.selected ?? []).map((label, index) => (
                 <LabelPill key={label} selected>
-                  {label}
+                  {/* Each label is drawn from its own tree, beside it at the same index. Only
+                      a server older than `selected_trees` answers a label with no tree, and the
+                      renderer then parses it, as it parses every stored text of that server's
+                      answers. */}
+                  <MarkdownBody
+                    markdown={label}
+                    source={source}
+                    surface="answers-chosen-options"
+                    tree={row.answer?.selected_trees?.[index]}
+                    variant="inline"
+                  />
                 </LabelPill>
               ))}
             </div>
@@ -94,6 +108,7 @@ function AnswerRow({
               <MarkdownBody
                 markdown={row.answer.text}
                 source={source}
+                surface="answers-answer"
                 tree={row.answer.text_tree}
               />
             </div>
@@ -106,6 +121,7 @@ function AnswerRow({
           <MarkdownBody
             markdown={row.reply.body}
             source={source}
+            surface="answers-reply"
             tree={row.reply.body_tree}
             variant="inline"
           />
@@ -139,10 +155,7 @@ export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
-    getNextPageParam: (last: MyAnswersResponse) =>
-      last.offset + (last.rows ?? []).length < last.total
-        ? last.offset + (last.rows ?? []).length
-        : undefined,
+    getNextPageParam: nextOffsetPage,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["me", "answers"],
@@ -205,16 +218,11 @@ export function AnswersPage(): ReactNode {
           })}
         </ul>
       )}
-      {answers.hasNextPage ? (
-        <button
-          className={`mt-4 min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${borderDefault} ${linkText} ${linkHoverText}`}
-          disabled={answers.isFetchingNextPage}
-          onClick={() => void answers.fetchNextPage()}
-          type="button"
-        >
-          {answers.isFetchingNextPage ? "Loading…" : "Show more"}
-        </button>
-      ) : null}
+      <ShowMore
+        fetching={answers.isFetchingNextPage}
+        hasMore={answers.hasNextPage}
+        onFetch={() => void answers.fetchNextPage()}
+      />
     </section>
   );
 }

@@ -33,10 +33,14 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 4 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 4 and callout, ask, requirement, plan_task, check", schema.Version, names)
+	want := []string{"callout", "ask", "requirement", "plan_task", "check", "decision", "reading"}
+	if schema.Version != 5 || !slices.Equal(names, want) {
+		t.Fatalf("schema = version %d, types %v; want version 5 and %v", schema.Version, names, want)
 	}
 	if ciCheck, declared := schema.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
+	}
+	if parents := schema.Types[6].Parents; !slices.Equal(parents, []string{"decision", "ask"}) {
+		t.Fatalf("reading parents = %v, want decision and ask", parents)
 	}
 }

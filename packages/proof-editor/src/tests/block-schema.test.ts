@@ -513,3 +513,146 @@ await test('a pasted typed block carrying a refused block pointer is not read as
   assert(parsed !== false && parsed !== null && JSON.stringify(parsed.serves) === JSON.stringify(value.split(' ')), `parsed = ${JSON.stringify(parsed)}`);
   assert(rule.getAttrs(section({ 'data-proof-block-attr-serves': 'dispatch://CORE-1/artifact/spec#b-x' })) === false, 'a refused pointer was parsed as the typed block');
 });
+
+// The shapes of the version-5 schema the rules below read: a decision and an ask that a reading
+// closes, an ask attribute, and attributes markdown never carries.
+const readingSchema = {
+  version: 5,
+  types: [
+    {
+      name: 'ask',
+      content: 'paragraph+ bullet_list?',
+      render: 'host',
+      attributes: {
+        state: { kind: 'enum', choices: ['open', 'answered', 'resolved'], default: 'open', server: true },
+        invalid: { kind: 'string', server: true, markdown: false },
+        shaped: { kind: 'block[]' },
+      },
+    },
+    { name: 'callout', content: 'block+', render: 'host', attributes: {} },
+    {
+      name: 'decision',
+      content: 'block+',
+      render: 'host',
+      attributes: {
+        shaped: { kind: 'block[]' },
+        from_ask: { kind: 'ask' },
+        decided_by: { kind: 'actor', server: true, markdown: false },
+      },
+    },
+    { name: 'reading', content: 'paragraph+', render: 'host', attributes: {}, parents: ['decision', 'ask'] },
+  ],
+} as const;
+
+const askAddress = 'dispatch://CORE-1/ask/0b6f4c0e-3d1a-4f5e-9a7b-2c8d1e0f3a4b';
+
+await test('an ask attribute names one ask of an issue, and never a part of one', async () => {
+  const proof = await createHeadlessProof({ blockSchema: readingSchema });
+  const decision = proof.parseMarkdown(`:::decision{#d1 from_ask="${askAddress}"}\nWe ship on Friday.\n:::\n`).child(0);
+  assert(decision.attrs.from_ask === askAddress, `from_ask = ${decision.attrs.from_ask}`);
+  for (const [value, reason] of [
+    [`${askAddress}#b-q1`, 'is a part of an ask'],
+    ['dispatch://CORE-1/spec#b-x', 'is not an ask of an issue'],
+    ['dispatch://CORE/artifact/handbook-md/ask/a1', 'is not an ask of an issue'],
+    [`${askAddress}.`, 'is not an ask of an issue'],
+  ] as const) {
+    const error = thrownBy(() => proof.parseMarkdown(`:::decision{#d1 from_ask="${value}"}\nWe ship.\n:::\n`));
+    assert(error !== undefined && error.message.includes('"from_ask"') && error.message.includes(reason), `${value}: ${error?.message}, want it refused as one that ${reason}`);
+  }
+});
+
+await test('an attribute markdown never carries is neither written into markdown nor read from it', async () => {
+  const proof = await createHeadlessProof({ blockSchema: readingSchema });
+  const claimed = proof.parseMarkdown(':::decision{#d1 decided_by="user:mallory"}\nWe ship.\n:::\n\n:::ask{#a1 invalid="forged"}\nWhich day?\n:::\n');
+  assert(claimed.child(0).attrs.decided_by === undefined, `decided_by = ${claimed.child(0).attrs.decided_by}`);
+  assert(claimed.child(1).attrs.invalid === undefined, `invalid = ${claimed.child(1).attrs.invalid}`);
+  const { schema } = proof;
+  const doc = schema.nodes.doc.create(null, [
+    schema.nodes.decision.create({ blockId: 'd1', decided_by: 'user:alice' }, schema.nodes.paragraph.create(null, schema.text('We ship.'))),
+    schema.nodes.ask.create({ blockId: 'a1', invalid: 'unreadable' }, schema.nodes.paragraph.create(null, schema.text('Which day?'))),
+  ]);
+  const markdown = proof.serializeMarkdown(doc);
+  assert(!markdown.includes('decided_by') && !markdown.includes('invalid'), `markdown = ${markdown}`);
+});
+
+await test('a reading stands only after the content of a decision or an ask, and in no node group', async () => {
+  const proof = await createHeadlessProof({ blockSchema: readingSchema });
+  const { schema } = proof;
+  assert(schema.nodes.reading.spec.group === undefined, `reading group = ${schema.nodes.reading.spec.group}`);
+  const paragraph = (text: string) => schema.nodes.paragraph.create(null, schema.text(text));
+  const reading = () => schema.nodes.reading.create({ blockId: 'r1' }, paragraph('The agent reads it so.'));
+  const list = () => schema.nodes.bullet_list.create(null, schema.nodes.list_item.create(null, paragraph('Friday')));
+  schema.nodes.decision.createChecked({ blockId: 'd1' }, [paragraph('We ship.'), reading()]);
+  schema.nodes.ask.createChecked({ blockId: 'a1' }, [paragraph('Which day?'), reading()]);
+  schema.nodes.ask.contentMatch.matchFragment(
+    schema.nodes.ask.create({ blockId: 'a1' }, [paragraph('Which day?'), list(), reading()]).content
+  )?.validEnd || assert(false, 'an ask closing its options with a reading breaks its content rule');
+  for (const [name, build] of [
+    ['a callout', () => schema.nodes.callout.createChecked({ blockId: 'k1' }, [paragraph('A note.'), reading()])],
+    ['the document', () => schema.nodes.doc.createChecked(null, [reading()])],
+  ] as const) {
+    assert(thrownBy(build) !== undefined, `a reading in ${name} was built`);
+  }
+  // A decision is built from a shared document whatever order its blocks stand in (the next
+  // case), but its content rule still holds every local edit, paste and parse to it.
+  const misordered = schema.nodes.decision.create({ blockId: 'd1' }, [reading(), paragraph('We ship.')]).content;
+  assert(schema.nodes.decision.contentMatch.matchFragment(misordered)?.validEnd !== true, 'a decision opening with its reading keeps its content rule');
+  const markdown = '::::decision{#d1}\nWe ship on Friday.\n\n:::reading{#r1}\nThe agent reads it so.\n:::\n::::\n';
+  const parsed = proof.parseMarkdown(markdown);
+  const decision = parsed.child(0);
+  assert(decision.type.name === 'decision' && decision.lastChild?.type.name === 'reading', `parsed = ${parsed.toString()}`);
+  assert(proof.serializeMarkdown(parsed) === markdown, `the decision did not round-trip: ${JSON.stringify(proof.serializeMarkdown(parsed))}`);
+});
+
+await test('an ask or a decision holding readings is built from a shared document whatever order they stand in', async () => {
+  const proof = await createHeadlessProof({ blockSchema: readingSchema });
+  const { schema } = proof;
+  const paragraph = (text: string) => schema.nodes.paragraph.create(null, schema.text(text));
+  const reading = schema.nodes.reading.create({ blockId: 'r1' }, paragraph('The agent reads it so.'));
+  // y-prosemirror deletes an element whose node createChecked refuses, so an ask or a decision a
+  // collaborator's edit left with a paragraph after its reading must still be built, its reading
+  // kept.
+  for (const name of ['ask', 'decision'] as const) {
+    const built = schema.nodes[name].createChecked({ blockId: 'b1' }, [paragraph('Which day?'), reading, paragraph('An afterthought.')]);
+    assert(built.childCount === 3 && built.child(1).type.name === 'reading', `${name} = ${built.toString()}`);
+  }
+  // What it may hold is still the block group and its readings, so no inline node.
+  assert(thrownBy(() => schema.nodes.decision.createChecked({ blockId: 'd1' }, [schema.text('loose')])) !== undefined, 'a decision holding text was built');
+});
+
+await test('a command and a paste refuse a shaped pointer or an ask of another issue than the document\'s', async () => {
+  const documentRef = 'dispatch://CORE-1/spec';
+  const proof = await createHeadlessProof({ blockSchema: readingSchema });
+  const { schema } = proof;
+  const doc = schema.nodes.doc.create(null, [
+    schema.nodes.decision.create({ blockId: 'd1' }, schema.nodes.paragraph.create({ blockId: 'p1' }, schema.text('We ship.'))),
+  ]);
+  const commandsFor = () => {
+    let state = EditorState.create({ schema, doc });
+    const commands = createTypedBlockCommands({
+      blockSchema: readingSchema,
+      documentRef,
+      getState: () => state,
+      dispatch: (tr) => {
+        state = state.apply(tr);
+      },
+    });
+    return { commands, state: () => state };
+  };
+  const own = commandsFor();
+  assert(own.commands.setBlockAttributes('d1', { shaped: ['dispatch://CORE-1/artifact/notes-md#b-x'], from_ask: askAddress }), 'a pointer and an ask of the document\'s issue were not set');
+  for (const [attrs, word] of [
+    [{ shaped: ['dispatch://CORE-2/spec#b-x'] }, 'CORE-2'],
+    [{ from_ask: 'dispatch://CORE-2/ask/a1' }, 'CORE-2'],
+  ] as const) {
+    const { commands, state } = commandsFor();
+    const error = thrownBy(() => commands.setBlockAttributes('d1', attrs));
+    assert(error !== undefined && error.message.includes(word) && error.message.includes('CORE-1'), `${JSON.stringify(attrs)}: ${error?.message}`);
+    assert(state().doc.eq(doc), `the refused ${JSON.stringify(attrs)} changed the document`);
+  }
+  const rule = typedBlockSpec(readingSchema.types[2], undefined, 5, { documentRef }).parseDOM![0] as { getAttrs: (dom: HTMLElement) => Record<string, unknown> | false | null };
+  assert(rule.getAttrs(section({ 'data-proof-block-attr-shaped': 'dispatch://CORE-1/spec#b-x' })) !== false, 'a pasted pointer of the document\'s issue was refused');
+  assert(rule.getAttrs(section({ 'data-proof-block-attr-shaped': 'dispatch://CORE-2/spec#b-x' })) === false, 'a pasted pointer of another issue was read as the typed block');
+  assert(rule.getAttrs(section({ 'data-proof-block-attr-from_ask': 'dispatch://CORE-2/ask/a1' })) === false, 'a pasted ask of another issue was read as the typed block');
+  assert(rule.getAttrs(section({ 'data-proof-block-attr-from_ask': `${askAddress}#b-q1` })) === false, 'a pasted part of an ask was read as the typed block');
+});

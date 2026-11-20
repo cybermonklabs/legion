@@ -87,6 +87,13 @@ var coldReadTimeout = 60 * time.Second
 // are handed out as they are, shared with every later read of the same stored head, so no caller
 // may write through them; none does, and copying them would cost every hit an allocation for a
 // table's size.
+//
+// tree is the tree it was rendered from, kept only for a document holding an ask block: the text
+// an agent reads takes the server-owned attributes off each ask block of it and reads each ask
+// block's answer from the store (TextWithAsks), which a read taking the cached rendering would
+// otherwise have to decode the stored history again for. It is shared with every read of the
+// stored head as the rest is, so no reader writes into it; the attributes are taken off a copy of
+// the path to each block that holds one (withoutAskServerAttributes).
 type documentRead struct {
 	artifactID string
 	stamp      DocumentStamp
@@ -94,6 +101,7 @@ type documentRead struct {
 	token      string
 	blocks     []model.ArtifactBlock
 	paths      map[string]pmdoc.BlockPath
+	tree       *pmdoc.Node
 	weight     int64
 }
 
@@ -184,7 +192,7 @@ const (
 // is counted where each part of the rendering holds it - a block, a path's key, a table's list of
 // the blocks it holds - but not again on the path entries that name it. Storage that paths share
 // is counted once however many share it (tablePositionsWeight), and so is a table block's rows
-// (blockTableWeight).
+// (blockTableWeight). A kept tree is counted whole (treeWeight).
 func (read *documentRead) measure() int64 {
 	weight := readEntryOverhead + int64(len(read.artifactID)+len(read.stamp.Row)+len(read.markdown)+len(read.token))
 	weight += int64(cap(read.blocks)) * int64(unsafe.Sizeof(model.ArtifactBlock{}))
@@ -208,7 +216,81 @@ func (read *documentRead) measure() int64 {
 			positions[path.Table] = struct{}{}
 		}
 	}
-	return weight + tablePositionsWeight(positions)
+	return weight + tablePositionsWeight(positions) + treeWeight(read.tree)
+}
+
+// Overheads treeWeight counts: a node's struct; a mark's slot; a child's slot; an attribute map's
+// header, and each group of eight slots its table holds, each slot a string key and an interface
+// value, beside the group's control word; and the header of a string or a list an interface value
+// boxes.
+const (
+	treeNodeOverhead  = int64(unsafe.Sizeof(pmdoc.Node{}))
+	treeMarkOverhead  = int64(unsafe.Sizeof(pmdoc.Mark{}))
+	treeChildOverhead = int64(unsafe.Sizeof((*pmdoc.Node)(nil)))
+	treeMapOverhead   = 48
+	treeGroupOverhead = 8 + 8*int64(unsafe.Sizeof("")+unsafe.Sizeof(any(nil)))
+	treeStringBoxed   = int64(unsafe.Sizeof(""))
+	treeListBoxed     = int64(unsafe.Sizeof([]any(nil)))
+)
+
+// treeWeight is the heap a kept tree holds (documentRead.tree): each node's struct, its type and
+// its text, its marks and its children's slots, and its attributes and its marks' attributes
+// (attrsWeight). A nil tree holds none.
+func treeWeight(node *pmdoc.Node) int64 {
+	if node == nil {
+		return 0
+	}
+	weight := treeNodeOverhead + int64(len(node.Type)+len(node.Text)) + attrsWeight(node.Attrs)
+	weight += int64(cap(node.Marks)) * treeMarkOverhead
+	for _, mark := range node.Marks {
+		weight += int64(len(mark.Type)) + attrsWeight(mark.Attrs)
+	}
+	weight += int64(cap(node.Children)) * treeChildOverhead
+	for _, child := range node.Children {
+		weight += treeWeight(child)
+	}
+	return weight
+}
+
+// attrsWeight is the heap an attribute map holds: its header and groups - one for up to eight
+// attributes, and past that a table of a power of two slots at most 7/8 full - each key's bytes,
+// and what each value boxes (boxedWeight).
+func attrsWeight(attrs pmdoc.Attrs) int64 {
+	if attrs == nil {
+		return 0
+	}
+	slots := int64(8)
+	for slots*7 < int64(len(attrs))*8 && len(attrs) > 8 {
+		slots *= 2
+	}
+	weight := treeMapOverhead + slots/8*treeGroupOverhead
+	for name, value := range attrs {
+		weight += int64(len(name)) + boxedWeight(value)
+	}
+	return weight
+}
+
+// boxedWeight is what value, an attribute's, boxes beside its interface slot: a string's header
+// and bytes, and a list's header, its slots and what each holds. A bool, a number or a nil boxes
+// nothing Go allocates for a value that small.
+func boxedWeight(value any) int64 {
+	switch value := value.(type) {
+	case string:
+		return treeStringBoxed + int64(len(value))
+	case []string:
+		weight := treeListBoxed + int64(cap(value))*treeStringBoxed
+		for _, item := range value {
+			weight += int64(len(item))
+		}
+		return weight
+	case []any:
+		weight := treeListBoxed + int64(cap(value))*int64(unsafe.Sizeof(any(nil)))
+		for _, item := range value {
+			weight += boxedWeight(item)
+		}
+		return weight
+	}
+	return 0
 }
 
 // blockTableWeight is the bytes a table block's rows hold beside the strings they name: a cell's
@@ -284,6 +366,9 @@ func buildDocumentRead(artifactID string, stamp DocumentStamp, tree pmdoc.ValidD
 		return nil, rendered.tokenErr
 	}
 	read := &documentRead{artifactID: artifactID, stamp: stamp, markdown: rendered.markdown, token: rendered.token, blocks: rendered.blocks, paths: paths}
+	if pmdoc.HoldsAskBlock(tree.Node()) {
+		read.tree = tree.Node()
+	}
 	read.weight = read.measure()
 	return read, nil
 }

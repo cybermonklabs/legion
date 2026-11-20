@@ -1,5 +1,5 @@
 {
-  "version": 4,
+  "version": 5,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -91,7 +91,8 @@
         },
         "invalid": {
           "kind": "string",
-          "server": true
+          "server": true,
+          "markdown": false
         },
         "copied_from": {
           "kind": "string",
@@ -100,6 +101,11 @@
         "copied_from_document": {
           "kind": "string",
           "server": true
+        },
+        "shaped": {
+          "kind": "block[]",
+          "since": 5,
+          "creatable_since": 5
         }
       }
     },
@@ -161,6 +167,72 @@
       },
       "since": 3,
       "creatable_since": 3
+    },
+    {
+      "name": "decision",
+      "content": "block+",
+      "render": "host",
+      "attributes": {
+        "uncertainty": {
+          "kind": "enum",
+          "choices": ["low", "medium", "high"],
+          "since": 5,
+          "creatable_since": 5
+        },
+        "uncertainty_reason": {
+          "kind": "string",
+          "since": 5,
+          "creatable_since": 5
+        },
+        "shaped": {
+          "kind": "block[]",
+          "since": 5,
+          "creatable_since": 5
+        },
+        "from_ask": {
+          "kind": "ask",
+          "since": 5,
+          "creatable_since": 5
+        },
+        "replaced": {
+          "kind": "bool",
+          "default": false,
+          "since": 5,
+          "creatable_since": 5
+        },
+        "decided_by": {
+          "kind": "actor",
+          "server": true,
+          "markdown": false,
+          "since": 5,
+          "creatable_since": 5
+        },
+        "kept_by": {
+          "kind": "actor",
+          "server": true,
+          "markdown": false,
+          "since": 5,
+          "creatable_since": 5
+        },
+        "kept_text_sum": {
+          "kind": "string",
+          "server": true,
+          "markdown": false,
+          "since": 5,
+          "creatable_since": 5
+        }
+      },
+      "since": 5,
+      "creatable_since": 5
+    },
+    {
+      "name": "reading",
+      "content": "paragraph+",
+      "render": "host",
+      "attributes": {},
+      "parents": ["decision", "ask"],
+      "since": 5,
+      "creatable_since": 5
     }
   ]
 }

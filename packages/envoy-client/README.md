@@ -793,7 +793,7 @@ the issue's messages for the reason, then close with one that points at it). The
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
-with no decision blocks, three or more session writes without a human response (with stronger
+with no ask blocks, three or more session writes without a human response (with stronger
 wording from six), a write while the issue is still in triage, and up to two still-open asks owned
 by the session. Ask replies do not trigger the write-cadence pointer and suppress an open-ask
 pointer when replying to that ask; a status-setting issue update does not trigger the triage
@@ -1070,7 +1070,7 @@ a PATCH that fails after the post names the posted message. The result is one li
 server refusal keeps its `code` (`INVALID_STATUS`, `ISSUE_CLOSED`, `EXTERNAL_LINK_TAKEN`) at the
 head of the thrown message.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
-name (the document's latest, `approval.latest_version`) holds a decision block open. It reads the
+name (the document's latest, `approval.latest_version`) holds an ask block open. It reads the
 live document's `ask` blocks (`GET /api/v1/artifacts/{id}/blocks`), then that version's markdown
 and the owner's asks (the issue's for an issue document, since the artifact route refuses those),
 and judges each block by its `state` on every line of the version that opens it, so a line quoting

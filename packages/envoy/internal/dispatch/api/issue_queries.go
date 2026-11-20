@@ -833,10 +833,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	who, ok := s.actingReader(w, r)
+	if !ok {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
+	read, err := s.readIssue(r.Context(), who, r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -876,14 +877,22 @@ type issueDetail struct {
 	// pays for it here, with the detail it already reads, instead of a graph request of
 	// its own; the edges themselves are read only when the reader opens the panel.
 	ReferencedByCount int `json:"referenced_by_count"`
+	// ComponentsReasonTree is the tree of the reason the issue's attachment gives for touching no
+	// component (Components.Reason, of mode `none`), which its writer typed in a box that carries
+	// the reference picker and the header's Components line draws through the renderer. It
+	// stands beside the issue rather than inside its components because model.Issue is the
+	// payload of the issue's events and no payload gains a field, and it stands last, so an
+	// answer to a caller that asked for no trees keeps its bytes.
+	ComponentsReasonTree model.DisplayTree `json:"components_reason_tree,omitempty"`
 }
 
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
 // the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
-// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
-func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
+// the documents' approval reasons, of the open asks' texts and of the attachment's reason for
+// touching no component, which only the dashboard reads.
+func (s *server) readIssue(ctx context.Context, who model.Actor, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
 	var artifacts []model.Artifact
@@ -927,7 +936,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 		read.DesignGates = scanned
 		return err
 	})
-	if err := refs.QueueBacklinkCounts(first, "issue", []string{key}, nil, issueCounts); err != nil {
+	if err := refs.QueueBacklinkCounts(first, who, "issue", []string{key}, nil, issueCounts); err != nil {
 		return issueDetail{}, err
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, first).Close(); err != nil {
@@ -939,16 +948,19 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, who, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
 	// The approvals are read by the second batch, so their reasons are registered after it,
-	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
-	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
-	// of its own, beside the rest of the request.
+	// where the sequential loader read them after loadArtifacts. The reasons, the open asks'
+	// texts and the attachment's reason are one query of the stored trees, and what it did not
+	// hold is stored on a goroutine of its own, beside the rest of the request.
 	reader := s.readDisplayTrees(ctx, trees)
 	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	if read.Issue.Components.Mode == "none" {
+		reader.textOf(&read.ComponentsReasonTree, read.Issue.Components.Reason)
+	}
 	reader.resolve()
 	return read, nil
 }
@@ -957,10 +969,10 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 // into the artifacts and asks it read, by the one queue-and-apply each of them has
 // (queueArtifactDetails, queueAskDetails). An issue with no artifact and no open ask names
 // nothing, so it queues nothing and sends no batch.
-func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifact, asks []*model.Ask) error {
+func (s *server) readIssueDetails(ctx context.Context, who model.Actor, artifacts []*model.Artifact, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
 	applyArtifacts := queueArtifactDetails(batch, artifacts)
-	applyAsks := queueAskDetails(batch, asks)
+	applyAsks := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1017,7 +1029,7 @@ var issueRowStatement = `
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedVerificationRole + `), ''),
 		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedPlanRole + `), ''),
-		       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and ` + aliasedDecisionsRole + `), ''),
+		       coalesce((select min(d.id::text) from decisions_documents() d where d.issue_key = i.key), ''), -- kept for one release: compat-objects
 		       i.last_seq, ` + issueClaimColumns + `,
 		       ` + issueProgressColumns + `,
 		       ` + issueComponentsColumns + `,
@@ -1197,11 +1209,14 @@ func scanIssueChildren(rows pgx.Rows) ([]model.IssueChild, error) {
 // issue's key and $2 the steps in the order a gate runs them, which is the order the read
 // answers them in and the order PUT /api/v1/issues/{key}/design-gates answers its own write in
 // (issue_design_gates.go). The order is a parameter rather than a case expression built into
-// the text, so model.GatedStepsKnown stays the one place that order is written. A key no issue
-// carries returns no row, which is what the issue read's first batch requires of every
-// statement beside the issue row's.
+// the text, so model.GatedStepsKnown stays the one place that order is written. A row of a step
+// outside it, the retired `decisions` step a daemon of the release before wrote, is left out.
+// A key no issue carries returns no row, which is what the issue
+// read's first batch requires of every statement beside the issue row's.
+//
+// kept for one release: design-gate-rows
 const issueDesignGatesStatement = `
-		select step, artifact_id from design_gates where issue = $1
+		select step, artifact_id from design_gates where issue = $1 and step = any($2::text[])
 		order by array_position($2::text[], step)
 	`
 

@@ -1,6 +1,11 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { type MutationKey, onlineManager, QueryClientProvider } from "@tanstack/react-query";
+import {
+  type MutationKey,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
@@ -11,6 +16,7 @@ import { ApiError, api, NetworkError } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Comment, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
   FIRST_BACKOFF_MS,
   SEND_DEADLINE_MS,
@@ -22,7 +28,13 @@ import { type HeldSend, type HeldSends, heldSends, stoppable } from "./held-send
 import { agentKey, agentSend, heldOf, request, signedIn, verdict } from "./held-sends-fixture";
 import { PendingSendTurn } from "./PendingSendTurn";
 import { carriedIdsOf, type SentRequest, saveCommentEdit } from "./send-request";
-import { useSessionSends } from "./useSessionSends";
+import { type SessionSends, useSessionSends } from "./useSessionSends";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const sentMessage = {
   body: "Status please",
@@ -35,7 +47,7 @@ const sentMessage = {
  *  default save. */
 const editSend: SentRequest = {
   ...request,
-  draft: { body: "Alpha\n\nBeta", mentions: [], replacement: "" },
+  draft: { body: "Alpha\n\nBeta", replacement: "" },
   edit: {
     carried: carriedIdsOf(
       {
@@ -329,6 +341,159 @@ test("a send kept with its edit as a bare comment id still restores", async () =
   }
 });
 
+// A record the build before this one wrote keeps a `mentions` array beside a body holding only
+// the cosmetic `@Planner` that build drew. A mention is a reference now, so each of those is
+// written back into the body as the party link naming it: the draft reads as who it addresses
+// and resends to them, where dropping the array would deliver it to nobody.
+test("a send kept with the old build's mentions restores them as the mentions that name them", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  const key: MutationKey = ["conversation", "CORE-1"];
+  const seeded: SentRequest = {
+    ...request,
+    draft: { body: "@Planner please look, @Gone.", replacement: "" },
+    sendKey: "send-old",
+  };
+  try {
+    heldOf(tab).held.send(key, seeded);
+    await settle();
+    const kept = tab.kept("send-old") as {
+      detail: { draft: { draft: object }; request: { draft: object } };
+    };
+    const withMentions = (draft: object) => ({
+      ...draft,
+      mentions: [
+        { end: 8, start: 0, target: "session:planner-session", text: "Planner" },
+        // A span the reader has since edited is their prose, and a target naming no party is
+        // mentioned by nothing: both keep the words the body holds.
+        { end: 27, start: 22, target: "session:gone", text: "Away" },
+      ],
+    });
+    tab.storage.setItem(
+      "dispatch.write:send-old",
+      JSON.stringify({
+        ...kept,
+        detail: {
+          ...kept.detail,
+          draft: { ...kept.detail.draft, draft: withMentions(kept.detail.draft.draft) },
+          request: { ...kept.detail.request, draft: withMentions(kept.detail.request.draft) },
+        },
+      })
+    );
+    pressedLongAgo(tab, "send-old");
+
+    const { held: after, writes } = heldOf(tab);
+    writes.resume("alice");
+    await settle();
+    // Each old `@Name` comes back as the party's mention, which reads as its current name.
+    const restored = "[@Planner](dispatch://agent/planner-session) please look, @Gone.";
+    expect(after.get(key)?.request.draft.body).toBe(restored);
+    expect(after.get(key)?.draft.draft.body).toBe(restored);
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+/** The body a send comes back with when the record kept beside it holds `mentions`: the draft is
+ *  seeded, its record rewritten as the build before this one wrote it, and the send put back far
+ *  enough that the page does not make it again. The request's body and the composer's are the
+ *  same restore, so the caller reads one and the test reads both. */
+async function restoredBody(
+  tab: KeptTab,
+  key: MutationKey,
+  sendKey: string,
+  body: string,
+  mentions: readonly object[]
+): Promise<{ draft: string | undefined; request: string | undefined }> {
+  heldOf(tab).held.send(key, { ...request, draft: { body, replacement: "" }, sendKey });
+  await settle();
+  const kept = tab.kept(sendKey) as {
+    detail: { draft: { draft: object }; request: { draft: object } };
+  };
+  const withMentions = (draft: object) => ({ ...draft, mentions });
+  tab.storage.setItem(
+    `dispatch.write:${sendKey}`,
+    JSON.stringify({
+      ...kept,
+      detail: {
+        ...kept.detail,
+        draft: { ...kept.detail.draft, draft: withMentions(kept.detail.draft.draft) },
+        request: { ...kept.detail.request, draft: withMentions(kept.detail.request.draft) },
+      },
+    })
+  );
+  pressedLongAgo(tab, sendKey);
+
+  const { held: after, writes } = heldOf(tab);
+  writes.resume("alice");
+  await settle();
+  return {
+    draft: after.get(key)?.draft.draft.body,
+    request: after.get(key)?.request.draft.body,
+  };
+}
+
+// What a record holds is read back as a record, not as a draft this build wrote: a kept mention
+// is rewritten only where its target is a delivery route and its offsets are a span of the body.
+// A target of no route's form is written into the body as it stands, and `slice` reads a
+// negative or fractional offset as a span of its own, so either puts Markdown of the record's
+// choosing - a link to another site - into a body a resumed send (`wire === null`) then sends.
+// Only same-origin script writes this storage, so there is no exploit path; the body is held to
+// the rule all the same.
+test("a kept mention is rewritten only for a delivery route at a span of the body", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  try {
+    const body = "@Planner @Ghost please look.";
+    const hostile = await restoredBody(tab, ["conversation", "CORE-1"], "send-bad", body, [
+      // A target that closes the link it is written into and opens one of its own.
+      { end: 8, start: 0, target: "session:x) [y](https://evil.example", text: "Planner" },
+      // A fraction is no offset, and `slice` truncates it to one that names `@Ghost`.
+      { end: 15.5, start: 9.5, target: "session:planner-session", text: "Ghost" },
+    ]);
+    expect(hostile).toEqual({ draft: body, request: body });
+
+    // A negative pair `slice` counts from the end of the body, where it names `@Away` whole.
+    const away = "@Away is away.";
+    const negative = await restoredBody(tab, ["conversation", "CORE-2"], "send-neg", away, [
+      { end: -9, start: -14, target: "session:planner-session", text: "Away" },
+    ]);
+    expect(negative).toEqual({ draft: away, request: away });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
+// A kept mention whose name holds a formatting character is written back as a pick writes it,
+// the name as literal words, so the restored draft's link is the mention it was and reads as the
+// party's current name rather than as words formatted in part.
+test("a kept mention whose name holds formatting characters is rewritten with the name escaped", async () => {
+  const tab = keptTab();
+  const createComment = spyOn(api, "createComment").mockReturnValue(
+    Promise.withResolvers<Comment>().promise
+  );
+  try {
+    const restored = await restoredBody(
+      tab,
+      ["conversation", "CORE-1"],
+      "send-formatted",
+      "@fix *the* cache please look.",
+      [{ end: 16, start: 0, target: "session:planner-session", text: "fix *the* cache" }]
+    );
+    const written = "[@fix \\*the\\* cache](dispatch://agent/planner-session) please look.";
+    expect(restored).toEqual({ draft: written, request: written });
+  } finally {
+    createComment.mockRestore();
+    tab.close();
+  }
+});
+
 // A closed tab loses what sessionStorage keeps, so while a send has no verdict the page asks to
 // confirm leaving, and only then.
 test("leaving asks for confirmation only while a send is unconfirmed", async () => {
@@ -485,6 +650,15 @@ test("a late send can be stopped, and its Retry goes under its key", async () =>
   });
 });
 
+/** A held send's turn, as the live view draws it: under a query client, since the draft is drawn
+ *  through the plain-text projection, which names what the draft references. */
+function heldTurn(held: HeldSend, sends: Pick<SessionSends, "discard" | "retry" | "stop">) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    createElement(QueryClientProvider, { client }, createElement(PendingSendTurn, { held, sends }))
+  );
+}
+
 // W51. A message the person's sign-out in another tab holds says so on its pending turn, and its
 // trying goes on once that tab's hold lifts.
 test("a send held for a sign-out in another tab says so, and goes on once released", async () => {
@@ -501,7 +675,7 @@ test("a send held for a sign-out in another tab says so, and goes on once releas
       await settle();
       const waiting = held.get(agentKey);
       expect(waiting?.signingOutElsewhere).toBe(true);
-      const turn = render(createElement(PendingSendTurn, { held: waiting as HeldSend, sends }));
+      const turn = heldTurn(waiting as HeldSend, sends);
       expect(turn.getByRole("status").textContent).toBe("Waiting for a sign-out in another tab");
       turn.unmount();
       const calls = createAgentMessage.mock.calls.length;
@@ -514,7 +688,7 @@ test("a send held for a sign-out in another tab says so, and goes on once releas
       const going = held.get(agentKey);
       expect(going?.signingOutElsewhere).toBe(false);
       expect(createAgentMessage.mock.calls.length).toBeGreaterThan(calls);
-      const again = render(createElement(PendingSendTurn, { held: going as HeldSend, sends }));
+      const again = heldTurn(going as HeldSend, sends);
       expect(again.getByRole("status").textContent).toBe("Sending…");
       again.unmount();
     } finally {
@@ -558,7 +732,7 @@ test("a send whose key has run out says so on its turn, with Retry and Discard",
       const spent = held.get(agentKey);
       expect(spent?.status === "refused" && spent.refusal).toBeInstanceOf(SendExpiredError);
 
-      const turn = render(createElement(PendingSendTurn, { held: spent as HeldSend, sends }));
+      const turn = heldTurn(spent as HeldSend, sends);
       try {
         expect(turn.getByTestId("agent-send-error").textContent).toBe(
           new SendExpiredError().message
@@ -619,7 +793,7 @@ test("a send re-pressed under its key sends nothing under it after a reload", as
       await settle();
       first.held.send(aheadKey, {
         ...agentSend,
-        draft: { body: "Ahead", mentions: [], replacement: "" },
+        draft: { body: "Ahead", replacement: "" },
         sendKey: "send-ahead",
       });
       await settle();

@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -29,13 +30,17 @@ const composedUploadDocument = "Context\n\n" +
 // so an upload can change the block above the ask and the block below it at once.
 const composedUploadSurroundedDocument = composedUploadDocument + "\nThe decision lands this week.\n"
 
-// composedUploadAnsweredOpener is the ask block's opener once the settlement has written the
-// person's answer onto it (setAskServerAttributes), and composedUploadComposedOpener is the
-// opener an agent composing the body again writes in its place: the question is the same, and the
-// block names neither an id of its own nor any attribute the server keeps.
+// composedUploadReadOpener is the ask block's opener as an agent reads the document through the
+// text routes (TextWithAsks), before the person answers and after: the block under its id, with
+// none of the attributes the server keeps, since a person's answer is held once, on the ask, and
+// read beside the text in its asks member (textAsks). composedUploadComposedOpener is the opener
+// an agent composing the body again writes in its place: the question is the same, and the block
+// names no id of its own. composedUploadAnsweredEntry is the asks member's entry for the block once
+// the person has answered it, as askLines writes it.
 const (
-	composedUploadAnsweredOpener = `:::ask{#transport urgency="med" multiple="false" state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected="[&#x22;REST&#x22;]"}`
+	composedUploadReadOpener     = `:::ask{#transport urgency="med" multiple="false"}`
 	composedUploadComposedOpener = `:::ask{urgency="med" multiple="false"}`
+	composedUploadAnsweredEntry  = `#transport state="answered" answered_by="alice" answered_at="2026-10-08T12:00:00Z" selected=["REST"]`
 )
 
 // composedUploadAnsweredAt is the moment the person's answer carries.
@@ -46,18 +51,19 @@ var composedUploadAgent = model.Actor{Kind: "session", ID: "session-0123456789ab
 
 // An agent that composes a document's body again writes each ask it holds from the question
 // alone: no id, since a body written rather than rendered names none, and none of the attributes
-// the server keeps, since the agent cannot know the answer a person gave. The upload leaves that
-// ask where it stands, so the block keeps the id the document gave it, the row holding the
-// person's answer stays the issue's one row for the question, and the settlement writes the
-// answer onto the block again.
+// the server keeps, which the text it reads does not print. The upload leaves that ask where it
+// stands, so the block keeps the id the document gave it, the row holding the person's answer
+// stays the issue's one row for the question, and the document reads as it read before the
+// upload: the block under its id, and the person's answer in the asks member of the text read.
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
-	answered := documentText(t, service, artifactID)
-	composed := strings.Replace(answered, composedUploadAnsweredOpener, composedUploadComposedOpener, 1)
+	read := asAgentReadsIt(t, service, artifactID)
+	answered := composedUploadAgentMarkdown(t, service, artifactID)
+	composed := strings.Replace(answered, composedUploadReadOpener, composedUploadComposedOpener, 1)
 	if composed == answered {
-		t.Fatalf("the answered document reads\n%s\nwant it to hold the opener the settlement writes, %s, which the agent composes without", answered, composedUploadAnsweredOpener)
+		t.Fatalf("the answered document reads\n%s\nwant it to hold the opener an agent reads, %s, which the agent composes without its id", answered, composedUploadReadOpener)
 	}
 
 	if _, err := joinedReplaceText(service, artifactID, composed, composedUploadAgent); err != nil {
@@ -71,8 +77,8 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 	}
 
 	settleCurrentGeneration(t, service, artifactID)
-	if text := documentText(t, service, artifactID); text != answered {
-		t.Errorf("the document after the upload and its settlement reads\n%s\nwant the answer written onto the block again, as it read before the upload\n%s", text, answered)
+	if after := asAgentReadsIt(t, service, artifactID); after != read {
+		t.Errorf("the document after the upload and its settlement reads, as an agent reads it,\n%s\nwant the block under its id and the person's answer in its asks member, as it read before the upload\n%s", after, read)
 	}
 	rows := askRowsOn(t, service, artifactID)
 	if len(rows) != 1 {
@@ -97,33 +103,56 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 }
 
 // An agent that composes the body with another question writes an ask the document does not hold:
-// the block is no longer the one the person answered, so it takes a fresh id and opens an ask of
-// its own, and the answered row stays as the record of the question it was given on. This is
-// where the rule above stops.
+// the block is not the one the person answered, so it takes a fresh id and opens an ask of its
+// own, and the answered row stays as the record of the question it was given on. This is where
+// the rule above stops. Written in place of the answered question, the other question would take
+// the answered ask's block out of the document, which no writer but a person may do
+// (ErrAnsweredAskKept): that body is refused and writes nothing, so the agent asks it beside the
+// answered question, which it writes from the question alone as above.
 func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
-	answered := documentText(t, service, artifactID)
-	composed := strings.Replace(answered, composedUploadAnsweredOpener, composedUploadComposedOpener, 1)
-	composed = strings.Replace(composed, composedUploadQuestion, composedUploadOtherQuestion, 1)
-	if !strings.Contains(composed, composedUploadComposedOpener) || !strings.Contains(composed, composedUploadOtherQuestion) {
-		t.Fatalf("the composed body reads\n%s\nwant the ask written with no id and the question changed to %q", composed, composedUploadOtherQuestion)
+	read := asAgentReadsIt(t, service, artifactID)
+	answered := composedUploadAgentMarkdown(t, service, artifactID)
+	start := strings.Index(answered, composedUploadReadOpener)
+	if start < 0 {
+		t.Fatalf("the answered document reads\n%s\nwant it to hold the opener an agent reads, %s", answered, composedUploadReadOpener)
+	}
+	keptBlock := strings.Replace(answered, composedUploadReadOpener, composedUploadComposedOpener, 1)
+	otherBlock := strings.Replace(strings.Replace(answered[start:], composedUploadReadOpener, composedUploadComposedOpener, 1),
+		composedUploadQuestion, composedUploadOtherQuestion, 1)
+	inPlace := strings.Replace(keptBlock, composedUploadQuestion, composedUploadOtherQuestion, 1)
+	composed := keptBlock + "\n" + otherBlock
+	for _, body := range []string{inPlace, composed} {
+		if !strings.Contains(body, composedUploadComposedOpener) || !strings.Contains(body, composedUploadOtherQuestion) {
+			t.Fatalf("the composed body reads\n%s\nwant the ask written with no id and asking %q", body, composedUploadOtherQuestion)
+		}
+	}
+
+	var kept *ErrAnsweredAskKept
+	if _, err := joinedReplaceText(service, artifactID, inPlace, composedUploadAgent); !errors.As(err, &kept) ||
+		len(kept.Asks) != 1 || kept.Asks[0].Question != composedUploadQuestion {
+		t.Fatalf("the upload of the body asking the other question in place of the answered one = %v, want it refused for the answered ask %s asking %q", err, ask.ID, composedUploadQuestion)
+	}
+	if after := asAgentReadsIt(t, service, artifactID); after != read {
+		t.Fatalf("the document after the refused upload reads, as an agent reads it,\n%s\nwant it as it read before\n%s", after, read)
 	}
 
 	if _, err := joinedReplaceText(service, artifactID, composed, composedUploadAgent); err != nil {
 		t.Fatalf("upload the body the agent composed with another question: %v", err)
 	}
 	ids := documentAskBlockIDs(t, service, artifactID)
-	if len(ids) != 1 || ids[0] == *ask.BlockID {
-		t.Fatalf("the document after the upload holds the ask blocks %q, want one block with an id of its own, not the answered ask's %q", ids, *ask.BlockID)
+	if len(ids) != 2 || ids[0] != *ask.BlockID || ids[1] == *ask.BlockID || ids[1] == "" {
+		t.Fatalf("the document after the upload holds the ask blocks %q, want the answered ask's %q and then one block with an id of its own", ids, *ask.BlockID)
 	}
-	fresh := ids[0]
+	fresh := ids[1]
 
 	settleCurrentGeneration(t, service, artifactID)
-	opener := fmt.Sprintf(`:::ask{#%s urgency="med" multiple="false" state="open"}`, fresh)
-	if text := documentText(t, service, artifactID); !strings.Contains(text, opener) {
-		t.Fatalf("the document after the upload and its settlement reads\n%s\nwant the other question open under its own id, %s", text, opener)
+	opener := fmt.Sprintf(`:::ask{#%s urgency="med" multiple="false"}`+"\n"+composedUploadOtherQuestion+"\n", fresh)
+	entries := fmt.Sprintf("\nasks:\n%s\n#%s state=\"open\"\n", composedUploadAnsweredEntry, fresh)
+	if read := asAgentReadsIt(t, service, artifactID); !strings.Contains(read, opener) || !strings.HasSuffix(read, entries) {
+		t.Fatalf("the document after the upload and its settlement reads, as an agent reads it,\n%s\nwant the other question under its own id, %q, and its asks member answering the answered ask and the other question open, %q", read, opener, entries)
 	}
 	rows := askRowsOn(t, service, artifactID)
 	if len(rows) != 2 {
@@ -155,14 +184,14 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 // once, and it is paired with the uploaded ask from the right. The pair is unchanged outside the
 // server state an upload resets, so the id is carried: a block of another type inserted above
 // the ask does not cost the ask its id, and the heading alone takes a fresh one. The row holding
-// the person's answer stays the issue's one row for the question, and the settlement writes the
-// answer onto the block again.
+// the person's answer stays the issue's one row for the question, and the text read answers that
+// answer for the block in its asks member.
 func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadSurroundedDocument)
-	answered := documentText(t, service, artifactID)
-	composed := strings.Replace(answered, composedUploadAnsweredOpener, "## Transport\n\n"+composedUploadComposedOpener, 1)
+	answered := composedUploadAgentMarkdown(t, service, artifactID)
+	composed := strings.Replace(answered, composedUploadReadOpener, "## Transport\n\n"+composedUploadComposedOpener, 1)
 	composed = strings.Replace(composed, "Context\n", "Context, revised.\n", 1)
 	composed = strings.Replace(composed, "The decision lands this week.\n", "The decision lands on Friday.\n", 1)
 	neighbourhood := []string{"Context, revised.\n", "## Transport\n", "The decision lands on Friday.\n"}
@@ -180,9 +209,10 @@ func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *tes
 	}
 
 	settleCurrentGeneration(t, service, artifactID)
-	text := documentText(t, service, artifactID)
-	if !strings.Contains(text, composedUploadAnsweredOpener) {
-		t.Errorf("the document after the upload and its settlement reads\n%s\nwant the answer written onto the block again, under the opener %s", text, composedUploadAnsweredOpener)
+	read := asAgentReadsIt(t, service, artifactID)
+	text, _, _ := strings.Cut(read, "\nasks:\n")
+	if !strings.Contains(text, composedUploadReadOpener) || !strings.HasSuffix(read, "\nasks:\n"+composedUploadAnsweredEntry+"\n") {
+		t.Errorf("the document after the upload and its settlement reads, as an agent reads it,\n%s\nwant the block under its id, %s, and the person's answer in its asks member, %s", read, composedUploadReadOpener, composedUploadAnsweredEntry)
 	}
 	for _, want := range neighbourhood {
 		if !strings.Contains(text, want) {
@@ -206,8 +236,9 @@ func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *tes
 }
 
 // composedUploadAnsweredAsk seeds document on artifactID, lets the settlement index its ask,
-// answers that ask as alice the way its route stores an answer, and lets the settlement write the
-// answer onto the block. It returns the answered row.
+// answers that ask as alice the way its route stores an answer, and lets the settlement run over
+// the answered ask. It returns the answered row, once the text read answers the person's answer
+// for the block in its asks member, which is where an agent reads it.
 func composedUploadAnsweredAsk(t *testing.T, service *Service, artifactID, document string) model.Ask {
 	t.Helper()
 	seedServiceText(t, service, artifactID, document)
@@ -229,7 +260,21 @@ func composedUploadAnsweredAsk(t *testing.T, service *Service, artifactID, docum
 	if answered.State != "answered" || answered.Answer == nil {
 		t.Fatalf("the ask the person answered is %s, want it answered before the upload", askRowSummary(answered))
 	}
+	if read := asAgentReadsIt(t, service, artifactID); !strings.HasSuffix(read, "\nasks:\n"+composedUploadAnsweredEntry+"\n") {
+		t.Fatalf("the answered document reads, as an agent reads it,\n%s\nwant its asks member to answer the block as alice answered it, %s", read, composedUploadAnsweredEntry)
+	}
 	return answered
+}
+
+// composedUploadAgentMarkdown is the markdown an agent reads of the document through the text
+// routes (TextWithAsks), which it composes its body from.
+func composedUploadAgentMarkdown(t *testing.T, service *Service, artifactID string) string {
+	t.Helper()
+	text, err := service.TextWithAsks(context.Background(), artifactID, false)
+	if err != nil {
+		t.Fatalf("read the document as an agent reads it: %v", err)
+	}
+	return text.Markdown
 }
 
 // documentAskBlockIDs is the id of every ask block the live document holds, in document order.

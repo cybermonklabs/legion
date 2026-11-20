@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -62,6 +62,7 @@ import {
 import { SubscribedAgents } from "../issue/SubscribedAgents";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName, AgentUnresponsiveNote } from "../refs/AgentName";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { relativeTimeLabel, Timestamp } from "../refs/Timestamp";
 import { AUTHOR_TEXT_ATTRIBUTE, PAGE_CHROME_ATTRIBUTE, PROPERTY_LABELS } from "./page-structure";
 import { ANSWER_LINES, AUTHOR_KIND_WORDS, CONTROL_LABELS, STATE_LINES } from "./page-words";
@@ -70,7 +71,6 @@ import {
   CLAIMED_AT,
   classOf,
   colourOf,
-  DECISIONS_ID,
   doc,
   draw,
   FOCUS_VARIANTS,
@@ -94,6 +94,7 @@ import {
   threadOf,
   tokens,
   undraw,
+  VERIFICATION_ID,
 } from "./shared-controls-fixture";
 
 /**
@@ -218,6 +219,13 @@ interface Stubs {
 
 let stubs: Stubs;
 
+// A control's stored words - a step's reason, a person's line - are drawn by the lazy Markdown
+// engine, and the rows read each element's marks as soon as the control mounts. The rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 beforeEach(() => {
   stubs = {
     getArchitecture: spyOn(api, "getArchitecture"),
@@ -277,7 +285,12 @@ function answerDefaults(): void {
     read_at: null,
     version: null,
   }));
-  stubs.getIssueDecisions.mockResolvedValue({ decisions: [], document: null, open_questions: [] });
+  stubs.getIssueDecisions.mockResolvedValue({
+    decisions: [],
+    document: null,
+    entries: [],
+    open_questions: [],
+  });
   stubs.getIssueSubscribers.mockResolvedValue([]);
   stubs.getReferences.mockResolvedValue({
     edges: [],
@@ -334,14 +347,16 @@ function notesWith(approval: ArtifactApproval): Artifact {
   return { ...notes, approval };
 }
 
-/** The gate's steps as Details draws them: the spec waits on a request for its version 1, the
- *  decisions were sent back with a reason, and the verification has no document yet. `values`
- *  names the two documents and gives the reason, which the wrap case makes long. */
+/** The gate's two steps as Details draws them: the spec waits on a request for its version 1,
+ *  and the verification was `sent back` with a reason or is `not requested`, with no document
+ *  yet. A gate has two steps, so the mounts draw a gate for each. `values` names the two
+ *  documents and gives the reason, which the wrap case makes long. */
 function stepEntries(
+  verification: "not requested" | "sent back",
   values = {
-    decisions: "decisions.md",
-    reason: "The second decision cites no evidence.",
+    reason: "The checks name no command.",
     spec: "spec.md",
+    verification: "verification.md",
   }
 ): StepEntry[] {
   return [
@@ -354,18 +369,19 @@ function stepEntries(
       label: "Spec",
       step: "spec",
     },
-    {
-      document: doc(DECISIONS_ID, values.decisions, {
-        by: { id: "bob", kind: "user" },
-        latest_version: 3,
-        reason: values.reason,
-        state: "changes_requested",
-        version: 3,
-      }),
-      label: "Decisions",
-      step: "decisions",
-    },
-    { document: undefined, label: "Verification", step: "criteria" },
+    verification === "sent back"
+      ? {
+          document: doc(VERIFICATION_ID, values.verification, {
+            by: { id: "bob", kind: "user" },
+            latest_version: 3,
+            reason: values.reason,
+            state: "changes_requested",
+            version: 3,
+          }),
+          label: "Verification",
+          step: "criteria",
+        }
+      : { document: undefined, label: "Verification", step: "criteria" },
   ];
 }
 
@@ -769,7 +785,17 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, Details' size with versions and reasons",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("sent back")}
+        primaryArtifactId={SPEC_ID}
+        versions={{ asks: [specRequest], issueKey: "CORE-1" }}
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, Details' size with versions and a step not requested",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("not requested")}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
       />
@@ -779,7 +805,18 @@ const MOUNTS: readonly Mount[] = [
     name: "ApprovalSteps, the header's compact size",
     node: () => (
       <ApprovalSteps
-        entries={stepEntries()}
+        entries={stepEntries("not requested")}
+        primaryArtifactId={SPEC_ID}
+        reasons={false}
+        size="compact"
+      />
+    ),
+  },
+  {
+    name: "ApprovalSteps, the header's compact size with a step sent back",
+    node: () => (
+      <ApprovalSteps
+        entries={stepEntries("sent back")}
         primaryArtifactId={SPEC_ID}
         reasons={false}
         size="compact"
@@ -1511,7 +1548,9 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   [mountNamed("Timestamp, exact"), [localTime(CLAIMED_AT)]],
   [mountNamed("ApprovalSteps, Details' size with versions and reasons"), []],
+  [mountNamed("ApprovalSteps, Details' size with versions and a step not requested"), []],
   [mountNamed("ApprovalSteps, the header's compact size"), []],
+  [mountNamed("ApprovalSteps, the header's compact size with a step sent back"), []],
   [mountNamed("AssigneeControl, both variants, assigned and not"), []],
   [mountNamed("PriorityControl and PriorityEditor, both variants, set and not"), []],
   [
@@ -1675,7 +1714,7 @@ const LONG = {
   liveTitle: "Implementer-of-the-new-issue-page-whose-title-runs-on-past-its-row",
   login: "a-person-whose-login-runs-on-past-the-row@example.com",
   question: "Should-we-ship-the-new-issue-page-before-its-header-is-done?",
-  reason: "The-second-decision-cites-no-evidence-for-its-claim-at-all.",
+  reason: "The-checks-name-no-command-to-run-and-no-result-to-read-at-all.",
   repository: "acme/the-repository-with-a-44-character-name",
   retired: "a-retired-component-whose-identifier-runs-on",
   route: "role:an-architect-role-whose-address-runs-on-past-its-row",
@@ -1819,10 +1858,10 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   withLongValues(mountNamed("ApprovalSteps, Details' size with versions and reasons"), {
     node: () => (
       <ApprovalSteps
-        entries={stepEntries({
-          decisions: `decisions-${LONG.document}`,
+        entries={stepEntries("sent back", {
           reason: LONG.reason,
           spec: LONG.document,
+          verification: `verification-${LONG.document}`,
         })}
         primaryArtifactId={SPEC_ID}
         versions={{ asks: [specRequest], issueKey: "CORE-1" }}
@@ -2014,12 +2053,23 @@ function boxHolds(element: Element, value: string): boolean {
   );
 }
 
+/** The element a holder of a value draws it as: the holder itself, unless the holder is a
+ *  Markdown body's (`MarkdownBody`), which takes no class, so its caller draws the value as the
+ *  element with the author-text mark around the body, whose classes are the value's. A body
+ *  with no such element around it is read as itself. */
+function valueDrawnBy(holder: Element): Element {
+  return (
+    holder.closest(".dispatch-markdown")?.parentElement?.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) ??
+    holder
+  );
+}
+
 /**
  * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
- * element holding one of `mount.values` in its own text, or a text box holding it as its value or
- * its placeholder. A value inside `sr-only` is read aloud and drawn in no row, and a native
- * `<option>` is drawn by the browser's own list, which no class wraps, so neither is read.
- * `missing` takes each value of `mount.values` that nothing draws.
+ * element holding one of `mount.values` in its own text (`valueDrawnBy`), or a text box holding
+ * it as its value or its placeholder. A value inside `sr-only` is read aloud and drawn in no row,
+ * and a native `<option>` is drawn by the browser's own list, which no class wraps, so neither is
+ * read. `missing` takes each value of `mount.values` that nothing draws.
  */
 function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
   const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
@@ -2029,7 +2079,7 @@ function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[])
       (element) => ownText(element).includes(value) || boxHolds(element, value)
     );
     if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
-    for (const holder of holders) values.add(holder);
+    for (const holder of holders) values.add(valueDrawnBy(holder));
   }
   return [...values];
 }
@@ -2302,43 +2352,53 @@ interface DrawnPair {
   readonly text: string;
 }
 
+/** Whether an attribute is a class an element is drawn with: its own `className`, or the class
+ *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`,
+ *  `labelClassName` and `hintClassName`), which is drawn where the component is. */
+const CLASS_ATTRIBUTE = /^(?:className|[a-z][A-Za-z]*ClassName)$/;
+
+/** The expression an attribute's value is: what its braces hold, or its string. */
+function attributeExpression(attribute: ts.JsxAttribute): ts.Expression | undefined {
+  const value = attribute.initializer;
+  return value === undefined
+    ? undefined
+    : ts.isJsxExpression(value)
+      ? value.expression
+      : ts.isStringLiteral(value)
+        ? value
+        : undefined;
+}
+
 /** Each page colour pair the elements of `file` that read an `ON_PAGE` entry draw, in each state
  *  of theirs and of the elements around them: the text an element's class gives it, else the
  *  nearest around it; on the ground its class gives it, else each ground of the nearest element
  *  around it that draws one in every look it can take, with the grounds of the looks on the way
- *  that draw one; else the page's grounds. */
+ *  that draw one; else the page's grounds. A component's class of one of its parts
+ *  (`CLASS_ATTRIBUTE`) is read as an element of its own where the component is drawn; only its
+ *  `className` is around what the component holds. */
 function onPagePairs(file: ParsedSource): DrawnPair[] {
   const pairs: DrawnPair[] = [];
   const visit = (node: ts.Node, around: readonly (readonly PageLook[])[]) => {
-    const opening = ts.isJsxElement(node)
-      ? node.openingElement
+    const attributes = ts.isJsxElement(node)
+      ? node.openingElement.attributes.properties
       : ts.isJsxSelfClosingElement(node)
-        ? node
-        : undefined;
-    const classAttribute = opening?.attributes.properties.find(
-      (attribute): attribute is ts.JsxAttribute =>
-        ts.isJsxAttribute(attribute) && attribute.name.getText() === "className"
-    );
-    const value = classAttribute?.initializer;
-    const expression =
-      value === undefined
-        ? undefined
-        : ts.isJsxExpression(value)
-          ? value.expression
-          : ts.isStringLiteral(value)
-            ? value
-            : undefined;
-    if (opening === undefined || expression === undefined) {
-      ts.forEachChild(node, (child) => visit(child, around));
-      return;
-    }
-    const looks = classStrings(expression, file).flatMap((className) => {
-      const look = pageLook(className);
-      return look === undefined ? [] : [look];
-    });
-    const entries = onPageEntries(expression, file);
-    if (entries.length > 0) {
-      const line = file.source.getLineAndCharacterOfPosition(opening.getStart()).line + 1;
+        ? node.attributes.properties
+        : [];
+    let held: readonly PageLook[] | undefined;
+    for (const attribute of attributes) {
+      if (!ts.isJsxAttribute(attribute) || !CLASS_ATTRIBUTE.test(attribute.name.getText())) {
+        continue;
+      }
+      const expression = attributeExpression(attribute);
+      if (expression === undefined) continue;
+      const looks = classStrings(expression, file).flatMap((className) => {
+        const look = pageLook(className);
+        return look === undefined ? [] : [look];
+      });
+      if (attribute.name.getText() === "className") held = looks;
+      const entries = onPageEntries(expression, file);
+      if (entries.length === 0) continue;
+      const line = file.source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       const states = new Set(
         [...looks, ...around.flat()].flatMap((look) => ["", ...look.bg.keys(), ...look.text.keys()])
       );
@@ -2354,7 +2414,7 @@ function onPagePairs(file: ParsedSource): DrawnPair[] {
         }
       }
     }
-    ts.forEachChild(node, (child) => visit(child, [looks, ...around]));
+    ts.forEachChild(node, (child) => visit(child, held === undefined ? around : [held, ...around]));
   };
   visit(file.source, []);
   return pairs;
@@ -2785,17 +2845,16 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [...root.querySelectorAll("[data-approval-artifact]")].map((chip) =>
           chip.getAttribute("data-approval-artifact")
         )
-      ).toEqual([SPEC_ID, DECISIONS_ID]);
+      ).toEqual([SPEC_ID, VERIFICATION_ID]);
       expectMarks(root, [
-        [CONTROL_LABELS.not_requested, "page-chrome"],
         // The line's own words, the step and the review, around the reviewer and the reason.
-        ["Decisions: requested changes on v3 ·", "page-chrome"],
+        ["Verification: requested changes on v3 ·", "page-chrome"],
         ["bob", "author-text"],
-        ["The second decision cites no evidence.", "author-text"],
+        ["The checks name no command.", "author-text"],
       ]);
       expect(
         root
-          .querySelector("[data-approval-step-reason='decisions']")
+          .querySelector("[data-approval-step-reason='criteria']")
           ?.hasAttribute(PAGE_CHROME_ATTRIBUTE)
       ).toBe(true);
       expectMarks(within(root).getByRole("link", { name: "spec.md, version 1" }), [
@@ -2803,6 +2862,14 @@ test("inside NoTooltips the words come from the page's word list and carry their
         [CONTROL_LABELS.version.toLowerCase(), "page-chrome"],
         ["1", "author-text"],
       ]);
+    }
+  );
+  // A gate has two steps, so the step with no request is read in the gates of its own.
+  await readDrawn(
+    mountNamed("ApprovalSteps, Details' size with versions and a step not requested"),
+    "inside",
+    (view) => {
+      expectMarks(view.container, [[CONTROL_LABELS.not_requested, "page-chrome"]]);
     }
   );
   await readDrawn(mountNamed("ApprovalSteps, the header's compact size"), "inside", (view) => {
@@ -3413,7 +3480,7 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
 test("inside NoTooltips ApprovalSteps' version link draws in the page's colours", async () => {
   const node = () => (
     <ApprovalSteps
-      entries={stepEntries()}
+      entries={stepEntries("sent back")}
       primaryArtifactId={SPEC_ID}
       versions={{ asks: [specRequest], issueKey: "CORE-1" }}
     />

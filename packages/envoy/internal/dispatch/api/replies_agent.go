@@ -8,9 +8,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The Agent rows of GET /api/v1/me/replies: the statements each state reads them through, the
@@ -48,11 +48,12 @@ import (
 // The definition of "a reply this login has not read in this session" is unread_replies.go's
 // (unreadDirectRepliesCTE), which the Agents page's New replies badge and the conversation window
 // read: a session's own reply under a root this person targeted at that session, newer than the
-// later of their read mark (user_agent_read, keyed on the canonical login $1) and their Clear
-// (user_agent_state, keyed on the raw actor id $2 - the asymmetry that file records), and not one
-// they have read by its id (user_agent_reply_read). The reads here ask that question of one root
-// at a time rather than of every root at once, and myAgentUnreadReplyTest is the one place this
-// file spells it, so the two can differ in what they cost and not in what they mean.
+// later of their read mark and their Clear, both read from their one person node ($1) whatever
+// spelling of their login wrote them (directMarks), and not one they have read by its id
+// (replyReadByID). The reads here ask that question of one root at a time rather than of every
+// root at once, through those same two readings of the marks, and myAgentUnreadReplyTest is the
+// one place this file spells it, so the two can differ in what they cost and not in what they
+// mean.
 //
 // Parameters are unreadDirectRepliesCTE's own (unreadDirectRepliesArgs), so the first free one is
 // $4, the number of rows a page read takes (null for every row), and a Dismissed page resumes from
@@ -82,37 +83,35 @@ func agentSessionOf(target string) string {
 }
 
 // myAgentMarks is every session this person has a read mark or a Clear for, which is
-// unreadDirectRepliesCTE's own direct_marks: the canonical login keys the read mark and the raw
-// actor id the Clear, the asymmetry that file records. It is materialized and read once per
-// statement rather than per root - a person has a row here per session they have ever read or
-// cleared, a handful, where the roots are every one-off message they ever sent.
-const myAgentMarks = `
+// unreadDirectRepliesCTE's own direct_marks read for every session (directMarks): the read
+// mark and the Clear from the person's one node, and a row no tuple states yet on the key the
+// release before read it by. It reads $1 and $2 alone, since a read here may bind $3 for a statement
+// of its own (inboxDismissCheckAgentRoots). It is materialized and read once per statement rather
+// than per root: it is one row a session they have ever read or cleared, each read off the index
+// in two probes a kind however many marks they stated there (newestMarks), where the roots are
+// every one-off message they ever sent.
+var myAgentMarks = `
 	with marks as materialized (
-		select coalesce(marked.session_id, cleared.session_id) as session_id,
-		       greatest(marked.read_through, cleared.cleared_before) as at
-		from (select session_id, read_through from user_agent_read where login = $1) marked
-		full join (select session_id, cleared_before from user_agent_state where login = $2) cleared
-		  on cleared.session_id = marked.session_id
+		select session_id, at from (` + directMarks(false) + `
+		) direct
 	),`
 
 // agentMarkOf is the later of the person's read mark and their Clear for one session, which a
 // reply is unread after. A session they have neither for reads as -infinity, so every reply in it
-// is unread, exactly as the full join above leaves it.
+// is unread, exactly as directMarks leaves it.
 func agentMarkOf(session string) string {
 	return `coalesce((select at from marks where marks.session_id = ` + session + `),
 			  '-infinity'::timestamptz)`
 }
 
 // myAgentUnreadReplyTest is this file's one spelling of "a reply the person has not read": newer
-// than the mark for its session, and not read by its id. reply names the reply and mark the mark,
-// both as expressions, since each read asks it of a row of its own walk - and each read takes the
-// mark once per root rather than once per reply, which is two index reads a reply saved.
+// than the mark for its session, and not read by its id (replyReadByID). reply names the reply and
+// mark the mark, both as expressions, since each read asks it of a row of its own walk - and each
+// read takes the mark once per root rather than once per reply, which is two index reads a reply
+// saved.
 func myAgentUnreadReplyTest(reply, mark string) string {
 	return `created_at > ` + mark + `
-			  and not exists (
-				select 1 from user_agent_reply_read
-				where user_agent_reply_read.login = $1 and user_agent_reply_read.reply_id = ` + reply + `
-			  )`
+			  and not ` + replyReadByID(reply)
 }
 
 // myAgentRootFilter is what makes a message one of the person's one-off messages to a session: an
@@ -346,36 +345,48 @@ func (s *server) readMyAgentRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	total := 0
+	var extra []any
+	if counted {
+		extra = append(extra, &total)
+	}
 	for rows.Next() {
-		row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
-		var session, subject, body string
-		var author []byte
-		var repliedAt time.Time
-		scanned := []any{
-			&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
-			&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
-			&row.UnreadCount, &row.UnreadReplyIDs,
+		row, err := scanMyAgentRow(rows, s.deps.ServerURL, extra...)
+		if err != nil {
+			return nil, 0, err
 		}
-		if counted {
-			scanned = append(scanned, &total)
-		}
-		if err := rows.Scan(scanned...); err != nil {
-			return nil, 0, fmt.Errorf("scan my agent thread: %w", err)
-		}
-		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-			return nil, 0, fmt.Errorf("decode my agent reply author: %w", err)
-		}
-		row.Ref = "/agents/" + session + "/live"
-		row.Subject = contracts.OneLineSummary(subject)
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
-		row.Unread = row.UnreadCount > 0
-		row.Session = &model.MyReplySession{ID: session}
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("list my agent threads: %w", err)
 	}
 	return read, total, nil
+}
+
+// scanMyAgentRow decodes one Agent row myAgentRowColumns selects, extra receiving the columns
+// after them: the row listMyReplies answers, and the agent row of an entry GET /api/v1/me/inbox
+// answers. Its session is named by its id until nameAgentSessions names it, and its subject and
+// its reply's first line are cut against serverURL, this server's deployment (refs.FirstLine).
+func scanMyAgentRow(scanned pgx.Row, serverURL string, extra ...any) (model.MyReplyRow, error) {
+	row := model.MyReplyRow{Kind: myReplyKindAgent, Reply: model.MyReplyReply{Kind: "reply"}}
+	var session, subject, body string
+	var author []byte
+	var repliedAt time.Time
+	if err := scanned.Scan(append([]any{
+		&row.ThreadID, &session, &repliedAt, &row.DismissedAt, &subject,
+		&row.Reply.ID, &author, &body, &row.Reply.CreatedAt,
+		&row.UnreadCount, &row.UnreadReplyIDs,
+	}, extra...)...); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("scan my agent thread: %w", err)
+	}
+	if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("decode my agent reply author: %w", err)
+	}
+	row.Ref = "/agents/" + session + "/live"
+	row.Subject = refs.FirstLine(subject, serverURL)
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
+	row.Unread = row.UnreadCount > 0
+	row.Session = &model.MyReplySession{ID: session}
+	return row, nil
 }
 
 // nameAgentSessions names the session of every Agent row on the page. A session's name is the

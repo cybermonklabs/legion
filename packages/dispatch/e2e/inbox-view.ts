@@ -279,7 +279,7 @@ const VALUE_LABELS: Record<string, string> = {
   low: "Low",
   med: "Medium",
   question: "Question",
-  reply: "Reply",
+  reply: "Threads",
 };
 
 /** The plural each Type band is headed by. */
@@ -288,7 +288,7 @@ const TYPE_BANDS: Record<string, string> = {
   approval: "Approvals",
   decision: "Decisions",
   question: "Questions",
-  reply: "Replies",
+  reply: "Threads",
 };
 
 export function valueLabel(field: string, value: string): string {

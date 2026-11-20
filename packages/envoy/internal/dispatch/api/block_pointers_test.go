@@ -376,12 +376,11 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	requireReferenceNotFound(t, handler, url.Values{"to": {missing}}, `no block "nowhere" in dispatch://`+issue.Key+"/spec")
 }
 
-// setBlockAttributes writes typed-block state through the live room's own service call, as the
-// answer route does (answerAsk's WriteBlock): inside a transaction joined with Docs.Join, the
-// only way a document write runs, committed when the write succeeds. It returns
-// SetBlockAttributes' own error, which a caller testing a refusal asserts on;
-// setLiveBlockAttributes is the same write for a caller that wants it to succeed.
-func setBlockAttributes(database *store.Store, documentService docs.API, artifactID, blockID string, attributes map[string]any, actor model.Actor) error {
+// insertLiveBlocks inserts markdown at the end of the document through the live room's own
+// service call, as the edits route does (ApplyOps): inside a transaction joined with Docs.Join, the
+// only way a document write runs, committed when the write succeeds. It returns ApplyOps' own
+// error, which a caller testing a refusal asserts on.
+func insertLiveBlocks(database *store.Store, documentService docs.API, artifactID, markdown string, actor model.Actor) error {
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -390,20 +389,21 @@ func setBlockAttributes(database *store.Store, documentService docs.API, artifac
 	defer tx.Rollback(ctx)
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	if err := documentService.SetBlockAttributes(joined, artifactID, blockID, attributes, actor); err != nil {
+	if _, err := documentService.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: markdown}}, actor, nil); err != nil {
 		return err
 	}
 	return ledger.Commit(ctx)
 }
 
-// The server's own write of a typed block's state (Docs.SetBlockAttributes) meets both refusals a
-// `block[]` value is held to in the live room: one naming a block of a type the attribute's
-// targets do not allow, refused against the block index (refuseBlockPointers), and one naming a
-// part of an ask, which is no block of a document, refused as the write validates the tree it
-// writes (validateBlockPointerValues, which pmdoc.SetBlockAttributes and pmdoc.Update both
-// reach). The room keeps nothing of a refused write, and the block carries an allowed pointer
-// afterwards.
-func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
+// A server write of a typed block's `block[]` value into the live room - an edit's insert, the
+// write that remains now that no route writes a block's attributes on their own - meets both
+// refusals such a value is held to there: one naming a block of a type the attribute's targets do
+// not allow, refused against the block index (refuseBlockPointers), and one naming a part of an
+// ask, which is no block of a document, refused as the write reads the value
+// (validateBlockPointerValues). The room keeps nothing of a refused write, and a pointer at an
+// allowed block is taken. A browser's write is never refused
+// (TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved).
+func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	// newTestServer, not blockIndexHandler: the document service this test calls is the
 	// dependencies', the very one the handlers write through. Its documents never settle during
@@ -434,7 +434,7 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		{name: "a pointer at a pinned part of an ask", serves: ask + "@v1", wants: []string{`"serves"`, ask + "@v1"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := setBlockAttributes(database, deps.Docs, saved.ID, "c1", map[string]any{"serves": []string{test.serves}}, actor)
+			err := insertLiveBlocks(database, deps.Docs, saved.ID, claimMarkdown("c2", test.serves), actor)
 			if err == nil {
 				t.Fatal("the write was accepted, want it refused")
 			}
@@ -443,10 +443,13 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 					t.Fatalf("error = %v, want a block pointer refusal", err)
 				}
 			} else {
-				// The value is refused where the write sets it, so the room never records it
-				// and then answers for its own document as one outside the schema.
-				if !errors.Is(err, pmdoc.ErrSchema) || errors.Is(err, docs.ErrDocSchema) {
-					t.Fatalf("error = %v, want the value refused (%v), not the document (%v)", err, pmdoc.ErrSchema, docs.ErrDocSchema)
+				// The value is refused where the write reads it: the caller's markdown
+				// (docs.ErrInvalidMarkdown), which the edit reports as an invalid operation on its
+				// markdown, so the room never records it and then answers for its own document as
+				// one outside the schema.
+				var invalid *docs.ErrInvalidOp
+				if !errors.As(err, &invalid) || invalid.Field != "markdown" || !errors.Is(err, docs.ErrInvalidMarkdown) || errors.Is(err, docs.ErrDocSchema) {
+					t.Fatalf("error = %v, want the markdown refused (%v), not the document (%v)", err, docs.ErrInvalidMarkdown, docs.ErrDocSchema)
 				}
 				const sentence = "is a block of an ask: a block[] attribute points only at a block of a document"
 				if !strings.HasSuffix(err.Error(), sentence) {
@@ -467,10 +470,10 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		})
 	}
 
-	if err := setBlockAttributes(database, deps.Docs, saved.ID, "c1", map[string]any{"serves": []string{checks + "#b-r2"}}, actor); err != nil {
+	if err := insertLiveBlocks(database, deps.Docs, saved.ID, claimMarkdown("c2", checks+"#b-r2"), actor); err != nil {
 		t.Fatalf("a pointer at a requirement: %v, want the write accepted", err)
 	}
-	want := ":::requirement{#r2}\nOurs.\n:::\n\n" + claimMarkdown("c1", checks+"#b-r2")
+	want := before + "\n" + claimMarkdown("c2", checks+"#b-r2")
 	if after := documentMarkdown(t, handler, saved.ID); after != want {
 		t.Fatalf("the room after the accepted write = %q, want %q", after, want)
 	}

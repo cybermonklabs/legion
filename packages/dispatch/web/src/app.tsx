@@ -56,8 +56,12 @@ import {
   AGENT_LIVE_PATH,
   ANSWERS_PATH,
   buildInboxPath,
+  buildPersonPath,
   buildProjectPath,
+  INBOX_COMPARISON_PATH,
   liveViewSessionOf,
+  PERSON_PATH,
+  parseInboxSearch,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -191,6 +195,12 @@ const PipelinePage = lazy(() =>
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
+);
+const ComparisonPage = lazy(() =>
+  import("./features/inbox/ComparisonPage").then((module) => ({ default: module.ComparisonPage }))
+);
+const PersonPage = lazy(() =>
+  import("./features/people/PersonPage").then((module) => ({ default: module.PersonPage }))
 );
 const SettingsPage = lazy(() =>
   import("./features/settings/SettingsPage").then((module) => ({ default: module.SettingsPage }))
@@ -466,7 +476,19 @@ function NavigationContents({
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        {/* The login is the way in to the reader's own page: what they wrote and what reached
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
+        <p className={`px-2 text-sm ${railMutedText}`}>
+          Signed in as{" "}
+          <Link
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
+            onClick={onClose}
+            to={buildPersonPath(user.login)}
+          >
+            {user.login}
+          </Link>
+        </p>
         <button
           className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
           disabled={signOutPending}
@@ -1078,10 +1100,18 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Routes>
                 <Route element={<InboxPage />} path="/" />
                 <Route element={<AnswersPage />} path={ANSWERS_PATH} />
-                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them. */}
+                <Route element={<ComparisonPage />} path={INBOX_COMPARISON_PATH} />
+                {/* The Replies page is the Inbox's Reply rows now; an old link lands on them,
+                    keeping the address's opt-in to the one read where it carries one. */}
                 <Route
                   element={
-                    <Navigate replace to={buildInboxPath({ filters: { type: ["reply"] } })} />
+                    <Navigate
+                      replace
+                      to={buildInboxPath({
+                        filters: { type: ["reply"] },
+                        one: parseInboxSearch(location.search).one,
+                      })}
+                    />
                   }
                   path="/replies"
                 />
@@ -1105,6 +1135,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<SettingsPage />} path="/settings" />
                 <Route element={<DeliveryPage />} path="/delivery" />
                 <Route element={<PipelinePage />} path="/pipeline" />
+                <Route element={<PersonPage />} path={PERSON_PATH} />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>
@@ -1128,7 +1159,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
         <InboxDrawer onClose={() => setInboxDrawerOpen(false)} open={inboxDrawerOpen} />
         <ShortcutHelp onClose={() => setHelpSnapshot(null)} snapshot={helpSnapshot} />
         {createOpen ? <CreateIssueDialog onClose={() => setCreateOpen(false)} /> : null}
-        <RefPreviewHost />
+        <RefPreviewHost surface="reference-hover-card" />
       </div>
     </ShellProviders>
   );

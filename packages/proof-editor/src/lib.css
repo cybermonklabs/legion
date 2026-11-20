@@ -928,3 +928,9 @@ span[data-dispatch="ask"] {
   vertical-align: bottom;
   cursor: pointer;
 }
+
+/* A title whose target opens no page - a person, whom no page shows - is drawn as a span, no
+   link, and points like the words around it. */
+span.dispatch-reference {
+  cursor: default;
+}

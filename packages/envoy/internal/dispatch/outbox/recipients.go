@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 
@@ -36,33 +37,48 @@ const documentCreditsSQL = `
 // so people are left out, and so is a session credit with no id, which has no topic either.
 const sessionCreditSQL = `author->>'kind' = 'session' and coalesce(author->>'id', '') <> ''`
 
-// commentRecipientsQuery is loadCommentRecipients' one statement. $1 is the comment ids, $2
-// maxCommentThreadDepth. The walk up (up) finds each comment's thread root. comments.reply_to has
-// no acyclicity constraint, so the walk unions on the visited row and stops at the depth bound: a
-// cycle then has no reply_to-is-null row and gives no root, rather than spinning. The walk down
-// (thread) reads every comment under that root, to the same depth, for legacy nested rows. The
-// thread's members are both walks' comments, so a cycle still reaches the authors of the comments
-// the walk up visited, the replied-to comment's among them. The thread's document is the root's
-// anchor's artifact, or the root's own artifact for a comment on a whole project artifact, since
-// a reply carries no anchor.
+// commentRecipientsQuery is walkCommentThreads' one statement. $1 is the comment ids, $2
+// maxCommentThreadDepth. The walk up (up) finds each comment's thread root, and the walk down
+// (thread) reads every comment under that root, for legacy nested rows. The walk stops at two
+// limits, each of which ends what the other cannot.
 //
-// Each row says, beside the key and the session's id, where the read found that session: a
-// member of the thread ranks array[0, ...] and a credit of the document array[1, ...], and the
-// group's min(rank) decides, so a session that is both comes out a member. A Postgres array is
-// 1-indexed, so that first element is (min(rank))[1], which the row carries as from_thread. The
-// caller keeps a member of the thread whatever the issue's claim is and leaves a credit out on an
-// issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute states.
+//   - The union on the visited row ends a cycle. comments.reply_to carries no acyclicity
+//     constraint, so the walk up carries the ids it has visited (visited) and never steps onto
+//     one again: each row also carries its depth, so a lap of a cycle would otherwise be a row
+//     the union has not seen, and the walk would go round until the depth bound stopped it. A
+//     cycle has no reply_to-is-null row and so gives no root. The walk down needs no such guard:
+//     it starts from a root, whose reply_to is null, and each row it reaches replies to the row
+//     it came from, so it reaches no row twice.
+//   - The depth bound holds a chain of replies that never repeats a row: neither walk takes more
+//     than $2 steps, so a chain that deep is answered whole and a longer one is cut at the bound.
+//     A cut is a row of its own in the answer: the key, no session, and cut set. The walk up was
+//     cut when a row it reached at the bound still replies to a row it has not visited - one it
+//     has visited is the cycle the visited guard ended, which cuts nothing - and the walk down
+//     when a row it reached at the bound has a reply.
+//
+// The thread's members are both walks' comments, so a cycle or a cut chain still reaches the
+// authors of the comments the walk up visited, the replied-to comment's among them. The thread's
+// document is the root's anchor's artifact, or the root's own artifact for a comment on a whole
+// project artifact, since a reply carries no anchor.
+//
+// Each recipient row says, beside the key and the session's id, where the read found that
+// session: a member of the thread ranks array[0, ...] and a credit of the document array[1, ...],
+// and the group's min(rank) decides, so a session that is both comes out a member. A Postgres
+// array is 1-indexed, so that first element is (min(rank))[1], which the row carries as
+// from_thread. The caller keeps a member of the thread whatever the issue's claim is and leaves a
+// credit out on an issue a session claims (addAuthorRoutes), by the rule takesClaimantRoute
+// states.
 const commentRecipientsQuery = `
 	with recursive
 	up as (
-		select c.id as key, c.id, c.reply_to, c.anchor, c.artifact_id, 0 as depth
+		select c.id as key, c.id, c.reply_to, c.anchor, c.artifact_id, 0 as depth, array[c.id] as visited
 		from comments c
 		where c.id = any($1::uuid[])
 		union
-		select u.key, c.id, c.reply_to, c.anchor, c.artifact_id, u.depth + 1
+		select u.key, c.id, c.reply_to, c.anchor, c.artifact_id, u.depth + 1, u.visited || c.id
 		from up u
 		join comments c on c.id = u.reply_to
-		where u.depth < $2
+		where u.depth < $2 and c.id <> all(u.visited)
 	),
 	roots as (
 		select key, id, coalesce((anchor->>'artifact_id')::uuid, artifact_id) as artifact_id
@@ -92,12 +108,24 @@ const commentRecipientsQuery = `
 		join comments c on c.id = m.id
 		union all
 		` + documentCreditsSQL + `
+	),
+	cuts as (
+		select key from up where depth = $2 and reply_to is not null and reply_to <> all(visited)
+		union
+		select t.key from thread t
+		where t.depth = $2 and exists (select 1 from comments c where c.reply_to = t.id)
 	)
-	select key::text, author->>'id', (min(rank))[1] = 0 as from_thread
-	from credited
-	where ` + sessionCreditSQL + `
-	group by key, author->>'id'
-	order by key, min(rank)
+	select key::text, session_id, from_thread, cut
+	from (
+		select key, author->>'id' as session_id, (min(rank))[1] = 0 as from_thread, false as cut, min(rank) as rank
+		from credited
+		where ` + sessionCreditSQL + `
+		group by key, author->>'id'
+		union all
+		select key, null, false, true, null
+		from cuts
+	) walked
+	order by key, rank
 `
 
 // threadRecipient is one session a person's reply under a comment reaches, and where the read
@@ -120,11 +148,50 @@ type threadRecipient struct {
 // by the rule takesClaimantRoute states. People are left out, since a person has no Envoy topic.
 // A comment that has no row has no entry. The actor and the sessions the reply's mentions reach
 // are skipped by the caller too.
+//
+// A comment whose walk the depth bound cut (walkCommentThreads) is logged, one line naming it and
+// the bound: the reply then reaches only the sessions the walk found inside the bound, and the
+// log is the one place that says so.
 func loadCommentRecipients(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, error) {
 	if len(commentIDs) == 0 {
 		return map[string][]threadRecipient{}, nil
 	}
-	return loadThreadRecipients(ctx, db, "load comment recipients", commentRecipientsQuery, commentIDs, maxCommentThreadDepth)
+	recipients, cut, err := walkCommentThreads(ctx, db, commentIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, comment := range cut {
+		slog.Warn("dispatch outbox: the comment thread walk stopped at its depth bound, so a reply under the comment reaches only the sessions the walk found inside it",
+			"comment", comment, "depth", maxCommentThreadDepth)
+	}
+	return recipients, nil
+}
+
+// walkCommentThreads runs commentRecipientsQuery over commentIDs, one statement for a whole
+// batch, and answers each comment's recipients in the order of their rows, and the comments whose
+// walk the depth bound cut, in the order of their ids. A cut comment's recipients are those the
+// walk reached inside the bound.
+func walkCommentThreads(ctx context.Context, db queryer, commentIDs []string) (map[string][]threadRecipient, []string, error) {
+	rows, err := db.Query(ctx, commentRecipientsQuery, commentIDs, maxCommentThreadDepth)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load comment recipients: %w", err)
+	}
+	recipients := map[string][]threadRecipient{}
+	var cut []string
+	var key string
+	var sessionID *string
+	var fromThread, stopped bool
+	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread, &stopped}, func() error {
+		if stopped {
+			cut = append(cut, key)
+			return nil
+		}
+		recipients[key] = append(recipients[key], threadRecipient{sessionID: *sessionID, fromThread: fromThread})
+		return nil
+	}); err != nil {
+		return nil, nil, fmt.Errorf("load comment recipients: %w", err)
+	}
+	return recipients, cut, nil
 }
 
 // primaryDocumentAuthorsQuery is loadPrimaryDocumentAuthors' one statement. $1 is the issue keys.
@@ -156,7 +223,9 @@ func loadPrimaryDocumentAuthors(ctx context.Context, db queryer, issueKeys []str
 
 // loadKeyedSessions runs query, one statement for a whole batch whose every row is a key and a
 // session id, and returns each key's sessions in the order of its rows. what names the load in its
-// error.
+// error. It reads the two recipient reads whose rows carry no mark beside the session; the
+// comment recipients' rows also say where the walk found each session, and whether the walk was
+// cut (walkCommentThreads).
 func loadKeyedSessions(ctx context.Context, db queryer, what, query string, args ...any) (map[string][]string, error) {
 	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
@@ -171,27 +240,6 @@ func loadKeyedSessions(ctx context.Context, db queryer, what, query string, args
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
 	return sessions, nil
-}
-
-// loadThreadRecipients runs query, loadCommentRecipients' one statement for a whole batch, whose
-// every row is a key, a session id and whether the read found that session in the thread, and
-// returns each key's recipients in the order of its rows. The other two recipient reads carry no
-// such mark and run through loadKeyedSessions. what names the load in its error.
-func loadThreadRecipients(ctx context.Context, db queryer, what, query string, args ...any) (map[string][]threadRecipient, error) {
-	rows, err := db.Query(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", what, err)
-	}
-	recipients := map[string][]threadRecipient{}
-	var key, sessionID string
-	var fromThread bool
-	if _, err := pgx.ForEachRow(rows, []any{&key, &sessionID, &fromThread}, func() error {
-		recipients[key] = append(recipients[key], threadRecipient{sessionID: sessionID, fromThread: fromThread})
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("%s: %w", what, err)
-	}
-	return recipients, nil
 }
 
 // takesPrimaryAuthors reports whether a person's comment event reaches the sessions of its issue's

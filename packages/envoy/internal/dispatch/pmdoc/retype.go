@@ -61,8 +61,9 @@ func RetypeBlock(doc *Node, blockID, typeName string, attributes Attrs) (*Node, 
 	return out, nil
 }
 
-// StripServerOwnedAttrs resets typed-block server attributes at an agent markdown boundary.
-// Parsed historical versions retain their recorded values; agent operations never supply them.
+// StripServerOwnedAttrs takes typed-block server attributes off at an agent markdown boundary: a
+// server attribute has no written default (writtenDefault), so each is removed. Parsed historical
+// versions retain their recorded values; agent operations never supply them.
 func StripServerOwnedAttrs(doc *Node) {
 	walk(doc, func(node *Node, _ []int, _, _ int) bool {
 		typ, typed := typedBlock(node.Type)

@@ -60,12 +60,14 @@ import { AgentName } from "../refs/AgentName";
 import { agentsQuery } from "../refs/agent-registry";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { textSourceOf } from "../refs/text-references";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
+import { agentConversation } from "./one-read-rows";
 
 /** One message of a thread, whatever route it was read from. */
 interface ThreadTurn {
@@ -73,6 +75,11 @@ interface ThreadTurn {
   readonly author: Actor;
   readonly body: string;
   readonly created_at: string;
+  /** Which record the turn is, so its body is drawn as that record's own text: the comment or
+   *  the issue message the route it was read from answered with. */
+  readonly kind: "comment" | "message";
+  /** The issue that record is on; null for a direct message. */
+  readonly issue: string | null;
   /** The reading Go sent with `body`, which the turn draws rather than parsing the markdown
    *  again (`MarkdownBody`). */
   readonly tree?: DisplayTree;
@@ -92,6 +99,7 @@ function ThreadQuote({ thread }: { thread: MyReplyRow }): ReactNode {
       className={`mt-2 border-l-2 pl-2 text-sm ${quoteAccentBorder} ${quoteBodyText}`}
       data-inbox-thread-quote=""
     >
+      {/* The document's own words, as they are: the reading list's `anchor-quote`. */}
       {quote}
     </blockquote>
   );
@@ -127,7 +135,12 @@ function ThreadTurnView({
         ) : null}
       </p>
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={turn.body} tree={turn.tree} />
+        <MarkdownBody
+          markdown={turn.body}
+          source={textSourceOf(turn.kind, turn.id, turn.issue)}
+          surface="inbox-thread-turn"
+          tree={turn.tree}
+        />
       </div>
       {turn.note}
     </div>
@@ -339,6 +352,7 @@ function CommentThreadBody({
           // comes back to this thread. The key names the composer too: the thread's root is
           // drawn beside it under the thread's id, and siblings are told apart by their keys.
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -372,6 +386,8 @@ function commentTurn(comment: CommentWithTrees): ThreadTurn {
     body: comment.body,
     created_at: comment.created_at,
     id: comment.id,
+    issue: comment.issue_key,
+    kind: "comment",
     tree: comment.body_tree,
   };
 }
@@ -382,6 +398,8 @@ function messageTurn(message: MessageWithTrees, note?: ReactNode): ThreadTurn {
     body: message.body,
     created_at: message.created_at,
     id: message.id,
+    issue: message.issue_key,
+    kind: "message",
     tree: message.body_tree,
     ...(note === undefined ? {} : { note }),
   };
@@ -425,6 +443,7 @@ function MessageThreadBody({
         root === undefined ? null : (
           // Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`).
           <MentionComposer
+            box="inbox-thread-reply"
             closed={issue.data !== undefined && issue.data.closed_at !== null}
             frame="mt-2"
             inline
@@ -526,6 +545,10 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
  * own follow-ups included, and a reply the session took as a turn of its live conversation saying
  * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
  * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
+ *
+ * A row of the one read carries its conversation (`agentConversation`), and the thread is drawn
+ * from that, the same fields of the same shape; a row of the threads' read carries none, and the
+ * thread is read out of the session's conversations.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -535,19 +558,21 @@ function AgentThreadBody({
   thread: MyReplyAgentRow;
 }): ReactNode {
   const sessionId = thread.session.id;
-  const messages = useQuery(agentMessagesQuery(sessionId));
+  const carried = agentConversation(thread);
+  const messages = useQuery({ ...agentMessagesQuery(sessionId), enabled: carried === undefined });
   const live = useQuery(agentsQuery());
   const agent = live.data?.find((candidate) => candidate.session_id === sessionId);
   const sendKey = threadSendKey(thread.thread_id);
   const hold = useSending(sendKey);
   // Read before the loading branches, because the mark below is a hook: the thread's own
   // conversation among the session's, which is undefined until the read lands.
-  const read: MessageRead | undefined = messages.data?.find(
-    (candidate) => candidate.message.id === thread.thread_id
-  );
+  const read: MessageRead | undefined =
+    carried ?? messages.data?.find((candidate) => candidate.message.id === thread.thread_id);
   const markNewest = useAgentThreadRead(thread, read?.replies ?? NO_REPLIES);
-  if (messages.isPending) return <LoadingSkeleton label="Opening the conversation" />;
-  if (messages.isError) {
+  if (carried === undefined && messages.isPending) {
+    return <LoadingSkeleton label="Opening the conversation" />;
+  }
+  if (carried === undefined && messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
   const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);

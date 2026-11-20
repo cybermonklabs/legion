@@ -568,7 +568,7 @@ const ASK_CHECKS_PER_PERIOD = 5;
 
 const UNASKED_WAIT_REMINDER =
   "You just said you are waiting on a human for something no open ask in Dispatch covers. " +
-  "Open it now: a decision block in the document it concerns (dispatch doc-edit with an ask block), or " +
+  "Open it now: an ask block in the document it concerns (dispatch doc-edit), or " +
   "dispatch ask for a to-do only a human can do, naming exactly what you need and from whom.";
 
 /**

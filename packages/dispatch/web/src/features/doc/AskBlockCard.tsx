@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 
@@ -19,9 +19,15 @@ import { URGENCY_LABELS } from "../inbox/ask-urgency";
 import { AgentName } from "../refs/AgentName";
 import { blockFragment } from "../refs/block-reference";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { buildReferencePath, itemRoute, parseNodeReference, shortForm } from "../refs/routes";
+import { itemRoute, parseNodeReference, referenceHref, shortForm } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
-import { type AskBlockFacts, type AskBlockHost, askBlockFacts } from "./typed-block-drawing";
+import { textSourceOf } from "../refs/text-references";
+import {
+  type AskBlockFacts,
+  type AskBlockHost,
+  askBlockFacts,
+  type ServedAsk,
+} from "./typed-block-drawing";
 
 const PILL_CLASS = "rounded-full px-2 py-0.5 text-[10px] font-semibold tracking-wide uppercase";
 
@@ -47,6 +53,13 @@ export interface AskBlockCardProps {
    *  record: the current document of a closed issue, whose close withdrew the ask. A saved
    *  version reads its own attributes only, so a later withdrawal never appears on it. */
   rowResolution: boolean;
+  /** The server's read of the ask the block shows, keyed by its block id: its own ask, or a
+   *  copy's source, from the owner's asks (`servedAskOf`) or, for a copy whose source they do not
+   *  list, from what the live text answers for the block in its asks (`liveAskOf`). The block's
+   *  state, answer, answerer, time and a copy's source are read from it, since the answer is held
+   *  on the ask alone; without it the block's own attributes are read, as a text body and a
+   *  version that holds them carry them, and a block that records no state reads as open. */
+  served?: ServedAsk;
 }
 
 /** The decision block's host for the one ask card every surface shares. It portals into the
@@ -71,8 +84,18 @@ export function AskBlockCard({
   owner,
   readOnly,
   rowResolution,
+  served,
 }: AskBlockCardProps): ReactNode {
-  const facts = askBlockFacts(host.node);
+  const facts = askBlockFacts(host.node, served);
+  // The frame's state stamp (`data-dispatch-ask-state`) is what the document's styles read to keep
+  // the source option list folded under the caret once the decision is no longer open. The node
+  // view stamps the block's own `state` at every redraw of the shell (`applyAskBlockShell`), and
+  // the block no longer records an answer, so the card stamps the state it shows over it: the
+  // server's read of the ask where it holds one. A new host comes with each redraw, so the stamp
+  // follows it.
+  useLayoutEffect(() => {
+    host.header.parentElement?.setAttribute("data-dispatch-ask-state", facts.state);
+  }, [host, facts.state]);
   const malformed = facts.malformedReason !== undefined;
   const open = facts.state === "open";
   const answered = facts.state === "answered";
@@ -187,7 +210,7 @@ export function AskBlockCard({
               frame="block"
             />
           ) : (
-            <AttributeRecord facts={facts} />
+            <AttributeRecord ask={ask} facts={facts} />
           )}
           {inBody ? (
             <p className={`mt-3 text-sm ${textMutedOnSurfaceMuted}`} data-dispatch-ask-text-only="">
@@ -219,17 +242,17 @@ export function TextAskBlockCard({ host }: { host: AskBlockHost }): ReactNode {
   );
 }
 
-/** Where a copied block's source stands, by the state settlement wrote into the block. */
+/** Where a copied block's source stands, by the state the server reads of it. */
 const COPY_STATE_LABELS: Record<string, string> = {
   answered: "answered there",
   open: "open there",
   resolved: "resolved there",
 };
 
-/** Where a copied block is answered: the document settlement names in the block's
- * `copied_from_document`, linked at the block, and the source's state there, which settlement
- * wrote into the block. Both come from the block, so the card reads no ask to show them; the
- * document's reference is the server's, read whatever the length of its name. */
+/** Where a copied block is answered: the document its source ask is on, linked at the block,
+ * and the source's state there, both read from the server's read of that ask (`servedAskOf`),
+ * or from the block's attributes on a version that records them. The document's reference is
+ * the server's, read whatever the length of its name. */
 function CopiedFromLink({
   blockId,
   copied,
@@ -240,20 +263,23 @@ function CopiedFromLink({
   state: string;
 }): ReactNode {
   const route = parseNodeReference(copied.document);
+  const href = route === undefined ? undefined : referenceHref(route);
+  // A reference naming no page of this dashboard - a person (R5) among them - is no link: the
+  // words it would have shown stand on their own.
+  const words =
+    route === undefined
+      ? "another document"
+      : route.kind === "spec"
+        ? "the spec"
+        : shortForm(route);
   const there = COPY_STATE_LABELS[state] ?? "closed there";
   return (
     <span className="inline-flex items-center gap-x-2" data-dispatch-ask-copied-from={copied.ask}>
       <span aria-hidden="true">·</span>
       <span>
         Copied from{" "}
-        {route === undefined ? (
-          "another document"
-        ) : (
-          <Link to={`${buildReferencePath(route)}${blockFragment(blockId)}`}>
-            {route.kind === "spec" ? "the spec" : shortForm(route)}
-          </Link>
-        )}
-        , {there}
+        {href === undefined ? words : <Link to={`${href}${blockFragment(blockId)}`}>{words}</Link>},{" "}
+        {there}
       </span>
     </span>
   );
@@ -261,14 +287,28 @@ function CopiedFromLink({
 
 /** What the block's own attributes record: its options with the chosen ones ticked, and the
  * note. A still-open decision shows its options with nothing chosen. */
-function AttributeRecord({ facts }: { facts: AskBlockFacts }): ReactNode {
+function AttributeRecord({
+  ask,
+  facts,
+}: {
+  ask: Ask | undefined;
+  facts: AskBlockFacts;
+}): ReactNode {
   const otherText =
     facts.state === "answered" && facts.options.length > 0 && facts.selected.length === 0
       ? facts.answerText
       : "";
   return (
     <div className="mt-3 space-y-2" data-dispatch-ask-record="">
-      <AskOptionList options={facts.options} rowClassName={surfaceBg} selected={facts.selected} />
+      {/* The block's own attributes, read from the document's text: where the server has indexed
+          the block into an ask, that ask is the record a `#id` in an option resolves against, as
+          on its own card; a block with no ask row behind it has none, and its `#id`s stay text. */}
+      <AskOptionList
+        options={facts.options}
+        rowClassName={surfaceBg}
+        selected={facts.selected}
+        source={textSourceOf("ask", ask?.id, ask?.issue_key)}
+      />
       {otherText === "" ? null : (
         <p className={`text-sm font-medium ${textPrimaryOnSurface}`}>Other</p>
       )}

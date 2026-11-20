@@ -204,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+15 {
-		t.Fatalf("test hooks add fifteen routes: got %d, want %d", got, len(routes)+15)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+16 {
+		t.Fatalf("test hooks add sixteen routes: got %d, want %d", got, len(routes)+16)
 	}
 }
 
@@ -380,6 +380,7 @@ func routeProbePath(pattern string) string {
 		{"{id}", "00000000-0000-0000-0000-000000000001"},
 		{"{session_id}", "s1"},
 		{"{block_id}", "b1"},
+		{"{login}", "alice"},
 		{"{owner}", "owner"},
 		{"{repo}", "repo"},
 		{"{slug}", "spec"},
@@ -555,11 +556,20 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"POST /api/v1/me/agent-tokens",
 		"DELETE /api/v1/me/agent-tokens/{id}",
 		"GET /api/v1/users",
+		// A person's own page is no older row either: it reads what one person wrote and what
+		// reached them, so a credential that proves no person has no business on it.
+		"GET /api/v1/people/{login}/nodes",
 		"GET /api/v1/issues/{key}/subscribers",
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
 		"GET /api/v1/me/replies",
+		// The one read of what is tied to a person is no older row either: it answers for the
+		// credential's own person alone, so a credential that proves none has nothing to read.
+		"GET /api/v1/me/inbox",
+		// The comparison's gate is no older row either: it states the newest run's counts to a
+		// person, as the page that draws them does, and a credential that proves none reads none.
+		"GET /api/v1/inbox/comparison",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read
 		// marks, so it is theirs as the two rows above it are.
@@ -567,6 +577,14 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		// The Dismiss beside it writes the person's own dismissal marks, so it is theirs too.
 		"POST /api/v1/me/inbox/dismiss",
 		"GET /api/v1/agents/{session_id}/messages",
+		// Which sessions Dispatch holds a record of is this change's own row: it answers only
+		// what the conversation read above already tells a caller, so it admits the callers
+		// that read admits and needs its scope.
+		"GET /api/v1/agents/known",
+		// The conversation's files are this change's own row: they are part of the conversation
+		// the read above shows, so the list admits the callers that read admits and needs its
+		// scope.
+		"GET /api/v1/agents/{session_id}/artifacts",
 		"POST /api/v1/agents/{session_id}/messages",
 		"POST /api/v1/broadcasts",
 		"GET /api/v1/broadcasts",

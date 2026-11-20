@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -287,11 +289,26 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// rather than nobody (movedAssignees below). Without it, an issue nobody held gaining an
 	// assignee would name only the new one, and the default's open Inbox would keep a row the
 	// server no longer gives them. It is read here, under the issue's owner lock and before the
-	// patch's first write, so it holds no transaction id; a patch that names no assignee, or one
-	// whose both sides name a person or both nobody, reads no project.
+	// patch's first write, so it holds no transaction id; a patch that names no assignee reads
+	// nothing here, and one whose both sides name a person or both nobody reads no project.
+	//
+	// An issue left to nobody hands its asks to that default, which the move below delivers them
+	// to, so the project's owner lock is taken shared first (inboxwrite.HoldProjectDefault), after
+	// the issue's own and before the read: a move of the default either committed before this
+	// read or waits for this write. Beside the default the same statement reads the transaction's
+	// now(), the moment the assignee's event is appended at, which the move's tuples are dated at.
 	var projectDefault string
-	if assigneeProvided && (before.Assignee == nil) != (assignee == nil) {
-		if err := tx.QueryRow(r.Context(), `select default_assignee from projects where key = $1`, before.Project).Scan(&projectDefault); err != nil {
+	var movedAt time.Time
+	if assigneeProvided {
+		if assignee == nil {
+			if err := inboxwrite.HoldProjectDefault(r.Context(), tx, before.Project); err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+		}
+		if err := tx.QueryRow(r.Context(), `
+			select coalesce((select default_assignee from projects where key = $1 and $2), ''), now()
+		`, before.Project, (before.Assignee == nil) != (assignee == nil)).Scan(&projectDefault, &movedAt); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -370,21 +387,24 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// The close's and the reopen's document work (prepareWithdrawal, prepareRestoration): it reads
 	// the asks, which none of the patch's row writes below touches, and queues its writes. It runs
 	// before the advice so the advice knows which asks the patch withdraws or restores; its writes
-	// are queued, not made, so the advice's queries still hold no transaction id. The reopen's
-	// second half runs here too (recordRestoredAsksTx): its follow of the versions a settlement
-	// wrote while the issue was closed reads and renders those versions, document work that must
-	// not run once the issue's update below has given the transaction its id, and it plans the
-	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
-	// and events queue after the document writes and before everything the patch queues below,
-	// which is where its writes run in the write phase.
-	var closingAsks, reopenedAsks []model.Ask
+	// are queued, not made, so the advice's queries still hold no transaction id. The close plans
+	// each ask's withdrawal here too, reading each ask's row and node before the issue's update
+	// below gives the transaction its id, and queues it after that update (recordWithdrawnAsksTx).
+	// The reopen's second half runs here too (recordRestoredAsksTx): its follow of the versions a
+	// settlement wrote while the issue was closed reads and renders those versions, document work
+	// that must not run once the issue's update below has given the transaction its id, and it
+	// plans the restored asks' parts before the follow plans the parts of the request it moves.
+	// Its writes and events queue after the document writes and before everything the patch
+	// queues below, which is where its writes run in the write phase.
+	var closingAsks withdrawal
+	var reopened restoredAsks
 	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
-			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
+		if reopened, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopened, actor)
 		}
 	}
 	if err != nil {
@@ -408,8 +428,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		afterRow.labels = labels
 	}
 	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
-		excluded: askIDs(closingAsks),
-		opened:   askIDs(reopenedAsks),
+		excluded: askIDs(closingAsks.asks),
+		opened:   askIDs(reopened.asks),
 	})
 	// The write phase: the statements from here on run back to back.
 	if changed {
@@ -534,7 +554,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	var withdrawn []model.Ask
 	appended := append([]*model.Event{}, restoredEvents...)
 	if closing {
-		if withdrawn, appended, err = s.recordWithdrawnAsksTx(documentCtx, tx, ledger, key, closingAsks, actor); err != nil {
+		if withdrawn, appended, err = s.recordWithdrawnAsksTx(ledger, key, closingAsks, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -605,6 +625,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	appended = append(appended, event)
+	// The issue's open asks handed to nobody follow its assignee, so each now reaches the new
+	// assignee, who takes part in its thread, and whoever its delivery stood to loses it - and
+	// their part in the thread, where nothing of their own holds them there - under the issue's
+	// own event, queued right after it (inboxwrite.QueueMoveWaiting). A write that closes the
+	// issue moves nothing: its asks are withdrawn earlier in the batch, and a closed issue's asks
+	// retract nothing until its reopen restores them.
+	if movedAssignees != nil {
+		move := inboxwrite.Reassigned(key, movedAt, actor)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			return inboxwrite.QueueMoveWaiting(b, move, graphstore.LatestEvent)
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if previousClaim != nil {
 		released, err := s.queueEvent(ledger, claimEvent("issue.released", key, actor, after, previousClaim, "closed"))
 		if err != nil {

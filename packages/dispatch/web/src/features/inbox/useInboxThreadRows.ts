@@ -1,11 +1,18 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type RefObject, useMemo } from "react";
 
-import { dismissedThreadsQuery, inboxThreadsQuery } from "../../api/queries";
+import {
+  dismissedThreadsQuery,
+  inboxThreadsQuery,
+  meInboxDismissedQuery,
+  meInboxQuery,
+} from "../../api/queries";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import type { InboxShow } from "../refs/routes";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
+import { useOneRead } from "./one-read";
+import { meInboxThreads } from "./one-read-rows";
 
 /** The thread side of the Inbox: the rows it lists, the mark a write over that list carries, and
  *  the page behind **Show more** where the list is paged. */
@@ -28,6 +35,8 @@ export interface InboxThreadRows {
  * A thread stays in the Inbox, read or not, until it is dismissed, so the Inbox read answers for
  * every row the list draws and reading one takes nothing away. The Dismissed read answers newest
  * dismissal first, `INBOX_DISMISSED_PAGE` rows at a time, and **Show more** follows its cursor.
+ * Behind the opt-in (`useOneRead`) both are the one read's own states, `inbox` and `dismissed`,
+ * paged the same way.
  */
 export function useInboxThreadRows({
   asksOnly,
@@ -44,35 +53,58 @@ export function useInboxThreadRows({
 }): InboxThreadRows {
   // The reader's own threads, in one unpaged read. The route needs the `person` scope, which a
   // signed-in browser holds, so the list only asks once the sign-in read says the principal is a
-  // user; neither read is made for the view that is not showing.
+  // user; no read is made for the view that is not showing, nor of the source not chosen.
   const human = useIsHuman();
+  const oneRead = useOneRead();
+  const listing = human && !asksOnly;
   const threads = useQuery({
     ...inboxThreadsQuery(),
-    enabled: human && !asksOnly && show === "inbox",
+    enabled: listing && !oneRead && show === "inbox",
   });
   const dismissed = useInfiniteQuery({
     ...dismissedThreadsQuery(),
-    enabled: human && !asksOnly && show === "dismissed",
+    enabled: listing && !oneRead && show === "dismissed",
+  });
+  const one = useQuery({ ...meInboxQuery(), enabled: listing && oneRead && show === "inbox" });
+  const oneDismissed = useInfiniteQuery({
+    ...meInboxDismissedQuery(),
+    enabled: listing && oneRead && show === "dismissed",
   });
   const pages = dismissed.data?.pages;
-  // One array per set of pages, and the same array until they change: the motion hold adopts what
-  // it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every render would have it
-  // adopt - and so re-render - for ever. The Inbox read above hands over its own `rows`, which the
-  // query cache keeps for it.
-  const paged = useMemo(() => pages?.flatMap((page) => page.rows ?? []), [pages]);
-  const read = show === "dismissed" ? paged : (threads.data?.rows ?? undefined);
+  const onePages = oneDismissed.data?.pages;
+  const oneAnswer = one.data;
+  // One array per set of pages or per answer, and the same array until they change: the motion
+  // hold adopts what it is given by identity (`motion-hold.ts`), so a fresh `flatMap` on every
+  // render would have it adopt - and so re-render - for ever. The Inbox read above hands over its
+  // own `rows`, which the query cache keeps for it.
+  const paged = useMemo(
+    () =>
+      oneRead
+        ? onePages?.flatMap((page) => meInboxThreads(page))
+        : pages?.flatMap((page) => page.rows ?? []),
+    [oneRead, onePages, pages]
+  );
+  const unpaged = useMemo(
+    () => (oneRead ? (oneAnswer === undefined ? undefined : meInboxThreads(oneAnswer)) : undefined),
+    [oneRead, oneAnswer]
+  );
+  const read = show === "dismissed" ? paged : oneRead ? unpaged : (threads.data?.rows ?? undefined);
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
+  const pager = oneRead ? oneDismissed : dismissed;
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the
     // one snapshot its cursor walks on from.
-    asOf: show === "dismissed" ? pages?.[0]?.as_of : threads.data?.as_of,
+    asOf:
+      show === "dismissed"
+        ? (oneRead ? onePages : pages)?.[0]?.as_of
+        : oneRead
+          ? oneAnswer?.as_of
+          : threads.data?.as_of,
     rows: listed.map((thread): InboxListRow => ({ kind: "thread", thread })),
     showMore:
-      show === "dismissed" && dismissed.hasNextPage
-        ? () => void dismissed.fetchNextPage()
-        : undefined,
-    showingMore: dismissed.isFetchingNextPage,
+      show === "dismissed" && pager.hasNextPage ? () => void pager.fetchNextPage() : undefined,
+    showingMore: pager.isFetchingNextPage,
   };
 }

@@ -13,7 +13,9 @@ first sections below.
 
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
-on everything else, and the nightly workflow calls it with the full lane. The rows are spread
+on everything else, ci.yaml's dispatch-references job calls it with the references lane on a
+pull request that changes what the reference rows test, and the nightly workflow calls it with
+the full lane. The rows are spread
 over four shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
@@ -61,9 +63,29 @@ default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
 reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
 ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
 checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
-`checks: write` (the ci-ok report it ends with, which only that call turns on).
-dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
-`ci-ok-changes` either, so the report step skips there and no check is posted.
+`checks: write` (the ci-ok report it ends with, which only that call turns on). ci.yaml's
+dispatch-references job and dispatch-browser-nightly.yaml's full job each declare the first two:
+neither call passes `ci-ok-changes`, so the report step skips there and no check is posted.
+
+## The third lane, references, and the lane prefix every artifact name takes
+
+`references` runs the `chromium` project over every row of the eleven spec files the
+reference framework's Verification document names and the nine of the reading list's walk,
+with main's parse-count walk beside them, on the four shard machines and the merge job alone,
+so a pull request that changes the reference framework gets those rows from CI at its head
+rather than from a run by hand. It gates nothing:
+.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+says why. The lane's spec files are written in one place, the `references)` arm of
+.github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.
+
+Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
+a pull request that selects both callers - and an artifact name is unique within a run, so
+every artifact this file uploads or downloads is named under the lane's prefix,
+ARTIFACT_LANE in the `env:` and nowhere else: `dispatch-references` for the references
+lane and `dispatch-browser` for the other two, and the merge job reads only its own lane's
+legs. The other two lanes' names are what they were before the references lane existed, but
+for the binaries artifact, `dispatch-browser-e2e-binaries` now where it was
+`dispatch-e2e-binaries`, so that every name takes the prefix in the one form.
 
 ## Why GOPROXY falls through to direct
 
@@ -73,6 +95,18 @@ proxy.golang.org reset a download mid-stream and turned a Go lane red on a modul
 go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
 straight from the source and checks them against go.sum, so this is a second path, not a weaker
 check.
+
+## Why ARTIFACT_LANE is written once, in the workflow's env
+
+The prefix of every artifact name of this run's lane, for the reason
+.github/ci-notes/dispatch-browser.md#the-third-lane-references-and-the-lane-prefix-every-artifact-name-takes
+gives. Every upload and download of dispatch-browser.yaml reads it as
+`${{ env.ARTIFACT_LANE }}`, and the one run: step that needs it, "Take the newest attempt of
+each leg's blob report", reads "$ARTIFACT_LANE" from its environment, so the condition is
+written there once and an artifact that reads it cannot take the other lane's name. A
+workflow's own `env:` may read `inputs` (GitHub's context availability table: `env` takes
+github, secrets, inputs and vars). .github/scripts/ci_filter_coverage.py's ENV_ALLOWED names
+it, since go reads no such name.
 
 ## Why the binaries job builds what the suite runs
 
@@ -97,8 +131,10 @@ run-broker.sh's DISPATCH_E2E_BROKER_BIN_DIR).
 
 It carries no `if:` of its own, as no job of a reusable workflow needs one: the caller has
 already decided the call. ci.yaml's dispatch-browser job holds the `dispatch_browser` filter
-and the merge-group attempt term, and the nightly calls this file unconditionally, so a
-condition here could only hold back a run its caller had asked for.
+and the merge-group attempt term, its dispatch-references job holds the
+`dispatch_references` filter and runs on a pull request alone, and the nightly calls this
+file unconditionally, so a condition here could only hold back a run its caller had asked
+for.
 
 ## The binaries job's budget
 
@@ -132,13 +168,20 @@ dispatch, broker, dev-oidc-issuer and requestseed. CGO_ENABLED=0 is pinned on th
 rather than left to the runner's default, so each binary is static by construction: the
 shard and alone jobs run them in a container of this repository's own image, and a
 binary with a PT_INTERP has a glibc there to disagree with. They are written under
-$RUNNER_TEMP, so the checkout stays clean.
+$RUNNER_TEMP, so the checkout stays clean. The server is stamped with this checkout's
+commit, as e2e/run-server.sh stamps the build it makes when no binary is given (its
+comment says why a server must carry one). -ldflags reaches every binary of the build,
+and -X sets main.buildCommit only where a main package declares it: cmd/dispatch alone,
+since the linker passes over a name a binary does not have.
 
 ## Why the binaries artifact's name holds no run attempt
 
 One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
 failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
-the artifact this job uploaded on the attempt before.
+the artifact this job uploaded on the attempt before. One name per lane, though: the
+references lane can run in the same run as the pull-request lane, and the second of two
+uploads under one name is refused, so the name takes ARTIFACT_LANE's prefix (the workflow's
+`env:`). The shard and alone jobs download it under the same name.
 
 ## The shard job, its stacks and its container
 
@@ -488,10 +531,15 @@ The browser step writes blob-report/ and rows/ into one directory instead, so th
 artifact holds the same two entries under the same names, which is what
 .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
 
+The name's prefix is the lane's, ARTIFACT_LANE of the workflow's `env:`, for the reason
+this file's head gives: the references lane can run in the same run as the pull-request
+lane, so its three uploads here are `dispatch-references-…` and the other two lanes' are
+`dispatch-browser-…` as before. The merge job downloads and selects under the same prefix.
+
 ## What the shard job collects after a run
 
 What the run left behind: in the job's own log, where a reader of a failed row looks
-first, and collected into the one directory the `dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
+first, and collected into the one directory the `${{ env.ARTIFACT_LANE }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
 trace says what the browser saw; these say what its stack's own servers did, which is
 where a stack-only failure (a port, a migration, a server that never came up) is legible.
 CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
@@ -704,7 +752,7 @@ the shard job's upload of this name is and for the reason it gives.
 ## What the alone job collects after a run
 
 What the run left behind: the stack's own server logs, in the job's own log and collected
-into the one directory the `dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
+into the one directory the `${{ env.ARTIFACT_LANE }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
 the browser step already wrote there. No file store runs on this machine, so there is no
 store log to collect.
 
@@ -776,7 +824,7 @@ connections read, which takes the two-minute floor until runs of it are measured
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
-`if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
+`if: failure()` upload of `${{ env.ARTIFACT_LANE }}-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
 machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
@@ -803,7 +851,9 @@ in the "Browser-test dispatch dashboard against two server processes" step makes
 
 run-server.sh builds it too, inside the harness's boot wait for each server
 (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
-current and start in seconds.
+current and start in seconds. It is stamped with this checkout's commit, as run-server.sh
+stamps its own build (whose comment says why a server must carry one), so that build finds
+it current rather than linking again.
 
 ## Why the Chromium install takes no apt and no cache, and what its budget is
 
@@ -890,10 +940,13 @@ exactly one - and the only thing that can read a count back is the fake embedder
 no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
 This job is where it runs.
 
-On both lanes, where the alone and multiprocess jobs run on `full` alone: this is one
-Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-A lane that skipped it would leave the claim unread until the merge queue.
+On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
+alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
+pull request it is on (the bar's embedding count) rather than a clock reading or a second
+server shape. A lane that skipped it would leave the claim unread until the merge queue. Not
+on `references`, which its `if:` holds it off: that lane runs the spec files its arm of
+.github/scripts/dispatch-browser-shard-suite.sh names, and e2e/search-tiers.e2e.ts is none of
+them, and this job's check stays the pull-request lane's, which runs it.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
 shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
@@ -921,7 +974,8 @@ build again (packages/dispatch's build:contracts).
 ## Why the embedder job's server build carries the lane in its name
 
 run-server.sh builds it too, inside the harness's boot wait; built here, the server
-finds it current and starts in seconds. The name carries the lane because
+finds it current and starts in seconds, stamped with this checkout's commit as the
+multiprocess job's step of the same build is. The name carries the lane because
 .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
 the multiprocess job has a step that builds the same binary.
 
@@ -1180,6 +1234,9 @@ newest attempt of each leg's blob report" can
 tell the attempts apart. A run's artifact list holds every attempt's artifacts and this
 pattern matches them all; two attempts of one leg hold the same inner paths, so merging
 them into one directory let one attempt overwrite the other in an order nothing fixes.
+The pattern is this lane's prefix, ARTIFACT_LANE of the workflow's `env:`, which the shard
+job's upload names too: a references run beside a pull-request run in one workflow run
+must not join the other's legs.
 
 ## Why a refused blob download is reported as a refused read
 
@@ -1207,7 +1264,9 @@ The newest attempt of each leg, and no other, into one directory of the shape th
 is what .github/scripts/ci-ok-report.sh already does with the jobs' ci-ok reports; the
 script's head says what two attempts of one leg did to a merged report when they were
 downloaded over each other. It runs from $GITHUB_WORKSPACE, this step's own directory,
-and its log names the attempt it took for each leg.
+and its log names the attempt it took for each leg. The third argument is the lane's
+artifact prefix, ARTIFACT_LANE from this step's environment, which the download step
+matched.
 
 ## What the merged report's three outputs are for
 
@@ -1254,10 +1313,12 @@ third, a missing blob, is in reading one, where it is found.
 
 ## When the merge job posts ci-ok
 
-ci.yaml's call only: on a merge-group run whose group ci.yaml's dispatch-browser job's
-own result decides it posts the failing ci-ok at once, and on every other run it posts
-nothing, the verdict being ci.yaml's `ci-ok` job's own check run
+ci.yaml's dispatch-browser call only: on a merge-group run whose group ci.yaml's
+dispatch-browser job's own result decides it posts the failing ci-ok at once, and on
+every other run it posts nothing, the verdict being ci.yaml's `ci-ok` job's own check run
 (.github/actions/ci-ok-report says how). This is the job that posts for that call: it
 needs every other job of this workflow, and the step is its last, which is the shape
 .github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
-nightly workflow passes no `ci-ok-changes`, and the step skips.
+nightly workflow passes no `ci-ok-changes`, and the step skips; nor does ci.yaml's
+dispatch-references job, which is outside ci-ok on purpose (CI_OK_EXEMPT), and which
+check_ci_ok refuses to let report.

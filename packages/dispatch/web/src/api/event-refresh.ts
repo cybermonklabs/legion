@@ -1,11 +1,17 @@
+import { hashKey, partialMatchKey, type QueryKey } from "@tanstack/react-query";
+
 import { askProject } from "../features/inbox/list-row";
+import { agentConversation, meInboxCachedRows } from "../features/inbox/one-read-rows";
 import { buildDispatchReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  dismissedThreadsQuery,
   inboxQuery,
   inboxThreadsKey,
+  inboxThreadsQuery,
+  meInboxKey,
   myRepliesKey,
   projectArchitectureSourcesQuery,
   projectDefaultAssigneesQuery,
@@ -194,6 +200,35 @@ const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
     query.queryKey.length === 3 &&
     query.queryKey[2] === "asks" &&
     rowsOf<Ask>(data).some(openAndNotHandedOn),
+};
+
+/** Every document's live text (`["artifact", id, "text"]`) that holds a copy of an ask on another
+ *  document: an entry of its `asks` naming the source (`copied_from`), or, from a Dispatch of the
+ *  release before, which sends no `asks`, a `copied_from` on an ask block's opening line. A
+ *  project document's page reads a copy's source from that text (`liveAskOf`), since no route
+ *  lists a project's asks, and an answer, a resolution or a reopening of the source changes no
+ *  byte of the copy's document, so no event of that document refreshes it. Of any document, since
+ *  the key names the document by id alone; a text that holds no copy is not read again. */
+const LIVE_TEXTS_RENDERING_COPIES: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) => {
+    if (query.queryKey.length !== 3 || query.queryKey[2] !== "text") return false;
+    if (typeof data !== "object" || data === null) return false;
+    if ("asks" in data && Array.isArray(data.asks)) {
+      return data.asks.some(
+        (entry: unknown) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          "copied_from" in entry &&
+          typeof entry.copied_from === "string"
+      );
+    }
+    return (
+      "markdown" in data &&
+      typeof data.markdown === "string" &&
+      data.markdown.includes("copied_from=")
+    );
+  },
 };
 
 /** The project the ask of a cached thread names, or undefined when it names none: its issue's
@@ -673,12 +708,8 @@ function issueWriteTargets(
   if (titleOrStatus) {
     targets.push(issueSummaryOf(key, event));
   }
-  // The Reference picker's project list and the Agents page's open-issue picker list titles and
-  // whether an issue is open.
+  // The Agents page's open-issue picker lists titles and whether an issue is open.
   if (created || closed || titleOrStatus) {
-    if (project !== undefined) {
-      targets.push({ exact: true, queryKey: ["issues", project] });
-    }
     targets.push({ exact: true, queryKey: ["agents", "issue-picker"] });
   }
   if (!created && titleOrStatus) {
@@ -936,6 +967,15 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   }
   if (isAskEvent(event)) {
     appendAskReads(targets, event);
+    // A copy of the ask on another of the project's documents reads its source's state from that
+    // document's live text.
+    if (
+      event.type === "ask.answered" ||
+      event.type === "ask.resolved" ||
+      event.type === "ask.opened"
+    ) {
+      targets.push(LIVE_TEXTS_RENDERING_COPIES);
+    }
   }
   if (isCommentLikeEvent(event)) {
     appendCommentReads(targets, event);
@@ -1167,10 +1207,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     if (event.type === "artifact.version") {
       targets.push({ queryKey: ["artifact", event.payload.artifact_id] });
-      // The Decisions view reads two of the issue's documents - its decisions.md for the
-      // decisions and its spec for each link's target - and the event names its document by
-      // name alone, which does not say which the spec is, so every version of the issue
-      // refreshes it. The query exists only while that tab is open.
+      // The Decisions view reads every document of the issue - each one's decision blocks and
+      // the spec nodes they shaped - and the event names its document by name alone, so every
+      // version of the issue refreshes it. The query exists only while that tab is open.
       targets.push({ exact: true, queryKey: ["decisions", key] });
     } else {
       // An uploaded document is an `attached_to` edge into its issue.
@@ -1478,6 +1517,82 @@ function askThreadsOn(issue: string): RefreshTarget {
   };
 }
 
+/** Whether `target` reaches the read `key` names, as `refreshQueries` matches a target to a
+ *  query: that key itself where the target is `exact`, else every key it is a prefix of. */
+function reaches(target: RefreshTarget, key: QueryKey): boolean {
+  return target.exact === true
+    ? hashKey(target.queryKey) === hashKey(key)
+    : partialMatchKey(key, target.queryKey);
+}
+
+/** The reader's thread rows a cached read of the one read holds, in the shape the threads' reads
+ *  answer (`MyRepliesResponse`), which a target's test of those reads takes (`threadRowsOf`). */
+function oneReadThreadRows(data: unknown): { rows: MyReplyRow[] } {
+  return {
+    rows: meInboxCachedRows(data).flatMap((row) => (row.kind === "thread" ? [row.thread] : [])),
+  };
+}
+
+/** The reads the one read stands in for behind the Inbox's opt-in, each with the rows of the one
+ *  read it holds of that read, in that read's own shape. */
+const ONE_READ_STANDS_IN_FOR: readonly {
+  readonly key: QueryKey;
+  readonly rows: (data: unknown) => unknown;
+}[] = [
+  {
+    key: inboxKey,
+    rows: (data) => meInboxCachedRows(data).flatMap((row) => (row.kind === "ask" ? [row.ask] : [])),
+  },
+  { key: inboxThreadsQuery().queryKey, rows: oneReadThreadRows },
+  { key: dismissedThreadsQuery().queryKey, rows: oneReadThreadRows },
+];
+
+/**
+ * What else an event's targets refresh: the one read (`meInboxKey`), which behind the Inbox's
+ * opt-in (`useOneRead`) stands in for the reader's half of the Inbox read (`inboxQuery`), for
+ * their thread reads (`inboxThreadsQuery`, `dismissedThreadsQuery`) and for the conversation of
+ * each Agent row it holds (`agentMessagesQuery`). Every target that reaches one of those reaches
+ * it, and one that tests what that read holds tests the same rule over the rows of that read the
+ * one read holds. A target of the threads' own prefix (`myRepliesKey`) reaches it already, since
+ * the one read sits under that prefix.
+ */
+function oneReadTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
+  const reached: RefreshTarget[] = [];
+  for (const target of targets) {
+    const when = target.when;
+    for (const read of ONE_READ_STANDS_IN_FOR) {
+      if (!reaches(target, read.key)) continue;
+      reached.push(
+        when === undefined
+          ? { queryKey: meInboxKey }
+          : { queryKey: meInboxKey, when: (data, query) => when(read.rows(data), query) }
+      );
+    }
+    // An Agent row draws the conversation the one read carries for it, so a target that reaches
+    // that row's session's conversation reaches the one read, tested over that conversation. A
+    // target that can reach no session's conversation, another read under the Agents page's key,
+    // adds nothing.
+    const session = target.queryKey[1];
+    if (!reaches(target, agentMessagesQuery(typeof session === "string" ? session : "").queryKey)) {
+      continue;
+    }
+    reached.push({
+      queryKey: meInboxKey,
+      when: (data, query) =>
+        meInboxCachedRows(data).some((row) => {
+          if (row.kind !== "thread" || row.thread.session === undefined) return false;
+          const conversation = agentConversation(row.thread);
+          return (
+            conversation !== undefined &&
+            reaches(target, agentMessagesQuery(row.thread.session.id).queryKey) &&
+            (when === undefined || when([conversation], query))
+          );
+        }),
+    });
+  }
+  return reached;
+}
+
 /**
  * Whether `address` is `owner` or an address under it: `owner`, then the end of the address or
  * one of `next`, the characters that may stand after an owner of that kind in an address
@@ -1651,7 +1766,8 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
 /**
  * The reads one event of the feed can change, each a query key (a prefix unless `exact`) and, where
  * only some of a family's reads can have moved, a test of the read's data. `signedInLogin` is the
- * viewer's: the per-viewer events and the Replies rule read it.
+ * viewer's: the per-viewer events and the Replies rule read it. The one read follows the reads it
+ * stands in for (`oneReadTargets`).
  */
 export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string): RefreshTarget[] {
   const targets = [...ownerTargets(event, signedInLogin), ...changedReferenceTargets(event)];
@@ -1660,5 +1776,5 @@ export function eventRefreshTargets(event: DispatchEvent, signedInLogin?: string
   if (threadsIssue !== null) {
     targets.push(askThreadsOn(threadsIssue));
   }
-  return targets;
+  return [...targets, ...oneReadTargets(targets)];
 }

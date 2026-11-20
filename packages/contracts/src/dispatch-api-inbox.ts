@@ -1,7 +1,10 @@
 import type {
   AskThread,
   CredentialPendingRow,
+  InboxRow,
   IssueAskRow,
+  MeInboxAgent,
+  MeInboxEntry,
   MyReplyRow,
   MyReplySession,
 } from "./dispatch-api.generated";
@@ -52,6 +55,36 @@ export interface MyReplyAgentRow extends MyReplyRow {
  *  reads as a Reply row, which is what every surface already draws for one. */
 export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgentRow {
   return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
+}
+
+/** The two ends of a relation an entry of `GET /api/v1/me/inbox` carries: `inbound`, a tuple into
+ *  the person's own node - a delivery to them, a mention of them, their writing of the node - and
+ *  `outbound`, one from that node - their taking part in a thread, a mark of theirs. */
+export const INBOX_RELATION_DIRECTIONS = ["inbound", "outbound"] as const;
+export type InboxRelationDirection = (typeof INBOX_RELATION_DIRECTIONS)[number];
+
+/** An Agent row of the one read, narrowed as `inboxThreadRow` narrows one of
+ *  `GET /api/v1/me/replies`, with the conversation it draws beside it. */
+export type MeInboxAgentRow = MeInboxAgent & MyReplyAgentRow;
+
+/** The row the page draws for one entry of `GET /api/v1/me/inbox`, by which of its three it
+ *  carries: the Inbox's ask row, a Reply row or an Agent row. An entry carries at most one, and
+ *  one the page draws no row for - a mention of the person, their own write nobody answered -
+ *  carries none. */
+export type InboxEntryRow =
+  | { readonly kind: "ask"; readonly ask: InboxRow }
+  | { readonly kind: "thread"; readonly thread: MyReplyThreadRow }
+  | { readonly kind: "agent"; readonly agent: MeInboxAgentRow }
+  | { readonly kind: "none" };
+
+/** `entry`'s row, as the shape its own field names. The route answers the three as optional
+ *  fields of one entry schema, so this is the one place a surface tells them apart. */
+export function inboxEntryRow(entry: MeInboxEntry): InboxEntryRow {
+  if (entry.ask !== undefined) return { kind: "ask", ask: entry.ask };
+  if (entry.thread !== undefined)
+    return { kind: "thread", thread: entry.thread as MyReplyThreadRow };
+  if (entry.agent !== undefined) return { kind: "agent", agent: entry.agent as MeInboxAgentRow };
+  return { kind: "none" };
 }
 
 /** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's

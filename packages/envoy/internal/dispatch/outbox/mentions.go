@@ -14,9 +14,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox/copyrule"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // fallbackClaim is how long one fallback pass's claim keeps a comment_fallback_copies row out of
@@ -1182,15 +1184,25 @@ func (c mentionComment) settleAbandoned(kind mentionKind, key string) (state men
 		if err != nil {
 			return err
 		}
+		// What each settled attempt now holds, stated under that attempt's own receipt as the
+		// receipt's actor writes it: each receipt and its attempt's facts right after it, in one
+		// batch (graphstore.QueueAttempted under graphstore.LatestEvent).
 		receipts = make([]model.Event, 0, len(settled))
-		for _, payload := range settled {
-			receipt := owner
-			receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
-			appended, err := deps.Broker.Append(ctx, tx, receipt)
-			if err != nil {
-				return err
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			for _, payload := range settled {
+				receipt := owner
+				receipt.Type, receipt.Actor, receipt.Payload = "comment.delivery", event.Actor, payload
+				if err := deps.Broker.QueueAppend(b, receipt, func(appended model.Event) { receipts = append(receipts, appended) }); err != nil {
+					return err
+				}
+				if err := graphstore.QueueAttempted(b, event.Actor, graphstore.LatestEvent,
+					graphstore.CommentAttempt(commentID, payload.Target, payload.Attempt)); err != nil {
+					return err
+				}
 			}
-			receipts = append(receipts, appended)
+			return nil
+		}); err != nil {
+			return err
 		}
 		var sent, resending, pending bool
 		if err := tx.QueryRow(ctx, `
@@ -1922,6 +1934,12 @@ func loadFallbackEvents(ctx context.Context, deps Deps, copies []fallbackCopy) (
 // next_attempt_at is no longer that claim was claimed again by a later pass, once the claim
 // lapsed, and is that pass's, so it is not written. A row a pass did not reach is not written
 // either and keeps its claim.
+//
+// Beside the rows it writes what each published copy delivered into the node and tuple store
+// (fallbackDelivered), as further arms of this one statement (graphstore.WriteArms), exactly as
+// a batch's record writes what the batch delivered (recordBatch): a copy the stream accepted is a
+// delivery whoever holds the hold, so those arms are written whether or not the rows are, and a
+// later pass that publishes the same copy again states nothing new under the repeat key.
 func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, records []fallbackRecord) (bool, error) {
 	if len(records) == 0 {
 		return true, nil
@@ -1949,6 +1967,18 @@ func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, re
 			retryAfter = append(retryAfter, nil)
 		}
 	}
+	// The store's arms are numbered after this statement's own parameters, as recordBatch numbers
+	// its own, and a pass that published no copy adds neither text nor parameter.
+	args := []any{commentIDs, destinations, claims, settled, published, retryAfter, counted, instance, publisherHold}
+	reached := fallbackDelivered(records, time.Now())
+	arms, stored, err := graphstore.WriteArms(len(args)+1, reached.nodes, reached.tuples, nil)
+	if err != nil {
+		return false, fmt.Errorf("record the fallback copies' deliveries: %w", err)
+	}
+	if arms != "" {
+		arms = ",\n" + arms
+	}
+	args = append(args, stored...)
 	var holds bool
 	if err := deps.Store.Pool.QueryRow(ctx, `
 		with hold as (
@@ -1968,10 +1998,38 @@ func recordFallbackCopies(ctx context.Context, deps Deps, instance uuid.UUID, re
 			cross join hold h
 			where c.comment_id = o.comment_id and c.destination = o.destination and c.settled_at is null
 				and c.next_attempt_at = o.claim and h.mine
-		)
+		)`+arms+`
 		select mine from hold
-	`, commentIDs, destinations, claims, settled, published, retryAfter, counted, instance, publisherHold).Scan(&holds); err != nil {
+	`, args...).Scan(&holds); err != nil {
 		return false, err
 	}
 	return holds, nil
+}
+
+// fallbackDelivered is what the published copies among records delivered, as deliveredGraph
+// states a batch's deliveries: one delivered_to tuple from the comment to the session or the role
+// its copy's topic reaches, caused by the comment.created event the copy is the envelope of. A
+// copy to a session's own topic records that session as well, since the copy's row names it
+// (graphcensus's recordedSessions): its node is made by this record, `do nothing` where the store
+// holds it already. A copy to a role topic ends at the role, whose node the role's own writers
+// make. An address past the store's bound is left out, as deliveredGraph leaves it out.
+func fallbackDelivered(records []fallbackRecord, at time.Time) graphWrite {
+	var write graphWrite
+	sessions := map[string]struct{}{}
+	for _, record := range records {
+		if !record.published {
+			continue
+		}
+		toKind, toID, ok := nodeOfSubject(record.held.destination)
+		if !ok || !graphstore.AddressFits(record.held.commentID) || !graphstore.AddressFits(toID) {
+			continue
+		}
+		write.tuples = append(write.tuples,
+			deliveredTo(graphstore.KindComment, record.held.commentID, toKind, toID, at, record.held.eventID))
+		if _, made := sessions[toID]; toKind == graphstore.KindSession && !made {
+			sessions[toID] = struct{}{}
+			write.nodes = append(write.nodes, graphstore.SessionNode(toID, graphWriter, at, record.held.eventID))
+		}
+	}
+	return write
 }

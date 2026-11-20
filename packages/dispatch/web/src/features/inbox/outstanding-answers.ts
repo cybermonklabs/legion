@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 
 import type { WriteBounds, WriteMethod } from "../../api/client";
-import { inboxQuery } from "../../api/queries";
+import { inboxQuery, meInboxQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { askWritten } from "../../api/write-events";
 import {
@@ -10,6 +10,14 @@ import {
   useKeyedWrite,
   useLiveRegistration,
 } from "../writes/useKeyedWrite";
+import {
+  cancelMeInbox,
+  invalidateMeInbox,
+  type MeInboxSnapshot,
+  meInboxSnapshot,
+  patchMeInboxAsks,
+  restoreMeInbox,
+} from "./one-read-cache";
 
 /**
  * The asks whose answer the reader has sent and the server has not decided, by ask id: the write
@@ -52,10 +60,13 @@ export function resetOutstandingAnswers(): void {
   outstanding.clear();
 }
 
-/** The rows the Inbox read held before the write took its ask's row out, kept so a refused write
- *  puts them back. Undefined where the write left the Inbox alone - a change to an answer the
- *  server has already recorded, whose ask has no open row there - and so kept nothing. */
-type InboxRowsBefore = { readonly rows: InboxRow[] | undefined } | undefined;
+/** The rows the Inbox read held before the write took its ask's row out, and every cached read of
+ *  the one read behind the Inbox's opt-in (`one-read-cache.ts`), kept so a refused write puts them
+ *  back. Undefined where the write left the Inbox alone - a change to an answer the server has
+ *  already recorded, whose ask has no open row there - and so kept nothing. */
+type InboxRowsBefore =
+  | { readonly rows: InboxRow[] | undefined; readonly oneRead: MeInboxSnapshot }
+  | undefined;
 
 /** What every press of an answer or a decline carries: the ask it is of. `retry()` runs the
  *  newest render's `write` and callbacks with the press's own values (`useKeyedWrite`), and a
@@ -85,8 +96,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
 
 /**
  * The reader's own answer to an ask, or their decline of it, as one write: it takes the ask's
- * row out of the Inbox the moment it goes, puts it back where the server refuses it, and holds
- * the ask here for as long as the answer is theirs to finish.
+ * row out of the Inbox - the Inbox read and the one read behind its opt-in - the moment it goes,
+ * puts it back where the server refuses it, holds the ask here for as long as the answer is theirs
+ * to finish, and reads the one read again once the server has decided.
  *
  * The order is the point, and it is why the two writes share this rather than each keeping its
  * own copy. The hold is registered before the row goes, never a commit after it: the reading
@@ -97,11 +109,11 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables extends AskPres
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The
  * hold lasts the same `pending || failed` liveness the snooze reports its own write by
  * (`SnoozeControl`), let go when the server decides the answer, when the form is reset, and when
- * the card goes. A write that takes the row out holds the Inbox's reads until Dispatch has taken
- * it (`holds`: its answer, or the ask's `ask.answered` or `ask.resolved` event, and at most
- * `SEND_DEADLINE_MS`): one asked before could be answered with the row still in it. The Inbox
- * lists the asks other people open, so the hold ends on the event rather than wait out an answer
- * that is late.
+ * the card goes. A write that takes the row out holds the Inbox's reads, and behind its opt-in
+ * the one read's, until Dispatch has taken it (`holds`: its answer, or the ask's `ask.answered`
+ * or `ask.resolved` event, and at most `SEND_DEADLINE_MS`): one asked before could be answered
+ * with the row still in it. The Inbox lists the asks other people open, so the hold ends on the
+ * event rather than wait out an answer that is late.
  */
 export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
   label,
@@ -120,7 +132,10 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
   const mutation = useKeyedWrite<TData, TVariables, InboxRowsBefore>({
     holds: (press) => ({
       endsOn: askWritten(press.ask.id, ["ask.answered", "ask.resolved"]),
-      keys: removesRow === undefined || removesRow(press) ? [inboxQuery().queryKey] : [],
+      keys:
+        removesRow === undefined || removesRow(press)
+          ? [inboxQuery().queryKey, meInboxQuery().queryKey]
+          : [],
     }),
     inline: true,
     label,
@@ -129,21 +144,30 @@ export function useOutstandingAnswerWrite<TData, TVariables extends AskPress>({
     onMutate: async (press) => {
       if (removesRow !== undefined && !removesRow(press)) return undefined;
       markAnswerOutstanding(press.ask.id, true);
-      await queryClient.cancelQueries({ queryKey: inboxQuery().queryKey });
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxQuery().queryKey }),
+        cancelMeInbox(queryClient),
+      ]);
       const rows = queryClient.getQueryData<InboxRow[]>(inboxQuery().queryKey);
+      const oneRead = meInboxSnapshot(queryClient);
       queryClient.setQueryData<InboxRow[]>(inboxQuery().queryKey, (current) =>
         current?.filter((row) => row.id !== press.ask.id)
       );
-      return { rows };
+      patchMeInboxAsks(queryClient, (row) => (row.id === press.ask.id ? undefined : row));
+      return { oneRead, rows };
     },
     onError: (error, variables, before) => {
       if (before !== undefined) {
         queryClient.setQueryData(inboxQuery().queryKey, before.rows);
+        restoreMeInbox(queryClient, before.oneRead);
         void queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey });
       }
       onError?.(error, variables, before);
     },
-    onSettled,
+    onSettled: () => {
+      invalidateMeInbox(queryClient);
+      onSettled?.();
+    },
     onSuccess,
   });
   // The ask held is the newest press's, the one whose answer is still out or refused.

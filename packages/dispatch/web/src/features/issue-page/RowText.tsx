@@ -29,8 +29,9 @@ import {
 } from "./row-references";
 
 /**
- * A node's own text, as its row in the outline draws it (R16, R20, R34),
- * in the size and the colour of the words it is drawn among.
+ * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
+ * answer an ask's row carries (`NodeRow.tsx`'s `AskAnswer`), in the size and the colour of the
+ * words it is drawn among.
  *
  * A text whose read sent the server's reading of it (`tree`) is drawn from that reading, with
  * the renderer every other surface draws a stored text with (`MarkdownBody`): a heading, bold
@@ -166,8 +167,8 @@ const ROW_CHIP = "data-row-chip";
 
 /** A typed block's source line in a node's words: its opening `:::requirement{#r1}`, or its
  *  closing `:::`. It is markup and no word of the node (part G's R4, the tester's F20): a
- *  decision's text holds the lines of a block its section quotes, and both its stored text and
- *  its reading carry them as they stand. */
+ *  decision's text holds the lines of a typed block inside its own `decision` block, and both
+ *  its stored text and its reading carry them as they stand. */
 const DIRECTIVE_LINE = /^[ \t]*:{3,}(?:[a-z_][^\n]*)?[ \t]*$\n?/gmu;
 
 /** `text` without a typed block's source lines, and with no blank line left where one stood:
@@ -501,6 +502,7 @@ function DrawnText({
           onRendered={link}
           referenceText=""
           source={source}
+          surface="node-row-words"
           tree={tree}
         />
       </TextAskCard.Provider>

@@ -22,7 +22,9 @@ var editorNodeDifferences = map[string]string{
 	"ask":         "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"callout":     "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"check":       "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
+	"decision":    "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"plan_task":   "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
+	"reading":     "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 	"requirement": "a typed block of schema/blocks.json: IsTypedBlock accepts it, the manifest's nodes do not list it",
 }
 
@@ -45,8 +47,8 @@ func TestEditorNodeAndMarkNamesMatchTheGoLists(t *testing.T) {
 	if len(editor.Nodes) == 0 || len(editor.Marks) == 0 {
 		t.Fatal("schema/editor-node-names.json lists no nodes or no marks: run `bun run gen` in gen/")
 	}
-	requireSameNames(t, "node", editor.Nodes, active.nodes, editorNodeDifferences)
-	requireSameNames(t, "mark", editor.Marks, active.marks, editorMarkDifferences)
+	requireSameNames(t, "node", editor.Nodes, active.Load().nodes, editorNodeDifferences)
+	requireSameNames(t, "mark", editor.Marks, active.Load().marks, editorMarkDifferences)
 }
 
 // requireSameNames fails t for a name editor or own holds alone that declared does not explain,

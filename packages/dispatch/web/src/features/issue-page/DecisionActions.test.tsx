@@ -1,4 +1,5 @@
 import { beforeAll, expect, type Mock, spyOn, test } from "bun:test";
+import { dispatchWritingBox } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,13 +7,23 @@ import type { ReactNode } from "react";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, ArtifactText, Decision, IssueDecisions } from "../../api/types";
+import type {
+  Artifact,
+  ArtifactText,
+  Decision,
+  DecisionEntry,
+  IssueDecisions,
+} from "../../api/types";
 import {
   borderDefault,
   dangerText,
+  inputClasses,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
@@ -30,22 +41,29 @@ import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
  */
 
 const KEY = "CORE-1";
-const REFERENCE = `dispatch://${KEY}/artifact/decisions-md#b-d1`;
+const REFERENCE = `dispatch://${KEY}/spec#b-d1`;
 
+/** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
+ *  written against and a Change is anchored in. */
 const document_: Artifact = {
   created_at: "2026-11-05T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
-  id: "artifact-decisions",
+  id: "artifact-spec",
   issue_key: KEY,
   kind: "doc",
-  name: "decisions.md",
-  primary: false,
+  name: "spec.md",
+  primary: true,
   project: "CORE",
-  ref_key: "artifact:artifact-decisions",
+  ref_key: "artifact:artifact-spec",
   session_id: null,
-  slug: "decisions-md",
+  slug: "spec",
   versions: [],
 };
+
+/** A decision's text as the decisions read answers it: its one `decision` block of the spec. */
+function decisionText(blockId: string, own: string): string {
+  return `:::decision{#${blockId}}\n${own}\n:::\n`;
+}
 
 const decision: Decision = {
   asks: [],
@@ -58,29 +76,85 @@ const decision: Decision = {
   links: [],
   ref: REFERENCE,
   replaced: false,
-  // The first paragraph below the heading is what a change is anchored to, so a decision with
-  // one is a decision whose Change control is drawn.
-  text: "One tree, five presets\n\nThe presets are queries over the one tree.",
+  // The first block below the heading is what a change is anchored to, so a decision with one
+  // is a decision whose Change control is drawn.
+  text: decisionText(
+    "d1",
+    "## One tree, five presets\n\nThe presets are queries over the one tree."
+  ),
   text_sha256: "sum",
   unsure: false,
   waiting_review: true,
 };
 
-const read: IssueDecisions = {
-  decisions: [decision],
-  document: document_.id,
-  open_questions: [],
-};
+/** The entry the decisions read answers beside the agent's decision `row` of the spec
+ *  (`api/decisions.go`'s `decisionEntry`): the block node that holds it and the spec's block it
+ *  stands at, each member an agent's decision holds none of null. */
+function entryOf(row: Decision): DecisionEntry {
+  const node = `${document_.ref_key}#${row.block_id}`;
+  return {
+    answer: null,
+    answer_state: null,
+    answered_at: null,
+    answered_by: null,
+    changed_at: row.changed_at,
+    changed_version: row.changed_version,
+    decided_by: { id: "planner", kind: "session" },
+    declined: false,
+    declined_note: null,
+    document: {
+      artifact_id: document_.id,
+      block: node,
+      block_id: row.block_id,
+      ref: `dispatch://${KEY}/spec`,
+    },
+    kept: row.kept,
+    kept_by: row.kept?.kept_by ?? null,
+    kept_text_sum: row.kept === null ? null : row.text_sha256,
+    kind: "agent",
+    multiple: null,
+    node: { id: node, kind: "block" },
+    options: null,
+    question: null,
+    readings: [],
+    ref: row.ref,
+    replaced: row.replaced,
+    resolution: null,
+    selected: null,
+    shaped: row.links,
+    text: row.text,
+    text_sha256: row.text_sha256,
+    ...(row.text_tree === undefined ? {} : { text_tree: row.text_tree }),
+    uncertainty: row.unsure ? "high" : null,
+    uncertainty_reason: null,
+    urgency: null,
+    waiting_review: row.waiting_review,
+  };
+}
 
-/** The decisions document `read` is the read of: its title, then the one decision. */
-const DOCUMENT_TEXT =
-  "# Decisions of CORE-1\n\n## One tree, five presets\n\nThe presets are queries over the one tree.";
+/** The decisions read over the agent's decisions `rows` of the spec, as this build's server
+ *  answers it: an entry for each, the same decisions in the old shape, and no decisions
+ *  document, which is retired. */
+function readOf(rows: readonly Decision[]): IssueDecisions {
+  return {
+    decisions: [...rows],
+    document: null,
+    entries: rows.map(entryOf),
+    open_questions: [],
+  };
+}
 
-/** The spy on the decisions document's text read, which a Change's send makes. */
+const read = readOf([decision]);
+
+/** The spec `read` is the read of: its title, then its `## Decisions` part holding the one
+ *  decision. */
+const DOCUMENT_TEXT = `# Spec of CORE-1\n\n## Decisions\n\n${decision.text}`;
+
+/** The spy on the spec's text read, which a Change's send makes. */
 type DocumentTextSpy = Mock<typeof api.getArtifactText>;
 
-/** Answers the decisions document's text read (`api.getArtifactText`) with the document
- *  `markdown` holds and the reading the server sends of it, or refuses it. */
+/** Answers the spec's text read (`api.getArtifactText`) with the document `markdown` holds and
+ *  the reading the server sends of it, or refuses it. */
 function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   return spyOn(api, "getArtifactText").mockImplementation(async (): Promise<ArtifactText> => {
     if (markdown instanceof Error) throw markdown;
@@ -88,9 +162,9 @@ function spyDocumentText(markdown: string | Error): DocumentTextSpy {
   });
 }
 
-/** Draws the decision's controls over `answer`, with the decisions document's text read answered
- *  by `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page
- *  draws them. */
+/** Draws the decision's controls over `answer`, with the spec's text read answered by
+ *  `documentText`; inside the page's `NoTooltips` where `page` says so, as the issue page draws
+ *  them. */
 function renderActions(
   answer: IssueDecisions = read,
   documentText: string | Error = DOCUMENT_TEXT,
@@ -357,24 +431,92 @@ test("the Change form draws the page's colours inside NoTooltips and main's outs
   }
 });
 
-/** Two decisions whose first blocks both hold "Draw it once.", the second's whole: a Change of
- *  the second quotes words that stand more than once in the decisions document. */
+// The Change's box is the field every box a person writes a comment in mounts, with the
+// reference picker in it (the writing list's `decisions-change`), and the line under it is that
+// row's own words. Inside `NoTooltips` it takes the page's shape - its box, its name and that
+// line in the page's own colours, no `title` anywhere, and no face of its own, so it is drawn in
+// the page's typeface - and outside it the field keeps its own box.
+test("the Change's box is the shared field, in the page's shape inside NoTooltips", async () => {
+  for (const surface of ["page", "main"] as const) {
+    const user = userEvent.setup();
+    const { unmount } = renderActions(read, DOCUMENT_TEXT, { page: surface === "page" });
+    try {
+      await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+      const box = screen.getByLabelText(CONTROL_LABELS.your_change);
+      const hint = document.getElementById(
+        box.getAttribute("aria-describedby")?.split(" ")[0] ?? ""
+      );
+      expect(hint?.textContent).toBe(dispatchWritingBox("decisions-change", "comment").hint);
+      const name = box.closest("label");
+      if (surface === "page") {
+        expect(wears(box, pageHairBorder, pagePaperBg, pageInkText), "the box's colours").toBe(
+          true
+        );
+        expect(wears(box, inputClasses(true)), "the box draws main's colours").toBe(false);
+        expect(name !== null && wears(name, pageMutedText), "the name's colour").toBe(true);
+        expect(hint !== null && wears(hint, pageMutedText), "the line's colour").toBe(true);
+        const form = box.closest("form");
+        expect(
+          form?.querySelectorAll("[title]").length,
+          "an element of the form sets a title"
+        ).toBe(0);
+        const faces = [form, ...(form?.querySelectorAll("*") ?? [])].filter((element) =>
+          [...(element?.classList ?? [])].some((one) => /^font-(?:sans|serif|mono)$/u.test(one))
+        );
+        expect(faces.length, "an element of the form draws in a face of its own").toBe(0);
+      } else {
+        expect(wears(box, inputClasses(true)), "the box keeps the field's own").toBe(true);
+      }
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// A write's label and a form's name hold no markup, so Keep's write and the Change form are
+// named after the heading's plain words, as the Decisions panel names its own (the reading
+// list's `decision-heading-words`), and never after its markdown.
+test("the Change form is named after the heading's plain words", async () => {
+  const text = "## **One** tree, five presets\n\nThe presets are queries over the one tree.";
+  const marked: Decision = {
+    ...decision,
+    heading: "**One** tree, five presets",
+    text,
+    text_tree: displayTree(text),
+  };
+  const user = userEvent.setup();
+  const { unmount } = renderActions(readOf([marked]), DOCUMENT_TEXT, { page: true });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    expect(
+      await screen.findByRole("form", {
+        name: `${CONTROL_LABELS.change_decision} One tree, five presets`,
+      })
+    ).toBeTruthy();
+  } finally {
+    unmount();
+  }
+});
+
+/** Two decisions of the spec whose first blocks both hold "Draw it once.", the second's whole: a
+ *  Change of the second quotes words that stand more than once in the spec. */
 const ABOVE: Decision = {
   ...decision,
   block_id: "d0",
   heading: "Keep the model pure",
-  ref: `dispatch://${KEY}/artifact/decisions-md#b-d0`,
-  text: "## Keep the model pure\n\nKeep the model pure. Draw it once.",
+  ref: `dispatch://${KEY}/spec#b-d0`,
+  text: decisionText("d0", "## Keep the model pure\n\nKeep the model pure. Draw it once."),
 };
 const OWN: Decision = {
   ...decision,
   heading: "Draw it once",
-  text: "## Draw it once\n\nDraw it once.",
+  text: decisionText("d1", "## Draw it once\n\nDraw it once."),
 };
 
-/** The decisions document that holds `ABOVE` and `OWN`, below its title and `intro`. */
+/** The spec that holds `ABOVE` and `OWN` in its `## Decisions` part, below its title and
+ *  `intro`. */
 function twoDecisionsText(intro: string): string {
-  return `# Decisions of CORE-1\n\n${intro}\n\n${ABOVE.text}\n\n${OWN.text}`;
+  return `# Spec of CORE-1\n\n${intro}\n\n## Decisions\n\n${ABOVE.text}\n${OWN.text}`;
 }
 
 /** The 409 Dispatch answers a comment whose anchor quote stands in `places` places of the
@@ -401,7 +543,7 @@ test("a Change names which place of the quote is its decision's own", async () =
   );
   const user = userEvent.setup();
   const { unmount } = renderActions(
-    { ...read, decisions: [ABOVE, OWN] },
+    readOf([ABOVE, OWN]),
     twoDecisionsText("The decisions this issue made.")
   );
   try {
@@ -420,19 +562,19 @@ test("a Change names which place of the quote is its decision's own", async () =
   }
 });
 
-// Decision 92 as amended: the server counts a quote's places over the whole decisions document,
-// so the send reads the document's text once, when the reader sends, and counts over its reading
-// (`markdown_tree`), never over the decisions read alone. Here the document's intro, which no
-// decision holds, quotes the decision too, so its own place is the third: a count over the
-// decisions read says the second, and a send with no reading names none. A refusal Dispatch
-// still makes is drawn in the page's words, the draft kept.
-test("a Change's send reads the decisions document once and counts its quote's places over it", async () => {
+// Decision 92 as amended: the server counts a quote's places over the whole document the
+// decision's block stands in, so the send reads the document's text once, when the reader sends,
+// and counts over its reading (`markdown_tree`), never over the decisions read alone. Here the
+// spec's intro, which no decision holds, quotes the decision too, so its own place is the third:
+// a count over the decisions read says the second, and a send with no reading names none. A
+// refusal Dispatch still makes is drawn in the page's words, the draft kept.
+test("a Change's send reads its decision's document once and counts its quote's places over it", async () => {
   const createComment = spyOn(api, "createComment").mockRejectedValue(
     ambiguousQuote("Draw it once.", 3)
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
-    { ...read, decisions: [ABOVE, OWN] },
+    readOf([ABOVE, OWN]),
     twoDecisionsText("Draw it once. That is the rule of every decision below.")
   );
   try {
@@ -449,7 +591,7 @@ test("a Change's send reads the decisions document once and counts its quote's p
     expect(createComment).toHaveBeenCalledTimes(1);
     expect(
       createComment.mock.calls[0]?.[1]?.anchor,
-      "the Change's place was not counted over the decisions document's reading"
+      "the Change's place was not counted over the reading of its decision's document"
     ).toEqual({ artifact: document_.id, occurrence: 2, quote: "Draw it once." });
     expect(alert.textContent).toBe(ANSWER_LINES.change_not_sent);
     expect(document.body.textContent, "the row draws the server's own words").not.toContain(
@@ -473,7 +615,7 @@ test("a Change whose document read fails names no place, and its refusal keeps t
   );
   const user = userEvent.setup();
   const { text, unmount } = renderActions(
-    { ...read, decisions: [ABOVE, OWN] },
+    readOf([ABOVE, OWN]),
     new ApiError(503, { code: "UNAVAILABLE", error: "the store is not reachable" })
   );
   try {
@@ -503,7 +645,7 @@ beforeAll(async () => {
  *  review so its node draws the Change. */
 async function quoteOf(fields: Pick<Decision, "text" | "text_tree">): Promise<string> {
   const user = userEvent.setup();
-  const { unmount } = renderActions({ ...read, decisions: [{ ...decision, ...fields }] });
+  const { unmount } = renderActions(readOf([{ ...decision, ...fields }]));
   try {
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
     return screen.getByTestId("decision-quote").textContent ?? "";
@@ -520,14 +662,20 @@ async function quoteOf(fields: Pick<Decision, "text" | "text_tree">): Promise<st
 // words come from the reading the server sent (`Decision.text_tree`), which the test builds
 // with the page's own engine (`__tests__/display-trees`).
 test("the quote of a first block that is a list holds one space between its items", async () => {
-  const text = "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it.";
+  const text = decisionText(
+    "d1",
+    "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it."
+  );
   expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("alpha beta");
 });
 
 // The same rule at a hard break: the break is a leaf of its own and takes a position, so the
 // two lines it divides are one space apart in the text the server matches a quote against.
 test("the quote of a first block with a hard break holds one space between its lines", async () => {
-  const text = "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it.";
+  const text = decisionText(
+    "d1",
+    "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it."
+  );
   expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("line one line two");
 });
 
@@ -535,6 +683,9 @@ test("the quote of a first block with a hard break holds one space between its l
 // deploy, and the Change still has a quote there: the first paragraph's own markdown, which is
 // all the browser has.
 test("a decision whose answer carried no reading quotes its first paragraph's markdown", async () => {
-  const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
+  const text = decisionText(
+    "d1",
+    "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow."
+  );
   expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
 });

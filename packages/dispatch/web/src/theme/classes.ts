@@ -355,6 +355,14 @@ registerText("link on callout-info", LINK, CALLOUT_INFO_BG);
 registerText("primary text on selected card", TEXT_PRIMARY, SELECTED_CARD_BG);
 registerText("option description text on selected card", TEXT_OPTION_DESCRIPTION, SELECTED_CARD_BG);
 registerText("link text on selected card", LINK, SELECTED_CARD_BG);
+/** The reference picker's rows wear it on the list's own recessed surface as well as on the
+ *  fill of the highlighted row (`RefPickerList`), so the detail line reads the same either
+ *  way. */
+registerText(
+  "option description text on surface-recessed",
+  TEXT_OPTION_DESCRIPTION,
+  SURFACE_RECESSED
+);
 
 // ---------------------------------------------------------------------------------------------
 // Architecture tree: component fill bars and the trust outline
@@ -932,8 +940,8 @@ export const pageStateText = {
  * kind's colour, filled while pressed (`.ck`), and on a phone they are drawn only while the
  * caret is in the box. Every word in it says what it is, so the colours repeat what is written
  * (R6). A phone here is a window 760 px wide or narrower, the prototype's breakpoint; Tailwind
- * builds `max-[761px]:` as a width under 761 px, so it holds 760 px (decision 72 of
- * dispatch://INFRA-1196/artifact/part-decisions-md).
+ * builds `max-[761px]:` as a width under 761 px, so it holds 760 px, as the issue page's design
+ * decided.
  */
 export const pageComposer = {
   answering:

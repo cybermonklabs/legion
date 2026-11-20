@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -46,8 +47,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -70,10 +73,13 @@ const (
 	idleTimeout       = 2 * time.Minute
 )
 
-// buildCommit is the legion commit this binary was built from. Only the image build stamps it
-// (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build argument through -ldflags -X,
-// and refuses anything but a full commit sha); every other build leaves it empty, and /healthz
-// then reports the commit as null rather than naming one it cannot vouch for.
+// buildCommit is the legion commit this binary was built from, stamped through -ldflags -X. The
+// image build stamps it (packages/envoy/docker/Dockerfile passes its LEGION_COMMIT build
+// argument, and refuses anything but a full commit sha), and so do the e2e harness's build
+// (packages/dispatch/e2e/run-server.sh, with its checkout's commit), the CI steps that build that
+// binary ahead of it, and the base builds of a two-build check. A build nothing stamped - a
+// `go test` binary, a devbox `go run` - leaves it empty, and /healthz then reports the commit as
+// null rather than naming one it cannot vouch for.
 var buildCommit string
 
 type bootConfig struct {
@@ -185,6 +191,10 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// HoldDecisionsStep keeps the server from running any phase of the decisions step
+	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
+	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
+	HoldDecisionsStep bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -400,6 +410,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A type is a node of the store, and the schema this process validates writes against and
+	// serves to an editor is built from those nodes (migration 20261109051232). The first
+	// install is here, beside the migration run: a process serving on a schema that is not the
+	// store's would hold documents to types the deployment has moved on from, so a failure
+	// stops the boot as a failed migration does. The reinstall on each change is a loop of its
+	// own, started beside the other woken loops below.
+	if err := schemanodes.InstallFromStore(ctx, database.Pool); err != nil {
+		slog.Error("dispatch: install the block schema from the store", "error", err)
+		os.Exit(1)
+	}
+
 	// document_search (migration 20261101182447) holds each document's latest search vector,
 	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
 	// documents stored before that. It runs here, in committed batches, rather than as migration
@@ -418,6 +439,24 @@ func main() {
 		os.Exit(1)
 	} else if filled > 0 {
 		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
+	}
+
+	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
+	// release before wrote is stated on its ask's node and marked, in committed batches, before
+	// this process serves, as document_search is filled above. A reading's check of its ask takes
+	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// failure stops the boot, and the release before keeps serving in a roll until this process
+	// can. The process waits here for the step's lock only while the first phase owes a row, so a
+	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
+	// catch-up, its count of what the restore and the conversion owe, and its later passes run on
+	// its own tick once the server listens, below: the boot reads only what the first phase reads,
+	// so a table it does not need, held by another transaction, keeps no process from serving.
+	decisionStep := docs.NewDecisionStep(database, buildCommit, nil)
+	if !boot.HoldDecisionsStep {
+		if err := decisionStep.Boot(ctx); err != nil {
+			slog.Error("dispatch: the decisions step's backfill", "error", err)
+			os.Exit(1)
+		}
 	}
 
 	// asks_anchor_artifact_id (migration 0148) indexes the anchors whose artifact_id is a
@@ -492,12 +531,17 @@ func main() {
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, docs.Deps{
-		Store:     database,
-		Events:    broker,
-		Identity:  requestIdentity,
-		ServerURL: serverURL,
+		Store:       database,
+		Events:      broker,
+		Identity:    requestIdentity,
+		ServerURL:   serverURL,
+		BuildCommit: buildCommit,
 	})
 	publishRoomFigures(documentService)
+	// The decisions step's third phase writes the issues' documents through this service: the
+	// restore of the answered asks that left their specs and the conversion of the decisions
+	// documents, on the step's tick below.
+	decisionStep.UseDocuments(documentService)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -605,7 +649,7 @@ func main() {
 	// whose loops would each run everywhere, so it ends here.
 	//
 	// The loops come in these shapes, so that a database nobody writes costs them nothing except
-	// where GitHub gives them nothing to wake on, and the five timers of the last shape:
+	// where GitHub gives them nothing to wake on, and the seven timers of the last shape:
 	//   - woken loops, which run a pass at start and then only when a Postgres notification on the
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
@@ -635,15 +679,17 @@ func main() {
 	//     rather than once per process: two tickers started minutes apart almost never meet inside
 	//     a pass, so the lease alone would exclude nothing.
 	//   - timers that poll the database: the block-index reconciliation (every 30 s, 2 s while a
-	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
-	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
-	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
-	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
-	//     from a tick at start, whose first pass of a display parser version runs until every
-	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     batch is full), the reference forms drain (docs.Service.RunRefsFormsReconciliation, at
+	//     the same pace under a lease of its own), the repair of closed and reopened issues' asks
+	//     (api.RunIssueAskRepair, every 10 minutes on a plain ticker, after the boot's own
+	//     unleased pass), the prune of the server process registry (processes.RunPrune, every
+	//     minute, which joinRegistry starts below), the keyed writes' maintenance sweep
+	//     (api.RunMaintenanceSweep, every minute), the document compaction sweep
+	//     (docs.Service.RunCompactionSweep, every hour from a tick at start, with or without NATS)
+	//     and the display tree fill (texttreefill.Run, every hour from a tick at start, whose
+	//     first pass of a display parser version runs until every stored text has a tree at it),
+	//     each recording its passes in duty_passes like the timers above; each tick sends its
+	//     statements whether or not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -712,6 +758,10 @@ func main() {
 	documentCompactionLeases := reserve("document compaction")
 	editNoticesLeases := reserve("edit notices")
 	blockIndexLeases := reserve("block index")
+	// The reference forms drain's, a caller of its own beside the block index's: the two passes
+	// run on their own goroutines under their own leases, so each can hold a connection while the
+	// other does.
+	refsFormsLeases := reserve("refs forms")
 	issueAskRepairLeases := reserve("issue ask repair")
 	// The webhook redelivery sweep's and the CI reconcile pass's, reserved whether or not this
 	// configuration runs them, as every caller's here is: the count the pool is sized for is the
@@ -839,6 +889,9 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
+	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
+	schemaWake := schemanodes.RegisterWake(listenerHub)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -847,6 +900,26 @@ func main() {
 	}
 
 	go embedqueue.Run(ctx, embedqueue.Deps{Store: database, Embedder: backgroundEmbedder, Wake: embeddingsWake})
+	// The block schema the store holds, read again each time a supertag write announces itself.
+	// A read that fails, and a value the install refuses, leaves the installed schema in place
+	// and is read again; a store a newer build migrated is installed at this build's own
+	// version (pmdoc.Install). A read that moved the schema this process serves first writes the
+	// numbers it serves now into its registry row, which every process's socket admission reads,
+	// and then closes its document sockets, so each editor connects again and its admission
+	// decides against the schema installed now, rather than writing against types this process
+	// no longer holds. The registration is made further down, once this process holds its
+	// listener, so the installer reaches it through registered.
+	var registered atomic.Pointer[processes.Registration]
+	go (&schemanodes.Installer{
+		Store: database.Pool,
+		Wake:  schemaWake,
+		OnSwitch: func() {
+			if registration := registered.Load(); registration != nil {
+				refreshRegistrySchema(ctx, registration)
+			}
+			documentService.CloseDocumentSockets()
+		},
+	}).Run(ctx)
 	// project_key (migration 20261109120000) is the project each embeddings row belongs to, the
 	// predicate every arm of a project-scoped meaning search reads (api/search.go). Both write
 	// functions set it from the deploy on, and this labels the rows stored before it, in
@@ -923,6 +996,20 @@ func main() {
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
 	// a build indexed without the block grammar.
 	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// The reference forms drain: each comment, ask, issue message and document a build that
+	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
+	// (refs_forms_owed). A loop of its own under a lease of its own, on the block index's
+	// interval: a period a process of the previous release served under the block index's lease
+	// would otherwise drain none of it, and a document's row is settled only by this build's own
+	// index of the document.
+	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
+	// The decisions step's tick, for as long as the process runs: the backfill while a row the
+	// release before wrote stands unmarked, the catch-up of what a process of another build
+	// writes while one lives, and, once the fleet is this one build, the restore of the answered
+	// asks that left their specs and the conversion of every decisions document.
+	if !boot.HoldDecisionsStep {
+		go decisionStep.Run(ctx)
+	}
 	// The asks a process older than the withdrawal leaves on an issue it closes or
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, issueAskRepairDeps, issueAskRepairLeases)
@@ -1056,12 +1143,15 @@ func main() {
 	// server process comes to serve one build (startup.Announcer), and /healthz reports the latest
 	// announcement's commit as fleet_commit. It runs once this process is registered, below
 	// (joinRegistry, registry.go). A process without NATS announces into the database and leaves
-	// the publish to a process whose bus answers.
+	// the publish to a process whose bus answers. It announces only the commit it registers under,
+	// with the relation kinds this build writes as tuples, the list graph_edges' tuple arm renders.
 	var announcements startup.Publisher
 	if natsClient != nil {
 		announcements = natsClient
 	}
-	announcer := startup.New(startup.Deps{Pool: database.Pool, Publisher: announcements})
+	announcer := startup.New(startup.Deps{
+		Pool: database.Pool, Publisher: announcements, Commit: buildCommit, TupleKinds: refs.TupleKinds,
+	})
 
 	routesHandler, background := routes.New(appCtx)
 	// exitAfterIntakes ends a process that started its intakes and will not serve: it stops them,
@@ -1100,7 +1190,7 @@ func main() {
 			githubreads.CIReconcile:        reconciler != nil,
 		}}
 	}
-	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, decisionStep, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1146,6 +1236,11 @@ func main() {
 		slog.Error("dispatch: register this server process", "error", err)
 		exitAfterIntakes()
 	}
+	// From here a reinstall that moves the schema refreshes this row before it closes the
+	// document sockets; the refresh after it covers a reinstall that came after the registration
+	// read the numbers and before the installer could reach the registration.
+	registered.Store(registration)
+	refreshRegistrySchema(ctx, registration)
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
@@ -1385,6 +1480,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_ROSTER_UNCACHED", &boot.ListenerRosterUncached},
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
+		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -1916,9 +2012,9 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // it says only that the process answers, for a liveness or startup probe, which must not wait on
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
-func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.Handler {
+func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, reads))
+	mux.Handle("GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, decisions, issuers, reads))
 	mux.HandleFunc("GET /livez", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.Handle("GET /metrics", registry.Handler())
 	mux.Handle("/", handler)
@@ -2069,7 +2165,10 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 
 // healthzHandler answers the readiness probe: 200 while this process can serve requests, which is
 // while Postgres answers on the health pool's own connection, and 503 while it does not; `ok` says
-// the same. Nothing here waits on the shared pool, and each probe bounds its own wait
+// the same. The store's block schema never decides it: a store a newer build migrated is installed
+// at this build's own version (pmdoc.Install), and the process keeps serving, so a release that
+// ships a type migration takes no process of the previous build out of service. Nothing
+// here waits on the shared pool, and each probe bounds its own wait
 // (store.healthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
 // as bad as one that never answers. The database and file-store probes run side by side: each
 // takes up to two seconds, and one after the other they would take four, past the three-second
@@ -2134,7 +2233,16 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 // api/request_keys.go): the agents' client reads it before it retries a write under its key, since
 // an earlier Dispatch ignores the header and would run a retried write again. It is a fact of the
 // binary, never of the probe, so it is true whatever the database or NATS answer.
-func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, reads *gitHubReads) http.HandlerFunc {
+//
+// `decisions_step_owed` is one number: the sum of what the decisions step's last pass found the
+// restore and the conversion still owe (docs.DecisionStepOwed.Total) - the decisions documents
+// still standing, the answered asks whose block left their spec, and the stored lists of gated
+// steps that hold `decisions`. The step logs the three parts at each count. A deploy check reads
+// the member at zero as the step having nothing left to do. It is absent until a tick of the step
+// has counted - the boot's pass counts nothing (docs.DecisionStep.Boot), and
+// DISPATCH_TEST_HOLD_DECISIONS_STEP holds the tick for as long as it is set - and it is read from
+// the step, so the probe adds no statement to the database. It never decides `ok`.
+func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, decisions *docs.DecisionStep, issuers issuers, reads *gitHubReads) http.HandlerFunc {
 	var reportedCommit *string
 	if commit != "" {
 		reportedCommit = &commit
@@ -2205,10 +2313,12 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			SchemaVersion   *int               `json:"schema_version"`
 			OutboxPublisher bool               `json:"outbox_publisher"`
 			IdempotencyKeys bool               `json:"idempotency_keys"`
+			// kept for one release: decisions-step
+			DecisionsStepOwed *int64 `json:"decisions_step_owed,omitempty"`
 		}{
 			OK: ok, DB: databaseOK, NATS: natsOK, Files: filesOK, SignIn: signInOK, ServiceTokens: serviceTokensOK,
 			GitHub: reads.member(), Commit: reportedCommit, FleetCommit: announcer.FleetCommit(), SchemaVersion: schemaVersion,
-			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true,
+			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
 }

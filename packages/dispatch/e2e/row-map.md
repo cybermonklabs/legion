@@ -251,6 +251,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-new-issue.e2e.ts` | the bar creates an issue and the row re-reads what the server stored, its messages and its results |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |
+| `e2e/graph-store.e2e.ts` | both rows read the node and tuple store back through the server's own reads over a real database: one applies a supertag migration under an open editor and reads the version the live document room admits after it, and the other reads one person's page, whose rows are the authored_by and delivered_to tuples the server wrote as those comments were posted and delivered |
 | `e2e/handoffs.e2e.ts` | needs the live frame |
 | `e2e/heavy-bodies.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other |
 | `e2e/heavy-streamed-turn.e2e.ts` | a long turn streaming over the live relay |
@@ -268,6 +269,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-stability.e2e.ts` | rows move because writes land elsewhere and arrive live under the reader's hand |
 | `e2e/inbox-thread-pane.e2e.ts` | opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay |
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
+| `e2e/inbox-unchanged.e2e.ts` | boots the base build and this build over a database of their own and compares the pages both serve over the same rows |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
@@ -304,11 +306,13 @@ such a row loses is feedback on the pull request itself.
 | `e2e/margin-thread-reply.e2e.ts` | margin replies in flight with server refusals |
 | `e2e/margin.e2e.ts` | two contexts, live document marks, suggestion accepts |
 | `e2e/mention-composer.e2e.ts` | delivery through the fake Envoy and the listener's own refusals |
+| `e2e/mention-reference.e2e.ts` | each row sends a comment and reads the stored record back - the party set the server reads out of the body, its delivery rows and the frames the fake Envoy listener took - and the refusals are the server's own |
 | `e2e/mermaid.e2e.ts` | the edit lands and is re-read; each draws the diagram inside the live document editor |
 | `e2e/message-agent.e2e.ts` | mention targets posted and their delivery failures |
 | `e2e/nav.e2e.ts` | the sidebar's badges are counts the server computes over the issues and asks the row seeds, and the row asserts the exact set of requests the page makes of that server |
 | `e2e/nested-directive.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other |
 | `e2e/offline-edits.e2e.ts` | document transport, IndexedDB recovery and read-only admissions |
+| `e2e/one-inbox.e2e.ts` | the one read answers from the tuples the server's writers append; the comparison page reads a run the comparison command makes against the base build booted beside the server |
 | `e2e/overlapping-marks.e2e.ts` | two readers' marks and the server's anchor refresh |
 | `e2e/parse-count.e2e.ts` | every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does |
 | `e2e/paste-recovery.e2e.ts` | pastes into the live document |
@@ -328,8 +332,20 @@ such a row loses is feedback on the pull request itself.
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
 | `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
+| `e2e/reading-agents.e2e.ts` | the Agents rows write a message and a session's reply and read back what the server stored and threaded, for a session the fake registry lists, and the live rows open on a view the relay builds from the session's replay; every key and address reads the title the server holds for its issue |
+| `e2e/reading-answers.e2e.ts` | every row writes a record through the API and reads it back on a page the server builds from that write - the Answers rows are its `/me/answers` over the asks alice answered and replied on, the Reply thread is its `/me/replies`, the person page row is its `/people/{login}/nodes` over the records alice wrote - and each key, address and party draws with the title and name the server's issue summaries and agent registry answer |
+| `e2e/reading-broadcasts.e2e.ts` | each row writes a broadcast or a recipient's reply through the API and reads it back on the broadcast's page, the Broadcasts list or the Agents page; the issue titles and the session name those texts draw come from the server's summaries and the fake listener's registry, and the send row reads the strip the page keeps after Dispatch refuses the send |
+| `e2e/reading-conversation.e2e.ts` | each row writes a record and then reads its own write, as the server resolves it: the bare key and the address read as the titles of issues the server holds, the party as the name of a session in the fake registry, and the decision is the server's reading of decisions.md; the Activity row pins an event and reads it back in the margin |
+| `e2e/reading-documents.e2e.ts` | each row writes a record through the API and reads it back in the page, where a key and an address read as the titles the server answers for them, a decision card shows where the server's reading of decisions.md links a spec block, and a pinned card is the reader's pin written to the server and read back from its stored state |
+| `e2e/reading-inbox-asks.e2e.ts` | the server reads each stored question, option, answer, earlier wording and resolution reason into the tree the card draws, resolves each reference's title and the live session's name, and decides which closed asks the Inbox lists as Reply rows |
+| `e2e/reading-inbox-threads.e2e.ts` | each row writes a record through the API and reads it back in the Inbox: the server lists the Reply rows, builds the approval's question around the summary, and answers each reference's title and the session's name as they are now |
+| `e2e/reading-pages.e2e.ts` | each row reads a text the server stored and resolves - a component's prose that the source sync read from the fake GitHub, and a priority's description and an issue's reason for touching no component written through the API - and the server decides what each bare key, address and party in it reads as, which a recording would freeze at the state it was recorded in |
+| `e2e/reading-references.e2e.ts` | each row writes a record through the API and reads it on another record's surface: a card and the hover card read their target as the server stores it, and the palette's hits are the server's ranking and its ts_headline snippet |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |
+| `e2e/reference-kinds.e2e.ts` | each pick is read back from the stored record, whose text and resolved name the server writes, and the party rows drive the fake registry and the fake Envoy listener |
+| `e2e/reference-naming.e2e.ts` | a bare address reads as its target's current name, which is the server's own resolution of the reference, re-read after the write that names it |
+| `e2e/reference-picker.e2e.ts` | the picker's rows come from the server's search and its registry read, and the row that reaches another project's node is that search answering across projects |
 | `e2e/reference-titles.e2e.ts` | asserts drawn titles inside the live editor |
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |
 | `e2e/refetch-budget.e2e.ts` | writes after load, counted reads and the server's event feed |
@@ -355,3 +371,4 @@ such a row loses is feedback on the pull request itself.
 | `e2e/workspace.e2e.ts` | it asserts the counts and the titles the server groups a workspace into |
 | `e2e/writer-spelling.e2e.ts` | asserts the readings inside the live document editor |
 | `e2e/writes.e2e.ts` | a failed pin's retry, one comment from a double Submit, and a pin removed from Pinned |
+| `e2e/writing-surfaces.e2e.ts` | it walks every covered writing box, the document's live editor and the agent live conversation among them, and each delivering box's row is read back from the write the server stored and the frame the fake Envoy listener took |

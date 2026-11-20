@@ -1,5 +1,14 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { createContext, type ReactNode, useContext, useId, useMemo, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
@@ -7,15 +16,22 @@ import { useTooltips } from "../../components/tooltips";
 import {
   borderDefault,
   dangerText,
-  inputClasses,
+  focusBorder,
   pageFailedText,
+  pageHairBorder,
+  pageInkText,
   pageLineBorder,
   pageMutedText,
+  pagePaperBg,
   pageWordsText,
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { decisionHeadingTree } from "../issue/decision-heading";
+import { usePlainHeadline } from "../refs/plain-text";
+import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
 import { authorText, pageChrome } from "./page-structure";
@@ -48,17 +64,20 @@ const DECISION_BUTTON =
   "rounded-[7px] border-[1.5px] border-page-decision px-3 py-0.5 text-xs leading-5 font-semibold";
 
 /** The colours of the lines Keep and Change draw under them, by the surface they are drawn on
- *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`); on
- *  today's page, `main`'s. */
+ *  (`useTooltips`): inside `NoTooltips`, the new page, its own pairs (`theme/classes.ts`), and the
+ *  Change's box in the shape the page gives every box it writes in (`MentionField`'s
+ *  `fieldClassName`); on today's page, `main`'s, and the box in the field's own. */
 const TONES = {
   main: {
     failed: dangerText,
+    field: undefined,
     muted: textMutedOnCanvas,
     rule: borderDefault,
     words: textSecondaryOnCanvas,
   },
   page: {
     failed: pageFailedText,
+    field: `${pageHairBorder} ${pagePaperBg} ${pageInkText} ${focusBorder}`,
     muted: pageMutedText,
     rule: pageLineBorder,
     words: pageWordsText,
@@ -120,8 +139,9 @@ export function DecisionActions({
   nodeReference,
   tabStops = false,
 }: {
-  /** The decisions document this node is a block of, which the Keep writes against;
-   *  `undefined` for a decision whose document the issue read does not carry. */
+  /** The document this node's `decision` block stands in - the spec, or another document of the
+   *  issue - which the Keep writes against and the Change is anchored in; `undefined` for a
+   *  decision whose document the issue read does not carry. */
   document: Artifact | undefined;
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
@@ -171,9 +191,19 @@ function DecisionControls({
   };
   // Read once per answer of the decisions read, which is when the decision is a new object.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
+  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
+  // The heading as plain words, which Keep and Change are named after: a write's label and a
+  // form's name hold no markup. Until the engine has answered, the heading as written, which is
+  // the load state the reading list's `decision-heading-words` accepts.
+  const { reads, text: heading } = usePlainHeadline(headingTree, decision.heading, {
+    source: textSourceOf("artifact", documentId, issueKey),
+    surface: "decision-heading-words",
+  });
+  const name = heading?.text ?? decision.heading;
   const keep = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${CONTROL_LABELS.keep_decision} ${name}`,
     method: "POST",
     // The sum of the text this node showed: a decision the agent changed since is refused
     // (`409 DECISION_CHANGED`), so a Keep never stands over words the reader did not see.
@@ -202,6 +232,7 @@ function DecisionControls({
   });
   return (
     <>
+      {reads}
       <p className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-2">
         {decision.waiting_review ? (
           // Out of the tab order, as every control inside a row is, unless `tabStops` holds,
@@ -247,6 +278,7 @@ function DecisionControls({
           documentId={documentId}
           issueKey={issueKey}
           focusField={!restored}
+          name={name}
           onDone={() => change(false)}
           quote={quote}
         />
@@ -256,12 +288,15 @@ function DecisionControls({
 }
 
 /** The change itself: a comment of the issue's, anchored to the decision's own words, which is
- *  the write the Decisions tab made. */
+ *  the write the Decisions tab made, written in the box every place a person writes a comment
+ *  in mounts (`MentionField`), with the reference picker in it (the writing list's
+ *  `decisions-change`). */
 function ChangeComposer({
   decision,
   documentId,
   focusField,
   issueKey,
+  name,
   onDone,
   quote,
 }: {
@@ -271,6 +306,9 @@ function ChangeComposer({
    *  form, and not when the form comes back with its row's body. */
   focusField: boolean;
   issueKey: string;
+  /** The decision's heading as plain words (`usePlainHeadline`), which the form and its write
+   *  are named after. */
+  name: string;
   onDone: () => void;
   quote: string;
 }): ReactNode {
@@ -279,10 +317,11 @@ function ChangeComposer({
   const [body, setBody] = useState(() => drafts?.get(decision.ref) ?? "");
   const queryClient = useQueryClient();
   const tones = TONES[useTooltips() ? "main" : "page"];
-  const fieldId = useId();
+  const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
-    label: () => `${CONTROL_LABELS.change_decision} ${decision.heading}`,
+    // A write's label holds no markup: the reading list's `decision-heading-words`.
+    label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
     // A comment on an issue's document is the issue's own write: the artifact route refuses it,
     // naming the issue route (`send-request.ts` follows the same rule for a thread's replies).
@@ -317,8 +356,8 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
+  // Whether the send is reading the text of the document the decision's block stands in, which it
+  // does before the comment goes out: Send is off while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -328,10 +367,16 @@ function ChangeComposer({
   // to change a decision is left where they are there to type however many frames React takes
   // over the commit, and whether they asked with the pointer or with the row's own key
   // (`useTreeKeymap.ts`'s `tree-change`). A form that comes back with its row's body takes none
-  // (`focusField`): the reader moved to the row, not into the field.
+  // (`focusField`): the reader moved to the row, not into the field. The caret goes in from the
+  // commit that mounts the field, as `autoFocus` puts it there, through the handle the field
+  // gives its host.
+  useLayoutEffect(() => {
+    if (focusField) field.current?.textarea()?.focus();
+  }, [focusField]);
   return (
     <form
-      aria-label={`${CONTROL_LABELS.change_decision} ${decision.heading}`}
+      // A form's name holds no markup: the reading list's `decision-heading-words`.
+      aria-label={`${CONTROL_LABELS.change_decision} ${name}`}
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
@@ -342,12 +387,12 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // Which of the quote's places in the document is this decision's own, counted here, at the
+        // send, over the document's own reading, which the send reads once now: `changeAnchor`
+        // walks the document's reading down to the decision's block, which no render of a row
+        // pays for (decision 92). With no reading - the read failed - the anchor names no place:
+        // Dispatch takes it where the quote stands once, and refuses it where the quote stands
+        // more than once, which the form says in the page's words with the draft kept.
         setReading(true);
         void queryClient
           .fetchQuery({
@@ -361,12 +406,7 @@ function ChangeComposer({
           )
           .then((tree) => {
             setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
-              tree
-            );
+            const anchor = changeAnchor(decision, tree);
             send.mutate({ anchor: anchor ?? { quote }, body });
           });
       }}
@@ -378,20 +418,21 @@ function ChangeComposer({
       >
         {quote}
       </blockquote>
-      <label className={`text-xs ${tones.muted}`} htmlFor={fieldId} {...pageChrome}>
-        {CONTROL_LABELS.your_change}
-      </label>
-      <textarea
-        // biome-ignore lint/a11y/noAutofocus: the form mounts because a reader asked to type in it
-        autoFocus={focusField}
-        className={`block w-full min-w-0 rounded-lg border px-2 py-1 text-sm outline-none ${inputClasses(true)}`}
-        id={fieldId}
-        onChange={(event) => {
-          setBody(event.target.value);
-          drafts?.set(decision.ref, event.target.value);
+      <MentionField
+        body={body}
+        className="text-sm"
+        fieldClassName={tones.field}
+        fieldRef={field}
+        hintClassName={`text-xs ${tones.muted}`}
+        issueKey={issueKey}
+        label={CONTROL_LABELS.your_change}
+        labelClassName={`block text-xs ${tones.muted}`}
+        onChange={(change) => {
+          setBody(change.body);
+          drafts?.set(decision.ref, change.body);
         }}
         rows={3}
-        value={body}
+        writing={dispatchWritingBox("decisions-change", "comment")}
       />
       {send.error === null ? null : (
         <p className={`text-xs ${tones.failed}`} role="alert" {...pageChrome}>

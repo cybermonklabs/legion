@@ -46,10 +46,13 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
+  INBOX_RELATION_DIRECTIONS,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
   type ItemBlocks,
+  inboxEntryRow,
   inboxThreadRow,
+  type MeInboxResponse,
   type Message,
   MessageDeliveryEventPayloadSchema,
   type MessageDeliveryMode,
@@ -716,6 +719,54 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
     "planner",
     "comment-1",
   ]);
+});
+
+test("narrows an entry of the one read to the row the page draws for it", () => {
+  const reply = {
+    thread_id: "comment-1",
+    kind: "comment",
+    ref: "/issues/CORE-1/comments/comment-1",
+    subject: "Ship it?",
+    reply: {
+      id: "comment-2",
+      kind: "reply",
+      author: { kind: "user", id: "bob" },
+      first_line: "Yes.",
+      created_at: "2026-11-17T09:00:00Z",
+    },
+    read_through: "2026-11-17T08:00:00Z",
+    unread: true,
+    unread_count: 1,
+    version: 3,
+  };
+  const answer = {
+    person: "alice",
+    as_of: "2026-11-17T09:01:00Z",
+    horizon: 42,
+    total: 2,
+    limit: 0,
+    offset: 0,
+    entries: [
+      {
+        node: { kind: "comment", id: "comment-1" },
+        relations: [{ kind: "participates_in", direction: "outbound", at: "2026-11-17T08:00:00Z" }],
+        moment: "2026-11-17T09:00:00Z",
+        thread: reply,
+      },
+      {
+        node: { kind: "comment", id: "comment-3" },
+        relations: [{ kind: "mentions", direction: "inbound", at: "2026-11-17T07:00:00Z" }],
+        moment: "2026-11-17T07:00:00Z",
+      },
+    ],
+  } satisfies MeInboxResponse;
+  const rows = (answer.entries ?? []).map(inboxEntryRow);
+  expect([
+    rows.map((row) => row.kind),
+    rows[0]?.kind === "thread" ? rows[0].thread.version : undefined,
+    answer.entries.flatMap((entry) => entry.relations.map((relation) => relation.direction)),
+    [...INBOX_RELATION_DIRECTIONS],
+  ]).toEqual([["thread", "none"], 3, ["outbound", "inbound"], ["inbound", "outbound"]]);
 });
 
 test("models a snooze's state event and a document named in references_changed", () => {

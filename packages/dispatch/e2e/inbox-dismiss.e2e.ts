@@ -241,7 +241,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
     await expect(rows).toHaveCount(3);
     await expectSidebarInboxCount(page, 3);
     expect(await bandHeadings(page)).toEqual(["P2 (2)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(1);
+    expect(await typeFilterCount(page, bar, "Threads")).toBe(1);
     expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
 
     // The selected row draws its Dismiss twice - on the short row and in the column's head -
@@ -269,7 +269,7 @@ test("the row's Dismiss takes a thread out of the list, the counts and the Inbox
 
     // And out of the Filter control's count and the band's.
     expect(await bandHeadings(page)).toEqual(["P2 (1)", "No priority (1)"]);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(0);
+    expect(await typeFilterCount(page, bar, "Threads")).toBe(0);
     expect(await typeFilterCount(page, bar, "Agent message")).toBe(1);
 
     // The server holds the same: one thread dismissed, one left in the Inbox.

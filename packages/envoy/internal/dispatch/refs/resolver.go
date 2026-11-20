@@ -86,6 +86,13 @@ func NewReaderInScope(ctx context.Context, q Queryer, fromKind, fromID, serverUR
 	return reader
 }
 
+// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
+// references: what a write that cuts the head of the same text an edge shows cuts it against
+// (EditedTargets).
+func (r *Reader) ServerURL() string {
+	return r.serverURL
+}
+
 // Mentions is the references body writes, read with the whole grammar (text.Mentions): the
 // `dispatch://` and dashboard addresses it spells out, the issue keys it writes bare, the
 // `#id`s naming the question blocks of the document the reader's source belongs to, and the
@@ -149,7 +156,9 @@ func (r *Reader) Issues(keys []string) (map[string]bool, error) {
 // QuestionMap), loaded at most once per reader and not at all unless a body holds a `#`
 // candidate, which is when text.Mentions asks. A source that belongs to no document - a direct
 // message, a reply whose thread names none - has no question, and a text on an issue but on no
-// document resolves against the issue's spec, which the scope answers with.
+// document resolves against the issue's spec, which the scope answers with. Both are read for no
+// person (scopeOf, questionMap): the index answers no reader, and the edge a `#id` makes is one
+// of its own source, which every read of the graph holds to the predicates of both its ends.
 //
 // Both reads the scope costs are paid here and nowhere earlier: a body with no `#` candidate
 // never asks, so a create whose text names no question block sends neither the query a queued
@@ -167,7 +176,7 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 	if document == "" {
 		return nil, nil
 	}
-	questions, err := QuestionMap(r.ctx, r.q, document)
+	questions, err := questionMap(r.ctx, r.q, nil, document)
 	if err != nil {
 		r.failed("read the question blocks a text's `#id` names", err)
 		return nil, nil
@@ -178,17 +187,18 @@ func (r *Reader) Questions() (map[string]text.Ref, error) {
 
 // scope is the document the source's text belongs to: the one the writer handed over for a row
 // this transaction has only queued (NewReaderInScope), which no read of that row can answer
-// yet, else the one the source's stored row answers (ScopeOf).
+// yet, else the one the source's stored row answers for no person (scopeOf).
 func (r *Reader) scope() (string, error) {
 	if r.pending != nil {
 		return r.pending.Scope(r.ctx, r.q)
 	}
-	return ScopeOf(r.ctx, r.q, r.kind, r.id)
+	return scopeOf(r.ctx, r.q, nil, r.kind, r.id)
 }
 
 // Items is the whole id of each short id the text writes, resolved within the owner the reference
-// itself names and not across the whole kind (ResolvePrefix, as the zero Viewer: the index writes
-// the graph every authenticated caller reads, so it reads no direct message's first line). A
+// itself names and not across the whole kind (resolvePrefix, for no person and as the zero
+// Viewer: the index writes the graph every authenticated caller reads, so it reads no direct
+// message's first line, and every read of an edge it writes binds the predicates of both ends). A
 // prefix that names nothing, one two items or more carry, and one whose owner no Scope holds are
 // all left out of the answer, which leaves the mention as the text wrote it.
 func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
@@ -221,7 +231,7 @@ func (r *Reader) Items(prefixes []text.Prefix) (map[int]string, error) {
 // resolveItem is the whole id key names, "" where it names nothing or two items or more. An error
 // is a failure reaching the database alone.
 func (r *Reader) resolveItem(key prefixKey) (string, error) {
-	candidate, err := ResolvePrefix(r.ctx, r.q, key.kind, key.scope, key.prefix, Viewer{})
+	candidate, err := resolvePrefix(r.ctx, r.q, nil, key.kind, key.scope, key.prefix, Viewer{})
 	switch {
 	case err == nil:
 		return candidate.ID, nil

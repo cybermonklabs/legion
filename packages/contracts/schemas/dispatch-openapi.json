@@ -87,6 +87,58 @@
         "x-auth": "any"
       }
     },
+    "/api/v1/agents/known": {
+      "get": {
+        "description": "Which of the sessions the repeated id parameter names (1 to 100 session ids) Dispatch holds any record of, so a page links a dispatch://agent/\u003csession id\u003e reference only where that conversation exists, an ended session's included: {sessions: [{session_id, title}]} in the order asked, each once, and no row for an id with no record. A record is the registry copy GET /api/v1/agents lists (whatever its age), an event the session wrote, a message targeted at it, a message or comment delivery to it, a file or image of its conversation, or an ask it follows; title is the registry copy's, null where that copy lists the session with none or does not list it. One statement answers the whole batch. A parameter other than id and session, no id, more than 100, a value that is no session id, or one longer than 2048 bytes, the longest session id a reference in text names, is 400 INVALID_QUERY naming the parameter. It needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits; session is the session the request acts for, as on every route.",
+        "operationId": "getApiV1AgentsKnown",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnownSessions"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/agents/{session_id}/answers": {
       "get": {
         "description": "What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's message deliveries the listener took (targeted and broadcast messages, handed to the running session or queued for it) and its comment deliveries (mentions) in those same two states; of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session. A session owns an ask when it wrote the ask or follows it, and only an owner is told that an ask is its own: for a comment, replied_on_your_ask (a reply in the thread of an ask the session owns) over mentioned_you over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue; for a message, replied_to_your_message over sent_you_a_message; for an answer, answered_your_ask for an owner and answered_an_ask for any other session; for a decline, declined_your_ask for an owner and declined_an_ask for any other session. A session that does not own the ask reads a reply in its thread by the reason that delivered it: the issue's route, its claim, a credit on its primary document, or a mention. Each item carries the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, whoever asked it, and its owner, dispatch:// ref and href (null owner and ref, and /agents/\u003csession_id\u003e/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and, on declined_your_ask alone, dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline that carries them, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list.",
@@ -149,6 +201,57 @@
       }
     },
     "/api/v1/agents/{session_id}/artifacts": {
+      "get": {
+        "description": "The newest 100 files and images of an agent's conversation, newest first (created_at, then id), each as GET /api/v1/agents/{session_id}/artifacts/{slug} reads it, with its versions; [] for a conversation that holds none. An older file is not listed and is still read by its slug. A reference picker lists them under the session, each addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. A conversation's files are part of the conversation, so the route needs the person scope and admits exactly the callers GET /api/v1/agents/{session_id}/messages admits, reading session as that route does.",
+        "operationId": "getApiV1AgentsBySessionIdArtifacts",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
+                  },
+                  "type": "array"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      },
       "post": {
         "description": "Upload a file or image to an agent's conversation (multipart, as an issue upload, its kind read from its bytes): ref_key agent/\u003csession_id\u003e/\u003cslug\u003e, addressed dispatch://agent/\u003csession_id\u003e/artifact/\u003cslug\u003e. It holds files and images only: a markdown document (JSON content or a text/markdown file) is 400 ARTIFACT_INPUT, since a document belongs to an issue or a project. No event is appended. A caller whose credential proves a session of its own uploads only into that session: any other session_id is 403 SESSION_SCOPE. A session_id that is empty or holds /, ?, #, whitespace, a control character or a character that ends a reference in text (\u003c\u003e\"'`[]|) is 400 INVALID_SESSION_ID on every agent artifact route.",
         "operationId": "postApiV1AgentsBySessionIdArtifacts",
@@ -710,7 +813,7 @@
         "x-write-scope": "project"
       },
       "patch": {
-        "description": "Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT.",
+        "description": "Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, a name whose slug is a decisions document's, on an issue's document that is not one, 409 DECISIONS_ARE_NODES (a later upload of that name would find it), the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT.",
         "operationId": "patchApiV1ArtifactsById",
         "parameters": [
           {
@@ -767,6 +870,54 @@
           "person"
         ],
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/artifacts/{id}/_test/ask-attributes": {
+      "get": {
+        "description": "Test hook: read the attributes each ask block of a document holds in this process's live tree.",
+        "operationId": "getApiV1ArtifactsByIdTestAskAttributes",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LiveAskAttributes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true
       }
     },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -1418,7 +1569,7 @@
     },
     "/api/v1/artifacts/{id}/blocks/{block_id}/keep": {
       "post": {
-        "description": "Record that the caller agrees with the decision that block opens, as the text they read it at: {text_sha256}, the decision's own text_sha256 from GET /api/v1/issues/{key}/decisions. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. The block must be the heading block of a decision of an issue's decisions.md outside `## Replaced`: any other block is 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody.",
+        "description": "Record that the caller agrees with a decision, as the text they read it at: {text_sha256}, the sum of the decision's own text as they read it. The block is an agent's decision, a decision block of any document of an issue, on whose node the Keep appends, in one write, a kept_by tuple to the caller and a kept_text_sum value holding the sum, with the decision_keeps row as their projection. Until the decisions step retires it, the block may also be a section heading of an issue's decisions document an earlier release stored, outside `## Replaced`, whose sum is that of the section's markdown from the heading to its last block; that Keep writes the decision_keeps row, which the conversion carries onto the section's decision node. A decision's text sum covers its own words and none of the readings it closes with. A decision whose text changed since is 409 DECISION_CHANGED with nothing written, and a body without the sum is 400 INVALID_KEEP; a repeat of the sum as it stands moves the row. A decision marked replaced, a heading of a retired decisions document, and any other block are 404 TARGET_NOT_FOUND. Answers the keep and appends decision.kept, which wakes nobody.",
         "operationId": "postApiV1ArtifactsByIdBlocksByBlockIdKeep",
         "parameters": [
           {
@@ -1535,7 +1686,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on a document or one of its quotes.",
+        "description": "Comment on a document or one of its quotes. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT.",
         "operationId": "postApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -1605,7 +1756,7 @@
     },
     "/api/v1/artifacts/{id}/edits": {
       "post": {
-        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition.",
+        "description": "Apply quote-anchored edit ops with an optional optimistic-concurrency precondition. A batch that is not a person's own (one whose credential does not hold the person scope: an agent's session, a pod's service account, the deployment's shared token) whose result drops the block of an answered ask, or retypes it, is 409 ANSWERED_ASK_KEPT, quoting each such ask's question and naming its node and its block's address, and writes nothing; a person's own, at a browser or through a token of theirs that holds the person scope, is taken.",
         "operationId": "postApiV1ArtifactsByIdEdits",
         "parameters": [
           {
@@ -2161,7 +2312,7 @@
     },
     "/api/v1/artifacts/{id}/text": {
       "get": {
-        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write.",
+        "description": "A document's canonical markdown, its whole-document token, its version and its asks. The markdown holds no server-owned attribute on any ask block (state, answered_by, answered_at, selected, answer, invalid, copied_from, copied_from_document), whatever the live document or its stored versions hold, so the text uploads back unchanged; a version's own text (GET /api/v1/artifacts/{id}/versions/{number}) keeps the stored bytes. asks answers each ask block of the markdown in document order, read from the ask that answers for it, under the names those attributes carried: {block_id, state?, answered_by?, answered_at?, selected?, answer?, copied_from?, copied_from_document?}. state is the ask's, a copy's source's (copied_from naming the source ask and copied_from_document its document's dispatch:// address), resolved for a block of a closed issue's document no settlement has indexed, and absent for any other block no ask indexes yet, a question nobody has opened; who answered, when, the options chosen and the words stand on an answered ask alone. A document with no ask block answers no asks member, as the release before answered every document. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from, so their byte ranges index the markdown served: a listing read this way cannot be split by another session's write.",
         "operationId": "getApiV1ArtifactsByIdText",
         "parameters": [
           {
@@ -5107,6 +5258,48 @@
         ]
       }
     },
+    "/api/v1/inbox/comparison": {
+      "get": {
+        "description": "The gate of the one read (GET /api/v1/me/inbox) over the three reads it replaces: the newest run of `envoy-dispatch inbox-compare`, read from its stored row alone, as counts - {run: {id, ran_at, difference_count (the rows an old read answered and the one read did not), people_checked (every person the database holds), people_uncovered (those the run did not reach), shapes (each corpus shape the gate requires, {shape, rows}), missing_shapes, met (no difference, nobody uncovered and every shape held)}}, or {run: null} before any run. It answers nobody's rows. The comparison runs in the branch alone, over a test database, and is deleted with this route before a release.",
+        "operationId": "getApiV1InboxComparison",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxComparisonResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/issues": {
       "get": {
         "description": "List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
@@ -5564,7 +5757,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length.",
+        "description": "Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key \u003cowner\u003e/\u003cslug\u003e it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. A new document whose name gives the slug of a decisions document is 409 DECISIONS_ARE_NODES, and so is an upload of that name once the issue's decisions document is retired: a decision is a `decision` block in the spec. An upload of that name while the issue's decisions document an earlier release stored still stands is that document's next version.",
         "operationId": "postApiV1IssuesByKeyArtifacts",
         "parameters": [
           {
@@ -5778,7 +5971,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to an issue document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it.",
         "operationId": "postApiV1IssuesByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -5876,7 +6069,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
+        "description": "An issue document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -6447,7 +6640,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A party address the body writes names that party, as an entry of mentions does. dispatch://agent/\u003csession id\u003e names a session and dispatch://role/\u003ctoken\u003e names a role, and the comment is delivered to each in the mode delivery names - btw, aside or steer - and in steer when the request names none. The same address inside a fenced code block, an indented code block or a code span names nobody. A person address, dispatch://person/\u003clogin\u003e, names a reader of the record, and nothing is delivered to a person. The array and the body make one party set: over 10 delivering parties in it, or a target of a form no delivery route takes, is 400 MENTION_INPUT.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6564,7 +6757,7 @@
     },
     "/api/v1/issues/{key}/decisions": {
       "get": {
-        "description": "The issue's decision records: {document, open_questions, decisions}. document is the dispatch:// address of its decisions.md, null (with no decisions) when it has none. open_questions are the issue's open asks whose block is in its spec, oldest first. Each decision is one `##` section of decisions.md in document order - a `###` section under `## Replaced` for a replaced one - with its heading block and markdown, the ask ids its blocks mention (kind person when it has any, agent otherwise), whether a paragraph of it starts `Unsure:`, the version its text last changed in, the Keep a person recorded, and one entry per link from its blocks to a spec block, each stale when the decision changed after it first linked that block and the block has not changed since.",
+        "description": "The issue's decision records: {entries, document, open_questions, decisions}. entries is the read of the store: one entry for each live ask node of a question the issue asked, on any of its documents or on the issue itself, and each live `decision` block node of any of its documents, found by its node and not by a block-index row, so a document that still owes its block index lists its decisions; a copy of an answered ask is no entry. Open asks come first, oldest first, then every other entry by its time (an answer's, a resolution's, or the version its words last changed in). Each entry names the node that holds it (node {kind, id}, ref, document {artifact_id, ref, block_id, block}), kind person for an ask, agent for a decision and declined for an ask the person declined, its text (an ask's question, a decision's own words) and text_sha256, an ask's question, options, urgency and multiple from its row and its answer_state, answer, selected, answered_by, answered_at and resolution from its node, declined and declined_note (a declined ask carries no answer), a decision's uncertainty, uncertainty_reason, kept_by and kept_text_sum, decided_by (the far end of its decided_by tuple), replaced, kept, waiting_review, changed_version and changed_at (the version its own words last changed in, readings left out), shaped (one link for each spec node a shaped tuple reaches, with the tuple's event, the event that wrote the version the node's text last changed in, text_changed_event, and stale, true when that text changed after the tuple), and readings (each reading node whose part_of reaches it, with its authored_by, null where it holds none). An entry whose stored value does not parse is left out and logged. open_questions are the issue's open asks whose block is in its spec, oldest first. document and decisions are kept for one release for a page of the release before, and answer from the store: decisions is each decision node and each answered ask of entries in its old shape (kind agent or person, links from shaped, kept and waiting_review from the node), and document is the dispatch:// address of the issue's decisions document while one an earlier release stored still stands, null once it is retired or where there is none. No read answers from that document's text.",
         "operationId": "getApiV1IssuesByKeyDecisions",
         "parameters": [
           {
@@ -6611,7 +6804,7 @@
     },
     "/api/v1/issues/{key}/design-gates": {
       "put": {
-        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
+        "description": "Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. An entry of the retired step decisions, which a daemon of the release before still publishes, is taken and dropped, so the issue's stored row of that step goes with the set it replaces. A body without gates, a step that is none of these, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND.",
         "operationId": "putApiV1IssuesByKeyDesignGates",
         "parameters": [
           {
@@ -8659,6 +8852,101 @@
         "x-write-scope": "session"
       }
     },
+    "/api/v1/me/inbox": {
+      "get": {
+        "description": "Everything tied to the caller's own person, in one statement: each node that holds a current relation to their person node (or to a session the server proved theirs) at either end, once, with every relation kind that ties it to them - {kind, direction (inbound, a tuple into the person; outbound, one from them), at} - and its moment, newest first. The kinds are the store's, so a kind a later write appends is an entry the day it is appended; the identity tuple gives none, and a node the caller may not see is in no entry and no count. ?kind= (a comma list of relation kinds, repeatable) narrows to the entries of those kinds and widens nothing. ?state= is the page's own narrowing - unread, inbox or dismissed - read from the lists the Inbox reads (GET /api/v1/me/replies' states, and under inbox GET /api/v1/inbox's open asks waiting on the caller); with none the entries are the walk of the tuples. Where an entry's node is a row the page draws (under no state, the inbox state's), it carries exactly one of ask (the Inbox's ask row with its thread), thread (a Reply row) or agent (an Agent row, with the conversation it draws). A narrowing never leaves in the answer an entry it cannot judge: ?project= narrows every entry by its node's own project, and a node the store holds no project of is then in none; ?issue= or ?artifact= (not both) keeps the rows the page draws of that owner and drops every other entry, an Agent row among them, since no attribute every node carries says which issue or document it belongs to. An absent limit answers every entry; a named one is 1-200 from ?offset=, and ?cursor= (the next_cursor of the page before it) resumes after the last entry it answered. Any other query key, an identity selector (login, person, assignee, session) among them, is 400 INVALID_QUERY naming it. The read is at the event horizon notifications read at. {person, as_of (the database time of the statement), horizon, total (every entry, taken after the visibility predicate), limit (0 when none was named), offset, next_cursor (while entries follow the page), entries}.",
+        "operationId": "getApiV1MeInbox",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "unread",
+                "inbox",
+                "dismissed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "issue",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "artifact",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "project",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeInboxResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
+      }
+    },
     "/api/v1/me/inbox/dismiss": {
       "post": {
         "description": "Take threads out of the caller's Inbox, or put them back: {threads} (the row ids reply:\u003cthread id\u003e and agent:\u003croot message id\u003e) with {seen_replies}, or the Inbox's own narrowing - kind, priority, urgency, project, and issue or artifact, as POST /api/v1/me/inbox/read reads them - with {dismiss_through} (RFC3339, required with the narrowing; stored as no later than now; missing, unparsable or more than a minute ahead of the server is 400 INVALID_STATE), never both (400 INVALID_QUERY). seen_replies is what the page drew in each row threads names, keyed by that same row id, and a dismissal naming threads without it is 400 INVALID_QUERY: a reply: row's entry is {version}, that row's version as GET /api/v1/me/replies answered it, and an agent: row's is {newest_reply, unread_replies}, that row's reply.id and the ids it drew as unread. The mark is written only while the row still holds what the page drew, so a dismissal buries no write nobody has read. A restore takes no seen_replies, and neither does the narrowing, where the server draws the rows itself (each 400 INVALID_QUERY). With the narrowing it changes exactly the threads GET /api/v1/me/replies answers under it whose newest reply, or whose dismissal, is at or before dismiss_through. {restore: true} clears the marks instead of writing them, so the threads are in the Inbox again. Dismissing marks a thread read as well, so a dismissed thread never counts as unread, and a later write by somebody else clears the mark and brings the thread back unread, while the caller's own reply leaves it dismissed. An Ask row's id, a row id of neither shape and an id that is not a uuid are 400 INVALID_QUERY. Answers {dismissed}, the number of threads it changed; a request that changes nothing answers 0 and appends no event. It takes the lock order and appends the events POST /api/v1/me/inbox/read does: one user_thread_state.updated per project and one user_agent_state.updated per session it touched.",
@@ -9487,6 +9775,70 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/people/{login}/nodes": {
+      "get": {
+        "description": "One person's page: what they wrote and what reached them, newest first, read from the node and tuple store. Each row carries the node's kind and id, the relations that put it there (authored_by, delivered_to, or both), the first line of its text and the dashboard path it opens at. It takes the login and a page - limit (1-200, default 50) and offset - and no kind, filter or edge to walk. {person, rows, total, limit, offset}. Needs the person scope, so the deployment's shared token is 403 OAUTH_SCOPE_REQUIRED. A login the store holds no person for is 404 NOT_FOUND, the answer an address nobody holds gets.",
+        "operationId": "getApiV1PeopleByLoginNodes",
+        "parameters": [
+          {
+            "name": "login",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PersonNodes"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ]
       }
     },
     "/api/v1/priorities": {
@@ -10348,7 +10700,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are.",
+        "description": "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version.",
         "operationId": "postApiV1ProjectsByKeyArtifacts",
         "parameters": [
           {
@@ -10562,7 +10914,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/edits": {
       "post": {
-        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename.",
+        "description": "Apply edit ops with an optional optimistic-concurrency precondition to a project document, by slug or unambiguous filename. A batch that is not a person's own and drops or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it.",
         "operationId": "postApiV1ProjectsByKeyArtifactsBySlugEdits",
         "parameters": [
           {
@@ -10715,7 +11067,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
+        "description": "A project document's canonical markdown, whole-document token, version and asks, by slug or unambiguous filename, as GET /api/v1/artifacts/{id}/text answers them: no server-owned ask attribute in the markdown, and each ask block's state and answer in asks; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -10976,7 +11328,7 @@
     },
     "/api/v1/projects/{key}/gated-steps": {
       "put": {
-        "description": "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.",
+        "description": "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. The retired step decisions, which a page of the release before still sends, is taken and stored nowhere: the list is stored without it, and a list of decisions alone is stored as [spec]. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.",
         "operationId": "putApiV1ProjectsByKeyGatedSteps",
         "parameters": [
           {
@@ -11610,7 +11962,7 @@
     },
     "/api/v1/related-checks": {
       "get": {
-        "description": "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.",
+        "description": "Count the related-item checks recorded when an issue, an ask or a new ask block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.",
         "operationId": "getApiV1RelatedChecks",
         "parameters": [
           {
@@ -11770,7 +12122,7 @@
     },
     "/api/v1/search": {
       "get": {
-        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY.",
+        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all ten: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. ?kind= is younger than that path, so a build serving it but released before ?kind= answers either route 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for: sending ?kind= there buys no refusal, and a client that must know the rows are narrowed reads each result's own kind. This route still reads all ten, so a page served by an earlier release that sends one of the six here is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY.",
         "operationId": "getApiV1Search",
         "parameters": [
           {
@@ -11876,7 +12228,7 @@
     },
     "/api/v1/search/results": {
       "get": {
-        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY.",
+        "description": "Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). ?kind= names one of issue, document, comment, ask and message and is repeated for each kind wanted: those kinds alone are ranked, counted and paged, and with no kind named every kind is. A q that is one issue key in any form a person writes it - CORE-1042, core-1042, CORE 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The \"phrase\", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all ten members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. ?kind= is younger than this path, so a build serving it but released before ?kind= answers both routes 200 with ?kind= dropped, which is every kind's rows where one kind's were asked for; a client that must know the rows are narrowed reads each result's own kind. GET /api/v1/search still reads all ten, so a page served by an earlier release that sends one of the six there is still answered narrowed. A q under 2 characters and a kind outside those five are 400 INVALID_QUERY, a q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY.",
         "operationId": "getApiV1SearchResults",
         "parameters": [
           {
@@ -11940,6 +12292,23 @@
             "in": "query",
             "schema": {
               "type": "integer"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "schema": {
+              "items": {
+                "enum": [
+                  "issue",
+                  "document",
+                  "comment",
+                  "ask",
+                  "message"
+                ],
+                "type": "string"
+              },
+              "type": "array"
             }
           },
           {
@@ -12591,6 +12960,55 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/writes/_test/fail-between/{writer}": {
+      "put": {
+        "description": "Test hook: arm one failure for the next write of that writer, injected between its store write and its projection write, so both roll back.",
+        "operationId": "putApiV1WritesTestFailBetweenByWriter",
+        "parameters": [
+          {
+            "name": "writer",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestHookOK"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-test-hook": true,
+        "x-write-scope": "deployment"
       }
     },
     "/api/v1/writes/_test/slow": {
@@ -13618,7 +14036,7 @@
           },
           "not_architectural": {
             "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeNone"
+              "$ref": "#/components/schemas/ArchitectureTreeNoneRead"
             },
             "type": [
               "array",
@@ -13833,6 +14251,49 @@
           },
           "reason": {
             "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "title",
+          "status",
+          "reason",
+          "inherited_from"
+        ],
+        "type": "object"
+      },
+      "ArchitectureTreeNoneRead": {
+        "properties": {
+          "inherited_from": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "key": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "status": {
             "type": "string"
@@ -14390,6 +14851,12 @@
       },
       "ArtifactText": {
         "properties": {
+          "asks": {
+            "items": {
+              "$ref": "#/components/schemas/TextAsk"
+            },
+            "type": "array"
+          },
           "blocks": {
             "items": {
               "$ref": "#/components/schemas/ArtifactBlock"
@@ -14663,6 +15130,22 @@
               "array",
               "null"
             ]
+          },
+          "selected_trees": {
+            "items": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
           },
           "text": {
             "type": [
@@ -18184,6 +18667,306 @@
         ],
         "type": "object"
       },
+      "DecisionEntry": {
+        "properties": {
+          "answer": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answer_state": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answer_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "answered_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "answered_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_version": {
+            "type": "integer"
+          },
+          "decided_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionEntryNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "declined": {
+            "type": "boolean"
+          },
+          "declined_note": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "document": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionEntryDocument"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kept": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionKeep"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kept_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kept_text_sum": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": [
+              "null",
+              "boolean"
+            ]
+          },
+          "node": {
+            "$ref": "#/components/schemas/DecisionEntryNode"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOption"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "readings": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionReading"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "replaced": {
+            "type": "boolean"
+          },
+          "resolution": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskResolution"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "selected_trees": {
+            "items": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "shaped": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionLink"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_sha256": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "uncertainty": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "uncertainty_reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "urgency": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "waiting_review": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "node",
+          "ref",
+          "document",
+          "kind",
+          "text",
+          "text_sha256",
+          "question",
+          "options",
+          "urgency",
+          "multiple",
+          "answer_state",
+          "answer",
+          "selected",
+          "answered_by",
+          "answered_at",
+          "resolution",
+          "declined",
+          "declined_note",
+          "uncertainty",
+          "uncertainty_reason",
+          "decided_by",
+          "kept_by",
+          "kept_text_sum",
+          "replaced",
+          "kept",
+          "waiting_review",
+          "changed_version",
+          "changed_at",
+          "shaped",
+          "readings"
+        ],
+        "type": "object"
+      },
+      "DecisionEntryDocument": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "block": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "ref",
+          "block_id",
+          "block"
+        ],
+        "type": "object"
+      },
+      "DecisionEntryNode": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
       "DecisionKeep": {
         "properties": {
           "artifact_id": {
@@ -18221,11 +19004,21 @@
           "created_version": {
             "type": "integer"
           },
+          "event": {
+            "type": "integer"
+          },
           "from_block": {
             "type": "string"
           },
           "stale": {
             "type": "boolean"
+          },
+          "text_changed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "text_changed_event": {
+            "type": "integer"
           },
           "to": {
             "$ref": "#/components/schemas/GraphNode"
@@ -18237,6 +19030,46 @@
           "created_version",
           "created_at",
           "stale"
+        ],
+        "type": "object"
+      },
+      "DecisionReading": {
+        "properties": {
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "authored_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DecisionEntryNode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/DecisionEntryNode"
+          },
+          "text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "node",
+          "artifact_id",
+          "block_id",
+          "text",
+          "authored_by"
         ],
         "type": "object"
       },
@@ -20290,6 +21123,9 @@
             "type": "string"
           },
           "index": {},
+          "into": {
+            "type": "string"
+          },
           "markdown": {
             "type": "string"
           },
@@ -20680,7 +21516,7 @@
         ],
         "type": "object"
       },
-      "GraphEdge": {
+      "GraphEdgeWithTrees": {
         "properties": {
           "block": {
             "$ref": "#/components/schemas/GraphNode"
@@ -20693,7 +21529,7 @@
             "type": "string"
           },
           "excerpt": {
-            "$ref": "#/components/schemas/GraphExcerpt"
+            "$ref": "#/components/schemas/GraphExcerptWithTrees"
           },
           "kind": {
             "type": "string"
@@ -20717,13 +21553,26 @@
         ],
         "type": "object"
       },
-      "GraphExcerpt": {
+      "GraphExcerptWithTrees": {
         "properties": {
           "block_id": {
             "type": "string"
           },
           "text": {
             "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -20952,7 +21801,7 @@
         "properties": {
           "edges": {
             "items": {
-              "$ref": "#/components/schemas/GraphEdge"
+              "$ref": "#/components/schemas/GraphEdgeWithTrees"
             },
             "type": [
               "array",
@@ -20986,6 +21835,22 @@
           "created_at": {
             "format": "date-time",
             "type": "string"
+          },
+          "field_trees": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+              "properties": {
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            "type": "object"
           },
           "id": {
             "type": "string"
@@ -21051,6 +21916,92 @@
         },
         "required": [
           "duration"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonResponse": {
+        "properties": {
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InboxComparisonRun"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "run"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonRun": {
+        "properties": {
+          "difference_count": {
+            "type": "integer"
+          },
+          "id": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "met": {
+            "type": "boolean"
+          },
+          "missing_shapes": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "people_checked": {
+            "type": "integer"
+          },
+          "people_uncovered": {
+            "type": "integer"
+          },
+          "ran_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "shapes": {
+            "items": {
+              "$ref": "#/components/schemas/InboxComparisonShape"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "ran_at",
+          "difference_count",
+          "people_checked",
+          "people_uncovered",
+          "shapes",
+          "missing_shapes",
+          "met"
+        ],
+        "type": "object"
+      },
+      "InboxComparisonShape": {
+        "properties": {
+          "rows": {
+            "type": "integer"
+          },
+          "shape": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "shape",
+          "rows"
         ],
         "type": "object"
       },
@@ -22250,6 +23201,15 @@
               "string"
             ]
           },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/DecisionEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "open_questions": {
             "items": {
               "$ref": "#/components/schemas/IssueAskRow"
@@ -22261,6 +23221,7 @@
           }
         },
         "required": [
+          "entries",
           "document",
           "open_questions",
           "decisions"
@@ -22402,6 +23363,19 @@
           },
           "components": {
             "$ref": "#/components/schemas/IssueComponents"
+          },
+          "components_reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "created_at": {
             "format": "date-time",
@@ -23422,6 +24396,41 @@
         ],
         "type": "object"
       },
+      "KnownSession": {
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "session_id",
+          "title"
+        ],
+        "type": "object"
+      },
+      "KnownSessions": {
+        "properties": {
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/KnownSession"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "type": "object"
+      },
       "LauncherCredentialResp": {
         "properties": {
           "approved_by": {
@@ -23785,6 +24794,24 @@
         ],
         "type": "object"
       },
+      "LiveAskAttributes": {
+        "properties": {
+          "blocks": {
+            "additionalProperties": {
+              "additionalProperties": {},
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "blocks"
+        ],
+        "type": "object"
+      },
       "LiveWritePauseState": {
         "properties": {
           "parked": {
@@ -23826,6 +24853,213 @@
         },
         "required": [
           "markdown"
+        ],
+        "type": "object"
+      },
+      "MeInboxAgent": {
+        "properties": {
+          "anchor": {
+            "$ref": "#/components/schemas/Anchor"
+          },
+          "conversation": {
+            "$ref": "#/components/schemas/MessageRead"
+          },
+          "dismissed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "document": {
+            "$ref": "#/components/schemas/OpenAskDocument"
+          },
+          "issue": {
+            "$ref": "#/components/schemas/OpenAskIssue"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "project": {
+            "type": "string"
+          },
+          "read_through": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "reply": {
+            "$ref": "#/components/schemas/MyReplyReply"
+          },
+          "session": {
+            "$ref": "#/components/schemas/MyReplySession"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "subject_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "thread_id": {
+            "type": "string"
+          },
+          "unread": {
+            "type": "boolean"
+          },
+          "unread_count": {
+            "type": "integer"
+          },
+          "unread_reply_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "thread_id",
+          "kind",
+          "ref",
+          "subject",
+          "reply",
+          "unread",
+          "unread_count",
+          "conversation"
+        ],
+        "type": "object"
+      },
+      "MeInboxEntry": {
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/MeInboxAgent"
+          },
+          "ask": {
+            "$ref": "#/components/schemas/InboxRow"
+          },
+          "moment": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "node": {
+            "$ref": "#/components/schemas/MeInboxNode"
+          },
+          "relations": {
+            "items": {
+              "$ref": "#/components/schemas/MeInboxRelation"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "thread": {
+            "$ref": "#/components/schemas/MyReplyRow"
+          }
+        },
+        "required": [
+          "node",
+          "relations",
+          "moment"
+        ],
+        "type": "object"
+      },
+      "MeInboxNode": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "MeInboxRelation": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "direction": {
+            "enum": [
+              "inbound",
+              "outbound"
+            ],
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "direction",
+          "at"
+        ],
+        "type": "object"
+      },
+      "MeInboxResponse": {
+        "properties": {
+          "as_of": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/MeInboxEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "horizon": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "next_cursor": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "as_of",
+          "horizon",
+          "total",
+          "limit",
+          "offset",
+          "entries"
         ],
         "type": "object"
       },
@@ -24439,6 +25673,19 @@
           "subject": {
             "type": "string"
           },
+          "subject_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "thread_id": {
             "type": "string"
           },
@@ -25038,6 +26285,90 @@
         },
         "type": "object"
       },
+      "PersonNode": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "first_line": {
+            "type": "string"
+          },
+          "first_line_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "href": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "relations": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "relations",
+          "first_line",
+          "created_at",
+          "href"
+        ],
+        "type": "object"
+      },
+      "PersonNodes": {
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "person": {
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PersonNode"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "person",
+          "rows",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "type": "object"
+      },
       "PersonSignInResp": {
         "properties": {
           "created_at": {
@@ -25457,6 +26788,19 @@
         "properties": {
           "description": {
             "type": "string"
+          },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "id": {
             "type": "string"
@@ -27846,6 +29190,46 @@
         },
         "required": [
           "ok"
+        ],
+        "type": "object"
+      },
+      "TextAsk": {
+        "properties": {
+          "answer": {
+            "type": "string"
+          },
+          "answered_at": {
+            "type": "string"
+          },
+          "answered_by": {
+            "type": "string"
+          },
+          "block_id": {
+            "type": "string"
+          },
+          "copied_from": {
+            "type": "string"
+          },
+          "copied_from_document": {
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "open",
+              "answered",
+              "resolved"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "block_id"
         ],
         "type": "object"
       },

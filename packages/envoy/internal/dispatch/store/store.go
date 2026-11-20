@@ -23,6 +23,13 @@ import (
 // Store is the shared Dispatch database handle.
 type Store struct {
 	Pool *Pool
+	// afterNonTransactionalStatement runs on the connection a marked migration was applied on,
+	// once its statement has returned and before its version is recorded, and its error fails
+	// that migration. Only a test sets it: the runner closes that connection before Migrate
+	// returns, so this is the one place the session that applied the statement can be asked
+	// whether it held a transaction around it. Nil, which every Store Open makes leaves it,
+	// runs nothing.
+	afterNonTransactionalStatement func(ctx context.Context, conn *pgx.Conn) error
 }
 
 // Every file in migrations, so pgmigrate.Load judges each one; pgmigratetest.CheckEmbedsEveryFile
@@ -41,10 +48,25 @@ var migrationFiles embed.FS
 // override them, deliberately and per pool (Pool.separate).
 const poolSizeParam = "pool_max_conns"
 
+// StoreMarkerWriterSetting is the session setting every connection of this build's pool carries,
+// `on`, as a startup parameter of the connection (Open), so it holds for the connection's whole
+// life and a RESET or a DISCARD returns it to `on`. It names the writer generation that keeps the
+// markers this build sets on its projection rows: a row whose node pair says its writer stated
+// the row's facts in the node and tuple store (comment_deliveries, message_deliveries, the block
+// rows of a comment, a message and an ask, and their link rows; migrations 20261116102800 and
+// 20261116140000). An older build's connections never carry it, and an update one of them makes
+// to such a row is an update whose facts that build did not state, so a trigger on each of those
+// tables names no node in the row it updates where the setting is not `on` (migration
+// 20261116150000): the row returns to its old arm and the backfill takes it again, as it takes a
+// row an older build inserts. A process that updates those rows of this build's on a connection
+// of its own carries it too.
+const StoreMarkerWriterSetting = "dispatch.store_marker_writer"
+
 // Open connects to databaseURL and verifies the database is reachable. The pool's size is
 // sharedPoolSize: how many connections Dispatch may hold is a property of Dispatch, not of the
 // string that names its database. Every connection it opens scans timestamptz in UTC
-// (scanTimestampsInUTC), as do the pools Pool.separate copies from its configuration.
+// (scanTimestampsInUTC) and carries StoreMarkerWriterSetting, as do the pools Pool.separate
+// copies from its configuration.
 func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	declared, err := declaresPoolSize(databaseURL)
 	if err != nil {
@@ -61,6 +83,10 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	}
 	config.MaxConns = sharedPoolSize
 	config.AfterConnect = scanTimestampsInUTC
+	if config.ConnConfig.RuntimeParams == nil {
+		config.ConnConfig.RuntimeParams = make(map[string]string)
+	}
+	config.ConnConfig.RuntimeParams[StoreMarkerWriterSetting] = "on"
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
@@ -483,6 +509,11 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migrations [
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err
+	}
+	if s.afterNonTransactionalStatement != nil {
+		if err := s.afterNonTransactionalStatement(ctx, conn); err != nil {
+			return err
+		}
 	}
 	return pgmigrate.Record(ctx, conn, versionTable, migration)
 }

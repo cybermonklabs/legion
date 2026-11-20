@@ -24,12 +24,12 @@ const test = stubbed(async () => {
   expect(plan.artifact.slug).toBe("plan-md");
   const cited = await blockId(plan.artifact.id, "Ship the block graph first.");
   const paragraph = `Decided: dispatch://${issue.key}/artifact/plan-md#b-${cited} holds.`;
-  const decisions = await createIssueArtifact(issue.key, {
+  const notes = await createIssueArtifact(issue.key, {
     content: `Context.\n\n${paragraph}\n`,
-    name: "decisions.md",
+    name: "notes.md",
   });
-  expect(decisions.artifact.slug).toBe("decisions-md");
-  const citing = await blockId(decisions.artifact.id, paragraph);
+  expect(notes.artifact.slug).toBe("notes-md");
+  const citing = await blockId(notes.artifact.id, paragraph);
   return { citing, issue: issue.key, paragraph };
 });
 
@@ -71,6 +71,14 @@ const commentTest = stubbed(async () => {
   return { hold, issue: issue.key, ship };
 });
 
+/** The words a citing paragraph writes before and after the one address it holds. The panel
+ *  draws the paragraph through the renderer, where the address is a reference that reads as its
+ *  target's name, so these are the words of it that stay as written. */
+function wordsAround(paragraph: string): [string, string] {
+  const [before = "", after = ""] = paragraph.split(/dispatch:\/\/\S+/u);
+  return [before.trim(), after.trim()];
+}
+
 test("a block of another document citing a block shows as that document's row, linked to the citing block @pr", async ({
   page,
   scene,
@@ -80,9 +88,17 @@ test("a block of another document citing a block shows as that document's row, l
   // One row: the citing paragraph, shown as the document holding it and linked to that block.
   await expect(references.getByRole("link", { name: `Artifact · ${scene.issue}` })).toHaveAttribute(
     "href",
-    `/issues/${scene.issue}/artifacts/decisions-md#b-${scene.citing}`
+    `/issues/${scene.issue}/artifacts/notes-md#b-${scene.citing}`
   );
-  await expect(references.getByText(scene.paragraph, { exact: true })).toBeVisible();
+  // The excerpt is the citing paragraph, drawn by the renderer: its own words around the one
+  // reference it holds, which is a reference to the cited block rather than its address.
+  const [before, after] = wordsAround(scene.paragraph);
+  const excerpt = references.locator(".dispatch-markdown");
+  await expect(excerpt).toContainText(before);
+  await expect(excerpt).toContainText(after);
+  await expect(
+    excerpt.locator(`[data-dispatch-ref^="dispatch://${scene.issue}/artifact/plan-md#b-"]`)
+  ).toHaveCount(1);
   await expect(references.getByRole("heading")).toHaveText("Referenced by (1)");
 });
 
@@ -104,12 +120,19 @@ twiceTest(
       [first, second, firstId],
       [second, first, secondId],
     ] as const) {
+      // Each row's excerpt is its paragraph drawn by the renderer: the paragraph's own words
+      // around a reference to the issue, which tell the two rows apart.
+      const [before, after] = wordsAround(text);
       const row = references
         .getByRole("listitem")
-        .filter({ hasText: text })
-        .filter({ hasNotText: other });
+        .filter({ hasText: before })
+        .filter({ hasNotText: wordsAround(other)[0] });
       await expect(row).toHaveCount(1);
-      await expect(row.getByText(text, { exact: true })).toBeVisible();
+      const excerpt = row.locator(".dispatch-markdown");
+      await expect(excerpt).toContainText(after);
+      await expect(excerpt.locator(`[data-dispatch-ref="dispatch://${scene.target}"]`)).toHaveCount(
+        1
+      );
       await expect(row.locator(`a[href="/issues/${source}/spec#b-${id}"]`)).toHaveCount(1);
     }
   }

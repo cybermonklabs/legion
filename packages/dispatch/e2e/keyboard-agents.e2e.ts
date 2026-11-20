@@ -1,5 +1,14 @@
-import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
+import {
+  agentRow,
+  openAgents,
+  plannerMention,
+  plannerSession,
+  reviewerMention,
+  seedAgents,
+  shownAgentRows,
+} from "./agents";
 import { createMessage } from "./api";
+import { refPicker } from "./ref-picker";
 import { holdPosts, pasteFile, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -234,7 +243,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
-      await expect(field).toHaveValue("@Planner please look at the migration");
+      await expect(field).toHaveValue(`${plannerMention} please look at the migration`);
       await expect(field).toBeFocused();
 
       // And with the pointer all the way: back to no issue, where the mention the channel
@@ -270,7 +279,7 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await toggle.click();
       await picker.selectOption("CORE-1");
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
       await pasteFile(field, "notes.md", "# Notes\n");
       await expect(row.getByRole("button", { name: "Uploading file…" })).toBeDisabled();
       await toggle.click();
@@ -278,7 +287,7 @@ test.describe("agents page", () => {
       await expect(toggle).toContainText("CORE-2");
       upload.release();
 
-      await expect(field).toHaveValue("@Planner dispatch://CORE-1/artifact/notes-md");
+      await expect(field).toHaveValue(`${plannerMention} dispatch://CORE-1/artifact/notes-md`);
       expect(upload.posts()).toBe(1);
     } finally {
       await context.close();
@@ -323,7 +332,7 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await row.getByRole("button", { name: "Choose issue" }).click();
       await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
       await field.press("End");
       await page.keyboard.type(" see attached");
       await pasteFile(field, "notes.md", "# Notes\n");
@@ -335,9 +344,11 @@ test.describe("agents page", () => {
       refuse();
 
       await expect(row.getByText(WRITE_REFUSED_TEXT)).toBeVisible();
-      await expect(field).toHaveValue("@Planner see attached");
+      await expect(field).toHaveValue(`${plannerMention} see attached`);
       await uploadRetry.click();
-      await expect(field).toHaveValue("@Planner see attached dispatch://CORE-1/artifact/notes-md");
+      await expect(field).toHaveValue(
+        `${plannerMention} see attached dispatch://CORE-1/artifact/notes-md`
+      );
       expect(uploads).toBe(2);
     } finally {
       await context.close();
@@ -473,7 +484,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
 
       // That issue re-confirmed: nothing changes, and the reader is still handed on.
       await field.fill("");
@@ -525,7 +536,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
     } finally {
       await context.close();
     }
@@ -555,7 +566,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-2");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
     } finally {
       await context.close();
     }
@@ -584,7 +595,7 @@ test.describe("agents page", () => {
       await expect(toggle).toHaveAttribute("aria-expanded", "false");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
     } finally {
       await context.close();
     }
@@ -621,7 +632,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText("CORE-1");
       await expect(field).toBeFocused();
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
     } finally {
       await context.close();
     }
@@ -657,16 +668,18 @@ test.describe("agents page", () => {
       await field.click();
       await page.keyboard.press("Home");
       await page.keyboard.type("now ");
-      await expect(field).toHaveValue("now @Planner hello");
+      await expect(field).toHaveValue(`now ${plannerMention} hello`);
 
       const posted = page.waitForRequest(
         (request) => request.method() === "POST" && request.url().includes("/comments")
       );
       await page.keyboard.press("Control+Enter");
       const body = (await posted).postDataJSON();
-      expect(body.mentions).toEqual([{ target: `session:${plannerSession.session_id}` }]);
+      // A mention is a reference in the text now (R4): the write carries no mentions array,
+      // and the party the agent is told about is the link the body holds.
+      expect(body.mentions).toBeUndefined();
       expect(body.delivery).toBeTruthy();
-      expect(body.body.match(/@Planner/g)).toHaveLength(1);
+      expect(body.body.split(plannerMention)).toHaveLength(2);
     } finally {
       await context.close();
     }
@@ -696,28 +709,27 @@ test.describe("agents page", () => {
       await expect(field).toBeFocused();
       await page.keyboard.type("who owns this");
       await pick("CORE-1");
-      await expect(field).toHaveValue("@Planner who owns this");
+      await expect(field).toHaveValue(`${plannerMention} who owns this`);
 
       // The reader mentions the reviewer themselves, inside the issue channel.
       await field.click();
       await page.keyboard.press("End");
       await page.keyboard.type(" @Rev");
-      await page
-        .getByRole("listbox", { name: "Mention suggestions" })
-        .getByRole("option", { exact: true, name: "Reviewer" })
+      await refPicker(page)
+        .getByRole("option", { name: /^Reviewer\b/ })
         .first()
         .click();
-      await expect(field).toHaveValue("@Planner who owns this @Reviewer");
+      await expect(field).toHaveValue(`${plannerMention} who owns this ${reviewerMention}`);
 
       // Into the direct channel: the channel's own mention goes, theirs stays.
       await pick("");
-      await expect(field).toHaveValue("who owns this @Reviewer");
+      await expect(field).toHaveValue(`who owns this ${reviewerMention}`);
       const sentMessage = page.waitForRequest(
         (request) => request.method() === "POST" && request.url().includes("/messages")
       );
       await field.click();
       await page.keyboard.press("Control+Enter");
-      expect((await sentMessage).postDataJSON().body).toBe("who owns this @Reviewer");
+      expect((await sentMessage).postDataJSON().body).toBe(`who owns this ${reviewerMention}`);
     } finally {
       await context.close();
     }
@@ -746,7 +758,7 @@ test.describe("agents page", () => {
       await toggle.click();
       await row.getByRole("combobox", { name: "Issue" }).selectOption("CORE-1");
       await expect(toggle).toContainText("CORE-1");
-      await expect(field).toHaveValue("@Planner");
+      await expect(field).toHaveValue(plannerMention);
     } finally {
       await context.close();
     }

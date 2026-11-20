@@ -21,7 +21,7 @@ import { embedHighlight } from "./highlight";
 import { refocusWhenSettled } from "./refocus-when-settled";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema } from "./schema";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, recordsAnswerState, type ServedAsk } from "./typed-block-drawing";
 
 export interface VersionViewProps {
   artifactId: string;
@@ -37,8 +37,16 @@ export interface VersionViewProps {
   changeBaseline?: ChangeBaseline;
   createdAt: string | undefined;
   highlight: Highlight | undefined;
+  /** The issue the document is on, which the version's text is a text of; null for a project
+   *  document. */
+  issueKey: string | null;
   /** The project document shown, for block asks with no issue to be referenced under. */
   owner: { project: string; slug: string } | undefined;
+  /** The server's read of the ask the block `blockId` shows (`ServedAsk`), which a block of a
+   *  version that records no answer state is read from, as the live card reads it: the document
+   *  page's, the owner's asks and then the live text, so a copy finds its source on another
+   *  document. Without it such a block reads its own attributes. */
+  servedAsk?: (blockId: string) => ServedAsk | undefined;
   version: number;
 }
 
@@ -48,7 +56,9 @@ export function VersionView({
   changeBaseline,
   createdAt,
   highlight,
+  issueKey,
   owner,
+  servedAsk,
   version,
 }: VersionViewProps): ReactNode {
   const root = useRef<HTMLDivElement>(null);
@@ -86,7 +96,10 @@ export function VersionView({
   const markdown = isText(versionQuery.data) ? versionQuery.data.markdown : undefined;
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
-  const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifactId, issueKey),
+    [artifactId, issueKey]
+  );
   const followReference = useReferenceClick();
 
   // `ProofDocument` renders this view and forwards `highlight`; `ArtifactDocument` above it
@@ -250,6 +263,9 @@ export function VersionView({
         onClick={followReference}
       >
         <div ref={root} />
+        {/* The read-only editor paints the version itself and draws its references as
+            decorations: why the renderer has no mount here is the reading list's
+            `document-version-body` (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
@@ -262,6 +278,11 @@ export function VersionView({
               owner={owner}
               readOnly
               rowResolution={false}
+              served={
+                markdown !== undefined && recordsAnswerState(markdown, blockId)
+                  ? undefined
+                  : servedAsk?.(blockId)
+              }
             />
           );
         })}

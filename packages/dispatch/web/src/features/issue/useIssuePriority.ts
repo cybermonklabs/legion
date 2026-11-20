@@ -10,10 +10,10 @@ export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "er
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,
  * board cards, list rows, the tables of the Priorities view, inbox rows) shares this, as do the
  * issue page's keys `0`-`3` and its palette: the pick's write shows the value on the issue detail,
- * every list of issues and every inbox query that shows the issue, keeps it there over every
- * answer until it lands, and puts back the value Dispatch last confirmed if it is refused (see
- * `useIssueFieldWrite` and `issue-field-writes.ts`). `host` is the priority as the caller reads
- * it from the issue's caches; draw `shown`.
+ * every list of issues, every inbox query that shows the issue and the asks of the one read behind
+ * the Inbox's opt-in, keeps it there over every answer until it lands, and puts back the value
+ * Dispatch last confirmed if it is refused (see `useIssueFieldWrite` and `issue-field-writes.ts`).
+ * `host` is the priority as the caller reads it from the issue's caches; draw `shown`.
  */
 export function useIssuePriority(issueKey: string, host: IssuePriority | null): IssuePriorityWrite {
   const write = useIssueFieldWrite(issueKey, "priority", host);

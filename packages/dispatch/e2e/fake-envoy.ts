@@ -1,4 +1,5 @@
 import { type ExpectsReply, LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { connect, type KV, StringCodec } from "nats";
 import type { TmuxPlace } from "../web/src/api/types";
 import { harnessPorts } from "./harness-ports";
 
@@ -372,6 +373,58 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
     });
 }
 
+/** The live holder of `role`, as this listener's role lookup names it: the first seeded session
+ *  that is running and lists the role. */
+function liveHolder(role: string): FakeSession | undefined {
+  return state.sessions.find(
+    (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
+  );
+}
+
+/** The bus the harness's Dispatch server publishes through: DISPATCH_E2E_NATS_URLS, which
+ *  e2e/run-server.sh hands that server as its NATS_URLS, and which this listener inherits from the
+ *  harness that starts both. Empty for a run with no bus. */
+const busServers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+  .split(",")
+  .map((server) => server.trim())
+  .filter((server) => server !== "");
+
+/** The two buckets of the real listener's that Dispatch's outbox reads itself rather than asking
+ *  this listener (packages/envoy/internal/roles, Buckets): the role claims, keyed by role, and the
+ *  session registrations, keyed by session id (packages/envoy/internal/bus, RoleClaimBucket and
+ *  SessionBucket). The outbox resolves a role route's holder from them, never from
+ *  `GET /v1/roles/{role}`, so a role this listener names a holder for is still read unclaimed
+ *  there until its claim is written on the bus too. Opened, and created where the bus holds
+ *  neither, on the first claim a test asks for. */
+let busBuckets: Promise<{ roles: KV; sessions: KV }> | undefined;
+
+function roleBuckets(): Promise<{ roles: KV; sessions: KV }> {
+  busBuckets ??= (async () => {
+    const js = (await connect({ servers: busServers })).jetstream();
+    return {
+      roles: await js.views.kv("envoy_roles"),
+      sessions: await js.views.kv("envoy_sessions"),
+    };
+  })();
+  return busBuckets;
+}
+
+const codec = StringCodec();
+
+/** The session a role's claim on the bus names, "" for a role the bus holds no claim of or a
+ *  claim that names no holder. */
+async function claimedHolder(roles: KV, role: string): Promise<string> {
+  const entry = await roles.get(role);
+  if (entry === null || entry.operation !== "PUT") return "";
+  const claim: unknown = JSON.parse(codec.decode(entry.value));
+  return typeof claim === "object" &&
+    claim !== null &&
+    "holder_session_id" in claim &&
+    typeof claim.holder_session_id === "string"
+    ? claim.holder_session_id
+    : "";
+}
+
 // FAKE_ENVOY_PORT, or with it unset port 0, so the OS chooses; the line at the end reports the
 // port bound, which e2e/harness-start.ts reads.
 const server = Bun.serve({
@@ -394,9 +447,7 @@ const server = Bun.serve({
     }
     if (request.method === "GET" && url.pathname.startsWith("/v1/roles/")) {
       const role = decodeURIComponent(url.pathname.slice("/v1/roles/".length));
-      const holder = state.sessions.find(
-        (session) => state.liveSessions.has(session.session_id) && session.roles?.includes(role)
-      );
+      const holder = liveHolder(role);
       if (holder === undefined)
         return Response.json({ error: `no holder for role ${role}` }, { status: 404 });
       const holderState = stateOf(holder.session_id);
@@ -577,6 +628,74 @@ const server = Bun.serve({
         unsubscribeCalls: state.unsubscribeCalls,
       };
       return Response.json({ ok: true });
+    }
+    // The claim of a role on the bus, as the real listener writes it when a session claims the
+    // role (packages/envoy/internal/store, RoleClaim): the holder is the live holder this
+    // listener's own lookup names, whose registration is written beside it, live from now, so
+    // Dispatch's outbox forwards a role route to that session and records it as the role's
+    // holder. A second claim of the same role, once a test has moved the lookup to another
+    // holder, names the first as previous_session_id. A role with no live holder is 404, and a
+    // listener started with no bus (DISPATCH_E2E_NATS_URLS unset) is 409, writing nothing.
+    if (request.method === "PUT" && url.pathname.startsWith("/__fixture/role-claims/")) {
+      const role = decodeURIComponent(url.pathname.slice("/__fixture/role-claims/".length));
+      const holder = liveHolder(role);
+      if (holder === undefined) {
+        return Response.json({ error: `no live holder for role ${role}` }, { status: 404 });
+      }
+      if (busServers.length === 0) {
+        return Response.json(
+          { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" },
+          { status: 409 }
+        );
+      }
+      const { roles, sessions } = await roleBuckets();
+      const previous = await claimedHolder(roles, role);
+      const now = Date.now();
+      await sessions.put(
+        holder.session_id,
+        codec.encode(
+          JSON.stringify({
+            capabilities: holder.capabilities ?? [],
+            dir: holder.dir ?? "",
+            host: holder.host ?? holder.machine_id,
+            machine_id: holder.machine_id ?? "",
+            port: 0,
+            title: holder.title,
+            updated_at: now,
+          })
+        )
+      );
+      await roles.put(
+        role,
+        codec.encode(
+          JSON.stringify({
+            claimed_at: now,
+            holder_session_id: holder.session_id,
+            previous_session_id: previous,
+            renewed_at: now,
+          })
+        )
+      );
+      return Response.json({ holder: holder.session_id, previous, role });
+    }
+    // The release of a role's claim on the bus and of the registration of the session it named,
+    // which a test that claimed a role makes before it ends: the claims are the bus's and outlive
+    // this listener's fixture, so neither a reseed nor a reset removes them.
+    if (request.method === "DELETE" && url.pathname.startsWith("/__fixture/role-claims/")) {
+      const role = decodeURIComponent(url.pathname.slice("/__fixture/role-claims/".length));
+      if (busServers.length === 0) {
+        return Response.json(
+          { error: "this listener has no bus: DISPATCH_E2E_NATS_URLS is unset" },
+          { status: 409 }
+        );
+      }
+      const { roles, sessions } = await roleBuckets();
+      const released = await claimedHolder(roles, role);
+      if (released !== "") {
+        await roles.delete(role);
+        await sessions.delete(released);
+      }
+      return Response.json({ released, role });
     }
     // The registry's entries, replaced whole; the daemon is the real bucket's only writer.
     if (request.method === "PUT" && url.pathname === "/__fixture/legion-agents") {

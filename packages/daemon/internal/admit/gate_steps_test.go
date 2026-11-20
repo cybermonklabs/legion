@@ -18,15 +18,12 @@ import (
 )
 
 // The documents of the steps these tests gate: artifact-root is the root's primary document,
-// which the spec step binds to, and these are its decisions and Verification documents.
-// register_gate carries no step of its own yet, so a registration writes the row the document it
-// names already holds and records the spec step for a document no row holds: a step other than
-// spec is given its row once with PutGate, to bind the document to the step, and every fact after
-// that is the engine's own.
-const (
-	decisionsDoc = "artifact-decisions"
-	criteriaDoc  = "artifact-criteria"
-)
+// which the spec step binds to, and criteriaDoc is its Verification document. register_gate
+// carries no step of its own yet, so a registration writes the row the document it names already
+// holds and records the spec step for a document no row holds: a step other than spec is given
+// its row once with PutGate, to bind the document to the step, and every fact after that is the
+// engine's own.
+const criteriaDoc = "artifact-criteria"
 
 // A step the deployment gates that nobody has registered holds the tree's work and asks nobody:
 // the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,
@@ -39,33 +36,33 @@ const (
 // another issue (blockers.waitsOf), and the third, a queued root carrying the row it held in
 // another tree, is not driven here. It starts once the step is registered and approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
-	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
+	steps := []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec}
 	t.Run("the step nobody registered", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmissionWithSteps(t, 1, steps, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		runningRoot(t, pool)
 
 		// The spec step is registered with the approval its read of Dispatch found, so it is open
-		// and the work stands on the decisions step, which has no row at all.
+		// and the work stands on the criteria step, which has no row at all.
 		applyFact(t, pool, admission, "register-spec", intake.GateRegistered{Issue: "LEGION-100", ArtifactID: "artifact-root",
 			Version: 3, ApprovedVersion: 3, RequestAsk: "ask-approval", Since: record.EventMark{Seq: 5}})
 
-		assertAdmittedInItsSlot(t, pool, "a registration of the spec step while the decisions step is unregistered")
+		assertAdmittedInItsSlot(t, pool, "a registration of the spec step while the criteria step is unregistered")
 		assertNoAwaitingEffects(t, pool, "LEGION-100")
 		if starts := phaseStarts(t, pool, "LEGION-100", claim.RolePlanner, phase.Planning); starts != 0 {
-			t.Fatalf("the root's planner was started %d times with the decisions step unregistered, want none", starts)
+			t.Fatalf("the root's planner was started %d times with the criteria step unregistered, want none", starts)
 		}
 
-		// Registering and approving the decisions step is what starts the tree.
-		seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, LatestVersion: 1})
-		applyFact(t, pool, admission, "register-decisions", intake.GateRegistered{Issue: "LEGION-100", Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, Version: 2})
+		// Registering and approving the criteria step is what starts the tree.
+		seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 1})
+		applyFact(t, pool, admission, "register-criteria", intake.GateRegistered{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 2})
 		if got := issue(t, pool, "LEGION-100"); got.Phase != phase.Admitted {
-			t.Fatalf("the root = %s with the decisions step registered and closed, want it admitted", got.Phase)
+			t.Fatalf("the root = %s with the criteria step registered and closed, want it admitted", got.Phase)
 		}
-		applyFact(t, pool, admission, "approve-decisions", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: decisionsDoc,
+		applyFact(t, pool, admission, "approve-criteria", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: criteriaDoc,
 			Kind: intake.DispatchArtifactApproved, Version: 2, Actor: alice, Mark: seqMark(11)})
 		if got := issue(t, pool, "LEGION-100"); got.Phase != phase.Planning {
-			t.Fatalf("the root = %s once the decisions step is registered and approved, want planning", got.Phase)
+			t.Fatalf("the root = %s once the criteria step is registered and approved, want planning", got.Phase)
 		}
 	})
 
@@ -73,17 +70,17 @@ func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 		pool := migratedPool(t)
 		admission := newAdmissionWithSteps(t, 1, steps, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		runningRoot(t, pool)
-		seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepDecisions, ArtifactID: decisionsDoc, LatestVersion: 1})
+		seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 1})
 
 		applyFact(t, pool, admission, "register-spec", intake.GateRegistered{Issue: "LEGION-100", ArtifactID: "artifact-root",
 			Version: 3, ApprovedVersion: 3, RequestAsk: "ask-approval", Since: record.EventMark{Seq: 5}})
-		applyFact(t, pool, admission, "register-decisions", intake.GateRegistered{Issue: "LEGION-100", Step: record.DesignStepDecisions, ArtifactID: decisionsDoc,
-			Version: 2, RequestAsk: "ask-decisions", Since: record.EventMark{Seq: 6}})
+		applyFact(t, pool, admission, "register-criteria", intake.GateRegistered{Issue: "LEGION-100", Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+			Version: 2, RequestAsk: "ask-criteria", Since: record.EventMark{Seq: 6}})
 
 		waiting := issue(t, pool, "LEGION-100")
-		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != decisionsDoc ||
+		if waiting.Phase != phase.AwaitingPerson || waiting.Awaiting == nil || waiting.Awaiting.Artifact != criteriaDoc ||
 			waiting.Awaiting.GateVersion != 2 {
-			t.Fatalf("the root = %#v, want it waiting on the decisions document at version 2", waiting.Awaiting)
+			t.Fatalf("the root = %#v, want it waiting on the Verification document at version 2", waiting.Awaiting)
 		}
 		assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
 		told := false
@@ -166,12 +163,12 @@ func TestGatedStepsCarryEveryStepToAHandedOverChild(t *testing.T) {
 // leave this root with no wait left to answer while a person holds its approval request.
 func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 	pool := migratedPool(t)
-	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
+	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	runningRoot(t, pool)
 
 	// The spec step is registered, unapproved, and its approval request is with the person; the
-	// decisions step has no row at all.
+	// criteria step has no row at all.
 	applyFact(t, pool, admission, "register-spec", intake.GateRegistered{Issue: "LEGION-100", ArtifactID: "artifact-root",
 		Version: 3, RequestAsk: "ask-approval", Since: record.EventMark{Seq: 5}})
 
@@ -184,20 +181,20 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 }
 
 // The approval a re-admission keeps for the next architect's start carries the step it is of, so
-// the start names the document the person reviewed. Under the decisions step and the spec, with
-// the decisions document approved below its latest version, that architect is sent to the
-// decisions document at the decisions document's versions, not to the spec.
+// the start names the document the person reviewed. Under the criteria step and the spec, with
+// the Verification document approved below its latest version, that architect is sent to the
+// Verification document at the Verification document's versions, not to the spec.
 func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 	ctx := context.Background()
 	pool := migratedPool(t)
-	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec},
+	admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	parkedRoot(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		for _, put := range []error{
-			records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", Step: record.DesignStepDecisions,
-				ArtifactID: decisionsDoc, LatestVersion: 3, ApprovedVersion: new(2)}),
+			records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", Step: record.DesignStepCriteria,
+				ArtifactID: criteriaDoc, LatestVersion: 3, ApprovedVersion: new(2)}),
 			records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-ROOT", Step: record.DesignStepSpec,
 				ArtifactID: "artifact-root", LatestVersion: 5, ApprovedVersion: new(5)}),
 		} {
@@ -209,14 +206,14 @@ func TestGatedStepsKeepTheStaleApprovalOfItsOwnDocument(t *testing.T) {
 
 	readmitRoot(t, pool, admission)
 
-	want := "The decisions document is approved at version 2 and is now at version 3: request approval of version 3, " +
+	want := "The Verification document is approved at version 2 and is now at version 3: request approval of version 3, " +
 		"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says."
 	starts := architectStartRows(t, pool)
 	if len(starts) != 1 || starts[0].Task != architectStart(t, pool, admission, "LEGION-ROOT", want) {
 		t.Fatalf("architect starts %#v, want one whose task names %q", starts, want)
 	}
-	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepDecisions || kept.Approved != 2 || kept.Latest != 3 {
-		t.Fatalf("the start's kept record %#v, want the decisions step's own pair", kept)
+	if kept := starts[0].Kept; kept == nil || kept.Step != record.DesignStepCriteria || kept.Approved != 2 || kept.Latest != 3 {
+		t.Fatalf("the start's kept record %#v, want the criteria step's own pair", kept)
 	}
 }
 
@@ -241,14 +238,14 @@ func TestABootOnAShorterListHoldsARootItsCatchUpHasNotReached(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			// This boot gates the spec alone. The tree was admitted under the decisions step as
+			// This boot gates the spec alone. The tree was admitted under the criteria step as
 			// well, whose row it still holds closed and which this deployment no longer reads,
 			// so the spec row the record shows open is all that holds its work now.
 			admission := newAdmissionWithSteps(t, 1, []record.DesignStep{record.DesignStepSpec},
 				slog.New(slog.NewTextHandler(io.Discard, nil)))
 			seedSlotted(t, pool, "LEGION-100", "A")
-			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepDecisions,
-				ArtifactID: decisionsDoc, LatestVersion: 1})
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepCriteria,
+				ArtifactID: criteriaDoc, LatestVersion: 1})
 			seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", Step: record.DesignStepSpec,
 				ArtifactID: "artifact-root", LatestVersion: 4, ApprovedVersion: new(4)})
 			if tc.catchUp {

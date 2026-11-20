@@ -414,7 +414,7 @@ Then:
   So a connect that failed with lines of its own failed in the server, and the log names why;
   a fork the postmaster could not make logs `could not fork new process for connection` instead, with no `connection received` line;
   and a connect with neither line never reached the postmaster.
-  The listen queue Postgres asks for is twice `max_connections`, 942, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
+  The listen queue Postgres asks for is twice `max_connections`, 958, below the 1,024 gVisor allows (`net.core.somaxconn`), and gVisor's network stack drops a burst past it while the postmaster is still forking, with no line at all.
   Measured on 2026-11-17 against a server whose queue was 40, a burst of 2,500 connects ended some in EOF, which libpq reports as `server closed the connection unexpectedly`, and left the rest waiting until the client's own timeout, while the postmaster stayed up and served the next connect at once;
   under that burst a fork took 20 ms at the median and 109 ms at the 95th percentile.
   No server setting widens the queue past the runtime's 1,024, so a suite that opens more connections than that at once has to open them in smaller steps or retry them.
@@ -8822,7 +8822,7 @@ In order, and keeping nothing until the daemon has answered, the command:
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).
    The daemon compares the token in constant time, then refuses a contract that is not its own with 409, naming both, before it mints anything, so a `legion` and a daemon from different releases never cut the running controller off.
    Otherwise it mints a fresh controller capability, which replaces the previous one and its registration and ends every controller grant: the last start wins.
-   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `decisions`, `criteria` or `spec`, is refused with a request to upgrade the daemon;
+   The answer also carries the daemon's `gates.design` as the list of steps it gates (`designGateSteps`, empty for a deployment that gates none), and an answer that names no list, or one naming a step that is not `criteria` or `spec`, is refused with a request to upgrade the daemon;
 
 4. writes the secret 0600 under the local state directory (`state_dir`, by default `$XDG_STATE_HOME/legion/<project>-controller`), beside the `legion` launcher and the deployment instructions;
 

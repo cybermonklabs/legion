@@ -29,6 +29,8 @@ import {
   pageWordsText,
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
+import { MarkdownBody } from "../refs/MarkdownBody";
+import { ReferenceHostIs } from "../refs/reference-host";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
@@ -41,6 +43,7 @@ import {
   firstLineOf,
   isStatement,
   lineWords,
+  type NodeAnswer,
   type NodeChip,
   type ParentLine,
   type TreeNode,
@@ -65,7 +68,7 @@ import {
   type NodeType,
   nodeStateWord,
 } from "./page-words";
-import { documentWord, RowText } from "./RowText";
+import { documentWord, RowText, useOutOfTabOrder } from "./RowText";
 
 /**
  * One row of the issue's outline, and the body it opens on focus (R1, R6, R9, R34, and the
@@ -147,8 +150,9 @@ export function NodeRow({
    *  marked, and the arrow keys reach it as they reach any other row (R2). */
   context: boolean;
   /** The document this row's node is a block of, which its body writes against: a decision's
-   *  Keep and Change are writes on the decisions document (R7). Undefined for a node that is
-   *  no block of a document of this issue. */
+   *  Keep and Change are writes on the document its `decision` block stands in, the spec or
+   *  another of the issue's (R7). Undefined for a node that is no block of a document of this
+   *  issue. */
   document?: Artifact;
   /** Whether the row carries `data-editable`, for a view that lets the reader edit its words in
    *  place and draws such a row its own way: part I's outline passes it, and its styles draw the
@@ -336,6 +340,7 @@ export function NodeRow({
                 // A child issue's row is one line, as the prototype's `.kr` draws it: its title,
                 // then how it stands, what blocks it and who holds it, small and grey (ruling 5).
                 <p className="break-words">
+                  {/* A title holds no markup: the reading list's `node-row-child-title`. */}
                   <span {...authorText}>{node.text}</span>
                   <ChildIssueFacts child={node.child} tabStops={tabStops} />
                 </p>
@@ -366,7 +371,13 @@ export function NodeRow({
             <NodeOptions body={body} node={node} tabStops={tabStops} writer={writer} />
           )}
           {node.answer === undefined || oneLine ? null : (
-            <AskAnswer answerer={answerer ?? ""} node={node} own={ownAnswer} />
+            <AskAnswer
+              answerer={answerer ?? ""}
+              focused={focused}
+              node={node}
+              own={ownAnswer}
+              tabStops={tabStops}
+            />
           )}
           {/* Under a filter, the node's parent where the filter draws it as no row: one line,
               its kind's word and its first line (R2, R1's first-line rule). */}
@@ -561,6 +572,11 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
       return author === "person" ? "person" : "agent";
     case "decision":
       return "decision";
+    // A reading is an agent's reading of a person's answer, inside the ask or the decision it
+    // reads, and always an agent's words: it takes an agent's quiet grey, never the colour of the
+    // question or the decision it reads, so it never reads as the person's decision itself (R9).
+    case "reading":
+      return "agent";
     case "plan_task":
       return "step";
     case "requirement":
@@ -778,9 +794,15 @@ export function RowMargin({
  * the question waits on the reader every one in the waiting colour. The words an option carries
  * beside its name are drawn in the focused node's body (R6).
  *
+ * An option's name and its words are the ask's stored text, drawn by the renderer from the
+ * server's reading of each, as the ask's card draws them (the reading list's `ask-option-text`).
+ * Whatever that draws that takes the focus - a reference's link - is out of the tab order unless
+ * `tabStops` holds, as every other control inside a row is (R9).
+ *
  * An open question's options are the choices of its answer (R16, the prototype's `button.opt`):
  * a press picks one, or lets it go, and sets the line at the foot of the outline to answer the
- * question, where the keyboard picks them too; the one picked is drawn on the waiting tint.
+ * question, where the keyboard picks them too; the one picked is drawn on the waiting tint. A
+ * reference inside such an option reads as a link and is none: the press is the option's.
  */
 export function NodeOptions({
   body,
@@ -794,12 +816,14 @@ export function NodeOptions({
   tabStops?: boolean;
   writer: OutlineWriter | undefined;
 }): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
   const chosen = new Set(node.answer?.selected ?? []);
   const answering = writer !== undefined && takesAnswer(node);
   const picks =
     writer?.answer !== undefined && writer.answer.nodeId === node.id ? writer.answer.selected : [];
   return (
-    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="">
+    <ul className="my-0.5 text-sm leading-[21px]" data-node-options="" ref={list}>
       {(node.options ?? []).map((option) => {
         const picked = chosen.has(option.label);
         const words = (
@@ -808,11 +832,27 @@ export function NodeOptions({
               {picked || picks.includes(option.label) ? "●" : "○"}
             </span>
             <span className="min-w-0 break-words">
-              <span {...authorText}>{option.label}</span>
+              <span {...authorText}>
+                <MarkdownBody
+                  markdown={option.label}
+                  source={node.source}
+                  surface="ask-option-text"
+                  tree={option.labelTree}
+                  variant="inline"
+                />
+              </span>
               {body && option.description !== undefined ? (
                 <span className={`font-normal ${pageQuietText}`}>
                   <span {...pageChrome}> — </span>
-                  <span {...authorText}>{option.description}</span>
+                  <span {...authorText}>
+                    <MarkdownBody
+                      markdown={option.description}
+                      source={node.source}
+                      surface="ask-option-text"
+                      tree={option.descriptionTree}
+                      variant="inline"
+                    />
+                  </span>
                 </span>
               ) : null}
             </span>
@@ -859,7 +899,7 @@ export function NodeOptions({
                 tabIndex={tabStops ? undefined : -1}
                 type="button"
               >
-                {words}
+                <ReferenceHostIs host="control">{words}</ReferenceHostIs>
               </button>
             ) : (
               words
@@ -970,18 +1010,29 @@ export function RowActs({
  * A person's answer to an ask, which is part of the ask and no node of its own
  * (R1): the page's word for it, who answered by
  * a name and a shape as every author is drawn (R9), what they chose where the ask offers no list
- * to mark it in, and what they wrote, whole and character for character, keeping the line breaks
- * they typed (R9, ruling 1). The reader's own answer carries the ink rule their own words carry
- * (R34).
+ * to mark it in, and what they wrote, whole (R9, ruling 1). The reader's own answer carries the
+ * ink rule their own words carry (R34).
+ *
+ * What they wrote is drawn as the row draws its node's words (`RowText`): from the server's
+ * reading of it, by the renderer, and where the read sent none as stored, character for
+ * character, keeping the line breaks they typed. What they chose is drawn by the renderer from
+ * the reading of each option's name the answer carries, as the Answers page draws it (the
+ * reading list's `answers-chosen-options`).
  */
 export function AskAnswer({
   answerer,
+  focused = false,
   node,
   own,
+  tabStops = false,
 }: {
   answerer: string;
+  /** Whether the row holds the focus (`RowText`'s `focused`). */
+  focused?: boolean;
   node: TreeNode;
   own: boolean;
+  /** Whether a link in the answer keeps its place in the tab order (`NodeRow`'s `tabStops`). */
+  tabStops?: boolean;
 }): ReactNode {
   const answer = node.answer;
   if (answer === undefined) return null;
@@ -1003,29 +1054,60 @@ export function AskAnswer({
         </span>
       </p>
       {node.options !== undefined || answer.selected.length === 0 ? null : (
-        <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`}>
-          {answer.selected.map((option) => (
-            <li
-              className="break-words font-semibold"
-              data-answer-choice=""
-              key={option}
-              {...authorText}
-            >
-              {option}
-            </li>
-          ))}
-        </ul>
+        <AnswerChoices answer={answer} source={node.source} tabStops={tabStops} />
       )}
       {answer.text === "" ? null : (
-        <p
-          className={`text-[15px] leading-6 whitespace-pre-wrap break-words ${own ? pageInkText : pageWordsText}`}
+        <div
+          className={`text-[15px] leading-6 ${own ? pageInkText : pageWordsText}`}
           data-answer-text=""
           {...authorText}
         >
-          {answer.text}
-        </p>
+          <RowText
+            focused={focused}
+            markdown={answer.text}
+            source={node.source}
+            tabStops={tabStops}
+            tree={answer.textTree}
+          />
+        </div>
       )}
     </div>
+  );
+}
+
+/** The options an answer chose, where its ask offers no list to mark them in: each drawn by the
+ *  renderer from the reading of its name the answer carries, at the same index, and every link
+ *  that draws out of the tab order unless `tabStops` holds (R9). */
+function AnswerChoices({
+  answer,
+  source,
+  tabStops,
+}: {
+  answer: NodeAnswer;
+  source: TreeNode["source"];
+  tabStops: boolean;
+}): ReactNode {
+  const list = useRef<HTMLUListElement>(null);
+  useOutOfTabOrder(list, !tabStops);
+  return (
+    <ul className={`flex min-w-0 flex-col text-sm leading-[21px] ${pageInkText}`} ref={list}>
+      {answer.selected.map((option, index) => (
+        <li
+          className="break-words font-semibold"
+          data-answer-choice=""
+          key={option}
+          {...authorText}
+        >
+          <MarkdownBody
+            markdown={option}
+            source={source}
+            surface="answers-chosen-options"
+            tree={answer.selectedTrees?.[index]}
+            variant="inline"
+          />
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -1090,15 +1172,15 @@ function Chip({
 }): ReactNode {
   // A chip names a node the page may not be drawing, and the old page's decision cards reached
   // each one by its words (R18, c-nothing-lost). A target nothing answers to now, one of several
-  // a short reference names, or a reference the grammar cannot read, is text: there is nowhere
-  // to go.
+  // a short reference names, a reference the grammar cannot read, or a person, whom no page
+  // shows (R5), is text: there is nowhere to go.
   const ambiguous = chip.ambiguous === true;
   const gone = chip.gone && !ambiguous;
   const target = parseNodeReference(chip.ref);
   const word = ambiguous ? undefined : documentWord(target);
   const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
   if (!gone && words === "") return null;
-  const route = chip.gone ? undefined : target;
+  const route = chip.gone || target === undefined || target.kind === "person" ? undefined : target;
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
@@ -1132,11 +1214,13 @@ function Chip({
 }
 
 /** The parent's own first line, as the link a reader follows to that node where the model gives
- *  it an address (R18, and R26: a step's row reaches the statement it serves). Out of the tab
- *  order, as every other control inside a row is, unless `tabStops` holds: `f` steps to it and
- *  Enter follows it. */
+ *  it an address (R18, and R26: a step's row reaches the statement it serves), and as words with
+ *  no link where that address names a person, whom no page shows (R5). Out of the tab order, as
+ *  every other control inside a row is, unless `tabStops` holds: `f` steps to it and Enter
+ *  follows it. */
 function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
-  const route = line.reference === undefined ? undefined : parseNodeReference(line.reference);
+  const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
+  const route = parent === undefined || parent.kind === "person" ? undefined : parent;
   return route === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
       {line.line}

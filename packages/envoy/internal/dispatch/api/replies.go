@@ -14,8 +14,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -617,6 +619,17 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Rows = append(response.Rows, rows...)
+	// Each row's subject carries the reading of its own line, for the caller that asked for the
+	// trees. The Inbox draws that line through the one renderer every body is drawn with
+	// (web/src/features/inbox/ThreadTitle.tsx), so the reading goes out beside it and no browser
+	// parses it. A subject is the thread root's first line cut by refs.FirstLine, which no writer
+	// stores a tree of, so each is read where it stands (shapeBuilt), neither asked of the table nor
+	// stored in it.
+	shapeBuilt(wantsDisplayTrees(r), func(reader *displayTreeReader) {
+		for index := range response.Rows {
+			reader.text(&response.Rows[index].SubjectTree, response.Rows[index].Subject)
+		}
+	})
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -670,60 +683,71 @@ func (s *server) readMyReplyRows(
 	defer rows.Close()
 	read := []model.MyReplyRow{}
 	for rows.Next() {
-		var row model.MyReplyRow
-		var issueKey, issueTitle, project, slug, name, replyID *string
-		var subject, body string
-		var author, anchor []byte
-		var isAnswer bool
-		var readThrough time.Time
-		var projectKey string
-		// The version is a Reply row's alone, so this scan is the one place that sets it: an
-		// Agent row carries none and sends none (model.MyReplyRow.Version).
-		var version int64
-		if err := rows.Scan(
-			&row.ThreadID, &row.Kind, &row.Ref,
-			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
-			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
-			&row.DismissedAt, &version,
-		); err != nil {
-			return nil, fmt.Errorf("scan my reply: %w", err)
+		row, err := scanMyReplyRow(rows, s.deps.ServerURL)
+		if err != nil {
+			return nil, err
 		}
-		row.Reply.Kind = "reply"
-		if isAnswer {
-			row.Reply.Kind = "answer"
-		}
-		if issueKey != nil {
-			row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
-		} else if project != nil {
-			row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
-		}
-		row.Project = &projectKey
-		row.ReadThrough = &readThrough
-		row.Version = &version
-		row.Subject = contracts.OneLineSummary(subject)
-		if replyID != nil {
-			row.Reply.ID = *replyID
-		}
-		if author != nil {
-			if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
-				return nil, fmt.Errorf("decode my reply author: %w", err)
-			}
-		}
-		if len(anchor) > 0 {
-			var value model.Anchor
-			if err := model.DecodeAnchor(anchor, &value); err != nil {
-				return nil, fmt.Errorf("decode my reply anchor: %w", err)
-			}
-			row.Anchor = &value
-		}
-		row.Reply.FirstLine = contracts.OneLineSummary(body)
 		read = append(read, row)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list my replies: %w", err)
 	}
 	return read, nil
+}
+
+// scanMyReplyRow decodes one Reply row myRepliesPageRest selects: the row listMyReplies answers,
+// and the thread row of an entry GET /api/v1/me/inbox answers. Its subject and its reply's first
+// line are cut against serverURL, this server's deployment (refs.FirstLine).
+func scanMyReplyRow(scanned pgx.Row, serverURL string) (model.MyReplyRow, error) {
+	var row model.MyReplyRow
+	var issueKey, issueTitle, project, slug, name, replyID *string
+	var subject, body string
+	var author, anchor []byte
+	var isAnswer bool
+	var readThrough time.Time
+	var projectKey string
+	// The version is a Reply row's alone, so this scan is the one place that sets it: an
+	// Agent row carries none and sends none (model.MyReplyRow.Version).
+	var version int64
+	if err := scanned.Scan(
+		&row.ThreadID, &row.Kind, &row.Ref,
+		&issueKey, &issueTitle, &project, &slug, &name,
+		&subject, &replyID, &isAnswer, &author, &body, &row.Reply.CreatedAt,
+		&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
+		&row.DismissedAt, &version,
+	); err != nil {
+		return model.MyReplyRow{}, fmt.Errorf("scan my reply: %w", err)
+	}
+	row.Reply.Kind = "reply"
+	if isAnswer {
+		row.Reply.Kind = "answer"
+	}
+	if issueKey != nil {
+		row.Issue = &model.OpenAskIssue{Key: *issueKey, Title: *issueTitle}
+	} else if project != nil {
+		row.Document = &model.OpenAskDocument{Project: *project, Slug: *slug, Name: *name}
+	}
+	row.Project = &projectKey
+	row.ReadThrough = &readThrough
+	row.Version = &version
+	row.Subject = refs.FirstLine(subject, serverURL)
+	if replyID != nil {
+		row.Reply.ID = *replyID
+	}
+	if author != nil {
+		if err := json.Unmarshal(author, &row.Reply.Author); err != nil {
+			return model.MyReplyRow{}, fmt.Errorf("decode my reply author: %w", err)
+		}
+	}
+	if len(anchor) > 0 {
+		var value model.Anchor
+		if err := model.DecodeAnchor(anchor, &value); err != nil {
+			return model.MyReplyRow{}, fmt.Errorf("decode my reply anchor: %w", err)
+		}
+		row.Anchor = &value
+	}
+	row.Reply.FirstLine = refs.FirstLine(body, serverURL)
+	return row, nil
 }
 
 // threadReadInput is the body of PUT /api/v1/me/threads/{id}/read.
@@ -741,6 +765,12 @@ const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least(
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
 // writes nothing.
+//
+// A mark that moved is a tuple from the caller's person node too (R6): read_through to the
+// thread's root at the moment the row now holds, appended through graphstore.QueueFromPerson under
+// the event the move appends, in that event's batch, so the tuple is caused by the write that
+// made it. The row keeps the login and the marker it holds: user_threads' marker is the one writer
+// of a thread's and the backfill's (inboxwrite.PlanRecord, migration 20261116160000).
 //
 // It runs in the two phases every write route runs in (INFRA-636): a read phase holding no
 // transaction id, which takes the thread's owner lock and then the project's and reads the row
@@ -847,15 +877,29 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// predicate is written on the update as well as on the read, because this is the statement
 	// that must never move a mark back, whatever was read before it; under the owner's lock it
 	// moves the row the read said it would, so the event below is appended for a mark that moved.
-	if _, err := tx.Exec(r.Context(), `
+	// The row answers the mark it now holds and its root's kind, which the mark's tuple states,
+	// and the transaction's now(), which the person node a mark makes is made at.
+	var kind, root string
+	var readThrough, at time.Time
+	if err := tx.QueryRow(r.Context(), `
 		update user_threads set read_through = least($3::text::timestamptz, now())
-		where `+threadReadMoves, login, threadID, *input.ReadThrough); err != nil {
+		where `+threadReadMoves+`
+		returning kind, thread_id::text, read_through, now()
+	`, login, threadID, *input.ReadThrough).Scan(&kind, &root, &readThrough, &at); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
+	// The event, and under it the mark's tuple, in one batch, with the failure point between the
+	// row written above and the tuple (failpoint.ThreadRead).
+	fails := failpoint.Planned(r.Context(), failpoint.ThreadRead)
+	event, err := s.appendEventThen(r.Context(), tx, projectOwner(project).event(
 		"user_thread_state.updated", actor, model.UserThreadStateEventPayload{Login: login, ThreadID: threadID},
-	))
+	), func(b *store.WriteBatch) error {
+		failpoint.Queue(b, fails)
+		return graphstore.QueueFromPerson(b, at, []graphstore.Tuple{
+			personMark(actor, graphstore.TupleReadThrough, kind, root, readThrough, true, graphstore.LatestEvent),
+		})
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

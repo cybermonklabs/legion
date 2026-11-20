@@ -957,6 +957,15 @@ func (s *server) typedBlockMarkdown(ctx context.Context, artifactID, blockType s
 	return markdown, nil, err
 }
 
+// sliceMarkdown is markdown[from:to] held to the string's own bounds: a block range the document
+// read gives lies inside it, and a range that does not answers "" rather than panicking.
+func sliceMarkdown(markdown string, from, to int) string {
+	if from < 0 || to > len(markdown) || from > to {
+		return ""
+	}
+	return markdown[from:to]
+}
+
 // checkBlocksIn is every `check` block of one document, in document order, with its attributes
 // and its words (typedBlocksIn). trees is the request's own reader, nil for a caller that asked
 // for no tree: each check registers with it, as its text_tree, the markdown typedBlocksIn reads

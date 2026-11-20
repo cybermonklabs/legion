@@ -103,6 +103,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { ReplyTarget } from "./composer-model";
 import type { SentRequest } from "./send-request";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // The composer draws a message's text, the quote of the message it answers among it, through the
 // Markdown engine, a module loaded on first use (`markdown-engine.ts`). A cell reads what the
 // composer quotes in the commit after its press, which a first load of the engine can come after,

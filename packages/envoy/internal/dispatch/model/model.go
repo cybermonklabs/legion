@@ -282,18 +282,17 @@ type Project struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// GatedStepDecisions, GatedStepCriteria and GatedStepSpec are the three design-gate steps
-// Project.GatedSteps names, each one a document of the root issue: the issue's decisions
-// document, its Verification document, and its primary document. GatedStepsKnown is the set in
-// the order the gate runs them, which the route checks a published list against and the
-// database's own check on projects.gated_steps repeats.
+// GatedStepCriteria and GatedStepSpec are the two design-gate steps Project.GatedSteps names,
+// each one a document of the root issue: its Verification document and its primary document.
+// GatedStepsKnown is the set in the order the gate runs them, which the route checks a published
+// list against. The `decisions` step is gone: no write of this build
+// stores it, and a stored list that holds it reads without it (api's gatedStepsWithout).
 const (
-	GatedStepDecisions = "decisions"
-	GatedStepCriteria  = "criteria"
-	GatedStepSpec      = "spec"
+	GatedStepCriteria = "criteria"
+	GatedStepSpec     = "spec"
 )
 
-var GatedStepsKnown = []string{GatedStepDecisions, GatedStepCriteria, GatedStepSpec}
+var GatedStepsKnown = []string{GatedStepCriteria, GatedStepSpec}
 
 // Priority is one thing the whole deployment is working towards: a node that belongs to no
 // project, which work in any project advances (internal/dispatch/prioritystore). Rank is the
@@ -584,14 +583,17 @@ type Issue struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	ClosedAt          *time.Time `json:"closed_at"`
 	PrimaryArtifactID string     `json:"primary_artifact_id"`
-	// VerificationArtifactID, PlanArtifactID and DecisionsArtifactID are the issue's documents
-	// by role (Artifact.Role): the one created as verification.md, the one created as plan.md
-	// and the one created as decisions.md, each "" when the issue holds none. They are resolved
-	// on read, as PrimaryArtifactID is.
+	// VerificationArtifactID and PlanArtifactID are the issue's documents by role
+	// (Artifact.Role): the one created as verification.md and the one created as plan.md, each ""
+	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
-	DecisionsArtifactID    string `json:"decisions_artifact_id"`
-	LastSeq                int    `json:"last_seq"`
+	// DecisionsArtifactID is the id of the issue's decisions document while it stands
+	// (decisions_documents()), "" once it is retired or where the issue holds none. A page of the
+	// release before reads it.
+	// kept for one release: compat-objects
+	DecisionsArtifactID string `json:"decisions_artifact_id"`
+	LastSeq             int    `json:"last_seq"`
 }
 
 // Route statuses: whether an issue's route reaches a running session right now.
@@ -749,15 +751,20 @@ type SearchAsk struct {
 	Resolution *AskResolution     `json:"resolution,omitempty"`
 }
 
-// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
-// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
-// payload gains a tree field. A search hit's ask and a person's answer history both answer with
-// it.
+// AskAnswerWithTree is an answer a read gives with the trees of its texts: its own text, and the
+// label of each option it chose. It is the read's own shape rather than fields on AskAnswer
+// itself: the answer is an event payload's shape, and no payload gains a tree field. A search
+// hit's ask, a person's answer history, an ask's thread and the ask itself all answer with it.
 type AskAnswerWithTree struct {
 	AskAnswer
 	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	TextTree DisplayTree `json:"text_tree,omitempty"`
+	// SelectedTrees is the ProseMirror tree each label of Selected is shown as, at that label's
+	// own index, present only for a caller that sent `Dispatch-Trees: 1` and only where Selected
+	// holds a label. A label is the label of an option the ask held when it was answered, which
+	// the ask's write stored the tree of; it may be one the ask has since renamed or removed.
+	SelectedTrees []DisplayTree `json:"selected_trees,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -949,7 +956,7 @@ type WriteSuggestion struct {
 // Related is always an array, never null.
 //
 // OtherProjects rides beside Related, never inside it: a write that asks a person a question -
-// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// an ask create, a new ask block, and `dispatch related` - also carries the answered
 // questions of the other projects that stand closest to it in meaning. Each item is one such
 // answered question, and its Owner.Project names the project that holds it. Every other write
 // leaves it empty.
@@ -1203,25 +1210,29 @@ type Artifact struct {
 	Primary   bool    `json:"primary"`
 	// Role is the part an issue's document plays beside its spec: ArtifactRoleVerification for
 	// the document created as verification.md, ArtifactRolePlan for the one created as plan.md,
-	// ArtifactRoleDecisions for the one created as decisions.md, "" for every other document.
-	// It is set from the document's slug when the row is created and never changes, as Primary
-	// never changes, and no request field sets it.
+	// "" for every other document. It is set from the document's slug when the row is created, as
+	// Primary is, and no request field sets it; the one write that clears it is the document's
+	// retirement. A decisions document an earlier release stored answers its stored role,
+	// `decisions`, until the decisions step retires it.
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
-	Versions  []Version `json:"versions"`
+	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
+	// is in no list of its issue's or its project's documents, plays no role, and its approval no
+	// longer stands, while its row, its versions and its address stay readable. No response
+	// carries it.
+	Retired  bool      `json:"-"`
+	Versions []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
 }
 
-// ArtifactRoleVerification, ArtifactRolePlan and ArtifactRoleDecisions are the three parts
-// Artifact.Role names, the values the contract's union declares (dispatch-api.ts). A document
-// that plays none of them holds "".
+// ArtifactRoleVerification and ArtifactRolePlan are the parts Artifact.Role names that this build
+// writes. A document that plays none of them holds "".
 const (
 	ArtifactRoleVerification = "verification"
 	ArtifactRolePlan         = "plan"
-	ArtifactRoleDecisions    = "decisions"
 )
 
 // ArtifactReview is one human review of a document, pinned to the version it was
@@ -1250,7 +1261,8 @@ type ArtifactReview struct {
 // ArtifactApproval is a document's approval state as of its latest version:
 // draft (never reviewed or requested), awaiting (an approval ask is open),
 // approved (approved at the latest version), stale (approved at an older
-// version), or changes_requested (the latest review asks for changes). An
+// version, or approved before the document was retired, whose retirement
+// superseded the approval), or changes_requested (the latest review asks for changes). An
 // awaiting approval carries its request's WaitingOn: agent once a version moved
 // the request past the one its agent handed to the human, or a reply left it with
 // the agent; human otherwise (the ask reads' waiting_on). Seq is the latest
@@ -1297,6 +1309,32 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+}
+
+// DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
+// retires, on the document's owner.
+const DocumentRetiredEventType = "document.retired"
+
+// DocumentRetiredEventPayload is the payload of document.retired: the document, the role it
+// played until its retirement cleared it ("" for none), why it was retired, and the approval the
+// retirement superseded, nil where the document held none standing.
+type DocumentRetiredEventPayload struct {
+	ArtifactID         string              `json:"artifact_id"`
+	RefKey             string              `json:"ref_key"`
+	Name               string              `json:"name"`
+	Role               string              `json:"role,omitempty"`
+	Reason             string              `json:"reason"`
+	SupersededApproval *SupersededApproval `json:"superseded_approval"`
+}
+
+// SupersededApproval is an approval a write ended rather than carried: the review that gave it,
+// the version it approved, who gave it and of which kind (docs' ReviewKindPerson,
+// ReviewKindPlanReview).
+type SupersededApproval struct {
+	ReviewID        string `json:"review_id"`
+	ApprovedVersion int    `json:"approved_version"`
+	ApprovedBy      Actor  `json:"approved_by"`
+	Kind            string `json:"kind"`
 }
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
@@ -1637,6 +1675,29 @@ type ArtifactBlock struct {
 	DescendantIDs []string              `json:"-"`
 }
 
+// TextAsk is one entry of the asks member the text routes answer (GET
+// /api/v1/artifacts/{id}/text and its issue and project slug variants): an ask block of the
+// markdown they serve, in document order, with its answer as the ask's node holds it. A person's
+// answer is held once, on the ask's node, so that markdown holds none of it; each field carries
+// the name and the value the server-owned attribute of the block carried in the release before.
+// State is the block's ask's state; for a copy of an ask of another document of the same owner,
+// the source's, with CopiedFrom the source's id and CopiedFromDocument its document's dispatch://
+// address; for a block of a closed issue's document that no settlement has indexed, resolved; and
+// absent for any other block no ask indexes yet, a question nobody has opened, which the text
+// routes showed with no state before they took the attributes off. AnsweredBy, AnsweredAt (RFC
+// 3339), Selected (empty where no option was chosen) and Answer (absent where the answer has no
+// words) are present on an answered ask alone.
+type TextAsk struct {
+	BlockID            string    `json:"block_id"`
+	State              string    `json:"state,omitempty" enum:"open,answered,resolved"`
+	AnsweredBy         string    `json:"answered_by,omitempty"`
+	AnsweredAt         string    `json:"answered_at,omitempty"`
+	Selected           *[]string `json:"selected,omitempty"`
+	Answer             *string   `json:"answer,omitempty"`
+	CopiedFrom         string    `json:"copied_from,omitempty"`
+	CopiedFromDocument string    `json:"copied_from_document,omitempty"`
+}
+
 // BlockAttributeValue is one attribute a typed block carries: the name its type declares it
 // under, the value the block holds, as its opening line writes it with no escape and no quotes
 // (pmdoc.TypedBlockAttributes), and the kind the block schema declares that attribute
@@ -1949,7 +2010,7 @@ type AskLastReply struct {
 // itself, flat, plus what the write moved in the reference graph. NewAskEventPayload is the only
 // way to build one, and it takes the changes, so a producer whose question text can cite
 // something cannot append an event that stays silent about it. Restored marks the `ask.opened` or
-// `ask.answered` settlement appends when a person's edit restores a decision block it retracted:
+// `ask.answered` settlement appends when a person's edit restores an ask block it retracted:
 // the ask returns to the state it had, and the event records no new answer (an `ask.answered`
 // restore carries the answer given before the retraction, credited to the editor who restored it).
 type AskEventPayload struct {
@@ -2236,9 +2297,17 @@ type MyReplyRow struct {
 	// Priority is the owning issue's coarse priority, absent on a row with no issue or none set.
 	Priority *int `json:"priority,omitempty"`
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
-	Project *string      `json:"project,omitempty"`
-	Subject string       `json:"subject"`
-	Reply   MyReplyReply `json:"reply"`
+	Project *string `json:"project,omitempty"`
+	// Subject is the thread root's first line, cut by refs.FirstLine: the line the
+	// Inbox draws for the row. SubjectTree is that line read as the document a reader is shown,
+	// present only for a caller that sent `Dispatch-Trees: 1` - the Inbox draws the row's line
+	// through the one renderer every body is drawn with, so without the tree beside it the
+	// browser would parse the line itself (web/src/features/inbox/ThreadTitle.tsx). The tree
+	// stands on this row rather than on a read shape of its own because no event payload
+	// carries a reply row: this shape is the replies read's alone.
+	Subject     string       `json:"subject"`
+	SubjectTree DisplayTree  `json:"subject_tree,omitempty"`
+	Reply       MyReplyReply `json:"reply"`
 	// ReadThrough is the caller's read mark on the thread (user_threads.read_through), absent on
 	// an Agent row, whose replies are read by id rather than by a mark.
 	ReadThrough *time.Time `json:"read_through,omitempty"`
@@ -2900,7 +2969,7 @@ type Comment struct {
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
 // reference (none for a block of a direct message, which has no address), its id, its stored
-// excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
+// excerpt (its text as refs.BlockExcerpt cuts it, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
 type ReplyBlock struct {
 	Node    string `json:"node"`
@@ -3506,8 +3575,9 @@ type ArtifactReferences struct {
 // GraphNode is one end of a reference-graph edge. IssueKey and Project locate it; an artifact an
 // agent's conversation owns has neither and is located by Ref alone
 // (`dispatch://agent/<session id>/artifact/<slug>`). Ref is its dispatch:// address and is empty
-// for session nodes, which have none. The edges into and out of a node are the reads `?to=` and
-// `?from=` of its Ref.
+// for a person, a role, a session and a page, none of which has one (graphstore.KindPerson and
+// the kinds beside it, which that doc names the id of). The edges into and out of a node are the
+// reads `?to=` and `?from=` of its Ref.
 //
 // Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
@@ -3673,25 +3743,34 @@ type DecisionKeep struct {
 	TextSHA256 string `json:"-"`
 }
 
-// DecisionLink is one link from a block of a decision to a block of the issue's spec: the
-// decision's own block that holds it, the spec block it names, when and in which version of
-// decisions.md the link was first written, and whether the spec block is out of date - the
-// decision changed after it first linked that block, and that block has not changed since.
+// DecisionLink is one link from a decision to a spec node it shaped: its `shaped` tuple
+// (internal/dispatch/decisionread). FromBlock is the decision's own block, To the node it names,
+// CreatedVersion and CreatedAt when the tuple was written, Event the event that wrote it,
+// TextChangedEvent and TextChangedAt the event and the time that wrote the version the node's text
+// last changed in, and Stale true when that text changed after the tuple was written. The three
+// are absent where the store holds none.
+//
+// kept for one release: compat-objects
 type DecisionLink struct {
-	FromBlock      string    `json:"from_block"`
-	To             GraphNode `json:"to"`
-	CreatedVersion int       `json:"created_version"`
-	CreatedAt      time.Time `json:"created_at"`
-	Stale          bool      `json:"stale"`
+	FromBlock        string     `json:"from_block"`
+	To               GraphNode  `json:"to"`
+	CreatedVersion   int        `json:"created_version"`
+	CreatedAt        time.Time  `json:"created_at"`
+	Stale            bool       `json:"stale"`
+	Event            *int64     `json:"event,omitempty"`
+	TextChangedEvent *int64     `json:"text_changed_event,omitempty"`
+	TextChangedAt    *time.Time `json:"text_changed_at,omitempty"`
 }
 
-// Decision is one decision of an issue's decisions.md: its heading block and every block after
-// it up to the next heading of its level or higher. Kind is "person" when its blocks mention an
-// ask (a person's decision links the answered ask) and "agent" otherwise; Unsure is set by a
-// paragraph that starts "Unsure:"; Replaced is set by sitting under the section headed exactly
-// "## Replaced". ChangedVersion and ChangedAt are the greatest of its blocks'. TextSHA256 is the
-// sum of Text, which a Keep carries back to say which text it agreed with. WaitingReview is an
-// agent's decision, not replaced, whose text nobody has kept as it stands.
+// Decision is one decision node of an issue in the shape the release before's Decisions read
+// answered (decisionread.Decisions): an agent's `decision` block, Kind "agent", or a person's
+// answered ask, Kind "person". Heading is the ask's question or the decision's first paragraph;
+// Unsure is true where its uncertainty is `high`; Replaced, Kept and WaitingReview are read from the
+// node. ChangedVersion and ChangedAt are the version that last changed its own words. TextSHA256 is
+// the sum of Text, which a Keep carries back to say which text it agreed with. The Decisions read's
+// old `decisions` member answers it for one release.
+//
+// kept for one release: compat-objects
 type Decision struct {
 	BlockID string `json:"block_id"`
 	Heading string `json:"heading"`
@@ -3711,6 +3790,11 @@ type Decision struct {
 	ChangedAt      *time.Time     `json:"changed_at"`
 	Kept           *DecisionKeep  `json:"kept"`
 	WaitingReview  bool           `json:"waiting_review"`
+	// NodeKind and NodeID name the node a decision node's read answered this for
+	// (decisionread.Decisions): an ask's own node, or a decision's block node. No wire shape
+	// carries them; a caller that asked for several decisions finds each one by them.
+	NodeKind string `json:"-"`
+	NodeID   string `json:"-"`
 }
 
 // DocumentRead is one person's last read version of a document: null when they have read none.
@@ -3779,6 +3863,10 @@ type EditOp struct {
 	Index      json.RawMessage `json:"index,omitempty"`
 	Type       string          `json:"type,omitempty"`
 	Attributes map[string]any  `json:"attributes,omitempty"`
+	// Into is an insert's third anchor, `block:<id>`: the markdown goes inside that block, after
+	// its last child, read as that block's content (docs.insertInto), where After and Before put
+	// it beside one. An insert names exactly one of the three.
+	Into string `json:"into,omitempty"`
 }
 
 // Route is a validated issue delivery route.

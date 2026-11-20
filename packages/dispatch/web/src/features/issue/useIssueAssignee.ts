@@ -15,6 +15,11 @@ export type IssueAssigneeWrite = IssueFieldWrite<string | null>;
  * unassign on its project's default assignee where the client holds the defaults read
  * (`showOnInboxRow` in `issue-field-looks.ts`). `host` is the assignee as the caller reads it
  * from the issue's caches; draw `shown`.
+ *
+ * The one read behind the Inbox's opt-in, which the reader's own asks are drawn from, takes the
+ * same move, and a row the write makes wait on the reader joins its Inbox answer where it held no
+ * entry (`shownOn` in `issue-field-looks.ts`): without it, taking an unassigned ask would take the
+ * row out of the old read's list and put it in no other.
  */
 export function useIssueAssignee(issueKey: string, host: string | null): IssueAssigneeWrite {
   return useIssueFieldWrite(issueKey, "assignee", host);

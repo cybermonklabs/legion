@@ -33,11 +33,10 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    reads as a question the person declined,
  *    never as an answer.
  * 4. **What others decided**, newest first: the same entries where the person who answered,
- *    declined, kept or changed is not the reader, a question its asker took back, and a section
- *    of `decisions.md` the server marks a person's with nobody it can be laid to. R2 names the
- *    third part "his own decisions", and Dispatch has several readers: another person's answer
- *    is no decision of the reader's, and it is still an ask the filter draws (R2: "Decisions the
- *    asks and the decisions"), so it stands under a heading that says whose it is.
+ *    declined, kept or changed is not the reader, and a question its asker took back. R2 names
+ *    the third part "his own decisions", and Dispatch has several readers: another person's
+ *    answer is no decision of the reader's, and it is still an ask the filter draws (R2:
+ *    "Decisions the asks and the decisions"), so it stands under a heading that says whose it is.
  * 5. **The agents' decisions that no statement rests on**, folded at the foot: an agent
  *    decision no `shaped` tie names a statement for, and a replaced one, which no statement
  *    stands on any longer (R5: "A replaced decision draws no line").
@@ -46,31 +45,36 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * decision - a comment, a statement, a check: the address outranks the filter (`presets.ts`),
  * so the view holds it, and the filter draws it as a row of its own kind, which the page focuses.
  *
+ * An agent's decision is a `decision` block of the spec or of another of the issue's documents,
+ * drawn as that block's node; a person's decision is the answered ask itself (`Decision.kind`),
+ * which the decisions read names by the ask's own address and which draws no decision node of
+ * its own (`tree-drafts.ts`'s `addDecisions`). So the ask's entry is the person's decision, and
+ * it carries the statements that decision's `shaped` ties name: the person's decision reaches
+ * every statement it shaped.
+ *
  * What the filter draws none of is an agent's reading of a person's answer (R2, R9: "No
- * restatement of a person's answer appears anywhere in the view"). Today's nearest thing to a
- * `reading` node is a section of `decisions.md` the server marks a person's because its blocks
- * name an ask (`Decision.kind`, `api/decisions.go`): where that ask is an answered ask of this
- * issue, the section restates the answer, the ask's own row is the decision, and the section is
- * drawn under the ask in the outline and nowhere in this filter (`isReading`). That section is
- * where today's read holds the decision's `shaped` ties, so the ask's entry carries the
- * statements they name: the person's decision reaches every statement it shaped.
+ * restatement of a person's answer appears anywhere in the view"): a `reading` block, which
+ * stands inside the ask or the decision it reads and is drawn under it in the outline. The
+ * filter's view keeps the asks and the decisions alone (`presets.ts`), so a reading is an entry
+ * only where the address names it, as any other node the address names is.
  *
  * This module is pure. It holds no React and makes no request, so the body
  * (`DecisionsFilterBody.tsx`) and the unit tests read one model.
  *
  * ## What today's reads hold, and what they do not
  *
- * - **The `shaped` tie** is a link from a block of a decision to a block of the spec
- *   (`Decision.links`), which is the edge as today's read carries it; the tuple is the decision
- *   model's. A tie counts where its far end is a statement of this issue, read
+ * - **The `shaped` tie** is a link from a decision's own block, or an answered ask's, to a block
+ *   of the spec (`Decision.links`), which is the edge as the decisions read carries it; the tuple
+ *   is the decision model's. A tie counts where its far end is a statement of this issue, read
  *   from the tree.
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decisions read holds no other time for one.
  * - **A Change** is a comment a person anchored to the decision's words since it last changed
  *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
- *   the decision model's: the read holds no author and one yes or no, `unsure`, which the
- *   row draws as the one word it has.
+ *   the read's `entries` (`DecisionEntry`); the `decisions` member this model reads, as the tree
+ *   does, holds no author and one yes or no, `unsure`, which the row draws as the one word it
+ *   has.
  */
 
 /** The parts, in the order the filter draws them (R2). */
@@ -113,8 +117,7 @@ interface EntryBase {
   /** The address of the node in the conversation, which the entry links to. */
   readonly path?: string;
   /** The statements of this issue the entry's `shaped` ties name, each once, in the ties' own
-   *  order: a decision's own, and for an answered ask those of the section of `decisions.md`
-   *  that restates its answer. */
+   *  order: a decision's own, and for an answered ask those of the person's decision it is. */
   readonly shapes: readonly ShapedStatement[];
 }
 
@@ -175,8 +178,8 @@ export type DecisionsAsk = Pick<TreeAsk, "id" | "resolution">;
 /**
  * The address of `node` in the conversation: an ask's own, and for a block of a document the
  * issue's own address with the block as its fragment, which opens the outline on that block's
- * node (`issue-address.ts`). A decision's own address opens `decisions.md` at its heading,
- * which is the document and not the conversation.
+ * node (`issue-address.ts`). A decision's own address opens the document its `decision` block
+ * stands in at that block, which is the document and not the conversation.
  */
 export function conversationPath(node: Pick<TreeNode, "reference">): string | undefined {
   const route = node.reference === undefined ? undefined : parseNodeReference(node.reference);
@@ -242,28 +245,6 @@ export function decisionsParts({
   const closings = new Map((asks ?? []).map((ask) => [ask.id, ask.resolution]));
   const isStatement = (reference: string): boolean =>
     placed.get(nodeIdOf(reference) ?? "")?.node.type === "requirement";
-  // Each answered ask by its own id, which is how a decision names the question it restates
-  // (`Decision.asks`): an ask the server indexed from a block of a document is drawn as that
-  // block, so its node id is not its id.
-  const answered = new Set<string>();
-  for (const { node } of placed.values()) {
-    const id = askIdOf(node);
-    if (id !== undefined && node.answer !== undefined) answered.add(id);
-  }
-  // What each answered ask shaped: the ties of every section that restates its answer, which is
-  // where today's read holds a person's decision's `shaped` ties.
-  const shapedByAsk = new Map<string, Map<string, ShapedStatement>>();
-  for (const row of rows.values()) {
-    if (!isReading(row, answered)) continue;
-    for (const ask of (row.asks ?? []).filter((one) => answered.has(one))) {
-      const held = shapedByAsk.get(ask) ?? new Map<string, ShapedStatement>();
-      for (const shape of shapesOf(row, nodeIdOf, placed)) {
-        held.set(shape.id, { ...shape, stale: shape.stale || held.get(shape.id)?.stale === true });
-      }
-      shapedByAsk.set(ask, held);
-    }
-  }
-
   const open: AskEntry[] = [];
   const review: DecisionEntry[] = [];
   const yours: DecisionsEntry[] = [];
@@ -283,7 +264,11 @@ export function decisionsParts({
     };
     if (node.type === "ask") {
       const askId = askIdOf(node) ?? "";
-      const shapes = [...(shapedByAsk.get(askId)?.values() ?? [])];
+      // A person's decision is the answered ask itself, which the decisions read names by the
+      // ask's own address (`Decision.kind`), the address the ask's node carries: its `shaped`
+      // ties are the statements the person's decision shaped.
+      const own = rows.get(node.reference ?? "");
+      const shapes = own?.kind === "person" ? shapesOf(own, nodeIdOf, placed) : [];
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-drafts.ts`'s `addAsks`).
       if (node.question) {
@@ -315,7 +300,6 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    if (isReading(row, answered)) continue;
     const shapes = shapesOf(row, nodeIdOf, placed);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = standingOf(row, asked !== undefined);
@@ -340,12 +324,7 @@ export function decisionsParts({
       shapes,
       ...(standing === undefined ? {} : { standing }),
     };
-    if (row.kind !== "agent") {
-      // A section the server marks a person's that restates no answer of this issue: it names
-      // an ask the tree does not hold, or one nobody answered. The server's word for whose it
-      // is stands, and no read says which person (the decision model's `decided_by`).
-      others.push(entry);
-    } else if (row.replaced) {
+    if (row.replaced) {
       agents.push(entry);
     } else if (asked !== undefined) {
       // The reader asked for a change: the decision waits on its agent, and stands with the
@@ -447,16 +426,6 @@ function timeOf(at: string | null | undefined): { readonly at?: string } {
 function pathOf(node: TreeNode): { readonly path?: string } {
   const path = conversationPath(node);
   return path === undefined ? {} : { path };
-}
-
-/**
- * Whether `row` is an agent's reading of a person's answer, which the filter draws none of
- * (R2, R9): a section the server marks a person's - its blocks name an ask - where one of those
- * asks is an answered ask of this issue. The ask's own row is that decision, in the person's
- * words.
- */
-export function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
-  return row.kind === "person" && (row.asks ?? []).some((ask) => answered.has(ask));
 }
 
 /** How a decision stands (`NODE_STATE_WORDS.decision`), read as the tree reads it

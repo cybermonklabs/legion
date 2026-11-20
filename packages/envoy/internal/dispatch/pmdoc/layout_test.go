@@ -814,9 +814,11 @@ func TestIncrementalRenderGuards(t *testing.T) {
 }
 
 // TestIncrementalRenderLayoutRecordsAsksAndSize checks what a layout tells its caller: the blocks
-// holding an ask, wherever it stands, the block count and the bytes it holds.
+// holding a credited block - an ask, wherever it stands, and a decision holding a reading - the
+// block count and the bytes it holds.
 func TestIncrementalRenderLayoutRecordsAsksAndSize(t *testing.T) {
-	doc, err := Parse("# Title\n\n:::ask{#a1 urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich?\n\n- A: a\n- B: b\n:::\n\nText.\n\n> :::ask{#a2 urgency=\"high\" multiple=\"false\" state=\"open\"}\n> Which?\n>\n> - A: a\n> - B: b\n> :::\n")
+	doc, err := Parse("# Title\n\n:::ask{#a1 urgency=\"high\" multiple=\"false\" state=\"open\"}\nWhich?\n\n- A: a\n- B: b\n:::\n\nText.\n\n> :::ask{#a2 urgency=\"high\" multiple=\"false\" state=\"open\"}\n> Which?\n>\n> - A: a\n> - B: b\n> :::\n\n" +
+		"::::decision{#d1}\nWe chose A.\n\n:::reading{#g1}\nThe agent reads it as A.\n:::\n::::\n")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -828,31 +830,35 @@ func TestIncrementalRenderLayoutRecordsAsksAndSize(t *testing.T) {
 	if err != nil || markdown != wantMarkdown || !reflect.DeepEqual(offsets, wantOffsets) {
 		t.Fatalf("RenderWithLayout differs from RenderWithBlockOffsets: %v", err)
 	}
-	if got := layout.AskBlocks(); !slices.Equal(got, []int{1, 3}) {
-		t.Errorf("AskBlocks() = %v, want [1 3]", got)
+	if got := layout.CreditedBlocks(); !slices.Equal(got, []int{1, 3, 4}) {
+		t.Errorf("CreditedBlocks() = %v, want [1 3 4]", got)
 	}
-	// The blocks the layout flags are the blocks WalkAskBlocks finds an ask in: the agreement the
-	// incremental path's ask ids rest on (holdsBlocks).
+	// The blocks the layout flags are the blocks WalkCreditedBlocks finds a credited block in: the
+	// agreement the incremental path's credited ids rest on (holdsBlocks).
 	var walked []int
+	var credited []string
 	for index, block := range doc.Children {
-		holdsAsk := false
-		WalkAskBlocks(block, func(string) { holdsAsk = true })
-		if holdsAsk {
+		holds := false
+		WalkCreditedBlocks(block, func(id string) { holds = true; credited = append(credited, id) })
+		if holds {
 			walked = append(walked, index)
 		}
 	}
-	if got := layout.AskBlocks(); !slices.Equal(got, walked) {
-		t.Errorf("AskBlocks() = %v, WalkAskBlocks finds an ask in blocks %v", got, walked)
+	if got := layout.CreditedBlocks(); !slices.Equal(got, walked) {
+		t.Errorf("CreditedBlocks() = %v, WalkCreditedBlocks finds a credited block in blocks %v", got, walked)
 	}
-	if layout.Blocks() != 4 {
-		t.Errorf("Blocks() = %d, want 4", layout.Blocks())
+	if !slices.Equal(credited, []string{"a1", "a2", "d1", "g1"}) {
+		t.Errorf("WalkCreditedBlocks visits %v, want the two asks, the decision and its reading", credited)
+	}
+	if layout.Blocks() != 5 {
+		t.Errorf("Blocks() = %d, want 5", layout.Blocks())
 	}
 	for index, end := range layout.ends {
 		if start := layout.start(index); markdown[int(end):int(end)+1] != "\n" || index > 0 && markdown[start-2:start] != "\n\n" {
 			t.Errorf("block %d ends at %d in %q", index, end, markdown)
 		}
 	}
-	if size := layoutSize(layout); size < 4*5 || size > 4*5+64 {
+	if size := layoutSize(layout); size < 5*5 || size > 5*5+64 {
 		t.Errorf("layoutSize = %d, want 5 bytes per block and the layout's own fields", size)
 	}
 }

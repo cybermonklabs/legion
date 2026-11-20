@@ -99,7 +99,7 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
     await expect(unreadMarks).toHaveCount(0);
     await expect(rows).toHaveCount(GROUP_PAGE);
-    expect(await typeFilterCount(page, inbox, "Reply")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, inbox, "Threads")).toBe(REPLY_THREADS);
     expect(await typeFilterCount(page, inbox, "Agent message")).toBe(AGENT_THREADS);
     await expectSidebarInboxCount(page, ASKS);
 
@@ -112,7 +112,7 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(rows).toHaveCount(GROUP_PAGE);
     await expect(unreadMarks).toHaveCount(0);
     await expectSidebarInboxCount(page, ASKS);
-    expect(await typeFilterCount(page, inbox, "Reply")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, inbox, "Threads")).toBe(REPLY_THREADS);
     expect(await typeFilterCount(page, inbox, "Agent message")).toBe(AGENT_THREADS);
 
     // The compact header carries the same number, as a link to the Inbox from another page.
@@ -169,7 +169,7 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
     await expect(drawer.locator("[data-inbox-mark-all]")).toHaveCount(0);
     const bar = drawer.locator("[data-inbox-bar]");
     await expect(drawer.locator("[data-inbox-row] [aria-label='Unread']")).toHaveCount(0);
-    expect(await typeFilterCount(page, bar, "Reply")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, bar, "Threads")).toBe(REPLY_THREADS);
     await expectInboxCount(page, ASKS);
     await expect(drawer.locator("[data-inbox-row]")).toHaveCount(GROUP_PAGE);
 

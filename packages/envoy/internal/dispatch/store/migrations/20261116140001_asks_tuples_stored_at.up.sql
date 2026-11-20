@@ -1,0 +1,27 @@
+-- 20261116140001_asks_tuples_stored_at.up.sql
+--
+-- asks learns since when the store holds what the ask states:
+--   tuples_stored_at   the moment of the last write of this release that stated the ask's facts in
+--                      the node and tuple store, in the transaction that wrote the row: the ask's
+--                      created_at, set by its insert (api's createAskFor and openApprovalAsk, docs'
+--                      createAskBlock, the seed's writeAsks). Null for an ask an older build
+--                      created.
+--
+-- It is the asks row's marker for what the store holds of the ask's own writes, which the trigger
+-- on asks (user_threads_ask, migration 0096) and the answer writers of a later change read. It is
+-- a moment rather than a flag because an answer sets it again at its own moment, which is how an
+-- answer an older build wrote is told apart from one this release wrote. graph_edges does not read
+-- it: the ask's citations are told apart row by row (refs.tuples_stored, migration 20261116135959).
+-- It names no node column: an ask's node columns, where a sibling child adds them, say which node
+-- the row projects, not whether its tuples were stated.
+--
+-- A nullable column with no default is a catalog change: no stored row is rewritten or read, and
+-- every existing row reads null, which is true of it, since no writer before this one stated an
+-- ask's citations. The ALTER takes ACCESS EXCLUSIVE on asks for its catalog write and no lock on
+-- any other table, so it closes no cycle with an ask write of the release still serving, which
+-- takes asks after the node it writes; the runner's lock_timeout bounds its wait
+-- (pgmigrate.LockTimeout), and the runner applies it again on a timeout
+-- (pgmigrate.LockTimeoutAttempts). The release before this one reads and writes asks by naming its
+-- columns, so the two roll side by side; rolling back past this migration is an image rollback
+-- alone, and the column left behind is read by nothing of that release.
+alter table asks add column tuples_stored_at timestamptz;

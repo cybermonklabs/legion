@@ -532,6 +532,14 @@ export function issuePatchRequest(key: string, input: Body<"/api/v1/issues/{key}
   return writeRequest("patch", "/api/v1/issues/{key}", { key }, input);
 }
 
+/** `PATCH /api/v1/priorities/{id}`: one change of a priority's fields - its title, description
+ *  or owner, and its place in the one order (`rank: {before, after}`, the priorities it lands
+ *  between, as the issue board's own drag names them). Each field left out is left alone. Every
+ *  change is a write on the priority's line, made from this request (`usePriorityWrites`). */
+export function priorityPatchRequest(id: string, input: Body<"/api/v1/priorities/{id}", "patch">) {
+  return writeRequest("patch", "/api/v1/priorities/{id}", { id }, input);
+}
+
 /** `POST /api/v1/agents/{session_id}/messages`: a person's message to one session
  *  (`createAgentMessage`). */
 export function agentMessageRequest(
@@ -1167,7 +1175,9 @@ export class DispatchApiClient {
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
   /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
-   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  keeps there: the same search either way, from the same handler. `kind` names the kinds to
+   *  rank, count and page, one `kind=` per entry; with none named every kind the index holds is
+   *  searched. `project`, `status`,
    *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
    *  each narrow every leg of the search rather than striking rows out of the page it answers.
    *  `number_project` narrows nothing: it is the project of the page the search was made from,
@@ -1176,13 +1186,15 @@ export class DispatchApiClient {
    *  makes no embedding call, whatever embedder the deployment configured, which is what the
    *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
    *  embedder is configured. The route refuses a value it cannot read under its own code
-   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
-   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  (`INVALID_QUERY`, `INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`,
+   *  `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches
+   *  while a person types,
    *  so it passes the `signal` of the search it is still interested in: an aborted request ends
    *  the route's own work with it, the embedding a search by meaning had asked for included.
    *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
    *  results route refuses that path outright rather than answering `GET /api/v1/search` with
-   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. A request
+   *  naming a `kind` is such a request, so it goes to the results route like the other five. */
   search(
     query: string,
     options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
@@ -1273,13 +1285,6 @@ export class DispatchApiClient {
     return this.post("/api/v1/priorities", {}, input, bounds);
   }
 
-  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
-   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
-   *  board's own drag names them). Each field left out is left alone. */
-  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
-    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
-  }
-
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
    *  write of its title, description, owner, order, state and visibility, and each `advances`
    *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
@@ -1290,6 +1295,24 @@ export class DispatchApiClient {
 
   getInbox(project?: string) {
     return this.read("/api/v1/inbox", {}, { project });
+  }
+
+  /** `GET /api/v1/inbox/comparison`: the newest run of `envoy-dispatch inbox-compare` as
+   *  counts alone - its differences, the people it checked and those it did not reach, the corpus
+   *  shapes it found and whether it meets the gate - with `run` null before any run. Needs the
+   *  `person` scope. */
+  getInboxComparison() {
+    return this.read("/api/v1/inbox/comparison", {});
+  }
+
+  /** `GET /api/v1/me/inbox`, the one read: every node tied to the signed-in person, once, with
+   *  the relation kinds that tie it to them, newest first; where the node is a row the Inbox
+   *  draws, the entry carries that row (`inboxEntryRow`). `state` narrows it to the page's own
+   *  rows in that state - `unread`, `inbox` or `dismissed` - an absent `limit` answers every
+   *  entry, and `cursor` reads on from a page's `next_cursor`. Any key the route does not declare
+   *  is refused by name. Needs the `person` scope. */
+  getMeInbox(query: Query<"/api/v1/me/inbox", "get"> = {}) {
+    return this.read("/api/v1/me/inbox", {}, query);
   }
 
   /** `PUT /api/v1/me/asks/{id}/snooze`: fold this inbox row away for the caller until
@@ -1315,6 +1338,16 @@ export class DispatchApiClient {
 
   listAgents() {
     return this.read("/api/v1/agents", {});
+  }
+
+  /** `GET /api/v1/agents/known`: which of `sessions` Dispatch holds any record of - listed in its
+   *  registry copy, or named by an event, a message, a delivery, an artifact or an ask it follows
+   *  - each with its registry title when listed, one `id=` per session. At most
+   *  `KNOWN_SESSIONS_MAX` ids per call, none longer than a `dispatch://agent/<session id>`
+   *  reference's target may be (`MAX_REFERENCE_TARGET_BYTES`); `known-sessions.ts` batches a
+   *  page's ids into one. */
+  getKnownSessions(sessions: readonly string[]) {
+    return this.read("/api/v1/agents/known", {}, { id: [...sessions] });
   }
 
   createAsk(key: string, input: Body<"/api/v1/issues/{key}/asks", "post">, bounds: WriteBounds) {
@@ -1359,6 +1392,12 @@ export class DispatchApiClient {
    *  one page at a time. Needs the `person` scope. */
   listMyAnswers(page: Query<"/api/v1/me/answers", "get">) {
     return this.read("/api/v1/me/answers", {}, page);
+  }
+
+  /** `GET /api/v1/people/{login}/nodes`: one person's page — what they wrote and what reached
+   *  them, newest first, one page at a time. Needs the `person` scope. */
+  listPersonNodes(login: string, page: Query<"/api/v1/people/{login}/nodes", "get">) {
+    return this.read("/api/v1/people/{login}/nodes", { login }, page);
   }
 
   /** `GET /api/v1/me/replies`: the threads the signed-in person is reading, newest write first.
@@ -1578,6 +1617,13 @@ export class DispatchApiClient {
     });
   }
 
+  /** `GET /api/v1/agents/{session_id}/artifacts`: the newest 100 files and images of an agent's
+   *  conversation, newest first, each with its versions. It needs the `person` scope, as the
+   *  conversation it belongs to does. */
+  listAgentArtifacts(sessionId: string) {
+    return this.read("/api/v1/agents/{session_id}/artifacts", { session_id: sessionId });
+  }
+
   getArtifactText(id: string) {
     return this.read("/api/v1/artifacts/{id}/text", { id });
   }
@@ -1607,13 +1653,13 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decisions.md, the open questions its spec holds, and each
-   *  decision with the spec blocks it shaped. */
+  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
+   *  its spec holds, and each decision with the spec nodes it shaped. */
   getIssueDecisions(key: string) {
     return this.read("/api/v1/issues/{key}/decisions", { key });
   }
 
-  /** Record that the caller agrees with the decision that heading block opens, as the text they
+  /** Record that the caller agrees with the decision at that block, as the text they
    *  read: `textSha256` is the decision's own `text_sha256`, and a decision that changed since
    *  is `409 DECISION_CHANGED`. */
   keepDecision(id: string, blockId: string, textSha256: string, bounds: WriteBounds) {

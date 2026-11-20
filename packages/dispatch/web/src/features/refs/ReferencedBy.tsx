@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import type { GraphEdge } from "../../api/types";
+import type { DisplayTree, GraphEdge, GraphReferences } from "../../api/types";
 import {
   borderDefault,
   linkHoverText,
@@ -12,11 +12,14 @@ import {
 } from "../../theme/classes";
 import { compiledBlockSchema } from "../doc/schema";
 import { blockFragment, isBlockItemKind } from "./block-reference";
+import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownPreview } from "./MarkdownPreview";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
-import { buildReferencePath, parseNodeReference } from "./routes";
+import { parseNodeReference, referenceHref } from "./routes";
 import { Timestamp } from "./Timestamp";
+import { type TextSource, textSourceKind, textSourceOf } from "./text-references";
 
 const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   artifact: "Artifact",
@@ -27,8 +30,17 @@ const NODE_LABELS: Record<GraphEdge["node"]["kind"], string> = {
   block: "Artifact",
   comment: "Comment",
   component: "Component",
+  // One attempt to reach one session or role; nothing points at one today, so it is named for the
+  // day an edge does rather than left out.
+  delivery_attempt: "Delivery attempt",
   issue: "Issue",
   message: "Message",
+  // The page of a role, or of a session that claimed none: it reads as whose page it is,
+  // because a reader opens the agent and not the page.
+  page: "Agent page",
+  person: "Person",
+  // A role is the agent Dispatch keeps across a restart, and a session is one run of one.
+  role: "Agent",
   session: "Session",
 };
 
@@ -108,14 +120,16 @@ interface SourcePath {
 
 /** Where `reference`, a node's own reference as the graph returned it, opens - whatever the length
  *  of its name - with `block` (the block of a document that holds the mention) as its `#b-`
- *  fragment when the reference names no block of its own. */
+ *  fragment when the reference names no block of its own. Undefined where it opens nothing: a
+ *  reference that does not parse, and a party the graph records no node for (R5). */
 function referencePath(reference: string | undefined, block?: string): SourcePath | undefined {
   const route = reference === undefined ? undefined : parseNodeReference(reference);
-  if (route === undefined) {
+  const href = route === undefined ? undefined : referenceHref(route);
+  if (route === undefined || href === undefined) {
     return undefined;
   }
   return {
-    href: `${buildReferencePath(route)}${
+    href: `${href}${
       ("block" in route && route.block !== undefined) || block === undefined
         ? ""
         : blockFragment(block)
@@ -124,8 +138,11 @@ function referencePath(reference: string | undefined, block?: string): SourcePat
   };
 }
 
+/** An edge as the references read answers it, with its excerpt's tree (`GraphEdgeWithTrees`). */
+type ReadEdge = NonNullable<GraphReferences["edges"]>[number];
+
 interface SourceGroup {
-  readonly edges: GraphEdge[];
+  readonly edges: ReadEdge[];
   readonly key: string;
   readonly label: string;
   /** How many citing nodes the group holds: more than one only when blocks of one document, or of
@@ -140,8 +157,8 @@ interface SourceGroup {
  *  that document's or item's rows. A source of one node links to that node (a block at the
  *  block); a document or item whose blocks are its rows links to itself, and each row to its own
  *  block. */
-function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
-  const groups = new Map<string, { edges: GraphEdge[]; nodes: Set<string> }>();
+function groupBySource(edges: readonly ReadEdge[]): SourceGroup[] {
+  const groups = new Map<string, { edges: ReadEdge[]; nodes: Set<string> }>();
   for (const edge of edges) {
     const key =
       edge.node.document ??
@@ -154,7 +171,7 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
     groups.set(key, group);
   }
   return [...groups].map(([key, { edges: grouped, nodes }]) => {
-    const [first] = grouped as [GraphEdge, ...GraphEdge[]];
+    const [first] = grouped as [ReadEdge, ...ReadEdge[]];
     return {
       edges: grouped,
       key,
@@ -168,17 +185,82 @@ function groupBySource(edges: readonly GraphEdge[]): SourceGroup[] {
   });
 }
 
-function Excerpt({ text }: { text: string }): ReactNode {
+/** The citing nodes whose excerpt is the head of their own stored text. */
+const BODY_NODE_KINDS: readonly string[] = ["ask", "block", "comment", "message"];
+
+/** Whether `edge`'s excerpt is the head of a stored body rather than a title or a name. A citing
+ *  block, ask, comment or message is listed by the head of its own text, and a document's
+ *  mention by the block that holds it (`excerpt.block_id`): each is a bounded head the server
+ *  cuts, which the renderer draws. A citing issue, document, component or session is listed by
+ *  its title or name, which is one line of text already. */
+function excerptIsBody(edge: GraphEdge): boolean {
+  return edge.excerpt?.block_id !== undefined || BODY_NODE_KINDS.includes(edge.node.kind);
+}
+
+/** The record a body excerpt is the head of, where the citing node is one a `TextSource` names:
+ *  an ask, a comment or a message, or a document. A citing block is a block of its holder - a
+ *  comment, an ask, a message or a document - which the node carries as its `parent`
+ *  (`refs/graph.go`), so its excerpt is the holder's text and a `#id` in it names a question of
+ *  the holder's document. */
+function excerptSource(node: GraphEdge["node"]): TextSource | undefined {
+  const holder = node.kind === "block" ? node.parent : node;
+  return holder === null
+    ? undefined
+    : textSourceOf(textSourceKind(holder.kind), holder.id, node.issue_key);
+}
+
+function Excerpt({
+  rendered,
+  source,
+  text,
+  tree,
+}: {
+  /** Whether the text is the head of a stored body, which the renderer draws (`excerptIsBody`). */
+  rendered: boolean;
+  source: TextSource | undefined;
+  text: string;
+  /** The server's reading of the head as it cut it, so the page parses none of it. */
+  tree: DisplayTree | undefined;
+}): ReactNode {
   const [expanded, setExpanded] = useState(false);
   const clampable = text.split("\n").length > CLAMP_LINES || text.length > CLAMP_CHARACTERS;
+  const clamped = clampable && !expanded;
 
   return (
     <>
-      <p
-        className={`mt-1 whitespace-pre-wrap text-sm ${expanded || !clampable ? "" : "line-clamp-3"} ${textSecondaryOnSurface}`}
-      >
-        {text}
-      </p>
+      {rendered ? (
+        // The head of a stored body, drawn by the renderer from the reading the server made of
+        // it: one clamped run until the reader opens it, the whole of it after.
+        // The type is on the element around the renderer in both, as `.dispatch-markdown` takes
+        // it from there (styles.css).
+        clamped ? (
+          <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+            <MarkdownPreview
+              lines={3}
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        ) : (
+          <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
+            <MarkdownBody
+              markdown={text}
+              source={source}
+              surface="referenced-by-excerpt"
+              tree={tree}
+            />
+          </div>
+        )
+      ) : (
+        <p
+          className={`mt-1 whitespace-pre-wrap text-sm ${clamped ? "line-clamp-3" : ""} ${textSecondaryOnSurface}`}
+        >
+          {/* A title or a name, as the line it is: the reading list's `referenced-by-title`. */}
+          {text}
+        </p>
+      )}
       {clampable ? (
         <button
           aria-expanded={expanded}
@@ -351,7 +433,17 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
-                      {edge.excerpt === undefined ? null : <Excerpt text={edge.excerpt.text} />}
+                      {/* A block whose text opens with a reference longer than the server's cut
+                          has an empty excerpt that still names the block it links to: the row
+                          then draws no excerpt rather than an empty paragraph. */}
+                      {edge.excerpt === undefined || edge.excerpt.text === "" ? null : (
+                        <Excerpt
+                          rendered={excerptIsBody(edge)}
+                          source={excerptSource(edge.node)}
+                          text={edge.excerpt.text}
+                          tree={edge.excerpt.text_tree}
+                        />
+                      )}
                     </li>
                   );
                 })}

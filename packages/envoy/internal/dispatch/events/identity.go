@@ -32,7 +32,7 @@ func OpenedEventIDs(ctx context.Context, q Queryer, askIDs []string) (map[string
 	if len(askIDs) == 0 {
 		return result, nil
 	}
-	rows, err := q.Query(ctx, openedEventIDsStatement, askIDs)
+	rows, err := q.Query(ctx, OpenedEventIDsStatement, askIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -50,15 +50,17 @@ func QueueOpenedEventIDs(b *pgx.Batch, askIDs []string, into map[string]int64) {
 	if len(askIDs) == 0 {
 		return
 	}
-	b.Queue(openedEventIDsStatement, askIDs).Query(func(rows pgx.Rows) error {
+	b.Queue(OpenedEventIDsStatement, askIDs).Query(func(rows pgx.Rows) error {
 		return scanOpenedEventIDs(rows, into)
 	})
 }
 
-// openedEventIDsStatement is the query both halves run, $1 the ask ids. The partial index
+// OpenedEventIDsStatement is the query both halves run, $1 the ask ids (text[]), and the one a
+// statement of another reader's splices in over ask ids of its own (api's GET /api/v1/me/inbox),
+// one row per ask that has an event, read by ScanOpenedEventID. The partial index
 // events_ask_payload_id (migration 0030) serves it, and that index's `type in (...)` list
 // mirrors this one.
-const openedEventIDsStatement = `
+const OpenedEventIDsStatement = `
 		select payload->>'id', min(id)
 		from events
 		where type in ('ask.opened', 'ask.answered', 'ask.resolved', 'ask.edited')
@@ -66,12 +68,18 @@ const openedEventIDsStatement = `
 		group by payload->>'id'
 	`
 
-// scanOpenedEventIDs reads the rows openedEventIDsStatement returns into result, keyed by ask id.
+// ScanOpenedEventID reads one row OpenedEventIDsStatement returns: the ask's id and its identity
+// event's.
+func ScanOpenedEventID(row pgx.Row) (askID string, eventID int64, err error) {
+	err = row.Scan(&askID, &eventID)
+	return askID, eventID, err
+}
+
+// scanOpenedEventIDs reads the rows OpenedEventIDsStatement returns into result, keyed by ask id.
 func scanOpenedEventIDs(rows pgx.Rows, result map[string]int64) error {
 	for rows.Next() {
-		var askID string
-		var eventID int64
-		if err := rows.Scan(&askID, &eventID); err != nil {
+		askID, eventID, err := ScanOpenedEventID(rows)
+		if err != nil {
 			return err
 		}
 		result[askID] = eventID

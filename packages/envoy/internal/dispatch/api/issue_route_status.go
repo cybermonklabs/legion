@@ -201,8 +201,16 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	if err != nil {
 		return routeRoster{}, fmt.Errorf("read the stored listener answer: %w", err)
 	}
+	return s.routeRosterAfterStored(ctx, roster, fresh, now, seen), nil
+}
+
+// routeRosterAfterStored is readRouteRoster past its read of the route_roster row: the stored
+// roster while it is fresh, else this process's built roster or one fetch's answer, as
+// readRouteRoster says. A read that reads the row inside a statement of its own (GET
+// /api/v1/me/inbox, through routeRosterStored) answers its routes from here too.
+func (s *server) routeRosterAfterStored(ctx context.Context, roster routeRoster, fresh bool, now, seen time.Time) routeRoster {
 	if fresh {
-		return roster, nil
+		return roster
 	}
 	cache := &s.rosters
 	cache.mu.Lock()
@@ -211,7 +219,7 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 		if cache.builtSent.After(seen) {
 			roster = cache.built
 			cache.mu.Unlock()
-			return roster, nil
+			return roster
 		}
 		fetch = &rosterFetch{done: make(chan struct{})}
 		cache.fetch = fetch
@@ -225,9 +233,9 @@ func (s *server) readRouteRoster(ctx context.Context) (routeRoster, error) {
 	cache.mu.Unlock()
 	select {
 	case <-fetch.done:
-		return fetch.roster, nil
+		return fetch.roster
 	case <-ctx.Done():
-		return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}, nil
+		return routeRoster{reason: model.RouteReasonUnreachable, err: fmt.Errorf("%w: %v", envoy.ErrUnavailable, ctx.Err())}
 	}
 }
 
@@ -267,20 +275,34 @@ const routeRosterQuery = `
 // the roster it holds, whether that is still fresh by the database's clock, that clock's now(),
 // and the row's sent_at, zero for no row. No row reads as not fresh.
 func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, fresh bool, now, sent time.Time, err error) {
-	cache := &s.rosters
-	cache.mu.Lock()
-	built, builtSent := cache.built, cache.builtSent
-	cache.mu.Unlock()
-	var known *time.Time
-	if !builtSent.IsZero() {
-		known = &builtSent
+	built, known := s.rosters.known()
+	return s.rosters.stored(s.deps.Store.Pool.QueryRow(ctx, routeRosterQuery, known), built)
+}
+
+// known is the roster this process last built and the sent_at of the answer it was built from,
+// nil before any, which is the $1 routeRosterQuery binds: a read binds it when it writes the
+// statement and hands the roster back to stored with the row it read.
+func (c *rosterCache) known() (routeRoster, *time.Time) {
+	c.mu.Lock()
+	built, builtSent := c.built, c.builtSent
+	c.mu.Unlock()
+	if builtSent.IsZero() {
+		return built, nil
 	}
+	return built, &builtSent
+}
+
+// stored reads one row of routeRosterQuery, read with the sent_at known answered beside built:
+// the roster it holds, built where the row still carries that sent_at and so leaves its sessions
+// out, whether it is still fresh by the database's clock, that clock's now(), and the row's
+// sent_at, zero for no row. No row reads as not fresh. storedRouteRoster reads it on the pool,
+// and GET /api/v1/me/inbox inside its one statement.
+func (c *rosterCache) stored(row pgx.Row, built routeRoster) (roster routeRoster, fresh bool, now, sent time.Time, err error) {
 	var answered bool
 	var reason, retryAfter string
 	var sentAt, expiresAt *time.Time
 	var sessions []byte
-	if err := s.deps.Store.Pool.QueryRow(ctx, routeRosterQuery, known).
-		Scan(&now, &answered, &sentAt, &expiresAt, &reason, &retryAfter, &sessions); err != nil {
+	if err := row.Scan(&now, &answered, &sentAt, &expiresAt, &reason, &retryAfter, &sessions); err != nil {
 		return routeRoster{}, false, time.Time{}, time.Time{}, err
 	}
 	if sentAt == nil {
@@ -288,7 +310,7 @@ func (s *server) storedRouteRoster(ctx context.Context) (roster routeRoster, fre
 	}
 	roster = built
 	if sessions != nil {
-		if roster, err = cache.remember(*sentAt, answered, reason, retryAfter, sessions); err != nil {
+		if roster, err = c.remember(*sentAt, answered, reason, retryAfter, sessions); err != nil {
 			return routeRoster{}, false, time.Time{}, time.Time{}, err
 		}
 	}

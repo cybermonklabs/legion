@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -109,7 +110,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 	comment.ResolvedAt = nil
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -241,7 +242,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	previousBody := comment.Body
 	comment.Body = input.Body
 	comment.EditedAt = timestampPtr(&editedAt)
-	referenceChanges, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
+	referenceChanges, indexed, err := s.queueEditedItemReferences(r.Context(), tx, ledger, refs.ItemComment, comment.ID, previousBody, comment.Body, editedAt, carried)
 	if carriedErr := (*itemblocks.CarriedError)(nil); errors.As(err, &carriedErr) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, carriedErr.Error())
 		return
@@ -252,7 +253,7 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if comment.Anchor != nil {
 		s.registerCommentAnchor(ledger, comment, actor, true)
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -278,6 +279,15 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		payload,
 	), "comment", comment.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// What the edit states in the store - the nodes of the blocks it wrote, their part_of, the
+	// links they gained or lost and the citations the comment did - under the comment.edited
+	// that records it, queued right after that event.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(b, indexed, graphstore.LatestEvent)
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -400,7 +410,8 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 				// Only the orphaned key is written, the one key this refusal decides: writing the
 				// whole anchor would write back every other key of the column as this transaction
 				// read it, which is not what orphaning an anchor means. The narrow write says what
-				// it changes.
+				// it changes, and the artifact the comment's anchored_to tuple names stays among
+				// the rest, so this write restates nothing the store holds.
 				if err := queueExec(ledger, `
 					update comments set anchor = jsonb_set(anchor, '{orphaned}', to_jsonb(true)) where id = $1
 				`, comment.ID); err != nil {
@@ -457,7 +468,7 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 	}
 	s.registerCommentAnchor(ledger, comment, actor, true)
 	if comment.Anchor != nil {
-		replies, err := s.loadReplyChain(r.Context(), tx, "reply_to", comment.ID)
+		replies, err := s.loadReplyChain(r.Context(), tx, everyReader, "reply_to", comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

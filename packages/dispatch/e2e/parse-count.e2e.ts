@@ -24,6 +24,8 @@ import {
   createProjectDocument,
   editArtifact,
   putArchitectureSource,
+  reviewArtifact,
+  setGatedSteps,
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
@@ -33,6 +35,7 @@ import {
   readParseCounts,
   rewrittenParseCallSites,
 } from "./parse-counting";
+import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { asUser } from "./users";
@@ -47,7 +50,9 @@ const architecture = {
   "web.md": "---\ntitle: Web\npaths: [packages/web]\n---\nThe **SPA** every reader opens.\n",
 };
 
-/** A word no seeded text but the document's holds, so the palette's hits are its own. */
+/** A word no seeded text holds but the document's and the chosen option of one answered ask, so
+ *  the palette's hits are theirs: the document's own, and the ask's, whose status line says
+ *  what was chosen. */
 const searchTerm = "astrolabe";
 
 /** The paragraph a block reference cites. Its markdown is the stored text `GET /api/v1/references`
@@ -69,11 +74,23 @@ const relatedDraft = "Zeppelin hangar for the blimps over winter";
 
 /** What the pages this spec opens were seeded with. */
 interface Seeded {
+  /** The comment beside the reference preview's target, whose id a second comment shares the
+   *  first eight characters of, so the address that writes those eight names both. */
+  readonly commentID: string;
   readonly documentSlug: string;
   readonly issueKey: string;
   readonly openAskID: string;
   readonly targetKey: string;
 }
+
+/** The reason the spec's reviewer asked for changes with, which the design gate's line under the
+ *  issue header's steps draws. */
+const gateReason = "Name the **rollback** path before this gate opens.";
+
+/** A reply that is nothing but a reference to a role nobody holds and no collaborator records:
+ *  the Replies page draws a card under it, and the role has no title, so the card shows the
+ *  reference as the body wrote it. */
+const untitledReference = "dispatch://role/surveyor";
 
 async function seedStoredTexts(): Promise<Seeded> {
   await createProject({ key: "CORE", name: "Core" });
@@ -94,10 +111,29 @@ async function seedStoredTexts(): Promise<Seeded> {
     spec: "# Plan\n\nThe **spec** of the issue page.\n",
     title: "Stored texts",
   });
-  await createComment(
+  // The issue is its tree's root and its project's deployment gates the spec, so its header
+  // draws the design gate's step, and the spec's reviewer asked for changes: the line under the
+  // step draws the reason, a stored text the issue read carries the tree of.
+  await setGatedSteps("CORE", ["spec"]);
+  await reviewArtifact(
+    issue.primary_artifact_id,
+    { reason: gateReason, state: "changes_requested" },
+    { login: "alice" }
+  );
+  const beside = await createComment(
     issue.key,
     { body: `A **comment** body, beside dispatch://${target.key}.` },
     session
+  );
+  // A second comment whose id starts with the same eight characters as that one's, so an address
+  // that writes the id short names both, and the page it opens lists each by its first line. Ids
+  // are minted, so the twin is written straight into Postgres as a copy of that comment with an
+  // id and a body of its own (`e2e/prefix-links.e2e.ts` makes its twin so).
+  await sql(
+    `create temporary table twin_comment as select * from comments where id = '${beside.id}'`,
+    `update twin_comment set id = '${beside.id.slice(0, 8)}-1111-4111-8111-111111111111', body = 'The **twin** of that comment.', created_at = now()`,
+    "insert into comments select * from twin_comment",
+    "drop table twin_comment"
   );
   await createMessage(issue.key, { body: "A **message** body." }, session);
   // An open ask, which the Inbox draws, and an answered one, whose answer the Answers page
@@ -113,13 +149,48 @@ async function seedStoredTexts(): Promise<Seeded> {
     selected: ["Ship"],
     text: "An **answer** of mine.",
   });
-  // A thread alice wrote in that a session replied to: the Replies page draws both bodies.
+  // An ask answered twice, whose options' labels hold markup and a reference, and whose second
+  // answer chose the option holding the palette's word. The Answers page lists both answers with
+  // the labels they chose; the palette's hit for that word says what was chosen; and the ask's
+  // card on the Conversation tab keeps the first answer under "Show 1 earlier answer", drawing
+  // the option it chose from the tree of that label, which the answer carries. The labels name
+  // the issue the ask is on, so no link to the reference preview's target is added to its page.
+  const sextant = `The **sextant**, per dispatch://${issue.key}`;
+  const astrolabe = `The **${searchTerm}**, as ${issue.key} keeps it`;
+  const instrument = await createAsk(
+    issue.key,
+    {
+      options: [{ label: sextant }, { label: astrolabe }],
+      question: "Which **instrument** takes the altitude?",
+    },
+    session
+  );
+  const firstAnswer = await answerAsk(instrument.id, {
+    expected_edited_at: null,
+    selected: [sextant],
+    text: "Whichever is **nearest**, for now.",
+  });
+  await answerAsk(instrument.id, {
+    expected_answer_at: firstAnswer.answer?.at ?? null,
+    expected_edited_at: null,
+    selected: [astrolabe],
+    text: "The **brass** one after all.",
+  });
+  // A reply alice made to that ask: the Activity tab's line for it quotes the question it
+  // replies to (`replied to “…”`), and the Answers page lists it among her replies.
+  await createComment(issue.key, {
+    ask_id: instrument.id,
+    body: "Which **mount** does it take?",
+  });
+  // A thread alice wrote in that a session replied to: the Replies page draws both bodies, and
+  // the card under the second reply, which is nothing but a reference to a role with no title.
   const thread = await createComment(issue.key, { body: "A **thread** alice opened." });
   await createComment(
     issue.key,
     { body: "A **reply** of the planner's.", reply_to: thread.id },
     session
   );
+  await createComment(issue.key, { body: untitledReference, reply_to: thread.id }, session);
   // A comment whose second paragraph another comment cites by its block id: a block reference
   // reads `GET /api/v1/references`, and both the citing link's title and its hover card are
   // drawn from the text that read's node carries.
@@ -155,13 +226,23 @@ async function seedStoredTexts(): Promise<Seeded> {
     { ops: [{ after: "end", markdown: "A **second** version.\n", op: "insert" }] },
     { as: "agent" }
   );
+  // What cites the document, which its page lists under the version it shows, in its Referenced
+  // by panel: a comment, listed by the head of its body, and a block of another document, listed
+  // by the block that holds the mention. Each excerpt is the head the server cut, drawn from the
+  // tree the server read of it.
+  const cited = `dispatch://CORE/artifact/${document.artifact.slug}`;
+  await createComment(issue.key, { body: `The **readings** are in ${cited}.` }, session);
+  await createProjectDocument("CORE", {
+    content: `# Logbook\n\nEach **entry** cites ${cited}.\n`,
+    name: "logbook.md",
+  });
 
-  // The issue's decisions.md, which the Decisions tab draws block by block: its one decision
-  // holds a paragraph of its own so the tab has a stored text to draw, and it links no spec
-  // block, so the issue page above draws no margin card for it.
+  // A decision of the issue, which the Decisions tab draws block by block: a `decision` block of
+  // a document of its own, holding a paragraph so the tab has a stored text to draw. It shapes
+  // no spec block, so the issue page above draws no margin card for it.
   await createIssueArtifact(issue.key, {
-    content: "## Store the notices\n\nA **decided** thing.\n",
-    name: "decisions.md",
+    content: ":::decision{#d1}\n### Store the notices\n\nA **decided** thing.\n:::\n",
+    name: "choices.md",
   });
 
   // An answered ask on an issue of its own, which the related-item check behind the create
@@ -185,6 +266,7 @@ async function seedStoredTexts(): Promise<Seeded> {
   });
 
   return {
+    commentID: beside.id,
     documentSlug: document.artifact.slug,
     issueKey: issue.key,
     openAskID: openAsk.id,
@@ -208,6 +290,15 @@ function bold(page: Page, word: string): Locator {
     .first();
 }
 
+/** The first answer of the ask answered twice, as its card on the Conversation tab draws it in
+ *  its list of earlier answers, in the commit that draws the option it chose beside it. The
+ *  answer's words are what is waited for, since they draw as markup whether the page reads
+ *  their tree or parses them, and so does the option it chose. The list is a closed disclosure,
+ *  so the answer is on the page and hidden: attached, never visible. */
+function earlierAnswer(page: Page): Locator {
+  return page.locator("details strong").filter({ hasText: /^nearest$/ });
+}
+
 function surfaces(seeded: Seeded): Surface[] {
   return [
     {
@@ -215,6 +306,13 @@ function surfaces(seeded: Seeded): Surface[] {
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}`);
         await expect(bold(page, "spec")).toBeVisible();
+        // The design gate's line under the header's steps, which draws why the spec's reviewer
+        // asked for changes.
+        await expect(
+          page
+            .locator('[data-approval-step-reason="spec"] strong')
+            .filter({ hasText: /^rollback$/ })
+        ).toBeVisible();
       },
     },
     {
@@ -261,6 +359,11 @@ function surfaces(seeded: Seeded): Surface[] {
         await expect(
           page.getByRole("region", { name: "Document version 1" }).getByText("Instruments")
         ).toBeVisible();
+        // The Referenced by panel under the version is a read of its own, which can land after
+        // the version's text: the walk waits for both excerpts, the comment's and the logbook
+        // block's, so the count is read once they are drawn.
+        const citing = page.getByRole("region", { name: "Referenced by" }).locator("strong");
+        await expect(citing.filter({ hasText: /^(readings|entry)$/ })).toHaveCount(2);
       },
     },
     {
@@ -279,7 +382,24 @@ function surfaces(seeded: Seeded): Surface[] {
     {
       name: "a reference preview",
       show: async (page) => {
-        await page.goto(`/issues/${seeded.issueKey}/conversation`);
+        // The reader comes by an address that writes a comment's id short, which names two
+        // comments: the page lists each by its first line, and the reader opens the one beside
+        // the target, which the Conversation tab then draws. Both pages are one page load, so
+        // the count is of both.
+        const short = seeded.commentID.slice(0, 8);
+        await page.goto(`/issues/${seeded.issueKey}/comments/${short}`);
+        await expect(
+          page.getByRole("heading", { name: "Several items match that link" })
+        ).toBeVisible();
+        await expect(page.getByRole("link", { name: "The twin of that comment." })).toBeVisible();
+        await page
+          .locator(`a[href="/issues/${seeded.issueKey}/comments/${seeded.commentID}"]`)
+          .click();
+        await expect(page).toHaveURL(`/issues/${seeded.issueKey}/comments/${seeded.commentID}`);
+        // The ask cards are a read of their own, which can land after the comment hovered
+        // below: the walk waits for the earlier answer one of them keeps, so the count is read
+        // once it is drawn.
+        await expect(earlierAnswer(page)).toBeAttached();
         await page.getByRole("link", { name: "Reference target" }).first().hover();
         await expect(page.getByRole("tooltip")).toContainText(seeded.targetKey);
       },
@@ -288,6 +408,8 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a block reference's card",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
+        // The ask cards' read, as the row above waits for it.
+        await expect(earlierAnswer(page)).toBeAttached();
         // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
         // the link's title and the card under it are both the text that read's node carries.
         await page.getByRole("link", { name: quotedTitle }).first().hover();
@@ -307,6 +429,11 @@ function surfaces(seeded: Seeded): Surface[] {
       show: async (page) => {
         await page.goto("/replies");
         await expect(bold(page, "reply")).toBeVisible();
+        // The card under the reply that is nothing but a reference to an untitled role, which
+        // shows the reference as the body wrote it.
+        await expect(
+          page.getByRole("region", { name: "References" }).getByText(untitledReference)
+        ).toBeVisible();
       },
     },
     {

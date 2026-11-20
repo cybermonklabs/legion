@@ -60,14 +60,17 @@ func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ..
 // nil receiver, so a route shapes its rows the one way whether or not the header was sent, and
 // neither reads the table nor writes to it when it was not.
 //
-// Only a stored text is registered. A cut - the snippet a search hit carries - is one line of a
-// longer stored text, which nothing stores a row for: it is read where it stands
-// (pmdoc.DisplaySnippetJSON), since registering it would ask the table for a text no writer
-// stores and store a row no reader takes.
+// Only a stored text is registered. A cut or a piece of one - the snippet a search hit carries,
+// an edge's excerpt, an Inbox row's subject, an ambiguous id's candidate first line, a string
+// inside a handoff's body - is a part of a longer stored text, which nothing stores a row for:
+// it is read where it stands, the snippet by pmdoc.DisplaySnippetJSON and the rest through a
+// reader that reads no row and stores none (builtDisplayTrees), since registering it here would
+// ask the table for a text no writer stores and store a row no reader takes.
 type displayTreeReader struct {
 	// server is the server whose table the trees are read from and stored to, and nil for a
 	// reader that reads every text for display itself: a write's own response, which answers the
-	// text it has just stored the tree of, and a live frame, which has no request behind it.
+	// text it has just stored the tree of, a live frame, which has no request behind it, and the
+	// cuts and pieces of a stored text a read answers (builtDisplayTrees).
 	server *server
 	ctx    context.Context
 	mode   pmdoc.DisplayMode
@@ -76,6 +79,10 @@ type displayTreeReader struct {
 	// so a shaper that fans out gathers its parts before it registers them or calls resolve.
 	texts []readDisplayText
 	at    map[[32]byte]int
+	// preread says the request's own statement already read the table's trees of its texts, and
+	// held is what it answered (readDisplayTreesHeld), which resolve takes in place of a query.
+	preread bool
+	held    map[[32]byte]json.RawMessage
 }
 
 // readDisplayText is one distinct text of a request, the fields its tree fills, and that tree
@@ -113,10 +120,24 @@ func (s *server) readDisplayTreesIn(ctx context.Context, mode pmdoc.DisplayMode,
 	return &displayTreeReader{server: s, ctx: ctx, mode: mode}
 }
 
+// readDisplayTreesHeld is readDisplayTrees for a read whose one statement has already read the
+// table's trees of the texts its answer carries (GET /api/v1/me/inbox): held is what that
+// statement answered, which resolve takes in place of a query of its own. A text it holds no tree
+// of is read for display and stored back, as every reader's misses are.
+func (s *server) readDisplayTreesHeld(ctx context.Context, trees bool, held map[[32]byte]json.RawMessage) *displayTreeReader {
+	reader := s.readDisplayTrees(ctx, trees)
+	if reader != nil {
+		reader.preread, reader.held = true, held
+	}
+	return reader
+}
+
 // builtDisplayTrees is the reader of an answer whose texts are read where they stand: a write's
-// own response, which carries the text the request has just written and stored the tree of, and
-// a live frame, which is no request. It reads no row and stores none - the write beside it does
-// both - and is the same reader otherwise, so one shaping serves a read and a write alike.
+// own response, which carries the text the request has just written and stored the tree of, a
+// live frame, which is no request, and the cuts and pieces of a stored text a read answers (an
+// edge's excerpt, an Inbox row's subject, a candidate's first line, a handoff's fields), which no
+// writer stores. It reads no row and stores none - for a write, the write beside it does both -
+// and is the same reader otherwise, so one shaping serves a read and a write alike.
 func builtDisplayTrees(trees bool) *displayTreeReader {
 	if !trees {
 		return nil
@@ -244,8 +265,13 @@ func (r *displayTreeReader) resolve() {
 
 // storedTrees is the table's tree of each of sums, and nothing at all where there is no table to
 // ask, where a connection of the caller's is already held, or where the query failed - each of
-// which leaves every text to be read for display, as it was before there was a table.
+// which leaves every text to be read for display, as it was before there was a table. A reader
+// whose request's statement read the table itself (preread) asks nothing and answers what that
+// statement held.
 func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMessage {
+	if r.preread {
+		return r.held
+	}
 	if r.server == nil || len(sums) == 0 || store.HoldsPooledConnection(r.ctx) {
 		return nil
 	}
@@ -269,7 +295,7 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 //
 // It runs on the request's context detached from its cancellation (context.WithoutCancel), since
 // a reader who goes away must not leave the saving to the next one, and bounded by
-// storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
+// StoreTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
 // the goroutine's own (store.ForConcurrentWorker), as the fill's connections are marked and as
 // every other detached run of this server is: the request's mark is still in use when the
 // handler returns - keyedWrites settles the Idempotency-Key on it - and the pool refuses a
@@ -295,7 +321,7 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	}
 	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	r.server.detached.goDetached(func() {
-		ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
+		ctx, cancel := context.WithTimeout(storing, StoreTreesTimeout)
 		defer cancel()
 		if err := texttrees.For(r.server.deps.Store).StoreTrees(ctx, r.mode, built); err != nil {
 			// Nothing the request carried is named here. The subject a route had at hand was
@@ -308,11 +334,13 @@ func (r *displayTreeReader) storeOf(missing []int) {
 	})
 }
 
-// storeTreesTimeout bounds the store of a read's own trees, which runs detached from the request
+// StoreTreesTimeout bounds the store of a read's own trees, which runs detached from the request
 // that read them and so from every cancellation that would otherwise end it. It is generous
 // because the work is one INSERT of a page's trees and the only cost of losing it is the next
-// reader's reading, and it is bounded at all because shutdown waits for this goroutine.
-const storeTreesTimeout = 30 * time.Second
+// reader's reading, and it is bounded at all because shutdown waits for this goroutine. It is
+// exported for `envoy-dispatch erase`, which waits it out after its commit and then deletes again
+// the trees it deleted, since a read that began before that commit can store one of them back.
+const StoreTreesTimeout = 30 * time.Second
 
 // storeEventDisplayTrees stores the display trees of every stored text the published events carry
 // in their payloads, keyed as every other tree is by the text alone. The event log and a live

@@ -28,6 +28,9 @@ import { inboxDismissRequest } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxThreadsQuery,
+  meInboxCountQuery,
+  meInboxDismissedQuery,
+  meInboxQuery,
   myRepliesCountQuery,
   myRepliesKey,
   userAgentStateQuery,
@@ -45,6 +48,13 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
+import {
+  cancelMeInbox,
+  dropMeInboxThreads,
+  type MeInboxSnapshot,
+  meInboxSnapshot,
+  restoreMeInbox,
+} from "./one-read-cache";
 import { inboxWriteScope, inWriteScope } from "./write-scope";
 
 /** One row a press names, and what the page drew in it. The server writes a row's mark only
@@ -207,21 +217,31 @@ function withRows(answer: MyRepliesResponse, dropped: readonly DroppedRow[]): My
 
 /** What a press rolls back to: the unread count as it stood, and the rows it took out of the view
  *  it was made in, with the place each held. Only one of the two views is written: a dismiss is
- *  made in the Inbox, a restore in the Dismissed view. */
+ *  made in the Inbox, a restore in the Dismissed view. Behind the Inbox's opt-in the two views are
+ *  the one read's (`one-read-cache.ts`): what it held before the press, and the rows the press
+ *  took out of it. */
 interface DismissRollback {
   readonly count: number | undefined;
   /** What left the Inbox's own read. */
   readonly inbox: readonly DroppedRow[];
   /** What left each page of the Dismissed read, by page. */
   readonly dismissed: readonly (readonly DroppedRow[])[];
+  /** Every cached read of the one read before the press, and the rows it took out of it. */
+  readonly oneRead: MeInboxSnapshot;
+  readonly oneReadDropped: readonly MyReplyRow[];
 }
 
 /** Every row a press took out of the views it was applied to, both sides at once: a dismiss
- *  takes them out of the Inbox's own read and a restore out of the Dismissed read's pages, so a
- *  press that names no row knows what it moved only from these. One rule for the count a refusal
- *  names and for the ids `onSettled` hands back, so the two can never disagree. */
+ *  takes them out of the Inbox's own read and a restore out of the Dismissed read's pages, and
+ *  behind the opt-in out of the one read's, so a press that names no row knows what it moved only
+ *  from these. One rule for the count a refusal names and for the ids `onSettled` hands back, so
+ *  the two can never disagree. */
 function droppedRows(rollback: DismissRollback | undefined): readonly DroppedRow[] {
-  return [...(rollback?.inbox ?? []), ...(rollback?.dismissed ?? []).flat()];
+  return [
+    ...(rollback?.inbox ?? []),
+    ...(rollback?.dismissed ?? []).flat(),
+    ...(rollback?.oneReadDropped ?? []).map((row, at) => ({ at, row })),
+  ];
 }
 
 /** The pages of the Dismissed read, as the infinite query holds them. */
@@ -261,6 +281,12 @@ export function useInboxDismiss({
   const inboxKey = inboxThreadsQuery().queryKey;
   const dismissedKey = dismissedThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
+  // Behind the Inbox's opt-in the two views and the count are the one read's, held as these are.
+  const oneReadKeys = [
+    meInboxQuery().queryKey,
+    meInboxDismissedQuery().queryKey,
+    meInboxCountQuery().queryKey,
+  ];
 
   const live = (rows: readonly string[], out: boolean) => {
     setPending((current) => {
@@ -274,10 +300,13 @@ export function useInboxDismiss({
   };
 
   const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
-    // A read of either view or the count asked while the press is out waits until Dispatch has
-    // taken it (its answer or its thread-state event): Dispatch can answer it before, with the
-    // rows it took out still in.
-    holds: () => ({ endsOn: inboxThreadsWritten, keys: [inboxKey, dismissedKey, countKey] }),
+    // A read of either view or the count, or behind the opt-in of the one read's, asked while the
+    // press is out waits until Dispatch has taken it (its answer or its thread-state event):
+    // Dispatch can answer it before, with the rows it took out still in.
+    holds: () => ({
+      endsOn: inboxThreadsWritten,
+      keys: [inboxKey, dismissedKey, countKey, ...oneReadKeys],
+    }),
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {
@@ -305,17 +334,20 @@ export function useInboxDismiss({
             }
       );
       if (rollback.count !== undefined) queryClient.setQueryData(countKey, rollback.count);
+      restoreMeInbox(queryClient, rollback.oneRead);
     },
     onMutate: async (input) => {
       setRefusal(undefined);
       // A read already out can land after this press's own apply and put every row it took back
       // on the page, where the refusal below would then draw each of them twice. Cancel the
       // reads this press writes first, as every optimistic write here does.
-      await Promise.all(
-        [inboxKey, dismissedKey, countKey].map((queryKey) =>
+      await Promise.all([
+        ...[inboxKey, dismissedKey, countKey].map((queryKey) =>
           queryClient.cancelQueries({ queryKey })
-        )
-      );
+        ),
+        cancelMeInbox(queryClient),
+      ]);
+      const oneRead = meInboxSnapshot(queryClient);
       const body = inboxDismissBody(input);
       const restoring = input.restore === true;
       // A dismiss takes its rows out of the Inbox's own read; a restore takes them out of the
@@ -349,7 +381,11 @@ export function useInboxDismiss({
       if (count !== undefined && unread > 0) {
         queryClient.setQueryData(countKey, Math.max(0, count - unread));
       }
-      return { count: unread > 0 ? count : undefined, dismissed, inbox };
+      // Behind the opt-in both views and the count are the one read's, written by the same rule.
+      const oneReadDropped = dropMeInboxThreads(queryClient, restoring, (thread) =>
+        dismissesThread(thread, body)
+      );
+      return { count: unread > 0 ? count : undefined, dismissed, inbox, oneRead, oneReadDropped };
     },
     onSuccess: () => {
       // What the server changed is read again from the server: both views, the counts, and the

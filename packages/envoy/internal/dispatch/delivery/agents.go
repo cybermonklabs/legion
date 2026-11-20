@@ -2,7 +2,7 @@ package delivery
 
 import "context"
 
-// resolveSessionTitlesQuery answers, for each id it is given, that session's newest event whose
+// ResolveSessionTitlesQuery answers, for each id it is given, that session's newest event whose
 // stamped title is not empty, as one ordered read a session that stops at that session's newest
 // titled row. It reads events_session_actor_created_at_idx (migration 0026), the partial index
 // on ((actor->>'id'), created_at desc) for a session actor, once per id.
@@ -27,7 +27,11 @@ import "context"
 // one row read a session: the read skips a session's untitled rows on the way to its newest
 // titled one, and a session that never stamped a title is read to the end of its own events and
 // answers no row at all.
-const resolveSessionTitlesQuery = `
+//
+// $1 is the session ids (text[]). It is exported for a reader that names its sessions inside a
+// statement of its own and splices this one in over them (api's GET /api/v1/me/inbox), reading
+// each row as ResolveSessionTitles does: the session's id, then its title.
+const ResolveSessionTitlesQuery = `
 		select s.id, e.session_title
 		from unnest($1::text[]) s(id)
 		cross join lateral (
@@ -62,7 +66,7 @@ func ResolveSessionTitles(ctx context.Context, q Querier, sessionIDs []string) (
 	}
 	// One statement for every id of the read, over that index, rather than one query per id: a
 	// Delivery timeline page can name hundreds of distinct sessions across its window.
-	rows, err := q.Query(ctx, resolveSessionTitlesQuery, sessionIDs)
+	rows, err := q.Query(ctx, ResolveSessionTitlesQuery, sessionIDs)
 	if err != nil {
 		return nil, err
 	}

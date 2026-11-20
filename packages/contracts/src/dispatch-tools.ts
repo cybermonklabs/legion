@@ -1,3 +1,4 @@
+import type { paths } from "./dispatch-api.generated";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DEFAULT_ISSUE_READ_EVENTS,
@@ -7,6 +8,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
+import { SEARCH_RESULT_KINDS } from "./dispatch-api-search";
 import { LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST } from "./legion-roles";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -535,13 +537,13 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
 /** What a tool that writes a body says about the two bounds the server holds it to and about the
- *  decision block it refuses in one, written once so every such tool says it the same way. */
+ *  ask block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "names it, and `dispatch limits` prints the bounds. A body holding an ask block (`:::ask`) " +
   "is refused however short it is, since nobody can answer a question put in a comment or a " +
-  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "message: ask the question in the issue's own document, as an ask block there, or open an " +
   "ask with `dispatch ask`.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
@@ -722,12 +724,14 @@ function resultProblem(value: unknown): string | undefined {
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units.
  * Generated into Go as `contracts.SearchQueryMax`, which the server enforces.
  *
- * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `project`,
- * `limit` and `offset`), and the load balancer in front of Dispatch answers a path and query over
- * 16,369 bytes with a bare `414` before the server runs. This limit and `PROJECT_KEY_PATTERN` (at
- * most 10 characters) keep the largest call the tool accepts at a 9,069-byte path and query, since
- * percent-encoding costs at most 9 bytes a unit. Raising either, or adding a parameter, means
- * redoing that sum.
+ * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `kind`,
+ * `project`, `limit` and `offset`), and the load balancer in front of Dispatch answers a path and
+ * query over 16,369 bytes with a bare `414` before the server runs. This limit and
+ * `PROJECT_KEY_PATTERN` (at most 10 characters) keep the largest call the tool accepts at a
+ * 9,147-byte path and query, since percent-encoding costs at most 9 bytes a unit: a call carrying
+ * `kind` goes to `GET /api/v1/search/results`, 8 bytes longer, and repeats `&kind=` at most
+ * `SEARCH_KINDS.length` (5) times, at most 14 bytes each, over the 9,069 bytes a call without it
+ * takes. Raising either, or adding a parameter, means redoing that sum.
  */
 export const SEARCH_QUERY_MAX = 1000;
 
@@ -742,6 +746,29 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  * `contracts.SearchKindDepth`, where the server cuts each kind's list.
  */
 export const SEARCH_KIND_DEPTH = 100;
+
+/** One value of the repeated `kind` parameter, read off the route table itself rather than
+ *  written out a second time: the parameter is optional, so both the parameter object and
+ *  `kind` are unwrapped before the array's element is taken. It is read from
+ *  `GET /api/v1/search/results`, the route that declares every member the handler reads;
+ *  `GET /api/v1/search` reads `kind` too and declares it nowhere, as it does the other five a
+ *  build released before them does not serve (`SEARCH_MEMBERS_EVERY_BUILD_READS`). */
+type SearchKindParameter = NonNullable<
+  NonNullable<paths["/api/v1/search/results"]["get"]["parameters"]["query"]>["kind"]
+>[number];
+
+/**
+ * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
+ * search index holds, in the order the answer's fusion lists them. A party, a component or any
+ * other node is read from its own route, so the search refuses a kind outside these rather than
+ * answering an empty page.
+ *
+ * It is the list a result's own kind is read as (`SEARCH_RESULT_KINDS` in
+ * `dispatch-api-search.ts`), named once: what the route ranks and what it answers with are one
+ * vocabulary. The `satisfies` is the route table's own, so a kind the CLI offers that the route
+ * would refuse does not compile.
+ */
+export const SEARCH_KINDS = SEARCH_RESULT_KINDS satisfies readonly SearchKindParameter[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
@@ -1086,7 +1113,7 @@ export const dispatchToolSpecs = [
       `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
       "live in. A question about the design an issue's document records is not this tool: write " +
-      "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
+      "it into that document as an ask block (dispatch doc-edit inserting an ask block at the " +
       "end of the section it concerns), at every phase, approved spec or not; the block reaches " +
       "the Inbox and its answer lands next to its context. Never give an ask an Approve option: a " +
       "document is approved through dispatch request-approval. Do not use this tool for a status " +
@@ -1297,7 +1324,7 @@ export const dispatchToolSpecs = [
     description:
       "Add review feedback to an issue or project document quote, or reply to a question asked with dispatch ask. " +
       "Do not use it for an exact replacement; use " +
-      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
+      `dispatch suggest instead. A quote anchor is pinned to its block. A reply under an open ask asks for clarification, not an answer: answer it with reply_to_ask, or reword the ask with dispatch edit-ask, rather than opening a second ask. A party reference in the body delivers this comment to that party: dispatch://agent/<session id> for an agent session, dispatch://role/<token> for a role. This tool sends no delivery mode, so Dispatch steers that party. Write that reference in backticks or in a code block to name nobody. dispatch://person/<login> names a person, and Dispatch delivers nothing to a person. ${BODY_BLOCK_RULE} The lines images appends count toward it. ${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
       project: z.string().describe("Project key owning the document.").optional(),
@@ -1395,7 +1422,8 @@ export const dispatchToolSpecs = [
     description:
       "Post a note humans must read now: a reply to a human's message or a deliverable that landed. A to-do only a human can " +
       "complete is an ask (dispatch ask), so it reaches their inbox. Never progress or status updates - Dispatch is a high-signal " +
-      "record, not a log. Not a design decision (write it as a decision block in the document) or document feedback (dispatch comment). " +
+      "record, not a log. Not a design question (write it as an ask block in the document), a design decision you made (write it as a " +
+      "`decision` block in the spec's `## Decisions` part), or document feedback (dispatch comment). " +
       "To answer a human's direct message to this session - one sent from the Agents page, which names no issue - pass that message's bare id as " +
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
@@ -1493,13 +1521,14 @@ export const dispatchToolSpecs = [
       "The blocks a with writes are refused, with the document unchanged, where the block holding the match cannot hold them: a heading and any cell of a table, which hold one line of text, and a typed block whose content rule they break - write that block's new text alone, and insert the blocks beside it. A hard break in with is INVALID_OP when the matched text is in a heading or a table cell, which are written on one line. In a table cell, with is the cell's text: write a | in it bare, in code too, since code whose text has an odd run of backslashes right before a | cannot be stored in a cell and is INVALID_OP, naming the cell. " +
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
+      'An insert writes inside a block instead with into, "block:<id>", after that block\'s last child: that is how a reading goes into a decision or an answered ask. ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
       `${CI_CHECK_RULE} ` +
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
       "A change a browser removes while the edit is in flight is never reported as applied: EDIT_LOST_TO_CONCURRENT_CHANGE means the write was refused and nothing was written, so re-read the document and decide again, as with PRECONDITION_FAILED; lost_ops on a successful result names operations whose text the live document no longer has, because the deletion landed after the version was written. " +
       "Several paragraphs, or a list, go in one replace, since with writes the blocks its markdown names; blocks beside a block go in one insert, since two inserts at one anchor come out reversed. The result prints the markdown of each block the edit wrote, so read that rather than the document again. " +
-      "Each decision block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Decision block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
+      "Each ask block the edit adds gets the related-item check dispatch ask gets, waiting at most five seconds for all of them together: the result prints, after its first line, `Ask block <id>:` and what that check found, that it found nothing, or that it was not made and why. " +
       "A block id written as {#id} longer than 256 bytes is stored, but its block is no graph node, so no reference reaches it. " +
       `The spec holds requirements, design, and decisions - never progress, status, or timestamps; a record of open items or progress is a document of its own. ${OWNER_REFERENCE} ${SPEC_WRITING_POINTER}`,
     arguments: (z) => ({
@@ -1554,6 +1583,12 @@ export const dispatchToolSpecs = [
                   'Insert or move before this anchor: a quote of the neighbouring block\'s text, or one of "start", "end", "heading:<exact heading text>", "block:<id>".'
                 )
                 .optional(),
+              into: z
+                .string()
+                .describe(
+                  'Insert inside this block, after its last child: "block:<id>" is the one form it takes. The markdown is read as that block\'s content, so it may hold what only that block holds, such as a reading closing a decision or an answered ask: {"op":"insert","into":"block:a1","markdown":":::reading{#r1}\\nThe agent reads the answer as REST for every service.\\n:::"}. An insert names exactly one of after, before and into. A Dispatch server older than into ignores it and refuses that insert with INVALID_OP naming after or before, writing nothing.'
+                )
+                .optional(),
               block: z
                 .string()
                 .describe(
@@ -1591,6 +1626,7 @@ export const dispatchToolSpecs = [
       "Do not use it for issue status, asks, or events; " +
       "use dispatch read instead. Supply ref, issue, or project plus artifact; issue plus an omitted artifact reads the primary document. " +
       "A live read returns its document token for an optional dispatch doc-edit precondition. With blocks it lists the live document's blocks instead of its markdown, in document order: each block's id, type, token, anchored comments and asks, and opening words, a typed block's serves and needs under it, and under a table each row by the index delete_row takes and each cell by its row and the column delete_column takes; block ids, block tokens and those indexes are what dispatch doc-edit takes. " +
+      "A live read's markdown holds no ask block's state or answer, so it uploads back unchanged; beside its document token it prints one `Answered <block id> by <answerer> at <time>: <answer>` line per answered ask block, with the options chosen, read from the server's asks. The approval line's content sha256 names the approved version's stored bytes, which differ from a live read's text where they still hold ask attributes; a version read prints those stored bytes and no Answered line. " +
       "After the markdown it prints every open thread anchored on the document in full: an open ask with its id and question and each reply's author, time and text, and a comment thread with its root's id, author, time, quote and text and each reply's author, time and text, in order; a resolved thread, and an ask that is answered or resolved, is not printed. " +
       "A picture (an uploaded PNG, JPEG, GIF or WebP of at most 3,750,000 bytes, 5 MB once base64-encoded) comes back as an image you see, with its name, type, size and version, every time you ask, including one a read already showed this session; " +
       "any other file that is not UTF-8 text is described, with the route that serves its bytes. " +
@@ -1642,20 +1678,19 @@ export const dispatchToolSpecs = [
       "nothing, and a different one is refused, since it would rewrite the card the human is " +
       "reading. Approve and Request changes each close the request, so the next call opens a new " +
       "one. Call it once per revision, when the revision is complete, never after each edit. An " +
-      "approval goes stale when the document changes outside its decision blocks after it, until " +
+      "approval goes stale when the document changes outside its ask blocks after it, until " +
       "a later version's text is exactly the approved version's again, as when an accidental " +
-      "edit is undone exactly, and no decision block in it was decided since: that version " +
+      "edit is undone exactly, and no ask block in it was decided since: that version " +
       "carries the approval and the document reads approved at it, so nothing is requested for " +
       "it. When the document does not read approved, request approval again once that revision " +
       "is complete and " +
       HUMAN_AGREED_TO_DOCUMENT +
       ", with a one-sentence summary naming what changed since the earlier approval: the card " +
       "names that approval (version, date, reviewer) and its Show diff control carries the detail. " +
-      "A human's own answer to a decision block carries the approval to the version it writes when " +
-      "that answer is the whole change since the approved version, so nothing is requested for " +
-      "it. A new version of a Legion root spec closes its armed design gate until a human " +
-      "approves it; a carried approval reopens it too. " +
-      "Refused, with nothing sent, while the document holds an open decision block, even when a " +
+      "A human's answer to an ask block writes no version and carries no approval. A new " +
+      "version of a Legion root spec closes its armed design gate until a human approves it; a " +
+      "carried approval reopens it too. " +
+      "Refused, with nothing sent, while the document holds an open ask block, even when a " +
       "human asked for approval: the refusal names each block; ask the human to answer or waive " +
       "it first. " +
       "Refused 409 PLAN_APPROVED_BY_REVIEW on an issue's plan, which its plan review approves " +
@@ -2074,7 +2109,9 @@ export const dispatchToolSpecs = [
       `The answer names how many results match; offset pages through them, and each kind lists at most its best ${SEARCH_KIND_DEPTH}, ` +
       "so narrow the query or name a project to reach the rest. Paging is exact only while the " +
       "corpus holds still: content added, changed, or removed between two offsets can shift rows " +
-      "across a page boundary, so one hit can come back twice and another never.",
+      "across a page boundary, so one hit can come back twice and another never. " +
+      `kind narrows the search to the kinds it names (${SEARCH_KINDS.join(", ")}), which are then ` +
+      "the only kinds ranked, counted and paged; with no kind named every kind is searched.",
     arguments: (z) => ({
       query: z
         .string({
@@ -2084,6 +2121,10 @@ export const dispatchToolSpecs = [
         })
         .describe(`Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} characters.`),
       project: z.string().describe("Optional project key to search within.").optional(),
+      kind: z
+        .array(z.enum(SEARCH_KINDS), { min: 1, max: SEARCH_KINDS.length })
+        .describe(`Kinds to search, any of ${SEARCH_KINDS.join(", ")}; every kind when absent.`)
+        .optional(),
       limit: z
         .number({ int: true, min: 1, max: 50 })
         .describe("Maximum results, 1-50; default 20.")
@@ -2107,7 +2148,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_related",
     example: { project: "CORE", title: "Retry failed webhook deliveries" },
     description:
-      "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
+      "Run the related-item check that dispatch issue, dispatch ask and a new ask block in " +
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
       "first), each ask with whether it is answered. Use it to check a draft before filing it. " +

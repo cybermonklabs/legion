@@ -12,6 +12,7 @@ import { mergeIssue } from "../../api/issue-cache";
 import { boardMoveMutationKey } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
 import type { Issue, IssuePriority } from "../../api/types";
+import { invalidateMeInbox } from "../inbox/one-read-cache";
 import type { BoardMoveVariables } from "../project/board-moves";
 import { type Shape, shape } from "../writes/tab-storage";
 import type { KeyedPress } from "../writes/useKeyedWrite";
@@ -509,6 +510,7 @@ function readAgain(client: QueryClient, issueKey: string): void {
   void client.invalidateQueries({ queryKey: ["issue", issueKey] });
   void client.invalidateQueries({ queryKey: ["issues"] });
   void client.invalidateQueries({ queryKey: inboxKey });
+  invalidateMeInbox(client);
 }
 
 /** Holds each read out now on a cache a pick shows on that was sent before the answer `record`

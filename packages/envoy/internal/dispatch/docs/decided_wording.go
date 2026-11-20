@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -256,7 +257,9 @@ func (s *Service) restoreDocumentDecidedWordings(ctx context.Context, tx pgx.Tx,
 // queued. They are indexed at the time this restoration writes them, the change they record, and
 // not at the time of the edit it undoes, which the restore leaves on the row (edited_at). No
 // event carries the change, as none does for refs.RebuildAll's, so nothing counts what the
-// restoration moved. Which asks it restores, their
+// restoration moved, and what the two index passes state in the node and tuple store - the
+// question's citations, the parts' nodes, their part_of and their links - is appended at the
+// sentinel (graphstore.NoEvent), right after the parts' write. Which asks it restores, their
 // references and their parts are read and planned where it is called (decidedWordingPlan); the
 // restoration, the references and the parts go through write, queued in that order, so an ask's
 // parts are written after the update whose wording they hold. The restoration names the planned
@@ -305,14 +308,14 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 	})
 	planned := make([]string, 0, len(restored))
 	answers := make([]*string, 0, len(restored))
-	steps := make([]WriteStep, 0, 2*len(restored))
+	steps := make([]WriteStep, 0, 3*len(restored))
 	for _, wording := range restored {
 		planned = append(planned, wording.ask)
 		answers = append(answers, wording.answerText)
 		// The question and the parts of the restored ask through one reader, which holds what
 		// the database answered for the first of them.
 		reader := refs.NewReader(ctx, tx, "ask", wording.ask, s.serverURL)
-		_, step, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question)
+		_, step, cited, err := planAskReferences(ctx, tx, reader, wording.ask, wording.wording.Question, nil)
 		if err != nil {
 			return nil, fmt.Errorf("index the restored question of ask %s: %w", wording.ask, err)
 		}
@@ -320,19 +323,26 @@ func (s *Service) restoreWordings(ctx context.Context, tx pgx.Tx, ids []string) 
 		// The restored ask's parts are its question, its restored options and the answer the
 		// decision was given on, which the restore leaves on the row. Their write is queued
 		// after the restore's, so the trigger that marks the ask's parts owed on that update has
-		// already run when this index clears it.
+		// already run when this index clears it, and after the question's, so the statement that
+		// ends the parts' index settles the ask's row of the forms queue after both deletes
+		// (refs.ItemIndexing.SettlingForms).
 		ask := model.Ask{
 			ID:       wording.ask,
 			Question: wording.wording.Question,
 			Options:  wording.wording.Options,
 			Answer:   wording.answer,
 		}
-		indexing, err := planAskPartIndex(ctx, tx, reader, ask, at)
+		indexing, _, err := planAskPartIndex(ctx, tx, reader, ask, at, nil)
 		if err != nil {
 			return nil, fmt.Errorf("index the parts of the restored ask %s: %w", wording.ask, err)
 		}
-		steps = append(steps, func(b *store.WriteBatch) error {
-			indexing.Queue(b)
+		indexing = indexing.SettlingForms()
+		stated := indexing.Stated()
+		stated.Tuples = append(stated.Tuples, cited.Tuples...)
+		steps = append(steps, indexing.Queue, func(b *store.WriteBatch) error {
+			if err := graphstore.QueueCaused(b, stated, graphstore.NoEvent); err != nil {
+				return fmt.Errorf("state the restored ask %s in the store: %w", wording.ask, err)
+			}
 			return nil
 		})
 	}

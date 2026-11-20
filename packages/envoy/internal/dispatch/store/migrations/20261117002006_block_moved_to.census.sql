@@ -1,0 +1,6 @@
+-- The migration creates two functions, moved_to_reach and block_moved_to, and nothing else: it
+-- writes no row, reads no row while it applies (plpgsql validates a body without running it, and a
+-- sql function's body is checked against the catalog, not run), and changes no table, so it
+-- refuses no row and rewrites no value any reader had before it. The number of existing rows this
+-- migration would refuse or rewrite is therefore 0.
+select 0

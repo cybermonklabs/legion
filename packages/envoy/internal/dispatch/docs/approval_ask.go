@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -110,7 +111,7 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
 // requested_version is the version the request names) and markdown is byte for byte the stored
-// text of that version (restoresVersionText), does its requested_version move with its version,
+// text of that version (restoresApprovedText), does its requested_version move with its version,
 // quietly: a settlement saves what the room already holds, such as the blocks a close and a reopen
 // wrote back, so the text the person was asked about did not change and the request keeps its
 // turn as if it had not moved, waking nobody. A version a route writes - a named version, an
@@ -167,7 +168,7 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 	}
 	keepsTurn := false
 	if bySettlement && moved.RequestedVersion == moved.Version {
-		if keepsTurn, err = restoresVersionText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
+		if keepsTurn, err = restoresApprovedText(ctx, tx, artifactID, moved.Version, markdown); err != nil {
 			return err
 		}
 	}
@@ -257,7 +258,7 @@ func rewriteApprovalAsk(
 		return err
 	}
 	reader := refs.NewReader(ctx, tx, "ask", ask.ID, serverURL)
-	changes, index, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
+	changes, index, cited, err := planEditedAskReferences(ctx, tx, reader, ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		return fmt.Errorf("index approval ask: %w", err)
 	}
@@ -271,11 +272,15 @@ func rewriteApprovalAsk(
 	// which its ask.edited names beside the request's own references. The parts are planned from
 	// the row the update below writes, which the read of the index does not show yet, and written
 	// in that same step; the row carries the edited_at that update sets, so the plan marks the
-	// request edited without reading it back.
-	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, changes)
+	// request edited without reading it back. The question's reconciliation is queued before the
+	// parts, so the parts' step settles the forms queue (questionReconciled).
+	changes, parts, indexed, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, true, changes, nil)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
 	}
+	// What the rewording states in the store - its parts' nodes and links and the request's
+	// citations - waits for the ask.edited that records it, right after which it is stated.
+	indexed.Tuples = append(indexed.Tuples, cited.Tuples...)
 	payload := model.NewAskEditEventPayload(row, previous, actor, changes)
 	payload.Quiet = quiet
 	return write(ctx, tx, func(b *store.WriteBatch) error {
@@ -297,6 +302,9 @@ func rewriteApprovalAsk(
 			return fmt.Errorf("append approval ask edit: %w", err)
 		}
 		refs.QueueStamp(b, "ask", ask.ID)
+		if err := graphstore.QueueCaused(b, indexed, graphstore.LatestEvent); err != nil {
+			return fmt.Errorf("state approval ask %s's rewording in the store: %w", ask.ID, err)
+		}
 		return nil
 	})
 }

@@ -55,7 +55,7 @@ async function commandsFor(markdown: string, selection?: number) {
 
 console.log('\n=== Typed block commands ===');
 
-await test('insertTypedBlock creates an empty typed block with schema defaults', async () => {
+await test('insertTypedBlock creates an empty typed block with schema defaults and no server attribute', async () => {
   let id = 0;
   setBlockIdGenerator(() => `local-${++id}`);
   try {
@@ -68,7 +68,9 @@ await test('insertTypedBlock creates an empty typed block with schema defaults',
     assert(ask.child(0).content.size === 0, 'ask body paragraph is not empty');
     assert(ask.attrs.urgency === 'med', `urgency = ${ask.attrs.urgency}`);
     assert(ask.attrs.multiple === false, `multiple = ${ask.attrs.multiple}`);
-    assert(ask.attrs.state === 'open', `state = ${ask.attrs.state}`);
+    // A server attribute has no default in the editor (`writtenDefault`): the server writes an
+    // ask's state, or nobody does.
+    assert(ask.attrs.state === undefined, `state = ${ask.attrs.state}`);
     assert(ask.attrs.answered_by === undefined, `answered_by = ${ask.attrs.answered_by}`);
     assert(blockIdOf(ask) === 'local-1', `ask blockId = ${blockIdOf(ask)}`);
     assert(blockIdOf(ask.child(0)) === 'local-2', `body blockId = ${blockIdOf(ask.child(0))}`);

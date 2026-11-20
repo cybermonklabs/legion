@@ -446,8 +446,8 @@ func (c *HTTPClient) messageBody(ctx context.Context, key, id string) (string, e
 }
 
 // Approval reads GET /api/v1/artifacts/{id} and returns the document's derived approval state,
-// the issue carrying it, and what the document is on that issue: its primary flag, its role and
-// its slug, which is how a design-gate step finds the document it binds to.
+// the issue carrying it, and what the document is on that issue: its primary flag and its role,
+// which is how a design-gate step finds the document it binds to.
 func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval, error) {
 	var response artifactResponse
 	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID), nil, &response); err != nil {
@@ -468,7 +468,6 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 		Reason:        response.Approval.Reason,
 		Primary:       response.Primary,
 		Role:          response.Role,
-		Slug:          response.Slug,
 	}
 	if response.Approval.At != nil {
 		at, err := time.Parse(time.RFC3339Nano, *response.Approval.At)
@@ -677,7 +676,6 @@ type issueEventResponse struct {
 
 type artifactResponse struct {
 	IssueKey *string           `json:"issue_key"`
-	Slug     string            `json:"slug"`
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`

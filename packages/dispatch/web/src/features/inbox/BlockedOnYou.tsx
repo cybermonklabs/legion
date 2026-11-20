@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { inboxQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import { useIsHuman } from "../../hooks/useIsHuman";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -16,6 +17,8 @@ import {
 } from "../../theme/classes";
 import { useCredentialRequests } from "../credentials/pending";
 import { formatAskAge } from "./ask-age";
+import { useOneRead } from "./one-read";
+import { meInboxAsks } from "./one-read-rows";
 import { isMine } from "./sections";
 import { isSnoozed } from "./snooze";
 
@@ -86,13 +89,19 @@ function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox -
+ *  the Inbox read's asks, or behind the opt-in (`useOneRead`) the one read's, which are the asks
+ *  that wait on the reader and no other. */
 export function useNeedsYouCount(): number {
-  const inbox = useQuery(inboxQuery());
+  const oneRead = useOneRead();
+  const human = useIsHuman();
+  const inbox = useQuery({ ...inboxQuery(), enabled: !oneRead });
+  const own = useQuery({ ...meInboxQuery(), enabled: oneRead && human });
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();
-  return needsYou(inbox.data ?? [], requests, viewer).count;
+  const asks = oneRead ? meInboxAsks(own.data) : (inbox.data ?? []);
+  return needsYou(asks, requests, viewer).count;
 }
 
 export function BlockedOnYou({

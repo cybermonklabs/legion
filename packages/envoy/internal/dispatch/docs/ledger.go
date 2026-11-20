@@ -13,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -22,13 +24,14 @@ import (
 
 // Ledger is what the document operations joined to one database transaction produce until it
 // ends: the events they generate, their writes to live documents (see liveWrite) and the versions
-// they write. Join is the only way to join a transaction, so an operation that has one always has
-// its ledger. Commit ends the transaction the way every caller must: it runs the transaction's
-// write queue, records the writes' authors and takes out the authors its versions listed in the
-// transaction itself, commits, marks the in-flight credits its versions listed consumed, records
-// the writes' latest edit source in their rooms, and publishes the writes to their rooms, in that
-// order. Discard, which callers defer right after Join, drops whatever a transaction that did not
-// commit left behind.
+// they write. Join, and joinAtOnce for the decisions step's restore of one issue, are the only ways
+// to join a transaction, so an operation that has one always has its ledger. Commit ends the
+// transaction the way every caller must: it runs the transaction's write queue, records the
+// writes' authors and takes out the authors its versions listed in the transaction itself,
+// commits, marks the in-flight credits its versions listed consumed, records the writes' latest
+// edit source in their rooms, and publishes the writes to their rooms, in that order. Discard,
+// which callers defer right after Join, drops whatever a transaction that did not commit left
+// behind.
 //
 // A joined transaction runs in two phases. Its read phase takes the locks it needs - advisory
 // locks, none of which gives it a transaction id - reads, and does every operation's document
@@ -48,15 +51,19 @@ import (
 // no `tx` and marks its ledger `ownTx` instead: a settlement (settleRoomWithin) and the block-id
 // backfill (backfillBlockIDs) are the two. A settlement's ledger queues its writes all the same
 // (writer), and the settlement runs the queue before it commits; the backfill's sets no writer,
-// so its writes run at once (write, store.RunWrite). Those are the ledgers document operations run
-// under: every operation that writes a document either joins its caller's transaction or runs in
-// the transaction of one of those two writers. A background pass with no document operation
-// queues its writes on a bare ledger (queueWrites).
+// so its writes run at once (write, store.RunWrite). The decisions step's restore of one issue
+// (DecisionStep.restoreIssue) is the third writer of a transaction of its own: it joins it with
+// joinAtOnce, whose ledger carries that `tx`, so Commit commits it, and sets no writer, so its
+// writes run at once, in the order it makes them, as the backfill's do. Those are the ledgers
+// document operations run under: every operation that writes a document either joins its caller's
+// transaction or runs in the transaction of one of those three writers. A background pass with no
+// document operation queues its writes on a bare ledger (queueWrites).
 type Ledger struct {
 	service *Service
 	tx      pgx.Tx
 	// writer is the transaction whose writes this ledger queues: the joined transaction, a
-	// writer's own transaction, or a background pass's (queueFor).
+	// writer's own transaction, or a background pass's (queueFor). It is nil on a ledger whose
+	// writes run at once: the block-id backfill's and the decisions step's restore's (joinAtOnce).
 	writer pgx.Tx
 	// ownTx marks a ledger whose operations run inside a transaction of the writer's own, which
 	// no caller joined: a settlement's (settleRoomWithin) and the block-id backfill's
@@ -96,6 +103,10 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
+	// removals holds, per document, each answered ask a person's own write of this transaction
+	// took the block of out of that document, by ask id (answerDroppedAnsweredAsks), which the
+	// version the write leaves states on the ask's node (removalsOf).
+	removals map[string]map[string]heldRemoval
 	// queue is the transaction's write phase (WriteStep): every write its operations and its
 	// caller made, in the order they made them, which Commit sends as one batch before it commits.
 	// sealed is set once the write phase has begun or the ledger was discarded, after which
@@ -137,11 +148,12 @@ type Ledger struct {
 	// approval of that document already: a write path that starts recording a review here would
 	// refuse the carry of any later version of the same document in the same transaction.
 	reviews map[string]model.ArtifactReview
-	// referenced is, per source, the targets its references cite once this transaction's queued
-	// reconciliation of them is written, and blockIndexes, per document, what its block index holds
-	// once its queued indexing is written: what a later reconciliation of the same source in this
-	// transaction plans against (planReplaceCounted, planBlockIndex).
-	referenced   map[refs.Target][]refs.Target
+	// referenced is, per source, this transaction's last queued reconciliation of its references,
+	// whose rows - and, for an item, each row's tuples_stored - are what the source holds once it
+	// is written, and blockIndexes, per document, what its block index holds once its queued
+	// indexing is written: what a later reconciliation of the same source in this transaction
+	// plans against (planReplaceCounted, planBlockIndex).
+	referenced   map[refs.Target]refs.Replacement
 	blockIndexes map[string]refs.BlockIndex
 	// askParts holds, per ask this transaction has planned the parts of, what its part index
 	// holds once that plan is written: what a later plan of the same ask's parts in this
@@ -168,9 +180,13 @@ type Ledger struct {
 	// ask.opened queued after that write (api.recordRestoredAsksTx). The asks table reads them
 	// withdrawn, and the events table holds no such ask.opened, until the write phase has run, so
 	// the reopen's reads that must see them restored take them from here (restoredAsksOf): its
-	// mark (MarkReopenOwedAskDocuments), and its follow's request and carry (openApprovalAsk,
-	// reopenRestoredSince).
+	// mark (MarkReopenOwedAskDocuments), and its follow's request (openApprovalAsk).
 	restored []string
+	// settledAsks holds, per ask, the last change of its answer state this transaction has planned
+	// and queued (PlanSettle): the asks row and the ask's node hold none of it until the write
+	// phase has run, so a later change of the same ask in this transaction is planned from it
+	// (asks.PlanSettleAfter) rather than from the tables.
+	settledAsks map[string]asks.Settled
 }
 
 // WriteStep is one step of a transaction's write phase: it puts the statements of one write on the
@@ -689,24 +705,40 @@ func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
 // whatever context the caller holds (ReadContext), as QueueVersion's write does, and it refuses
 // a ledger no caller joined and a sealed one (ErrQueueSealed).
 //
+// It returns, too, what the parts state in the node and tuple store - their block nodes, their
+// part_of and their links (refs.ItemIndexing.Stated) - held for the event of the write, which the
+// route queues with graphstore.QueueCaused under graphstore.LatestEvent right after the ask's
+// event, beside what the event's other writes stated.
+//
 // document is the one the parts' `#id`s resolve against for an ask whose insert the route has
 // queued, which no read of that row can answer yet (refs.PendingAskDocument); nil for an ask
 // already stored, whose row the reader reads for itself (refs.ScopeOf). It is read only if a
 // part holds a `#` candidate, and a route that reconciles the ask's question too hands the same
-// one to both readers, so the two of them read it once.
+// one to both readers, so the two of them read it once. scope is, likewise, the ask's node as
+// the route queued it before that insert (refs.WrittenItem), which the parts are planned under
+// since no read of the index finds the ask yet; nil for an ask already stored, whose node the
+// index reads for itself (refs.ReadItemIndex).
+//
+// questionReconciled says the route queued the reconciliation of the ask's question before this
+// call, so the parts' statements settle the ask's row of the forms queue; a route that writes the
+// parts alone - an answer, a resolution, a restoration - passes false, and the parts' step
+// reconciles the question's references after them and settles it there (planAskPartsCounted),
+// and what it returns as stated holds the question's citations beside the parts'.
 func (l *Ledger) QueueAskParts(
 	ctx context.Context,
 	ask model.Ask,
 	serverURL string,
 	document *refs.PendingDocument,
+	scope *refs.ItemScope,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
-) (model.ReferenceChanges, error) {
+) (model.ReferenceChanges, graphstore.Uncaused, error) {
 	if l.writer == nil {
-		return model.ReferenceChanges{}, errUnjoined
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, errUnjoined
 	}
 	if l.sealed {
-		return model.ReferenceChanges{}, ErrQueueSealed
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, ErrQueueSealed
 	}
 	// Every read below runs under this ledger's context, so a `#id` naming a question block
 	// this transaction has only queued resolves to the ask it will name (refs.Pending); the
@@ -717,14 +749,14 @@ func (l *Ledger) QueueAskParts(
 	// that reconciles the question too builds one and reconciles through it
 	// (refs.NewReaderInScope).
 	reader := refs.NewReaderInScope(ctx, l.writer, "ask", ask.ID, serverURL, document)
-	changes, parts, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, beside)
+	changes, parts, stated, err := planAskPartsCounted(ctx, l.writer, reader, ask, at, questionReconciled, beside, scope)
 	if err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
 	if err := l.Queue(parts); err != nil {
-		return model.ReferenceChanges{}, err
+		return model.ReferenceChanges{}, graphstore.Uncaused{}, err
 	}
-	return changes, nil
+	return changes, stated, nil
 }
 
 // pendingArtifact is the address registered for artifactID on ctx's ledger
@@ -786,6 +818,49 @@ func recordPendingReview(ctx context.Context, tx pgx.Tx, artifactID string, revi
 	return nil
 }
 
+// PlanSettle plans change on the ask askID for this transaction's write phase, as the one writer
+// of an ask's answer state plans it (asks.PlanSettle): from the last change of the same ask this
+// transaction has planned, where it has planned one (asks.PlanSettleAfter), and from the stored row
+// and node otherwise; and records the plan as the ask's latest, so a change after it is planned
+// from it in turn. The caller queues the plan where it makes the write (Queue, write,
+// asks.Settled.Queue). Every settle of a transaction that queues its writes is planned here - the
+// reopen restores an ask and then its follow answers it, a settlement retracts an ask whose block
+// then returns - so no change of an ask is planned from a row an earlier queued change has already
+// moved. It refuses a ledger no caller joined and a sealed one (ErrQueueSealed).
+func (l *Ledger) PlanSettle(ctx context.Context, askID string, change asks.Change) (asks.Settled, error) {
+	if l.writer == nil {
+		return asks.Settled{}, errUnjoined
+	}
+	if l.sealed {
+		return asks.Settled{}, ErrQueueSealed
+	}
+	var settled asks.Settled
+	var err error
+	if earlier, planned := l.settledAsks[askID]; planned {
+		settled, err = asks.PlanSettleAfter(l.ReadContext(ctx), earlier, change)
+	} else {
+		settled, err = asks.PlanSettle(l.ReadContext(ctx), l.writer, askID, change)
+	}
+	if err != nil {
+		return asks.Settled{}, err
+	}
+	if l.settledAsks == nil {
+		l.settledAsks = make(map[string]asks.Settled, 1)
+	}
+	l.settledAsks[askID] = settled
+	return settled, nil
+}
+
+// planSettle plans change on the ask askID in tx: through the ledger that queues tx's writes
+// (Ledger.PlanSettle), which plans it after a change of the same ask that ledger already holds,
+// and else from the stored row and node, for a write that runs at once (asks.PlanSettle).
+func planSettle(ctx context.Context, tx pgx.Tx, askID string, change asks.Change) (asks.Settled, error) {
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		return ledger.PlanSettle(ctx, askID, change)
+	}
+	return asks.PlanSettle(ctx, tx, askID, change)
+}
+
 // PendingReview is the review of artifactID this transaction has queued and not yet written
 // (recordPendingReview): a review it queued is newer than every stored one, so a read of the
 // document's newest review before Commit takes it from here. False when this transaction queued
@@ -838,7 +913,8 @@ func (l *Ledger) deferAnnouncement(artifactID string, version persistence.Versio
 // the advisory locks the appends took and the transaction still holds, so a listener that hears
 // it reads a head at or past that version, and hears nothing of a transaction that rolls back.
 // It is queued on the write phase's batch (commitWrites), the last statement after every append
-// it announces, so the transaction spends no round trip of its own on it.
+// it announces, so the transaction spends no round trip of its own on it; a transaction whose
+// ledger queues nothing (joinAtOnce) runs it at once, after those appends.
 func (l *Ledger) announceAppends(ctx context.Context) error {
 	if len(l.announced) == 0 {
 		return nil
@@ -850,7 +926,7 @@ func (l *Ledger) announceAppends(ctx context.Context) error {
 		heads = append(heads, int64(announced.head))
 	}
 	l.announced = nil
-	return writeExec(ctx, l.writer, "announce the documents the transaction appended to", `
+	return writeExec(ctx, l.tx, "announce the documents the transaction appended to", `
 		select `+announceDocumentHead("announced.room", "announced.head", "$3::text")+`
 		from unnest($1::text[], $2::bigint[]) with ordinality as announced(room, head, position)
 		order by announced.position
@@ -892,6 +968,20 @@ var errUnjoined = errors.New("docs: the operation needs a transaction joined wit
 // produce in the returned ledger and queueing their writes for its Commit.
 func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx, writer: tx}
+	return withLedger(ctx, ledger), ledger
+}
+
+// joinAtOnce joins the document operations run with the returned context to tx, as Join does,
+// and queues none of their writes: the ledger knows tx, so its operations run as inside a
+// transaction (inTransaction) and Commit commits it, and it sets no writer, so each write runs at
+// once, in the order the operations make it (write, store.RunWrite), and Commit's settlement
+// credit runs at once too. It is for the decisions step's restore (DecisionStep.restoreIssue),
+// whose transaction is one issue's restore and no more: a background pass under the step's own
+// advisory lock (takeRestoreLock) whose reads must see its own writes - an ask row it moved, a
+// version it wrote before the event that names it, a node it stated - and which no request waits
+// on, as the block-id backfill is (backfillBlockIDs). Every other caller joins with Join.
+func (s *Service) joinAtOnce(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
+	ledger := &Ledger{service: s, tx: tx}
 	return withLedger(ctx, ledger), ledger
 }
 

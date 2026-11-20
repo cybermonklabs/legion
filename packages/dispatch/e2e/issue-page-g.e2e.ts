@@ -138,9 +138,9 @@ test("a node draws its kind at the right of its row and every node starts at one
         .toBeGreaterThan(0);
       const layouts = await rowLayouts(page, seeded.slugs.spec);
       expectRowLayouts(layouts, where, true, size.width);
-      // Decision 246: the spec's requirement is a statement and the decisions document's is a
-      // block, so the view draws a bullet of each colour, each on its own row, for the check
-      // above to read.
+      // Decision 246: the spec's requirement is a statement and the requirement inside the
+      // plan's decision is a block, so the view draws a bullet of each colour, each on its own
+      // row, for the check above to read.
       expect(
         layouts
           .filter((row) => row.type === "requirement" && !row.context)
@@ -149,7 +149,7 @@ test("a node draws its kind at the right of its row and every node starts at one
       ).toEqual(
         expect.arrayContaining([
           [`${seeded.slugs.spec}#b-r-one`, true],
-          [`${seeded.slugs.decisions}#b-r1`, false],
+          [`${seeded.slugs.plan}#b-r1`, false],
         ])
       );
       expectRowGroups(await rowGroups(page), where, size.width, addressesOf(seeded));

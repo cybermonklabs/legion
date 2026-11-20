@@ -64,6 +64,52 @@ test("a bare key links only where the batched read answered that its issue exist
   ]);
 });
 
+// The graph holds no node for a party, so the batched read refuses a request that names one,
+// which would leave every row of the tree unnamed. A row asks for none.
+test("a party is never asked for", () => {
+  const parties =
+    "Ask dispatch://role/reviewer, dispatch://person/alice@example.com and " +
+    "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce about dispatch://CORE-7.";
+  expect(citedReferences(parties)).toEqual(["dispatch://CORE-7"]);
+});
+
+/** The links a pass over `text` makes, each as its href and its words. */
+function partyLinks(text: string): (string | null)[][] {
+  const root = document.createElement("div");
+  root.innerHTML = `<p>${text}</p>`;
+  linkRowReferences(root, NAMES);
+  // A second pass, as a page makes once names arrive, keeps each party's words.
+  linkRowReferences(root, NAMES);
+  return [...root.querySelectorAll("a")].map((link) => [
+    link.getAttribute("href"),
+    link.textContent,
+  ]);
+}
+
+// A row links a party from its address alone, as every other sink of a reference does
+// (`referenceHref`): the read brings no name for one, so the link keeps its writer's words.
+test("an agent's session links to its live view, in the words its writer wrote", () => {
+  const agent = "dispatch://agent/01a1bb84-93b2-74d6-9d65-fb75e08653ce";
+  expect(partyLinks(`Ask ${agent}.`)).toEqual([
+    ["/agents/01a1bb84-93b2-74d6-9d65-fb75e08653ce/live", agent],
+  ]);
+});
+
+test("a role links to the agents list that role filters, in the words its writer wrote", () => {
+  expect(partyLinks("Ask dispatch://role/reviewer.")).toEqual([
+    ["/agents?role=reviewer", "dispatch://role/reviewer"],
+  ]);
+});
+
+// No page shows a person (R5), so a person's address is drawn as written and links nothing.
+test("a person links to nothing and is drawn as written", () => {
+  const text = "Ask dispatch://person/alice@example.com about dispatch://CORE-7.";
+  expect(partyLinks(text)).toEqual([
+    ["/issues/CORE-7", "CORE-7 The header draws the approval of each step"],
+  ]);
+  expect(rowReferences(text, []).map((one) => one.reference)).toEqual(["dispatch://CORE-7"]);
+});
+
 test("an issue reads as its key and title, and anything else as its target's own words", () => {
   const [issue, unnamed, ask] = rowReferences(
     "dispatch://CORE-7 dispatch://CORE-9 dispatch://CORE-1/ask/ask-1",

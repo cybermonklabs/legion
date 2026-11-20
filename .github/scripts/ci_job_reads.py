@@ -779,6 +779,11 @@ RULES = {
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501-502 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
+    # c-document-gone's test reads this tree's href table through `..`; it is a basebuild test,
+    # which no job of ci.yaml compiles today, so the rule binds the run that first does.
+    f"{ENVOY}/cmd/dispatch/document_gone_test.go": reads(
+        (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
+         "cmd/dispatch/document_gone_test.go:301 os.ReadFile of ../../internal/dispatch/text/testdata/dispatch-href-references.json")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
@@ -793,20 +798,20 @@ RULES = {
     ) + envoy_client_dep("packages/envoy-client/bin/dispatch.ts, which cmd/dispatch/twobuild_cli_test.go:42-46 runs, "
                          "imports src/dispatch-cli.ts"),
     # The two-build suite's stored-document half reads this tree's side of what each build holds
-    # (documentSides, tree ../../internal/dispatch at :55); the previous build's side is the copy
+    # (documentSides, tree ../../internal/dispatch at :65); the previous build's side is the copy
     # packages/envoy/scripts/build-dispatch-build.sh writes outside the checkout.
     f"{ENVOY}/cmd/dispatch/twobuild_documents_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json",
-         "cmd/dispatch/twobuild_documents_test.go:57 readManifest (os.ReadFile :112) of the current build's block manifest"),
+         "cmd/dispatch/twobuild_documents_test.go:67 readManifest (os.ReadFile :122) of the current build's block manifest"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/corpus/*.md",
-         "cmd/dispatch/twobuild_documents_test.go:70 the current build's corpus: corpusFiles :407 os.ReadDir, and "
-         ":485 os.ReadFile of each .md file it lists"),
+         "cmd/dispatch/twobuild_documents_test.go:80 the current build's corpus: corpusFiles :418 os.ReadDir, and "
+         ":513 os.ReadFile of each .md file it lists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile"),
+         "cmd/dispatch/twobuild_documents_test.go:81 the current build's reference fixtures, read by "
+         "referencesMarkdown and readsTabAddresses through readReferenceTables and readFixture :772 os.ReadFile"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json",
-         "cmd/dispatch/twobuild_documents_test.go:71 the current build's reference fixtures, read by "
-         "referencesMarkdown :661 os.ReadFile")),
+         "cmd/dispatch/twobuild_documents_test.go:81 the current build's reference fixtures, read by "
+         "referencesMarkdown and hrefsReadApart through hrefTable and readFixture :772 os.ReadFile")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads three documents only when
     # DISPATCH_EDIT_PROFILE_OUT is set (line 125), which CI never sets: not a CI read.
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
@@ -878,6 +883,11 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
+    f"{ENVOY}/internal/dispatch/graphcensus/store_drives_test.go": [
+        run(ENVOY, ["./cmd/dispatch-seed"],
+            "internal/dispatch/graphcensus/store_drives_test.go:293 cmdtest.BuildCommand . in ../../../cmd/dispatch-seed, "
+            "whose binary TestTheSizingCountsEveryTupleTheWritersAppend runs as the seed's three store writers",
+            mode="build")],
     f"{ENVOY}/internal/dispatch/legion/golden_state_test.go": reads(
         (f"{FIX}/daemon-api/state.json",
          "internal/dispatch/legion/golden_state_test.go:29 os.ReadFile (goldenStatePath :16, "
@@ -2151,7 +2161,12 @@ CLAIM_MODEL_SCRIPT = (f"go test -count=1 -timeout {CLAIM_MODEL_TIMEOUT} -v -run 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
-DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch"
+DISPATCH_SERVER_BUILD = 'flock ./.dispatch-e2e.lock go build -ldflags "-X main.buildCommit=$build_commit" -o ./dispatch-e2e ./cmd/dispatch'
+# The step that builds run-server.sh's binary ahead of the harness's boot, in each job that runs
+# that script's own build: stamped with the checkout's commit as that build is, so it finds the
+# binary current and links nothing.
+DISPATCH_E2E_BUILD = 'go build -ldflags "-X main.buildCommit=$commit" -o ./dispatch-e2e ./cmd/dispatch'
+DISPATCH_E2E_BUILD_SCRIPT = f"commit=$(git rev-parse HEAD)\n{DISPATCH_E2E_BUILD}"
 # The three commands of the real broker's harness rows, and the Dispatch server with them: the
 # binaries job of dispatch-browser.yaml builds all four, since the shard and alone jobs run
 # them in a container and so run no go command of their own (that file says why).
@@ -2160,7 +2175,8 @@ BROKER_PKGS = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./internal/broker/broke
 BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
+commit=$(git rev-parse HEAD)
+CGO_ENABLED=0 go build -ldflags "-X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
@@ -2418,6 +2434,10 @@ SCRIPT_TEST_GATES = [
     ], lib=False),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
+    ]),
+    harness("check_kept_for_one_release_test", "Test the kept-for-one-release list check",
+            f"{SCRIPTS}/check-kept-for-one-release.test.sh", [
+        (f"{SCRIPTS}/check-kept-for-one-release.sh", "the script under test"),
     ]),
     harness("check_fireevent_reasons_test", "Test the fireEvent reason check",
             f"{SCRIPTS}/check-fireevent-reasons.test.sh", [
@@ -2989,11 +3009,13 @@ GATES = [
         # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
         # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
         # direction passes over that block's patterns.
+        (".github/scripts/dispatch-browser-shard-suite.sh", f"packages/dispatch/e2e/__tests__/reading-walk.test.ts:279-301, the new URL at :282, reads the spec files of the references lane out of its `references)` arm, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:380-381"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/features/doc/schema.ts:1, features/refs/markdown-engine.test.ts:4 and features/doc/ProofDocument.admission.test.tsx:5 import blocks.json, and packages/proof-editor/tests/manifest-schema.test.ts:14, block-schema-fixture.ts:8 and nested-directive.test.ts:30 read it; packages/proof-editor/tests/ask-concurrent-edit.test.ts:278 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
+        (f"{ENVOY}/internal/dispatch/text/testdata/head-refs.json", f"packages/dispatch/web/src/features/refs/head-refs.test.ts:22-32, the new URL at :25, reads the head table the Go text package's HeadRefs is held to as well, and {at('dispatch-ui', 'Test dispatch dashboard')} runs it"),
         (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:358-360, the new URL at :359"),
         ("packages/contracts/schemas/dispatch-openapi.json",
          "packages/dispatch/e2e/__tests__/stub-recordings.test.ts:50-53, the new URL at :51: the generated API "
@@ -3065,16 +3087,17 @@ GATES = [
                             (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
-        # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
+        # The script reads the commit it stamps the build with into a variable and its build
+        # line has an `-o`, neither of which this check reduces, so the entry pins the whole
         # script and names the one package it compiles - which is the closure run-server.sh
         # compiles in that same job.
-        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
         ], workflow=BROWSER_SITE),
         # The embedder job builds it once for the same reason, and names its step for its own
         # lane because this check looks a step up by name across the workflow.
-        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{BROWSER_SUITE_STEPS} run the suite, "
@@ -3448,6 +3471,8 @@ GATES = [
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")],
          reads=ceiling_reads("envoy-go-race") + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
+    # TestAReadingIsAChildNodeOfTheDecisionItReads runs this tree's dispatch command under bun, so
+    # the job installs Bun and the workspace, and reads every package that command loads.
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[ceiling_run("envoy-go-race-api")], exact=[
         pinned_step("envoy-go-race-api", RACE_API.step, ENVOY, RACE_API_SCRIPT, [
             (ENVOY, race_pkgs(RACE_API),
@@ -3455,7 +3480,11 @@ GATES = [
         ]),
     ], reads=reads(
         (DATABASE_SKIPS_SCRIPT, f"{at('envoy-go-race-api', RACE_API.step)} runs the package through it"),
-    ) + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
+        ("packages/envoy-client/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 (runDispatchCLI) runs "
+                                     "`bun ../../../../envoy-client/bin/dispatch.ts`, which loads envoy-client's sources"),
+        ("packages/contracts/**", f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862: that command imports @legion/contracts"),
+    ) + envoy_client_dep(f"{ENVOY}/internal/dispatch/api/decision_entries_test.go:849-862 runs packages/envoy-client/bin/dispatch.ts")
+      + ceiling_reads("envoy-go-race-api") + setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + bun_job("envoy-go-race-api")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", runs=[ceiling_run("envoy-go-race-docs")], exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -3490,10 +3519,10 @@ GATES = [
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
     ) + ceiling_reads("dispatch-multiprocess") + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")),
 
-    # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
-    # reduce, so the step is pinned whole, as dispatch-browser-multiprocess's is. The Go step is a
-    # gate of its own below; this gate carries that step's reads too, since the job must be
-    # selected for the step to run in it.
+    # Its "Build the Dispatch server" step reads the commit it stamps the build with and names an
+    # output (-o), which the simple form does not reduce, so the step is pinned whole, as
+    # dispatch-browser-multiprocess's is. The Go step is a gate of its own below; this gate carries
+    # that step's reads too, since the job must be selected for the step to run in it.
     gate("dispatch_two_builds", TWO_BUILDS_JOB, runs=[
         script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer (harness-start.ts, which "
                    "e2e/global-setup.ts runs) in "
@@ -3505,8 +3534,15 @@ GATES = [
     ], exact=[
         two_builds_go_step(),
         two_builds_same_step(),
-        pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
-            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        pinned_step(TWO_BUILDS_JOB, "Build the Dispatch server", ENVOY, DISPATCH_E2E_BUILD_SCRIPT, [
+            (ENVOY, ["./cmd/dispatch"], DISPATCH_E2E_BUILD, {"mode": "build"}),
+        ]),
+        # The browser half's stack connection limit, read before its two browser steps, which
+        # start the harness's own Postgres rather than using the service.
+        pinned_step(TWO_BUILDS_JOB, TWO_BUILDS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build"}),
         ]),
         # The browser half's stack connection limit, read before its two browser steps, which
         # start the harness's own Postgres rather than using the service.
@@ -3933,4 +3969,8 @@ EXCLUDED = {
                     "every file the build reads",
     "browser_image": "gates browser-image.yaml's image build; .github/scripts/check-image-trigger-paths.sh proves it covers "
                      "every file the build reads",
+    "dispatch_references": "gates ci.yaml's dispatch-references job, a pull-request preview of the reference rows that is "
+                           "outside ci-ok (CI_OK_EXEMPT) and so gates no merge; its filter names the eleven spec files "
+                           "and what they test, less than the job reads on purpose, and the dispatch_browser gate, "
+                           "whose full lane the merge queue runs, holds every read of those rows",
 }

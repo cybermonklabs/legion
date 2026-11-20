@@ -123,6 +123,12 @@ import {
   setReferences as applyReferences,
 } from './reference-decorations';
 import type { EditorReferences } from './reference-decorations';
+import {
+  insertReference as applyReferenceInsertion,
+  referencePickerPlugin,
+  setReferencePicker as applyReferencePicker,
+} from './reference-picker';
+import type { EditorReferencePicker, ReferenceInsertion } from './reference-picker';
 import { removeRecordMark, remarkRecordMark, retypeMark as retypeRecordMark } from './record-mark-retype';
 import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
@@ -130,7 +136,8 @@ export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverAc
 export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
-export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
+export type { EditorReferences, OfferedReference, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
+export type { EditorReferencePicker, ReferenceInsertion, ReferencePickerCaret } from './reference-picker';
 export type { BlockMark } from './editor-highlights';
 export type { DocumentJSON, DocumentMarkJSON } from './document-json';
 export type {
@@ -193,7 +200,9 @@ export interface CreateProofEditorOptions {
   renderBlock?: HostBlockRenderer;
   /** The open document's unversioned Dispatch reference (`dispatch://<ISSUE>/spec`, or
    *  `dispatch://<ISSUE or PROJECT>/artifact/<slug>`), so the typed-block commands refuse a
-   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow. */
+   *  `block[]` pointer to one of its own blocks whose type the attribute does not allow, and the
+   *  commands and a paste refuse a typed block naming something of another issue than its own
+   *  (`otherIssueRefusal`). */
   documentRef?: string;
   /** The host's Mermaid renderer, which draws each mermaid code block's diagram. Without one a
    *  document's mermaid blocks show their source. */
@@ -283,6 +292,14 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  the editor reports the document's candidate keys to, in one value that replaces the last
    *  one; `null` draws none. See ./reference-decorations.ts. */
   setReferences(references: EditorReferences | null): void;
+  /** Hosts the reference picker in the document, in place of the last one; `null` hosts none.
+   *  The host is told what stands before the caret and is offered the focused document's keys,
+   *  and writes a pick through `insertReference`. See ./reference-picker.ts. */
+  setReferencePicker(picker: EditorReferencePicker | null): void;
+  /** Writes a pick - the words, and the stretch of the text last reported they replace - as one
+   *  transaction, and answers whether it did: an insertion the document has moved under is
+   *  refused and changes nothing. See ./reference-picker.ts. */
+  insertReference(insertion: ReferenceInsertion): boolean;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
   /** Tears the editor and any collab binding down, the ProseMirror view first. Idempotent, and
@@ -425,7 +442,7 @@ export async function createProofEditor(
     // of plugins — is an argument Milkdown accepts but its own signature cannot express.
     .use(codeBlockExtPlugins as unknown as MilkdownPlugin[])
     // Every block carries a stable blockId (see ./editor/schema/block-ids.ts).
-    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock) as unknown as MilkdownPlugin[]) : [])
+    .use(opts.blockSchema ? (blockSchemaPlugins(opts.blockSchema, opts.renderBlock, opts.documentRef) as unknown as MilkdownPlugin[]) : [])
     .use(blockIdPlugins)
     .use(history)
     .use(listener)
@@ -486,6 +503,7 @@ export async function createProofEditor(
     .use(editorHighlightsPlugin)
     .use(editorChangeDecorationsPlugin)
     .use(referenceDecorationsPlugin)
+    .use(referencePickerPlugin)
     .use(placeholderPlugin)
     .use(keepUnselectedAskBlocks) // no read-back edit drops an unselected block of an off-rule ask (./ask-content.ts)
     .config((ctx) => {
@@ -526,8 +544,8 @@ export async function createProofEditor(
   // mapping is populated.
   editor.action((ctx) => {
     const collabService = ctx.get(collabServiceCtx);
-    // Before the shared document renders: an ask two collaborators left off its content rule
-    // must not be deleted from it (see ./ask-content.ts).
+    // Before the shared document renders: an ask or a decision two collaborators left off its
+    // content rule must not be deleted from it (see ./ask-content.ts).
     relaxAskContentCheck(ctx.get(schemaCtx));
     collabService.bindDoc(opts.ydoc);
     collabService.mergeOptions({
@@ -677,6 +695,12 @@ export async function createProofEditor(
     },
     setReferences(references: EditorReferences | null): void {
       applyReferences(view, references);
+    },
+    setReferencePicker(picker: EditorReferencePicker | null): void {
+      applyReferencePicker(view, picker);
+    },
+    insertReference(insertion: ReferenceInsertion): boolean {
+      return applyReferenceInsertion(view.state, (transaction) => view.dispatch(transaction), insertion);
     },
     blockIdAtSelection(): string | null {
       const $head = view.state.selection.$head;

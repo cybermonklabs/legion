@@ -50,6 +50,7 @@ import {
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
+import { PlainText } from "../refs/plain-text";
 import { watchPicturePath } from "../refs/reference-target";
 import {
   buildDispatchReference,
@@ -68,6 +69,7 @@ import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
+import { DocumentRefPicker } from "./DocumentRefPicker";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
@@ -88,7 +90,7 @@ import { FRAGMENT_NAME } from "./roots";
 import { DocumentRuntime } from "./runtime";
 import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
-import type { AskBlockHost } from "./typed-block-drawing";
+import { type AskBlockHost, liveAskOf, type ServedAsk, servedAskOf } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
@@ -315,7 +317,10 @@ export function ProofDocument({
   const queryClient = useQueryClient();
   // Where a `#id` in this document's text resolves: this document, whose question blocks
   // declare the asks it names (`refs.ScopeOf` of a document version is the document).
-  const textSource = useMemo(() => textSourceOf("artifact", artifact.id), [artifact.id]);
+  const textSource = useMemo(
+    () => textSourceOf("artifact", artifact.id, artifact.issue_key),
+    [artifact.id, artifact.issue_key]
+  );
   const followReference = useReferenceClick();
   // The address's fragment as the dashboard's own navigation leaves it: a click on a link to a
   // block of this document changes it in place, firing no event of the browser's own.
@@ -412,6 +417,33 @@ export function ProofDocument({
   );
   const blocksReadOnly = isClosed || schemaReadOnly;
   const [askBlockHosts, setAskBlockHosts] = useState<readonly AskBlockHost[]>([]);
+  // The server's read of the ask the block `blockId` shows: its row among the owner's asks, else
+  // what the live text answers for the block in its asks, which is the one read of a copy's
+  // source on a project document: the document's own asks hold no row of another document's.
+  const servedAsk = (blockId: string): ServedAsk | undefined =>
+    servedAskOf(
+      asksQuery.data ?? [],
+      artifact.id,
+      blockId,
+      owner.kind === "issue" ? undefined : owner.project
+    ) ?? liveAskOf(liveTextQuery.data, blockId);
+  // The server's read of the ask each mounted block shows, by block id, read once per render for
+  // the cards below and for the editor's refusal of a reading in an open ask, which reads the
+  // answer states at each edit: a ref, so the editor made once reads the latest asks read.
+  const servedAsks = new Map(
+    askBlockHosts.map((host) => {
+      const blockId = String(host.node.attrs.blockId);
+      return [blockId, servedAsk(blockId)] as const;
+    })
+  );
+  const askStates = useRef<ReadonlyMap<string, string>>(new Map());
+  askStates.current = new Map(
+    [...servedAsks].flatMap(([blockId, served]) =>
+      served === undefined
+        ? []
+        : [[blockId, "ask" in served ? served.ask.state : served.rendered.state] as const]
+    )
+  );
   const [isNameDialogOpen, setIsNameDialogOpen] = useState(false);
   // Naming a version is the name dialog's form, which shows a refusal itself; a rebuild shows
   // its own beside its button.
@@ -487,8 +519,9 @@ export function ProofDocument({
     setIsNameDialogOpen(true);
   }, []);
   // The answer itself goes through the shared ask card; the document's own reads (text, blocks,
-  // versions) refresh once it lands, since the server writes the outcome into the block, and a
-  // host that selected the question hears of its answer too.
+  // versions) refresh once it lands, since the server's ask node now holds the outcome the block
+  // shows, though the answer writes no version, and a host that selected the question hears of
+  // its answer too.
   const blockAnswered = useCallback(
     (askId: string) => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
@@ -931,6 +964,7 @@ export function ProofDocument({
                     globalThis.document.documentElement.clientWidth < 1280)
                     ? null
                     : connection.awareness,
+                askStateOf: (blockId) => askStates.current.get(blockId),
                 heatMapMode: "hidden",
                 onAskBlockHosts: setAskBlockHosts,
                 onMarkAction: (action) => {
@@ -1177,26 +1211,43 @@ export function ProofDocument({
               ? "1 open decision"
               : `${openBlockAsks.length} open decisions`}
           </span>
-          <a
-            className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
-            href={blockFragment(openDecision.block_id ?? "")}
-            onClick={(event) => {
-              event.preventDefault();
-              const blockID = openDecision.block_id;
-              if (blockID === undefined || blockID === null) {
-                return;
-              }
-              window.location.hash = blockFragment(blockID);
-              focusInEditor(() => editorRef.current?.focusBlock(blockID));
-            }}
-            title={tooltips ? openDecision.question : undefined}
+          {/* A link's words and its `title` hold no markup, so the question is read as its plain
+              words: the reading list's `document-open-decision` (`DISPATCH_READING_SURFACES`).
+              The question is an ask block of this document, so a `#id` in it names a question
+              of this document. */}
+          <PlainText
+            markdown={openDecision.question}
+            source={textSource}
+            surface="document-open-decision"
+            tree={openDecision.question_tree}
           >
-            {tooltips ? (
-              <TruncatedText>{openDecision.question}</TruncatedText>
-            ) : (
-              openDecision.question
+            {(question) => (
+              <a
+                className={`block min-w-0 max-w-[90ch] ${tooltips ? "truncate" : "[overflow-wrap:anywhere]"} text-sm font-medium underline ${tooltips ? `${linkText} ${linkHoverText}` : pageInkText}`}
+                href={blockFragment(openDecision.block_id ?? "")}
+                onClick={(event) => {
+                  event.preventDefault();
+                  const blockID = openDecision.block_id;
+                  if (blockID === undefined || blockID === null) {
+                    return;
+                  }
+                  window.location.hash = blockFragment(blockID);
+                  focusInEditor(() => editorRef.current?.focusBlock(blockID));
+                }}
+                // Until the engine has answered, the question as written, so the link is never
+                // left with no words: the reading list's `document-open-decision`.
+                title={tooltips ? (question ?? openDecision.question) : undefined}
+              >
+                {tooltips ? (
+                  // The same load state: the reading list's `document-open-decision`.
+                  <TruncatedText>{question ?? openDecision.question}</TruncatedText>
+                ) : (
+                  // The same, uncut: the reading list's `document-open-decision`.
+                  (question ?? openDecision.question)
+                )}
+              </a>
             )}
-          </a>
+          </PlainText>
           {openBlockAsks.length > 1 ? (
             <button
               aria-label="Next open decision"
@@ -1236,7 +1287,16 @@ export function ProofDocument({
         {anchoredThread === undefined || anchoredHost === undefined
           ? null
           : createPortal(anchoredThread.children, anchoredHost.slot, String(anchoredHost.key))}
+        {/* The editor paints the body itself and draws its references as decorations: why the
+            renderer has no mount here is the reading list's `document-body`
+            (`DISPATCH_READING_SURFACES`). */}
         <DocumentReferences editor={editorHandle} source={textSource} />
+        <DocumentRefPicker
+          editor={editorHandle}
+          enabled={editorAccess(page, isClosed, schemaReadOnly) === "edit"}
+          issueKey={owner.kind === "issue" ? owner.key : undefined}
+          project={owner.kind === "document" ? owner.project : undefined}
+        />
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
@@ -1249,6 +1309,7 @@ export function ProofDocument({
               owner={owner.kind === "document" ? owner : undefined}
               readOnly={blocksReadOnly}
               rowResolution={isClosed}
+              served={servedAsks.get(blockId)}
             />
           );
         })}
@@ -1310,6 +1371,7 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
+        // The exact characters a change swaps: the reading list's `change-view-diff`.
         <ChangeView after={liveMarkdown} before={versionMarkdown} />
       ) : (
         <div data-testid="version-view">
@@ -1318,7 +1380,9 @@ export function ProofDocument({
             asks={blockAsks}
             createdAt={versions.find((item) => item.number === version)?.created_at}
             highlight={highlight}
+            issueKey={artifact.issue_key}
             owner={owner.kind === "document" ? owner : undefined}
+            servedAsk={servedAsk}
             version={version}
           />
         </div>

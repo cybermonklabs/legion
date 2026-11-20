@@ -36,9 +36,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -207,11 +209,13 @@ type Deps struct {
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
 	// BuildCommit is the legion commit this process was built from, which cmd/dispatch holds in
-	// its own `buildCommit` and the image build stamps (docker/Dockerfile's LEGION_COMMIT). It
-	// is hashed into every list validator (listETag), so two builds never answer one ETag for
-	// two bodies; a build nothing stamped - every `go test` binary, a devbox `go run` - leaves
-	// it empty, which is one identity for every such build and is why a deploy is what it is
-	// for rather than a key anything depends on being unique.
+	// its own `buildCommit`: the image build stamps it (docker/Dockerfile's LEGION_COMMIT), and so
+	// do the e2e harness's build (packages/dispatch/e2e/run-server.sh) and the CI steps that build
+	// that binary ahead of it, each with its checkout's commit. It is hashed into every list
+	// validator (listETag), so two builds never answer one ETag for two bodies; a build nothing
+	// stamped - every `go test` binary, a devbox `go run` - leaves it empty, which is one identity
+	// for every such build and is why a deploy is what it is for rather than a key anything
+	// depends on being unique.
 	BuildCommit string
 }
 
@@ -468,6 +472,19 @@ type server struct {
 	// leg of the related-item check past its grace, or makes it fail, while every other leg runs
 	// as it runs in production.
 	beforeCrossProjectRead func(ctx context.Context) error
+	// beforeCommentCommit runs on a comment write's own request, once the comment, its node and
+	// every event it appended are written and before its transaction commits, with those events;
+	// its error stands in for the commit failing, so the route answers it and rolls the write
+	// back. Only a test sets it: it is how a case holds a write open after its events are
+	// appended, to read whether any of them reaches a subscriber before the commit, and how it
+	// ends one in a rollback.
+	beforeCommentCommit func(ctx context.Context, events []model.Event) error
+	// betweenPersonPageReads runs on a person page's request once the route has decided it
+	// answers 200 and before it lists the rows (listPersonNodes), inside the transaction both
+	// reads share; nil, which every server the deployment builds leaves it, runs nothing. Only a
+	// test sets it: it is how a case commits a write between the decision and the list, to read
+	// that the list answers the snapshot the decision read.
+	betweenPersonPageReads func()
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -580,6 +597,11 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// failBetween is the set of writers whose next write the fail-between test hook armed
+	// (PUT /api/v1/writes/_test/fail-between/{writer}), which every request this server serves
+	// carries (routeHandler), so each writer's failpoint.Between finds it; nil on a server without
+	// TestHooksEnabled, whose requests carry none.
+	failBetween *failpoint.Armed
 	// newIssueOverride is what the new-issue test hook last set
 	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
@@ -801,6 +823,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
 	}
+	if deps.TestHooksEnabled {
+		s.failBetween = failpoint.NewArmed()
+	}
 	routes := s.routes()
 	if undecidable := s.undecidableWrites(routes); len(undecidable) > 0 {
 		// A mutating row the project check cannot decide would serve a project-scoped caller a
@@ -942,6 +967,14 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// compressed for a caller that takes gzip and the line counts the bytes that went on the
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
+	if s.failBetween != nil {
+		// Every request carries the fail-between set, so the writer it reaches finds whether a
+		// test armed it (failpoint.Between); a server without test hooks carries none.
+		armed, inner := s.failBetween, handler
+		handler = func(w http.ResponseWriter, r *http.Request) {
+			inner(w, r.WithContext(failpoint.With(r.Context(), armed)))
+		}
+	}
 	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
 }
 
@@ -1310,6 +1343,28 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		if supplied != nil {
 			actor.Origin = supplied.Origin
 		}
+		// The credential itself proved this session, and for a token the broker scoped to a
+		// person it proved whose session it is too (brokerTokenActor sets Owner from the token
+		// and never from a body). That pair is what R14 calls "a session the server itself
+		// proved theirs", and the store ties the two with an alias_of tuple on the next write
+		// (graphstore.aliases). The act names the session the credential proved, exactly as
+		// actingPerson names the agent that acted for a person, and says it was proved
+		// (SessionProven), as every act naming a session the credential proved does; the actor's
+		// kind and id are left as they were, so every stored author, every event and every reader
+		// keeps the shape it has.
+		//
+		// A session named in a request body earns none of this: the branch below, which every
+		// credential that proves no session of its own takes, records the session the caller
+		// asked for, no act and no Proven mark, because an actor that merely claims a session
+		// proves nothing about whose it is (R14).
+		if actor.Owner != nil && *actor.Owner != "" && authenticated.Credential != nil &&
+			authenticated.Credential.Session == authenticated.ID {
+			actor.Act = &model.ActorAct{
+				Session:       authenticated.ID,
+				SessionProven: true,
+				Scopes:        authenticated.Credential.Scopes,
+			}
+		}
 		accesslog.Note(r.Context(), accesslog.KindSession, actor.ID)
 		return actor, nil
 	}
@@ -1629,7 +1684,7 @@ func countExceededError(code, field string, count, limit int) *apiError {
 // blockBoundError is what a route answers an itemblocks.Check with: nil where the body broke no
 // rule, else the refusal the typed error words, under the code that rule is refused by. A bound
 // broken (itemblocks.CapExceeded names the block, itemblocks.CountExceeded the count) carries
-// CAP_EXCEEDED, the code every cap refusal carries; a body holding a decision block
+// CAP_EXCEEDED, the code every cap refusal carries; a body holding an ask block
 // (itemblocks.DecisionBlock) carries DECISION_BLOCK_IN_BODY, since what it is refused for is
 // what it holds rather than how long it is. Every route that checks a body calls this one
 // helper, so a route added later cannot word the same refusal differently.
@@ -1797,6 +1852,33 @@ func encodeJSON(value any) ([]byte, error) {
 
 func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) (model.Event, error) {
 	return s.deps.Events.Append(ctx, tx, event)
+}
+
+// appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
+// made before it existed (graphstore.Uncaused): the event's append and the append of what that
+// write stated under it, in one batch, the second naming the event's id as the id sequence left it
+// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
+// it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+	return s.appendEventThen(ctx, tx, event, func(b *store.WriteBatch) error {
+		return graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+	})
+}
+
+// appendEventThen is appendEvent for an event the statements then queues follow under, in the
+// same batch: the event's append, then each statement then queues, which names the event's id as
+// the id sequence left it (graphstore.LatestEvent) and runs as the batch reaches it. A route that
+// writes as it goes sends the event and everything it causes as one round trip, so the statements
+// it causes run inside the transaction's id window without a round trip of their own between them.
+func (s *server) appendEventThen(ctx context.Context, tx pgx.Tx, event model.Event, then func(*store.WriteBatch) error) (model.Event, error) {
+	var appended model.Event
+	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
+			return err
+		}
+		return then(b)
+	})
+	return appended, err
 }
 
 // publish hands each event to the broker and then stores the display trees of the stored texts

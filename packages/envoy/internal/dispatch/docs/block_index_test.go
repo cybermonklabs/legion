@@ -37,13 +37,22 @@ func blockIndexService(t *testing.T) (*store.Store, *Service) {
 	`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	return database, blockIndexProcess(t, database, "")
+}
+
+// blockIndexProcess is one process's document service on database, serving the build of commit
+// (the empty string: an unstamped build's), whose settle delay is an hour, so no timer settles a
+// document during a test. A test that builds a second one on the same database has a second
+// process of that build start beside the first, or after it.
+func blockIndexProcess(t *testing.T, database *store.Store, commit string) *Service {
+	t.Helper()
+	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, BuildCommit: commit})
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
-	return database, service
+	return service
 }
 
 // createOwedDocument creates document slug of issue (CORE-1 or CORE-2), id its uuid (empty: one
@@ -515,7 +524,10 @@ func TestBlockIndexDoesNotRereadALiveAheadDocumentUntilItMoves(t *testing.T) {
 	if service.srv.GetDoc(opened) == nil || !settlementMark(opened).Equal(mark) {
 		t.Fatalf("opening the room of %s left none resident or moved its settlement mark", opened)
 	}
-	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1 where artifact_id = $1`, indexedElsewhere); err != nil {
+	// Another process of this build indexes the fourth document, which settles both marks a
+	// debt of this build carries: the version, and this build's own mark, which the tick's
+	// grammar arm set beside it when it owed the document a re-index (oweDocumentIndex).
+	if _, err := database.Pool.Exec(ctx, `update document_block_versions set version = 1, store_owed_at = null where artifact_id = $1`, indexedElsewhere); err != nil {
 		t.Fatalf("index %s elsewhere: %v", indexedElsewhere, err)
 	}
 
@@ -653,7 +665,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 	holder := holderOf(t, service, spec, "dispatch://CORE-2")
 
 	before := eventID - 1
-	edges, err := refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
+	edges, err := refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &before})
 	if err != nil {
 		t.Fatalf("read the references to CORE-2 since %d: %v", before, err)
 	}
@@ -661,7 +673,7 @@ func TestAReconciledLinkKeepsItsPlaceInSince(t *testing.T) {
 		edges[0].SourceSeq == nil || *edges[0].SourceSeq != eventID {
 		t.Fatalf("references to CORE-2 since %d = %#v, want the block %s's mention from event %d", before, edges, holder, eventID)
 	}
-	edges, err = refs.Edges(ctx, database.Pool, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
+	edges, err = refs.Edges(ctx, database.Pool, model.Actor{}, refs.Query{Direction: "in", Kind: "issue", ID: "CORE-2", Since: &eventID})
 	if err != nil {
 		t.Fatal(err)
 	}

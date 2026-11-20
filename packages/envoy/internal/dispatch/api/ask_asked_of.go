@@ -4,7 +4,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/inboxwrite"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // Handing an ask on: PUT /api/v1/asks/{id}/asked-of.
@@ -140,9 +143,17 @@ func (s *server) putAskAskedOf(w http.ResponseWriter, r *http.Request) {
 	// why the event does not carry the ask's thread logins (events.ThreadLoginsOf): somebody
 	// who replied in the thread has the same rows after this write as before it.
 	payload.ThreadLogins = movedLogins(nil, waitedOn, askedOf)
-	event, err := s.appendEvent(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
+	// The ask now reaches the person it was handed to, who takes part in its thread, and whoever
+	// its delivery stood to loses it - and their part in the thread, where nothing of their own
+	// holds them there - under this write's event, in that event's batch right after it
+	// (inboxwrite.QueueMoveWaiting), dated at the hand-on's own moment. The owner's lock is held
+	// since before the person the ask waited on was read, so a move of the project's default
+	// waits for this write.
+	event, err := s.appendEventThen(r.Context(), tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.asked_of", actor, payload,
-	))
+	), func(b *store.WriteBatch) error {
+		return inboxwrite.QueueMoveWaiting(b, inboxwrite.HandedOn(ask.ID, handedOnAt, actor), graphstore.LatestEvent)
+	})
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
