@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -243,6 +244,8 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 	// goes out only once the log's rule passes it for this caller (sendReadable). The loop takes
 	// every event already queued with the one it received (takeQueued), so one statement decides
 	// them all, and an event that can move what the caller sees resolves the caller again first.
+	// An access change no event carries moves what the caller sees too, so the loop also resolves
+	// the caller again on the socket's heartbeat (recheckEventsReader).
 	//
 	// A reset reuses ids, and the comparison cannot tell this page apart from the events of the
 	// log it was reading; the relay ends the generation at a reset instead, which ends this
@@ -251,10 +254,16 @@ func (s *server) feedEvents(ctx context.Context, stream liveStreamer, sub string
 	view := eventsReader{reader: reader, through: head}
 	queued := make([]relayedEvent, 0, liveEventsBuffer+1)
 	after := replay.after
+	recheck := time.NewTicker(s.accessRecheckEvery())
+	defer recheck.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-recheck.C:
+			if !s.recheckEventsReader(ctx, stream, sub, &view) {
+				return
+			}
 		case event, open := <-subscription.events:
 			if open {
 				var sending bool
@@ -296,6 +305,38 @@ func sendReplayedEvents(ctx context.Context, stream liveStreamer, sub string, ev
 			return false
 		}
 	}
+	return true
+}
+
+// accessRecheckEvery is how often a live reader is resolved again whatever its events say: the
+// socket's heartbeat (Deps.StreamHeartbeat), on which the socket asks again of its credential too
+// (whileCallerResolves).
+func (s *server) accessRecheckEvery() time.Duration {
+	return cmp.Or(s.deps.StreamHeartbeat, defaultStreamHeartbeat)
+}
+
+// recheckEventsReader resolves the caller of an events subscription again on the socket's
+// heartbeat (accessRecheckEvery) and reports whether the subscription goes on. An access change
+// that no event carries, one made by SQL alone, which appends none and announces nothing on
+// access.ChangedChannel, moves what the caller sees all the same, and no event can tell the live
+// loop so: this is what finds it, a heartbeat at most after it committed. One that moved what the
+// caller sees (sightMoved) ends the subscription (behind), as an access change an event carries
+// does (sendReadable), so nothing more of a project the caller lost reaches its page; the
+// resubscribe's gap holds no event of the change, so it is replayed as complete, and the page keeps
+// what it read of that project before the change until it next reads everything again. Otherwise
+// the loop goes on with the reader it read; a read that fails ends the subscription, as every
+// failed read of the loop does.
+func (s *server) recheckEventsReader(ctx context.Context, stream liveStreamer, sub string, view *eventsReader) bool {
+	next, err := s.readerFor(ctx, stream.Caller())
+	if err != nil {
+		endEventsAfterFailure(ctx, stream, sub, "resolve what the caller sees", err)
+		return false
+	}
+	if sightMoved(view.reader, next, model.Event{}) {
+		_ = stream.SendWait(ctx, liveEnded(sub, liveEndedBehind))
+		return false
+	}
+	view.reader = next
 	return true
 }
 

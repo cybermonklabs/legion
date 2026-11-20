@@ -16,7 +16,10 @@ import (
 // work recomputes g's dirty views and the expired ones, one at a time, and keeps the freshness
 // verdict on its threshold, until g ends. One timer, re-armed after every pass, wakes it at the
 // earliest moment a view is due or the reconciled sources cross their threshold; nothing else
-// wakes it but a mark.
+// wakes it but a mark, and the socket's heartbeat (accessRecheckEvery), on which it resolves every
+// sub's reader again: an access change that appends no event and announces nothing on
+// access.ChangedChannel, one made by SQL alone, moves a reader all the same, and the re-check is
+// what moves its sub to the view of the reader it is now (recheckSubs), as an announced change does.
 func (h *deliveryHub) work(g *hubGeneration) {
 	select {
 	case <-g.ctx.Done():
@@ -29,6 +32,8 @@ func (h *deliveryHub) work(g *hubGeneration) {
 			timer.Stop()
 		}
 	}()
+	recheck := time.NewTicker(h.server.accessRecheckEvery())
+	defer recheck.Stop()
 	for {
 		for h.runDue(g) {
 		}
@@ -48,6 +53,8 @@ func (h *deliveryHub) work(g *hubGeneration) {
 		case <-g.ctx.Done():
 			return
 		case <-g.wakeWork:
+		case <-recheck.C:
+			g.readersStale.Store(true)
 		}
 	}
 }

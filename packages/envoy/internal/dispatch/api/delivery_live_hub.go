@@ -376,9 +376,10 @@ type hubGeneration struct {
 	barrier                          chan chan struct{}
 	// readersStale is set when something may have moved what a subscriber sees: an access change
 	// announced on access.ChangedChannel, a relayed event that can move it (movesSight, receive),
-	// or the listener's (re)connection, which may have missed an announcement. The worker resolves
-	// every sub's reader again before its next recompute (recheckStaleReaders), once for however
-	// many came since its last pass.
+	// the listener's (re)connection, which may have missed an announcement, and the socket's
+	// heartbeat, past which an access change no event or announcement carries goes unread no
+	// longer (work). The worker resolves every sub's reader again before its next recompute
+	// (recheckStaleReaders), once for however many came since its last pass.
 	readersStale atomic.Bool
 	// feeds hands the intake the relay subscription seedEvents took. It has no slot: a hand-over
 	// completes only as the intake takes it, so a subscription is always either the intake's, which
