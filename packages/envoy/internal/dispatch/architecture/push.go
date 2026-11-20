@@ -112,8 +112,7 @@ func (i *Importer) recordPush(source EnabledSource, branch string) {
 	pending, running := i.pushes[key]
 	if !running {
 		if !i.running.begin() {
-			slog.Warn(pushRefusedMessage,
-				"project", source.Project, "repo", githubapp.ShownBody(source.Repo), "branch", githubapp.ShownBody(branch))
+			pushLogger(source, branch).Warn(pushRefusedMessage)
 			return
 		}
 		pending = &pushedSource{}
@@ -159,26 +158,26 @@ func (i *Importer) importPushes(source EnabledSource) {
 			if synced.LastCommit != nil {
 				commit = *synced.LastCommit
 			}
-			slog.Info(importedAfterPushMessage, "project", source.Project,
-				"repo", githubapp.ShownBody(source.Repo), "branch", githubapp.ShownBody(branch),
-				"commit", commit, "pushes", covered)
+			pushLogger(source, branch).Info(importedAfterPushMessage, "commit", commit, "pushes", covered)
 		case errors.Is(err, ErrNoSource), stopping:
 			// A deleted source has nothing to import, and a stopping process reports what it
 			// left below rather than the error, which may be the stop's own.
 		default:
-			slog.Warn(importAfterPushFailedMessage, "project", source.Project,
-				"repo", githubapp.ShownBody(source.Repo), "branch", githubapp.ShownBody(branch),
-				"pushes", covered, "error", err)
+			pushLogger(source, branch).Warn(importAfterPushFailedMessage, "pushes", covered, "error", err)
 		}
 		if uncovered > 0 {
-			slog.Warn(pushesUncoveredMessage,
-				"project", source.Project, "repo", githubapp.ShownBody(source.Repo), "branch", githubapp.ShownBody(branch),
-				"pushes", uncovered)
+			pushLogger(source, branch).Warn(pushesUncoveredMessage, "pushes", uncovered)
 		}
 		if !again {
 			return
 		}
 	}
+}
+
+// pushLogger is slog's default logger, read now, with source's project and repo and branch.
+func pushLogger(source EnabledSource, branch string) *slog.Logger {
+	return slog.With("project", source.Project,
+		"repo", githubapp.ShownBody(source.Repo), "branch", githubapp.ShownBody(branch))
 }
 
 // coverPushes drops from key's entry every push recorded no later than servedAt, the moment the

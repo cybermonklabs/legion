@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -398,12 +399,7 @@ func TestAPushDuringAWorkersLastLookIsNotLost(t *testing.T) {
 		group.Wait()
 		waitForPushWorkers(t, importer)
 
-		newest := asked[0]
-		for _, at := range asked[1:] {
-			if at.After(newest) {
-				newest = at
-			}
-		}
+		newest := slices.MaxFunc(asked, time.Time.Compare)
 		if looked := heads.latestLookup(); looked.Before(newest) {
 			t.Fatalf("round %d: the last import's head lookup arrived %s before the newest push was asked for; want every push covered by an import whose head lookup came after it",
 				round, newest.Sub(looked))

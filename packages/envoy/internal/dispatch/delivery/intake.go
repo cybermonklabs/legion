@@ -80,8 +80,8 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases intakeLeases, gi
 // Pushed runs on the push's key's goroutine (intakeKey) under the message's deadline, and the
 // message holds one of the intake's in-flight slots (intakeMaxAckPending) until it returns, so it
 // returns without waiting for the import it starts. ctx holds no connection of the pool (deliver),
-// so Pushed may read through the pool. A failure it answers is logged and the message acknowledged,
-// as every handler's failure is (deliver).
+// so Pushed may read through the pool. A failure it answers is logged at WARN (`process event`)
+// and the message acknowledged, as deliver does for a handler's error other than ErrHeadNotStored.
 type PushImports interface {
 	Pushed(ctx context.Context, repo, branch string) error
 }

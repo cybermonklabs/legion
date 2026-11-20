@@ -62,9 +62,10 @@ import (
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round at every reconcile pass of one
-// process, at most five minutes apart (PullRequestHeadStaleAfter), but a merged row is read again
-// only by that arm — so a change made without raising it leaves every pull request merged before
-// it judged by the rule of its day for good.
+// process, each starting at most five minutes after the one before it ended
+// (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a change made
+// without raising it leaves every pull request merged before it judged by the rule of its day for
+// good.
 const AttributionRuleVersion = 2
 
 // attributionSource names the source a pull request's issue came from.

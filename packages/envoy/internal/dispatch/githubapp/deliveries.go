@@ -465,8 +465,9 @@ const shownBodyRunes = 512
 // shownBodyRunes runes long, and otherwise its first shownBodyRunes runes and `… (<n> bytes)`, n
 // the length of the whole body. A line that logs such text writes it whole, so the webhook
 // redelivery sweep shows each GUID, event, action and bucket refusal it logs or returns this way
-// (redeliver). It reads at most shownBodyRunes × 4 bytes of body, the most that many runes take,
-// and never splits a rune; a byte that is no UTF-8 counts as one rune.
+// (redeliver), and the architecture importer a push's repository and branch
+// (architecture.Importer.Pushed). It reads at most shownBodyRunes × 4 bytes of body, the most that
+// many runes take, and never splits a rune; a byte that is no UTF-8 counts as one rune.
 func ShownBody[Body ~string | ~[]byte](body Body) string {
 	head := string(body[:min(len(body), shownBodyRunes*utf8.UTFMax)])
 	runes := 0

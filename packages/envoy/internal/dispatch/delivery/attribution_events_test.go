@@ -133,9 +133,9 @@ func TestAnAttributionThatMovesIsRecordedOnBothIssues(t *testing.T) {
 
 // TestAnAttributionThatStaysIsRecordedNowhere: a write that stores the issue the row already
 // holds appends nothing, and neither does a write that carries no issue at all. The reconcile
-// re-reads every open row at every pass of one process, at most five minutes apart, and as
-// PullRequestHeadStaleAfter says with several, so an event per write would bury each issue's
-// timeline under the pass's own heartbeat.
+// re-reads every open row at every pass of one process, each starting at most five minutes after
+// the one before it ended, and as PullRequestHeadStaleAfter says with several, so an event per
+// write would bury each issue's timeline under the pass's own heartbeat.
 func TestAnAttributionThatStaysIsRecordedNowhere(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 72)

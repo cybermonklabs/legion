@@ -1,7 +1,7 @@
 kind: Added
 body: |-
     A push to the branch of a component source starts that source's architecture import at once: the delivery intake hands each push of a branch to the importer, which imports every enabled source on that repository (matched whatever its case) and branch (matched exactly).
-    The delivery intake routes a push only while it runs, which is while Dispatch has delivery settings saved; a deployment with none imports on its five-minute timer alone until the intake runs without them.
+    The delivery intake routes a push only while it runs, which is while Dispatch has delivery settings saved; a deployment with none imports a source only on its five-minute timer, from the Settings Refresh button or through `dispatch architecture-sync`, until the intake runs without settings.
     Pushes that arrive while an import runs, after that import's head lookup, start one more import after it, not one for each push; a push that arrives before the import's head lookup is covered by that import and starts none.
     The five-minute import stays as the repair where a push event never arrives.
     Each import a push starts logs `dispatch architecture: imported after a push` with the project, the repository, the branch, the commit and how many pushes it covered.

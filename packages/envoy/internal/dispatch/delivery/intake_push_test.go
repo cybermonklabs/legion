@@ -91,10 +91,8 @@ func pushEnvelope(t *testing.T, owner, name, ref string) contracts.Envelope {
 func TestTheIntakeHandsABranchPushToItsImporter(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	natsClient := intakeTestClient(t)
-	// The cache reads delivery_settings once, here, and never again, and the intake binds its
-	// durable only while the cache holds settings: so the row is saved before that read. It is
-	// also the row the event freshness is stamped on, which RecordEventAt updates and never
-	// inserts, and PutSettings saves it with last_event_at null.
+	// The delivery_settings row is also the one the event freshness is stamped on, which
+	// RecordEventAt updates and never inserts, and PutSettings saves it with last_event_at null.
 	seedDeliverySettings(t, ctx, pool)
 	settings := loadedSettingsCache(t, ctx, pool)
 	if settings.Load() == nil {

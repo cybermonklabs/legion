@@ -658,10 +658,10 @@ const PullRequestHeadBatch = 200
 // merged row a rule older than this build's judged (AttributionRuleVersion).
 //
 // A merged row is revisited at all because nothing else ever revisits one. An open row comes
-// round at every pass of one process, at most five minutes apart, and as
-// PullRequestHeadStaleAfter says with several; a merged row is written once more at most, by an
-// envelope or a read-through, and a recorded result reads through only for a commit no head
-// Dispatch knows. So a merged row left credited to nobody stays that way, and every
+// round at every pass of one process, each starting at most five minutes after the one before it
+// ended, and as PullRequestHeadStaleAfter says with several; a merged row is written once more at
+// most, by an envelope or a read-through, and a recorded result reads through only for a commit
+// no head Dispatch knows. So a merged row left credited to nobody stays that way, and every
 // `before_merge` result at that head stands at no basis for ever: a merge delivered by a
 // `pull_request` envelope naming no head repository is one such row (recordPullRequestHead
 // attributes nobody, since it cannot tell this repository's branch from a fork's), and so is
