@@ -16,8 +16,9 @@
 #   ENVOY_URL=<OUTSIDE_LISTENER_URL> ENVOY_INBOUND=listener DISPATCH_URL=<OUTSIDE_DISPATCH_URL>
 #   DISPATCH_TOKEN_BROKER=1 AGENT_SECRETS_URL=<OUTSIDE_BROKER_URL>
 #   AGENT_SECRETS_MACHINE_IDENTITY=device-login AGENT_SECRETS_PROJECTS=<OUTSIDE_PROJECT>
-# beside PATH, HOME, TERM and TMPDIR. No model credential, ENVOY_NATS_URL, ENVOY_TOKEN or
-# DISPATCH_TOKEN reaches any of them.
+# beside PATH, HOME, TERM, TMPDIR and OMP_SKIP_SETUP=1, Oh My Pi's own switch that skips its
+# first-run setup wizard, which a fresh HOME would otherwise open. No model credential,
+# ENVOY_NATS_URL, ENVOY_TOKEN or DISPATCH_TOKEN reaches any of them.
 #
 # Inputs, each named by the row that cannot run without it:
 #   OUTSIDE_DISPATCH_URL, OUTSIDE_BROKER_URL, OUTSIDE_LISTENER_URL
@@ -206,6 +207,7 @@ session_env=(
   "HOME=$home"
   "TERM=${TERM:-xterm-256color}"
   "TMPDIR=${TMPDIR:-/tmp}"
+  "OMP_SKIP_SETUP=1"
   "ENVOY_URL=$listener"
   "ENVOY_INBOUND=listener"
   "DISPATCH_URL=$dispatch"
@@ -464,8 +466,8 @@ else
   while [ -z "$ready" ] && [ "$(now)" -lt "$deadline" ]; do
     case $(pane) in *"outside-e2e-$nonce"*) ready=yes ;; *) sleep 1 ;; esac
   done
-  # A HOME Oh My Pi has never run in opens its first-run screens, which the session waits behind:
-  # each is skipped as a person who skips it would, the setup with Escape and the splash with
+  # OMP_SKIP_SETUP keeps the setup wizard shut; any first-run screen a fresh HOME still opens (its
+  # splash) is skipped as a person who skips it would: a setup screen with Escape, the splash with
   # Enter. One screen can follow another a moment later, so the leg goes on only after three
   # checks in a row, 2 s apart, show neither (at most 40 s).
   checks=0
