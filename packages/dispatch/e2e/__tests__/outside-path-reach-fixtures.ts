@@ -398,9 +398,11 @@ export function reachFixtures() {
   // one that allows exec, which the `curl` and `sleep` the rows write here need, and that has room
   // for six runs at once (the loaded runs of docs/testing.md). tmpfs charges a page for each file
   // that holds data, so `driveEach` removes its results once read: with them kept to the end, one
-  // run of outside-path-reach-input.test.ts held 10.7 MiB of tmpfs at once; with them removed, 6.9
-  // MiB, and one run of all four files 7.3 MiB (statvfs read every 2 ms, 2026-11-20). So 8 MiB a
-  // run, 48 MiB for six, which a 64 MiB `/dev/shm` (a Legion role's, Docker's default) holds.
+  // run of outside-path-reach-input.test.ts held 10.7 MiB of tmpfs at once; with them removed, 6.7
+  // to 7.5 MiB, and one run of all four files 7.3 to 7.8 MiB (three readers, 2026-11-20). So 8 MiB
+  // a run, 48 MiB for six, which an empty 64 MiB `/dev/shm` (a Legion role's, Docker's default)
+  // holds. One with more than 16 MiB in use, such as a stopped run's leftovers, sends the scratch to
+  // `tmpdir()`: a slower removal there, where too little room would fail rows with ENOSPC.
   const scratch = temporaryDirectory("outside-path-reach", {
     root: memoryRoot({ need: 6 * 8 * 2 ** 20 }),
   });
