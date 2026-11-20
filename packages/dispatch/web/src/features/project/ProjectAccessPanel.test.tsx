@@ -575,6 +575,49 @@ test("the owner makes the project private with the switch, and the switch reads 
   }
 });
 
+// A switch to public shows the project and everything in it to every full member, so it is sent
+// only once the owner confirms it, as giving the project away is: a declined confirmation sends
+// nothing and the switch stays private. The switch to private shows nobody more and asks nothing.
+test("the owner makes a private project public only once they confirm it", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ answer: access({ visibility: "private" }) });
+  const confirm = spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  const patch = spyOn(api, "patchProjectAccess")
+    .mockImplementationOnce(panel.lands(access({ visibility: "public" })))
+    .mockImplementationOnce(panel.lands(access({ visibility: "private" })));
+  try {
+    const toggle = await screen.findByRole("switch", { name: "Private" });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    // Declined: nothing is sent, and the project stays private.
+    await user.click(toggle);
+    expect(confirm).toHaveBeenCalledWith(
+      "Make CORE public? Every full member can then see it and everything in it."
+    );
+    await settle();
+    expect(patch).not.toHaveBeenCalled();
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Private");
+
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("CORE", { visibility: "public" }, keyedAttempt)
+    );
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+
+    // Back to private: no confirmation is asked.
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(patch).toHaveBeenLastCalledWith("CORE", { visibility: "private" }, keyedAttempt)
+    );
+    expect(confirm).toHaveBeenCalledTimes(2);
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+    patch.mockRestore();
+  }
+});
+
 /** Whether `text` is drawn anywhere on the page: in its text, or in an attribute a reader meets,
  *  such as a title's tooltip or an accessible name. */
 function drawn(text: string): boolean {

@@ -253,7 +253,9 @@ const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4
  * identity the shell already holds. Dispatch refuses the switch with a code (PRIVATE_PROJECTS_OFF,
  * PRIVATE_PROJECT_NOT_PROVISIONED, PRIVATE_PROJECTS_INCOMPLETE, PRIVATE_PROJECTS_UNAVAILABLE and
  * others), and the switch shows beside it the owner's sentence for that code (`switchRefusal`),
- * never Dispatch's own words, which are the operator's.
+ * never Dispatch's own words, which are the operator's. A switch to public, which shows the
+ * project and everything in it to every full member, is sent only once the owner confirms it, as
+ * giving the project away is; a switch to private asks nothing, since it shows nobody more.
  */
 export function ProjectAccessPanel({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -455,6 +457,14 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
             className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
             onClick={() => {
               if (refusal !== null || visibilityPending) return;
+              if (
+                isPrivate &&
+                !window.confirm(
+                  `Make ${project} public? Every full member can then see it and everything in it.`
+                )
+              ) {
+                return;
+              }
               write.save({ kind: "visibility", visibility: isPrivate ? "public" : "private" });
             }}
             title={refusal ?? undefined}
