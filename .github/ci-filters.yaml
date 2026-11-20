@@ -958,11 +958,13 @@ go_test_step_expansion_test: &go_test_step_expansion_test
   - '.github/scripts/ci_filter_coverage.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
-  - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
-  - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
-  - '.github/workflows/ci-job-envoy-go.yaml'
-  - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+  - '.github/workflows/ci-job-*.yaml'
+  - '.github/workflows/browser-image.yaml'
+  - '.github/workflows/dispatch-browser.yaml'
+  - '.github/workflows/docs-site.yaml'
+  - '.github/workflows/worker-image.yaml'
   - 'packages/envoy/scripts/database-skips.sh'
+  - 'packages/envoy/scripts/backend-count.sh'
   - '.github/scripts/ci_job_reads.py'
 
 # why: .github/ci-notes/ci.md#test-the-test-job-the-claude-code-plugin-build-the-changelog

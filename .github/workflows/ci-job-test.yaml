@@ -594,10 +594,11 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
 
-      # Beside the two checks above, and needing no Go either: every case is one line of text,
-      # read by the line reader of .github/scripts/go-test-step-expansion.py, or the hash of a
-      # script that file's AUDITED_SCRIPTS pins. The script's own run compiles the three Go
-      # modules it covers and is run by hand rather than by any job.
+      # Beside the two checks above, and needing no Go either: every case is text, read by the
+      # line and step readers of .github/scripts/go-test-step-expansion.py (the step reader over
+      # every go test step of ci.yaml and the workflows its jobs call, so a step it would refuse
+      # fails here), or the hash of a script that file's AUDITED_SCRIPTS pins. The script's own
+      # run compiles the three Go modules it covers and is run by hand rather than by any job.
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh

@@ -54,7 +54,10 @@ export interface ReplyTarget {
   readonly actor: Actor;
   readonly excerpt: string;
   readonly id: string;
-  readonly parentKind: "comment" | "message";
+  /** What the reply answers: a comment (`reply_to`), a message (`in_reply_to`), or an ask, whose
+   *  reply is a comment naming it (`ask_id`) - an open ask's question back, or a word under an
+   *  answered or resolved one, so a reader can answer the thread they are reading. */
+  readonly parentKind: "ask" | "comment" | "message";
   /** Canonical targets carried by a comment parent, prefilled as editable @ mentions. */
   readonly mentions?: readonly { readonly target: string; readonly title: string }[];
   /** Kept while old targeted-message threads remain readable; S2 writes comments only. */
