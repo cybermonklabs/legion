@@ -2525,8 +2525,16 @@ test("a reader at contract 152 parses the repositories block served below 200", 
   ]);
   const block = repositoriesAt152.safeParse(written);
   expect(block.error?.issues ?? []).toEqual([]);
-  const live = LegionStateResponse.parse(fixture("state.json")).repositories;
-  const caches = new Map((live?.live ?? []).map((entry) => [entry.repo, entry.cache]));
+  // The entries the narrowed block is written from, read from the state golden with the cache
+  // view of 152 itself: the current schema takes every key of a cache as optional, which no reader
+  // of 152 does, so an entry that lost a key would pass that schema and fail this one.
+  const live = z
+    .object({
+      live: z.array(z.object({ repo: nonEmptyAt152, cache: cacheViewAt152.optional() })),
+      caches: z.array(cacheViewAt152),
+    })
+    .parse(fixtureBody("state.json").repositories);
+  const caches = new Map(live.live.map((entry) => [entry.repo, entry.cache]));
   const both = { implement: true, review: true };
   expect(block.data?.owners).toEqual(["acme", "cybermonklabs", "zeta"]);
   expect(block.data?.mapped).toEqual([
@@ -2553,7 +2561,7 @@ test("a reader at contract 152 parses the repositories block served below 200", 
         "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
     },
   ]);
-  expect(block.data?.caches).toEqual(live?.caches);
+  expect(block.data?.caches).toEqual(live.caches);
 
   // Every other key is the state golden's own, the `contract` mark and `lowestPluginContract`
   // aside: the mark names the contract the caller is served at, 193, the contract version.go
