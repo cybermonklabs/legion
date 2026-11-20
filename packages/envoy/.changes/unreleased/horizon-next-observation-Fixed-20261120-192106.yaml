@@ -3,9 +3,9 @@ body: |-
   Readers of the event horizon that waited out an observation already in flight when they asked
   no longer each run an observation of their own when they wake late. A reader that wakes to find
   a newer observation already ended takes that one's answer, since it started after the reader's
-  call. Before, each reader that woke after the next observation had ended ran another, so on a
-  loaded machine each late reader cost the horizon one more round trip and one more transaction
-  id.
+  call, unless another reader's cancellation abandoned it. Before, each reader that woke after the
+  next observation had ended ran another, so on a loaded machine each late reader cost the horizon
+  one more round trip and one more transaction id.
 time: 2026-11-20T19:21:06Z
 custom:
     Issue: horizon-next-observation

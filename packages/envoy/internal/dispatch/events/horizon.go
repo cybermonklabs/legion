@@ -652,11 +652,12 @@ func (h *Horizon) Reset() {
 // after started before the caller needed it, so the caller waits it out and takes a later one; so
 // does one abandoned by its runner's context while the caller's is live. Back at h.mu, the caller
 // first takes the newest ended observation (h.ended) when it is numbered above the one it waited
-// out, and only otherwise joins the one in flight or runs one: observations run one at a time, so
-// one numbered above the one waited out started after that one had ended, so after the call.
-// Callers that wait out the same observation therefore run at most one more between them, unless
-// that one is abandoned, however the scheduler wakes them; each that found the next one already
-// ended would otherwise run one of its own.
+// out and is one the caller would take, and only otherwise joins the one in flight or runs one:
+// observations run one at a time, so one numbered above the one waited out started after that one
+// had ended, so after the call. Callers that wait out the same observation therefore run at most
+// one more between them however the scheduler wakes them, unless an observation that ends between
+// their wakes is abandoned; each that found the next one already ended would otherwise run one of
+// its own.
 func (h *Horizon) observe(ctx context.Context, after uint64) error {
 	takes := func(flight *horizonFlight) bool {
 		return flight.number > after && !(flight.abandoned && ctx.Err() == nil)
