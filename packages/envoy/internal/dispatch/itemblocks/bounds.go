@@ -9,11 +9,26 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// OverCap is how Dispatch words every refusal of a text over a cap it counts in UTF-16 code
+// units: "<subject>: trim K UTF-16 code unit(s) (L/M)", the number to trim first, in the unit the
+// cap counts, then the measured length and the cap. A block of a body (CapExceeded), a route's
+// text field (the api package's capExceededError) and a document ask block's wording
+// (docs.askWordingTooLong) all read through it, so no second wording can drift from it.
+// overCapMessage in packages/contracts/src/tool-schema.ts is its twin for a tool call refused
+// before it is sent; each side's test pins the same strings.
+func OverCap(subject string, units, limit int) string {
+	trim := units - limit
+	unit := "units"
+	if trim == 1 {
+		unit = "unit"
+	}
+	return fmt.Sprintf("%s: trim %d UTF-16 code %s (%d/%d)", subject, trim, unit, units, limit)
+}
+
 // CapExceeded is one block of a body over contracts.DispatchBlockUnits. Field is the field the
 // body arrived in, Position the block's place in the body counted from 1, Type the block's Proof
-// node type, Units its length in UTF-16 code units and Limit the bound it passed. Error names the
-// number of UTF-16 code units a caller must trim, before it gives the measured length and cap; a
-// caller adds only the HTTP status and the code.
+// node type, Units its length in UTF-16 code units and Limit the bound it passed. Error is
+// OverCap's wording; a caller adds only the HTTP status and the code.
 type CapExceeded struct {
 	Field    string
 	Position int
@@ -23,13 +38,7 @@ type CapExceeded struct {
 }
 
 func (e *CapExceeded) Error() string {
-	trim := e.Units - e.Limit
-	unit := "units"
-	if trim == 1 {
-		unit = "unit"
-	}
-	return fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code %s (%d/%d)",
-		e.Field, e.Position, e.Type, trim, unit, e.Units, e.Limit)
+	return OverCap(fmt.Sprintf("%s block %d (%s)", e.Field, e.Position, e.Type), e.Units, e.Limit)
 }
 
 // CountExceeded is a body holding more blocks than contracts.DispatchItemBlocks. Field is the

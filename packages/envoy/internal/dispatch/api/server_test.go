@@ -543,7 +543,8 @@ func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 }
 
 // overCapCases are texts just past a cap of limit UTF-16 units, each with the length the refusal
-// names: ASCII and é each spend one unit, and an emoji spends two.
+// names: an ASCII letter and an accented one each spend one unit, and a character outside the
+// Basic Multilingual Plane spends two.
 func overCapCases(limit int) map[string]struct {
 	text   string
 	length int
@@ -552,9 +553,10 @@ func overCapCases(limit int) map[string]struct {
 		text   string
 		length int
 	}{
-		"one ASCII a over":         {strings.Repeat("a", limit+1), limit + 1},
-		"one accented e over":      {strings.Repeat("é", limit+1), limit + 1},
-		"one emoji unit pair over": {strings.Repeat("😀", limit/2+1), limit + 2},
+		"one letter over":          {strings.Repeat("a", limit+1), limit + 1},
+		"one accented letter over": {strings.Repeat("é", limit+1), limit + 1},
+		// 501 characters outside the Basic Multilingual Plane are 1,002 UTF-16 units.
+		"counted in UTF-16 units": {strings.Repeat("😀", limit/2+1), limit + 2},
 	}
 }
 
@@ -569,10 +571,15 @@ func atCapCases(limit int) map[string]string {
 }
 
 // assertCapExceeded requires response to be the 400 CAP_EXCEEDED capExceededError writes for a
-// field of length units past a cap of limit, followed by "; hint" when hint is not empty.
+// field of length units past a cap of limit, followed by "; hint" when hint is not empty: the
+// number to trim, "unit" for 1 and "units" for more, then the length and the cap.
 func assertCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, length, limit int, hint string) {
 	t.Helper()
-	want := fmt.Sprintf("%s: %d of at most %d", field, length, limit)
+	unit := "units"
+	if length-limit == 1 {
+		unit = "unit"
+	}
+	want := fmt.Sprintf("%s: trim %d UTF-16 code %s (%d/%d)", field, length-limit, unit, length, limit)
 	if hint != "" {
 		want += "; " + hint
 	}

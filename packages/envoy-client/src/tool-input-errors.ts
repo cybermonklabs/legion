@@ -197,8 +197,8 @@ export function formatZodIssues(
         if (issue.origin === "array" && Array.isArray(issue.input)) {
           return [`${path} has ${issue.input.length} items; the limit is ${issue.maximum}`];
         }
-        // A string past its cap reads as the server's own refusal of it: "title: 1002 of at
-        // most 1000" (`overCapMessage`, `@legion/contracts/tool-schema`).
+        // A string past its cap reads as the server's own refusal of it: "title: trim 2 UTF-16
+        // code units (1002/1000)" (`overCapMessage`, `@legion/contracts/tool-schema`).
         if (issue.origin === "string") return [`${path}: ${issue.message}`];
         return [`${path} ${issue.message}`];
       case "custom":

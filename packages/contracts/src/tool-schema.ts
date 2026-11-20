@@ -48,14 +48,16 @@ type ZodNode = z.ZodType & {
 };
 
 /**
- * "L of at most M", a string's length and its cap; the formatter writes the field name and ": "
- * before it. It is the twin of the server's `capExceededError`
- * (`packages/envoy/internal/dispatch/api/server.go`), so a call refused here and one refused by
- * the server for the same cap read alike: "title: 1002 of at most 1000". Lengths are UTF-16
- * units, zod's and the server's both, and the words name no unit.
+ * "trim K UTF-16 code unit(s) (L/M)": the number to trim, in the unit the cap counts, then a
+ * string's length and its cap; the formatter writes the field name and ": " before it. It is the
+ * twin of the server's one wording for a text over a UTF-16 cap, `itemblocks.OverCap`
+ * (`packages/envoy/internal/dispatch/itemblocks/bounds.go`), so a call refused here and one
+ * refused by the server for the same cap read alike: "title: trim 2 UTF-16 code units
+ * (1002/1000)". Lengths are UTF-16 units, zod's and the server's both.
  */
 export function overCapMessage(length: number, max: number): string {
-  return `${length} of at most ${max}`;
+  const trim = length - max;
+  return `trim ${trim} UTF-16 code ${trim === 1 ? "unit" : "units"} (${length}/${max})`;
 }
 
 /**

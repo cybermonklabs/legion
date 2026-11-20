@@ -3505,7 +3505,7 @@ func TestSettlementMarksADecisionOverTheWordingBoundInvalid(t *testing.T) {
 	}
 
 	setQuestion(question)
-	reason := fmt.Sprintf("ask block %q: its question and options are %d of at most %d",
+	reason := fmt.Sprintf("ask block %q, its question and options: trim 1 UTF-16 code unit (%d/%d)",
 		blockID, contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax)
 	assertAskMarkedInvalidAndKept(t, service, artifactID, blockID, reason)
 

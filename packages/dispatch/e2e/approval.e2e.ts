@@ -189,10 +189,10 @@ test("a reason longer than the server takes shows the server's own refusal in th
 
     await dialog.getByRole("button", { exact: true, name: "Request changes" }).click();
 
-    // What the reader is shown is the server's refusal, which names the field and the bound,
-    // in place of the sentence the dialog says for a failure it cannot read.
+    // What the reader is shown is the server's refusal, which names the field, the number to
+    // trim and the bound, in place of the sentence the dialog says for a failure it cannot read.
     await expect(dialog.getByRole("alert")).toHaveText(
-      `reason: ${reason.length} of at most ${DISPATCH_EVENT_BODY_MAX}`
+      `reason: trim 1 UTF-16 code unit (${DISPATCH_EVENT_BODY_MAX + 1}/${DISPATCH_EVENT_BODY_MAX})`
     );
     await expect(dialog.getByText("Could not request changes. Try again.")).toHaveCount(0);
 

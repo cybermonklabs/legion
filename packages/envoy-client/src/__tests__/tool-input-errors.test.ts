@@ -128,7 +128,7 @@ describe("formatZodIssues", () => {
   test("carries the number to trim for an over-limit string and the item count for an array", () => {
     expect(
       problemsFor("dispatch_issue", { project: "DSP", title: "x".repeat(ISSUE_TITLE_MAX + 50) })
-    ).toEqual([`--title: ${ISSUE_TITLE_MAX + 50} of at most ${ISSUE_TITLE_MAX}`]);
+    ).toEqual([`--title: trim 50 UTF-16 code units (${ISSUE_TITLE_MAX + 50}/${ISSUE_TITLE_MAX})`]);
     expect(
       problemsFor("dispatch_ask", {
         issue: "DSP-42",

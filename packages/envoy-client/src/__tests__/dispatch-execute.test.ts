@@ -633,7 +633,7 @@ describe("executeDispatchTool", () => {
     const ref = "dispatch://DSP-41/ask/ab";
     const question = "x".repeat(DISPATCH_EVENT_BODY_MAX - 10);
     const sent = `${question}\n\nRef: ${ref}`;
-    const refusal = `question and options: ${DISPATCH_EVENT_BODY_MAX + 21} of at most ${DISPATCH_EVENT_BODY_MAX}`;
+    const refusal = `question and options: trim 21 UTF-16 code units (${DISPATCH_EVENT_BODY_MAX + 21}/${DISPATCH_EVENT_BODY_MAX})`;
     const questions: unknown[] = [];
     const fetchImpl = async (_url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       questions.push(JSON.parse(String(init?.body)).question);
@@ -5137,7 +5137,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl,
       })
-    ).rejects.toThrow(/title: 1001 of at most 1000/);
+    ).rejects.toThrow(/title: trim 1 UTF-16 code unit \(1001\/1000\)/);
   });
 
   /**

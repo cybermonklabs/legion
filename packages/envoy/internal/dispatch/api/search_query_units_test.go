@@ -33,7 +33,7 @@ func TestSearchQueryBoundsCountUTF16CodeUnits(t *testing.T) {
 		{name: "half the maximum in emoji is the maximum in units", q: strings.Repeat(emoji, contracts.SearchQueryMax/2),
 			status: http.StatusOK},
 		{name: "one emoji more is over it", q: strings.Repeat(emoji, contracts.SearchQueryMax/2+1),
-			status: http.StatusBadRequest, code: "CAP_EXCEEDED", message: "q: 1002 of at most 1000"},
+			status: http.StatusBadRequest, code: "CAP_EXCEEDED", message: "q: trim 2 UTF-16 code units (1002/1000)"},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {

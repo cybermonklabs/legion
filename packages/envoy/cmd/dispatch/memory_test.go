@@ -715,8 +715,8 @@ func TestReturnedAnswersCannotGrowADocumentPastWhatOneUploadMayHold(t *testing.T
 	askIDs := server.blockAsks(t, issue.Key, asks)
 	refusal := server.send(t, http.MethodPost, "/api/v1/asks/"+askIDs[0]+"/answer", "application/json", bytes.NewReader(tooLong), http.Header{"X-Dispatch-User": {"alice"}})
 	t.Logf("an answer of 900,000 ASCII characters answered %d %.200s", refusal.status, refusal.body)
-	if refusal.status != http.StatusBadRequest || !strings.Contains(string(refusal.body), `"code":"CAP_EXCEEDED"`) || !strings.Contains(string(refusal.body), "text: 900000 of at most 32000") {
-		t.Errorf("an answer of 900,000 ASCII characters answered %d %.300s, want 400 CAP_EXCEEDED naming its length", refusal.status, refusal.body)
+	if refusal.status != http.StatusBadRequest || !strings.Contains(string(refusal.body), `"code":"CAP_EXCEEDED"`) || !strings.Contains(string(refusal.body), "text: trim 868000 UTF-16 code units (900000/32000)") {
+		t.Errorf("an answer of 900,000 ASCII characters answered %d %.300s, want 400 CAP_EXCEEDED naming the number to trim", refusal.status, refusal.body)
 	}
 	for index, askID := range askIDs {
 		if answer := server.send(t, http.MethodPost, "/api/v1/asks/"+askID+"/answer", "application/json", bytes.NewReader(body), http.Header{"X-Dispatch-User": {"alice"}}); answer.status != http.StatusOK {

@@ -363,7 +363,7 @@ func TestAnUploadedDecisionBlockIsHeldToTheSameBoundAsAnAskRoute(t *testing.T) {
 	}
 	refused := upload("One unit over", spec(contracts.DispatchEventBodyMax+1))
 	body := refused.Body.String()
-	want := fmt.Sprintf(`ask block \"ask-0\": its question and options are %d of at most %d`,
+	want := fmt.Sprintf(`ask block \"ask-0\", its question and options: trim 1 UTF-16 code unit (%d/%d)`,
 		contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax)
 	if refused.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"INVALID_ASK_BLOCK"`) || !strings.Contains(body, want) {
 		t.Fatalf("a spec one unit over the ask bound: status=%d body=%.400s, want 400 INVALID_ASK_BLOCK %q", refused.Code, body, want)

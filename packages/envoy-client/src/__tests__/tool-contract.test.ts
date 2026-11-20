@@ -576,7 +576,7 @@ describe("message metadata", () => {
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
       "thread_ts is required (string)",
-      `text: ${SLACK_POST_TEXT_MAX + 1} of at most ${SLACK_POST_TEXT_MAX}`,
+      `text: trim 1 UTF-16 code unit (${SLACK_POST_TEXT_MAX + 1}/${SLACK_POST_TEXT_MAX})`,
     ]);
     expect(failure.message).toContain("slack_post was not called: 2 problems");
   });

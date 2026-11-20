@@ -207,7 +207,7 @@ describe("sending pictures", () => {
   });
 
   test("an ask's question goes to Dispatch with its ref and its picture lines, and Dispatch bounds it", async () => {
-    const over = `question and options: ${DISPATCH_EVENT_BODY_MAX + 1} of at most ${DISPATCH_EVENT_BODY_MAX}`;
+    const over = `question and options: trim 1 UTF-16 code unit (${DISPATCH_EVENT_BODY_MAX + 1}/${DISPATCH_EVENT_BODY_MAX})`;
     const server = dispatch((pathname, init) =>
       pathname === "/api/v1/issues/DSP-41/asks" && init.method === "POST"
         ? json({ code: "CAP_EXCEEDED", error: over }, 400)

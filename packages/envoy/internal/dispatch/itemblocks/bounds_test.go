@@ -9,6 +9,24 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
+// OverCap is every refusal of a text over a UTF-16 cap: the number to trim in the singular for
+// one unit and in the plural for more, then the length and the cap. The TypeScript twin,
+// overCapMessage, is held to the same two strings (packages/contracts/src/dispatch-tools.test.ts),
+// so a change to either wording fails a test.
+func TestOverCapNamesTheNumberToTrimInUTF16CodeUnits(t *testing.T) {
+	for _, row := range []struct {
+		units int
+		want  string
+	}{
+		{1001, "title: trim 1 UTF-16 code unit (1001/1000)"},
+		{1002, "title: trim 2 UTF-16 code units (1002/1000)"},
+	} {
+		if got := OverCap("title", row.units, 1000); got != row.want {
+			t.Errorf("OverCap(title, %d, 1000) = %q, want %q", row.units, got, row.want)
+		}
+	}
+}
+
 func requirePasses(t *testing.T, name, body string) {
 	t.Helper()
 	if err := Check("body", body); err != nil {

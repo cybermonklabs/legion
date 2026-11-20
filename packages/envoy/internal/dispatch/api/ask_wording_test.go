@@ -56,7 +56,7 @@ func TestAnAsksWordingIsBoundedWhereverItIsWritten(t *testing.T) {
 	// The wording is the 32,000-unit question plus "Ship" and "Release it": 32,014 units.
 	body := refused.Body.String()
 	if refused.Code != http.StatusBadRequest || !strings.Contains(body, `"code":"INVALID_ASK_BLOCK"`) ||
-		!strings.Contains(body, `ask block \"big\": its question and options are 32014 of at most 32000`) {
+		!strings.Contains(body, `ask block \"big\", its question and options: trim 14 UTF-16 code units (32014/32000)`) {
 		t.Fatalf("a decision block past the bound: status=%d body=%.400s", refused.Code, body)
 	}
 	text := decodeBody[struct {

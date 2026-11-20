@@ -258,7 +258,7 @@ func TestApprovalRequestSummaryAndARepeatWithANewSummary(t *testing.T) {
 	room := contracts.DispatchEventBodyMax -
 		docs.AskWordingUnits(docs.ApprovalQuestion(approvalOf("spec.md", maxApprovalVersion), ""), approvalAskOptions) - 1
 	over := strings.Repeat("é", room+1)
-	overCap := "summary: " + strconv.Itoa(room+1) + " of at most " + strconv.Itoa(room)
+	overCap := "summary: trim 1 UTF-16 code unit (" + strconv.Itoa(room+1) + "/" + strconv.Itoa(room) + ")"
 	if refused := request(issue.PrimaryArtifactID, &over); refused.Code != http.StatusBadRequest || !strings.Contains(refused.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(refused.Body.String(), overCap) {
 		t.Fatalf("summary over the cap: status=%d body=%s", refused.Code, refused.Body.String())
 	}
@@ -330,7 +330,7 @@ func TestTheLongestAcceptedSummaryFitsTheBoundAtEveryVersion(t *testing.T) {
 			})
 			limit := refused - 1
 			summary := strings.Repeat("é", limit)
-			if _, err := approvalQuestion(approvalOf(name, requested), summary+"é"); err == nil || !strings.Contains(err.Error(), "summary: "+strconv.Itoa(limit+1)+" of at most "+strconv.Itoa(limit)) {
+			if _, err := approvalQuestion(approvalOf(name, requested), summary+"é"); err == nil || !strings.Contains(err.Error(), "summary: trim 1 UTF-16 code unit ("+strconv.Itoa(limit+1)+"/"+strconv.Itoa(limit)+")") {
 				t.Fatalf("%s at version %d: one past the %d-unit limit = %v, want CAP_EXCEEDED", name, requested, limit, err)
 			}
 			// A move to the first version of each digit count, then to the longest of all.
@@ -364,7 +364,7 @@ func TestAVersionMoveKeepsTheLongestAcceptedSummaryWithinTheAskBound(t *testing.
 			map[string]any{"actor": sessionActor(), "summary": summary})
 	}
 	refused := request(strings.Repeat("é", contracts.DispatchEventBodyMax))
-	match := regexp.MustCompile(`of at most (\d+)`).FindStringSubmatch(refused.Body.String())
+	match := regexp.MustCompile(`summary: trim \d+ UTF-16 code units? \(\d+/(\d+)\)`).FindStringSubmatch(refused.Body.String())
 	if refused.Code != http.StatusBadRequest || match == nil {
 		t.Fatalf("summary past the cap: status=%d body=%s, want CAP_EXCEEDED naming the limit", refused.Code, refused.Body.String())
 	}

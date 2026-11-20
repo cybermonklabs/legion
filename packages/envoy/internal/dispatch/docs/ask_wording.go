@@ -1,6 +1,7 @@
 package docs
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -69,13 +70,14 @@ func AskWordingUnits(question string, options []model.AskOption) int {
 }
 
 // askWordingTooLong is why block's wording passes contracts.DispatchEventBodyMax, nil where it
-// stands inside it. A decision block opens an ask like any other, and its ask.answered event
+// stands inside it, in the one wording every refusal of a text over a UTF-16 cap takes
+// (itemblocks.OverCap). A decision block opens an ask like any other, and its ask.answered event
 // carries the same wording, so a document writes none a route would refuse.
 func askWordingTooLong(block askBlock) error {
 	units := AskWordingUnits(block.question, block.options)
 	if units <= contracts.DispatchEventBodyMax {
 		return nil
 	}
-	return fmt.Errorf("ask block %q: its question and options are %d of at most %d",
-		block.id, units, contracts.DispatchEventBodyMax)
+	return errors.New(itemblocks.OverCap(
+		fmt.Sprintf("ask block %q, its question and options", block.id), units, contracts.DispatchEventBodyMax))
 }
