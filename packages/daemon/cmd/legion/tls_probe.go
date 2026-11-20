@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
@@ -618,12 +619,20 @@ func tlsCommandMessage(err error, output string) string {
 	return "the command returned no output"
 }
 
+// trimTLSDetail is detail, a client's output, as an outcome carries it: what the URL rule leaves
+// of the whole of it, and where that is longer than tlsDetailLimit, its first third and its end,
+// where a client writes its refusal, with "…" between them. The length is decided on what the
+// rule leaves, so the head and the end never overlap. redact.Bytes cuts the head and redact.Tail
+// the end, each where a character starts, from the text the rule has read whole: a cut made first
+// can stop inside a URL's userinfo or its query, where the rule no longer finds either.
 func trimTLSDetail(detail string) string {
-	if len(detail) > tlsDetailLimit {
-		head := tlsDetailLimit / 3
-		return detail[:head] + "…" + detail[len(detail)-(tlsDetailLimit-head-1):]
+	detail = redact.URLCredentials(detail)
+	if len(detail) <= tlsDetailLimit {
+		return detail
 	}
-	return detail
+	head, _ := redact.Bytes(detail, tlsDetailLimit/3)
+	tail, _ := redact.Tail(detail, tlsDetailLimit-tlsDetailLimit/3-1)
+	return head + "…" + tail
 }
 
 func tlsCertificateError(detail string) bool {

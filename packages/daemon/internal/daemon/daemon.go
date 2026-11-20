@@ -96,9 +96,9 @@ const (
 	stopBudget = 10 * time.Second
 	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
 	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
-	// connection's own lock (nats.go v1.53.1, nats.go:6098-6101: nc.bw.flush() when the socket is
+	// connection's own lock (nats.go v1.55.0, nats.go:6242-6312: nc.bw.flush() when the socket is
 	// up and no reconnect is in progress), that write goes through timeoutWriter, whose deadline
-	// is Opts.FlusherTimeout (nats.go:2295-2296, :6827), and the default is a minute
+	// is Opts.FlusherTimeout (nats.go:2341-2346, :7026-7029), and the default is a minute
 	// (nats.go:67), which natsauth.Connect leaves as it is. So a server that has stopped reading
 	// from a full send buffer would hold the stop there for up to that minute. A connection the
 	// daemon stops waiting for costs nothing: the process is ending, and the server drops the

@@ -176,6 +176,70 @@ func TestTLSCommandDetailKeepsCertificateErrorTail(t *testing.T) {
 	}
 }
 
+// A detail longer than tlsDetailLimit whose head's bound falls inside a URL's user name, before
+// its "@", or whose end's window starts inside a URL's query, after its "?", keeps no part of
+// either: trimTLSDetail gives the whole detail through the URL rule before it cuts it. A cut made
+// first keeps the start of the user name, where the rule reads it as the URL's host, or the end of
+// the query with no "?" before it, where the rule finds no query. A detail the rule brings within
+// tlsDetailLimit is kept whole, rather than as a head and an end that overlap.
+func TestTrimTLSDetailKeepsNoPartOfAURLItsBoundsFallInside(t *testing.T) {
+	const user, query = "legion-reader", "token=planted-query-token-8"
+	head, window := tlsDetailLimit/3, tlsDetailLimit-tlsDetailLimit/3-1
+	// part is the first four bytes in a row of planted that text holds, and "" where it holds none.
+	part := func(text, planted string) string {
+		for i := 0; i+4 <= len(planted); i++ {
+			if strings.Contains(text, planted[i:i+4]) {
+				return planted[i : i+4]
+			}
+		}
+		return ""
+	}
+	headDetail := strings.Repeat("w", 85) + " https://" + user + "@h.example/p " + strings.Repeat("z", 400)
+	tailDetail := strings.Repeat("w", 400) + " https://h.example/p?" + query + " " + strings.Repeat("z", 177)
+	for _, tc := range []struct {
+		name, detail, planted string
+		// bound is what the bound alone keeps of the detail: its head, or its end's window; ""
+		// where the detail's length is what the case reads.
+		bound, want string
+	}{
+		{
+			name:    "a head whose bound falls inside a URL's user name",
+			detail:  headDetail,
+			planted: user,
+			bound:   headDetail[:head],
+			want:    strings.Repeat("w", 85) + " https://h.exam" + "…" + strings.Repeat("z", window),
+		},
+		{
+			name:    "an end whose window starts inside a URL's query",
+			detail:  tailDetail,
+			planted: query,
+			bound:   tailDetail[len(tailDetail)-window:],
+			want:    strings.Repeat("w", head) + "…" + "w https://h.example/p " + strings.Repeat("z", 177),
+		},
+		{
+			name:    "a detail the rule brings within the bound",
+			detail:  strings.Repeat("w", 260) + " https://h.example/p?" + query,
+			planted: query,
+			want:    strings.Repeat("w", 260) + " https://h.example/p",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.bound != "" && (part(tc.bound, tc.planted) == "" || strings.Contains(tc.bound, tc.planted)) {
+				t.Fatalf("the bound alone keeps %q, which does not cut %q: the case tests nothing", tc.bound, tc.planted)
+			}
+			got := trimTLSDetail(tc.detail)
+			for _, planted := range []string{user, query} {
+				if held := part(got, planted); held != "" {
+					t.Fatalf("trimTLSDetail = %q, which holds %q of %q", got, held, planted)
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("trimTLSDetail = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTLSCommandClientClassifiesApplicationErrorBeforeTruncatingDetail(t *testing.T) {
 	response := strings.Repeat("x", tlsDetailLimit) + " invalid XML received " + strings.Repeat("y", tlsDetailLimit)
 	client := tlsCommandClient{

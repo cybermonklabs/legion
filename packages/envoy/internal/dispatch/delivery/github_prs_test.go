@@ -175,14 +175,20 @@ func (f *fakeGitHub) handle(pattern string, handler http.HandlerFunc) {
 // newTestClient builds the App client this fake answers, with options (a shared rate limit,
 // githubapp.WithLimits) where a test needs them.
 func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Client {
-	t := f.t
+	f.t.Helper()
+	return newAppClient(f.t, githubtest.Spec{Handle: f.mux.ServeHTTP}, options...)
+}
+
+// newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
+// stand-in spec describes, with options where a test needs them.
+func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	base := githubtest.Server(t, githubtest.Spec{Handle: f.mux.ServeHTTP})
+	base := githubtest.Server(t, spec)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base, options...)
 	if err != nil {
 		t.Fatalf("new client: %v", err)

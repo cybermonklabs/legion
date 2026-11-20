@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -840,13 +841,16 @@ func (w *workflowRuntime) sessionHeld(ctx context.Context, tx pgx.Tx, c supervis
 
 // agentText is text when it is in the form of a step's agent text (steprecord.AgentTextHolds), and
 // "" when it is not, logged with its length and its first 256 bytes, quoted, so an operator can see
-// what the record leaves out without the log carrying text of any length.
+// what the record leaves out without the log carrying text of any length. The text comes from the
+// agent's frames, so redact.Bytes reads it whole through the URL rule before the cut: a cut made
+// first could end inside a URL's userinfo, before its "@", where the log's rule no longer finds it.
 func (w *workflowRuntime) agentText(token claim.Token, field, text string) string {
 	if text == "" || steprecord.AgentTextHolds(text) {
 		return text
 	}
+	quoted, _ := redact.Bytes(text, 256)
 	w.log.Warn("legion step record leaves out an agent's text outside its form", "claim", string(token), "field", field,
-		"bytes", len(text), "text", strconv.Quote(text[:min(len(text), 256)]))
+		"bytes", len(text), "text", strconv.Quote(quoted))
 	return ""
 }
 
@@ -1180,7 +1184,8 @@ func (w *workflowRuntime) reconcile(ctx context.Context) error {
 
 // reconcileListing applies issues, a Dispatch listing of the project, as reconcile says: the
 // boot's whole listing (keep nil, boot set, which also holds the roots the boot's catch-up reads
-// out of admission's decision), or a recovery's (recoverRepositories), scoped to the summaries
+// out of admission's decision and refills the project's rows of the copy of Dispatch's issues
+// where its mark asks for it), or a recovery's (recoverRepositories), scoped to the summaries
 // keep keeps, judged against every record, while every summary of the listing is still the walk
 // each chain is read up.
 func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatch.IssueSummary, keep func(records map[string]*record.Issue, summary dispatch.IssueSummary) bool, boot bool) error {
@@ -1251,10 +1256,47 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
 		}
+		// The boot's whole listing refills the project's rows of the copy of Dispatch's issues
+		// where the project's mark asks for it (record.Store.TakeDispatchRefill): the first boot
+		// of a project on the release of 20261120055717_dispatch_issue_value_sequences empties
+		// the project's rows here, and the mirror below fills them from this listing, so the
+		// empty, the fill and the mark's stamp commit together, under the fact lock and before
+		// admission's pass, the boot's first decision. A transaction that fails leaves the mark,
+		// and the next attempt refills. A recovery's listing is a part of the project, and it
+		// never refills. Dispatch deletes no issue and moves none to another project, and the
+		// listing is unpaged, so a key the refill removes that the listing does not hold is an
+		// anomaly the line below names.
+		if boot {
+			removed, refilled, err := w.records.TakeDispatchRefill(scoped, tx, w.dispatchProject)
+			if err != nil {
+				return err
+			}
+			if refilled {
+				inListing := make(map[string]bool, len(scope))
+				for _, summary := range scope {
+					inListing[summary.Key] = true
+				}
+				unlisted := make([]string, 0, len(removed))
+				for _, key := range removed {
+					if !inListing[key] {
+						unlisted = append(unlisted, key)
+					}
+				}
+				intake.OnCommit(scoped, func() {
+					w.log.Info("workflow: the first boot on this release refilled the copy of Dispatch's issues from the listing",
+						"project", w.dispatchProject, "removed", len(removed), "written", len(scope), "removedUnlisted", unlisted)
+				})
+			}
+		}
 		// The mirror takes every summary, before admission decides anything from it — including a
 		// summary admission defers to the Dispatch consumer: a deferred key's listed status is
-		// still the freshest thing the daemon holds about it, and the sequence fence keeps an
-		// event already applied from being written back over.
+		// still the freshest thing the daemon holds about it. Each value a summary carries
+		// replaces the copy's only where an older reading wrote it or none did
+		// (record.Store.PutDispatchIssue), so a listing no newer than an event already applied
+		// changes nothing that event wrote. At the boot that refills, no reading of this boot has
+		// reached the copy before this listing: the durable consumers start only in serve, after
+		// the catch-up that follows this listing, and the API serves only from serve too (run), so
+		// the rows the refill emptied are filled from this listing alone.
 		if err := blockers.Reconcile(scoped, tx, w.records, w.dispatchProject, scope); err != nil {
 			return err
 		}
