@@ -19,7 +19,9 @@
  *  environment of whatever addresses the harness. A run with `PLAYWRIGHT_BASE_URL` starts only
  *  the rows marked `deployed`, the fakes a deployed server is tested with. The pool calls it once
  *  per stack, each call with that stack's database and file-store bucket in `options.env`
- *  (`e2e/harness-ports.ts`), so one process starts a whole harness per Playwright worker.
+ *  (`e2e/harness-ports.ts`), so one process starts a whole harness per Playwright worker. The one
+ *  program it starts outside a stack is the stubbed layer's static file server, which serves the
+ *  whole run and which `e2e/stub/server.ts` starts through `startReporting`.
  *
  *  Nothing here is Bun's, because Playwright's runner is node's: the processes are
  *  `node:child_process`'s (`e2e/local-instance-support.ts`), and their output is read as a node
@@ -42,7 +44,11 @@ import { text } from "node:stream/consumers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-import { type HarnessListener, targetedListeners } from "./harness-listeners";
+import {
+  type HarnessListener,
+  type ReportingListener,
+  targetedListeners,
+} from "./harness-listeners";
 import { harnessPorts, harnessVariables } from "./harness-ports";
 import { type PipedRunning, Supervisor } from "./local-instance-support";
 
@@ -56,7 +62,7 @@ const tailLines = 20;
 const keeperBootMs = 30_000;
 
 export interface HarnessProcess {
-  readonly listener: HarnessListener;
+  readonly listener: ReportingListener;
   /** The process, the leader of a process group of its own, as `node:child_process` returns it:
    *  `exitCode` and `signalCode` say how it ended. */
   readonly child: ChildProcess;
@@ -104,7 +110,7 @@ interface Watched extends HarnessProcess {
 
 /** Copies the process's output to `logDir` or this process's stderr, and reads each line for the
  *  listener's report. */
-function watch(running: PipedRunning, listener: HarnessListener, logDir?: string): Watched {
+function watch(running: PipedRunning, listener: ReportingListener, logDir?: string): Watched {
   const log = logDir === undefined ? undefined : join(logDir, `${listener.id}.log`);
   const file = log === undefined ? undefined : createWriteStream(log);
   const tail: string[] = [];
@@ -140,14 +146,15 @@ function watch(running: PipedRunning, listener: HarnessListener, logDir?: string
   return { child, drained, listener, log, reported: () => port, tail };
 }
 
-/** The refusal for a listener that did not come up, quoting its last lines. An explicitly set port
- *  it could not bind is named as such. */
-function refusal(watched: Watched, given: number, what: string): Error {
+/** The refusal for a listener that did not come up, quoting its last lines. `named` is the port a
+ *  caller set for it, as `FAKE_ENVOY_PORT=4100`, or undefined where the OS chose it: a set port it
+ *  could not bind is named as such. */
+function refusal(watched: Watched, named: string | undefined, what: string): Error {
   const { listener, log, tail } = watched;
   const lines = tail.join("\n");
-  const inUse = given !== 0 && /EADDRINUSE|address already in use/.test(lines);
+  const inUse = named !== undefined && /EADDRINUSE|address already in use/.test(lines);
   const head = inUse
-    ? `${listener.name} cannot listen on ${harnessVariables[listener.key]}=${given}: address already in use`
+    ? `${listener.name} cannot listen on ${named}: address already in use`
     : `${listener.name} ${what}`;
   const where = log === undefined ? "" : ` (${log})`;
   return new Error(
@@ -157,18 +164,23 @@ function refusal(watched: Watched, given: number, what: string): Error {
 
 /** Waits for the listener's report and, for a listener with a health path, for that path to
  *  answer 200, and returns the port it serves on. It fails as soon as the process exits, so a
- *  server whose build failed is reported at once rather than when the wait runs out. */
-async function serving(watched: Watched, given: number, supervisor: Supervisor): Promise<number> {
+ *  server whose build failed is reported at once rather than when the wait runs out. `named` is
+ *  as for `refusal`. */
+async function serving(
+  watched: Watched,
+  named: string | undefined,
+  supervisor: Supervisor
+): Promise<number> {
   const { child, listener } = watched;
   const deadline = Date.now() + listener.bootMs;
   const check = async (waitingFor: string) => {
     if (child.exitCode !== null || child.signalCode !== null) {
       // The last lines are the reason; let the output reach the tail first.
       await Promise.race([watched.drained, sleep(1000)]);
-      throw refusal(watched, given, `exited ${child.exitCode ?? child.signalCode} ${waitingFor}`);
+      throw refusal(watched, named, `exited ${child.exitCode ?? child.signalCode} ${waitingFor}`);
     }
     if (Date.now() > deadline) {
-      throw refusal(watched, given, `did not ${waitingFor} within ${listener.bootMs / 1000} s`);
+      throw refusal(watched, named, `did not ${waitingFor} within ${listener.bootMs / 1000} s`);
     }
     await supervisor.untilInterrupted(sleep(100));
   };
@@ -242,6 +254,19 @@ async function keepPort(
   return { port: Number(readFileSync(portFile, "utf8").trim()), socket };
 }
 
+/** Starts `listener`, a program outside every stack that binds port 0 and reports the port the
+ *  kernel gave it, as a row of the table is started, and returns that port once the program serves
+ *  on it (`serving`). Its output goes to this process's stderr, and `supervisor` is the caller's:
+ *  its `stop` ends the program, a failed start included. The stubbed layer's static file server
+ *  is the one such program (`e2e/stub/server.ts`). */
+export async function startReporting(
+  listener: ReportingListener,
+  supervisor: Supervisor
+): Promise<number> {
+  const running = supervisor.startPiped(listener.name, listener.argv, dispatchPackage, process.env);
+  return serving(watch(running, listener), undefined, supervisor);
+}
+
 /** Starts the harness (see the module comment) and returns once every listener serves. A failure
  *  stops every process it started before it throws. */
 export async function startHarness(options: HarnessOptions = {}): Promise<Harness> {
@@ -275,11 +300,12 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
     }
     for (const listener of listeners) {
       const held = kept.get(listener);
+      const set = given[listener.key].port;
       const heldInputs =
         listener.heldAhead === undefined
           ? {}
           : held === undefined
-            ? { [listener.heldAhead.portEnv]: String(given[listener.key].port) }
+            ? { [listener.heldAhead.portEnv]: String(set) }
             : { [listener.heldAhead.keeperEnv]: held.socket };
       const running = supervisor.startPiped(listener.name, listener.argv, dispatchPackage, {
         ...environment,
@@ -290,7 +316,11 @@ export async function startHarness(options: HarnessOptions = {}): Promise<Harnes
       const watched = watch(running, listener, options.logDir);
       processes.push(watched);
       env[harnessVariables[listener.key]] = String(
-        await serving(watched, given[listener.key].port, supervisor)
+        await serving(
+          watched,
+          set === 0 ? undefined : `${harnessVariables[listener.key]}=${set}`,
+          supervisor
+        )
       );
     }
   } catch (error) {

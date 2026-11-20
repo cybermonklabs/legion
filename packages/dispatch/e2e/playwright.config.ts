@@ -123,10 +123,10 @@ refuseUnknownReuseServers();
 // works.
 //
 // What this run wants of the stubbed layer, read once (e2e/stub/selection.ts): whether it is
-// recording, whether it holds a stubbed row at all - which is what decides the static file
-// server below - and whether it is the stubbed layer alone, which is what tells `globalSetup` to
-// start nothing. That module says why each question is asked and why the third travels to the
-// workers in an environment variable.
+// recording, whether it holds a stubbed row at all - which is what decides whether `globalSetup`
+// starts the static file server (e2e/stub/server.ts) - and whether it is the stubbed layer alone,
+// which is what tells `globalSetup` to start no stack. That module says why each question is
+// asked and why the third travels to the workers in an environment variable.
 const stub = stubSelection({
   argv: process.argv,
   env: process.env,
@@ -626,9 +626,13 @@ const visualProjects = [
  * (e2e/__tests__/row-configurations.test.ts), so a project declared only when a variable is set
  * would be invisible to it.
  *
- * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server
- * (e2e/stub/origin.ts), which is also what gives it a configuration key of its own: `chromium`
- * runs the same engine at the same viewport, and the origin is what tells the two apart.
+ * Its origin is its own, a static file server over `web/dist` rather than a Dispatch server, which
+ * `globalSetup` starts on a port the kernel chooses and hands to the workers (e2e/stub/server.ts,
+ * e2e/stub/origin.ts). `chromium` runs the same engine at the same viewport, so in a worker the
+ * origin is what gives this project a configuration key of its own. In the runner's first
+ * evaluation, which the guard above lists, both origins are still port 0 and the two keys are
+ * one; no row runs twice under it, because `chromium` ignores `stubSpecs` and these projects
+ * match nothing else.
  *
  * `testIgnore: []` because this config's own `testIgnore` holds `stubSpecs`, to keep a project
  * that names neither selector from picking these rows up; a project's `testIgnore` replaces this
@@ -747,45 +751,22 @@ export default defineConfig({
   },
   // Starts this run's stacks and checks each of them before any row (e2e/global-setup.ts), and
   // stops them afterwards (e2e/global-teardown.ts). Both hooks are declared for every run,
-  // including the two that start nothing - the stubbed layer alone, and a run against servers a
+  // including the two that start no stack - the stubbed layer alone, and a run against servers a
   // person started - because that decision is the hook's own, which is where a reader now finds
-  // it. A deployed run starts a stack of the fakes alone, and the hook says why.
+  // it. A deployed run starts a stack of the fakes alone, and the hook says why. The same hooks
+  // start and stop the stubbed layer's static file server for a run that holds a stubbed row
+  // (e2e/stub/server.ts); this config declares no `webServer`, because Playwright tests a
+  // `webServer`'s URL before it starts the command, which needs a port fixed before any server
+  // holds it.
   globalSetup: fileURLToPath(new URL("./global-setup.ts", import.meta.url)),
   globalTeardown: fileURLToPath(new URL("./global-teardown.ts", import.meta.url)),
-  // The one server this config declares itself, and it serves files: the built SPA, for the
-  // stubbed layer's own origin (e2e/stub/static-server.ts). The harness is the pool's, which
-  // `globalSetup` starts (e2e/harness-pool.ts).
-  //
-  // It is declared for a run that holds a stubbed row and for no other (e2e/stub/selection.ts
-  // says which runs those are and why the question has to be asked at all).
-  //
-  // `reuseExistingServer: false`, deliberately, and it is the one thing that makes the fixed
-  // port safe. The port has to be fixed because Playwright polls a URL before the command it
-  // starts exists; reusing whatever answers it would let a second checkout on one machine
-  // replay this one's rows against that one's `web/dist`, silently, since the probe only asks
-  // for a document every build serves. Refusing instead makes the collision a message:
-  // Playwright says the port is in use and names it, and `DISPATCH_E2E_STUB_PORT` moves this
-  // run off it.
-  webServer:
-    !stub.holdsStubRow || stub.recording
-      ? undefined
-      : {
-          command: "bun e2e/stub/static-server.ts",
-          // Playwright runs a `webServer` command in the config's own directory, and every
-          // command of this package is written from the package root, as `package.json`'s
-          // scripts are.
-          cwd: fileURLToPath(new URL("..", import.meta.url)),
-          reuseExistingServer: false,
-          stdout: "pipe",
-          timeout: 60_000,
-          url: `${stubOrigin()}/index.html`,
-        },
   // A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) gets no stub project at
   // all: the stubbed layer replays a recording against a build this checkout made, so against
   // a deployed server it would prove nothing about either, and `e2e:deployed` names no project
-  // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`
-  // above is built on the same one, so a server can never start for a project this list leaves
-  // out, nor a project be declared with no server to answer it.
+  // and builds no `web/dist` to serve. `stub.declared` is that answer, and `holdsStubRow`, which
+  // `globalSetup` starts the static file server on, is built on the same one, so a server can
+  // never start for a project this list leaves out, nor a project be declared with no server to
+  // answer it.
   projects:
     harnessProcessCount === 2
       ? multiprocessProjects

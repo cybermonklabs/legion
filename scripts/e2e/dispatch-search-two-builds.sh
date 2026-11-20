@@ -17,13 +17,14 @@
 # extension, which meaning search needs. --base-commit is required and names the commit the base
 # build is built from, which for this proof is the release before pull request #2809 added the
 # five members (legion-envoy-v29.47.1); its tree is taken with `git archive` into the run's own
-# work directory, so the checkout is never touched. The ports are SEARCH_TWO_BUILDS_BASE_PORT
-# (19081), SEARCH_TWO_BUILDS_HEAD_PORT (19082) and SEARCH_TWO_BUILDS_ENVOY_PORT (19083), each
-# refused when something already answers on it, so this proof and dispatch-two-builds.sh beside it
-# hold no port in common. Running them at once still takes a database each: both reset their own
-# DATABASE_URL's `public` schema, so one database given to both leaves each build migrating a
-# schema the other emptied. The work directory, under TMPDIR, holds the base tree, both binaries
-# and every process's log: removed when the run passes, kept and printed when it fails.
+# work directory, so the checkout is never touched. No port is chosen before its server binds it:
+# each build serves on a socket held from the kernel's choice until it serves, and the fake Envoy
+# binds a port the kernel picks and names it (lib/two-builds.sh), so this proof and
+# dispatch-two-builds.sh beside it can run at once with no port in common. Running them at once
+# still takes a database each: both reset their own DATABASE_URL's `public` schema, so one
+# database given to both leaves each build migrating a schema the other emptied. The work
+# directory, under TMPDIR, holds the base tree, both binaries and every process's log: removed
+# when the run passes, kept and printed when it fails.
 #
 # It is a sibling of dispatch-two-builds.sh rather than a case added to it: that proof needs a
 # base build older than this release's reference grammar, and this one needs the release before
@@ -101,14 +102,10 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/two-builds.sh
 . "$root/scripts/e2e/lib/two-builds.sh"
 
-# This proof's own ports, and a longer wait on one call than the shared default: a search of
-# this corpus runs the meaning leg too. two_builds_setup reads this script's --base-commit and
-# DATABASE_URL before it drops every DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and
-# PGSERVICEFILE the shell inherited, and arms the teardown, whose last line carries the label
-# given here.
-base_port=${SEARCH_TWO_BUILDS_BASE_PORT:-19081}
-head_port=${SEARCH_TWO_BUILDS_HEAD_PORT:-19082}
-envoy_port=${SEARCH_TWO_BUILDS_ENVOY_PORT:-19083}
+# A longer wait on one call than the shared default: a search of this corpus runs the meaning leg
+# too. two_builds_setup reads this script's --base-commit and DATABASE_URL before it drops every
+# DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and PGSERVICEFILE the shell inherited, and
+# arms the teardown, whose last line carries the label given here.
 call_seconds=30
 two_builds_setup 'dispatch search two builds e2e' "$@"
 
@@ -260,14 +257,14 @@ begin base-build
 # DISPATCH_DEV_EMBEDDER is what the sibling proof does not need: it embeds in this process,
 # calls no model service, and needs the DISPATCH_DEV_SIGNIN=1 the shared start_server sets
 # beside it.
-start_server base "$work/bin/dispatch-base" "$base_port" DISPATCH_DEV_EMBEDDER=1
+start_server base "$work/bin/dispatch-base" DISPATCH_DEV_EMBEDDER=1
 await_start base "$base_pid" 120 "the base build to answer /healthz" \
   curl -fsS --max-time 2 "$base_url/healthz"
 note "the base build serves $base_url on the schema it migrated"
 pass
 
 begin head-build
-start_server head "$work/bin/dispatch-head" "$head_port" DISPATCH_DEV_EMBEDDER=1
+start_server head "$work/bin/dispatch-head" DISPATCH_DEV_EMBEDDER=1
 await_start head "$head_pid" 120 "this build to answer /healthz" \
   curl -fsS --max-time 2 "$head_url/healthz"
 kill -0 "$base_pid" 2>/dev/null || fail "the base build exited when this build migrated the schema"

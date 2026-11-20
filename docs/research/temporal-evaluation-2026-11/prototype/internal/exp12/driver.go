@@ -73,8 +73,8 @@ func Run(ctx context.Context, cfg harness.Config) error {
 
 	harness.Fact("restate-server-version", env.Version)
 	harness.Fact("restate-server-started-by-this-experiment", env.StartedServer)
-	harness.Fact("restate-ingress-address", cfg.RestateIngress)
-	harness.Fact("restate-admin-address", cfg.RestateAdmin)
+	harness.Fact("restate-ingress-address", env.IngressAddress)
+	harness.Fact("restate-admin-address", env.AdminAddress)
 	harness.Fact("invocation-status-read-from",
 		"POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations")
 	harness.Fact("the-change", "one new durable step, review, inserted between plan and implement -- the ordinary Legion change")
@@ -97,11 +97,12 @@ func Run(ctx context.Context, cfg harness.Config) error {
 // to the deployment it started on and finishes on the old code; the next invocation
 // goes to the new one.
 func runSupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, workDir string) error {
-	oldPort, err := restatex.FreePort()
+	oldEndpoint, err := restatex.HoldEndpoint()
 	if err != nil {
 		return err
 	}
-	old, err := startService(ctx, "service-recorded", serviceBinary, workDir, oldPort, VariantRecorded)
+	defer oldEndpoint.Close()
+	old, err := startService(ctx, "service-recorded", serviceBinary, workDir, oldEndpoint, VariantRecorded)
 	if err != nil {
 		return err
 	}
@@ -141,11 +142,12 @@ func runSupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, work
 
 	// The change, deployed the supported way: a new endpoint, registered as a new
 	// deployment of the same service.
-	newPort, err := restatex.FreePort()
+	newEndpoint, err := restatex.HoldEndpoint()
 	if err != nil {
 		return err
 	}
-	changed, err := startService(ctx, "service-changed", serviceBinary, workDir, newPort, VariantChanged)
+	defer newEndpoint.Close()
+	changed, err := startService(ctx, "service-changed", serviceBinary, workDir, newEndpoint, VariantChanged)
 	if err != nil {
 		return err
 	}
@@ -227,11 +229,14 @@ func runSupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, work
 // very endpoint an unfinished invocation is pinned to, so the server replays a journal
 // recorded by the old code into the new code.
 func runUnsupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, workDir string) error {
-	port, err := restatex.FreePort()
+	// The endpoint's port is held until the experiment ends, so the changed binary
+	// serves the very URL the recorded one served.
+	endpoint, err := restatex.HoldEndpoint()
 	if err != nil {
 		return err
 	}
-	recorded, err := startService(ctx, "service-recorded-2", serviceBinary, workDir, port, VariantRecorded)
+	defer endpoint.Close()
+	recorded, err := startService(ctx, "service-recorded-2", serviceBinary, workDir, endpoint, VariantRecorded)
 	if err != nil {
 		return err
 	}
@@ -269,7 +274,7 @@ func runUnsupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, wo
 		return err
 	}
 	harness.Fact("old-code-process-killed-pid", killed)
-	changed, err := startService(ctx, "service-changed-2", serviceBinary, workDir, port, VariantChanged)
+	changed, err := startService(ctx, "service-changed-2", serviceBinary, workDir, endpoint, VariantChanged)
 	if err != nil {
 		return err
 	}
@@ -343,12 +348,11 @@ func runUnsupportedWay(ctx context.Context, env *restatex.Env, serviceBinary, wo
 	return nil
 }
 
-// startService runs one cmd/restateservice process in experiment 12's mode, serving
-// one variant of the code.
-func startService(ctx context.Context, name, binary, workDir string, port int, variant string) (*restatex.Service, error) {
-	address := restatex.Address(port)
-	args := []string{"-mode", "exp12", "-address", address, "-work-dir", workDir, "-variant", variant}
-	return restatex.StartService(ctx, name, binary, args, workDir, address, restatex.ServiceReady)
+// startService runs one cmd/restateservice process in experiment 12's mode on endpoint, a
+// loopback port the driver holds, serving one variant of the code.
+func startService(ctx context.Context, name, binary, workDir string, endpoint *restatex.Endpoint, variant string) (*restatex.Service, error) {
+	args := []string{"-mode", "exp12", "-work-dir", workDir, "-variant", variant}
+	return restatex.StartService(ctx, name, binary, args, workDir, endpoint, restatex.ServiceReady)
 }
 
 // waitForSteps blocks until one run has written at least want step lines.

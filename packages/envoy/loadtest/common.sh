@@ -14,16 +14,16 @@
 # exports them as LOADTEST_SRC and LOADTEST_ROOT. It sets DISPATCH_SRC, the checkout envoy-dispatch
 # is built from, to LOADTEST_DISPATCH_SRC (default SRC).
 #
-# stack_ports ROOT: the stack's ports for ROOT, "KEY PORT" a line. The defaults follow the root's
-# physical path (port_block, default_port): a root always gets the same block of 8 ports, and two
-# roots get two blocks out of 200, so they share every port about 1 pair of roots in 200 (the block
-# is a hash modulo 200, not a per-root reservation). Each LOADTEST_*_PORT (PORT_VAR) overrides its
-# own port. So two Legion roles of one pod, each with its own LOADTEST_ROOT, almost always run a
-# stack each with no port variable set; when their blocks do collide, check_port refuses the second
-# stack and the roles set the LOADTEST_*_PORT variables (or pick another root). stack.sh setup
-# records the ports in ROOT/stack.json, and `stack.sh status` prints them. The blocks sit below the
-# machine's ephemeral range (port_base), and stack_ports refuses, naming both ranges, when they
-# cannot.
+# stack_ports: the stack's ports, "KEY PORT" a line, as the operator gives them: LOADTEST_PORT_BASE,
+# from which the nine ports are offsets 0 to 8, and each key's LOADTEST_*_PORT (PORT_VAR), which
+# overrides its own port. The stack chooses no port itself: a port it chose and probed free could be
+# taken by another program between the probe and the server's bind. Two stacks on one machine (two
+# Legion roles of one pod, each with its own LOADTEST_ROOT) take two bases. stack.sh setup records
+# the ports in ROOT/stack.json, and `stack.sh status` prints them.
+#
+# port_in_ephemeral PORT: PORT is inside this machine's ephemeral range (ephemeral_range), from which
+# the kernel takes the source port of every outgoing connection, so stack.sh start refuses such a
+# port (check_port): a connection of the stack could take it before its server binds it.
 #
 # lock_root ROOT: one run at a time per root (README.md, "One run at a time"). It takes an
 # exclusive, non-blocking flock on ROOT/.run.lock and keeps it on file descriptor 9. The lock lasts
@@ -49,7 +49,8 @@
 # stack process keeps the lock.
 #
 # prepare_stack runs stack.sh setup (an incremental build of SRC, and of DISPATCH_SRC's
-# envoy-dispatch), start and seed, each of which does nothing when its work is already done, and the
+# envoy-dispatch; a first setup whose environment gives a key no port is refused before any build,
+# stack_ports), start and seed, each of which does nothing when its work is already done, and the
 # migration check: a Dispatch build that lacks a migration the seed holds is refused with exit 1,
 # and one that holds migrations the seed lacks is noted. Then it sets BUILD to `stack.sh build-info`
 # ("<commit> <dirty>"). run-step.sh calls it before a step that is not part of a series;
@@ -95,13 +96,12 @@ resolve_paths() {
 
 # ---- the stack's ports ---------------------------------------------------------------------------
 
-# The stack's default ports follow LOADTEST_ROOT, so two roots on one machine (two Legion roles of
-# one pod, each with its own root and its own PID namespace) almost always run side by side with no
-# port variable set: each root hashes to one of PORT_BLOCKS blocks, so two roots land in one block
-# about 1 pair in 200, and then every port of the two stacks is the same one (check_port refuses
-# the second stack; the remedy is the LOADTEST_*_PORT variables). PORT_KEYS names stack.json's
-# ports, PORT_VAR each one's environment variable and PORT_OFFSET its place in a root's block of
-# ports.
+# The stack's ports are the operator's: LOADTEST_PORT_BASE gives all nine, as offsets 0 to 8 of it,
+# and each LOADTEST_*_PORT overrides its own. The stack chooses none, so another program can take a
+# port only where the operator gave one it holds: check_port (stack.sh) refuses that clearly before
+# the start, and a port taken after the check fails the start, since each server binds its own port
+# and the start waits for that server, not for the port. PORT_KEYS names stack.json's ports,
+# PORT_VAR each one's environment variable and PORT_OFFSET its place after LOADTEST_PORT_BASE.
 PORT_KEYS=(postgres proxy proxy_stats nats nats_monitor listener dispatch pprof envoy_proxy)
 declare -A PORT_VAR=(
   [postgres]=LOADTEST_PG_PORT [proxy]=LOADTEST_PROXY_PORT [proxy_stats]=LOADTEST_PROXY_STATS_PORT
@@ -112,16 +112,50 @@ declare -A PORT_OFFSET=(
   [postgres]=0 [proxy]=1 [nats]=2 [nats_monitor]=3 [listener]=4 [dispatch]=5 [pprof]=6
   [proxy_stats]=7 [envoy_proxy]=8
 )
-PORT_BASE_DEFAULT=15000
-PORT_STRIDE=10
-PORT_BLOCKS=200
 
-# port_block ROOT: ROOT's block of ports, an index k in [0, PORT_BLOCKS): the first 8 hex digits of
-# the sha256 of ROOT's physical path, modulo PORT_BLOCKS. The same root always gets the same block.
-port_block() {
-  local hex
-  hex=$(printf '%s' "$1" | sha256sum | cut -c1-8)
-  printf '%s\n' "$((16#$hex % PORT_BLOCKS))"
+# given_ports: the ports this environment gives, "KEY PORT" a line in PORT_KEYS' order, for the keys
+# it gives one: the key's PORT_VAR when set, else LOADTEST_PORT_BASE plus the key's offset when the
+# base is set. It fails, naming each bad value, when a value is no port from 1024 to 65535.
+given_ports() {
+  local key var value base=${LOADTEST_PORT_BASE:-} bad=() out=""
+  if [ -n "$base" ] && ! { [[ $base =~ ^[1-9][0-9]*$ ]] && ((base >= 1024 && base <= 65527)); }; then
+    bad+=("LOADTEST_PORT_BASE=$base (the first of nine ports, from 1024 to 65527)")
+    base=""
+  fi
+  for key in "${PORT_KEYS[@]}"; do
+    var=${PORT_VAR[$key]}
+    value=${!var:-}
+    if [ -z "$value" ]; then
+      [ -n "$base" ] || continue
+      value=$((base + PORT_OFFSET[$key]))
+    fi
+    if [[ $value =~ ^[1-9][0-9]*$ ]] && ((value >= 1024 && value <= 65535)); then
+      out+="$key $value"$'\n'
+    else
+      bad+=("$var=$value (a port from 1024 to 65535)")
+    fi
+  done
+  if ((${#bad[@]} > 0)); then
+    note "not a port: ${bad[*]}"
+    return 1
+  fi
+  printf '%s' "$out"
+}
+
+# stack_ports: every key's port as this environment gives it (given_ports), "KEY PORT" a line in
+# PORT_KEYS' order. It fails, naming the variables to set, when the environment leaves a key without
+# one. stack.sh setup records them in ROOT/stack.json, which `stack.sh status` prints.
+stack_ports() {
+  local given key missing=()
+  given=$(given_ports) || return 1
+  for key in "${PORT_KEYS[@]}"; do
+    grep -q "^$key " <<<"$given" || missing+=("${PORT_VAR[$key]}")
+  done
+  if ((${#missing[@]} > 0)); then
+    note "the stack chooses no port of its own: set LOADTEST_PORT_BASE (nine ports from it, free on this machine), or ${missing[*]}"
+    return 1
+  fi
+  printf '%s\n' "$given"
 }
 
 # ephemeral_range: this machine's ephemeral port range, "LOW HIGH", read from
@@ -137,33 +171,6 @@ ephemeral_range() {
   printf '%s %s\n' "$low" "$high"
 }
 
-# port_base: the first port of block 0. The PORT_BLOCKS blocks of PORT_STRIDE ports take
-# PORT_BLOCKS * PORT_STRIDE ports from it (2000). It is PORT_BASE_DEFAULT (15000) when they end
-# below the ephemeral range, which holds for Linux's default range (32768-60999). Otherwise it is
-# the 2000 ports just below the range: a gVisor pod's range starts at 16000, so there the blocks
-# take 14000-15998. When no range can be read it is the default. When the range starts too low for
-# 2000 ports above 1023, it prints a refusal naming both ranges on stderr and returns 1.
-port_base() {
-  local span=$((PORT_BLOCKS * PORT_STRIDE)) range low high base
-  range=$(ephemeral_range)
-  if [ -z "$range" ]; then
-    printf '%s\n' "$PORT_BASE_DEFAULT"
-    return 0
-  fi
-  read -r low high <<<"$range"
-  if ((PORT_BASE_DEFAULT + span <= low)); then
-    printf '%s\n' "$PORT_BASE_DEFAULT"
-    return 0
-  fi
-  base=$((low - span))
-  if ((base < 1024)); then
-    printf 'loadtest: the stack needs %d ports below the ephemeral range %d-%d (ip_local_port_range) and above 1023, and the range starts too low for them; set every LOADTEST_*_PORT to a port outside %d-%d\n' \
-      "$span" "$low" "$high" "$low" "$high" >&2
-    return 1
-  fi
-  printf '%s\n' "$base"
-}
-
 # port_in_ephemeral PORT: PORT is inside this machine's ephemeral range.
 port_in_ephemeral() {
   local range low high
@@ -171,39 +178,6 @@ port_in_ephemeral() {
   [ -n "$range" ] || return 1
   read -r low high <<<"$range"
   (($1 >= low && $1 <= high))
-}
-
-# default_port KEY BLOCK [BASE]: the default port of KEY in block BLOCK:
-#
-#   BASE + BLOCK * PORT_STRIDE + PORT_OFFSET[KEY] = BASE + 10k + 0..8
-#
-# BASE is port_base's unless given. The 9 offsets differ and all are below the stride, so no two
-# ports of a block and no two ports of two different blocks ever meet (two roots in one block hold
-# the same 9 ports); every port is between BASE and BASE + 1998, inside 1024-65535 and below the
-# ephemeral range (port_base).
-default_port() {
-  local base=${3:-}
-  if [ -z "$base" ]; then
-    base=$(port_base) || return 1
-  fi
-  printf '%s\n' "$((base + $2 * PORT_STRIDE + PORT_OFFSET[$1]))"
-}
-
-# stack_ports ROOT: ROOT's ports, "KEY PORT" a line in PORT_KEYS' order: the block's default port,
-# or the value of the key's PORT_VAR when this environment sets it. stack.sh setup records them in
-# ROOT/stack.json, which `stack.sh status` prints. It fails, printing nothing, when a key takes its
-# default and port_base refuses.
-stack_ports() {
-  local block key var base="" out=""
-  block=$(port_block "$1")
-  for key in "${PORT_KEYS[@]}"; do
-    var=${PORT_VAR[$key]}
-    if [ -z "${!var:-}" ] && [ -z "$base" ]; then
-      base=$(port_base) || return 1
-    fi
-    out+="$key ${!var:-$(default_port "$key" "$block" "$base")}"$'\n'
-  done
-  printf '%s' "$out"
 }
 
 # lock_field NAME RECORD: the value of NAME= in a lock record.

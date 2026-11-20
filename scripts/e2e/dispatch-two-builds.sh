@@ -15,10 +15,11 @@
 # base build is built from, which is the merge base with the default branch for a change under
 # review; its tree is taken with `git archive` into the run's own work directory, so the checkout
 # is never touched.
-# The ports are TWO_BUILDS_BASE_PORT (19071), TWO_BUILDS_HEAD_PORT (19072) and
-# TWO_BUILDS_ENVOY_PORT (19073), each refused when something already answers on it. The work
-# directory, under TMPDIR, holds the base tree, both binaries and every process's log: removed
-# when the run passes, kept and printed when it fails.
+# No port is chosen before its server binds it: each build serves on a socket held from the
+# kernel's choice until it serves, and the fake Envoy binds a port the kernel picks and names it
+# (lib/two-builds.sh), so the base build must take DISPATCH_LISTEN_FD (legion-envoy-v18.5.0 and
+# later). The work directory, under TMPDIR, holds the base tree, both binaries and every process's
+# log: removed when the run passes, kept and printed when it fails.
 # The harness this proof and dispatch-search-two-builds.sh run on — the argument, the
 # prerequisites, the build of both binaries, the reset, the fake Envoy and the start of each
 # server — is scripts/e2e/lib/two-builds.sh, which both source; what is below is this proof's
@@ -58,12 +59,9 @@ timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/two-builds.sh
 . "$root/scripts/e2e/lib/two-builds.sh"
 
-# This proof's own ports. two_builds_setup reads this script's --base-commit and DATABASE_URL
-# before it drops every DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and PGSERVICEFILE the
-# shell inherited, and arms the teardown, whose last line carries the label given here.
-base_port=${TWO_BUILDS_BASE_PORT:-19071}
-head_port=${TWO_BUILDS_HEAD_PORT:-19072}
-envoy_port=${TWO_BUILDS_ENVOY_PORT:-19073}
+# two_builds_setup reads this script's --base-commit and DATABASE_URL before it drops every
+# DISPATCH_*, ENVOY_*, NATS_*, PGHOSTADDR, PGSERVICE and PGSERVICEFILE the shell inherited, and
+# arms the teardown, whose last line carries the label given here.
 two_builds_setup 'dispatch two builds e2e' "$@"
 
 # references_hold TARGET SOURCE... reads the target's "Referenced by" (GET
@@ -125,7 +123,7 @@ pass
 two_builds_identity
 
 begin base-build
-start_server base "$work/bin/dispatch-base" "$base_port"
+start_server base "$work/bin/dispatch-base"
 await_start base "$base_pid" 120 "the base build to answer /healthz" \
   curl -fsS --max-time 2 "$base_url/healthz"
 note "the base build serves $base_url on the schema it migrated"
@@ -183,7 +181,7 @@ note "after ${waited}s under the base build alone, $target_key is referenced by 
 pass
 
 begin head-build
-start_server head "$work/bin/dispatch-head" "$head_port"
+start_server head "$work/bin/dispatch-head"
 await_start head "$head_pid" 120 "this build to answer /healthz" \
   curl -fsS --max-time 2 "$head_url/healthz"
 kill -0 "$base_pid" 2>/dev/null || fail "the base build exited when this build migrated the schema"

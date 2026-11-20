@@ -8,11 +8,12 @@
 // Nothing of the record path is stood in for. Dispatch is the real server: this driver builds
 // packages/envoy's cmd/dispatch and runs it, as packages/dispatch/e2e/run-server.sh does, on a
 // database of its own on LEGION_TEST_PG_DSN's server, with NATS off and the agent token the daemon
-// and the CLI present; it stops it and starts it again on the same database and port for A10. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
-// booted with dispatch_url at that server, so every Dispatch read and write it makes - the
-// repository mapping, the issue list, its status writes and messages, and the read of the record a
-// completion names - goes to the real routes. The worker side is the real `dispatch` CLI
+// and the CLI present; it stops it for A10, leaving on its port a stand-in that closes each
+// connection at once, and starts it again on the same database and port. The daemon is the whole
+// daemon (run, the function `legion start` calls, through startDaemonWithin), booted with
+// dispatch_url at that server, so every Dispatch read and write it makes - the repository mapping,
+// the issue list, its status writes and messages, and the read of the record a completion names -
+// goes to the real routes. The worker side is the real `dispatch` CLI
 // (packages/envoy-client/bin/dispatch.ts under bun) run as each claim's registered session, and
 // the daemon's own routes: registration, grants and POST /legion/v1/handoff/complete. The plugin
 // side a completion's commit comes from is the real `findHandoffReport`
@@ -562,24 +563,27 @@ func (r *handoffRecordsLive) a10Up() {
 	r.note("handoff-write as %s with Dispatch up: %s", planner.session, r.a10Existing.line)
 }
 
-// Step A10. With the Dispatch process stopped, `dispatch handoff-write` exits non-zero naming the
-// connection failure, and the planner's completion naming the record that exists is refused 502
-// DISPATCH_READ_FAILED; the issue stays in planning.
+// Step A10. With the Dispatch process stopped and its port held by a stand-in that closes each
+// connection at once, `dispatch handoff-write` exits non-zero with the CLI's own message for a
+// Dispatch that sent no answer, naming the stopped one (writeUnanswered), and the planner's
+// completion naming the record that exists is refused 502 DISPATCH_READ_FAILED for a read of that
+// record that got no answer (readUnanswered); the issue stays in planning. Neither check reads a
+// word of the runtime's account of the failure: that text is Bun's or Go's, not this
+// repository's, and the same word comes with failures that are not the stopped Dispatch.
 func (r *handoffRecordsLive) a10Down() {
 	t := r.t
 	planner := r.claimants[r.token(r.a10, claim.RolePlanner)]
-	r.dispatch.stop()
-	r.note("stopped the Dispatch process (SIGINT); %s refuses connections", r.dispatch.base)
+	r.dispatch.stopWithStandIn()
+	r.note("stopped the Dispatch process (SIGINT); %s closes each connection at once", r.dispatch.base)
 	file := r.bodyFile("a10-retry", r.smallBody(r.a10, "plan", "written once Dispatch answers"))
 	out, code := r.cli(planner.session, "handoff-write", "--issue", r.a10, "--phase", "plan", "--body-file", file)
-	lower := strings.ToLower(out)
-	if code == 0 || !(strings.Contains(lower, "connect") || strings.Contains(lower, "refused")) {
-		t.Fatalf("handoff-write with Dispatch stopped exited %d: %q, want a non-zero exit naming the connection failure", code, out)
+	if !writeUnanswered(out, code, r.dispatch.base) {
+		t.Fatalf("handoff-write with Dispatch stopped exited %d: %q, want a non-zero exit printing %q", code, out, unansweredWriteText(r.dispatch.base))
 	}
 	r.note("handoff-write with Dispatch stopped exited %d: %s", code, strings.TrimSpace(out))
 	status, failure := planner.complete(api.HandoffCompleteRequest{Summary: "planned", HandoffID: r.a10Existing.id, HandoffVersion: r.a10Existing.version})
-	if status != http.StatusBadGateway || failure.Code != "DISPATCH_READ_FAILED" {
-		t.Fatalf("the completion with Dispatch stopped = %d %+v, want 502 DISPATCH_READ_FAILED", status, failure)
+	if !readUnanswered(status, failure, r.a10Existing.id) {
+		t.Fatalf("the completion with Dispatch stopped = %d %+v, want 502 DISPATCH_READ_FAILED starting %q", status, failure, unansweredReadText(r.a10Existing.id))
 	}
 	r.note("POST /legion/v1/handoff/complete naming %s: %d %s: %s", r.a10Existing.id, status, failure.Code, failure.Error)
 	r.holdPhase(r.a10, phase.Planning)

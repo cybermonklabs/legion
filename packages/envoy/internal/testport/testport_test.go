@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -70,40 +69,5 @@ func TestRefusedRefusesEveryDialAndHoldsItsPort(t *testing.T) {
 		t.Fatalf("a bind with SO_REUSEADDR and SO_REUSEPORT took %s while the test held it", address)
 	} else if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Fatalf("a sharing bind of %s failed with %v, want EADDRINUSE", address, err)
-	}
-}
-
-// A reservation refuses a dial and a bind without SO_REUSEADDR, yet takes a Go listener's bind
-// beside it twice, as a server that starts and then restarts on the port makes it. The listener
-// rows fail when Reserve drops SO_REUSEADDR, and the dial row when the reservation listens.
-func TestReserveTakesAListenerAndRefusesADialAndAPlainBind(t *testing.T) {
-	fd, port, err := Reserve(&syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}})
-	if err != nil {
-		t.Fatalf("reserve a loopback port: %v", err)
-	}
-	t.Cleanup(func() { _ = syscall.Close(fd) })
-	address := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
-	if err == nil {
-		_ = conn.Close()
-	}
-	if !errors.Is(err, syscall.ECONNREFUSED) {
-		t.Errorf("a dial of the reserved %s: %v, want ECONNREFUSED", address, err)
-	}
-	plain, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
-	if err != nil {
-		t.Fatalf("make the plain bind's socket: %v", err)
-	}
-	err = syscall.Bind(plain, &syscall.SockaddrInet4{Port: port, Addr: [4]byte{127, 0, 0, 1}})
-	_ = syscall.Close(plain)
-	if !errors.Is(err, syscall.EADDRINUSE) {
-		t.Errorf("a bind of the reserved %s without SO_REUSEADDR: %v, want EADDRINUSE", address, err)
-	}
-	for _, start := range []string{"start", "restart"} {
-		listener, err := net.Listen("tcp", address)
-		if err != nil {
-			t.Fatalf("a Go listener's bind of the reserved %s at its %s: %v", address, start, err)
-		}
-		_ = listener.Close()
 	}
 }

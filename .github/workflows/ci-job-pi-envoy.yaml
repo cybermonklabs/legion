@@ -26,12 +26,14 @@ jobs:
     timeout-minutes: 10
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
-    # pinned by digest as this file's other service images are.
+    # pinned by digest as this file's other service images are. Docker publishes it on a host port
+    # it chooses, which the test step reads from the job's service context, so the job binds no
+    # fixed port of the runner, and no NATS of the job's listens on nats.js's default 127.0.0.1:4222.
     services:
       nats:
         # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
         image: ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
-        ports: ["4222:4222"]
+        ports: ["4222"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -62,7 +64,7 @@ jobs:
         run: bun run test
         working-directory: packages/pi-envoy
         env:
-          LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          LEGION_TEST_NATS_URL: nats://127.0.0.1:${{ job.services.nats.ports['4222'] }}
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

@@ -157,6 +157,17 @@
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts): a check that refuses the start for what a dead run left, as its containers,
+# its processes and the session database port its container still publishes, would end every
+# later start with that Postgres still there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "CHECK setup: FAIL: the removal of the Postgres of dead stacks could not run"
+  echo "stage 4b e2e: FAIL (check setup)"
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e4b.$$.XXXXXXXX")
 evidence=${STAGE4B_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e4b-evidence.XXXXXXXX)}
 # Refused before anything is written into the evidence directory, the transcript's tee started or
@@ -465,8 +476,6 @@ blocked() {
 . "$root/scripts/e2e/lib/workflow.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/namespace-rig.sh
 . "$root/scripts/e2e/lib/namespace-rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/session-db.sh
 . "$root/scripts/e2e/lib/session-db.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/role-namespaces.sh
@@ -3517,7 +3526,8 @@ while IFS= read -r line; do note "$line"; done <<<"$built"
 # The build's source is the run's recorded source, or the tree changed between the two.
 [ "$(sed -n 's/^source: //p' <<<"$built")" = "$(jq -r .revision "$evidence/run.json")" ] ||
   fail "the tree changed between prerequisites ($(jq -r .revision "$evidence/run.json")) and the build ($(sed -n 's/^source: //p' <<<"$built"))"
-docker run -d --name "$pg_container" --label "$run_container_label=$run_container_id" \
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+docker run -d --name "$pg_container" --label "$pg_mark" --label "$run_container_label=$run_container_id" \
   --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
   -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null

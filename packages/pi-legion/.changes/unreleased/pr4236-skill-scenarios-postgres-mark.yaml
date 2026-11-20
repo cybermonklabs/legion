@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The skill scenarios' batch (`scripts/skill-scenarios/rig.sh`) marks its Postgres container as every test stack marks its own, and before it starts it removes the Postgres of each test stack whose process is gone (`scripts/e2e/lib/leftovers.sh`). A batch that was killed hard no longer leaves its Postgres running for good, and the start needs `bun` on `PATH`.

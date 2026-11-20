@@ -10,9 +10,10 @@
 // Experiments 1 to 6 and 19 to 21 measure Temporal and take its address; experiments 7 to 9
 // measure DBOS, which is a library keeping its state in the application's own
 // PostgreSQL, and take that database's URL instead; experiments 10 to 12 measure
-// Restate, which is a server that calls the application, and take that server's two
-// loopback addresses, the restate-server binary to start, and the binary of the
-// service process the server is to call.
+// Restate, which is a server that calls the application, and take the restate-server
+// binary to start, which serves on unix sockets of its own, and the binary of the
+// service process the server is to call, or else the two loopback addresses of a
+// server the operator runs.
 //
 // Each experiment prints its measured numbers as plain lines and then exactly one last
 // line, `experiment N: PASS` or `experiment N: FAIL`, exiting 0 only on PASS.
@@ -65,8 +66,8 @@ func main() {
 	flag.StringVar(&cfg.RepoRoot, "repo-root", "", "the Legion repository's root, whose own code experiment 1 measures (default: found by walking up from the working directory)")
 	flag.StringVar(&cfg.PostgresDSN, "postgres-dsn", os.Getenv("LEGION_TEST_PG_DSN"), "the PostgreSQL the library experiments measure against (experiments 7..9 and 13..18)")
 	flag.StringVar(&cfg.DBOSWorker, "dbos-worker", "", "absolute path of the built cmd/dbosworker binary (experiments 7..9; default: the dbosworker beside this binary)")
-	flag.StringVar(&cfg.RestateIngress, "restate-ingress", "127.0.0.1:8080", "the Restate server's ingress address, which must be on 127.0.0.1 (experiments 10..12)")
-	flag.StringVar(&cfg.RestateAdmin, "restate-admin", "127.0.0.1:9070", "the Restate server's admin address, which must be on 127.0.0.1 (experiments 10..12)")
+	flag.StringVar(&cfg.RestateIngress, "restate-ingress", "127.0.0.1:8080", "the ingress address of a Restate server already running, which must be on 127.0.0.1 (experiments 10..12, when they start no server; one they start serves on a unix socket of its own)")
+	flag.StringVar(&cfg.RestateAdmin, "restate-admin", "127.0.0.1:9070", "the admin address of a Restate server already running, which must be on 127.0.0.1 (experiments 10..12, when they start no server; one they start serves on a unix socket of its own)")
 	flag.StringVar(&cfg.RestateServer, "restate-server", "", "absolute path of a restate-server executable, which the experiment starts itself (experiments 10..12; default: the restate-server beside this binary, and failing that a server already answering at -restate-admin)")
 	flag.StringVar(&cfg.RestateService, "restate-service", "", "absolute path of the built cmd/restateservice binary, the process Restate calls (experiments 10..12; default: the restateservice beside this binary)")
 	flag.StringVar(&cfg.GWWorker, "gw-worker", "", "absolute path of the built cmd/gwworker binary (experiments 13 and 14; default: the gwworker beside this binary)")

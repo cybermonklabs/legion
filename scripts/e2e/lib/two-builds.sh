@@ -6,7 +6,7 @@
 # of what a pane exports, the teardown, the HTTP call, the prerequisites, the build of both
 # binaries, the reset of the database's `public` schema, the fake Envoy and the start of a server
 # — so a fix to the loopback guard or to the reset lands in one place. Each proof keeps its own
-# header, its own ports, its own seed and its own cases.
+# header, its own seed and its own cases.
 #
 # Sourced, never run. It sources lib/rig.sh itself, so a proof sources this alone. Before it does,
 # the caller sets what lib/rig.sh asks of it —
@@ -16,14 +16,16 @@
 # — and defines note and fail (which exits). cleanup below also reads two of the caller's own:
 #   check          the check a failure is reported at
 #   started        $SECONDS when the run began
-# and the caller sets its three ports, base_port, head_port and envoy_port, before it calls
-# anything here.
+# No port is the caller's to choose: each build serves on a socket held from the kernel's choice
+# until it serves (lib/rig.sh's start_held), and the fake Envoy binds a port the kernel picks and
+# names it (start_reported), so no port is free between its choice and its bind.
 #
 # What this sets for the caller: base_commit and database_url, work and the pids fake_envoy_pid,
-# base_pid and head_pid (two_builds_setup), base_sha (two_builds_prerequisites), and agent_token,
-# signin_key, base_url and head_url (two_builds_identity). call sends to target_url, which the
-# caller sets to the build it is talking to, and waits call_seconds for an answer, which the
-# caller may set; it is 20 here. sign_in and call_person do the same as a person.
+# base_pid and head_pid (two_builds_setup), base_sha (two_builds_prerequisites), envoy_port
+# (two_builds_fake_envoy), agent_token and signin_key (two_builds_identity), and base_url and
+# head_url (start_server, as each build starts). call sends to target_url, which the caller sets to
+# the build it is talking to, and waits call_seconds for an answer, which the caller may set; it is
+# 20 here. sign_in and call_person do the same as a person.
 #
 # A proof calls these in the order they stand in below: two_builds_setup once, then
 # two_builds_prerequisites, two_builds_build, two_builds_reset_database, two_builds_fake_envoy
@@ -80,6 +82,11 @@ two_builds_setup() {
   fake_envoy_pid=''
   base_pid=''
   head_pid=''
+  # Assigned as each server starts: envoy_port by two_builds_fake_envoy, base_url and head_url by
+  # start_server.
+  envoy_port=''
+  base_url=''
+  head_url=''
   target_url=''
   agent_token=''
 
@@ -177,7 +184,7 @@ json_field() {
 # its own terms. CHECK, when given, is the proof's own prerequisite, run after the shared ones and
 # before the two notes below, so what it notes lands where it did.
 two_builds_prerequisites() {
-  local refusal=$1 db_host tool port
+  local refusal=$1 db_host tool
   shift
   [ -n "$database_url" ] ||
     fail "DATABASE_URL is required: it names a loopback PostgreSQL database this run resets (postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable)"
@@ -188,7 +195,7 @@ two_builds_prerequisites() {
   esac
   # tar is in the list because two_builds_build takes the base tree with `git archive | tar -x`,
   # and python3 because require_loopback_dsn below runs lib/loopback-dsn.py, which is why the
-  # tool check comes first.
+  # tool check comes first; start_server's lib/held-port.py needs it too.
   for tool in go bun curl psql git tar openssl python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
@@ -200,15 +207,11 @@ two_builds_prerequisites() {
     fail "$db_host"
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
     fail "--base-commit '$base_commit' names no commit of this repository"
-  for port in "$base_port" "$head_port" "$envoy_port"; do
-    if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
-      fail "'$port' is not a port"
-    fi
-    port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
-  done
-  if [ "$base_port" = "$head_port" ] || [ "$base_port" = "$envoy_port" ] || [ "$head_port" = "$envoy_port" ]; then
-    fail "the base, head and fake Envoy ports must differ ($base_port, $head_port, $envoy_port)"
-  fi
+  # The base build serves on the socket start_server holds for it, which only a server that takes
+  # DISPATCH_LISTEN_FD does (legion-envoy-v18.5.0 and later); an earlier one would bind a port of
+  # its own and exit with `address already in use`.
+  git -C "$root" grep -q DISPATCH_LISTEN_FD "$base_sha" -- packages/envoy/cmd/dispatch/main.go ||
+    fail "--base-commit $base_sha predates DISPATCH_LISTEN_FD (legion-envoy-v18.5.0), so its server cannot serve on the socket this run holds for it"
   # The `vector` extension is the deployment's bootstrap's to install, as a cluster's master role
   # (0072_embeddings_core.up.sql), and the role this run connects as is not one, so a database
   # without it is one no build can migrate. It is read here rather than met with a failed boot.
@@ -248,35 +251,38 @@ two_builds_reset_database() {
 # two_builds_fake_envoy starts the listener both builds are pointed at, which is the Dispatch
 # browser harness's own fake, and waits for it to answer.
 two_builds_fake_envoy() {
-  FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+  # FAKE_ENVOY_PORT is unset, so the fake binds a port the kernel picks and names it.
+  start_reported fake_envoy envoy_port 'fake envoy listener on 127\.0\.0\.1:' -- \
+    env -u FAKE_ENVOY_PORT bun "$root/packages/dispatch/e2e/fake-envoy.ts"
   await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
     curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
   note "fake Envoy listener on http://127.0.0.1:$envoy_port"
 }
 
 # two_builds_identity mints the agent bearer both builds take and the key both sign their cookies
-# with, and names each build's URL.
+# with.
 two_builds_identity() {
   agent_token=$(openssl rand -hex 24)
   # Both processes serve one database, so each must sign its cookies with the key the other
   # holds, as e2e/run-server.sh gives two-process mode: a process with a key of its own is
   # refused registration by the one already live.
   signin_key=$(openssl rand -hex 32)
-  base_url=http://127.0.0.1:$base_port
-  head_url=http://127.0.0.1:$head_port
 }
 
-# start_server NAME BINARY PORT [VARIABLE=VALUE...] starts one build with this environment and
+# start_server NAME BINARY [VARIABLE=VALUE...] starts one build with this environment and
 # nothing else: identity is the production cookie, minted at the dev sign-in route with a signing
 # key the process generates for itself, HOME and the XDG directories name nothing, and both
 # processes share one agent token, so a session's bearer is good against either. Each VARIABLE
 # given is set beside them, which is where the two proofs differ: the search proof passes
 # DISPATCH_DEV_EMBEDDER=1, which embeds in this process and calls no model service, and the
-# reference-grammar proof passes none.
+# reference-grammar proof passes none. The build serves on a socket held from the kernel's choice
+# until it serves (start_held), named in DISPATCH_PORT and DISPATCH_SERVER_URL ({port}); start_server
+# sets NAME_port and NAME_url (base_url, head_url) once the port is held. A held socket queues a
+# connection until the build serves, so each poll carries a timeout of its own.
 start_server() {
-  local name=$1 binary=$2 port=$3
-  shift 3
-  start_process "$name" env -i \
+  local name=$1 binary=$2
+  shift 2
+  start_held "$name" "${name}_port" DISPATCH_LISTEN_FD -- env -i \
     PATH="$PATH" \
     TMPDIR="$work" \
     HOME=/nonexistent \
@@ -289,12 +295,15 @@ start_server() {
     DISPATCH_DEV_SIGNIN_SHARED_KEY="$signin_key" \
     DISPATCH_IDENTITY=cookie \
     DISPATCH_INSECURE_COOKIE=1 \
+    DISPATCH_LISTEN_FD=3 \
     DISPATCH_LISTEN_HOST=127.0.0.1 \
     DISPATCH_NATS_DISABLED=1 \
-    DISPATCH_PORT="$port" \
-    DISPATCH_SERVER_URL="http://127.0.0.1:$port" \
+    DISPATCH_PORT='{port}' \
+    DISPATCH_SERVER_URL='http://127.0.0.1:{port}' \
     DISPATCH_WEB_DIST="$work/web-dist" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" \
     "$@" \
     "$binary"
+  local port_var=${name}_port
+  printf -v "${name}_url" 'http://127.0.0.1:%s' "${!port_var}"
 }

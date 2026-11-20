@@ -19,11 +19,13 @@
 # before the server migrates it, keeping the extensions that schema holds, and leaves what the run
 # wrote there for inspection.
 # DISPATCH_BIN names a prebuilt envoy-dispatch (the negative control runs one built from the base
-# commit); unset, the script builds ./cmd/dispatch from this checkout. The ports are
-# CLAIMANT_E2E_DISPATCH_PORT (19051) and CLAIMANT_E2E_ENVOY_PORT (19053), each refused when
-# something already answers on it; NATS listens on a port the kernel picks. The work directory, under
-# TMPDIR, holds the binaries and every process's log: removed when the run passes, kept and printed
-# when it fails.
+# commit), which must serve on an inherited socket (DISPATCH_LISTEN_FD, legion-envoy-v18.5.0 and
+# later); unset, the script builds ./cmd/dispatch from this checkout. No port is chosen before its
+# server binds it: the server serves on a socket held from the kernel's choice until it serves
+# (lib/held-port.py through lib/rig.sh's start_held), and NATS and the fake Envoy listener each
+# bind a port the kernel picks and name it in their logs. The work directory, under TMPDIR, holds
+# the binaries and every process's log: removed when the run passes, kept and printed when it
+# fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -44,8 +46,10 @@ timeout_hook=''
 # DISPATCH_BIN is this script's input, read before the sweep below drops every DISPATCH_* variable.
 dispatch_bin=${DISPATCH_BIN:-}
 database_url=${DATABASE_URL:-}
-dispatch_port=${CLAIMANT_E2E_DISPATCH_PORT:-19051}
-envoy_port=${CLAIMANT_E2E_ENVOY_PORT:-19053}
+# Each port is assigned as its server names it (start_reported) or once its socket is held
+# (start_held).
+envoy_port=''
+dispatch_port=''
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
@@ -54,7 +58,7 @@ envoy_port=${CLAIMANT_E2E_ENVOY_PORT:-19053}
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
-    DISPATCH_* | ENVOY_* | NATS_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
+    DISPATCH_* | ENVOY_* | NATS_* | FAKE_* | PGHOSTADDR | PGSERVICE | PGSERVICEFILE) unset "$name" ;;
   esac
 done
 
@@ -102,13 +106,6 @@ require_loopback_dsn db_host DATABASE_URL "$database_url" "this run resets the d
 if [ -n "$dispatch_bin" ]; then
   [ -x "$dispatch_bin" ] || fail "DISPATCH_BIN=$dispatch_bin is not an executable file"
 fi
-for port in "$dispatch_port" "$envoy_port"; do
-  if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
-    fail "'$port' is not a port"
-  fi
-  port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
-done
-[ "$dispatch_port" != "$envoy_port" ] || fail "the Dispatch and fake Envoy ports are both $dispatch_port"
 note "database host $db_host (URL not printed)"
 pass
 
@@ -146,7 +143,10 @@ note "JetStream on $nats_url"
 pass
 
 begin fake-envoy
-FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+# FAKE_ENVOY_PORT is unset (the sweep above drops it), so the fake binds a port the kernel picks
+# and names it on its listening line.
+start_reported fake_envoy envoy_port 'fake envoy listener on 127\.0\.0\.1:' -- \
+  bun "$root/packages/dispatch/e2e/fake-envoy.ts"
 await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
   curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
 note "fake Envoy listener on http://127.0.0.1:$envoy_port"
@@ -158,8 +158,11 @@ begin dispatch
 # HOME and the XDG directories name nothing, so no envoy.json, data directory or AWS profile of the
 # caller's is read. Sessions authenticate with a token minted for this run.
 agent_token=$(openssl rand -hex 24)
-dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+# The server serves on a socket held from the kernel's choice until it serves (start_held), and
+# names that port in DISPATCH_PORT and DISPATCH_SERVER_URL ({port}, which held-port.py fills in);
+# under env -i it names DISPATCH_LISTEN_FD itself. A held socket queues a connection until the
+# server serves, so each poll carries a timeout of its own.
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- env -i \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
@@ -171,13 +174,15 @@ start_process dispatch env -i \
   DISPATCH_DEV_SIGNIN=1 \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
+  DISPATCH_LISTEN_FD=3 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_PORT="$dispatch_port" \
-  DISPATCH_SERVER_URL="$dispatch_url" \
+  DISPATCH_PORT='{port}' \
+  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' \
   DISPATCH_WEB_DIST="$work/web-dist" \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
   "$dispatch_bin"
+dispatch_url=http://127.0.0.1:$dispatch_port
 await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, outbox publishing to $nats_url"

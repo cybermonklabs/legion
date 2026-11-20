@@ -9,6 +9,8 @@ standalone helpers they run, and the files they source, which `shellcheck` follo
 
 - [`lib/rig.sh`](#librigsh)
 
+- [`lib/held-front.sh`](#libheld-frontsh)
+
 - [`lib/process-tree.sh`](#libprocess-treesh)
 
 - [`lib/workflow.sh`](#libworkflowsh)
@@ -35,9 +37,11 @@ A new script's section, and its item in the index list below, go next to the scr
 
 Every `docker run` in these scripts sets a CPU and a memory limit inline, and its container is removed when the run ends (an `EXIT` trap's `docker rm -f -v`, or `--rm`):
 the proofs run on a shared devbox, where an unbounded container takes cores and memory from every other run there.
-A container is named for the pid of the driver that started it, and the kernel hands a pid out again, so Stage 4b's teardown removes by label rather than by name:
+Most drivers name a container for the pid of the driver that started it, and the kernel hands a pid out again.
+Stage 3 and the controller-start and parked-decision proofs name theirs with that pid and random bytes after it, since a run in another pid namespace on one Docker daemon can share the pid, pi-legion's skill-scenario rig names its own with a hash of its work directory, and each of those removes its containers by the id its `docker create` printed (`start_container`, [`lib/rig.sh`](#librigsh)).
+Stage 4b's teardown removes by label rather than by name:
 every container it starts carries that run's own id as the docker label `legion.dev/e2e-run`, and the teardown removes a name only while the container at it carries that id (`remove_run_container`, `lib/stage4b-run-containers.test.ts`).
-What an earlier run left stays for [`lib/leftovers.sh`](#libleftoverssh) to name to the operator.
+What an earlier run left stays for [`lib/leftovers.sh`](#libleftoverssh) to name to the operator, but for a Postgres, which the next start of a test stack removes once its driver is gone.
 Every scratch Postgres keeps its data directory on `tmpfs`, so no run leaves a volume behind, and tmpfs is charged to the container's memory.
 Every scratch Postgres gets `--cpus 2 --memory 2g`, except the session databases of Stage 4a and Stage 4b, which get `--cpus 2 --memory 4g`:
 they hold every pod's Oh My Pi session for the whole run, hours for Stage 4b.
@@ -3650,8 +3654,8 @@ It builds both binaries from the checkout, so it proves the tree you are standin
 
 What the run touches, and nothing else:
 
-- `/tmp/verifiers-e2e` — the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
-  Recreated from empty each run.
+- `/tmp/verifiers-e2e.XXXXXXXX` — a directory of the run's own, which the run names on its line `== the run's directory:`: the two built binaries, the boot logs, the refusal logs, the last response body, and the scratch `HOME` the binaries run under, so Dispatch's signing key never lands in the box's `~/.local/share/dispatch`.
+  The `EXIT` trap removes the two binaries; the logs and the body stay.
 
 - the containers `verifiers-e2e-pg` (pgvector on PostgreSQL 18, the image CI's Dispatch service runs, pinned by digest) and `verifiers-e2e-nats` (the hub's nats-server with `-js`, [`lib/nats-image.sh`](#libnats-imagesh)), both on ephemeral loopback ports.
 
@@ -3986,15 +3990,9 @@ Each item below names an input and its default, then what it means.
 
 - `DISPATCH_BIN` — unset
 
-  a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+  a prebuilt `envoy-dispatch` to run, which must serve on an inherited socket (`DISPATCH_LISTEN_FD`, legion-envoy-v18.5.0 and later); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
 
-- `CLAIMANT_E2E_DISPATCH_PORT` — `19051`
-
-  the server's port; refused when something already answers on it
-
-- `CLAIMANT_E2E_ENVOY_PORT` — `19053`
-
-  the fake Envoy listener's port; refused the same way
+No port is chosen before its server binds it: the server serves on a socket [`lib/held-port.py`](#libheld-portpy) holds from the kernel's choice until it serves (`lib/rig.sh`'s `start_held`), and NATS and the fake Envoy listener each bind a port the kernel picks and name it in their logs (`start_reported`).
 
 The script drops every inherited `DISPATCH_*`, `ENVOY_*` and `NATS_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`, where the three sessions are registered live and P and C advertise `steer`, a mention's default mode), and the server with NATS on, dev sign-in, an insecure cookie and an agent token minted for the run, in an environment holding nothing else.
@@ -4101,7 +4099,7 @@ Each item below names an input and its default, then what it means.
 
 - `DISPATCH_BIN` — unset
 
-  a prebuilt `envoy-dispatch` to run; unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
+  a prebuilt `envoy-dispatch` to run, which must serve on an inherited socket (`DISPATCH_LISTEN_FD`, legion-envoy-v18.5.0 and later); unset, the script builds `./cmd/dispatch` from this checkout's `packages/envoy`
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_CLI` — unset
 
@@ -4110,17 +4108,7 @@ Each item below names an input and its default, then what it means.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
 
-- `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
-
-  the server's port; refused when something already answers on it
-
-- `VERIFICATION_RESULTS_E2E_ENVOY_PORT` — `19063`
-
-  the fake Envoy listener's port; refused the same way
-
-- `VERIFICATION_RESULTS_E2E_GITHUB_PORT` — `19065`
-
-  the fake GitHub's port; refused the same way, and the three must differ
+No port is chosen before its server binds it: the server serves on a socket [`lib/held-port.py`](#libheld-portpy) holds from the kernel's choice until it serves (`lib/rig.sh`'s `start_held`), and NATS, the fake Envoy listener and the fake GitHub each bind a port the kernel picks and name it in their logs (`start_reported`).
 
 The script drops every inherited `DISPATCH_*`, `ENVOY_*`, `NATS_*` and `FAKE_*` variable (and `PGHOSTADDR`, `PGSERVICE` and `PGSERVICEFILE`) before it starts anything, so a Legion pane's real listener, Dispatch and NATS credentials reach none of it.
 It starts a NATS of its own (`internal/testnats/cmd/natsd`, JetStream on, on a port the kernel picks), the harness's fake Envoy listener (`packages/dispatch/e2e/fake-envoy.ts`), the harness's fake GitHub (`packages/dispatch/e2e/fake-github.ts`, which the server reads as `DISPATCH_GITHUB_API_BASE`), and the server with NATS on, dev sign-in, an insecure cookie, an agent token minted for the run and a throwaway RSA App key, in an environment holding nothing else.
@@ -5425,12 +5413,12 @@ natsd binds the client and monitor ports the kernel chooses (`-p -1 -m -1`), and
 Every other server restarts in a window, and a configuration names its port before it first starts:
 the sessions' `envoy.json` names listener `shared` and a proxy, and Dispatch's environment names listener `dispatch` and its proxy.
 So each serves on a copy of a socket a keeper (`held-port.py keep`, one per server, its socket under `ports/`) holds for the whole run:
-each listener through `ENVOY_LISTEN_FD`, Dispatch through `DISPATCH_LISTEN_FD`, and each proxy as `socat ACCEPT-FD:3,fork` (the helper hands the socket over as descriptor 3).
+each listener through `ENVOY_LISTEN_FD`, Dispatch through `DISPATCH_LISTEN_FD`, and each proxy through the held front of [`lib/held-front.sh`](#libheld-frontsh), `socat ACCEPT-FD:3,fork` (the helper hands the socket over as descriptor 3).
 A restart serves the same port, and nothing else can take it while the server is down.
 A kept port with no server still listens: the kernel queues a connection and nothing answers it.
 A client of a server a window has stopped therefore waits rather than being refused, and the script polls every kept port with a timeout (`curl --max-time`, and for a proxy a read of natsd's `INFO` line within 2 s).
-Only a listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds a number:
-it can bind only the `PORT` it is given, so it gets a port picked free below the kernel's ephemeral range, and its restart binds the same number again.
+A listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds the `PORT` it is given, so it gets `PORT=0` and binds a port the kernel chooses.
+It logs only the address it was given, so the script reads that port from the kernel's list of the sockets the process holds (its descriptors' inodes against the LISTEN rows of `/proc/net/tcp`), and a held front on the listener's kept socket forwards to it; its restart binds a new port the kernel chooses, behind a new front, and the window's kill stops the front before the listener.
 
 Windows a to g publish these events.
 Each event carries a marker of its own in its text:
@@ -5451,7 +5439,7 @@ This is what sjawhar/legion#2720's deleted replay sweep did for a brand-new sess
 
 The listener sends go to listener `dispatch`, and to listener `shared` in window d.
 In window d, Dispatch cannot reach its listener:
-its lookup of the session (`GET /v1/registry/<id>`) gets no answer within its five-second window on the kept port (a picked port refuses the connection), so it records its two messages as failed attempts with no envelope.
+its lookup of the session (`GET /v1/registry/<id>`) gets no answer within its five-second window on the kept port, so it records its two messages as failed attempts with no envelope.
 Nothing was published for them, and they are expected 0 times (`/0` in the table).
 
 After each window, the script waits up to `SESSION_DELIVERY_SETTLE_S` for every marker to reach its session, then `SESSION_DELIVERY_HOLD_S` more for a repeat.
@@ -5727,7 +5715,7 @@ A port a person sets explicitly is used as given, and an occupied one fails with
 
 ## lib/port-file.sh
 
-The wait for the port file [`lib/held-port.py`](#libheld-portpy) writes, which `lib/rig.sh`'s `start_held` and `keep_port`, `envoy-session-delivery.sh`, and `packages/envoy/scripts/search-smoke.sh` and `searchbench.sh` share.
+The wait for the port file [`lib/held-port.py`](#libheld-portpy) writes, which `lib/rig.sh`'s `start_held` and `keep_port`, `envoy-session-delivery.sh`, and `packages/envoy/scripts/search-smoke.sh`, `searchbench.sh` and `e2e-refill.sh` share.
 Sourced, never run; it needs nothing of its caller's.
 
 ```sh
@@ -5738,6 +5726,35 @@ read_port_file "$work/dispatch.port" "$server_pid" port || waited=$?
 `read_port_file FILE PID VAR` polls FILE every tenth of a second while PID lives and assigns VAR the port it names.
 It prints nothing, so each caller words its own failure:
 it returns 0 once VAR is set, 1 when PID exits before FILE is written, and 2 after `port_file_seconds` (30).
+
+## lib/held-front.sh
+
+The held front of a server that takes no socket and must serve one port across its restarts: natsd, which binds a port the kernel chooses each time it starts (`-p -1`).
+A keeper ([`lib/held-port.py`](#libheld-portpy) `keep`) holds one loopback port for the whole run, every client is given that port, and the front serves it by forwarding each connection to the server's own port.
+When the server stops, the caller stops its front too, and starts a new one on the kept socket once the server serves on its new port, so every client keeps its URL and no port is free between its choice and its bind.
+A front left running would forward to the port the server released, which another program can bind in the meantime.
+Between two fronts the kept port still listens: the kernel queues a connection until the next front accepts it, so a client sees a hang rather than a refusal, and every poll of a kept port carries a timeout.
+[`envoy-session-delivery.sh`](#envoy-session-deliverysh) fronts natsd this way for each proxy it cuts, and `envoy-session-states.sh` and `packages/envoy/scripts/e2e-refill.sh` front natsd itself, which they stop and start again under a running listener.
+Sourced, never run; it needs nothing of its caller's, and `python3` and `socat` 1.8.0 or later (for `ACCEPT-FD`) on the PATH the front runs with.
+
+```sh
+. "$root/scripts/e2e/lib/held-front.sh"
+held_front_argv front "$work/nats_keeper.sock" "$natsd_port"
+start_process nats_front "${front[@]}"
+until_true 30 "the NATS front" held_front_answers "$nats_port" INFO
+```
+
+Each item below names a function, then what it does.
+
+- `held_front_argv VAR KEEPER_SOCKET PORT`
+
+  sets the array VAR to the front's command: `held-port.py exec --from KEEPER_SOCKET`, which takes a copy of the kept socket as descriptor 3 and executes `socat ACCEPT-FD:3,fork TCP:127.0.0.1:PORT` in place.
+  Stopped with its process group, the front cuts every connection through it, and the keeper keeps the port
+
+- `held_front_answers PORT WORD`
+
+  succeeds when a connection to `127.0.0.1:PORT` reads WORD, the first bytes the server behind the front sends (natsd's `INFO`), within 2 s.
+  A kept port with no front accepts the connection and sends nothing, so this is the poll that waits for a front
 
 ## lib/built-from.sh
 
@@ -6343,11 +6360,11 @@ Each item below names a function, then what it does.
   the digits right after the first match of the extended regex PATTERN in LOG (`'Listening for client connections on [^ ]*:'` for `nats-server -p -1`).
   It fails while no line matches, so it is also the poll that waits for one
 
-- `port_answers PORT`
+- `start_reported NAME PORT_VAR PATTERN -- CMD…`
 
-  succeeds when something accepts a connection on `127.0.0.1:PORT`, through bash's own `/dev/tcp`.
-  It is how a proof refuses a port of its own that is already answering, before it starts anything.
-  It asks a different question from `listening_holders` below, which reads who holds a socket that is already listening
+  starts CMD as the service NAME (`start_process`), a server that takes no socket, binds a port the kernel chooses and names it in its own log, and sets PORT_VAR to the port `report_port` reads with PATTERN in what the log gained from this start on, waited for while NAME lives.
+  Every start of NAME appends to the one log, so a restart reads its own start's line.
+  The e2e harness's fakes are such servers when `FAKE_ENVOY_PORT` and `FAKE_GITHUB_PORT` are unset: each logs `fake envoy listener on 127.0.0.1:<port>` or `fake github listener on 127.0.0.1:<port>`
 
 - `listening_holders PORT`
 
@@ -6370,6 +6387,17 @@ Each item below names a function, then what it does.
 
   TERM, then KILL after 10 s, each sent through `freeze_if` held to the start time recorded for PID when the run learned it (`record_start`; `start_process` records each service, and a script records each `$!` and pid file it reads), so a pid whose process ended and passed to another process since, another user's or another run's, gets no signal; best effort, so a failed cleanup never hides the check that failed.
   An empty PID does nothing, a PID with no recorded start is named and left alone, and a PID that cannot name one process of the run (0 however spelled, so any value with a leading zero, 1, a negative or non-numeric value, the calling shell or its process group's leader) is refused with a printed line ([`signalable`](#libprocess-treesh)), since `kill 0` signals the caller's whole process group
+
+- `start_container IDS NAME ARGS…`
+
+  makes the container NAME of the run with `docker create --name NAME ARGS…`, adds the id that create printed to the array IDS, and starts it.
+  A `docker create` that a name refused made no container of the run's, and the caller fails
+
+- `remove_containers IDS`
+
+  removes each container of the array IDS by its id, best effort, as `stop_pid` is.
+  A run removes a container only by the id its own create printed, never by a name, which another run on the Docker daemon can hold.
+  The controller, Stage 3 and parked-decision proofs and the skill-scenarios rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`) start and remove their containers with these two
 
 - `run_processes`
 
@@ -6590,7 +6618,8 @@ Each proof keeps its own header, its own ports, its own seed and its own cases.
 ```
 
 It sources [`lib/rig.sh`](#librigsh) itself, so a proof sources this file alone and gets both.
-Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, keeps `check` and `started`, which `cleanup` reads, and sets its three ports.
+Before it does, the caller sets what `lib/rig.sh` asks of it — `root`, `evidence` (empty; `two_builds_build` sets it to the work directory) and `timeout_hook` — defines `note` and `fail`, and keeps `check` and `started`, which `cleanup` reads.
+No port is the caller's to choose: each build serves on a socket held from the kernel's choice until it serves (`start_held`), so a base build must take `DISPATCH_LISTEN_FD` (legion-envoy-v18.5.0 and later), and the fake Envoy binds a port the kernel picks and names it (`start_reported`).
 
 Each item below names a function, then what it does.
 
@@ -6610,11 +6639,12 @@ Each item below names a function, then what it does.
 
 - `two_builds_identity`
 
-  sets `agent_token`, `signin_key`, `base_url` and `head_url`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
+  sets `agent_token` and `signin_key`: one agent token good against either build, and one sign-in key, since a process with a key of its own is refused registration by the one already live
 
-- `start_server NAME BINARY PORT [VAR=VALUE…]`
+- `start_server NAME BINARY [VAR=VALUE…]`
 
-  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`
+  starts one build under `env -i` with the run's own environment and nothing else, taking any extra variable the proof needs — which is how only the search proof passes `DISPATCH_DEV_EMBEDDER=1`.
+  The build serves on a socket held from the kernel's choice until it serves (`start_held`, `DISPATCH_LISTEN_FD`), and `start_server` sets `NAME_port` and `NAME_url` (`base_url`, `head_url`) once the port is held
 
 - `call METHOD PATH [BODY]`, `json_field FIELD`, `cleanup RC`
 
@@ -6636,10 +6666,10 @@ Sets `nats_image` to the NATS server image every live proof that starts its own 
 The listener and the Legion daemon refuse a nats-server below the floor `packages/envoy/natsversion` holds, every 2.10 among them, so a proof on any older image never brings its stack up; reading the Go tests' own constant keeps the two from drifting.
 Needs `$root`; ends the script when it cannot read the constant, and says so on stderr under `set -e` too.
 Stage 2, Stage 3, both Claude backend proofs, the controller-start, user-turns, parked-decision and verifiers proofs, the operator walkthrough's `record-casts.sh` and pi-legion's skill-scenario rig source it.
-`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a `docker run` line that passes `-js` to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
+`lib/nats-image.test.ts` scans every tracked shell script, and holds each one with a line that starts NATS, a `docker run` or a `start_container` of `lib/rig.sh` that passes `-js`, to starting `"$nats_image"` and sourcing this helper; the drivers above are a floor under that scan.
 It also scans every tracked text file but dated plans and changelogs for the nats-server module's path followed by `@` and a version, in any command (`go install`, `go run`, `go get`), a literal version or `@$name` with a literal `name=<version>` in the same file, and fails on any version the floor refuses.
 It holds no copy of the floor: it builds `packages/envoy/natsversion/cmd/natsfloor` once and asks it, so the verdict is `natsversion.Refusal`'s, the rule the listener and the daemon refuse a server by, and so it needs `go` on `PATH`.
-It does not see a `docker run` continued over lines, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
+It does not see a start continued over lines, a `docker create` and `docker start` of the script's own, `podman` or a launcher that is not a shell script, an `export name=` or `${name:-<version>}` assignment, or a version set in another file the script sources; none is used in the tree.
 
 ## lib/omp-home.sh
 
@@ -6693,22 +6723,43 @@ They are that session's id, the mark Oh My Pi puts on the shells its bash tool s
 
 A driver that dies with no chance to clean up (SIGKILL, a crashed host) leaves its daemon, listener, agents and containers running.
 `refuse_leftovers PREFIX` is how the next run of the same stage notices:
-Stage 2 (`legion-e2e2`), Stage 3 (`legion-e2e3`), Stage 4b (`legion-e2e4b`) and the controller proof (`legion-e2e-controller`) run it before they start anything.
+Stage 2 (`legion-e2e2`), Stage 3 (`legion-e2e3`), Stage 4b (`legion-e2e4b`) and the controller proof (`legion-e2e-controller`) run it before they start anything but the removal of the Postgres of dead stacks below, which goes first.
 
 ```sh
 . "$root/scripts/e2e/lib/leftovers.sh"     # sourced, never run
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
 refuse_leftovers legion-e2e3
 ```
 
 Everything a run starts carries its driver's pid:
-each container is named `<prefix>-<role>-<pid>`, and every process of the run holds its work directory, `/tmp/<prefix>.<pid>.<random>`, in its argv, its working directory (an agent) or its environment (a bridge handed the run's state directories).
+each container is named `<prefix>-<role>-<pid>`, or `<prefix>-<role>-<pid>-<random>` with 16 random hex digits where two pid namespaces on one Docker daemon could share the pid, and every process of the run holds its work directory, `/tmp/<prefix>.<pid>.<random>`, in its argv, its working directory (an agent) or its environment (a bridge handed the run's state directories).
 The check fails, through the caller's `fail`, naming each container and process whose driver is no longer alive and the command that removes it (`docker rm -f -v <name>`, `kill <pid>`).
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
+A container's creation, which Docker reports in nanoseconds, is turned into clock ticks since the boot (the boot read to a millisecond from `/proc/uptime`, not `btime`'s whole second) and compared with the owner's start in ticks: a driver that started in the same tick its container was made is alive, and a later process given a dead driver's pid is taken for that driver only where it started in that same tick.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
 It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)), each process's command line and environment in the shell itself and the working directories of the processes neither names a run in through one `find`, so it starts no program for each process.
 A proc root that lists no process, and a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
-`lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
+`lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run.
+`lib/leftovers-containers.test.ts` holds the reading of containers: both name forms, a marked container left to the removal, a live run's container, and the comparison in ticks, with a `docker` of its own and a proc root of its own.
+
+A Postgres container is not the check's.
+Every shell stack that starts one marks it as the browser pool marks its own (`packages/dispatch/e2e/harness-postgres-marks.ts`), and first of all, right after it finds its own checkout, before each command that can end the start but one that reads only its own inputs (its arguments, its environment, the tools on its `PATH` and where its own scripts are), it removes the Postgres of each test stack that is gone, the pool's among them, by the one removal every start of a test stack runs; a refusal before it for what a dead run left, such as `refuse_leftovers`, `ports_free`, the skill scenarios' `lock_services`, Stage 4a's check of its ports or the box-login lock of Stages 2 and 3, would end every later start with the dead stack's Postgres still there, and so would any command that `set -e` ends the start on, a `mktemp`, a `mkdir` or a transcript on a disk a dead run filled among them:
+
+```sh
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+docker run -d --name "$pg_container" --label "$pg_mark" …
+```
+
+`postgres_mark RUN CONTAINER` prints the `--label` that marks the container as the Postgres of the run whose work directory is `RUN`, owned by the calling shell (`$$`), whose death ends the run.
+`remove_leftover_postgres` removes each Postgres whose mark names a process that is gone, leaves one whose process runs, and names on stderr, one line per kind, each one it leaves, such as a mark of another boot or pid namespace, which it cannot judge.
+Both run `bun packages/dispatch/e2e/postgres-mark.ts`, which imports Node's built-in modules alone, so they need Bun and no `bun install`; with no `bun` on `PATH` they fail with a line that names it.
+`refuse_leftovers` leaves a marked container to that removal.
+`scripts/e2e/lib/sweep-order.ts` finds, by each driver's own order of calls, every start that runs a refusal or marks its own Postgres before that removal, a command whose failure `set -e` (from a `set` or the script's first line) or a `trap` on ERR makes the start's end included (`bun scripts/e2e/lib/sweep-order.ts`; it says UNKNOWN where it read no driver, or where it cannot parse a driver's script).
+It reads those options per shell, as bash keeps them: a `set +e` in a subshell, a command substitution, a function in parentheses, a pipeline or a list in the background does not reach the start's own shell, and one in a branch, list or loop that may not run leaves `set -e` on.
+`scripts/e2e/lib/order-search-set-e-refusal.test.sh TREE`, `order-search-errexit-shebang-arith.test.sh TREE`, `order-search-errexit-scope.test.sh TREE` and `order-search-errexit-builtins.test.sh TREE` each run a planted start in each form they name (a check under `set -e`, a `cd` or `pushd` to a directory a dead run took away among them; `-e` on the first line and a command substitution in `(( … ))`; a `set +e` that bash does not apply to the start; errexit set through `shopt -o`, `builtin`, `command` or `eval`, and kept by `local -`) through one runner (`order-search-cases.sh`), see it end before its removal with a lock there, and require the search of `TREE` to name it, or to name as unread a command whose words it cannot know; `sweep-order.test.ts` runs them over this tree.
+`scripts/e2e/lib/sweep-order.test.ts` runs each such driver's own file, with the commands that would reach outside the machine cut, and holds it to the removal before each refusal, before each create of its Postgres, and before any container where `LEGION_E2E_PG_DSN` names a Postgres.
 
 ## lib/operator-dispatch.sh
 

@@ -62,19 +62,23 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 
 	harness.Fact("restate-server-version", env.Version)
 	harness.Fact("restate-server-started-by-this-experiment", env.StartedServer)
-	harness.Fact("restate-ingress-address", cfg.RestateIngress)
-	harness.Fact("restate-admin-address", cfg.RestateAdmin)
+	harness.Fact("restate-ingress-address", env.IngressAddress)
+	harness.Fact("restate-admin-address", env.AdminAddress)
 	harness.Fact("restate-data-directory", env.Dir)
 	harness.Fact("invocation-status-read-from",
 		"POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations")
 	harness.Fact("side-effect-file", sideEffects)
 
-	// 1. The process that will be killed, and the deployment that points at it.
-	firstPort, err := restatex.FreePort()
+	// 1. The process that will be killed, and the deployment that points at it. Its
+	// endpoint's port is held until the experiment ends, so the replacement of step 7
+	// serves the very URL, and the held port refuses connections while no process
+	// serves it: the dead endpoint of step 5 is a port nothing listens on.
+	firstEndpoint, err := restatex.HoldEndpoint()
 	if err != nil {
 		return err
 	}
-	first, err := startService(ctx, "service1", serviceBinary, workDir, firstPort)
+	defer firstEndpoint.Close()
+	first, err := startService(ctx, "service1", serviceBinary, workDir, firstEndpoint)
 	if err != nil {
 		return err
 	}
@@ -155,11 +159,12 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 
 		// 6. A second deployment of the same service, at a URL that is alive, while
 		// the invocation's own endpoint is still dead: does the invocation move?
-		secondPort, err := restatex.FreePort()
+		secondEndpoint, err := restatex.HoldEndpoint()
 		if err != nil {
 			return err
 		}
-		other, err := startService(ctx, "service-other-endpoint", serviceBinary, workDir, secondPort)
+		defer secondEndpoint.Close()
+		other, err := startService(ctx, "service-other-endpoint", serviceBinary, workDir, secondEndpoint)
 		if err != nil {
 			return err
 		}
@@ -193,7 +198,7 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 
 		// 7. The replacement: a new process at the very URL the dead one served,
 		// which is the only thing that makes the pinned deployment reachable again.
-		replacement, err = startService(ctx, "service2", serviceBinary, workDir, firstPort)
+		replacement, err = startService(ctx, "service2", serviceBinary, workDir, firstEndpoint)
 		if err != nil {
 			return err
 		}
@@ -287,12 +292,11 @@ func Run(ctx context.Context, cfg harness.Config, suppressKill bool) error {
 	return nil
 }
 
-// startService runs one cmd/restateservice process in experiment 10's mode on a
-// loopback port of its own.
-func startService(ctx context.Context, name, binary, workDir string, port int) (*restatex.Service, error) {
-	address := restatex.Address(port)
-	args := []string{"-mode", "exp10", "-address", address, "-work-dir", workDir}
-	return restatex.StartService(ctx, name, binary, args, workDir, address, restatex.ServiceReady)
+// startService runs one cmd/restateservice process in experiment 10's mode on endpoint, a
+// loopback port the driver holds.
+func startService(ctx context.Context, name, binary, workDir string, endpoint *restatex.Endpoint) (*restatex.Service, error) {
+	args := []string{"-mode", "exp10", "-work-dir", workDir}
+	return restatex.StartService(ctx, name, binary, args, workDir, endpoint, restatex.ServiceReady)
 }
 
 // observeDeadEndpoint samples the invocation while nothing is listening on the URL it

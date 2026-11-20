@@ -36,7 +36,7 @@ function docker(...args: string[]): string {
 }
 
 async function startNats(): Promise<void> {
-  docker(
+  const id = docker(
     "run",
     "--detach",
     // --rm, so a container this run stops is reclaimed by docker itself rather than by a later
@@ -48,18 +48,37 @@ async function startNats(): Promise<void> {
     "0.5",
     "--memory",
     "512m",
-    "-p",
-    "127.0.0.1::4222",
+    // No published port: Docker's allocator, not the kernel, would choose it, and it fails the run
+    // when another program holds the ports after its last choice. On the host's network the
+    // server binds a loopback port the kernel chooses (-p -1) and logs it.
+    "--network",
+    "host",
     // ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml)
     "ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f",
-    "-js"
-  );
+    "-js",
+    "-a",
+    "127.0.0.1",
+    "-p",
+    "-1"
+  ).trim();
+  // By the id `docker run` printed, never by the container's name.
   removeContainer = () => {
-    Bun.spawnSync(["docker", "rm", "-f", "-v", container], { cwd: root });
+    Bun.spawnSync(["docker", "rm", "-f", "-v", id], { cwd: root });
   };
   try {
-    const endpoint = docker("port", container, "4222/tcp").trim();
-    serverUrl = `nats://${endpoint}`;
+    // A poll of a real container's log, which is the only signal the server gives, bounded by
+    // the deadline below: no fake clock can stand in for another process.
+    let port: string | undefined;
+    for (const deadline = Date.now() + 60_000; port === undefined; await Bun.sleep(100)) {
+      const logs = Bun.spawnSync(["docker", "logs", container], { cwd: root });
+      port = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(
+        logs.stderr.toString()
+      )?.[1];
+      if (port === undefined && Date.now() > deadline) {
+        throw new Error(`NATS container ${container} logged no client port in 60 s`);
+      }
+    }
+    serverUrl = `nats://127.0.0.1:${port}`;
 
     nc = await connect({
       servers: serverUrl,

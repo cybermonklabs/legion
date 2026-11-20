@@ -21,11 +21,12 @@
 #
 # The series holds LOADTEST_ROOT for its whole run (common.sh); its own run-step.sh calls pass, and
 # keep the lock if the series is killed. It sets up (builds this checkout), starts and seeds the
-# stack and runs the migration check once, before its first step, and passes that build's commit
-# and dirty flag to every step in LOADTEST_SERIES_BUILD; its steps skip setup, so every step of a
-# series runs one build, even when the checkout changes during the series. A failed step stops the
-# series: the series TABLES.md covers the steps that ran, the failed one included when it wrote
-# summary.json, and the script exits 1 naming the step.
+# stack and runs the migration check once, before its first step; its first setup on a root takes
+# the ports the operator gives, as run-step.sh's does. It passes that build's commit and dirty flag
+# to every step in LOADTEST_SERIES_BUILD; its steps skip setup, so every step of a series runs one
+# build, even when the checkout changes during the series. A failed step stops the series: the
+# series TABLES.md covers the steps that ran, the failed one included when it wrote summary.json,
+# and the script exits 1 naming the step.
 set -euo pipefail
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)

@@ -1,7 +1,7 @@
 // packages/envoy/cmd/broker/main_test.go
 //
 // main() calls fatal on every failure, which calls os.Exit — so it cannot be driven directly by a
-// test. refusePortZeroPublicURLInProduction is main's own port-0 refusal outside a local run,
+// test. refusePortZeroURLInProduction is main's own port-0 refusal outside a local run,
 // extracted so this test can drive it without exiting the test process.
 package main
 
@@ -100,7 +100,7 @@ func productionEnv(t *testing.T) []string {
 }
 
 func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
-	err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "")
+	err := refusePortZeroURLInProduction("BROKER_PUBLIC_URL", "http://127.0.0.1:0", "")
 	if err == nil {
 		t.Fatal("BROKER_PUBLIC_URL port 0 with no BROKER_FAKE_SECRETS_FILE: want an error, got nil")
 	}
@@ -111,14 +111,50 @@ func TestPortZeroPublicURLRefusedInProduction(t *testing.T) {
 }
 
 func TestPortZeroPublicURLIsFineForALocalRun(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("http://127.0.0.1:0", "/dev/fake-secrets.json"); err != nil {
+	if err := refusePortZeroURLInProduction("BROKER_PUBLIC_URL", "http://127.0.0.1:0", "/dev/fake-secrets.json"); err != nil {
 		t.Fatalf("BROKER_PUBLIC_URL port 0 with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 }
 
 func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
-	if err := refusePortZeroPublicURLInProduction("https://broker.invalid", ""); err != nil {
+	if err := refusePortZeroURLInProduction("BROKER_PUBLIC_URL", "https://broker.invalid", ""); err != nil {
 		t.Fatalf("a real BROKER_PUBLIC_URL: want nil, got %v", err)
+	}
+}
+
+// BROKER_AIRLOCK_PROXY_URL takes the derive-from-bind convention too: refused with port 0 on a
+// production start, naming the setting, and admitted for a local run, where an unset or a real
+// proxy URL is refused neither way.
+func TestPortZeroAirlockProxyURLRefusedInProduction(t *testing.T) {
+	err := refusePortZeroURLInProduction("BROKER_AIRLOCK_PROXY_URL", "http://127.0.0.1:0", "")
+	if err == nil || !strings.HasPrefix(err.Error(), `BROKER_AIRLOCK_PROXY_URL "http://127.0.0.1:0": port 0 is never dialable in production`) {
+		t.Fatalf("BROKER_AIRLOCK_PROXY_URL port 0 in production: err = %v, want the refusal naming the setting", err)
+	}
+	for _, admitted := range []struct{ value, fake string }{
+		{"http://127.0.0.1:0", "/dev/fake-secrets.json"},
+		{"http://agent-airlock.example.svc:13381", ""},
+		{"", ""},
+	} {
+		if err := refusePortZeroURLInProduction("BROKER_AIRLOCK_PROXY_URL", admitted.value, admitted.fake); err != nil {
+			t.Errorf("BROKER_AIRLOCK_PROXY_URL=%q, fake secrets %q: want nil, got %v", admitted.value, admitted.fake, err)
+		}
+	}
+}
+
+// withBoundPort replaces port 0 alone, with the port the listener took, and keeps the URL's scheme,
+// host and path; every other URL is answered as it was.
+func TestWithBoundPortResolvesPortZeroAlone(t *testing.T) {
+	bound := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 41234}
+	for raw, want := range map[string]string{
+		"http://127.0.0.1:0":         "http://127.0.0.1:41234",
+		"http://localhost:0/proxy":   "http://localhost:41234/proxy",
+		"http://127.0.0.1:13381":     "http://127.0.0.1:13381",
+		"https://proxy.example.test": "https://proxy.example.test",
+		"http://[::1]:0":             "http://[::1]:41234",
+	} {
+		if got := withBoundPort(raw, bound); got != want {
+			t.Errorf("withBoundPort(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }
 
@@ -260,7 +296,7 @@ func TestTheRequestMachineCarriesTheServicesByAccount(t *testing.T) {
 }
 
 // TestMainRefusesPortZeroPublicURLInProduction drives the REAL compiled binary's main(), not
-// refusePortZeroPublicURLInProduction directly: the helper's own tests above prove only that it is
+// refusePortZeroURLInProduction directly: the helper's own tests above prove only that it is
 // correct, and with this guard's only call site moved to run after st.Migrate, the first Secrets
 // Manager read, and net.Listen, a misconfigured production boot would migrate the production
 // database and bind a socket before ever refusing. This builds cmd/broker once, execs it with

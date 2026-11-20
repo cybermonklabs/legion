@@ -48,7 +48,18 @@
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-# The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
+# The Postgres of a dead stack goes first, before the lock and each other command of the start but
+# one that reads only its own inputs (lib/sweep-order.ts): a pane that a dead run left still holds
+# the lock, under set -e a command that fails ends the start, and one that fails for what a dead run
+# left would end every later start with that Postgres still there. This run's own carries its mark
+# (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
+# Then the model route, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
 # run makes its work or evidence directory or anything else: a run the lock refuses leaves nothing
 # behind.
 # shellcheck source-path=SCRIPTDIR source=lib/box-login.sh
@@ -115,8 +126,14 @@ operator_home=$HOME
 repo="sjawhar/legion-smoke"
 # Anthropic through the configured route: the Google provider answered long workflow turns with
 # empty responses (finishReason STOP with no content), so no Gemini-backed implementer could finish.
-pg_container="legion-e2e3-pg-$$"
-nats_container="legion-e2e3-nats-$$"
+# The driver's pid, which refuse_leftovers (lib/leftovers.sh) judges a dead run's container by, and
+# random bytes after it, since a run in another PID namespace on one Docker daemon can share the
+# pid; the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$$-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+pg_container="legion-e2e3-pg-$containers_tag"
+nats_container="legion-e2e3-nats-$containers_tag"
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
+containers=()
 daemon_pid=
 dispatch_pid=
 listener_pid=
@@ -155,8 +172,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/omp-home.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/workflow.sh
 . "$root/scripts/e2e/lib/workflow.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/operator-dispatch.sh
 . "$root/scripts/e2e/lib/operator-dispatch.sh"
 # Nothing the run starts inherits the operator's production bearer (lib/operator-dispatch.sh).
@@ -214,8 +229,8 @@ cleanup() {
     unlink_box_login_db "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-  stop_marked_processes "$work"
-  docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+  stop_marked_processes "$work" || true
+  remove_containers containers
   collect_transcripts
   close_unpassed_run_pull_requests
   rm -rf "$work/model-gateway-cache" || true
@@ -733,17 +748,20 @@ chmod 0600 "$work"/*token "$work"/*-header "$work/postgres-password"
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work/envoy-listener" "$work/envoy-dispatch") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 docker ps >/dev/null
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+# Docker chooses each container's host port and binds it itself, trying the next port when one is
+# taken, so no port is free between its choice and its bind; the start fails only when ten ports
+# in a row are taken.
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+start_container containers "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
-  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
+  -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
 port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')
 [ -n "$port_pg" ] || fail "docker assigned Postgres no host port"
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d dispatch
 docker exec "$pg_container" createdb -U legion legion
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js >/dev/null
+start_container containers "$nats_container" --cpus 1 --memory 512m -p "127.0.0.1::4222" "$nats_image" -js
 port_nats=$(docker port "$nats_container" 4222/tcp | sed -n '1s/.*://p')
 [ -n "$port_nats" ] || fail "docker assigned NATS no host port"
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
@@ -1464,7 +1482,7 @@ if [ "$model_route" = box-login ]; then
   unlink_box_login_db "$profile_agent"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
-docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true
+remove_containers containers
 stop_marked_processes "$work" || fail "the run's processes could not be read for their SIGKILL"
 [ "$(docker ps -aq --filter "name=^/$pg_container$" --filter "name=^/$nats_container$")" = "" ] || fail "a proof container remains"
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" has-session 2>/dev/null && fail "the proof tmux server remains"

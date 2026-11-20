@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # The wait for the port file lib/held-port.py writes: `exec` writes it before it runs its command,
 # `keep` once it hands out copies of its socket. lib/rig.sh, scripts/e2e/envoy-session-delivery.sh,
-# packages/envoy/scripts/search-smoke.sh and packages/envoy/scripts/searchbench.sh source it.
+# packages/envoy/scripts/search-smoke.sh, packages/envoy/scripts/searchbench.sh,
+# packages/envoy/scripts/e2e-refill.sh and packages/pi-envoy/scripts/local-stack.sh source it.
 # Sourced, never run: it defines port_file_seconds and read_port_file, and needs nothing of its
 # caller's.
 

@@ -177,9 +177,35 @@ report_port() {
   printf '%s\n' "${_match##*[!0-9]}"
 }
 
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
+# start_reported NAME PORT_VAR PATTERN -- COMMAND... starts COMMAND as the service NAME
+# (start_process), a server that binds a port the kernel chooses and names it in its own log, and
+# assigns PORT_VAR the port: the digits right after the first match of PATTERN (report_port) in what
+# the log gained from this start on, waited for while NAME lives. Every start of NAME appends to the
+# one log, whose first match can name the port of an earlier start, so a restart through it reads
+# its own start's line, once the earlier start has stopped writing. It is how a run starts a server
+# that takes no socket, which binds a port the kernel chooses and logs it: the e2e harness's fakes
+# bind port 0 with FAKE_ENVOY_PORT and FAKE_GITHUB_PORT unset and log
+# `fake envoy listener on 127.0.0.1:<port>`, and natsd -p -1 logs
+# 'Listening for client connections on 127.0.0.1:<port>'. The locals' names are ones no caller passes.
+start_reported() {
+  local _name=$1 _port_var=$2 _pattern=$3 _pid_var _reported _log _from=0
+  shift 3
+  [ "${1:-}" = -- ] || fail "start_reported $_name: the command comes after --"
+  shift
+  _log=$evidence/logs/$_name.log
+  [ ! -e "$_log" ] || _from=$(wc -c <"$_log")
+  start_process "$_name" "$@"
+  _pid_var=${_name}_pid
+  await_start "$_name" "${!_pid_var}" 60 "$_name to name its port" \
+    _report_port_since "$_log" "$_from" "$_pattern"
+  _reported=$(_report_port_since "$_log" "$_from" "$_pattern")
+  printf -v "$_port_var" '%s' "$_reported"
+}
+
+# _report_port_since LOG FROM PATTERN is report_port LOG PATTERN over what LOG holds past its first
+# FROM bytes.
+_report_port_since() {
+  report_port <(tail -c "+$(($2 + 1))" "$1" 2>/dev/null) "$3"
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
@@ -302,12 +328,32 @@ start_process() {
   record_start "$!" || started_at[$!]=gone
 }
 
+# start_container IDS NAME ARGS... makes the container NAME of this run (`docker create --name NAME
+# ARGS...`), adds the id that create printed to the array IDS, and starts it; remove_containers IDS
+# removes each container of IDS by that id. A run removes a container only by the id its own create
+# printed, never by a name: another run on the Docker daemon can hold a name, and a create that the
+# name refused made no container of this run's to remove. remove_containers is best effort, as
+# stop_pid is.
+start_container() {
+  local -n _start_container_ids=$1
+  local id
+  id=$(docker create --name "$2" "${@:3}") || fail "docker create of the container $2 failed"
+  _start_container_ids+=("$id")
+  docker start "$id" >/dev/null || fail "docker start of the container $2 failed"
+}
+
+remove_containers() {
+  local -n _remove_container_ids=$1
+  [ "${#_remove_container_ids[@]}" -eq 0 ] || docker rm -f -v "${_remove_container_ids[@]}" >/dev/null 2>&1 || true
+}
+
 # run_processes prints the pid of every process of this run still alive: each that carries the run's
-# mark (marked_processes and run_marks, lib/process-tree.sh), which the run exports as LEGION_E2E_RUN
-# once its transcript runs. A process that works under $work or names it on its command line and
-# carries no mark, a person's shell or `tail -f` watching the run among them, is none of the run's.
-# It prints why and fails with 2 when the run's processes could not be read, so no caller reads an
-# unread machine as one with nothing left. stop_marked_processes "$work" ends what it names.
+# mark (marked_processes and run_marks, lib/process-tree.sh), which the run exports as
+# LEGION_E2E_RUN once its transcript runs. A process that works under $work or names it on its
+# command line and carries no mark, a person's shell or `tail -f` watching the run among them, is
+# none of the run's. It prints why and fails with 2 when the run's processes could not be read, so
+# no caller reads an unread machine as one with nothing left. stop_marked_processes "$work" ends
+# what it names.
 run_processes() {
   local pairs pid
   pairs=$(marked_processes "$work") || return 2

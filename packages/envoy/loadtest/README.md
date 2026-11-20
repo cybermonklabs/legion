@@ -97,7 +97,7 @@ same step before and after its change, and compares the two rows.
 | `restart-step.sh` | One step whose listener is killed in the middle of the window, and its report (The listener restart, below) |
 | `common.sh` | What the step scripts share, sourced by each: the `LOADTEST_ROOT`, `LOADTEST_SRC` and `LOADTEST_DISPATCH_SRC` paths, the run lock (One run at a time, below), and the setup, start, seed and migration check before a step. Also the replay's download and verify of the manifest's parts, file artifacts of `LOADTEST_REPLAY_ISSUE` (`replay_fetch_parts`, `replay_get_bundle`), which `stack.sh replay-get` and `cluster/cluster.sh replay-prepare` both call |
 | `*_test.go` | Unit tests. They need no Postgres and no NATS: `cd packages/envoy && go test ./loadtest/` |
-| `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
+| `run-step.test.sh` | The test of the run lock, and of the refusal of a run given no port. It fakes `go` and `uv`, gives the stack's ports as an operator does, and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
 | `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
@@ -141,16 +141,17 @@ same step before and after its change, and compares the two rows.
 | `LOADTEST_ROOT` | `${TMPDIR:-/tmp}/dispatch-loadtest` | The directory that holds all the stack's state, binaries and step output. On a Legion pod, `$TMPDIR` is `/legion/scratch/tmp`, the issue's volume. |
 | `LOADTEST_SRC` | The checkout that holds the script | The checkout that `stack.sh setup` builds `envoy-listener` and `loadgen` from, and `envoy-dispatch` unless `LOADTEST_DISPATCH_SRC` or `LOADTEST_DISPATCH_COMMIT` names another. |
 | `LOADTEST_DISPATCH_SRC` | `LOADTEST_SRC` | The checkout that `stack.sh setup` builds `envoy-dispatch` from. It need not hold this package (Before and after across commits, below). `build-info`, `meta.json` and `seed.meta.json` record its commit. |
-| `LOADTEST_PG_PORT` | `B + 10k` | The Postgres port. |
-| `LOADTEST_PROXY_PORT` | `B + 1 + 10k` | The latency proxy port. |
-| `LOADTEST_PROXY_STATS_PORT` | `B + 7 + 10k` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
-| `LOADTEST_NATS_PORT` | `B + 2 + 10k` | The NATS client port. |
-| `LOADTEST_NATS_MONITOR_PORT` | `B + 3 + 10k` | The NATS monitoring port (`/varz`). |
-| `LOADTEST_LISTENER_PORT` | `B + 4 + 10k` | The Envoy listener port. |
-| `LOADTEST_DISPATCH_PORT` | `B + 5 + 10k` | The Dispatch HTTP port. |
-| `LOADTEST_PPROF_PORT` | `B + 6 + 10k` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
-| `LOADTEST_ENVOY_PROXY_PORT` | `B + 8 + 10k` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
-| `LOADTEST_PORT_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from, which decides `B` (below). Another file is for a test of a range this machine does not have. |
+| `LOADTEST_PORT_BASE` | none | The first of the stack's nine ports, which are this number plus the offset in the default column below; 1024 to 65527. The stack chooses no port itself, so `stack.sh setup` refuses a first setup that gives a port to no key (Ports, below). |
+| `LOADTEST_PG_PORT` | `LOADTEST_PORT_BASE` | The Postgres port. |
+| `LOADTEST_PROXY_PORT` | `LOADTEST_PORT_BASE + 1` | The latency proxy port. |
+| `LOADTEST_PROXY_STATS_PORT` | `LOADTEST_PORT_BASE + 7` | The latency proxy's wire-count port (`GET /stats`, Document rooms, below). |
+| `LOADTEST_NATS_PORT` | `LOADTEST_PORT_BASE + 2` | The NATS client port. |
+| `LOADTEST_NATS_MONITOR_PORT` | `LOADTEST_PORT_BASE + 3` | The NATS monitoring port (`/varz`). |
+| `LOADTEST_LISTENER_PORT` | `LOADTEST_PORT_BASE + 4` | The Envoy listener port. |
+| `LOADTEST_DISPATCH_PORT` | `LOADTEST_PORT_BASE + 5` | The Dispatch HTTP port. |
+| `LOADTEST_PPROF_PORT` | `LOADTEST_PORT_BASE + 6` | The Dispatch pprof port (`DISPATCH_PPROF_PORT`). |
+| `LOADTEST_ENVOY_PROXY_PORT` | `LOADTEST_PORT_BASE + 8` | The port of `envoy_proxy`, the latency proxy in front of the listener (`--envoy-rtt`). |
+| `LOADTEST_PORT_RANGE_FILE` | `/proc/sys/net/ipv4/ip_local_port_range` | The file the ephemeral range is read from: `stack.sh start` refuses a port inside that range (Ports, below). Another file is for a test of a range this machine does not have. |
 | `LOADTEST_PROXY_RTT` | `1ms` | The round trip that the proxy adds, as a Go duration. Read when the proxy starts. |
 | `LOADTEST_PG_DIRECT` | unset (`1` for a `--replay` step) | `1` connects Dispatch to Postgres directly, without the proxy. Read when Dispatch starts, so set it on `run-step.sh`. `stack.json` and `meta.json` record it as `pg_direct`. |
 | `LOADTEST_ENVOY_RTT` | unset | A Go duration: Dispatch's `ENVOY_URL` goes through `envoy_proxy` with that round trip. Read when `stack.sh reset` starts Dispatch. `run-step.sh` sets it from `--envoy-rtt` and clears it otherwise. `stack.json` and `meta.json` record it as `envoy_rtt`. |
@@ -161,33 +162,31 @@ same step before and after its change, and compares the two rows.
 | `DISPATCH_URL`, `DISPATCH_TOKEN_FILE` | unset | Read by `stack.sh replay-get` alone, in its own shell, to download the replay's parts. |
 | `LOADTEST_NO_RESUME` | unset | `1`, under consumer delivery, leaves the resume point out of every registration's `delivery`, as a plugin sends that never wrote a frame. `stack.sh loadgen` passes it to `loadgen run`. |
 
-Every process listens on `127.0.0.1`. The default ports follow `LOADTEST_ROOT`: the root's block
-`k` is the first 8 hex digits of the sha256 of its physical path, modulo 200, and each port is
-`B + 10k` plus the offset above, so every port lies between `B` and `B + 1998` and no two ports of
-a root meet. `B` keeps every port below the machine's ephemeral range, from which the kernel takes
-the source port of every outgoing connection, so no connection of the stack can take a stack port
-before its process binds it. `B` is 15000 when the range starts at 17000 or above, as Linux's
-default (32768-60999) does. Otherwise it is the 2000 ports just below the range: a gVisor pod's
-range is 16000-65535, so there the ports are 14000-15998. When the range starts too low to leave
-2000 ports above 1023, `stack.sh setup` refuses and names both ranges, unless every
-`LOADTEST_*_PORT` is set. `stack.sh start` refuses a port inside the range, and `stack.sh setup`
-moves a port `stack.json` recorded inside it to the root's default below it. The block is a hash,
-not a reservation: two roots land in one block about 1 pair in
-200, and then they hold the same 9 ports. Two Legion roles of one pod, each with its own
-`LOADTEST_ROOT`, therefore almost always run a stack each with no port variable set; on a collision
-`stack.sh start` refuses the second stack (`check_port`, so no stack is ever shared) and the
-refusal names the block and the remedies: set the `LOADTEST_*_PORT` variables, or move to another
-`LOADTEST_ROOT`, which picks another block with probability 199/200. Each `LOADTEST_*_PORT`
-overrides its own port, and `stack.json` keeps the port a `setup` recorded; a port that is not
-this root's block default any more is refused without the block explanation, which would name a
-block that has nothing to do with the port in use.
+#### Ports
+
+Every process listens on `127.0.0.1`, on the ports the operator gives: `LOADTEST_PORT_BASE` gives
+all nine, and each `LOADTEST_*_PORT` gives or overrides its own. The stack chooses no port of its
+own. A port that the stack chose and tested free could be taken by another program between the
+test and the server's bind, and the start would then fail or, worse, find another program on the
+port. So the first `stack.sh setup` with no port for a key is refused, naming the variables to set.
+Two stacks on one machine, such as two Legion roles of one pod each with its own `LOADTEST_ROOT`,
+take two bases nine or more apart.
+`stack.sh start` refuses a port inside the machine's ephemeral range (`ip_local_port_range`), from
+which the kernel takes the source port of every outgoing connection, so a connection of the stack
+could take that port before its process binds it; give such a key a port outside the range. Under
+Linux's default range (32768-60999), a base from 1024 to 32759 keeps all nine ports below it; in a
+gVisor pod, whose range starts at 16000, a base from 1024 to 15991 does.
 
 `stack.sh setup` writes the ports into `$LOADTEST_ROOT/stack.json`, and `stack.sh status` prints
 them with the path of that file. A later `setup` keeps the ports the file records and moves only
-those whose variable the environment sets, and it refuses to move a port while a stack process
-runs. `start` refuses a port that another process holds: it names the process when this PID
-namespace can see it, and says that it cannot see one when another Legion role of the pod, in its
-own PID namespace, holds the port.
+those that the environment gives, and it refuses to move a port while a stack process runs. A
+`stack.json` that an earlier `stack.sh` wrote holds ports that `stack.sh` chose itself, from a hash
+of `LOADTEST_ROOT`: `start` refuses it until a `setup` is given every port. `start` also refuses a
+port that another process holds: it names the process when this PID namespace can see it, and says
+that it cannot see one when another Legion role of the pod, in its own PID namespace, holds the
+port. A port that another program takes after that check fails the start: each server binds its
+own port, and `start` waits for that server, never for the port alone (the latency proxies until
+the proxy's own process holds its port).
 
 Every stack process starts under `env -i` with an explicit environment. The `DISPATCH_URL`,
 `ENVOY_URL`, `ENVOY_NATS_URL`, `AWS_*`, `HOME` and `XDG_*` of your shell never reach the stack or
@@ -198,6 +197,7 @@ the key stays the same across steps. `stack.sh` stops each process by the pid in
 ## Run one step
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --requests <per s> \
   [--duration 180s] [--warmup 30s] [--grace 20s] [--event-mix <preset or kind=w,...>] \
   [--route-mix <file>] [--human 0.1] [--live <n>] [--rng-seed 1] [--xact-interval 10ms] \
@@ -209,9 +209,15 @@ packages/envoy/loadtest/run-step.sh <name> --events <per s> --sessions <n> --req
 
 A replay step takes `--replay` and the replay's flags instead (The replay, below).
 
+The stack chooses no port of its own (Ports, above). The first run on a `LOADTEST_ROOT` takes the
+stack's ports from the environment: set `LOADTEST_PORT_BASE` (nine ports from it, free on this
+machine), or each `LOADTEST_*_PORT`. Without them its `stack.sh setup` refuses before it builds
+anything, naming the variables to set. A later run keeps the ports that `stack.json` records.
+
 Example, the 1x step of the root report:
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-step.sh step-1x --events 4 --sessions 400 --requests 60
 ```
 
@@ -250,10 +256,11 @@ Poisson from the RNG seed, so two runs of one step with one seed offer the same 
 `run-step.sh` does these steps in order:
 
 1. `stack.sh setup`: it builds the binaries from the checkout (incremental), so a step always runs
-   the checkout's current code.
-2. `stack.sh start`, then `stack.sh seed`. Each one does nothing when its work is already done. So
-   `run-step.sh` is the one command from a fresh checkout. On the first run, the seed alone takes
-   37 to 50 minutes.
+   the checkout's current code. The first setup on a root records the ports that the operator
+   gives, and refuses before it builds when a key has none (Ports, above).
+2. `stack.sh start`, then `stack.sh seed`. Each one does nothing when its work is already done. So,
+   with the stack's ports given (step 1), `run-step.sh` is the one command from a fresh checkout.
+   On the first run, the seed alone takes 37 to 50 minutes.
 3. The migration check (Before and after across commits, below).
 4. `stack.sh reset`, with Dispatch's log in the step directory (The reset, below).
 5. `loadgen run`. It writes the step's files.
@@ -358,6 +365,7 @@ step answers two questions: once the listener is back, how long is it before eve
 backlog that built up while it was down, and does any relay frame reach a session twice?
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/restart-step.sh <name> [--events 40] [--sessions 1000] [--requests 600] \
   [--duration 300s] [--out <dir>] [--warm-at 60] [--kill-at 120] [--down 30] \
   [--backlog-per 3] [--backlog-over 25s] [--warm-over 10s] [other run-step.sh flags]
@@ -443,6 +451,7 @@ both the `done` answer and the `identity` of every frame.
 ## Run the series
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/run-series.sh [step flags]
 ```
 
@@ -472,7 +481,8 @@ series directory.
 - With the default window, a step takes about 5 minutes and a series about 30 minutes.
 - `run-series.sh` runs the setup (one build of the checkout), the start, the seed and the migration
   check once, before the series directory exists, and reads the build's commit and dirty flag once
-  (`stack.sh build-info`). It passes them to its steps in `LOADTEST_SERIES_BUILD`. Its steps skip
+  (`stack.sh build-info`). Its first setup on a root needs the stack's ports, as a step's does (Run
+  one step, above). It passes the build to its steps in `LOADTEST_SERIES_BUILD`. Its steps skip
   the setup and record that build in `meta.json`, so every step of a series runs one build, even
   when the checkout changes during the series. A `run-step.sh` that does not hold the series' lock
   ignores `LOADTEST_SERIES_BUILD` and builds the checkout.
@@ -489,6 +499,7 @@ the build before the change and on the build after it, back to back, with the sa
 give each run its own name (for example `1x-before` and `1x-after`):
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 # 1x: the full REST mix of step-1x, plus 20 editors at 2 updates/s on 10 specs.
 packages/envoy/loadtest/run-step.sh 1x --events 4 --sessions 400 --requests 60 \
   --editors 20 --editor-rate 2 --editor-docs 10
@@ -513,7 +524,7 @@ packages/envoy/loadtest/run-step.sh editors-10x-over-0.25x --events 1 --sessions
 
 | Command | What it does |
 | --- | --- |
-| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json`. Each run does it again, incrementally. |
+| `stack.sh setup` | Builds `envoy-dispatch` (from `LOADTEST_DISPATCH_SRC`, or `LOADTEST_DISPATCH_COMMIT`'s commit), `envoy-listener` and `loadgen` into `$LOADTEST_ROOT/bin`, with `bin/envoy-dispatch.json`, the build's record. Installs `nats-server` at the version that `packages/envoy/go.mod` pins, with `go install`. Installs Postgres with pgvector from the `pgserver` wheel. Runs `initdb`. Writes `stack.json` with the ports that the operator gives (Ports, above): a first setup that gives a key no port is refused before it builds anything, naming the variables to set. Each run does it again, incrementally. |
 | `stack.sh start` | Starts Postgres, the proxy, NATS and the listener. It keeps a process that already runs. It refuses a port that another process holds, and names that process when this PID namespace can see it. Dispatch (and the listener's latency proxy) start only in `seed` and `reset`. |
 | `stack.sh seed [--force] [--min-events N]` | Makes the seed template `dispatch_seed` (The seed, below). It does nothing when `dispatch_seed` and `seed.meta.json` exist. `--force` drops the old seed and seeds again. `--min-events N` extends the event log to N rows (The seed, below); on an existing seed with fewer rows, it extends that seed in place, in seconds, without seeding again. |
 | `stack.sh reset [LOG]` | Resets the stack to the seed and starts Dispatch, with its log in `LOG` (default `$LOADTEST_ROOT/logs/dispatch.log`). `run-step.sh` does this before each step. |
@@ -889,6 +900,7 @@ The generator's revision tokens start at `r0`, because the database is at the se
 ## Before and after across commits
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/stack.sh setup         # build this checkout's Dispatch, listener and loadgen
 packages/envoy/loadtest/stack.sh start
 packages/envoy/loadtest/stack.sh seed --force  # seed with a build that has loadgen seed-refs
@@ -909,6 +921,7 @@ step uses), keep `LOADTEST_SRC` on this checkout and name the older one in
 `LOADTEST_DISPATCH_SRC`: the same `loadgen` then runs against both builds.
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 LOADTEST_DISPATCH_SRC=<base checkout> packages/envoy/loadtest/run-step.sh restart-before <flags>
 packages/envoy/loadtest/run-step.sh restart-after <flags>
 ```
@@ -1365,6 +1378,7 @@ holds the restored replay seed (`stack.sh replay-seed`'s dump), whose
 `loadgen run` reads that table once, over the stack's Postgres URL, before the window.
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 # One replay step (setup, start, replay-get, replay-prepare, reset --replay, loadgen run, tables).
 # LOADTEST_REPLAY_ISSUE names the issue the bundle's and the seed's parts are file artifacts of:
 LOADTEST_REPLAY_ISSUE=<issue> packages/envoy/loadtest/run-step.sh replay-f0.05 --replay --rate 0.05
@@ -1794,6 +1808,7 @@ interleaved on one box in one session; runs from two sessions, or two boxes, are
 
 ```bash
 export LOADTEST_REPLAY_ISSUE=<issue>
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 for i in 1 2 3; do
   packages/envoy/loadtest/run-step.sh base-$i --replay --rate 0.05 --rng-seed 1 --gomaxprocs 2 --dispatch-commit B
   packages/envoy/loadtest/run-step.sh head-$i --replay --rate 0.05 --rng-seed 1 --gomaxprocs 2 --dispatch-commit H
@@ -1866,6 +1881,7 @@ the refetch a browser makes, and comments that mention live sessions through a s
 same `loadgen` runs against both Dispatch builds (Before and after across commits, above):
 
 ```bash
+export LOADTEST_PORT_BASE=<the first of nine free ports>  # the first run on this root only
 packages/envoy/loadtest/stack.sh seed --min-events 13000
 packages/envoy/loadtest/run-step.sh restart-1x --events 4 --sessions 400 --requests 60 \
   --live 50 --live-resume 1 --live-stale 10 --restart-at 90s \

@@ -16,6 +16,7 @@ import {
   bash,
   blackhole,
   closedPort,
+  closedRangeHoldingTarget,
   closingTarget,
   fakeDispatch,
   holdingTarget,
@@ -29,6 +30,26 @@ import {
 } from "./outside-path-reach-fixtures";
 
 const { drive, targets, written, list, pathOf, pathWithCurl, pathRounds, v6Only } = reachFixtures();
+
+// The second program of the row whose path to the hub is down at first: it binds 127.0.0.1 at
+// RIVAL_PORT, as any Node server does, prints `bound` or the error's code, and lets a port it bound
+// go again at once.
+const rivalSource = [
+  'const server = require("node:net").createServer();',
+  'server.once("error", (error) => { console.log(error.code); process.exit(0); });',
+  'server.listen(Number(process.env.RIVAL_PORT), "127.0.0.1", () => { console.log("bound"); server.close(); });',
+].join("\n");
+
+/** What another program's bind of 127.0.0.1:`port` meets: `bound`, or the error's code. */
+async function bindFromAnotherProcess(port: number): Promise<string> {
+  const rival = Bun.spawn([process.execPath, "-e", rivalSource], {
+    env: { RIVAL_PORT: String(port) },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [said] = await Promise.all([new Response(rival.stdout).text(), rival.exited]);
+  return said.trim() || "said nothing";
+}
 
 describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
@@ -141,11 +162,14 @@ describe.concurrent("outside-path-reach.sh", () => {
   probingRow(withoutTools)(
     "reads the same holding target as unreachable once it is closed, and passes",
     async () => {
-      const holding = holdingTarget(await closedPort());
-      const { port } = holding;
-      holding.stop(true);
       const origin = await fakeDispatch();
+      const holding = await closedRangeHoldingTarget();
+      const { port } = holding;
       try {
+        // The target holds its port from the moment the row knows it, so a second program's bind
+        // of it fails until the row closes it.
+        expect(await bindFromAnotherProcess(port)).toBe("EADDRINUSE");
+        holding.stop(true);
         const run = await drive({
           OUTSIDE_ORIGIN: `http://127.0.0.1:${origin.port}`,
           OUTSIDE_PATH_TARGETS: await list(`nats 127.0.0.1 ${port}`),
@@ -155,6 +179,7 @@ describe.concurrent("outside-path-reach.sh", () => {
         expect(run.code).toBe(0);
       } finally {
         await origin.stop();
+        holding.stop(true);
       }
     }
   );
@@ -483,18 +508,21 @@ describe.concurrent("outside-path-reach.sh", () => {
 
   // A tunnel that lost its first handshake packet stays down until WireGuard sends it again, after
   // its RekeyTimeout of 5 s plus up to 334 ms, so probes started together would all fall inside
-  // that; the rounds start 6 s apart. Here the hub is down in round 1, its curl answering as a
-  // refused connect, and listens from round 2 on. The row reads the spacing from the order of what
-  // the script ran, not from a clock this host's load moves: `pathRounds` logs each probe of the hub
-  // as it starts and each sleep once it has ended, and the host's `sleep 6` ran to its end between
-  // each two probes of the hub. Rounds 4 s apart would log `slept 4`, and rounds that did not wait
-  // for their sleep would log two probes in a row.
+  // that; the rounds start 6 s apart. Here the path to the hub is down in round 1, its curl
+  // answering as a refused connect, and up from round 2 on. The row reads the spacing from the
+  // order of what the script ran, not from a clock this host's load moves: `pathRounds` logs each
+  // probe of the hub as it starts and each sleep once it has ended, and the host's `sleep 6` ran to
+  // its end between each two probes of the hub. Rounds 4 s apart would log `slept 4`, and rounds
+  // that did not wait for their sleep would log two probes in a row. The hub listens from the
+  // start, on a port the kernel chose, so no other program can take the port while the path is
+  // down: a second program's bind of it must fail.
   probingRow(withoutTools)(
     "sleeps a whole 6 s between each two of its five rounds, so a target down only in the first round reads reached",
     async () => {
       const hub = holdingTarget();
       const origin = await fakeDispatch();
       try {
+        expect(await bindFromAnotherProcess(hub.port)).toBe("EADDRINUSE");
         const { path, log } = pathRounds(
           { hub: `127.0.0.1:${hub.port}` },
           `[ "$target" = hub ] && [ "$round" -eq 1 ] && { printf '0.000010 0.000000'; exit 7; }`

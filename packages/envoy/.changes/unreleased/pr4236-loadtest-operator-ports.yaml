@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The load test (`loadtest/stack.sh`) chooses no port of its own. Its first `setup` on a `LOADTEST_ROOT`, and so the first `run-step.sh` or `run-series.sh` there, takes the ports from the operator: `LOADTEST_PORT_BASE`, which gives all nine, or each `LOADTEST_*_PORT`. Without them it refuses before it builds anything (`the stack chooses no port of its own: set LOADTEST_PORT_BASE …`). Before, a stack with no port set took nine ports from a hash of `LOADTEST_ROOT`, which another program could hold. `start` also refuses a `stack.json` that an earlier `stack.sh` wrote with such ports. An operator who ran the load test with no port variable sets `LOADTEST_PORT_BASE` once and runs `stack.sh setup` again.

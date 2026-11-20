@@ -2,6 +2,7 @@ import { beforeAll, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -15,23 +16,32 @@ import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
-// checkout that holds its e2e helpers and stand-ins for what a run reaches:
-//   - docker: the batch's Postgres container;
+// checkout that holds the e2e helpers it sources and stand-ins for what a run reaches:
+//   - docker: the batch's Postgres container, and the containers a batch creates, starts and
+//     removes;
 //   - packages/dispatch/e2e/run-server.sh: a server that answers every request with the database
 //     its DATABASE_URL names;
+//   - packages/dispatch/e2e/postgres-mark.ts, the command scripts/e2e/lib/leftovers.sh runs for
+//     the removal of a dead stack's Postgres and for the mark of the batch's own: it records each
+//     call and prints a mark, and removes nothing (the real command acts on every stack of the
+//     machine, and scripts/e2e/lib/leftovers.test.ts runs it with this rig's lines);
 //   - seed.ts: records the Dispatch that each seed reached, and writes the fixture;
 //   - tmux: runs the pane's command at once;
 //   - mise: answers `mise where <pin>` with a pin whose bin/omp is the agent, which records the
 //     Dispatch variables of its environment, and runs `mise x <pin> -- <command>` as the command
-//     (a run names its pin's omp by path).
+//     (a run names its pin's omp by path);
+//   - go: `go build -o <file> ./cmd/listener` writes a listener that answers every request on the
+//     socket it is handed.
 // Each run must get a database of its own, a server of its own and a DISPATCH_URL of its own, and
-// must stop its server when it ends.
+// must stop its server when it ends. A batch of no runs must remove the Postgres of dead stacks
+// before it creates its own, mark its own, and remove its containers when it ends.
 setDefaultTimeout(120_000);
 
 // Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
 // in a process group of its own (`runRig` below says why it must). Read once, so one warning names
 // perl for the whole file.
 const withoutPerl = skipWithout("perl");
+const withoutPython = skipWithout("python3");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 const scratch = temporaryDirectory("skill-scenarios-isolation", { real: true });
@@ -55,7 +65,8 @@ function put(file: string, text: string, mode = 0o644) {
   });
 }
 
-// The checkout: this rig.sh and the e2e helpers it sources, with the two Dispatch stand-ins.
+// The checkout: this rig.sh and the e2e helpers it sources, with the Dispatch stand-ins and the
+// mark's. nats.go is the file lib/nats-image.sh reads the NATS image from, for a batch's NATS.
 const co = path.join(scratch, "checkout");
 const rig = path.join(co, "packages/pi-legion/scripts/skill-scenarios/rig.sh");
 const stub = path.join(scratch, "stub");
@@ -64,6 +75,8 @@ stagings.push(() => {
   copyFileSync(path.join(import.meta.dir, "rig.sh"), rig);
   for (const lib of [
     "rig.sh",
+    "leftovers.sh",
+    "nats-image.sh",
     "process-tree.sh",
     "loopback-dsn.sh",
     "loopback-dsn.py",
@@ -73,12 +86,28 @@ stagings.push(() => {
     mkdirSync(path.join(co, "scripts/e2e/lib"), { recursive: true });
     copyFileSync(path.join(root, "scripts/e2e/lib", lib), path.join(co, "scripts/e2e/lib", lib));
   }
+  const natsGo = "packages/envoy/internal/testnats/nats.go";
+  mkdirSync(path.dirname(path.join(co, natsGo)), { recursive: true });
+  copyFileSync(path.join(root, natsGo), path.join(co, natsGo));
   mkdirSync(stub);
 });
 put(
   path.join(co, "packages/dispatch/e2e/run-server.sh"),
   ["#!/usr/bin/env bash", 'exec bun "$STUB_DIR/server.ts"', ""].join("\n"),
   0o755
+);
+// `postgres-mark.ts sweep` and `postgres-mark.ts label <owner> <run> <container>`, recorded in the
+// order of docker's calls, in docker's own log.
+put(
+  path.join(co, "packages/dispatch/e2e/postgres-mark.ts"),
+  [
+    'import { appendFileSync } from "node:fs";',
+    'import path from "node:path";',
+    "const args = Bun.argv.slice(2);",
+    'appendFileSync(path.join(process.env.STUB_DIR ?? "", "docker.log"), "postgres-mark " + args.join(" ") + "\\n");',
+    'if (args[0] === "label") console.log("dev.legion.dispatch-e2e.postgres-mark=stub-" + args[3]);',
+    "",
+  ].join("\n")
 );
 // No DISPATCH_E2E_PORT: the server takes a port of the kernel's choosing and reports it as the Go
 // server does (`msg="dispatch: listening" addr=127.0.0.1:<port>`), which start_dispatch reads from
@@ -128,14 +157,55 @@ put(
   ].join("\n")
 );
 
-// The stand-ins first on PATH.
+// The stand-ins first on PATH. docker's `create --name <name> …` prints the id `id-<name>`.
 const bin = path.join(scratch, "bin");
 put(
   path.join(bin, "docker"),
   [
     "#!/usr/bin/env bash",
     'printf \'%s\\n\' "$*" >>"$STUB_DIR/docker.log"',
-    'case $1 in port) echo "127.0.0.1:15432" ;; inspect) echo stub-postgres ;; exec) ;; *) exit 1 ;; esac',
+    "case $1 in",
+    '  port) echo "127.0.0.1:15432" ;;',
+    "  inspect) echo stub-postgres ;;",
+    '  create) echo "id-$3" ;;',
+    '  logs) echo "Server is ready" ;;',
+    "  exec | start | rm) ;;",
+    "  *) exit 1 ;;",
+    "esac",
+    "",
+  ].join("\n"),
+  0o755
+);
+// The listener `go build` makes: an HTTP server that answers 200 to every request, on the socket
+// held-port.py hands it (ENVOY_LISTEN_FD).
+const listener = path.join(scratch, "listener.py");
+put(
+  listener,
+  [
+    "#!/usr/bin/env python3",
+    "import http.server, os, socket",
+    'held = socket.socket(fileno=int(os.environ["ENVOY_LISTEN_FD"]))',
+    "class Answer(http.server.BaseHTTPRequestHandler):",
+    "    def do_GET(self):",
+    "        self.send_response(200)",
+    "        self.end_headers()",
+    "    def log_message(self, *args):",
+    "        pass",
+    'server = http.server.HTTPServer(("127.0.0.1", 0), Answer, bind_and_activate=False)',
+    "server.socket.close()",
+    "server.socket = held",
+    "server.serve_forever()",
+    "",
+  ].join("\n"),
+  0o755
+);
+put(
+  path.join(bin, "go"),
+  [
+    "#!/usr/bin/env bash",
+    'while [ $# -gt 0 ] && [ "$1" != -o ]; do shift; done',
+    "[ $# -ge 2 ] || exit 1",
+    `cp ${JSON.stringify(listener)} "$2"`,
     "",
   ].join("\n"),
   0o755
@@ -434,5 +504,44 @@ test.skipIf(withoutPerl)(
     expect(quoted).not.toBeNull();
     const crontab = lines(path.join(dir, "cwd", "export-host.crontab"));
     expect(crontab[Number(line) - 1]).toBe(text);
+  }
+);
+
+// A batch removes the Postgres of every dead stack before it starts its own (the removal of
+// scripts/e2e/lib/leftovers.sh), creates its own with the mark leftovers.sh made for it as a label,
+// and removes its containers by the ids their creates printed when it ends. A batch of no runs, in
+// a work directory and a log of its own, so the services file of the rows above stays theirs.
+test.skipIf(withoutPython)(
+  "a batch removes the Postgres of dead stacks first, creates its own with its mark as a label, and removes its containers by their ids at its end",
+  async () => {
+    const own = path.join(scratch, "batch-work");
+    const ownStub = path.join(scratch, "batch-stub");
+    mkdirSync(ownStub);
+    cpSync(path.join(work, "profiles", "on"), path.join(own, "profiles", "on"), {
+      recursive: true,
+    });
+    const ownTag = `skill-scenarios-${new Bun.CryptoHasher("sha256").update(own).digest("hex").slice(0, 8)}`;
+    const { code, stderr } = await runRig(["batch", "askgate", "0", "on"], {
+      SKILL_SCENARIOS_WORK: own,
+      STUB_DIR: ownStub,
+    });
+    expect({ code, stderr }).toEqual({ code: 0, stderr: expect.any(String) });
+    const calls = lines(path.join(ownStub, "docker.log"));
+    const sweep = calls.indexOf("postgres-mark sweep");
+    const mark = calls.findIndex(
+      (line) => line.startsWith("postgres-mark label ") && line.endsWith(` ${own} ${ownTag}-pg`)
+    );
+    const create = calls.findIndex((line) =>
+      line.startsWith(
+        `create --name ${ownTag}-pg --label dev.legion.dispatch-e2e.postgres-mark=stub-${ownTag}-pg `
+      )
+    );
+    expect({ sweep, markAfterSweep: mark > sweep, createAfterMark: create > mark, calls }).toEqual({
+      sweep: 0,
+      markAfterSweep: true,
+      createAfterMark: true,
+      calls,
+    });
+    expect(calls.at(-1)).toBe(`rm -f -v id-${ownTag}-pg id-${ownTag}-nats`);
   }
 );

@@ -242,7 +242,9 @@ scratch.
 `--listener-bin <path>` runs that built listener in place of building one, so a control can run a
 scratch build; natsd is still built from the checkout. A path that is not an executable file is
 refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
-listener.
+listener. Either listener must serve on the socket it is handed (`ENVOY_LISTEN_FD`,
+legion-envoy-v18.5.0 and later): an earlier one binds a port of its own, exits with
+`address already in use`, and the run refuses with that line.
 
 `SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
 (c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
@@ -259,7 +261,8 @@ listener that repairs its copy within the window passes the row; one that does n
 holder with no role until the window ends, and the row fails naming the two answers it last read.
 
 Prerequisites, each checked before anything starts: `bash` 5 or later, `go`, `bun` with the
-checkout's dependencies installed, `curl`, `jq`, and `jj`, `git` and `tar` for `--base-rev`.
+checkout's dependencies installed, `curl`, `jq`, `python3` (`scripts/e2e/lib/held-port.py`, which
+holds the listener's port), and `jj`, `git` and `tar` for `--base-rev`.
 Everything the run writes — the binaries it builds, the JetStream store, each client's home and
 state directory, every proxy's request log — lives in one `mktemp -d` under `$TMPDIR`, which an
 exit trap removes after a pass and keeps after anything else. Nothing it starts inherits this
@@ -293,27 +296,31 @@ ENVOY_URL=<listener> ENVOY_TOKEN_FILE=<0600 file> \
 bash packages/pi-envoy/scripts/smoke-registration-stall.sh --arm recover --local-stack
 ```
 
-`--local-stack` builds natsd and the listener from the checkout and runs both on loopback ports of
-its own, as `smoke-role-takeover.sh` does, so the run needs no deployment and no bearer: it ignores
-`ENVOY_URL` and `ENVOY_TOKEN_FILE`, says so, and keeps both out of the pane it spawns. Its one
-remaining live dependency is the model provider the pane's turn needs, which the pane inherits
-from the caller's environment. `--heartbeat-ms <n>` shortens the pane's refresh interval, which
-every budget the run prints is measured in. Its scratch is a `mktemp -d` under `$TMPDIR` that an
-exit trap removes. Exit 0 is `SMOKE <arm> PASS:`, 1 is `SMOKE <arm> FAIL:` naming the observation
-that failed, and 2 is a refusal.
+`--local-stack` builds natsd and the listener from the checkout and runs both on loopback ports no
+other program can take, as `smoke-role-takeover.sh` does, so the run needs no deployment and no
+bearer: it ignores `ENVOY_URL` and `ENVOY_TOKEN_FILE`, says so, and keeps both out of the pane it
+spawns. Its one remaining live dependency is the model provider the pane's turn needs, which the
+pane inherits from the caller's environment. `--heartbeat-ms <n>` shortens the pane's refresh
+interval, which every budget the run prints is measured in. Its scratch is a `mktemp -d` under
+`$TMPDIR` that an exit trap removes. Exit 0 is `SMOKE <arm> PASS:`, 1 is `SMOKE <arm> FAIL:`
+naming the observation that failed, and 2 is a refusal.
 
 ## local-stack.sh
 
-The loopback Envoy stack the two smokes above bring up, in one sourced file: a free loopback
-port below the kernel's ephemeral range (`port_range`, `port_open`, `pick_port`), the natsd and
+The loopback Envoy stack the two smokes above bring up, in one sourced file: the natsd and
 listener builds (`build_natsd`, `build_listener`, each taking the `packages/envoy` directory to
 build from, which is how `smoke-role-takeover.sh --base-rev` builds the listener from another
-revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`)
-and when it is up (`natsd_serving`, `listener_healthy`, polled with `poll_until`). It is sourced,
-never run: it starts no process, so every script keeps its own isolation, logs, traps, timeouts,
-messages and exit codes. A caller defines `refuse` and sets `local_stack_fail` to the function an
-exhausted port range is reported through, `refuse` in both smokes here.
-`packages/envoy-client/test/envoy-stack.ts` is the same stack for the TypeScript suite.
+revision), the argv and assignments each service is run with (`set_natsd_argv`, `set_listener_env`,
+`set_listener_held_argv`), the ports each one serves (`natsd_ports`, and `read_port_file` of
+`scripts/e2e/lib/port-file.sh`) and when it is up (`natsd_serving`, `listener_healthy`, polled with
+`poll_until`). No port is free between its choice and its server's bind: natsd binds ports the
+kernel chooses (`-p -1`, `-m -1`) and `natsd_ports` reads them from its log, and the listener serves
+on a socket `scripts/e2e/lib/held-port.py` holds from the choice of its port until the listener
+serves on it (`ENVOY_LISTEN_FD`). Each proxy of `smoke-role-takeover.sh` binds a port the kernel
+chooses and names it on its ready line. It is sourced, never run: it starts no process, so every
+script keeps its own isolation, logs, traps, timeouts, messages and exit codes. A caller sets
+`repo_root` to the checkout. `packages/envoy-client/test/envoy-stack.ts` is the same stack for the
+TypeScript suite.
 
 ## listener-api.sh
 

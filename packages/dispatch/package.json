@@ -13,7 +13,7 @@
     "test:web": "bun test --parallel --timeout 60000 --preload ./web/src/__tests__/register-dom.ts --preload ./web/src/__tests__/setup.ts",
     "test:web:cold": "bun run test:web --preload ./web/src/__tests__/hold-lazy-loads.ts",
     "test:web:late-reads": "bun run test:web --preload ./web/src/__tests__/hold-read-answers.ts",
-    "test:harness": "bun test --parallel --timeout 60000",
+    "test:harness": "bun test --parallel --timeout 60000 --path-ignore-patterns e2e/__tests__/harness-postgres-image-mount.test.ts --path-ignore-patterns e2e/__tests__/harness-postgres-image-port.test.ts --path-ignore-patterns e2e/__tests__/harness-postgres-image-ready.test.ts --path-ignore-patterns e2e/__tests__/harness-postgres-image-stall.test.ts --path-ignore-patterns e2e/__tests__/harness-postgres-leftover.test.ts --path-ignore-patterns e2e/__tests__/second-global-setup.test.ts",
     "test:repeat": "bun run build:contracts && bun e2e/tools/unit-repeat.ts",
     "dispatch:local": "bun e2e/local-instance.ts",
     "build:contracts": "bun run --filter @legion/contracts build:dispatch",

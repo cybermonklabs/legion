@@ -98,6 +98,8 @@ bash docs/research/temporal-evaluation-2026-11/run.sh
 
 It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the twenty-one experiments in order, runs the negative control of each of the five kill experiments that have one and requires it to fail, and ends with `temporal-evaluation: all 21 experiments passed`.
 It writes nothing into the working tree.
+It needs Docker: the dev server runs in a container, whose ports Docker publishes at host ports it chooses itself, and the script refuses to start when `docker` does not answer.
+It chooses no port: each restate-server serves on unix sockets in its experiment's directory, and its stop and cleanup signal only the processes and the container that the run started and recorded.
 Set `TMPDIR` to a directory on a volume with about 300 MB free; the script refuses an unset one and one under `/tmp`.
 Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the twenty-one need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
 Run one at a time: two runs share one directory under `$TMPDIR` and collide.

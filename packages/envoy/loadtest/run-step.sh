@@ -12,7 +12,9 @@
 #     [--rng-seed N] [--from D --to D] [--roster N] [--keys-file FILE] [--warmup D]
 #     [--gomaxprocs N] [--dispatch-commit REV] [--manifest FILE] [--heap-samples] [--out <dir>]
 #
-# From a fresh checkout it sets up, starts and seeds the stack (stack.sh). Then, every step that is
+# From a fresh checkout it sets up, starts and seeds the stack (stack.sh), on the ports the operator
+# gives: the first setup on a root refuses before any build without LOADTEST_PORT_BASE (nine ports
+# from it, free on this machine) or each LOADTEST_*_PORT (README.md, Ports). Then, every step that is
 # not part of a series: it rebuilds the binaries from this checkout (stack.sh setup, incremental) and
 # refuses a build whose highest migration is older than the seed's. A step of run-series.sh skips
 # that: the series did it once, before its first step, and passes its build's commit and dirty flag

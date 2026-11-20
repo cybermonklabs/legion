@@ -257,14 +257,15 @@ func pauseMyself(ctx restate.Context, p SelfPauseParams) (string, error) {
 	return fmt.Sprintf("ran to the end on attempt %d without being paused", attempt), nil
 }
 
-// patchPause is the admin API call a handler makes about itself.
+// patchPause is the admin API call a handler makes about itself, at adminAddress: the
+// server's unix socket (`unix:<path>`) when the driver started it, else its HOST:PORT.
 func patchPause(adminAddress, invocation string) (string, error) {
-	url := fmt.Sprintf("http://%s/invocations/%s/pause", adminAddress, invocation)
-	req, err := http.NewRequest(http.MethodPatch, url, nil)
+	client, base := restatex.HTTPClient(adminAddress, 10*time.Second)
+	req, err := http.NewRequest(http.MethodPatch, fmt.Sprintf("%s/invocations/%s/pause", base, invocation), nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("pause myself: %w", err)
 	}

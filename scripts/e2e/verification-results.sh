@@ -53,8 +53,9 @@
 # extensions that schema holds, and it leaves what the run wrote there for inspection. The driver
 # reads it too, for the one fixture no route of Dispatch can write: a stored pull request row of
 # the attribution rule before this build's. DISPATCH_BIN is optional and names a prebuilt
-# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
-# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch from
+# envoy-dispatch, which must serve on an inherited socket (DISPATCH_LISTEN_FD, legion-envoy-v18.5.0
+# and later): built from the base commit it is this change's negative control, and it fails at the
+# first result write, the route it does not serve; unset, the script builds ./cmd/dispatch from
 # this checkout.
 # VERIFICATION_RESULTS_E2E_DISPATCH_CLI is optional and names the bin/dispatch.ts the driver runs
 # in place of this checkout's packages/envoy-client/bin/dispatch.ts; the run refuses a value that
@@ -67,11 +68,11 @@
 # that starts with `-`, `values-kept` fails at step 1, which exits 2 with the line for
 # --negative-control.
 #
-# The ports are VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT
-# (19063) and VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already
-# answers on it; NATS listens on a port the kernel picks. The work directory, under TMPDIR, holds
-# the binaries and every process's log: removed when the run passes, kept and printed when it
-# fails.
+# No port is chosen before its server binds it: the server serves on a socket held from the
+# kernel's choice until it serves (lib/held-port.py through lib/rig.sh's start_held), and NATS, the
+# fake Envoy listener and the fake GitHub each bind a port the kernel picks and name it in their
+# logs. The work directory, under TMPDIR, holds the binaries and every process's log: removed when
+# the run passes, kept and printed when it fails.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -100,9 +101,11 @@ timeout_hook=''
 dispatch_bin=${DISPATCH_BIN:-}
 dispatch_cli=${VERIFICATION_RESULTS_E2E_DISPATCH_CLI:-}
 database_url=${DATABASE_URL:-}
-dispatch_port=${VERIFICATION_RESULTS_E2E_DISPATCH_PORT:-19061}
-envoy_port=${VERIFICATION_RESULTS_E2E_ENVOY_PORT:-19063}
-github_port=${VERIFICATION_RESULTS_E2E_GITHUB_PORT:-19065}
+# Each port is assigned as its server names it (start_reported) or once its socket is held
+# (start_held).
+envoy_port=''
+github_port=''
+dispatch_port=''
 
 # A Legion pane exports the real listener (ENVOY_URL), the real Dispatch (DISPATCH_URL,
 # DISPATCH_TOKEN_FILE) and an nkey for the real NATS; nothing this run starts inherits any of it.
@@ -167,14 +170,6 @@ if [ -n "$dispatch_cli" ]; then
   fi
   dispatch_cli=$(cd "$(dirname "$dispatch_cli")" && pwd)/$(basename "$dispatch_cli")
 fi
-for port in "$dispatch_port" "$envoy_port" "$github_port"; do
-  if ! [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || [ "$port" -gt 65535 ]; then
-    fail "'$port' is not a port"
-  fi
-  port_answers "$port" && fail "something already answers on 127.0.0.1:$port"
-done
-[ "$(printf '%s\n' "$dispatch_port" "$envoy_port" "$github_port" | sort -u | wc -l)" -eq 3 ] ||
-  fail "the Dispatch, fake Envoy and fake GitHub ports are not three different ports"
 note "database host $db_host (URL not printed)"
 pass
 
@@ -212,14 +207,18 @@ note "JetStream on $nats_url"
 pass
 
 begin fake-envoy
-FAKE_ENVOY_PORT=$envoy_port start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+# FAKE_ENVOY_PORT and FAKE_GITHUB_PORT are unset (the sweep above drops both), so each fake binds a
+# port the kernel picks and names it on its listening line.
+start_reported fake_envoy envoy_port 'fake envoy listener on 127\.0\.0\.1:' -- \
+  bun "$root/packages/dispatch/e2e/fake-envoy.ts"
 await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy listener to answer /healthz" \
   curl -fsS --max-time 2 "http://127.0.0.1:$envoy_port/healthz"
 note "fake Envoy listener on http://127.0.0.1:$envoy_port"
 pass
 
 begin fake-github
-FAKE_GITHUB_PORT=$github_port start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
+start_reported fake_github github_port 'fake github listener on 127\.0\.0\.1:' -- \
+  bun "$root/packages/dispatch/e2e/fake-github.ts"
 await_start fake_github "$fake_github_pid" 60 "the fake GitHub to answer /healthz" \
   curl -fsS --max-time 2 "http://127.0.0.1:$github_port/healthz"
 github_url=http://127.0.0.1:$github_port
@@ -241,8 +240,11 @@ begin dispatch
 # five minutes for one would be no proof a reader runs.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
-dispatch_url=http://127.0.0.1:$dispatch_port
-start_process dispatch env -i \
+# The server serves on a socket held from the kernel's choice until it serves (start_held), and
+# names that port in DISPATCH_PORT and DISPATCH_SERVER_URL ({port}, which held-port.py fills in);
+# under env -i it names DISPATCH_LISTEN_FD itself. A held socket queues a connection until the
+# server serves, so each poll carries a timeout of its own.
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- env -i \
   PATH="$PATH" \
   TMPDIR="$work" \
   HOME=/nonexistent \
@@ -257,9 +259,10 @@ start_process dispatch env -i \
   DISPATCH_GITHUB_API_BASE="$github_url" \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
+  DISPATCH_LISTEN_FD=3 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_PORT="$dispatch_port" \
-  DISPATCH_SERVER_URL="$dispatch_url" \
+  DISPATCH_PORT='{port}' \
+  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' \
   DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_RECONCILE_AT_START=1 \
@@ -267,6 +270,7 @@ start_process dispatch env -i \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
   "$dispatch_bin"
+dispatch_url=http://127.0.0.1:$dispatch_port
 await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
 note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"

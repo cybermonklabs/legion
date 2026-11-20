@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The idle-rig listener and the scratch Dispatch server of the daemon's tests serve on a socket the test holds for its whole life (`ENVOY_LISTEN_FD`, `DISPATCH_LISTEN_FD`), so a restart comes back on the same port and no other program can take it in between. Before, the idle rig chose a free port and let it go before the listener bound it, and the scratch Dispatch server let its port go at each stop and bound it again, retrying `address already in use`. While the handoff-records proof has Dispatch stopped, a stand-in on the held socket closes each connection at once, so the step still sees the connection fail.

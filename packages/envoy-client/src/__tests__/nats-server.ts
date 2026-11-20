@@ -63,14 +63,18 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       : `jetstream {}\nauthorization {\n  users = [ { nkey: ${JSON.stringify(nkeyUser)} } ]\n}\n`,
     { mode: 0o644 }
   );
+  // The id `docker run` printed, by which `stop` removes the container: never by its name.
+  let id = "";
   const stop = () => {
     // With -v, since the image declares a VOLUME a plain `docker rm -f` leaves on the host
     // (docs/testing.md).
-    Bun.spawnSync(["docker", "rm", "-f", "-v", name], { stdout: "ignore", stderr: "ignore" });
+    if (id !== "") {
+      Bun.spawnSync(["docker", "rm", "-f", "-v", id], { stdout: "ignore", stderr: "ignore" });
+    }
     rmSync(config, { force: true });
   };
   try {
-    await docker(
+    const run = await docker(
       "run",
       "-d",
       // A container that dies on its own is gone with it, so the readiness loop's `docker logs`
@@ -84,22 +88,34 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "1",
       "--memory",
       "512m",
-      "-p",
-      "127.0.0.1::4222",
+      // No published port: Docker's allocator, not the kernel, would choose it, and it fails the
+      // run when another program holds the ports after its last choice. On the host's network
+      // the server binds a loopback port the kernel chooses (-p -1) and logs it, as a server
+      // that takes no socket must.
+      "--network",
+      "host",
       "-v",
       `${config}:/etc/nats/test.conf:ro`,
       NATS_IMAGE,
       "-c",
-      "/etc/nats/test.conf"
+      "/etc/nats/test.conf",
+      "-a",
+      "127.0.0.1",
+      "-p",
+      "-1"
     );
+    id = run.stdout.trim();
     const deadline = Date.now() + 90_000;
-    // nats-server logs to stderr.
-    while (!(await docker("logs", name)).stderr.includes("Server is ready")) {
+    // nats-server logs to stderr, the client line before the ready line.
+    let log = (await docker("logs", name)).stderr;
+    while (!log.includes("Server is ready")) {
       if (Date.now() > deadline) throw new Error(`NATS container ${name} never became ready`);
       await Bun.sleep(100);
+      log = (await docker("logs", name)).stderr;
     }
-    const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
-    return { url: `nats://${port}`, stop };
+    const port = /Listening for client connections on 127\.0\.0\.1:(\d+)/.exec(log)?.[1];
+    if (port === undefined) throw new Error(`NATS container ${name} logged no client port: ${log}`);
+    return { url: `nats://127.0.0.1:${port}`, stop };
   } catch (error) {
     stop();
     throw error;

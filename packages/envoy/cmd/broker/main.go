@@ -215,7 +215,11 @@ func main() {
 	// Its "kms_key_id" names the agent-secrets key as the selected store configures it:
 	// BROKER_SECRETS_KMS_KEY_ARN, or BROKER_SECRETS_KMS_KEY_NAME under gcp-secret-manager.
 	fakeSecrets := os.Getenv("BROKER_FAKE_SECRETS_FILE")
-	fatal(refusePortZeroPublicURLInProduction(cfg.PublicURL, fakeSecrets))
+	fatal(refusePortZeroURLInProduction("BROKER_PUBLIC_URL", cfg.PublicURL, fakeSecrets))
+	// The airlock's proxy URL takes the same convention, resolved from the address its proxy port
+	// binds (BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0), so a local stack hands each release the port
+	// the kernel chose and chooses no port of its own.
+	fatal(refusePortZeroURLInProduction("BROKER_AIRLOCK_PROXY_URL", cfg.AirlockProxyURL, fakeSecrets))
 	// And, in the same breath, the airlock's test-only settings: every one of them is a local
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
@@ -438,7 +442,7 @@ func main() {
 	// convention (its BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0): resolve it from
 	// the real bound address before anything checks a request's audience against it. Every
 	// audience-consuming construct below (enr.Chain included) is built after this point, so none
-	// ever sees the stale placeholder. refusePortZeroPublicURLInProduction (the dev-vs-production
+	// ever sees the stale placeholder. refusePortZeroURLInProduction (the dev-vs-production
 	// gate) already refused this above, right after config.Load — before st.Migrate, any AWS
 	// call, and the boot's bind — so reaching here means it's safe to apply.
 	if u, urlErr := url.Parse(cfg.PublicURL); urlErr == nil && u.Port() == "0" {
@@ -446,6 +450,10 @@ func main() {
 	}
 	slog.Info("broker listening", "addr", listener.Addr().String())
 	if started.AirlockListener != nil {
+		// A proxy URL with port 0 is the same local-run convention as BROKER_PUBLIC_URL's, refused
+		// above in production: it names the port the proxy actually bound, before the request
+		// machine below puts the URL in a release.
+		cfg.AirlockProxyURL = withBoundPort(cfg.AirlockProxyURL, started.AirlockListener.Addr())
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
 	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
@@ -937,19 +945,33 @@ func openStore(ctx context.Context, cfg config.Config, awsAlso bool) (*store.Sto
 	return st, awsCfg, nil
 }
 
-// refusePortZeroPublicURLInProduction refuses a BROKER_PUBLIC_URL whose port is literally "0"
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never dialable, so it can only
-// be dev-broker.sh's own "derive my public URL from whatever address I actually bind" convention
-// (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0). A stray literal ":0" reaching a real
-// deployment must fail loudly at boot, never silently reinterpret the broker's own public
-// identity as its internal bind address. Extracted from main so a test can drive it directly
-// instead of through fatal, which calls os.Exit.
-func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) error {
-	u, err := url.Parse(publicURL)
+// refusePortZeroURLInProduction refuses the URL setting name whose port is literally "0" unless
+// BROKER_FAKE_SECRETS_FILE makes this a local run: port 0 is never dialable, so it can only be
+// dev-broker.sh's own "derive my URL from whatever address I actually bind" convention
+// (BROKER_PUBLIC_URL mirrors BROKER_LISTEN_ADDR=127.0.0.1:0, BROKER_AIRLOCK_PROXY_URL mirrors
+// BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0). A stray literal ":0" reaching a real deployment must
+// fail loudly at boot, never silently reinterpret the broker's own public identity, or the proxy
+// every release names, as its internal bind address. Extracted from main so a test can drive it
+// directly instead of through fatal, which calls os.Exit.
+func refusePortZeroURLInProduction(name, value, fakeSecretsFile string) error {
+	u, err := url.Parse(value)
 	if err != nil || u.Port() != "0" || fakeSecretsFile != "" {
 		return nil
 	}
-	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
+	return fmt.Errorf("%s %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", name, redact.URL(value))
+}
+
+// withBoundPort answers raw with its port 0 replaced by the port bound took, keeping its scheme,
+// host and path: the derive-from-bind convention refusePortZeroURLInProduction admits for a local
+// run. A URL with any other port, or one that does not parse, is answered as it is.
+func withBoundPort(raw string, bound net.Addr) string {
+	u, err := url.Parse(raw)
+	tcp, isTCP := bound.(*net.TCPAddr)
+	if err != nil || u.Port() != "0" || !isTCP {
+		return raw
+	}
+	u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(tcp.Port))
+	return u.String()
 }
 
 // refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only

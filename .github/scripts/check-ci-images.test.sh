@@ -225,8 +225,8 @@ YAML
 judge_image=$REGISTRY@$NATS
 docker run --rm --init "\$judge_image" bash -c 'echo judged'
 # The shape IMAGE_FROM covers in the real rig.sh: its NATS server's image, which
-# scripts/e2e/lib/nats-image.sh sets.
-docker run -d --name rig-nats "\$nats_image" -js >/dev/null
+# scripts/e2e/lib/nats-image.sh sets, started through scripts/e2e/lib/rig.sh's start_container.
+start_container service_containers rig-nats -p 127.0.0.1::4222 "\$nats_image" -js
 YAML
   cat > "$root/scripts/e2e/stage1-skeleton.sh" <<YAML
 #!/usr/bin/env bash
@@ -767,13 +767,57 @@ run_check tree "$root"
 check "a variable from nowhere fails" "$(is "$status" 1)"
 check "says what to do with it" "$(contains "$out" 'add the variable that holds it to IMAGE_FROM')"
 
-echo "case: an IMAGE_FROM entry no docker command uses"
+echo "case: an IMAGE_FROM entry no fetch uses"
 root=$(fixture image-from-stale)
 rm -r "$root/.github/actions/pull-test-images"
 run_check tree "$root"
 check "fails" "$(is "$status" 1)"
 check "names the variable" "$(contains "$out" 'IMAGE_FROM names \$image here')"
 check "says what to delete" "$(contains "$out" 'Delete the entry')"
+
+echo "case: a container scripts/e2e/lib/rig.sh's start_container makes"
+# start_container IDS NAME ARGS... runs `docker create --name NAME ARGS...`, so a call of it is a
+# fetch, read as a `docker create` is. The fixture's rig.sh starts its NATS server through it,
+# and that call is what keeps rig.sh's IMAGE_FROM entry in use in every passing case above.
+root=$(fixture start-container-other-registry)
+cat >> "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh" <<'YAML'
+start_container service_containers rig-pg -p 127.0.0.1::5432 docker.io/pgvector/pgvector:pg17
+YAML
+run_check tree "$root"
+check "an image on another registry fails" "$(is "$status" 1)"
+check "names the image the call fetches" \
+  "$(contains "$out" 'rig.sh:7: the image this command fetches names docker.io/pgvector/pgvector')"
+
+root=$(fixture start-container-opaque)
+cat >> "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh" <<'YAML'
+start_container service_containers rig-pg "$PG_IMAGE"
+YAML
+run_check tree "$root"
+check "a variable from nowhere fails" "$(is "$status" 1)"
+check "names the call" \
+  "$(contains "$out" 'this command fetches an image this check cannot read (start_container')"
+
+echo "case: a start in a form this check does not read as a fetch"
+# The control of the case above: the fixture's NATS start moved into a function this check
+# does not know. rig.sh's IMAGE_FROM entry then names no fetch, and is refused rather than
+# passed over; and a literal image such a start names is read as a word of its command, so it
+# is judged all the same.
+root=$(fixture start-unread-form)
+sed -i 's/^start_container service_containers rig-nats /launch_container service_containers rig-nats /' \
+  "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh"
+run_check tree "$root"
+check "fails" "$(is "$status" 1)"
+check "names the entry the start left unused" "$(contains "$out" 'IMAGE_FROM names \$nats_image here')"
+check "and says to teach the check that form" "$(contains "$out" 'teach it the form')"
+
+root=$(fixture start-unread-form-literal)
+cat >> "$root/packages/pi-legion/scripts/skill-scenarios/rig.sh" <<'YAML'
+launch_container service_containers rig-pg docker.io/pgvector/pgvector:pg17
+YAML
+run_check tree "$root"
+check "a literal image of such a start fails" "$(is "$status" 1)"
+check "read as a word of its command" \
+  "$(contains "$out" 'rig.sh:7: this word of a shell command names docker.io/pgvector/pgvector')"
 
 echo "case: a FROM that is neither a stage nor an ARG"
 root=$(fixture from-undeclared)

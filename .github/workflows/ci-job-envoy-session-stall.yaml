@@ -114,6 +114,11 @@ jobs:
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
         working-directory: packages/envoy-client
+      # Both stacks start their servers though another program takes each port they choose: a
+      # held socket for Dispatch and the listener, the kernel's ports for natsd.
+      - name: Ports of the Dispatch and Envoy stacks
+        run: bun test src/__tests__/stack-ports.live.test.ts
+        working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
       # to Dispatch.

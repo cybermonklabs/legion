@@ -1199,6 +1199,20 @@ check "exits 1" "$(is "$status" 1)"
 check "names docker run" "$(contains "$out" "job 'pi_envoy_publish' holds a credential, but step 'Smoke the image' runs 'docker run'")"
 check "does not name the inspect step" "$(is "$(contains "$out" "step 'Inspect the image'")" false)"
 
+echo "case: a container a credentialed job creates and then starts"
+# docker create makes a container and runs none of its code; docker start runs it, as docker run
+# does. scripts/e2e/lib/rig.sh's start_container does both, and a step reaches it only by
+# sourcing that file, whose path is under scripts/.
+root=$(fixture docker-create-start)
+add_publish_step "$root" $'      - name: Create only\n        run: docker create --name x alpine sh\n      - name: Create and start\n        run: |\n          id=$(docker create alpine sh)\n          docker start "$id"\n      - name: Start in the long form\n        run: docker container start x\n      - name: Start through the rig\n        run: |\n          . scripts/e2e/lib/rig.sh\n          start_container ids x alpine sh\n'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names docker start" "$(contains "$out" "step 'Create and start' runs 'docker start'")"
+check "names docker container start" "$(contains "$out" "step 'Start in the long form' runs 'docker container start'")"
+check "names the rig a start_container step sources" \
+  "$(contains "$out" "step 'Start through the rig' runs 'scripts/e2e/lib/rig.sh'")"
+check "does not name a create that starts nothing" "$(is "$(contains "$out" "step 'Create only'")" false)"
+
 echo "case: a checkout written Actions/Checkout, without persist-credentials"
 root=$(fixture checkout-casing)
 mutate "$root/$RELEASE" "      - uses: actions/checkout@$SHA"$'\n        with:\n          fetch-depth: 0\n          persist-credentials: false\n' "      - uses: Actions/Checkout@$SHA"$'\n        with:\n          fetch-depth: 0\n' 1

@@ -24,8 +24,10 @@
 # server takes its port as lib/held-port.py gives it, never a port picked free a moment earlier:
 # natsd binds ports the kernel chooses and reports them (-p -1 -m -1); each listener, Dispatch and
 # each proxy (socat's ACCEPT-FD) serves on a copy of a socket a keeper holds for the whole run, so a
-# restart serves the same port. Only a --build-from listener that takes no ENVOY_LISTEN_FD binds a
-# number, a port picked free below the kernel's ephemeral range, which its restart binds again. At
+# restart serves the same port. A --build-from listener that takes no ENVOY_LISTEN_FD binds a port
+# the kernel chooses (PORT=0), which the run reads from the kernel's list of the sockets that
+# process holds, and a held front (lib/held-front.sh) serves the listener's kept port, forwarding
+# there; its restart binds a new port the kernel chooses, behind a new front. At
 # setup each session is told (one model turn) to follow the issue topic
 # notifications.dispatch.issue.<KEY>.> and the run's own team topic
 # notifications.team.live-delivery-<run>, and to hold a role of its own; the listener's registry is
@@ -333,16 +335,19 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# reads its caller's DSN with, lib/port-file.sh for read_port_file, which this proof's own
+# await_port_file waits with, and lib/held-front.sh for the proxies' command and readiness
+# (held_front_argv, held_front_answers). None of the three reads a variable of this shell. This
+# proof sources no rig: its await_port_file and keep_port, written for the pid map below, are its
+# own, and lib/rig.sh defines both of those names and a start_held that calls its own
+# await_port_file, so sourcing it for that one DSN helper would leave which await_port_file runs
+# to the order of the two files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/held-front.sh
+. "$repo_root/scripts/e2e/lib/held-front.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -405,9 +410,9 @@ cleanup() {
   trap - EXIT
   set +e
   for label in pi cc; do close_fd "$label"; stop_label "$label"; done
-  for label in proxy-pi proxy-cc dispatch proxy-dispatch listener-shared listener-dispatch natsd \
-    model-proxy keep-proxy-pi keep-proxy-cc keep-proxy-dispatch keep-dispatch keep-listener-shared \
-    keep-listener-dispatch; do
+  for label in proxy-pi proxy-cc dispatch proxy-dispatch front-listener-shared listener-shared \
+    front-listener-dispatch listener-dispatch natsd model-proxy keep-proxy-pi keep-proxy-cc \
+    keep-proxy-dispatch keep-dispatch keep-listener-shared keep-listener-dispatch; do
     stop_label "$label"
   done
   if [[ -n "$database_created" ]]; then
@@ -495,23 +500,23 @@ reported_port() {
   match=$(grep -m1 -oE -- "$2[0-9]+" "$1" 2>/dev/null) || return 1
   printf -v "$3" '%s' "${match##*[!0-9]}"
 }
-# pick_port VAR: a loopback port nothing answers on, below the kernel's ephemeral range (which
-# every connection's own local port comes from) and new to this run. Only for a server that can
-# only bind a number it is given: a --build-from listener that takes no ENVOY_LISTEN_FD.
-picked_ports=" "
-pick_port() {
-  local candidate i low
-  read -r low _ </proc/sys/net/ipv4/ip_local_port_range
-  ((low > 11000)) || fail "the kernel's ephemeral range starts at ${low}, leaving no ports below it above 10000"
-  for ((i = 0; i < 100; i++)); do
-    candidate=$((10000 + RANDOM % (low - 10000)))
-    [[ "$picked_ports" != *" ${candidate} "* ]] || continue
-    (exec 3<>"/dev/tcp/127.0.0.1/$candidate") 2>/dev/null && continue
-    picked_ports+="${candidate} "
-    printf -v "$1" '%s' "$candidate"
-    return 0
+# listening_port PID VAR: assigns VAR the port of the one TCP socket the process PID listens on,
+# from the kernel's list of the sockets it holds: the inodes its descriptors name (/proc/PID/fd)
+# matched against the LISTEN rows (state 0A) of /proc/net/tcp and /proc/net/tcp6. It is how the run
+# reads the port of a server that binds port 0 and names its port nowhere: a listener that takes no
+# ENVOY_LISTEN_FD logs the address it was given, 127.0.0.1:0. It fails while PID listens on no
+# socket or on more than one, so it is also the poll that waits for one. The locals' names are
+# ones no caller passes.
+listening_port() {
+  local _lp_fd _lp_target _lp_inodes=" " _lp_hex
+  for _lp_fd in "/proc/$1/fd/"*; do
+    _lp_target=$(readlink "$_lp_fd" 2>/dev/null) || continue
+    [[ "$_lp_target" == socket:\[*\] ]] && _lp_inodes+="${_lp_target//[!0-9]/} "
   done
-  fail "no free loopback port below ${low}"
+  _lp_hex=$(awk -v inodes="$_lp_inodes" '$4 == "0A" && index(inodes, " " $10 " ") { n = split($2, a, ":"); print a[n] }' \
+    /proc/net/tcp /proc/net/tcp6 2>/dev/null | sort -u)
+  [[ "$_lp_hex" =~ ^[0-9A-F]{4}$ ]] || return 1
+  printf -v "$2" '%d' "$((16#$_lp_hex))"
 }
 new_uuid() { cat /proc/sys/kernel/random/uuid; }
 
@@ -640,11 +645,11 @@ bun_bin=$(command -v bun)
 claude_reported=$("$work/bin/claude" --version 2>"$work/logs/claude-version.log") ||
   fail "bunx could not run Claude Code $claude_version; see $work/logs/claude-version.log"
 # A listener that takes ENVOY_LISTEN_FD serves on a keeper's socket; an earlier revision's binds the
-# number it is given (PORT), so it gets a picked one.
+# number it is given (PORT), so it binds port 0 behind a held front on the keeper's socket.
 listener_held=0
 if grep -rqs --include='*.go' --exclude='*_test.go' ENVOY_LISTEN_FD "$tree/packages/envoy/cmd/listener"; then listener_held=1; fi
 listener_ports="serve on kept ports (ENVOY_LISTEN_FD)"
-((listener_held == 1)) || listener_ports="take no ENVOY_LISTEN_FD: each binds a picked port, again on its restart"
+((listener_held == 1)) || listener_ports="take no ENVOY_LISTEN_FD: each binds a port the kernel chooses, again on its restart, behind a held front on its kept port"
 note "pi-envoy $(jq -r .version "$work/pi-envoy/package.json"); claude-envoy $(jq -r .version "$work/claude-envoy/package.json" 2>/dev/null || jq -r .version "$claude_plugin_after/package.json"); Claude Code ${claude_reported}; omp $("$omp" --version 2>/dev/null | head -n 1); bridge argv ${replay_flag[*]:-without --replay-user-messages}; the listeners ${listener_ports}"
 [[ -z "$upgrade_label" ]] || note "upgrade: the sessions start on ${upgrade_label}"
 
@@ -665,13 +670,7 @@ await natsd "$work/logs/natsd.log" 30 nats_ready
 # Each listener, Dispatch and each proxy restarts in a window, and the sessions' envoy.json and
 # Dispatch's environment name their ports before they first start: each serves on a keeper's port.
 declare -A listener_port=() proxy_port=()
-for name in shared dispatch; do
-  if ((listener_held == 1)); then
-    keep_port "keep-listener-$name" "listener_port[$name]"
-  else
-    pick_port "listener_port[$name]"
-  fi
-done
+for name in shared dispatch; do keep_port "keep-listener-$name" "listener_port[$name]"; done
 for label in proxy-pi proxy-cc proxy-dispatch; do keep_port "keep-$label" "proxy_port[$label]"; done
 dispatch_port=""
 keep_port keep-dispatch dispatch_port
@@ -679,38 +678,53 @@ listener_url() { printf 'http://127.0.0.1:%s' "${listener_port[$1]}"; }
 dispatch_url="http://127.0.0.1:${dispatch_port}"
 
 listener_ready() { curl -fsS --max-time 2 "$(listener_url "$1")/healthz" | jq -e '.status == "healthy"'; }
+# start_listener NAME: listener NAME, serving its kept port. One that takes ENVOY_LISTEN_FD serves
+# on a copy of the keeper's socket. One that takes none binds port 0 (PORT=0), and once
+# listening_port reads its port, a held front (held_front_argv) on a copy of the keeper's socket
+# forwards each connection there, in a process group of its own (setsid), so kill_listener's one
+# SIGKILL to the group cuts every connection through it and the keeper keeps the port.
 start_listener() {
-  local name=$1
-  local -a serve=("$work/bin/envoy-listener")
+  local name=$1 bind_port=0 own_port=""
+  local -a serve=("$work/bin/envoy-listener") front
   if ((listener_held == 1)); then
+    bind_port=${listener_port[$name]}
     serve=(python3 "$held_port" exec --from "$work/ports/keep-listener-$name.sock" --fd-env ENVOY_LISTEN_FD -- "${serve[@]}")
   fi
-  (isolated_exec "" HOME="$work/listener-$name-home" PORT="${listener_port[$name]}" ENVOY_LISTEN_HOST=127.0.0.1 \
+  (isolated_exec "" HOME="$work/listener-$name-home" PORT="$bind_port" ENVOY_LISTEN_HOST=127.0.0.1 \
     ENVOY_MACHINE_ID="$name" NATS_URLS="$nats_url" -- "${serve[@]}") \
     >>"$work/logs/listener-$name.log" 2>&1 &
   pid[listener-$name]=$!
+  if ((listener_held == 0)); then
+    await "listener-$name" "$work/logs/listener-$name.log" 90 listening_port "${pid[listener-$name]}" own_port
+    held_front_argv front "$work/ports/keep-listener-$name.sock" "$own_port"
+    (isolated_exec "" -- setsid "${front[@]}") >>"$work/logs/front-listener-$name.log" 2>&1 &
+    pid[front-listener-$name]=$!
+  fi
   await "listener-$name" "$work/logs/listener-$name.log" 90 listener_ready "$name"
-  note "listener $name (pid ${pid[listener-$name]}) healthy at $(listener_url "$name")"
+  note "listener $name (pid ${pid[listener-$name]}) healthy at $(listener_url "$name")${own_port:+, through a held front to its own port $own_port}"
+}
+# kill_listener NAME: SIGKILLs listener NAME, and first the front that serves its kept port when it
+# takes no ENVOY_LISTEN_FD: a front left running would forward to the port the listener released,
+# which another program can bind before the restart.
+kill_listener() {
+  kill_label "front-listener-$1" KILL
+  kill_label "listener-$1" KILL
 }
 start_listener shared
 start_listener dispatch
 
-# proxy_ready PORT: a connection to PORT reads natsd's INFO line within 2 s, so the proxy there
-# accepts and forwards (a kept port with no proxy accepts the connection and sends nothing).
-proxy_ready() {
-  local word=""
-  (exec 3<>"/dev/tcp/127.0.0.1/$1" && read -r -t 2 -N 4 word <&3 && [[ "$word" == INFO ]]) 2>/dev/null
-}
-# start_proxy LABEL: socat forwarding to natsd from the socket the keeper keep-LABEL holds
-# (ACCEPT-FD; held-port.py names the descriptor PROXY_LISTEN_FD, which socat does not read), one
-# fork per connection, in a process group of its own (setsid and held-port.py exec in place), so
-# one SIGKILL to the group cuts every connection through it and the keeper keeps the port.
+# start_proxy LABEL: the held front (lib/held-front.sh) forwarding to natsd from the socket the
+# keeper keep-LABEL holds, one fork per connection, in a process group of its own (setsid, and
+# held-port.py exec in place), so one SIGKILL to the group cuts every connection through it and the
+# keeper keeps the port. It is ready once a connection through it reads natsd's INFO line within
+# 2 s (a kept port with no proxy accepts the connection and sends nothing).
 start_proxy() {
   local label=$1 group
-  (isolated_exec "" -- setsid python3 "$held_port" exec --from "$work/ports/keep-$label.sock" --fd-env PROXY_LISTEN_FD -- \
-    socat "ACCEPT-FD:3,fork" "TCP:127.0.0.1:${nats_port}") >>"$work/logs/$label.log" 2>&1 &
+  local -a front
+  held_front_argv front "$work/ports/keep-$label.sock" "$nats_port"
+  (isolated_exec "" -- setsid "${front[@]}") >>"$work/logs/$label.log" 2>&1 &
   pid[$label]=$!
-  await "$label" "$work/logs/$label.log" 10 proxy_ready "${proxy_port[$label]}"
+  await "$label" "$work/logs/$label.log" 10 held_front_answers "${proxy_port[$label]}" INFO
   read -r _ _ _ _ group _ <"/proc/${pid[$label]}/stat"
   [[ "$group" == "${pid[$label]}" ]] || fail "$label (pid ${pid[$label]}) is not in a process group of its own"
 }
@@ -1425,7 +1439,7 @@ run_window() {
     note "both proxies back"
     ;;
   c)
-    kill_label listener-shared KILL
+    kill_listener shared
     note "listener shared SIGKILLed"
     publish_dispatch c
     publish_rest c "$via"
@@ -1433,7 +1447,7 @@ run_window() {
     start_listener shared
     ;;
   d)
-    kill_label listener-dispatch KILL
+    kill_listener dispatch
     via=shared
     note "listener dispatch SIGKILLed; the listener sends go to shared"
     publish_dispatch d

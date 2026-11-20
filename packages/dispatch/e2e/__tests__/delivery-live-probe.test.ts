@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,7 @@ import {
   watch,
   whether,
 } from "./bounded-subprocess";
+import { noHookLimit, removeScratch } from "./step-end";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
 // replays the frames Dispatch's own diff writes (packages/contracts/fixtures/live): a
@@ -89,11 +90,16 @@ const servers: FakeDispatchServer<LiveClientFrame>[] = [];
 const kills: (() => void)[] = [];
 const scratchDirs: string[] = [];
 
-afterEach(() => {
-  for (const kill of kills.splice(0)) kill();
-  for (const server of servers.splice(0)) server.stop();
-  for (const dir of scratchDirs.splice(0)) rmSync(dir, { force: true, recursive: true });
-});
+afterEach(
+  async () => {
+    for (const kill of kills.splice(0)) kill();
+    for (const server of servers.splice(0)) server.stop();
+    await removeScratch(scratchDirs.splice(0), rowLimit("short"));
+  },
+  // Each row's scratch goes in a process of its own, which may take what the CI step leaves, or
+  // the limit of this file's shortest row, and the hook has no limit of Bun's: step-end.ts says why.
+  noHookLimit
+);
 
 function scratch(): string {
   const dir = mkdtempSync(join(tmpdir(), "delivery-live-probe-"));

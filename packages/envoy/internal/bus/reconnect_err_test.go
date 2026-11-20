@@ -40,7 +40,9 @@ func (c *reconnectErrClock) Advance(d time.Duration) {
 //
 // nats.go runs ReconnectErrCB only for an attempt whose dial failed, so the outage is made by
 // stopping the server and closing the gate its address belongs to: nothing listens there, and
-// every reconnect dial is refused rather than accepted and dropped.
+// every reconnect dial fails rather than being accepted and dropped. On Linux the closed gate
+// refuses it; on macOS the kernel drops it unanswered and the dial fails at its timeout
+// (testnats.StartGate).
 func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	unsetNkeyEnvironment(t)
 	seed, public := testnats.User(t)
@@ -146,7 +148,7 @@ func TestAFailedReconnectAttemptLogsOneWarnAMinute(t *testing.T) {
 	// fake clock, which never passes again. The outage is made the same way the first one was,
 	// and in the same order: the gate's address goes first, so no reconnect reaches a listening
 	// socket, and stopping the server then drops the live connection the gate's own close would
-	// have left joined, so the client's next dial is refused rather than accepted.
+	// have left joined, so the client's next dial fails rather than being accepted.
 	gate.Close()
 	srv.Stop(t)
 	awaitWarnings(12)

@@ -225,7 +225,9 @@ type Config struct {
 	// absolute http or https URL with a host: a value with no scheme or no host would boot and
 	// then fail every airlock run one command at a time. It is a setting of its own rather than
 	// BROKER_PUBLIC_URL with another port, because the Service port a pod dials need not be the
-	// container port the broker binds.
+	// container port the broker binds. Port 0 is a local run's alone (BROKER_FAKE_SECRETS_FILE
+	// set), as BROKER_PUBLIC_URL's is: the broker puts the port its proxy port bound in its place,
+	// and refuses a production start that names it.
 	AirlockProxyURL string
 	// BROKER_AIRLOCK_CA_CERT_FILE: the PEM certificate of the airlock proxy's certificate
 	// authority, the one every release hands the command to trust. Required with

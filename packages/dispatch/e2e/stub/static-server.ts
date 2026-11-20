@@ -1,5 +1,7 @@
 /** `bun e2e/stub/static-server.ts`: the one server the stubbed layer runs, which
- *  e2e/playwright.config.ts starts as the `stub` project's `webServer`.
+ *  e2e/stub/server.ts starts from `globalSetup` for a run that holds a stubbed row. It binds port 0
+ *  and prints the port the kernel gave it on its listening line, which is where the run reads its
+ *  origin from, so no port is chosen or tested before this server holds it.
  *
  *  It serves `packages/dispatch/web/dist` - the build under test, freshly built by the command
  *  that runs the suite - the way the Go router serves it (`packages/envoy/internal/dispatch/
@@ -19,9 +21,14 @@ import { existsSync, statSync } from "node:fs";
 import { basename, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { stubPort } from "./origin";
+import { stubListening } from "./origin";
 
-const dist = resolve(fileURLToPath(new URL("../../web/dist", import.meta.url)));
+/** The build it serves: `web/dist`, or the directory `DISPATCH_E2E_STUB_DIST` names, which
+ *  e2e/__tests__/stub-web-server.test.ts sets so that it starts this server with no build of its
+ *  own. */
+const dist = resolve(
+  process.env.DISPATCH_E2E_STUB_DIST || fileURLToPath(new URL("../../web/dist", import.meta.url))
+);
 
 /** The content types the built SPA holds. A file whose extension is none of these is answered as
  *  bytes. */
@@ -88,7 +95,7 @@ const recordedRoutes = /^\/(api|auth)(\/|$)/;
 
 const server = Bun.serve({
   hostname: "127.0.0.1",
-  port: stubPort(),
+  port: 0,
   fetch(request) {
     const path = new URL(request.url).pathname;
     if (recordedRoutes.test(path)) {
@@ -128,4 +135,13 @@ const server = Bun.serve({
   },
 });
 
-console.log(`dispatch stub static server: listening ${server.url} over ${dist}`);
+console.log(`${stubListening} ${server.url} over ${dist}`);
+
+// The run that started this server can end by a signal that runs no teardown - a SIGTERM to
+// Playwright's runner - and the server is the leader of a process group of its own, so nothing
+// would stop it then. It stops itself instead, once the process that started it is gone: the
+// exit closes its socket.
+const parent = process.ppid;
+setInterval(() => {
+  if (process.ppid !== parent) process.exit(0);
+}, 1000);

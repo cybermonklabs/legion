@@ -8,16 +8,28 @@ import { binaryB, harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
 import { harnessSignIn, oidcSignIn } from "./harness-signin";
 
-/** One process the harness starts and how it reports its port. */
-export interface HarnessListener {
-  /** Its entry in `harnessPorts` and `harnessVariables` (e2e/harness-ports.ts), whose variable,
-   *  set, is the port it binds; unset, the OS chooses and it reports. */
-  readonly key: HarnessListenerKey;
+/** A program that prints the port it serves on, on one line once it serves, which
+ *  e2e/harness-start.ts reads: every row of `harnessListeners` below, and the stubbed layer's
+ *  static file server (e2e/stub/server.ts), which serves a whole run rather than one stack. */
+export interface ReportingListener {
   /** What a message calls it. */
   readonly name: string;
   /** Its log file's name, without `.log`, when its output goes to a directory. */
   readonly id: string;
   readonly argv: readonly string[];
+  /** The line it prints once it serves, whose one group is the port it serves on. */
+  readonly report: RegExp;
+  /** A path that answers 200 once it is ready, when listening is not enough. */
+  readonly health?: string;
+  /** How long it may take to report and be ready. */
+  readonly bootMs: number;
+}
+
+/** One process the harness starts and how it reports its port. */
+export interface HarnessListener extends ReportingListener {
+  /** Its entry in `harnessPorts` and `harnessVariables` (e2e/harness-ports.ts), whose variable,
+   *  set, is the port it binds; unset, the OS chooses and it reports. */
+  readonly key: HarnessListenerKey;
   /** Variables this process gets on top of the harness's environment: in two-process mode, each
    *  Dispatch server's own inputs to run-server.sh, and the dev OIDC issuer's to
    *  run-signin-issuer.sh. */
@@ -29,12 +41,6 @@ export interface HarnessListener {
    *  variable, and hands the row the keeper's unix socket in `keeperEnv`; set, it hands the row
    *  that port in `portEnv`. */
   readonly heldAhead?: { readonly keeperEnv: string; readonly portEnv: string };
-  /** The line it prints once it serves, whose one group is the port it serves on. */
-  readonly report: RegExp;
-  /** A path that answers 200 once it is ready, when listening is not enough. */
-  readonly health?: string;
-  /** How long it may take to report and be ready. */
-  readonly bootMs: number;
   /** Whether a deployed run (`PLAYWRIGHT_BASE_URL`) starts it. */
   readonly deployed: boolean;
 }
@@ -44,6 +50,8 @@ const script = (name: string) => fileURLToPath(new URL(`./${name}`, import.meta.
 /** run-server.sh builds the server before it listens, and a cold `go build` on a busy machine is
  *  the long pole, so the server gets ten minutes. */
 const serverBootMs = 600_000;
+/** How long a bun listener of the harness may take to report: every fake and the proxies. The
+ *  stubbed layer's static file server has a bound of its own (e2e/stub/server.ts). */
 const listenerBootMs = 30_000;
 
 /** A run-server.sh row: the server's slog line, written with the address it serves on (a held

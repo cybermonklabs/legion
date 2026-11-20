@@ -16,8 +16,8 @@ const ServerReady = 90 * time.Second
 const ServiceReady = 30 * time.Second
 
 // EnvOptions is everything one Restate experiment needs before it can measure
-// anything: where to work, which binaries to run, and which loopback addresses the
-// server is to use.
+// anything: where to work, which binaries to run, and where a server somebody else runs
+// answers.
 type EnvOptions struct {
 	// Experiment is the number, used to name the work directory and the cluster node
 	// so two experiments never share a data directory.
@@ -29,7 +29,9 @@ type EnvOptions struct {
 	// the driver starts nothing and measures a server already running at Ingress and
 	// Admin.
 	ServerBinary string
-	// Ingress and Admin are the server's two loopback addresses.
+	// Ingress and Admin are the loopback HOST:PORT of a server somebody else runs,
+	// which the operator gives; a server the driver starts serves on unix sockets of
+	// its own, and these are not read.
 	Ingress string
 	Admin   string
 }
@@ -46,6 +48,10 @@ type Env struct {
 	// Admin and Ingress address that server.
 	Admin   *Admin
 	Ingress *Ingress
+	// AdminAddress and IngressAddress are where they answer: the server's unix sockets
+	// (`unix:<path>`) when the driver started it, else the given HOST:PORT.
+	AdminAddress   string
+	IngressAddress string
 	// Version is the server version the experiment measured, read from the admin API.
 	Version string
 	// Defaults are the server's own effective settings, read from the binary, and
@@ -59,27 +65,20 @@ type Env struct {
 // StartEnv prepares one experiment's Restate and returns it ready to use. The caller
 // must call Stop on every exit path.
 func StartEnv(ctx context.Context, opts EnvOptions) (*Env, error) {
-	if err := RequireLoopback("-restate-ingress", opts.Ingress); err != nil {
-		return nil, err
-	}
-	if err := RequireLoopback("-restate-admin", opts.Admin); err != nil {
-		return nil, err
-	}
 	dir := filepath.Join(opts.WorkDir, fmt.Sprintf("exp%d-restate", opts.Experiment))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dir, err)
 	}
-	env := &Env{
-		Dir:     dir,
-		Admin:   NewAdmin(opts.Admin),
-		Ingress: NewIngress(opts.Ingress),
-	}
+	env := &Env{Dir: dir, AdminAddress: opts.Admin, IngressAddress: opts.Ingress}
 
-	if opts.ServerBinary != "" {
-		fabric, err := FreePort()
-		if err != nil {
+	if opts.ServerBinary == "" {
+		if err := RequireLoopback("-restate-ingress", opts.Ingress); err != nil {
 			return nil, err
 		}
+		if err := RequireLoopback("-restate-admin", opts.Admin); err != nil {
+			return nil, err
+		}
+	} else {
 		defaults, err := ReadDefaults(ctx, opts.ServerBinary, dir)
 		if err != nil {
 			return nil, err
@@ -88,9 +87,6 @@ func StartEnv(ctx context.Context, opts EnvOptions) (*Env, error) {
 		server, err := StartServer(ctx, ServerOptions{
 			Binary:  opts.ServerBinary,
 			BaseDir: filepath.Join(dir, "server"),
-			Ingress: opts.Ingress,
-			Admin:   opts.Admin,
-			Fabric:  fabric,
 			// A node name that never changes for a data directory that is always
 			// new, so a second run cannot inherit the first one's cluster identity.
 			NodeName: fmt.Sprintf("exp%d", opts.Experiment),
@@ -103,7 +99,10 @@ func StartEnv(ctx context.Context, opts EnvOptions) (*Env, error) {
 		}
 		env.Server = server
 		env.StartedServer = true
+		env.AdminAddress, env.IngressAddress = server.AdminAddress(), server.IngressAddress()
 	}
+	env.Admin = NewAdmin(env.AdminAddress)
+	env.Ingress = NewIngress(env.IngressAddress)
 
 	version, err := env.Admin.Version(ctx)
 	if err != nil {

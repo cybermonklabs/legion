@@ -42,22 +42,39 @@ type Service struct {
 	updated chan struct{}
 }
 
-// StartService runs a service process and returns once its endpoint answers. Restate
-// calls the endpoint rather than the other way round, so a driver that registered a
-// deployment before the endpoint was up would have the server fail discovery; waiting
-// for the endpoint's own health check is what makes registration reliable.
-func StartService(ctx context.Context, name, binary string, args []string, workDir, address string, timeout time.Duration) (*Service, error) {
+// ServiceListenFD is the descriptor a service process serves on: the socket listening on
+// its endpoint's held port, which StartService hands over as the process's first extra
+// file and names with -listen-fd.
+const ServiceListenFD = 3
+
+// StartService runs a service process serving on endpoint and returns once its endpoint
+// answers. The process serves on a socket listening on the endpoint's held port, which
+// it inherits (ServiceListenFD); the driver closes its own copy once the process has
+// started, so the socket dies with the process and the port goes back to refusing
+// connections while the endpoint still holds it. Restate calls the endpoint rather than
+// the other way round, so a driver that registered a deployment before the endpoint was
+// up would have the server fail discovery; waiting for the endpoint's own health check
+// is what makes registration reliable.
+func StartService(ctx context.Context, name, binary string, args []string, workDir string, endpoint *Endpoint, timeout time.Duration) (*Service, error) {
+	socket, err := endpoint.listen()
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
 	readEnd, writeEnd, err := os.Pipe()
 	if err != nil {
+		socket.Close()
 		return nil, fmt.Errorf("%s: pipe: %w", name, err)
 	}
-	cmd := exec.Command(binary, args...)
+	cmd := exec.Command(binary, append(args, "-listen-fd", strconv.Itoa(ServiceListenFD))...)
 	cmd.Dir = workDir
 	cmd.Stdout = writeEnd
 	cmd.Stderr = writeEnd
+	cmd.ExtraFiles = []*os.File{socket}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	socket.Close()
+	if err != nil {
 		readEnd.Close()
 		writeEnd.Close()
 		return nil, fmt.Errorf("%s: start %s: %w", name, binary, err)
@@ -67,7 +84,7 @@ func StartService(ctx context.Context, name, binary string, args []string, workD
 
 	s := &Service{
 		name:    name,
-		address: address,
+		address: endpoint.Address(),
 		cmd:     cmd,
 		pid:     cmd.Process.Pid,
 		drained: make(chan struct{}),

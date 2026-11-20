@@ -23,15 +23,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// Loopback is the only host the Restate experiments bind or address. The server's
-// startup banner prints the host it advertises, so everything -- the node's own
-// advertised host included -- is pinned to the loopback address, and no address of the
+// Loopback is the only host the Restate experiments bind or address over TCP: the endpoints
+// of the service processes, and a server somebody else runs. A server the driver starts
+// serves on unix sockets alone (StartServer), so its startup banner and its node's own
+// advertised address name a path of the experiment's directory, and no address of the
 // machine the experiment runs on can reach the measured output.
 const Loopback = "127.0.0.1"
 
@@ -57,38 +57,16 @@ func RequireLoopback(flag, address string) error {
 	return nil
 }
 
-// FreePort is a TCP port nothing is listening on, for a service endpoint the driver
-// starts. The port is released before it is returned, so what this reports is a port
-// that was free a moment ago rather than one that is held.
-func FreePort() (int, error) {
-	listener, err := net.Listen("tcp", Loopback+":0")
-	if err != nil {
-		return 0, fmt.Errorf("find a free port: %w", err)
-	}
-	port := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		return 0, fmt.Errorf("release the free port %d: %w", port, err)
-	}
-	return port, nil
-}
-
-// Address is a loopback HOST:PORT for a port this process chose.
-func Address(port int) string {
-	return net.JoinHostPort(Loopback, strconv.Itoa(port))
-}
-
 // ServerOptions is one restate-server process the driver runs.
 type ServerOptions struct {
 	// Binary is the restate-server executable.
 	Binary string
 	// BaseDir is where the server keeps everything it writes. It is emptied before
 	// the server starts, so a second run of the same experiment starts from nothing.
+	// The server serves its admin API, its ingress and its node-to-node channel (the
+	// message fabric) on unix sockets under BaseDir/NodeName (AdminAddress,
+	// IngressAddress), and on no TCP port.
 	BaseDir string
-	// Ingress and Admin are the HOST:PORT the server binds its two user-facing APIs
-	// on, and Fabric the port of its internal node-to-node channel.
-	Ingress string
-	Admin   string
-	Fabric  int
 	// NodeName is the cluster node name, which the server requires to be stable
 	// across restarts of the same data directory.
 	NodeName string
@@ -107,15 +85,9 @@ type Server struct {
 
 // StartServer runs restate-server and returns once its admin API answers. Everything
 // the server prints goes to a log file under its base directory rather than to the
-// experiment's own output: the server's banner names the host it advertises, and the
-// measured lines must carry no address of this machine.
+// experiment's own output: the server's banner names the paths it serves on, and the
+// measured lines carry only what the experiment chooses to print.
 func StartServer(ctx context.Context, opts ServerOptions, timeout time.Duration) (*Server, error) {
-	if err := RequireLoopback("-restate-ingress", opts.Ingress); err != nil {
-		return nil, err
-	}
-	if err := RequireLoopback("-restate-admin", opts.Admin); err != nil {
-		return nil, err
-	}
 	if err := os.RemoveAll(opts.BaseDir); err != nil {
 		return nil, fmt.Errorf("clear the server's base directory %s: %w", opts.BaseDir, err)
 	}
@@ -130,13 +102,17 @@ func StartServer(ctx context.Context, opts ServerOptions, timeout time.Duration)
 	}
 	defer logFile.Close()
 
+	// --listen-mode unix: the server binds no TCP port at all, so there is no port for the
+	// driver to choose and the server to bind later, which another program could take in
+	// between. The node's own address for its message fabric is relative to the server's
+	// working directory, its base directory: the absolute path of an experiment's directory
+	// under a long TMPDIR exceeds the 108 bytes a unix socket address holds, and a node
+	// advertising that path cannot reach itself ("path must be shorter than SUN_LEN").
 	cmd := exec.Command(opts.Binary,
 		"--node-name", opts.NodeName,
 		"--no-logo",
-		"--bind-ip", Loopback,
-		"--bind-port", fmt.Sprint(opts.Fabric),
-		"--advertised-host", Loopback,
-		"--advertised-address", fmt.Sprintf("http://%s:%d/", Loopback, opts.Fabric),
+		"--listen-mode", "unix",
+		"--advertised-address", "unix:"+filepath.Join(opts.NodeName, "fabric.sock"),
 		"--default-num-partitions", fmt.Sprint(opts.Partitions),
 	)
 	cmd.Dir = opts.BaseDir
@@ -144,8 +120,6 @@ func StartServer(ctx context.Context, opts ServerOptions, timeout time.Duration)
 	cmd.Stderr = logFile
 	cmd.Env = append(os.Environ(),
 		"RESTATE_BASE_DIR="+opts.BaseDir,
-		"RESTATE_ADMIN__BIND_ADDRESS="+opts.Admin,
-		"RESTATE_INGRESS__BIND_ADDRESS="+opts.Ingress,
 		"RESTATE_DISABLE_TELEMETRY=true",
 	)
 	// Its own process group, so Stop takes the server down whatever it spawned.
@@ -162,10 +136,22 @@ func StartServer(ctx context.Context, opts ServerOptions, timeout time.Duration)
 	return server, nil
 }
 
-// waitReady blocks until the admin API answers and the ingress port accepts a
+// AdminAddress is where the server's admin API answers: its unix socket, as `unix:<path>`
+// (HTTPClient).
+func (s *Server) AdminAddress() string {
+	return unixScheme + filepath.Join(s.opts.BaseDir, s.opts.NodeName, "admin.sock")
+}
+
+// IngressAddress is where the server's ingress answers: its unix socket, as `unix:<path>`.
+func (s *Server) IngressAddress() string {
+	return unixScheme + filepath.Join(s.opts.BaseDir, s.opts.NodeName, "ingress.sock")
+}
+
+// waitReady blocks until the admin API answers and the ingress socket accepts a
 // connection, or until the server dies or the timeout passes.
 func (s *Server) waitReady(ctx context.Context, timeout time.Duration) error {
-	admin := NewAdmin(s.opts.Admin)
+	admin := NewAdmin(s.AdminAddress())
+	ingress := strings.TrimPrefix(s.IngressAddress(), unixScheme)
 	deadline := time.Now().Add(timeout)
 	var last error
 	for time.Now().Before(deadline) {
@@ -174,7 +160,7 @@ func (s *Server) waitReady(ctx context.Context, timeout time.Duration) error {
 		}
 		if _, err := admin.Version(ctx); err != nil {
 			last = err
-		} else if conn, err := net.DialTimeout("tcp", s.opts.Ingress, time.Second); err != nil {
+		} else if conn, err := dialUnix(ctx, ingress); err != nil {
 			last = err
 		} else {
 			conn.Close()
@@ -186,7 +172,7 @@ func (s *Server) waitReady(ctx context.Context, timeout time.Duration) error {
 		case <-time.After(pollInterval):
 		}
 	}
-	return fmt.Errorf("restate-server did not answer on %s within %s (%v); its log is %s", s.opts.Admin, timeout, last, s.logPath)
+	return fmt.Errorf("restate-server did not answer on %s within %s (%v); its log is %s", s.AdminAddress(), timeout, last, s.logPath)
 }
 
 // PID is the server process's id.

@@ -18,9 +18,11 @@
  *  (require_commands). LEGION_TEST_PG_DSN passes through to the driver where it is set, so the
  *  guard compares with the shared database in a pod.
  *
- *  Every row that runs the driver skips where psql is not on PATH: the driver requires it before
- *  its guard and the guard asks each server through it. The rows that need a server also skip
- *  where LEGION_TEST_PG_DSN names none, as in CI's `dispatch-ui` job; the two of them the guard
+ *  Every row that runs the driver needs psql on PATH: the driver requires it before its guard
+ *  and the guard asks each server through it. The rows that need a server also need
+ *  LEGION_TEST_PG_DSN to name one, which CI's `dispatch-ui` job names for its Postgres service.
+ *  A developer's run that lacks either skips those rows; a CI run never skips them, and fails
+ *  them naming what is missing (`e2e/__tests__/postgres-provider.ts`). The two rows the guard
  *  lets through run on a scratch database they make and drop on that server, as
  *  psql-session.test.ts does. The refusal rows that need none hold strings psql gets no answer
  *  through: a database named `mine`, which the pod's server does not hold, a port nothing listens
@@ -32,11 +34,16 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import { dropDatabase, sqlAt } from "../psql";
 import { masked, rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  missingForServer,
+  requireNothingMissing,
+  serverVariable,
+  skipsWithout,
+} from "./postgres-provider";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const driverPath = join(dispatchPackage, "e2e/acceptance/replace-blocks.sh");
@@ -44,38 +51,35 @@ const localInstancePath = join(dispatchPackage, "e2e/local-instance.ts");
 
 /** LEGION_TEST_PG_DSN as this run has it, quotes and all, which `drive` hands the driver
  *  unchanged, so the guard reads it through the driver's own strip of its quotes. */
-const exportedServer = process.env.LEGION_TEST_PG_DSN ?? "";
+const exportedServer = process.env[serverVariable] ?? "";
 /** The pod's shared test database, and the server the rows that need one make a database on. An
- *  issue pod names it, a developer names it, and CI's `dispatch-ui` job has no Postgres, so those
- *  rows skip there. It is LEGION_TEST_PG_DSN with one `"` or `'` taken off its start and one off
- *  its end, each whether or not the other was there. That is the same rule as the driver's own
+ *  issue pod names it, a developer names it, and CI's `dispatch-ui` job names its Postgres
+ *  service. It is LEGION_TEST_PG_DSN with one `"` or `'` taken off its start and one off its
+ *  end, each whether or not the other was there. That is the same rule as the driver's own
  *  strip of it, `${shared_dsn#[\"\']}` then `${shared_dsn%[\"\']}` in
  *  e2e/acceptance/replace-blocks.sh, before its guard reads it, so every row here reads the string
  *  the driver reads. */
 const server = exportedServer.replace(/^["']/, "").replace(/["']$/, "");
-/** Whether psql is missing from this host's PATH. The driver's DATABASE_URL branch requires it
- *  before its guard runs, so without it every row that runs the driver would see that refusal and
- *  not the guard's: they skip. */
-const withoutPsql = hostTool("psql") === null;
+/** What every row that runs the driver needs and this host does not have: psql on PATH. The
+ *  driver's DATABASE_URL branch requires it before its guard runs, so without it every such row
+ *  would see that refusal and not the guard's: a developer's run skips them, and CI, which never
+ *  skips them, fails them (`e2e/__tests__/postgres-provider.ts`). */
+const missingForDriver = missingForServer(undefined);
 /** Everything the rows that need a server need and this host or run does not have, in one list,
  *  so a host missing both reads one line naming both (psql-session.test.ts composes it the same
  *  way). */
 const missing = [
-  ...(withoutPsql ? ["psql on this host's PATH"] : []),
+  ...missingForDriver,
   ...(server === ""
     ? [
-        "LEGION_TEST_PG_DSN, naming the shared test database on a server this run may create a database on",
+        `${serverVariable}, naming the shared test database on a server this run may create a database on`,
       ]
     : []),
 ];
-const live = missing.length === 0;
-if (!live) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path} that ` +
-      `${withoutPsql ? "run the driver" : "need a database server"}. This run does not have: ` +
-      `${missing.join("; ")}. Supply what is missing and run the tests again.`
-  );
-}
+const file = "e2e/__tests__/replace-blocks-guard.test.ts";
+const skipsDriver = skipsWithout(file, missingForDriver);
+// Read only where the line above printed nothing, so a host missing psql reads one line.
+const skipsServer = skipsDriver || skipsWithout(file, missing);
 
 /** The first line of the hand-over message e2e/local-instance.ts prints once the instance is up,
  *  the message that holds DATABASE_URL whole. The fixture log below is built from it, and a row
@@ -283,9 +287,10 @@ for (const { label, shape, databaseUrl, secret } of [
     secret: "sekrit",
   },
 ]) {
-  test.skipIf(withoutPsql)(
+  test.skipIf(skipsDriver)(
     `a refusal writes no password to stderr: ${shape}`,
     async () => {
+      requireNothingMissing(missingForDriver);
       await expectRefusal(label, databaseUrl, unreadReason, [secret]);
     },
     // The driver, a bounded child under the short bound.
@@ -293,9 +298,10 @@ for (const { label, shape, databaseUrl, secret } of [
   );
 }
 
-test.skipIf(withoutPsql)(
+test.skipIf(skipsDriver)(
   "a refusal of a string no reader can parse names the reason and none of the string",
   async () => {
+    requireNothingMissing(missingForDriver);
     // A person who meant user:password and left the host out: libpq reads `qq` as the port,
     // refuses it as no integer, and connects nowhere, so the guard refuses what it could not read.
     const afterScheme = "zz-unparseable:qq";
@@ -305,9 +311,10 @@ test.skipIf(withoutPsql)(
   rowLimit("short")
 );
 
-test.skipIf(!live)(
+test.skipIf(skipsServer)(
   "a refusal writes no password to stderr: a password of letters, with a percent escape in its query that reaches the shared database",
   async () => {
+    requireNothingMissing(missing);
     const shared = sharedServer();
     const url = withPassword("sekrit", `?db%6Eame=${shared.database}`, shared.authority);
     await expectRefusal("shared-percent-escape", url, await sharedDatabaseRefusal(url), ["sekrit"]);
@@ -317,9 +324,10 @@ test.skipIf(!live)(
   rowLimit("short", "short")
 );
 
-test.skipIf(!live)(
+test.skipIf(skipsServer)(
   "a password that hides a dbname= keyword is refused for the shared database the server names",
   async () => {
+    requireNothingMissing(missing);
     // The reviewer's string: libpq reads everything before the `@` as the userinfo, so it
     // connects to the database in the path, the shared one, while a reader of the text finds
     // `dbname=mine` in what looks like a query.
@@ -339,9 +347,10 @@ test.skipIf(!live)(
   rowLimit("short", "short")
 );
 
-test.skipIf(!live)(
+test.skipIf(skipsServer)(
   "a scratch database on the shared server is let through to the start",
   async () => {
+    requireNothingMissing(missing);
     await withScratchDatabase(async (scratch) => {
       const run = await drive("scratch-let-through", scratch.url);
       const { code, stdout, started } = run;
@@ -404,9 +413,10 @@ test("the hand-over heading is the line the instance writes and the line the dri
   ).toContain(cut);
 });
 
-test.skipIf(!live)(
+test.skipIf(skipsServer)(
   "a start that fails prints the instance's log without the hand-over message",
   async () => {
+    requireNothingMissing(missing);
     await withScratchDatabase(async (scratch) => {
       const { log, handOver } = stoppedInstanceLog(scratch.url);
       // The control: the last ten lines of that log, as a plain tail reads them, hold the URL, so

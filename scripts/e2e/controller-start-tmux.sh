@@ -22,6 +22,16 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left would end every later start with that Postgres still there. This
+# run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e-controller.$$.XXXXXXXX")
 evidence=${CONTROLLER_START_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-controller-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
@@ -47,8 +57,14 @@ profile=legion-e2e-controller-$$-$(date +%s)
 project="CS$$$(date +%s)"
 project=${project:0:10}
 ptoken=${project,,}
-nats_container=legion-e2e-controller-nats-$$
-pg_container=legion-e2e-controller-pg-$$
+# The driver's pid, which refuse_leftovers (lib/leftovers.sh) judges a dead run's container by, and
+# random bytes after it, since a run in another PID namespace on one Docker daemon can share the
+# pid; the containers are removed by the ids their creates printed (start_container, lib/rig.sh).
+containers_tag=$$-$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+nats_container=legion-e2e-controller-nats-$containers_tag
+pg_container=legion-e2e-controller-pg-$containers_tag
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
+containers=()
 state=$work/state
 omp_home=$work/omp-home
 profile_agent=$omp_home/.omp/profiles/$profile/agent
@@ -63,8 +79,6 @@ pass() { echo "ok $check"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 
@@ -78,8 +92,8 @@ cleanup() {
   TMUX_TMPDIR=$work/tmux tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1
   stop_pid "$listener_pid"
   stop_pid "$daemon_keeper_pid"
-  stop_marked_processes "$work"
-  docker rm -f -v "$nats_container" "$pg_container" >/dev/null 2>&1
+  stop_marked_processes "$work" || true
+  remove_containers containers
   rm -rf "$work"
   [ -n "$ok" ] || echo "controller start e2e: FAIL (check $check)"
   echo "evidence: $evidence (transcript.log, logs/daemon.log, logs/listener.log, and checks/: each check's own output and the controller panes)"
@@ -159,17 +173,20 @@ note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race.
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+# Docker chooses each container's host port and binds it itself, trying the next port when one is
+# taken, so no port is free between its choice and its bind; the start fails only when ten ports
+# in a row are taken.
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+start_container containers "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
-  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
+  -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion
 dsn="postgres://legion:$(cat "$work/postgres-password")@127.0.0.1:${pg_port}/legion?sslmode=disable"
 
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker run -d --name "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+start_container containers "$nats_container" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js
 until_true 90 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | sed 's/.*://')"
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/envoy-token" &&

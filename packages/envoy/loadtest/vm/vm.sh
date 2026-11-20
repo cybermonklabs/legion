@@ -1541,7 +1541,7 @@ cmd_up() {
   if [ -n "${OPT[run]:-}" ]; then use_run; else new_run; fi
   local role vm bin
   bin=$(loadgen_bin)
-  [ -x "$bin" ] || die "up: no loadgen at $bin: build it (packages/envoy/loadtest/stack.sh setup) or name it with --loadgen"
+  [ -x "$bin" ] || die "up: no loadgen at $bin: build it (LOADTEST_PORT_BASE=<the first of nine free ports> packages/envoy/loadtest/stack.sh setup: the stack chooses no port of its own) or name it with --loadgen"
   # The way in, before anything is started: no ssh of this script authenticates until the run's
   # key is imported and the OS Login user read (oslogin_ready).
   oslogin_ready

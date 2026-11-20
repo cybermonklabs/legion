@@ -1,18 +1,62 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Server } from "bun";
+import { noHookLimit, removeScratch } from "../../../packages/dispatch/e2e/__tests__/step-end";
 import { fixtureSecret } from "../../../packages/test-fixtures/src/fixture-secret";
+import {
+  command,
+  type Row,
+  rowMs,
+  rowOf,
+  type Wait,
+} from "../../../packages/test-fixtures/src/row-waits";
+import { defaultTimeoutS } from "./dispatch-live-events";
 
 const probe = join(import.meta.dir, "dispatch-live-events.ts");
 const servers: Server<undefined>[] = [];
 const scratchDirectories: string[] = [];
 
-afterEach(() => {
+/** What the rows of this file wait for, each row its own list of them, which its limit is the sum
+ *  of (`rowMs` of `packages/test-fixtures/src/row-waits.ts`) and which `run` counts as the row
+ *  makes them (`rowOf`). The first is the probe, a process of its own, up to its watch. */
+const theProbe = command("the live event probe");
+
+/** The probe's watch of the feed, which ends at the first event that matches, or at its
+ *  `--timeout` of `seconds`. */
+function theWatch(seconds: number): Wait {
+  return { what: "the probe's watch, which its --timeout ends", ms: seconds * 1000 };
+}
+
+/** The probe's wait before it subscribes, its `--subscribe-after` of `seconds`. */
+function theDelay(seconds: number): Wait {
+  return { what: "the probe's wait before it subscribes (--subscribe-after)", ms: seconds * 1000 };
+}
+
+/** A row that runs the probe once with a `--timeout` of 5 s, of 2 s, of 0.1 s, or of none, which
+ *  is the probe's own default. */
+const watchFive = [theProbe, theWatch(5)];
+const watchTwo = [theProbe, theWatch(2)];
+const watchBriefly = [theProbe, theWatch(0.1)];
+const watchDefault = [theProbe, theWatch(defaultTimeoutS)];
+/** The row that runs the probe from whoami, which waits 0.2 s before it subscribes. */
+const fromWhoami = [theProbe, theDelay(0.2), theWatch(defaultTimeoutS)];
+/** The row that runs the probe three times, each refused, the third with a wait of 5 s. */
+const threeRefusals = [
+  ...watchDefault,
+  ...watchDefault,
+  theProbe,
+  theDelay(5),
+  theWatch(defaultTimeoutS),
+];
+
+// Each row's scratch goes in a process of its own, which may take what the CI step leaves, or the
+// limit of this file's shortest row, and the hook has no limit of Bun's (step-end.ts).
+afterEach(async () => {
   for (const server of servers.splice(0)) server.stop(true);
-  for (const directory of scratchDirectories.splice(0))
-    rmSync(directory, { force: true, recursive: true });
-});
+  await removeScratch(scratchDirectories.splice(0), rowMs(watchBriefly));
+}, noHookLimit);
 
 function scratch(): string {
   const directory = mkdtempSync(join(tmpdir(), "dispatch-live-events-"));
@@ -20,9 +64,24 @@ function scratch(): string {
   return directory;
 }
 
+/** The number of seconds `args` give `option`, or `otherwise` where they give none. */
+function secondsOf(args: readonly string[], option: string, otherwise: number): number {
+  const at = args.indexOf(option);
+  return at === -1 ? otherwise : Number(args[at + 1]);
+}
+
+/** Runs the probe with `args`, and counts against `row` what the row then waits for: the probe,
+ *  its wait before it subscribes where `args` give one, and its watch, up to the `--timeout` they
+ *  give or the probe's own. A probe that refuses `args` makes no watch, and its row counts one
+ *  all the same: one it failed to refuse watches until then, and fails the row by its answer. */
 async function run(
+  row: Row,
   ...args: string[]
 ): Promise<{ code: number; stderr: string; stdout: unknown[] }> {
+  row.charge(theProbe);
+  const delay = secondsOf(args, "--subscribe-after", 0);
+  if (delay > 0) row.charge(theDelay(delay));
+  row.charge(theWatch(secondsOf(args, "--timeout", defaultTimeoutS)));
   const child = Bun.spawn([process.execPath, probe, ...args], {
     stderr: "pipe",
     stdout: "pipe",
@@ -42,488 +101,533 @@ async function run(
   };
 }
 
-test("the live event probe resumes after rotation and stops once an event matches", async () => {
-  const upgrades: string[] = [];
-  const subscriptions: unknown[] = [];
-  let connections = 0;
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      upgrades.push(request.headers.get("x-dispatch-user") ?? "");
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket, raw) {
-        const frame = JSON.parse(String(raw));
-        subscriptions.push(frame);
-        connections += 1;
-        if (connections === 1) {
-          socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+test(
+  "the live event probe resumes after rotation and stops once an event matches",
+  async () => {
+    const upgrades: string[] = [];
+    const subscriptions: unknown[] = [];
+    let connections = 0;
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        upgrades.push(request.headers.get("x-dispatch-user") ?? "");
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket, raw) {
+          const frame = JSON.parse(String(raw));
+          subscriptions.push(frame);
+          connections += 1;
+          if (connections === 1) {
+            socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+            socket.send(
+              JSON.stringify({
+                event: { id: 6, type: "issue.updated" },
+                id: "6",
+                sub: "events",
+                type: "event",
+              })
+            );
+            socket.close(4001, "max age");
+            return;
+          }
+          socket.send(JSON.stringify({ since: "6", sub: "events", type: "events_start" }));
           socket.send(
             JSON.stringify({
-              event: { id: 6, type: "issue.updated" },
-              id: "6",
+              event: { id: 7, note: "needle", type: "issue.updated" },
+              id: "7",
               sub: "events",
               type: "event",
             })
           );
-          socket.close(4001, "max age");
-          return;
-        }
-        socket.send(JSON.stringify({ since: "6", sub: "events", type: "events_start" }));
-        socket.send(
-          JSON.stringify({
-            event: { id: 7, note: "needle", type: "issue.updated" },
-            id: "7",
-            sub: "events",
-            type: "event",
-          })
-        );
+        },
       },
-    },
-  });
-  servers.push(server);
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--user",
-    "alice@example.com",
-    "--until",
-    "needle",
-    "--timeout",
-    "5"
-  );
+    const result = await run(
+      rowOf(watchFive),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--user",
+      "alice@example.com",
+      "--until",
+      "needle",
+      "--timeout",
+      "5"
+    );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(upgrades).toEqual(["alice@example.com", "alice@example.com"]);
-  expect(subscriptions).toEqual([
-    { sub: "events", type: "subscribe", view: { kind: "events" } },
-    { resume: { since: "6" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-  ]);
-  expect(result.stdout).toEqual([
-    { event: { id: 6, type: "issue.updated" } },
-    { close: 4001, reason: "max age" },
-    { resubscribed: "6" },
-    { event: { id: 7, note: "needle", type: "issue.updated" } },
-  ]);
-});
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(upgrades).toEqual(["alice@example.com", "alice@example.com"]);
+    expect(subscriptions).toEqual([
+      { sub: "events", type: "subscribe", view: { kind: "events" } },
+      { resume: { since: "6" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+    ]);
+    expect(result.stdout).toEqual([
+      { event: { id: 6, type: "issue.updated" } },
+      { close: 4001, reason: "max age" },
+      { resubscribed: "6" },
+      { event: { id: 7, note: "needle", type: "issue.updated" } },
+    ]);
+  },
+  rowMs(watchFive)
+);
 
-test("the live event probe subscribes again from its cursor when Dispatch ends the feed", async () => {
-  const subscriptions: unknown[] = [];
-  let upgrades = 0;
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      upgrades += 1;
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket, raw) {
-        subscriptions.push(JSON.parse(String(raw)));
-        if (subscriptions.length === 1) {
-          socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+test(
+  "the live event probe subscribes again from its cursor when Dispatch ends the feed",
+  async () => {
+    const subscriptions: unknown[] = [];
+    let upgrades = 0;
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        upgrades += 1;
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket, raw) {
+          subscriptions.push(JSON.parse(String(raw)));
+          if (subscriptions.length === 1) {
+            socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+            socket.send(
+              JSON.stringify({
+                event: { id: 6, type: "issue.updated" },
+                id: "6",
+                sub: "events",
+                type: "event",
+              })
+            );
+            // The relay dropped the subscription: the socket stays open, silent for this feed.
+            socket.send(JSON.stringify({ reason: "behind", sub: "events", type: "ended" }));
+            return;
+          }
+          socket.send(JSON.stringify({ since: "6", sub: "events", type: "events_start" }));
           socket.send(
             JSON.stringify({
-              event: { id: 6, type: "issue.updated" },
-              id: "6",
+              event: { id: 7, note: "needle", type: "issue.updated" },
+              id: "7",
               sub: "events",
               type: "event",
             })
           );
-          // The relay dropped the subscription: the socket stays open, silent for this feed.
-          socket.send(JSON.stringify({ reason: "behind", sub: "events", type: "ended" }));
-          return;
-        }
-        socket.send(JSON.stringify({ since: "6", sub: "events", type: "events_start" }));
-        socket.send(
-          JSON.stringify({
-            event: { id: 7, note: "needle", type: "issue.updated" },
-            id: "7",
-            sub: "events",
-            type: "event",
-          })
-        );
+        },
       },
-    },
-  });
-  servers.push(server);
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--user",
-    "alice@example.com",
-    "--until",
-    "needle",
-    "--timeout",
-    "2"
-  );
+    const result = await run(
+      rowOf(watchTwo),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--user",
+      "alice@example.com",
+      "--until",
+      "needle",
+      "--timeout",
+      "2"
+    );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(upgrades).toBe(1);
-  expect(subscriptions).toEqual([
-    { sub: "events", type: "subscribe", view: { kind: "events" } },
-    { resume: { since: "6" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-  ]);
-  expect(result.stdout).toEqual([
-    { event: { id: 6, type: "issue.updated" } },
-    { ended: "behind", resubscribed: "6" },
-    { event: { id: 7, note: "needle", type: "issue.updated" } },
-  ]);
-});
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(upgrades).toBe(1);
+    expect(subscriptions).toEqual([
+      { sub: "events", type: "subscribe", view: { kind: "events" } },
+      { resume: { since: "6" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+    ]);
+    expect(result.stdout).toEqual([
+      { event: { id: 6, type: "issue.updated" } },
+      { ended: "behind", resubscribed: "6" },
+      { event: { id: 7, note: "needle", type: "issue.updated" } },
+    ]);
+  },
+  rowMs(watchTwo)
+);
 
 // A redial resumes after the cursor, so Dispatch replays nothing at or below it; a duplicate that
 // arrives anyway (an older frame on the socket, or a replay after a redial) is noted, not written as
 // an event, so the audits that count the event lines count it once, and no event moves the cursor
 // back.
-test("the live event probe writes a duplicate once and no event lowers its cursor", async () => {
-  const subscriptions: unknown[] = [];
-  const event = (id: number, extra: object = {}) =>
-    JSON.stringify({
-      event: { id, type: "issue.updated", ...extra },
-      id: String(id),
-      sub: "events",
-      type: "event",
-    });
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket, raw) {
-        subscriptions.push(JSON.parse(String(raw)));
-        if (subscriptions.length === 1) {
-          socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
-          socket.send(event(6));
-          socket.send(event(7));
-          // An older event after a newer one: written once, and the resume stays at 7.
-          socket.send(event(6));
-          socket.close(1012, "service restart");
-          return;
-        }
-        socket.send(JSON.stringify({ since: "7", sub: "events", type: "events_start" }));
-        // The redial's replay repeats the last event before the next.
-        socket.send(event(7));
-        socket.send(event(8, { note: "needle" }));
+test(
+  "the live event probe writes a duplicate once and no event lowers its cursor",
+  async () => {
+    const subscriptions: unknown[] = [];
+    const event = (id: number, extra: object = {}) =>
+      JSON.stringify({
+        event: { id, type: "issue.updated", ...extra },
+        id: String(id),
+        sub: "events",
+        type: "event",
+      });
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
       },
-    },
-  });
-  servers.push(server);
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket, raw) {
+          subscriptions.push(JSON.parse(String(raw)));
+          if (subscriptions.length === 1) {
+            socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+            socket.send(event(6));
+            socket.send(event(7));
+            // An older event after a newer one: written once, and the resume stays at 7.
+            socket.send(event(6));
+            socket.close(1012, "service restart");
+            return;
+          }
+          socket.send(JSON.stringify({ since: "7", sub: "events", type: "events_start" }));
+          // The redial's replay repeats the last event before the next.
+          socket.send(event(7));
+          socket.send(event(8, { note: "needle" }));
+        },
+      },
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--user",
-    "alice@example.com",
-    "--until",
-    "needle",
-    "--timeout",
-    "5"
-  );
+    const result = await run(
+      rowOf(watchFive),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--user",
+      "alice@example.com",
+      "--until",
+      "needle",
+      "--timeout",
+      "5"
+    );
 
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(subscriptions).toEqual([
-    { sub: "events", type: "subscribe", view: { kind: "events" } },
-    { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-  ]);
-  expect(result.stdout).toEqual([
-    { event: { id: 6, type: "issue.updated" } },
-    { event: { id: 7, type: "issue.updated" } },
-    { duplicate: "6" },
-    { close: 1012, reason: "service restart" },
-    { resubscribed: "7" },
-    { duplicate: "7" },
-    { event: { id: 8, note: "needle", type: "issue.updated" } },
-  ]);
-  // What the stage proofs' audits count: each event's line, once.
-  const counted = result.stdout.flatMap((line) =>
-    typeof line === "object" && line !== null && "event" in line ? [line.event] : []
-  );
-  expect(counted).toHaveLength(3);
-});
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(subscriptions).toEqual([
+      { sub: "events", type: "subscribe", view: { kind: "events" } },
+      { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+    ]);
+    expect(result.stdout).toEqual([
+      { event: { id: 6, type: "issue.updated" } },
+      { event: { id: 7, type: "issue.updated" } },
+      { duplicate: "6" },
+      { close: 1012, reason: "service restart" },
+      { resubscribed: "7" },
+      { duplicate: "7" },
+      { event: { id: 8, note: "needle", type: "issue.updated" } },
+    ]);
+    // What the stage proofs' audits count: each event's line, once.
+    const counted = result.stdout.flatMap((line) =>
+      typeof line === "object" && line !== null && "event" in line ? [line.event] : []
+    );
+    expect(counted).toHaveLength(3);
+  },
+  rowMs(watchFive)
+);
 
 // Dispatch starts a feed at what it was asked or below it, never above: below a `--since` past its
 // head (clamped to the head), and below the resume a redial asks once its event log was reset. The
 // probe takes the start as its cursor every time, so the events after it are written as events, not
 // as duplicates of ids the probe asked past.
-test("the live event probe takes every events_start as its cursor, below what it asked included", async () => {
-  const subscriptions: unknown[] = [];
-  const event = (id: number, extra: object = {}) =>
-    JSON.stringify({
-      event: { id, type: "issue.updated", ...extra },
-      id: String(id),
-      sub: "events",
-      type: "event",
+test(
+  "the live event probe takes every events_start as its cursor, below what it asked included",
+  async () => {
+    const subscriptions: unknown[] = [];
+    const event = (id: number, extra: object = {}) =>
+      JSON.stringify({
+        event: { id, type: "issue.updated", ...extra },
+        id: String(id),
+        sub: "events",
+        type: "event",
+      });
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket, raw) {
+          subscriptions.push(JSON.parse(String(raw)));
+          if (subscriptions.length === 1) {
+            // Asked to start after 100, past the head: the feed starts at the head, 5.
+            socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
+            socket.send(event(6));
+            socket.send(event(7));
+            socket.close(1012, "service restart");
+            return;
+          }
+          // The log was reset across the restart: the resume after 7 starts at the new head, 2.
+          socket.send(JSON.stringify({ since: "2", sub: "events", type: "events_start" }));
+          socket.send(event(3));
+          socket.send(event(3));
+          socket.send(event(4, { note: "needle" }));
+        },
+      },
     });
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket, raw) {
-        subscriptions.push(JSON.parse(String(raw)));
-        if (subscriptions.length === 1) {
-          // Asked to start after 100, past the head: the feed starts at the head, 5.
-          socket.send(JSON.stringify({ since: "5", sub: "events", type: "events_start" }));
-          socket.send(event(6));
-          socket.send(event(7));
-          socket.close(1012, "service restart");
-          return;
+    servers.push(server);
+
+    const result = await run(
+      rowOf(watchTwo),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--user",
+      "alice@example.com",
+      "--since",
+      "100",
+      "--until",
+      "needle",
+      "--timeout",
+      "2"
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(subscriptions).toEqual([
+      { resume: { since: "100" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+      { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+    ]);
+    expect(result.stdout).toEqual([
+      { event: { id: 6, type: "issue.updated" } },
+      { event: { id: 7, type: "issue.updated" } },
+      { close: 1012, reason: "service restart" },
+      { resubscribed: "7" },
+      { event: { id: 3, type: "issue.updated" } },
+      { duplicate: "3" },
+      { event: { id: 4, note: "needle", type: "issue.updated" } },
+    ]);
+  },
+  rowMs(watchTwo)
+);
+
+test(
+  "the live event probe prints Dispatch's refusal of the feed and exits 1",
+  async () => {
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket) {
+          socket.send(
+            JSON.stringify({
+              code: "STREAM_UNAVAILABLE",
+              message: "no feed",
+              sub: "events",
+              type: "error",
+            })
+          );
+        },
+      },
+    });
+    servers.push(server);
+
+    const result = await run(
+      rowOf(watchTwo),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--user",
+      "alice@example.com",
+      "--timeout",
+      "2"
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe(
+      "dispatch-live-events: Dispatch refused the events subscription: STREAM_UNAVAILABLE: no feed\n"
+    );
+    expect(result.stdout).toEqual([]);
+  },
+  rowMs(watchTwo)
+);
+
+test(
+  "the live event probe authenticates with a bearer file and exits at its timeout",
+  async () => {
+    const directory = scratch();
+    const bearerFile = join(directory, "bearer");
+    writeFileSync(bearerFile, "test-bearer\n", { mode: 0o600 });
+    const server = Bun.serve({
+      fetch(request, srv) {
+        if (new URL(request.url).pathname !== "/ws/live")
+          return new Response("not found", { status: 404 });
+        if (request.headers.get("authorization") !== "Bearer test-bearer") {
+          return new Response("forbidden", { status: 403 });
         }
-        // The log was reset across the restart: the resume after 7 starts at the new head, 2.
-        socket.send(JSON.stringify({ since: "2", sub: "events", type: "events_start" }));
-        socket.send(event(3));
-        socket.send(event(3));
-        socket.send(event(4, { note: "needle" }));
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
       },
-    },
-  });
-  servers.push(server);
-
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--user",
-    "alice@example.com",
-    "--since",
-    "100",
-    "--until",
-    "needle",
-    "--timeout",
-    "2"
-  );
-
-  expect(result.code).toBe(0);
-  expect(result.stderr).toBe("");
-  expect(subscriptions).toEqual([
-    { resume: { since: "100" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-    { resume: { since: "7" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-  ]);
-  expect(result.stdout).toEqual([
-    { event: { id: 6, type: "issue.updated" } },
-    { event: { id: 7, type: "issue.updated" } },
-    { close: 1012, reason: "service restart" },
-    { resubscribed: "7" },
-    { event: { id: 3, type: "issue.updated" } },
-    { duplicate: "3" },
-    { event: { id: 4, note: "needle", type: "issue.updated" } },
-  ]);
-});
-
-test("the live event probe prints Dispatch's refusal of the feed and exits 1", async () => {
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket) {
-        socket.send(
-          JSON.stringify({
-            code: "STREAM_UNAVAILABLE",
-            message: "no feed",
-            sub: "events",
-            type: "error",
-          })
-        );
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket) {
+          socket.send(JSON.stringify({ since: "0", sub: "events", type: "events_start" }));
+        },
       },
-    },
-  });
-  servers.push(server);
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--user",
-    "alice@example.com",
-    "--timeout",
-    "2"
-  );
+    const result = await run(
+      rowOf(watchBriefly),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--bearer-file",
+      bearerFile,
+      "--timeout",
+      "0.1"
+    );
 
-  expect(result.code).toBe(1);
-  expect(result.stderr).toBe(
-    "dispatch-live-events: Dispatch refused the events subscription: STREAM_UNAVAILABLE: no feed\n"
-  );
-  expect(result.stdout).toEqual([]);
-});
-
-test("the live event probe authenticates with a bearer file and exits at its timeout", async () => {
-  const directory = scratch();
-  const bearerFile = join(directory, "bearer");
-  writeFileSync(bearerFile, "test-bearer\n", { mode: 0o600 });
-  const server = Bun.serve({
-    fetch(request, srv) {
-      if (new URL(request.url).pathname !== "/ws/live")
-        return new Response("not found", { status: 404 });
-      if (request.headers.get("authorization") !== "Bearer test-bearer") {
-        return new Response("forbidden", { status: 403 });
-      }
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket) {
-        socket.send(JSON.stringify({ since: "0", sub: "events", type: "events_start" }));
-      },
-    },
-  });
-  servers.push(server);
-
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--bearer-file",
-    bearerFile,
-    "--timeout",
-    "0.1"
-  );
-
-  expect(result.code).toBe(1);
-  expect(result.stderr).toBe("");
-  expect(result.stdout).toEqual([]);
-});
+    expect(result.code).toBe(1);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toEqual([]);
+  },
+  rowMs(watchBriefly)
+);
 
 // INFRA-292's production check: the probe starts its feed where a page does, at whoami's
 // event_head, and a write committed after whoami answered and before the socket opened reaches it.
-test("--from-whoami resumes the feed from whoami's event_head under the cookie it was given", async () => {
-  const directory = scratch();
-  const cookieFile = join(directory, "cookie");
-  writeFileSync(cookieFile, "dispatch_session=signed-cookie\n", { mode: 0o600 });
-  const cookies: (string | null)[] = [];
-  const subscriptions: unknown[] = [];
-  const server = Bun.serve({
-    fetch(request, srv) {
-      const path = new URL(request.url).pathname;
-      cookies.push(request.headers.get("cookie"));
-      if (path === "/auth/whoami") {
-        return Response.json({ event_head: "41", kind: "user", login: "alice@example.test" });
-      }
-      if (path !== "/ws/live") return new Response("not found", { status: 404 });
-      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-    websocket: {
-      message(socket, raw) {
-        subscriptions.push(JSON.parse(String(raw)));
-        socket.send(JSON.stringify({ since: "41", sub: "events", type: "events_start" }));
-        socket.send(
-          JSON.stringify({
-            event: { id: 42, note: "committed while loading", type: "comment.created" },
-            id: "42",
-            sub: "events",
-            type: "event",
-          })
-        );
+test(
+  "--from-whoami resumes the feed from whoami's event_head under the cookie it was given",
+  async () => {
+    const directory = scratch();
+    const cookieFile = join(directory, "cookie");
+    writeFileSync(cookieFile, "dispatch_session=signed-cookie\n", { mode: 0o600 });
+    const cookies: (string | null)[] = [];
+    const subscriptions: unknown[] = [];
+    const server = Bun.serve({
+      fetch(request, srv) {
+        const path = new URL(request.url).pathname;
+        cookies.push(request.headers.get("cookie"));
+        if (path === "/auth/whoami") {
+          return Response.json({ event_head: "41", kind: "user", login: "alice@example.test" });
+        }
+        if (path !== "/ws/live") return new Response("not found", { status: 404 });
+        return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
       },
-    },
-  });
-  servers.push(server);
+      hostname: "127.0.0.1",
+      port: 0,
+      websocket: {
+        message(socket, raw) {
+          subscriptions.push(JSON.parse(String(raw)));
+          socket.send(JSON.stringify({ since: "41", sub: "events", type: "events_start" }));
+          socket.send(
+            JSON.stringify({
+              event: { id: 42, note: "committed while loading", type: "comment.created" },
+              id: "42",
+              sub: "events",
+              type: "event",
+            })
+          );
+        },
+      },
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--cookie-file",
-    cookieFile,
-    "--from-whoami",
-    "--subscribe-after",
-    "0.2",
-    "--until",
-    "committed while loading"
-  );
+    const result = await run(
+      rowOf(fromWhoami),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--cookie-file",
+      cookieFile,
+      "--from-whoami",
+      "--subscribe-after",
+      "0.2",
+      "--until",
+      "committed while loading"
+    );
 
-  expect(result.code).toBe(0);
-  expect(cookies).toEqual(["dispatch_session=signed-cookie", "dispatch_session=signed-cookie"]);
-  expect(subscriptions).toEqual([
-    { resume: { since: "41" }, sub: "events", type: "subscribe", view: { kind: "events" } },
-  ]);
-  expect(result.stdout).toEqual([
-    { whoami: { event_head: "41", login: "alice@example.test" } },
-    { subscribing_in: 0.2 },
-    { event: { id: 42, note: "committed while loading", type: "comment.created" } },
-  ]);
-});
+    expect(result.code).toBe(0);
+    expect(cookies).toEqual(["dispatch_session=signed-cookie", "dispatch_session=signed-cookie"]);
+    expect(subscriptions).toEqual([
+      { resume: { since: "41" }, sub: "events", type: "subscribe", view: { kind: "events" } },
+    ]);
+    expect(result.stdout).toEqual([
+      { whoami: { event_head: "41", login: "alice@example.test" } },
+      { subscribing_in: 0.2 },
+      { event: { id: 42, note: "committed while loading", type: "comment.created" } },
+    ]);
+  },
+  rowMs(fromWhoami)
+);
 
 // The coordinator's ruling on the review of 81d860a8f7: a whoami answer with no event_head is named
 // in one line with the credential the probe sent redacted, as the Dispatch client names a body
 // that is not Dispatch's own, never quoted whole: whatever answered can echo the cookie back.
-test("--from-whoami names a refusal that echoes the cookie in one line, the cookie redacted", async () => {
-  const directory = scratch();
-  const cookieFile = join(directory, "cookie");
-  const cookie = `dispatch_session=${fixtureSecret("cookie")}`;
-  writeFileSync(cookieFile, `${cookie}\n`, { mode: 0o600 });
-  const server = Bun.serve({
-    fetch(request) {
-      if (new URL(request.url).pathname !== "/auth/whoami") {
-        return new Response("not found", { status: 404 });
-      }
-      return Response.json(
-        {
-          error: "not signed in",
-          you_sent: request.headers.get("cookie"),
-          detail: "x".repeat(400),
-        },
-        { status: 401 }
-      );
-    },
-    hostname: "127.0.0.1",
-    port: 0,
-  });
-  servers.push(server);
+test(
+  "--from-whoami names a refusal that echoes the cookie in one line, the cookie redacted",
+  async () => {
+    const directory = scratch();
+    const cookieFile = join(directory, "cookie");
+    const cookie = `dispatch_session=${fixtureSecret("cookie")}`;
+    writeFileSync(cookieFile, `${cookie}\n`, { mode: 0o600 });
+    const server = Bun.serve({
+      fetch(request) {
+        if (new URL(request.url).pathname !== "/auth/whoami") {
+          return new Response("not found", { status: 404 });
+        }
+        return Response.json(
+          {
+            error: "not signed in",
+            you_sent: request.headers.get("cookie"),
+            detail: "x".repeat(400),
+          },
+          { status: 401 }
+        );
+      },
+      hostname: "127.0.0.1",
+      port: 0,
+    });
+    servers.push(server);
 
-  const result = await run(
-    "--url",
-    `http://127.0.0.1:${server.port}`,
-    "--cookie-file",
-    cookieFile,
-    "--from-whoami"
-  );
+    const result = await run(
+      rowOf(watchDefault),
+      "--url",
+      `http://127.0.0.1:${server.port}`,
+      "--cookie-file",
+      cookieFile,
+      "--from-whoami"
+    );
 
-  expect(result.code).toBe(1);
-  expect(result.stderr).toStartWith(
-    "dispatch-live-events: GET /auth/whoami answered 401 with a body that is not a sign-in answer " +
-      'naming its event_head ("{\\"error\\":\\"not signed in\\",\\"you_sent\\":\\"[redacted]\\"'
-  );
-  expect(result.stderr).not.toContain(cookie.slice("dispatch_session=".length));
-  expect(result.stderr).not.toContain("dispatch_session=");
-  expect(result.stderr.trimEnd()).not.toContain("\n");
-  expect(result.stderr.length).toBeLessThan(400);
-  expect(result.stdout).toEqual([]);
-});
+    expect(result.code).toBe(1);
+    expect(result.stderr).toStartWith(
+      "dispatch-live-events: GET /auth/whoami answered 401 with a body that is not a sign-in answer " +
+        'naming its event_head ("{\\"error\\":\\"not signed in\\",\\"you_sent\\":\\"[redacted]\\"'
+    );
+    expect(result.stderr).not.toContain(cookie.slice("dispatch_session=".length));
+    expect(result.stderr).not.toContain("dispatch_session=");
+    expect(result.stderr.trimEnd()).not.toContain("\n");
+    expect(result.stderr.length).toBeLessThan(400);
+    expect(result.stdout).toEqual([]);
+  },
+  rowMs(watchDefault)
+);
 
-test("--from-whoami signs in as a person and reads its own start", async () => {
-  const directory = scratch();
-  const bearerFile = join(directory, "bearer");
-  writeFileSync(bearerFile, "test-bearer\n", { mode: 0o600 });
-  for (const [args, refusal] of [
-    [["--bearer-file", bearerFile, "--from-whoami"], "give --cookie-file or --user"],
-    [["--user", "alice", "--from-whoami", "--since", "4"], "it takes no --since"],
-    [["--user", "alice", "--subscribe-after", "5"], "it needs --from-whoami"],
-  ] as const) {
-    const result = await run("--url", "http://127.0.0.1:1", ...args);
-    expect(result.code).toBe(2);
-    expect(result.stderr).toContain(refusal);
-  }
-});
+test(
+  "--from-whoami signs in as a person and reads its own start",
+  async () => {
+    const row = rowOf(threeRefusals);
+    const directory = scratch();
+    const bearerFile = join(directory, "bearer");
+    writeFileSync(bearerFile, "test-bearer\n", { mode: 0o600 });
+    for (const [args, refusal] of [
+      [["--bearer-file", bearerFile, "--from-whoami"], "give --cookie-file or --user"],
+      [["--user", "alice", "--from-whoami", "--since", "4"], "it takes no --since"],
+      [["--user", "alice", "--subscribe-after", "5"], "it needs --from-whoami"],
+    ] as const) {
+      const result = await run(row, "--url", "http://127.0.0.1:1", ...args);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toContain(refusal);
+    }
+  },
+  rowMs(threeRefusals)
+);

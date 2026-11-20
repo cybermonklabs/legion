@@ -89,8 +89,8 @@
 # bash — is not bash or sh (a body under python, pwsh, node or cmd is a program this check cannot
 # read), or when a word in command position of its `run:` is one of DEPENDENCY_COMMANDS, is `npm`
 # with any subcommand but those on NPM_ALLOWED (view, and publish of a `.tgz` named right after
-# it), is `docker` with one of DOCKER_DEPENDENCY (build, run, compose, exec) or a long form on
-# DOCKER_DEPENDENCY_LONG (`docker container run`, `docker image build`, `docker buildx build`, …),
+# it), is `docker` with one of DOCKER_DEPENDENCY (build, run, start, compose, exec) or a long form
+# on DOCKER_DEPENDENCY_LONG (`docker container run`, `docker image build`, `docker buildx build`, …),
 # past docker's global options (`--config /tmp/c`, `-H tcp://x`, `-D`), is a path with a
 # `scripts/` or `out/` component (`./scripts/x`, `../../scripts/x`, `out/x`,
 # `"$GITHUB_WORKSPACE/out/x"`), other than one of the two repository shell scripts
@@ -229,14 +229,15 @@ DEPENDENCY_COMMANDS = {
 NPM_ALLOWED = {"view", "publish"}
 NO_TARBALL = "without a tarball right after it (the tarball must be the word after `publish`; a directory publish runs the package's prepack)"
 # docker runs a container's code under these, and under the long forms of the same on
-# DOCKER_DEPENDENCY_LONG; `docker login`, `docker buildx imagetools`, `docker image ls` and
+# DOCKER_DEPENDENCY_LONG; `docker create` makes a container and runs none of its code until a
+# `docker start`; `docker login`, `docker buildx imagetools`, `docker image ls` and
 # `docker container ls` move only credentials, manifests and listings. The subcommand is the first
 # word past docker's global options: every leading `-` word, and the value after one on
 # DOCKER_GLOBAL_VALUES (`--config /tmp/c`, `-H tcp://x`; `--config=/tmp/c` is one word already).
-DOCKER_DEPENDENCY = {"build", "run", "compose", "exec"}
+DOCKER_DEPENDENCY = {"build", "run", "start", "compose", "exec"}
 DOCKER_DEPENDENCY_LONG = {
-    ("container", "run"), ("container", "exec"), ("image", "build"), ("buildx", "build"),
-    ("buildx", "bake"),
+    ("container", "run"), ("container", "start"), ("container", "exec"), ("image", "build"),
+    ("buildx", "build"), ("buildx", "bake"),
 }
 DOCKER_GLOBAL_VALUES = {
     "--config", "-c", "--context", "-H", "--host", "-l", "--log-level", "--tlscacert",

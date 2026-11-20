@@ -7,8 +7,6 @@
 //   bun scripts/e2e/lib/dispatch-session-settings.ts run <rig.json>
 //     the checks; rig.json is the setup the shell script wrote (no secret is in it: the provider
 //     keys reach each Oh My Pi from this process's environment, and nothing else)
-//   bun scripts/e2e/lib/dispatch-session-settings.ts free-port
-//     prints a loopback TCP port nothing listens on
 //
 // What the page shows is never its own oracle. The session's model is RPC `get_state`'s; the
 // models it lists are `get_available_models`'; its thinking level and the levels it offers are the
@@ -1225,19 +1223,10 @@ async function run(rigFile: string): Promise<void> {
   }
 }
 
-// ---- a port ----------------------------------------------------------------------------------
-
-function freePort(): void {
-  const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-  process.stdout.write(`${server.port}\n`);
-  server.stop(true);
-}
-
 if (command === "run") {
   if (args[0] === undefined) refuse("usage: run <rig.json>");
   await run(args[0]);
   // A request's or a stop's deadline timer would otherwise hold the process for minutes after the
   // last check.
   process.exit(process.exitCode ?? 0);
-} else if (command === "free-port") freePort();
-else refuse(`unknown command ${command ?? "(none)"}: run or free-port`);
+} else refuse(`unknown command ${command ?? "(none)"}: run`);

@@ -190,8 +190,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-alone-jobs-measured-steps-and-its-budget
-    # 180 + 120 + 120 + 442 = 862 s, 14 min 22 s, rounded up to the 15 minutes below.
-    timeout-minutes: 15
+    # 180 + 120 + 120 + 120 + 442 = 982 s, 16 min 22 s, rounded up to the 17 minutes below.
+    timeout-minutes: 17
     strategy:
       fail-fast: false
       matrix:
@@ -242,6 +242,17 @@ jobs:
       # why: .github/ci-notes/dispatch-browser.md#what-the-alone-jobs-postgresql-reading-records
       - name: Read the lanes' PostgreSQL and time its provider
         run: .github/scripts/dispatch-browser-postgres.sh 1
+      # why: .github/ci-notes/dispatch-browser.md#why-the-alone-jobs-chromium-alone-leg-tests-the-postgres-binaries-provider
+      - name: Test the stacks' Postgres binaries provider
+        if: matrix.project == 'chromium-alone'
+        timeout-minutes: 2
+        run: |
+          export LEGION_TEST_STEP_ENDS_AT=$(( $(date -u +%s) + 2 * 60 ))
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
+          bun test -t '^binaries provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
+        working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # why: .github/ci-notes/dispatch-browser.md#why-the-alone-job-runs-one-stack-and-no-file-store-and-what-its-browser-steps-budget-is
         # 141 x 1.15 = 162 s -> 3 min.
@@ -278,8 +289,8 @@ jobs:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/dispatch-browser.md#the-two-process-jobs-measured-steps-and-its-budgets
-    # 4 + 4 + 2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min.
-    timeout-minutes: 17
+    # 4 + 4 + 2 + 2 + 2 min plus 135 s and 120 s = 18 min 15 s -> 19 min.
+    timeout-minutes: 19
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -343,6 +354,15 @@ jobs:
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
+        working-directory: packages/dispatch
+      # why: .github/ci-notes/dispatch-browser.md#why-the-multiprocess-job-tests-a-second-globalsetup-in-one-process
+      - name: Test a second globalSetup in one process
+        timeout-minutes: 2
+        run: |
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun test e2e/__tests__/second-global-setup.test.ts
         working-directory: packages/dispatch
       # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-jobs-upload-runs-on-failure-alone
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -419,11 +439,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-visual-review-its-docker-run-and-its-budgets
-  # 240 + 333 + 120 = 693 s -> 12 min; 12 + 4 = 16 min with the reverse-order step.
+  # 240 + 120 + 120 + 333 = 813 s -> 14 min; 14 + 4 = 18 min with the reverse-order step.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 16
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -469,6 +489,17 @@ jobs:
           [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
           echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
+      # why: .github/ci-notes/dispatch-browser.md#why-the-visual-job-tests-the-postgres-image-provider
+      - name: Test the stacks' Postgres image provider
+        timeout-minutes: 2
+        run: |
+          export LEGION_TEST_STEP_ENDS_AT=$(( $(date -u +%s) + 2 * 60 ))
+          export TMPDIR="$RUNNER_TEMP"
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts e2e/__tests__/harness-postgres-image-ready.test.ts e2e/__tests__/harness-postgres-image-stall.test.ts
+          bun test -t '^image provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
+        working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines
         id: visual-normal
         # 183 x 1.15 = 211 s -> 4 min.

@@ -88,11 +88,10 @@ refresh from the authoritative one, in that order.
   requires the script's **own** child — `kill -0` on its pid, then its own log's ready line, then
   the greeting. The port is not pre-checked: the bind is the check, it cannot be raced, and its
   failure names the port in the server's own words.
-- A `StartGate` that stopped reading `/proc/sys/net/ipv4/ip_local_port_range` would have passed
-  every committed test. The test now reads that file itself and checks 20 gate ports against it —
-  with no injection seam, because a seam is a different object from the behaviour. Its limit is
-  recorded: on a machine whose ephemeral range begins at the rig's fallback, the mutation passes,
-  and only a runner with a different range catches it.
+- A `StartGate` whose closed gate gave its port up would have passed every committed test. The
+  gate now holds its port, and its test asks the kernel itself: a second process binds the closed
+  gate's address and must get `EADDRINUSE`, with no injection seam. A copy of the gate with its
+  hold released, built through `go test -overlay`, fails that test.
 - A guard test whose comment and **name** asserted a universal the code did not check was renamed
   along with its comment. The rename was proven by running the **old** name and requiring zero
   tests: `go test -run TestNoPackageOutsideTestnatsNeedsAContainerRuntime` prints `ok` for a test

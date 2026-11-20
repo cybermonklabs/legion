@@ -410,25 +410,33 @@ kube_for() {
 # kube_read ARGS: kube ARGS for a call that only reads (an exec that reads a file, a psql query,
 # a nats-box listing), retried once TRANSIENT_RETRY_SECONDS later when it fails with a
 # TRANSIENT_RE line on its standard error, saying so. Its standard output and error are those of
-# the last try (held in files until then, so a failed try leaves nothing on them); its exit
-# status is the last try's. Never for a write: a write's failure is never retried.
+# the last try, in that order (held until then, so a failed try leaves nothing on them); its exit
+# status is the last try's. Never for a write: a write's failure is never retried. No file holds
+# either stream: both come over one pipe, kubectl's standard error as it writes it, then a NUL, its
+# standard output with an x after it (which keeps its trailing newlines), a NUL and its status. A
+# file made for them stays behind when the read is killed, and a kill no trap can take is one a
+# caller inside a watcher gets (pg_disk_watch_stop's SIGKILL at its bound). What the reads read is
+# text, which holds no NUL.
 kube_read() {
-  local out err rc try
-  out=$(mktemp "${TMPDIR:-/tmp}/cluster-read.XXXXXX") || return 1
-  err=$(mktemp "${TMPDIR:-/tmp}/cluster-read.XXXXXX") || {
-    rm -f -- "$out"
-    return 1
-  }
+  local out err rc try line transient
   for try in 1 2; do
-    rc=0
-    kube "$@" >"$out" 2>"$err" || rc=$?
-    if ((rc == 0 || try == 2)) || ! grep -qE -- "$TRANSIENT_RE" "$err"; then break; fi
-    note "kubectl $1 failed on a transient API server error ($(grep -m1 -E -- "$TRANSIENT_RE" "$err")); retrying once in $TRANSIENT_RETRY_SECONDS s"
+    {
+      IFS= read -r -d '' err
+      IFS= read -r -d '' out
+      IFS= read -r -d '' rc
+    } < <({ printf '\0%s\0%s\0' "$(kube "$@" 2>&3 3>&-; s=$?; printf x; exit "$s")" "$?"; } 3>&1)
+    out=${out%x}
+    ((rc == 0 || try == 2)) && break
+    transient=
+    while IFS= read -r line; do
+      if [[ $line =~ $TRANSIENT_RE ]]; then transient=$line && break; fi
+    done < <(printf '%s\n' "$err")
+    [ -n "$transient" ] || break
+    note "kubectl $1 failed on a transient API server error ($transient); retrying once in $TRANSIENT_RETRY_SECONDS s"
     sleep "$TRANSIENT_RETRY_SECONDS"
   done
-  cat -- "$out"
-  cat -- "$err" >&2
-  rm -f -- "$out" "$err"
+  printf '%s' "$out"
+  printf '%s' "$err" >&2
   return "$rc"
 }
 
@@ -901,6 +909,20 @@ kube_lock_get() {
   kube get configmap "$LOCK" --ignore-not-found -o json || die "kubectl could not read ConfigMap $LOCK in $NS"
 }
 
+# lock_read: one read of the lock. A read that answered prints the lock (kube_lock_get's standard
+# output) and returns 0; a read that failed prints the words of its own failure in its place --
+# kubectl's standard error and kube_lock_get's die -- and returns that read's status. The two
+# streams are held apart by two command substitutions, the inner one keeping the lock until the
+# read is over and then giving it out on 3, this function's standard output, and no file holds
+# either: a file made for the words stays behind when the read is killed, and a kill no trap can
+# take is one a guarded caller gets (pg_disk_watch_stop's SIGKILL at its bound).
+lock_read() {
+  local words rc=0
+  words=$({ got=$(kube_lock_get 3>&-) || exit; printf '%s\n' "$got" >&3; } 2>&1) || rc=$?
+  ((rc == 0)) || printf '%s\n' "$words"
+  return "$rc"
+} 3>&1
+
 # copy_is_ours WHAT: the lock still names this run, so WHAT -- a pod, a deployment, a runner job
 # or a file of the copy, each of which carries the same fixed name in every run -- is this run's
 # to stop, kill or remove. It reads the lock itself, LOCK_READ_TRIES tries
@@ -923,16 +945,12 @@ kube_lock_get() {
 # and says whether kubectl delivered it, so no second read can fail where the first answered
 # and leave the job running.
 copy_is_ours() {
-  local lock try rc err ans=2 errs
-  # kubectl's own words for a read that failed, kept through a file: one command substitution
-  # gives back the lock or that text, never both. /dev/null when this pod has nowhere to write,
-  # and then the note below has no words to carry.
-  errs=$(mktemp "${TMPDIR:-/tmp}/lock-read.XXXXXX" 2>/dev/null) || errs=/dev/null
+  local lock try rc err="" ans=2
   for ((try = 1; try <= LOCK_READ_TRIES; try++)); do
     rc=0
-    # kube_lock_get dies in this command substitution's subshell alone, so a failed read is this
-    # loop's to answer for, and each try leaves its standard error in errs for the note.
-    lock=$(kube_lock_get 2>"$errs") || rc=$?
+    # kube_lock_get dies in lock_read's command substitution alone, so a failed read is this
+    # loop's to answer for, and each failed try gives back its own words for the note.
+    lock=$(lock_read) || rc=$?
     if ((rc == 0)); then
       ans=0
       if [ -n "$lock" ] && [ "$(jq -r '.data.run // ""' <<<"$lock")" != "$RUN" ]; then
@@ -941,14 +959,13 @@ copy_is_ours() {
       fi
       break
     fi
+    err=$lock
     ((try == LOCK_READ_TRIES)) || sleep "$LOCK_READ_RETRY_SECONDS"
   done
   if ((ans == 2)); then
-    err=$(<"$errs")
     err=${err//$'\n'/ }
     note "could not read the lock $LOCK in $NS after $LOCK_READ_TRIES tries (the last one said: ${err:-nothing}), so whether $1 is still this run's is not known; this run stops and removes nothing"
   fi
-  [ "$errs" = /dev/null ] || rm -f -- "$errs"
   return "$ans"
 }
 

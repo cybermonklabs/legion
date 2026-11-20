@@ -47,11 +47,11 @@ func airlockProxyAddr(t *testing.T, broker *brokerProcess) string {
 	return addr
 }
 
-// airlockOf is the airlock half of a grant's release: the password every connection to the proxy
-// opens with, and each name's slots, which hold the placeholders the command puts in its
-// requests. A grant whose one name is behind the airlock gets no value at all, so this is all
-// the session has.
-func airlockOf(b podBroker, p pod, grantID string) (password string, slots map[string]string) {
+// airlockOf is the airlock half of a grant's release: the URL of the proxy, the password every
+// connection to it opens with, and each name's slots, which hold the placeholders the command puts
+// in its requests. A grant whose one name is behind the airlock gets no value at all, so this is
+// all the session has.
+func airlockOf(b podBroker, p pod, grantID string) (proxyURL, password string, slots map[string]string) {
 	b.t.Helper()
 	status, answer := b.signed(p, "/v1/grants/"+grantID+"/values", nil)
 	if status != http.StatusOK {
@@ -59,6 +59,7 @@ func airlockOf(b podBroker, p pod, grantID string) (password string, slots map[s
 	}
 	var release struct {
 		Airlock *struct {
+			ProxyURL      string `json:"proxy_url"`
 			ProxyPassword string `json:"proxy_password"`
 			Names         map[string]struct {
 				Slots map[string]string `json:"slots"`
@@ -72,7 +73,7 @@ func airlockOf(b podBroker, p pod, grantID string) (password string, slots map[s
 	for _, held := range release.Airlock.Names {
 		slots = held.Slots
 	}
-	return release.Airlock.ProxyPassword, slots
+	return release.Airlock.ProxyURL, release.Airlock.ProxyPassword, slots
 }
 
 // TestARereadOfASecretReachesTheAirlocksProxy: a new version of a stored value moves neither the
@@ -115,7 +116,8 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,
 		"BROKER_SERVICES=" + service + "=" + podAccount,
-		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:13381",
+		// Port 0, as a local stack gives it: the release names the port the proxy bound.
+		"BROKER_AIRLOCK_PROXY_URL=http://127.0.0.1:0",
 		"BROKER_AIRLOCK_CA_CERT_FILE=" + certFile,
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
@@ -134,10 +136,15 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
 	}
 	grantID := *granted.GrantID
-	password, slots := airlockOf(api, p, grantID)
+	releasedProxy, password, slots := airlockOf(api, p, grantID)
 	placeholder := slots[requests.SlotValue]
 	if password == "" || placeholder == "" {
 		t.Fatalf("the release carries no proxy password or no value placeholder: %q, %v", password, slots)
+	}
+	// BROKER_AIRLOCK_PROXY_URL named port 0, so the URL the release carries is the address the
+	// broker's proxy port bound, which its listening line names.
+	if releasedProxy != "http://"+proxyAddr {
+		t.Fatalf("the release's proxy_url = %q, want http://%s, the address the proxy bound", releasedProxy, proxyAddr)
 	}
 
 	// A command's own client: the proxy as its HTTPS_PROXY, the broker's airlock authority as

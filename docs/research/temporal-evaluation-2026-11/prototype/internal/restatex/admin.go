@@ -19,12 +19,11 @@ type Admin struct {
 	client *http.Client
 }
 
-// NewAdmin addresses the admin API at a loopback HOST:PORT.
+// NewAdmin addresses the admin API at address: the unix socket of a server the driver
+// started (`unix:<path>`), or the loopback HOST:PORT of one somebody else runs.
 func NewAdmin(address string) *Admin {
-	return &Admin{
-		base:   "http://" + address,
-		client: &http.Client{Timeout: 30 * time.Second},
-	}
+	client, base := HTTPClient(address, 30*time.Second)
+	return &Admin{base: base, client: client}
 }
 
 // Version is the server's version, which is also the cheapest proof that the admin API

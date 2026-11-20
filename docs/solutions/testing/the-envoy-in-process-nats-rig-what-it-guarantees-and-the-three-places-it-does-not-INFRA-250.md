@@ -79,9 +79,10 @@ modules, or when porting this rig to the daemon.
   `natslive` matrix lane. Since the modules share a `go.work`, another module's requirement can
   raise it; production code already depends on version-specific server behaviour, so read what moved
   before assuming a bump is inert.
-- **`Gate`'s port is free while the gate is closed**, by design — that is what makes nats.go run
-  `ReconnectErrCB`. `gatePorts` takes the 1000 ports below the machine's ephemeral low bound, read
-  from `/proc/sys/net/ipv4/ip_local_port_range`, so an arbitrary `:0` bind will not land there. Two
-  test binaries running concurrently share that band, so a long closed window in one can be taken by
-  a gate in the other: keep closed windows short. The failure is loud (a `Fatal` from `Open`, or a
-  reconnect-callback timeout), never a false pass.
+- **Nothing listens at `Gate`'s address while the gate is closed**, by design — that is what makes
+  nats.go run `ReconnectErrCB`. The gate still holds its port: a socket bound with `SO_REUSEPORT`
+  and no `SO_REUSEADDR` that never listens, from `StartGate` to the test's end, beside which the
+  open gate listens on a second `SO_REUSEPORT` socket. While the gate is closed, a bind without
+  `SO_REUSEPORT` fails and no `:0` bind is handed the port. A dial of a closed gate is refused at
+  once on Linux; Darwin drops it unanswered, so there it fails at the client's dial timeout. A
+  program of the same user that sets `SO_REUSEPORT` too can still bind the port.

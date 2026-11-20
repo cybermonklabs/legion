@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The clustered-hub live tests (`infra/gcp`, build tag `natslive`) no longer draw loopback ports, release them and start nats-server, the exporter and the listener on those numbers, retrying `address already in use` up to ten times. Each nats-server binds its client, monitoring and route ports as the kernel chooses them (`-1`), and every client, peer and exporter reaches it through a held front (`testnats.StartFront`) that keeps its address across the test's restarts; the listener serves on a held socket (`cmdtest.HoldPortOn`, `ENVOY_LISTEN_FD`). A start is never retried.

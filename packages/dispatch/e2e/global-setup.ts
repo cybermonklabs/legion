@@ -1,16 +1,18 @@
 /** Playwright's `globalSetup` (`e2e/playwright.config.ts`): it starts this run's stacks, writes
  *  them into the environment every worker inherits, and checks each of them before any row runs.
  *
- *  It is the hook of every run, including the ones that start nothing, because the decision not
+ *  It is the hook of every run, including the ones that start no stack, because the decision not
  *  to start is this file's: a run against servers a person started
  *  (`DISPATCH_E2E_REUSE_SERVERS=1`, which is also what `e2e/harness-up.ts` prints) and a run of
- *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a directory is made
- *  or a server starts.
+ *  the stubbed layer alone (`e2e/stub/selection.ts`) each return here before a stack's directory
+ *  is made or its servers start.
  *
- *  The one thing it does BEFORE the reuse return is refuse a run of more than one worker whose
- *  caller set a variable one stack owns (`refuseStackConflicts`, `e2e/harness-ports.ts`), since
- *  returning on such a run is exactly what would put four workers on one server and one
- *  database. A run of the stubbed layer alone is out of that: it addresses none of them.
+ *  Before both returns it starts the stubbed layer's static file server for a run that holds a
+ *  stubbed row (`e2e/stub/server.ts`), since both kinds of run can hold one. Before the reuse
+ *  return it refuses a run of more than one worker whose caller set a variable one stack owns
+ *  (`refuseStackConflicts`, `e2e/harness-ports.ts`), since returning on such a run is exactly
+ *  what would put four workers on one server and one database. A run of the stubbed layer alone
+ *  has returned by then: it addresses none of them.
  *
  *  A deployed run (`PLAYWRIGHT_BASE_URL`, `bun run e2e:deployed`) does start a stack, and a small
  *  one: `targetedListeners()` keeps the rows marked `deployed` alone (`e2e/harness-listeners.ts`,
@@ -58,6 +60,7 @@ import {
 } from "./harness-processes";
 import { harnessSignIn } from "./harness-signin";
 import { stubSelection } from "./stub/selection";
+import { startStubServer } from "./stub/server";
 
 /** What this module's own lines are prefixed with, as the pool's are with its name. */
 const named = "e2e/global-setup.ts";
@@ -226,7 +229,11 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     processes: harnessProcessCount,
     projects: stubProjectNames,
   });
-  // The stubbed layer alone returns first, before the refusal below: it reaches no server, no
+  // The stubbed layer's static file server, for a run that holds a stubbed row, first: the stub
+  // projects' rows read its origin whatever else this run starts, and `e2e/global-teardown.ts`
+  // stops it however the rest of this hook ends.
+  await startStubServer(stub);
+  // The stubbed layer alone returns next, before the refusal below: it reaches no server, no
   // database and no listener of this harness, so no number of workers can make two of its rows
   // share anything, and a `DATABASE_URL` in the caller's environment is nothing to do with it.
   if (stub.onlyStub) return;
@@ -238,8 +245,8 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   if (config.workers > 1) refuseStackConflicts(config.workers);
   if (process.env.DISPATCH_E2E_REUSE_SERVERS === "1") return;
 
-  // Before a directory is made or a server starts, so a run whose browsers are missing says so
-  // whatever else is wrong with it.
+  // Before a stack's directory is made or its servers start, so a run whose browsers are missing
+  // says so whatever else is wrong with it.
   await refuseMissingBrowsers(config.filteredProjects);
   // `config.workers` is this run's resolved worker count, a `--workers` on the command line
   // included, and under `--shard` it is this process's own.

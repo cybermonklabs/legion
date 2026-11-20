@@ -29,9 +29,10 @@
 #     reading the record of its own phase; control: against records whose bodies name no head the
 #     same three report no commit at all;
 #   - A10: with Dispatch up the first write succeeds; with the Dispatch process stopped
-#     `handoff-write` exits non-zero naming the connection failure and the completion naming the
-#     existing record is refused DISPATCH_READ_FAILED, the phase unchanged; Dispatch restarted on the
-#     same database, the retried write succeeds, the completion is accepted, and GET
+#     `handoff-write` exits non-zero with the CLI's message that the Dispatch at its URL is
+#     unreachable, and the completion naming the existing record is refused DISPATCH_READ_FAILED
+#     for a read that got no answer, the phase unchanged; Dispatch restarted on the same database,
+#     the retried write succeeds, the completion is accepted, and GET
 #     /api/v1/issues/<KEY>/handoffs (what Conversation lists) holds it.
 #
 # Run it from a checkout on a Linux host with go, git, jj 0.38 or later (the daemon's boot refuses

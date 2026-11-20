@@ -3,6 +3,8 @@ package restatex
 import (
 	"context"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"runtime"
 	"sync/atomic"
@@ -30,13 +32,16 @@ func EnterHandler() func() {
 	return func() { inFlight.Add(-1) }
 }
 
-// Serve binds the given service definitions and serves them on a loopback address
-// until the context ends. It prints the process's pid as its first field line, because
-// the driver's whole measurement is which pid it killed, and then prints a reading of
-// the process -- its goroutines and its in-flight handlers -- every few hundred
-// milliseconds.
-func Serve(ctx context.Context, address string, definitions ...restate.ServiceDefinition) error {
-	if err := RequireLoopback("-address", address); err != nil {
+// Serve serves the given service definitions on listener, the loopback socket its driver
+// handed over (StartService), until the context ends. It serves as the SDK's own Start
+// does, unencrypted HTTP/2, on that socket instead of one it would bind itself, so the
+// port stays the one the driver held. It prints the process's pid as its first field
+// line, because the driver's whole measurement is which pid it killed, and then prints a
+// reading of the process -- its goroutines and its in-flight handlers -- every few
+// hundred milliseconds.
+func Serve(ctx context.Context, listener net.Listener, definitions ...restate.ServiceDefinition) error {
+	if err := RequireLoopback("-listen-fd", listener.Addr().String()); err != nil {
+		listener.Close()
 		return err
 	}
 	// The SDK's own chatter goes to stderr at warning level, so it never crowds the
@@ -46,10 +51,24 @@ func Serve(ctx context.Context, address string, definitions ...restate.ServiceDe
 	for _, definition := range definitions {
 		endpoint.Bind(definition)
 	}
+	handler, err := endpoint.Handler()
+	if err != nil {
+		listener.Close()
+		return err
+	}
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	httpServer := &http.Server{Handler: handler, Protocols: &protocols, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		<-ctx.Done()
+		shutdown, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdown)
+	}()
 
 	Field("pid", os.Getpid())
 	go report(ctx)
-	return endpoint.Start(ctx, address)
+	return httpServer.Serve(listener)
 }
 
 // report prints what this process holds, again and again, until the context ends.

@@ -42,7 +42,18 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-# The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
+# The Postgres of a dead stack goes first, before the lock and each other command of the start but
+# one that reads only its own inputs (lib/sweep-order.ts): a pane that a dead run left still holds
+# the lock, under set -e a command that fails ends the start, and one that fails for what a dead run
+# left would end every later start with that Postgres still there. This run's own carries its mark
+# (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
+# Then the model route, and under box-login the one-at-a-time lock (lib/box-login.sh), before the
 # run makes its work directory or anything else: a run the lock refuses leaves nothing behind.
 # shellcheck source-path=SCRIPTDIR source=lib/box-login.sh
 . "$root/scripts/e2e/lib/box-login.sh"
@@ -372,15 +383,14 @@ port_of "the second daemon's keeper" "$work/deadline.port" "$deadline_keeper_pid
 built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion") || fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 refuse_leftovers legion-e2e2
 
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # tmpfs, not the image's anonymous volume: creating a volume is one more moving part the proof
   # does not need, and on a box whose volume subsystem stalls it hangs the run.
-  docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+  docker run -d --name "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion -e POSTGRES_DB=legion \
     -p 127.0.0.1::5432 mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   until_true 60 "postgres to accept connections over TCP" \

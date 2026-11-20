@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `loadtest/cluster/cluster.sh` reads the lock, and every answer of `kubectl` it reads, without a temporary file. A read that was killed, such as the disk watcher's read when `pg_disk_watch_stop` kills the watcher at its bound, left a `lock-read.*` or a `cluster-read.*` file in `TMPDIR`, which on a Legion pod is the issue's volume. It now leaves nothing there.

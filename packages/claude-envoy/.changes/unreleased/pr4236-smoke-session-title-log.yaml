@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `scripts/smoke-session-title.sh` makes the Envoy listener's log before it starts the listener. Its first read of that log, which ends the run when it fails, could come before the background start had made it.

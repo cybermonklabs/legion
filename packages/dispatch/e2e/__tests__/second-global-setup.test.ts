@@ -17,35 +17,30 @@
  *  is that process, and the reading is the one the finding is about: the second start's own
  *  Postgres, on a port of its own.
  *
- *  WHY IT IS SKIPPED WITHOUT A POSTGRES PROVIDER. It starts two whole stacks, each with a
- *  Postgres, a Go server and the fakes, which is minutes of work and needs
- *  `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` to make the databases at all
- *  (`e2e/harness-postgres.ts`). Without one it would prove nothing, so it is skipped and says
- *  so, as `e2e/__tests__/psql-session.test.ts`'s cases are. */
+ *  WHERE IT RUNS. It starts two whole stacks, each with a Postgres, a Go server and the fakes,
+ *  and needs `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` to make the databases at all
+ *  (`e2e/harness-postgres.ts`). A developer's run that names neither skips it and says so on one
+ *  line; a CI run never skips it, and fails naming both variables where the job names neither
+ *  (`e2e/__tests__/postgres-provider.ts`). The `multiprocess` job of
+ *  .github/workflows/dispatch-browser.yaml runs it with the image provider, since that job has
+ *  the Chromium the hook refuses to start without, the Go toolchain run-server.sh builds the
+ *  server with, and the image already pulled for its own Postgres service. The `dispatch-ui`
+ *  job, which runs this directory with no provider, leaves it out (`postgres-provider.test.ts`). */
 
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-
 import { stacksVariable } from "../harness-ports";
+import { pgBinVariable, pgConnectionsVariable, pgImageVariable } from "../harness-postgres";
 import { rowLimit, runBounded } from "./bounded-subprocess";
+import { eitherProvider, requirePostgres, skipsWithoutPostgres } from "./postgres-provider";
 
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
-const pgProvider = ["DISPATCH_E2E_PG_BIN", "DISPATCH_E2E_PG_IMAGE"].filter(
-  (variable) => (process.env[variable] ?? "").trim() !== ""
-);
-const withoutPostgres = pgProvider.length === 0;
-if (withoutPostgres) {
-  console.error(
-    "e2e/__tests__/second-global-setup.test.ts: skipped, since neither DISPATCH_E2E_PG_BIN nor " +
-      "DISPATCH_E2E_PG_IMAGE names a Postgres this run can make two stacks' databases with."
-  );
-}
-
-test.skipIf(withoutPostgres)(
+test.skipIf(skipsWithoutPostgres("e2e/__tests__/second-global-setup.test.ts", eitherProvider))(
   "a second globalSetup starts a Postgres of its own rather than reading the first's",
   async () => {
+    requirePostgres(eitherProvider);
     // `filteredProjects` names one Chromium project, so the hook's browser refusal asks for
     // Chromium alone rather than for every engine of the mode, and `workers: 1` is one stack.
     const script =
@@ -83,7 +78,13 @@ test.skipIf(withoutPostgres)(
             .filter((variable) => process.env[variable] !== undefined)
             .map((variable) => [variable, process.env[variable]])
         ),
-        ...Object.fromEntries(pgProvider.map((variable) => [variable, process.env[variable]])),
+        // The providers the run names, and the connection limit where the job read it already,
+        // so the stacks' Postgres needs no `go run` of its own in a job that gave it one.
+        ...Object.fromEntries(
+          [pgBinVariable, pgImageVariable, pgConnectionsVariable]
+            .filter((variable) => (process.env[variable] ?? "").trim() !== "")
+            .map((variable) => [variable, process.env[variable]])
+        ),
       },
       from: import.meta.url,
     });

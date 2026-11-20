@@ -7,6 +7,9 @@ const USAGE =
 const SERVICE_RESTART = 1012;
 const BASE_RECONNECT_DELAY_MS = 1_000;
 const MAX_RECONNECT_DELAY_MS = 30_000;
+/** How long the probe watches the feed where its command line gives no `--timeout`, in seconds:
+ *  its test's rows count it in their limits (`dispatch-live-events.test.ts`). */
+export const defaultTimeoutS = 60;
 
 interface ArgumentValues {
   readonly "bearer-file"?: string;
@@ -128,7 +131,7 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     throw new UsageError(`--url is Dispatch's http or https address, not ${rawURL}`);
   }
 
-  const rawTimeout = values.timeout ?? "60";
+  const rawTimeout = values.timeout ?? String(defaultTimeoutS);
   const timeoutSeconds = Number(rawTimeout);
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
     throw new UsageError(`--timeout is a number of seconds above 0, not ${rawTimeout}`);
@@ -141,7 +144,7 @@ async function optionsFrom(argv: readonly string[]): Promise<Options> {
     );
   }
 
-  const authorization =
+  const authorization: Record<string, string> =
     bearerFile !== undefined
       ? { Authorization: `Bearer ${await secretFrom(bearerFile, "--bearer-file", "token")}` }
       : cookieFile !== undefined
@@ -417,4 +420,5 @@ async function main(argv: readonly string[]): Promise<number> {
   }
 }
 
-process.exit(await main(Bun.argv.slice(2)));
+// The probe runs when it is the program; its test imports `defaultTimeoutS` from it.
+if (import.meta.main) process.exit(await main(Bun.argv.slice(2)));

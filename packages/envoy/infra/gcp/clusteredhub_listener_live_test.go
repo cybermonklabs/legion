@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -83,15 +84,15 @@ func buildLiveListener(t *testing.T) string {
 	return cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Dir: filepath.Join("..", "..", "cmd", "listener")})
 }
 
-// liveListenerEnv is the whole environment of a tailnet listener pod of gcp:ClusteredNatsHub (a
+// liveListenerEnv is the environment of a tailnet listener pod of gcp:ClusteredNatsHub (a
 // tailnet.listener with no clientNamespaces) on this machine: core.ListenerConfig.Env for the
-// config the component resolves — PORT,
-// ENVOY_LISTEN_HOST=0.0.0.0, ENVOY_ALLOWED_HOSTS, ENVOY_MACHINE_ID and NATS_URLS — with
-// ENVOY_API_ALLOW_UNAUTHENTICATED=1 after it, as clusteredHubListenerEnv adds it
-// (clusteredhub_listener.go), unless allowUnauthenticated is false, which is the negative control.
-// It is the process's whole environment, so there is no ENVOY_API_TOKEN and no OIDC pair in it,
-// which is what the pod renders too. The pod's NATS_NKEY_SEED_FILE is left out: this server
-// carries no authorization, so there is no seed to mount.
+// config the component resolves — PORT, ENVOY_LISTEN_HOST=0.0.0.0, ENVOY_ALLOWED_HOSTS,
+// ENVOY_MACHINE_ID and NATS_URLS — with ENVOY_API_ALLOW_UNAUTHENTICATED=1 after it, as
+// clusteredHubListenerEnv adds it (clusteredhub_listener.go), unless allowUnauthenticated is false,
+// which is the negative control. It is the process's whole environment save the ENVOY_LISTEN_FD
+// that hands the process the socket the test holds for port, so there is no ENVOY_API_TOKEN and no
+// OIDC pair in it, which is what the pod renders too. The pod's NATS_NKEY_SEED_FILE is left out:
+// this server carries no authorization, so there is no seed to mount.
 func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticated bool) []string {
 	t.Helper()
 	env, err := core.ListenerConfig{
@@ -107,18 +108,20 @@ func liveListenerEnv(t *testing.T, port int, natsURL string, allowUnauthenticate
 	return env
 }
 
-// startLiveListener starts a listener of the pod's environment on a port reservePorts reserved and
-// waits for its /healthz to answer 200, so it returns a process that is serving. It returns the
-// process and the port it serves on. The listener binds ENVOY_LISTEN_HOST=0.0.0.0 as the pod does,
-// so it binds the port itself rather than inherit a cmdtest.HoldPort socket, which listens on
-// loopback alone.
+// startLiveListener starts a listener of the pod's environment and waits for its /healthz to
+// answer 200, so it returns a process that is serving. The listener serves on a socket the test
+// holds from before the start, on every IPv4 interface as the pod's ENVOY_LISTEN_HOST=0.0.0.0 binds,
+// which it inherits as ENVOY_LISTEN_FD (cmdtest.HoldPortOn): the listener checks the socket against
+// PORT and ENVOY_LISTEN_HOST (internal/config Load), and its API check judges the socket's address
+// as it judges the one the pod binds. It returns the process and its port.
 func startLiveListener(t *testing.T, name, binary, natsURL string) (*cmdtest.Process, int) {
 	t.Helper()
-	port := reservePorts(t, 1)[0]
+	held := cmdtest.HoldPortOn(t, "tcp4", "0.0.0.0:0")
 	cmd := exec.Command(binary)
-	cmd.Env = liveListenerEnv(t, port, natsURL, true)
-	process := startReady(t, name, cmd, func(*cmdtest.Process) error {
-		status, body, err := liveListenerHealthz(port)
+	cmd.Env = liveListenerEnv(t, held.Port, natsURL, true)
+	held.Pass(cmd, "ENVOY_LISTEN_FD")
+	process := startServing(t, name, cmd, func(*cmdtest.Process) error {
+		status, body, err := liveListenerHealthz(held.Port)
 		if err != nil {
 			return err
 		}
@@ -127,7 +130,25 @@ func startLiveListener(t *testing.T, name, binary, natsURL string) (*cmdtest.Pro
 		}
 		return nil
 	})
-	return process, port
+	return process, held.Port
+}
+
+// refusedListenerSocket holds a socket on every IPv4 interface for a listener whose own API check
+// is to refuse it, and keeps the test's copy until the test ends: the check runs before the
+// listener serves (cmd/listener/main.go), so a listener that served would answer there, and
+// nothing else can, since no other program can bind a port the test holds. Once the refused
+// listener has exited, a probe's connection waits on the test's own copy, which accepts nothing,
+// until the client's timeout. It returns the port and a descriptor of the socket for the
+// listener's ExtraFiles entry 0, which is descriptor 3 in the process (ENVOY_LISTEN_FD=3), and
+// which cmdtest.Start closes once the process has started.
+func refusedListenerSocket(t *testing.T) (int, *os.File) {
+	t.Helper()
+	socket, err := net.Listen("tcp4", "0.0.0.0:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = socket.Close() })
+	file, err := socket.(*net.TCPListener).File()
+	require.NoError(t, err)
+	return socket.Addr().(*net.TCPAddr).Port, file
 }
 
 // liveListenerHealthz is the status and body /healthz answers on loopback at port. It is a copy of
@@ -284,12 +305,11 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 	t.Logf("the listener held its durable after %.1fs: %s", waited.Seconds(), strings.TrimSpace(healthy))
 
 	// The negative control. The same environment with ENVOY_API_ALLOW_UNAUTHENTICATED removed, on
-	// a port reserved for it (reservePorts), so no other program is listening there: the API check
-	// runs before the socket is bound (cmd/listener/main.go), so nothing listens on the port
-	// throughout and a listener that served would answer on it.
-	controlPort := reservePorts(t, 1)[0]
+	// a socket of its own that the test holds (refusedListenerSocket).
+	controlPort, controlFile := refusedListenerSocket(t)
 	control := exec.Command(binary)
-	control.Env = liveListenerEnv(t, controlPort, natsURL, false)
+	control.Env = append(liveListenerEnv(t, controlPort, natsURL, false), "ENVOY_LISTEN_FD=3")
+	control.ExtraFiles = []*os.File{controlFile}
 	refused := startLogged(t, "the listener without ENVOY_API_ALLOW_UNAUTHENTICATED", control)
 	listeners++
 	refused.WaitExit(t, "its own API check")
@@ -302,6 +322,7 @@ func TestClusteredNatsHubListenerServesItsPodEnvironment(t *testing.T) {
 		refused.Cmd.ProcessState.ExitCode(), named, strings.TrimSpace(refused.Output.String()))
 	_, _, err = liveListenerHealthz(controlPort)
 	require.Error(t, err, "something answered /healthz on the refused listener's port %d", controlPort)
+	t.Logf("the probe of the refused listener's port %d, which the test still holds: %v", controlPort, err)
 
 	// The pod's own address, with no credential: the Host the hub told it is served, every other
 	// is not.
@@ -371,10 +392,14 @@ func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.
 	}
 
 	answers, listeners := 0, 0
-	port := reservePorts(t, 1)[0]
+	// The listener serves on a socket the test holds from before its start, on every IPv4
+	// interface as the rendered ENVOY_LISTEN_HOST binds, as startLiveListener's does.
+	held := cmdtest.HoldPortOn(t, "tcp4", "0.0.0.0:0")
+	port := held.Port
 	cmd := exec.Command(binary)
 	cmd.Env = envFor(port)
-	process := startReady(t, "the listener that requires a token", cmd, func(*cmdtest.Process) error {
+	held.Pass(cmd, "ENVOY_LISTEN_FD")
+	process := startServing(t, "the listener that requires a token", cmd, func(*cmdtest.Process) error {
 		status, body, err := liveListenerHealthz(port)
 		if err != nil {
 			return err
@@ -409,9 +434,11 @@ func TestClusteredNatsHubListenerRefusesAnInClusterCallWithoutAToken(t *testing.
 		t.Logf("GET /v1/sessions at %s with %s: %d %s", addr, call.name, status, strings.TrimSpace(body))
 	}
 
-	controlPort := reservePorts(t, 1)[0]
+	// The control, on a socket of its own that the test holds (refusedListenerSocket).
+	controlPort, controlFile := refusedListenerSocket(t)
 	control := exec.Command(binary)
-	control.Env = envFor(controlPort, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS")
+	control.Env = append(envFor(controlPort, "ENVOY_OIDC_ISSUER", "ENVOY_OIDC_AUDIENCE", "ENVOY_OIDC_ACCOUNTS"), "ENVOY_LISTEN_FD=3")
+	control.ExtraFiles = []*os.File{controlFile}
 	refused := startLogged(t, "the same listener without its token check", control)
 	listeners++
 	refused.WaitExit(t, "its own API check")

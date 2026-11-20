@@ -913,13 +913,17 @@ check_k4() {
 
 	# A stand-in on a .svc name of its own, which the stack does not have. It is this run's
 	# own: one Python HTTP server on loopback, reached by the .svc name with curl --resolve,
-	# because a Legion pod's /etc/hosts cannot be written.
-	local svc_port
-	svc_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	# because a Legion pod's /etc/hosts cannot be written. It binds a port the kernel chooses
+	# (port 0) and names it on its first line, which is read back; a number chosen first and
+	# bound later could be another program's by then.
+	local svc_port svc_pid
 	mkdir -p "$WORK_DIR/svc"
 	echo "the .svc stand-in answered" >"$WORK_DIR/svc/index.html"
-	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
-	HELPER_PIDS+=($!)
+	(cd "$WORK_DIR/svc" && exec python3 -u -m http.server 0 --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
+	svc_pid=$!
+	HELPER_PIDS+=("$svc_pid")
+	await "the .svc stand-in" 30 "$WORK_DIR/svc.log" '^Serving HTTP on 127\.0\.0\.1 port [0-9]+ ' "$svc_pid"
+	svc_port="$(sed -n 's/^Serving HTTP on 127\.0\.0\.1 port \([0-9]*\) .*/\1/p' "$WORK_DIR/svc.log" | head -n 1)"
 
 	local s_before t_before
 	s_before="$(records_count s)"
@@ -1479,26 +1483,26 @@ k7_dotfiles() {
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
 # whose environment comes from the running one, with the rules file, the three listening addresses
-# and the public URL replaced; the metrics port is one the system picks, since nothing here
-# scrapes it and the stack's own brokers hold theirs.
+# and the two URLs replaced. Each address is port 0, so the kernel chooses every port as the broker
+# binds it, and the two URLs name port 0, which the broker resolves from what it bound (a local
+# run's derive-from-bind convention); the API and proxy URLs are read back from its listening
+# lines. Nothing here scrapes the metrics port.
 k7_broker() {
-	local d="$WORK_DIR/k7" api proxy
-	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	proxy="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	K7_API_URL="http://127.0.0.1:$api"
-	K7_PROXY_URL="http://127.0.0.1:$proxy"
+	local d="$WORK_DIR/k7"
 	broker_env \
 		BROKER_AIRLOCK_RULES_FILE="$d/rules.json" \
-		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
-		BROKER_PUBLIC_URL="$K7_API_URL" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
-		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
+		BROKER_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_AIRLOCK_PROXY_URL="http://127.0.0.1:0" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
+	K7_API_URL="http://$(logged_addr 'broker listening' "$d/broker.log")"
+	K7_PROXY_URL="http://$(logged_addr 'airlock proxy listening' "$d/broker.log")"
 }
 
 

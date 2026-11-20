@@ -51,6 +51,17 @@ set -euo pipefail
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as refuse_leftovers's refusal of what the same dead run left,
+# would end every later start with that Postgres still there. This run's own carries its mark
+# (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "/tmp/legion-e2e-user-turns.$$.XXXXXXXX")
 evidence=${DISPATCH_USER_TURNS_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-user-turns-evidence.XXXXXXXX)}
 mkdir -p "$evidence/logs" "$evidence/checks"
@@ -78,8 +89,6 @@ pass() { echo "ok $check"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
 # Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
@@ -223,7 +232,8 @@ omp_exe=$(native_program "$(mise where "$omp_tool")/bin/omp") || fail "the Oh My
 (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) || fail "the SPA did not build; see $evidence/logs/build-web.log"
 note "Oh My Pi $omp_tool; run $run"
 
-docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+docker run -d --name "$pg_container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch -e POSTGRES_DB=dispatch \
   -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')

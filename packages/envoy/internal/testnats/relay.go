@@ -101,6 +101,17 @@ func (r *relay) join(client net.Conn) {
 		_ = client.Close()
 		return
 	}
+	// The target is read again once the dial is made. Each caller stops the target before it stops
+	// the server (StartFront's doc; Server.detach for the in-process server), so a target that still
+	// names this address names a server that was listening when the dial reached it. A target that
+	// changed may have been stopped, and its server with it, between the first read and the dial, so
+	// the dial may have reached another program that bound the released port: that connection is
+	// closed, not relayed.
+	if again, err := r.target(); err != nil || again != address {
+		_ = upstream.Close()
+		_ = client.Close()
+		return
+	}
 	if r.clientPort {
 		r.joinClient(client, upstream)
 		return

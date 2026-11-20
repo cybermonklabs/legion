@@ -49,6 +49,15 @@ runs the Vite development server for interface work. `bun run test:web <file>` r
 test file; a bare `bun test <file>` loads no DOM, since the DOM comes from the preloads
 `test:web` names (`web/src/__tests__/register-dom.ts`).
 
+`bun run test` runs the unit tests and `e2e/__tests__`. The database cases of
+`psql-session.test.ts`, `harness-stacks.test.ts` and `replace-blocks-guard.test.ts` make a
+database of their own on the server `LEGION_TEST_PG_DSN` names, through psql. The tests that
+start a stack's own Postgres call `requirePostgres` (`e2e/__tests__/postgres-provider.ts`), and
+`bun run test` leaves them out; run each by name with `DISPATCH_E2E_PG_IMAGE` or
+`DISPATCH_E2E_PG_BIN` set, as the jobs of `.github/workflows/dispatch-browser.yaml` that name a
+provider do. A test that lacks its Postgres skips on your machine and says so on one line; in CI
+(`CI=true`) it fails instead and names what to set.
+
 ## End-to-end tests
 
 `bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
@@ -152,15 +161,12 @@ the SPA first, or the Playwright command itself, as in
 which builds nothing. Playwright stops the harness
 when the run ends, a Ctrl-C included, and exits with its own status.
 
-A SIGTERM stops the stacks this suite starts and no more. A run that holds a stubbed row also
-starts Playwright's own `webServer` (`e2e/stub/static-server.ts`), which Playwright stops on a
-SIGINT and leaves running on a SIGTERM: measured on playwright 1.64.1, a signalled mixed run
-exited 143 with every stack of this suite gone and that static server still serving its fixed
-port, so the
-next run holding a stubbed row was refused with
-`http://127.0.0.1:4319/index.html is already used`. It is Playwright's own leak, not this
-suite's - a run of the stubbed layer alone, which installs no signal handler here, leaks the
-same server - so `kill` that process, or use a Ctrl-C, which stops everything.
+A SIGTERM stops the stacks this suite starts. A run that holds a stubbed row also starts the
+stubbed layer's static file server (`e2e/stub/server.ts`), which a SIGTERM to Playwright's runner
+does not stop, since Playwright runs no teardown then; the server checks once a second whether
+the runner is still its parent and stops itself when it is not (`e2e/stub/static-server.ts`). It
+serves a port the kernel chose when it bound, so a second checkout's run on the same machine
+never finds that port taken.
 
 Playwright's UI mode starts the stacks itself. The UI server runs `globalSetup`
 when a client connects rather than when it begins listening, so a session
@@ -213,6 +219,127 @@ crash safety off (`fsync`, `full_page_writes`, `synchronous_commit`), so no
 commit waits for the disk: a database you name in `DATABASE_URL` keeps its
 own settings, and where its commits wait for a disk that stalls, a write a
 closed page left in flight can hold a table past the reset's 5 s.
+The image provider serves each stack's Postgres on a unix socket in a directory
+that it bind-mounts into the container, so it needs Linux with a local Docker
+daemon. Under Docker Desktop the server runs in the desktop's virtual machine,
+and under a remote `DOCKER_HOST` the mount is a directory of that other
+machine, so the harness would not reach the socket; neither case has been
+measured. Each stack's socket directory is in the run's directory, or is
+`/tmp/pg-<i>-XXXXXX` when the socket's path there would be too long for a unix
+socket or would hold a `,`. A stop removes it.
+
+A harness killed hard (SIGKILL) stops nothing, so its Postgres keeps serving,
+with its data and socket directories. Each start of a stack removes what such a
+harness left, where it can show the harness dead. Each Postgres carries a mark
+of the process that started it: a file in the run's directory, and the image
+provider's container also carries it as a label
+(`e2e/harness-postgres-marks.ts`). Each shell stack of `scripts/e2e` that
+starts a Postgres container marks it the same way and runs the same removal
+first (`scripts/e2e/lib/leftovers.sh`). A start reads three places: the
+`dispatch-e2e-run-*` directories of its own `TMPDIR`; the containers that Docker
+lists with the label, wherever their stack ran; and `/proc`, for each postmaster
+of its own user whose working directory is a stack's data directory in a run
+directory that its listing does not read (another `TMPDIR`'s, or one renamed
+after its stack started, a start's claim of it included), which that
+directory's `postmaster.pid` names by the pid the postmaster's own PID
+namespace gives it. A name only finds a candidate;
+the mark decides. The start reads a mark only where no other user can have
+written it (each directory of its path, read without following a link, is
+root's or the user's,
+and none that another user can reach may be written by another user but for a
+sticky one such as `/tmp`), and it follows no link. It removes each Postgres
+whose process is gone, in this boot and PID namespace, by the steps the mark
+names: the container by its id, or the postmaster by a signal to the pid that
+the kernel shows running as this user from that data directory with the mark's
+`postgres` for its program, and then the data and socket directories. It runs
+no program that a mark names. It leaves the Postgres of a process that still
+runs without a word, and it names each one it leaves, one line per kind. A
+stack is not dead while a process it started still holds its directories: a
+harness killed while its `pg_ctl start`, `initdb` or `docker create` runs leaves
+that child running, and before a start claims a data or socket directory it
+reads every process of its user, and leaves the directory under its name, with
+its mark, where a process's working directory, an open file or a path that an
+argument names is that directory or in it. It judges a holder by the directory
+itself, its device and inode, whatever spells it: through a link, relative to
+where the process runs, or with a doubled `/`. A later start judges it again.
+It waits at most 10 s for each path a process names: a path on a network or
+FUSE mount whose server hangs never answers, and a start cannot judge a process
+by it, so it leaves the directory and names that process and that path.
+A removal that fails is one line, and the start goes on. A start waits for its
+`docker rm` of a container while Docker answers each ask, a `docker ps` every 5 s
+that exits 0 within 60 s: a daemon many sessions share took 91 s over one
+removal on 2026-11-18. Once the removal has run 60 s the start says on one line
+that it waits. It gives the removal up, and names the container on one line,
+where an ask gets no answer or exits other than 0, or where the removal has run
+10 minutes, and goes on. While another start's removal of the container is in
+progress, Docker refuses this start's, and the start waits for that removal the
+same way, sending no `docker rm` of its own until Docker removes the container
+no more.
+A start whose own `TMPDIR` is gone still reads the containers and `/proc`, and
+names that `TMPDIR` on one line. The logs of a killed run stay in its directory.
+
+Two starts at once on one dead stack act on each of its parts once. A
+directory, and the postmaster that serves from a data directory, are claimed by
+a rename to `<path>.removing-<pid>-<start>`, the claimer's pid and start. The
+rename is the claim: one of two renames wins, and a start killed after it
+leaves no other file behind. A start renames only a directory that no process
+of its user holds, read just before the rename; another start's descriptors
+under a claim of its own are its removal, and hold nothing. A
+container is claimed by Docker's own removal, which removes it for one
+`docker rm` and refuses it, or finds it gone, for the other. The start that
+holds the claim removes the part and says "removed", of a postmaster only where
+its own signal reached it; the other says that another start removed it first.
+A start that finds a claim whose claimer still runs says so on one line and
+waits for it, for at most 140 s: twice the
+claimer's longest stop of a postmaster (60 s after SIGQUIT, as `pg_ctl` waits,
+and 10 s after SIGKILL), so the removal of the directory after the stop has as
+long again; the removal of a data directory of 20,000 files took under a second
+on a shared Linux machine on 2026-11-17, and 141 and 187 s on one whose disk
+other sessions loaded, on 2026-11-19. At the bound the start leaves that part
+and its mark to the claim, names the claim on one line, and goes on; the
+claimer's removal goes on too. A claim whose claimer died before its removal
+the next start claims again.
+
+What a start leaves and names, and what you do to remove it by hand:
+
+- A mark of another boot: this machine before it restarted, or another
+  machine on a shared Docker daemon or `TMPDIR`. A start cannot tell which, so
+  it judges none. Once you know no machine still runs that stack, remove the
+  container the line names (`docker rm -f -v <id>`) and the run directory.
+- A mark of another PID namespace: a stack that ran in a container of its own,
+  or in a namespace that has since ended. Its process cannot be seen from here.
+  From that namespace, or once you know it ended, stop the postmaster with its
+  own binaries (`pg_ctl -D <data> -m immediate stop`) or remove the container,
+  then the run directory.
+- A mark of another time namespace: a start cannot compare its process's start
+  with a clock of another namespace, so it judges none. Remove it from that
+  namespace, or by hand as above once you know its stack ended.
+- A mark of another user: its process belongs to that user, so remove it as
+  that user.
+- A mark from a machine with no `/proc`, such as macOS, carries no owner, and a
+  start there judges no mark. Stop its Postgres the same way by hand.
+- A dead stack's directory that a process of this user still holds, such as a
+  `pg_ctl start` the stack began before it was killed, or that a process may
+  hold, as it names a path that answered no stat within 10 s: a start leaves it
+  and its mark, and names the process and any such path. Once that process has
+  ended, or the path answers, the next start removes what is left.
+- A run directory of another `TMPDIR` whose postmaster has already ended holds
+  no running server, so no start finds it: remove that `dispatch-e2e-run-*`
+  directory by hand. One whose postmaster still runs is removed as above, and
+  a postmaster there that no mark names is named, for you to stop by hand.
+- A run directory renamed after its stack was killed (to keep its logs, say):
+  its marks name the old directory, so a start trusts none of them and names
+  the postmaster that serves from it. Stop it by hand as above.
+- The mark of a container, read by a start with no `docker` on its `PATH`: that
+  start cannot tell whether the container still runs, so it keeps the mark and
+  the socket directory and names them. Run a start where `docker` is on `PATH`,
+  or remove the container (`docker rm -f -v <id>`) and then the run directory.
+- A mark, or a path it names, that another user could have written or that a
+  link leads through is never acted on: read who owns it before you remove it.
+- A container whose removal Docker did not end within 10 minutes, or whose
+  removal a start gave up because Docker answered no ask: the start names it
+  and keeps its label, and the next start removes it again. Once Docker answers,
+  read why with `docker inspect <id>`, or remove it (`docker rm -f -v <id>`).
 
 ```bash
 cd packages/dispatch
@@ -887,17 +1014,18 @@ server decides for its rows, and a new stub file a header comment saying why a r
 answer its rows. After either, `bun e2e/tools/row-map.ts --write` regenerates `e2e/row-map.md`,
 which `e2e/__tests__/row-map.test.ts` holds to a fresh generation.
 
-The stubbed layer reads three variables of its own, and a run that is not recording needs none
-of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
-what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_PORT` moves the static file
-server off 4319, which is what a second checkout on one machine needs, since the server refuses
-to reuse one already listening rather than serve another checkout's build. And
-`DISPATCH_E2E_STUB_RECORDINGS` points a run at a set of recordings other than the committed
-one, which the nightly's re-record job uses so that it can see a committed recording no row
-writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries "this run is
-the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
-stack at all, for the whole run and real-stack projects included, which then find no server to
-address.
+The stubbed layer reads three variables a person may set, and a run that is not recording needs
+none of them. `DISPATCH_E2E_STUB_RECORD=1` makes the stubbed rows meet the real harness and write
+what they fetched (`bun run e2e:stub:record`). `DISPATCH_E2E_STUB_RECORDINGS` points a run at a
+set of recordings other than the committed one, which the nightly's re-record job uses so that
+it can see a committed recording no row writes any more. And `DISPATCH_E2E_STUB_DIST` makes the
+static file server serve another directory than `web/dist`, which its own test uses
+(`e2e/__tests__/stub-web-server.test.ts`). Two more are the run's own, which it sets for itself.
+`DISPATCH_E2E_STUB_ORIGIN` is the static file server's origin: the server takes no port setting,
+it binds a port the kernel chooses, and `globalSetup` hands the origin to the workers in it.
+`DISPATCH_E2E_STUB_ONLY=1` is how the config carries "this run is the stubbed layer alone" to the
+rest of the run; set by hand it tells `globalSetup` to start no stack at all, for the whole run
+and real-stack projects included, which then find no server to address.
 
 Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
 (`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps

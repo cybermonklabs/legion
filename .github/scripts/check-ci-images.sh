@@ -140,16 +140,21 @@
 #     reference. A `FROM` on a variable the Dockerfile declares with no default anywhere is not
 #     one either: whoever runs the build passes that value, so no image can be read here;
 #   * the image a `docker pull`, `docker run` or `docker create` fetches, in a `run:` script or a
-#     shell file. Every literal reference the command holds is read. A command holding none must
-#     name a variable this check can follow: one the same file assigns a literal reference to, or
-#     one IMAGE_FROM lists with where its value comes from and why that source is already checked.
-#     A command naming neither is refused, because an image this check cannot read is an image no
-#     row has to hold;
-#   * a string of a Go or a TypeScript source, or a shell assignment, whose value reads as a
-#     reference. Every string, not only a `const`: nats-stream.test.ts writes its image as one
-#     argument of a `docker("run", …)` call. reads_as_reference says which values are read as
-#     one and which written-alike things (a Go import path, a TypeScript module specifier, a
-#     host and port) are not.
+#     shell file, or the image of a call of a function FETCH_FUNCTIONS names, which runs one of
+#     those (scripts/e2e/lib/rig.sh's `start_container`). A fetch holding no literal reference
+#     must name a variable this check can follow: one the same file assigns a literal reference
+#     to, or one IMAGE_FROM lists with where its value comes from and why that source is already
+#     checked. A fetch naming neither is refused, because an image this check cannot read is an
+#     image no row has to hold. An IMAGE_FROM entry that no fetch of its file names is refused
+#     too, so a start in a form this check does not read as a fetch is named, never passed over.
+#     What no rule sees: an image in a variable no IMAGE_FROM entry lists, started through a
+#     function FETCH_FUNCTIONS does not name;
+#   * a string of a Go or a TypeScript source, or a word of a shell command, whose value reads
+#     as a reference. Every string, not only a `const`: nats-stream.test.ts writes its image as
+#     one argument of a `docker("run", …)` call. Every word, not only one of a fetch: an image a
+#     script starts through a command this check does not read as a fetch is read all the same.
+#     reads_as_reference says which values are read as one and which written-alike things (a Go
+#     import path, a TypeScript module specifier, a host and port) are not.
 # A line this check cannot read is a refusal that names it, never a silent pass.
 #
 # THE EXCEPTION LIST. Besides the reach, this check sweeps every text file of the repository and
@@ -346,7 +351,7 @@ REACH = (
     "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
-# A docker command whose image is a variable, and where that variable's value comes from. The
+# A fetch whose image is a variable, and where that variable's value comes from. The
 # key is (file, variable name); the value is why the image it carries is checked elsewhere.
 IMAGE_FROM = {
     (".github/actions/pull-test-images/action.yml", "image"): (
@@ -373,7 +378,8 @@ FETCHES_NOTHING = "a CI job runs it, and it fetches nothing"
 
 # Every file outside the reach that may name mirror.gcr.io, and the one ground that admits it.
 # `no CI job runs it`: the devbox live proofs and their libraries, the compose files, the
-# walkthrough recorder, the corpus copy a developer restores on a devbox, and documentation.
+# walkthrough recorder, the corpus copy a developer restores on a devbox, the research record's
+# run.sh, and documentation.
 # `a CI job runs it, and it fetches nothing`: a script a CI job runs whose mirror.gcr.io text no
 # job ever hands to a registry — dev-postgres.test.sh, which the envoy-go-checks job runs,
 # installs a fake `docker` on PATH; the load test's cluster copy (packages/envoy/loadtest/cluster/),
@@ -384,6 +390,7 @@ EXCEPTIONS = {
     "docs/kubernetes.md": NO_CI_JOB,
     "docs/plans/2026-10-14-dispatch-gcp-plan.md": NO_CI_JOB,
     "docs/plans/2026-10-14-envoy-infra-plan.md": NO_CI_JOB,
+    "docs/research/temporal-evaluation-2026-11/run.sh": NO_CI_JOB,
     "docs/solutions/github/an-image-pull-that-fails-in-ci-is-this-repositorys-own-package-read-the-failure-do-not-re-run-pr2512.md": NO_CI_JOB,
     "docs/site/media/walkthroughs/legion-operator/record-casts.sh": NO_CI_JOB,
     "docs/solutions/testing/a-docker-run-line-is-proven-from-a-pod-with-no-container-runtime-as-a-two-container-job-whose-client-ships-in-the-image-pr2498.md": NO_CI_JOB,
@@ -425,6 +432,10 @@ ASSIGNMENT = re.compile(r"^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(\S*)")
 STRING = re.compile(r"\"([^\"\n\\]*)\"|'([^'\n\\]*)'|`([^`\n\\]*)`")
 GO_VERSION_ARG = re.compile(r"^ARG\s+GO_VERSION=(\S+)\s*$")
 FETCH_VERBS = {"pull", "run", "create"}
+# The shell functions of this repository that fetch an image, each by a docker command of
+# FETCH_VERBS: scripts/e2e/lib/rig.sh's `start_container IDS NAME ARGS...` runs
+# `docker create --name NAME ARGS...`.
+FETCH_FUNCTIONS = {"start_container"}
 
 problems: list[str] = []
 used_image_from: set[tuple[str, str]] = set()
@@ -444,7 +455,7 @@ def fatal(message: str) -> None:
 
 def reads_as_reference(text: str) -> bool:
     """A value this check reads as an image reference where its position does not already say it
-    is one: a Go or TypeScript string, a shell assignment, a word of a docker command. Three
+    is one: a Go or TypeScript string, a shell assignment, a word of a shell command. Three
     shapes are read as one, and the reason each needs a rule of its own is that other things are
     written the same way:
       * anything carrying a digest. Nothing else is;
@@ -1040,13 +1051,15 @@ def strip_comment(command: str) -> str:
 
 def fetches(words: list[str]) -> bool:
     """A command that fetches an image from a registry: a `docker` whose subcommand, the first
-    word after it that is not an option, is `pull`, `run` or `create`. `docker buildx
-    imagetools create` writes an index and `docker image inspect` reads the local daemon, so
-    neither is one; what `docker buildx build` pulls is the FROM of its Dockerfile, which this
-    check reads where that Dockerfile is in the reach. A global option that takes a separate
-    value (`docker --context two run …`) would shift the subcommand, and no command in the reach
-    has one."""
+    word after it that is not an option, is `pull`, `run` or `create`, or a call of a function
+    FETCH_FUNCTIONS names. `docker buildx imagetools create` writes an index and `docker image
+    inspect` reads the local daemon, so neither is one; what `docker buildx build` pulls is the
+    FROM of its Dockerfile, which this check reads where that Dockerfile is in the reach. A
+    global option that takes a separate value (`docker --context two run …`) would shift the
+    subcommand, and no command in the reach has one."""
     for index, word in enumerate(words):
+        if word in FETCH_FUNCTIONS:
+            return True
         if word != "docker" and not word.endswith("/docker"):
             continue
         for following in words[index + 1 :]:
@@ -1059,8 +1072,8 @@ def fetches(words: list[str]) -> bool:
 
 
 def scan_shell(path: Path, text: str, first: int, lines: list[str]) -> None:
-    """Rules 4, 5 and 6 over shell text: every assignment that reads as a reference, and the
-    image of every docker fetch."""
+    """Rules 4, 5 and 6 over shell text: every assignment and every other word that reads as a
+    reference, and the image of every docker fetch."""
     commands = shell_lines(text, first)
     assigned: dict[str, str] = {}
     for _, command in commands:
@@ -1073,14 +1086,20 @@ def scan_shell(path: Path, text: str, first: int, lines: list[str]) -> None:
         if found and reads_as_reference(unquote(found.group(2))):
             value = unquote(found.group(2))
             note(path, locate(lines, line, value), value, f"{found.group(1)}=")
-        if not fetches(words):
-            continue
+        fetch = fetches(words)
+        # A word is read whatever command holds it, so an image started through a command this
+        # check does not know as a fetch is read all the same. The assignment's own word was
+        # read above.
+        assignment = f"{found.group(1)}={found.group(2)}" if found else None
         literals = [
-            unquote(word) for word in words if reads_as_reference(unquote(word))
+            unquote(word)
+            for word in words
+            if word != assignment and reads_as_reference(unquote(word))
         ]
+        how = "the image this command fetches" if fetch else "this word of a shell command"
         for value in literals:
-            note(path, locate(lines, line, value), value, "the image this docker command fetches")
-        if literals:
+            note(path, locate(lines, line, value), value, how)
+        if literals or not fetch:
             continue
         names = set(VARIABLE.findall(command))
         followed = any(reads_as_reference(assigned.get(name, "")) for name in names)
@@ -1090,7 +1109,7 @@ def scan_shell(path: Path, text: str, first: int, lines: list[str]) -> None:
                 followed = True
         if not followed:
             problems.append(
-                f"{path}:{line}: this docker command fetches an image this check cannot read "
+                f"{path}:{line}: this command fetches an image this check cannot read "
                 f"({one_line(command)}). Name the image, or add the variable that holds it to "
                 f"IMAGE_FROM in this check, saying where its value comes from."
             )
@@ -1264,8 +1283,9 @@ for path, line, text, how in references:
 for key, why in sorted(IMAGE_FROM.items()):
     if key not in used_image_from:
         problems.append(
-            f"{key[0]}:1: IMAGE_FROM names ${key[1]} here, and no docker command in that file "
-            f"fetches it any more ({one_line(why)}). Delete the entry."
+            f"{key[0]}:1: IMAGE_FROM names ${key[1]} here, and no command in that file that this "
+            f"check reads as a fetch names it any more ({one_line(why)}). Delete the entry, or, "
+            f"where that file starts the image in a form fetches() does not read, teach it the form."
         )
 
 # ---------------------------------------------------------------- the mirror.gcr.io sweep

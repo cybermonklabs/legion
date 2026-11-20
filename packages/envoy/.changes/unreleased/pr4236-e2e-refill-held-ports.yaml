@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `scripts/e2e-refill.sh` no longer starts NATS and the listener on fixed ports (14232 and 19030) that another program could hold: the listener serves on a socket a keeper holds for the whole run (`ENVOY_LISTEN_FD`), and natsd binds a port the kernel chooses at each start, behind a held front on a second kept port, so a restart of either keeps every client's URL. `E2E_REFILL_NATS_PORT` and `E2E_REFILL_PORT` are removed, and the script needs `python3` and `socat` 1.8.0 or later. `refillrig register` asks for each session's own consumer, which the listener requires of a registration, so the proof's first registration is no longer refused `409 not_requested`.

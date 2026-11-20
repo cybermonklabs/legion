@@ -189,6 +189,17 @@
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as its containers, its processes, the session database port its
+# container still publishes or a disk it filled, would end every later start with that Postgres
+# still there. This run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs.$$.XXXXXXXX")
 evidence=${CLAUDE_SANDBOX_E2E_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs-evidence.XXXXXXXX")}
 mkdir -p "$evidence/logs" "$evidence/transcripts"
@@ -319,8 +330,6 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 . "$root/scripts/e2e/lib/namespace-rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/bridge-tunnel.sh
 . "$root/scripts/e2e/lib/bridge-tunnel.sh"
-# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
-. "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/session-db.sh
 . "$root/scripts/e2e/lib/session-db.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/role-namespaces.sh
@@ -1119,7 +1128,7 @@ cleanup() {
   # container running, so the container is removed here too, before the teardown deletes the
   # Sandboxes. Nothing to remove under aws-private-ip. A driver killed outright leaves it for the
   # next run's refuse_leftovers, which names it.
-  docker rm -f "$daemon_container" >/dev/null 2>&1 || true
+  docker rm -f -v "$daemon_container" >/dev/null 2>&1 || true
   # The App credential files (bridge alone) next, once no container of the daemon's can read them,
   # the refresher stopped first; a partial directory, from a run that stopped while it wrote them,
   # goes too.
@@ -1131,7 +1140,9 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$dispatch_identity_issuer_pid"
   stop_marked_processes "$work" || true
-  docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
+  # Its three containers are made by name (`docker run -d --name`, and session_db_start's), not by
+  # lib/rig.sh's start_container, so they are removed by those names.
+  docker rm -f -v "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
   # namespace_clean fails loudly when the namespace differs from its snapshot, and its `fail` is an
@@ -1162,8 +1173,8 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The operator's inputs come first, before the run reads a tool, a key or the cluster: an unset one
-# is a run that was never going to happen, and it is refused by its own name.
+# The operator's inputs, before the run reads a tool, a key or the cluster: an unset one is a
+# run that was never going to happen, and it is refused by its own name.
 begin prerequisites
 [ -n "$runtime_context" ] ||
   fail "LEGION_E2E_RUNTIME_CONTEXT is unset: the runtime must run as the Legion daemon's restricted identity, never the operator's"
@@ -1364,7 +1375,8 @@ built=$(bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" "$work
   fail "lib/built-from.sh could not say what the run built"
 while IFS= read -r line; do note "$line"; done <<<"$built"
 # Postgres is the daemon's and Dispatch's alone, so it stays on loopback: no pod reads it.
-docker run -d --name "$pg_container" --mount type=tmpfs,destination=/var/lib/postgresql \
+pg_mark=$(postgres_mark "$work" "$pg_container") || fail "the mark of $pg_container could not be made"
+docker run -d --name "$pg_container" --label "$pg_mark" --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=dispatch \
   -p "127.0.0.1::5432" mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
 port_pg=$(docker port "$pg_container" 5432/tcp | sed -n '1s/.*://p')

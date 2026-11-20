@@ -211,8 +211,8 @@ type bootConfig struct {
 	// ListenSocket is the listening socket DISPATCH_LISTEN_FD names, inspected but not yet
 	// adopted: main serves on it in place of binding ListenAddr. Nil when the variable is unset.
 	ListenSocket *listenfd.Socket
-	// PprofAddr is where the profiling listener binds, 127.0.0.1 and DISPATCH_PPROF_PORT
-	// (pprofAddress); empty, nothing listens.
+	// PprofAddr is where the profiling listener binds, 127.0.0.1 and DISPATCH_PPROF_PORT, port 0
+	// a port the kernel chooses (pprofAddress); empty, nothing listens.
 	PprofAddr string
 	// MaxLiveRooms and MaxDocConnections are DISPATCH_MAX_LIVE_ROOMS and
 	// DISPATCH_MAX_DOC_CONNECTIONS, the document service's room and connection caps; zero, unset,

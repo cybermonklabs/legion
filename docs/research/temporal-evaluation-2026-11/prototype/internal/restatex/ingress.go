@@ -18,12 +18,11 @@ type Ingress struct {
 	client *http.Client
 }
 
-// NewIngress addresses the ingress at a loopback HOST:PORT.
+// NewIngress addresses the ingress at address: the unix socket of a server the driver
+// started (`unix:<path>`), or the loopback HOST:PORT of one somebody else runs.
 func NewIngress(address string) *Ingress {
-	return &Ingress{
-		base:   "http://" + address,
-		client: &http.Client{Timeout: 2 * time.Minute},
-	}
+	client, base := HTTPClient(address, 2*time.Minute)
+	return &Ingress{base: base, client: client}
 }
 
 // Send starts an invocation and returns its id without waiting for it to finish. It is

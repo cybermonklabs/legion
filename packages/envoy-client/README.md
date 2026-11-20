@@ -286,6 +286,20 @@ LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
 CI runs both in `ci.yaml`'s `envoy-session-stall` job, which is the one lane of this package with
 both a PostgreSQL and a Go.
 
+No port of either stack is free between its choice and its server's bind, so many stacks can start
+at one time on one machine. The Dispatch server and the listener serve on a listening socket the
+stack opens on a port the kernel chooses and hands them as their descriptor 3
+(`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`), as the Go tests' `cmdtest.HoldPort` does. natsd takes no
+socket, so it binds ports the kernel chooses (`-p -1 -m -1`) and the stack reads them from natsd's
+log. `src/__tests__/stack-ports.live.test.ts` proves each: at every port a stack chooses, a second
+program tries to bind it before the server starts, and the server must serve all the same:
+
+```sh
+cd packages/envoy-client
+LEGION_E2E_ENVOY_STACK=1 LEGION_E2E_DISPATCH_STACK=1 DISPATCH_TEST_DATABASE_URL="$LEGION_TEST_PG_DSN" \
+  bun test src/__tests__/stack-ports.live.test.ts
+```
+
 ## HTTP transport
 
 `createEnvoyClient` sends and receives the listener's `/v1` JSON contracts. Send and publish

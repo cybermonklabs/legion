@@ -118,6 +118,17 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left, as the session database's port that its container still
+# publishes, would end every later start with that Postgres still there. This run's own carries its
+# mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 namespace=legion
 # The rigs' worker-stream port, within the devbox's admitted range. Overridable
 # (LEGION_E2E_WORKER_STREAM_PORT, see Inputs, above) so two runs — two Stage 4a's, or a Stage 4a
@@ -400,7 +411,8 @@ session_db_password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 )
 unset session_db_password
 session_db_started=1
-docker run -d --name "$session_db" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
+session_db_mark=$(postgres_mark "$work" "$session_db") || fail "the mark of $session_db could not be made"
+docker run -d --name "$session_db" --label "$session_db_mark" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
   --env-file "$work/session-db.env" -p "$bind_host:$session_db_port:5432" "$session_db_image" >/dev/null ||
   fail "docker could not start the scratch session database $session_db on $bind_host:$session_db_port"
 ready=

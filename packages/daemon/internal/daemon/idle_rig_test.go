@@ -255,13 +255,15 @@ func (r *idleWakeRig) awaitListenerReady() {
 		}
 		// A durable consumer this daemon has just created starts at the next message
 		// (intake's createConsumer), so the report the listener published at its own start is
-		// behind it. The listener is started again on the same port, which publishes a fresh
-		// one that the consumer does see and leaves every URL already handed out valid.
+		// behind it. The listener is started again on the socket the rig holds, so it serves the
+		// same port, which no other program can take while no listener serves it: the new one
+		// publishes a fresh report that the consumer does see, and every URL already handed out
+		// stays valid.
 		if !restarted && time.Since(began) > 2*time.Second {
 			restarted = true
-			port := r.listener.port
+			socket, port := r.listener.socket, r.listener.port
 			r.listener.stop()
-			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", port)
+			r.listener = startIdleRigListenerOn(r.t, r.natsURL, "idlerig", socket, port)
 		}
 		return false
 	})
@@ -1075,8 +1077,8 @@ const idleRigDeadlineMargin = 5 * time.Second
 // panic, which would take the rest of internal/daemon with it.
 const (
 	// idleRigListenerStartWait bounds the Envoy listener's own process coming up far enough to
-	// answer /healthz: one binary started and one port bound, with nothing of the daemon behind
-	// it.
+	// answer /healthz: one binary started and serving on the socket the rig holds, with nothing of
+	// the daemon behind it.
 	idleRigListenerStartWait = 60 * time.Second
 	// idleRigListenerReportWait bounds the daemon's read of that listener's ready report, which
 	// is the listener's publish, NATS, the daemon's durable consumer and the row it writes; a

@@ -1815,10 +1815,11 @@ func podPriorityClass(input string, name *string) (string, error) {
 }
 
 // newDispatchPprofPort resolves pprofPort, the port envoy-dispatch's profiler binds on the pod's
-// loopback: 0, rendering nothing, when it is unset. It refuses a value outside 1-65535, which
-// Dispatch would refuse at startup, and the two ports the app pod already binds on its loopback,
-// envoy-dispatch's own 8766 and the cloud-sql-proxy sidecar's 5432, where the bind would fail and
-// the pod would never start.
+// loopback: 0, rendering nothing, when it is unset. It refuses a value outside 1-65535: Dispatch
+// takes 0 too, for a port the kernel chooses, but no port-forward to the pod can name a port that
+// is chosen only at the bind. It also refuses the two ports the app pod already binds on its
+// loopback, envoy-dispatch's own 8766 and the cloud-sql-proxy sidecar's 5432, where the bind would
+// fail and the pod would never start.
 func newDispatchPprofPort(args *DispatchArgs) (int, error) {
 	if args.PprofPort == nil {
 		return 0, nil

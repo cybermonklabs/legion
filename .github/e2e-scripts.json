@@ -116,10 +116,10 @@
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],
-      "bun": false,
+      "bun": true,
       "evidence_variable": "",
       "timeout_minutes": 20,
-      "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
+      "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; its start removes the Postgres of each test stack that is gone through bun (scripts/e2e/lib/leftovers.sh); with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's daemon-go job already runs it",
       "jj": false
     },
     {

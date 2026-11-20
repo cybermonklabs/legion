@@ -126,10 +126,16 @@ Each scenario prints `verdict <scenario> PASS <what it saw>`, `FAIL <reason>`, o
 a scan that finished before the interruption, a read that began before the bucket was filled, a
 self-health tick inside the read of `recreate-live`), which is never a pass. It exits 0 when every
 verdict passes, 1 on a `FAIL`, and 4 on an `INVALID` with no `FAIL`. `--listener-bin` and
-`--natsd-bin` run other builds, such as the merge base's for a negative control. The evidence (each
-scenario's listener and NATS logs and every poll, one JSON line each) goes to `--out` (default
-`$TMPDIR/envoy-e2e-refill`). `E2E_REFILL_NATS_PORT` (14232) and `E2E_REFILL_PORT` (19030) move the
-ports. A full run takes about ten minutes, so it is a manual proof, not a CI job.
+`--natsd-bin` run other builds, such as the merge base's for a negative control; the listener must
+take `ENVOY_LISTEN_FD`. No port is chosen before its server binds it: the listener serves on a
+socket a keeper (`scripts/e2e/lib/held-port.py keep`) holds for the whole run, and natsd binds a
+port the kernel chooses at each start, reached through the held front of
+`scripts/e2e/lib/held-front.sh` on a second kept port, so a restart of either keeps every client's
+URL. It needs `python3` and `socat` 1.8.0 or later, and keeps the keepers' unix sockets in a
+directory of its own under `/tmp`, since a long `TMPDIR` would pass the socket path limit. The
+evidence (each scenario's listener and NATS logs and every poll, one JSON line each) goes to
+`--out` (default `$TMPDIR/envoy-e2e-refill`). A full run takes about ten minutes, so it is a
+manual proof, not a CI job.
 
 ## dev-airlock.sh
 
@@ -502,13 +508,14 @@ a profile the AWS config does not hold stops the command before that endpoint si
 packages/envoy/scripts/aws-moto-check.sh [BINARY]
 ```
 
-It starts `moto[server]==5.2.5` through `uvx` on a free loopback port under the account
+It starts `moto[server]==5.2.5` through `uvx` on a loopback port the kernel chooses
+(`-p 0`), which it reads from moto's `Running on` line, under the account
 the tests' key ARN names, runs the test with `AGENT_SECRETS_BINARY` set to BINARY (empty:
 the test builds the CLI from this tree), stops moto, and exits with go test's status; the
 test fails, and never skips, without `AGENT_SECRETS_MOTO_URL`. A release binary as BINARY
 is the negative control. moto ignores a policy's conditions and refuses with an XML
 `AccessDenied` rather than `AccessDeniedException`, so this proves no IAM policy, and
-the refusal's text is proved in process only. It needs uv, curl, python3 and go.
+the refusal's text is proved in process only. It needs uv, curl and go.
 
 ## airlock-lean-axioms.sh
 

@@ -24,6 +24,26 @@ jobs:
   dispatch-ui:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
+    # The server the database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts
+    # and replace-blocks-guard.test.ts make their own databases on, through LEGION_TEST_PG_DSN in
+    # the test step below. Those cases never skip in CI (e2e/__tests__/postgres-provider.ts): a
+    # job that runs them without a server fails them, naming the variable. The image is the one
+    # .github/workflows/ci-job-sessions-script.yaml's service runs, for the same kind of suite:
+    # one pinned Postgres for the workflow rather than a second digest to bump. A service and not
+    # a `docker run` in a step: GitHub pulls it and waits on its health check before the first
+    # step, which is the readiness wait a step-level container of this image once timed out on.
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml).
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,24 +85,48 @@ jobs:
       # has no zsh (dash, the other shell it runs under, is Ubuntu's /bin/sh).
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends zsh
-      # The database cases of e2e/__tests__/psql-session.test.ts and harness-stacks.test.ts skip
-      # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
-      # has no `postgres:` service, as this job's head says. A container of the pinned image for
-      # this step alone was tried and taken out again, in the job these tests ran in before this
-      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on one
-      # runner in three. What those cases prove - that a worker's psql reads its own stack's
-      # database and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set,
-      # which is how a developer and an issue pod run them (`bun run test` in packages/dispatch;
-      # psql-session makes a database of its own there), and the stack contract they guard is also
-      # covered end to end by every multi-worker run of the browser suite itself.
+      # The database cases of e2e/__tests__/psql-session.test.ts, harness-stacks.test.ts and
+      # replace-blocks-guard.test.ts make a database of their own on the server LEGION_TEST_PG_DSN
+      # names, this job's service, and drop it again; the login is the image's superuser, since
+      # each of them starts with a CREATE DATABASE. The tests that start a stack's own Postgres
+      # need DISPATCH_E2E_PG_IMAGE or DISPATCH_E2E_PG_BIN, which this job names neither of, so the
+      # package's harness lane (its `test:harness` script, which `test` runs) leaves those files out
+      # (one --path-ignore-patterns each, held to the files by
+      # e2e/__tests__/postgres-provider.test.ts), and the jobs of
+      # .github/workflows/dispatch-browser.yaml that name a provider run them.
       #
       # This step runs both lanes in random order, which packages/dispatch/bunfig.toml sets. Each
       # lane prints its own ` --seed=<n>` in its summary. A red row that failed from the order is
       # reproduced with its file alone and that seed, as docs/testing.md ("A Dispatch unit test runs
       # in random order") says; it also says what a row that failed from the lane's load needs.
+      #
+      # The rows of harness-postgres-removal.test.ts, the files split from it
+      # (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+      # harness-postgres-waits.test.ts), harness-postgres-holders.test.ts and
+      # harness-postgres-marks.test.ts in this lane may wait, within their parts' own bounds, far
+      # longer than this job runs (their limits are the sums of those bounds,
+      # e2e/__tests__/harness-postgres-waits.ts's `rowMs`). So the step has a limit of
+      # its own and exports when it ends, in whole seconds since the epoch, as its script's first
+      # line (LEGION_TEST_STEP_ENDS_AT): a row whose step ends first ends there, naming what it
+      # waited for, and removes what it made, where the step's own clock would name no row
+      # (harness-postgres-source-rules.test.ts reads every workflow for such a step), and a file's hook
+      # that removes a directory may take what the step leaves, and no more
+      # (e2e/__tests__/step-end.ts). The limit is dispatch-browser.yaml's rule, the measured
+      # maximum plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the
+      # 28 green runs of the 40 newest green ci.yaml runs on 2026-11-19, and 129, 138 and 227 s in
+      # the branch's three green runs that added those rows' newest forms (44342655660, 44390012817,
+      # 44443452775), so 227 x 1.15 = 261 s, 5 minutes. Those rows wait out bounds of a few seconds
+      # each, which they set through the parameters the start reads its own from: the three files
+      # took 104 to 121 s together in 8 whole runs on one bun worker beside a shared Linux
+      # machine's load of 318 to 336 on 2026-11-19, so 121 x 1.15 = 140 s, 3 minutes, inside the 5.
       - name: Test dispatch dashboard
-        run: bun run test
+        timeout-minutes: 5
+        run: |
+          export LEGION_TEST_STEP_ENDS_AT=$(( $(date -u +%s) + 5 * 60 ))
+          bun run test
         working-directory: packages/dispatch
+        env:
+          LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard

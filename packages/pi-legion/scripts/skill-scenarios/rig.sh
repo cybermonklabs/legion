@@ -116,10 +116,11 @@
 # (seed.ts) and stopped when the run ends. A `dispatch search` searches every project of its
 # server, and a Dispatch bearer cannot be limited to one project, so a shared server would show
 # each run the other runs' issues and asks. Each run records its Dispatch in <run>/dispatch.json,
-# and score.ts does not score two runs that name one database. Docker assigns the containers' host
-# ports, the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds for it
-# until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same way and
-# reports, and the kernel assigns each run's daemon stand-in its port.
+# and score.ts does not score two runs that name one database. Docker chooses the containers' host
+# ports and binds them itself, trying the next port when one is taken (a start fails only when ten
+# in a row are), the listener serves on a port the kernel chose and scripts/e2e/lib/rig.sh holds
+# for it until it serves (start_held), each run's Dispatch on its own run-server.sh holds the same
+# way and reports, and the kernel assigns each run's daemon stand-in its port.
 #
 # Operator input (no default in this repository), for `profile`, `judge` and `judge-omp`:
 #   LEGION_E2E_MODEL_ROUTE        gateway (the default), key-file or provider: how the agents reach
@@ -207,12 +208,26 @@ set -euo pipefail
 # exports ENVOY_URL, DISPATCH_URL and their token files, a developer's shell can hold NATS
 # credentials (packages/dispatch/e2e/run-server.sh strips the same three families), and e2e/api.ts,
 # which seed.ts calls, addresses PLAYWRIGHT_BASE_URL with E2E_AGENT_TOKEN whenever it is set.
-for name in $(compgen -e); do
-  case $name in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$name" ;; esac
+for inherited in $(compgen -e); do
+  case $inherited in DISPATCH_* | ENVOY_* | NATS_* | PLAYWRIGHT_BASE_URL | E2E_AGENT_TOKEN) unset "$inherited" ;; esac
 done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
+note() { printf 'skill-scenarios: %s\n' "$*"; }
+fail() {
+  echo "skill-scenarios: $*" >&2
+  exit 1
+}
+
+# A batch removes the Postgres of dead stacks first, before each check of its start but one of its
+# own inputs (scripts/e2e/lib/sweep-order.ts): a check that refuses the batch for what a dead batch
+# of this work directory left, as lock_services's of the lock it leaves, would end every later
+# batch with that Postgres still there (scripts/e2e/lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+case "${1:-}" in batch) remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run" ;; esac
+
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 
@@ -220,12 +235,6 @@ work=$(realpath -m -- "$work")
 # run_tester_proof sets once seed.ts has filed it.
 worker_key=''
 worker_repo=example/widgets
-
-note() { printf 'skill-scenarios: %s\n' "$*"; }
-fail() {
-  echo "skill-scenarios: $*" >&2
-  exit 1
-}
 
 # omp_ancestor DIR prints DIR/.omp, or the .omp of the nearest directory above DIR that holds one,
 # and fails when none holds one. Oh My Pi reads a `.omp` in any directory from a session's cwd up
@@ -243,7 +252,6 @@ omp_ancestor() {
     dir=$(dirname -- "$dir")
   done
 }
-
 case "$work/" in "$root"/*) fail "SKILL_SCENARIOS_WORK $work is inside the checkout $root, where jj would snapshot it" ;; esac
 if found=$(omp_ancestor "$work"); then
   fail "SKILL_SCENARIOS_WORK $work is under $found: Oh My Pi reads that .omp as the configuration of every run's cwd, so a run would load its plugins and not its label's; give a work directory with no .omp in it or above it"
@@ -275,6 +283,9 @@ timeout_hook=
 . "$root/scripts/e2e/lib/rig.sh"
 
 tag=skill-scenarios-$(printf '%s' "$work" | sha256sum | cut -c1-8)
+# The ids of the batch's own containers, by which services_down removes them (start_container).
+# shellcheck disable=SC2034 # start_container and remove_containers fill and read it by its name
+service_containers=()
 tmux_socket=$work/tmux.sock
 tmux() { command tmux -S "$tmux_socket" "$@"; }
 
@@ -783,16 +794,22 @@ lock_services() {
 services_up() {
   evidence=$S
   # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-  docker run -d --name "$tag-pg" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  # Each by the id its create printed (start_container, lib/rig.sh), which services_down removes:
+  # a batch of another work directory with the same hash, or of the same path in another mount
+  # namespace on one Docker daemon, holds the same names, and its create then fails rather than
+  # take these. The batch's Postgres carries its mark (scripts/e2e/lib/leftovers.sh); the batch
+  # removed the Postgres of dead stacks at its start, before it took the lock.
+  pg_mark=$(postgres_mark "$work" "$tag-pg") || fail "the mark of $tag-pg could not be made"
+  start_container service_containers "$tag-pg" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_PASSWORD=ci -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
-    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20)) >/dev/null
+    -c max_connections=$((30 * ${SKILL_SCENARIOS_PARALLEL:-5} + 20))
   pg_port=$(docker port "$tag-pg" 5432/tcp | sed -n '1s/.*://p')
   [ -n "$pg_port" ] || fail "docker assigned Postgres no host port"
   # The hub's nats-server (lib/nats-image.sh reads testnats.HubImage): the listener and the daemon
   # refuse a nats-server below the floor packages/envoy/natsversion holds, every 2.10 among them.
   # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/nats-image.sh
   . "$root/scripts/e2e/lib/nats-image.sh"
-  docker run -d --name "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js >/dev/null
+  start_container service_containers "$tag-nats" --cpus 1 --memory 512m -p 127.0.0.1::4222 "$nats_image" -js
   nats_port=$(docker port "$tag-nats" 4222/tcp | sed -n '1s/.*://p')
   [ -n "$nats_port" ] || fail "docker assigned NATS no host port"
   until_true 60 "Postgres to accept TCP connections" docker exec "$tag-pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres
@@ -811,7 +828,7 @@ services_up() {
 # shellcheck disable=SC2329 # stop_batch, an exit trap, runs it
 services_down() {
   stop_tree "${listener_pid:-}"
-  docker rm -fv "$tag-nats" "$tag-pg" >/dev/null 2>&1 || true
+  remove_containers service_containers
   rm -f "$services_env" "$S/up"
 }
 

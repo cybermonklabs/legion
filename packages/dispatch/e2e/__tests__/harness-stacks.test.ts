@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { hostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 
 import { startStacks } from "../harness-pool";
@@ -15,6 +14,12 @@ import {
   withoutHarnessPort,
 } from "../harness-ports";
 import { rowLimit, runBounded } from "./bounded-subprocess";
+import {
+  missingForServer,
+  requireNothingMissing,
+  serverVariable,
+  skipsWithout,
+} from "./postgres-provider";
 
 const psqlModule = fileURLToPath(new URL("../psql.ts", import.meta.url));
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
@@ -179,26 +184,18 @@ test("a run of more than one stack refuses to start without a Postgres provider"
 });
 
 // The database a stack reads is the psql it starts, so the case that proves which one it picked
-// needs psql and a live database to answer; without either it would prove nothing and is
-// skipped, as e2e/__tests__/psql-session.test.ts's cases are, and its two halves are composed
-// into one line for the reason that file gives. The case runs `select 1` and writes nothing, so
-// it runs on the server's own database rather than one of its own.
-const live = (process.env.LEGION_TEST_PG_DSN ?? "").trim();
-const missingForDatabase = [
-  ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
-  ...(live === "" ? ["LEGION_TEST_PG_DSN, naming a server this run may read"] : []),
-];
-const withoutDatabase = missingForDatabase.length > 0;
-if (withoutDatabase) {
-  console.warn(
-    `Skipped the test in ${import.meta.path} that needs a database. This run does not have: ` +
-      `${missingForDatabase.join("; ")}. Supply what is missing and run the tests again.`
-  );
-}
+// needs psql and a live database to answer; without either it would prove nothing, so a
+// developer's run skips it and CI fails it, as e2e/__tests__/psql-session.test.ts's cases are
+// (`e2e/__tests__/postgres-provider.ts`), and its two halves are composed into one line for the
+// reason that file gives. The case runs `select 1` and writes nothing, so it runs on the
+// server's own database rather than one of its own.
+const live = (process.env[serverVariable] ?? "").trim();
+const missingForDatabase = missingForServer("a server this run may read");
 
-test.skipIf(withoutDatabase)(
+test.skipIf(skipsWithout("e2e/__tests__/harness-stacks.test.ts", missingForDatabase))(
   "psql reads its own stack's database",
   async () => {
+    requireNothingMissing(missingForDatabase);
     // A process of its own per case, which imports e2e/psql.ts in the environment under test: it
     // resolves the database once, when it starts its psql.
     const resolve = [

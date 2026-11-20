@@ -1,34 +1,28 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
-import { hostTool } from "@legion/test-fixtures/host-tools";
 
 import { dropDatabase, resetSession, sql, sqlAt } from "../psql";
 import { bounds, eventually, rowLimit } from "./bounded-subprocess";
+import {
+  missingForServer,
+  requireNothingMissing,
+  serverVariable,
+  skipsWithout,
+} from "./postgres-provider";
 
 /** The PostgreSQL server this run may make a database on: an issue pod names it, a developer
- *  names it, and the `dispatch` CI job has no Postgres at all, so these cases skip there. The
- *  session protocol is psql's answer to real statements, so the cases that need a database are
- *  skipped where no server is named rather than faked against a mock psql that could agree with a
- *  wrong reading of the protocol. */
-const server = process.env.LEGION_TEST_PG_DSN ?? "";
-/** Everything those cases need and this host or run does not have. The psql half is the gate
- *  `skipWithout("psql")` is, composed here rather than called: it prints a line of its own, and a
- *  host that has neither psql nor a server would get one line for each half rather than one
- *  naming both (harness-stacks.test.ts composes its Playwright gate the same way). */
-const missing = [
-  ...(hostTool("psql") === null ? ["psql on this host's PATH"] : []),
-  ...(server === ""
-    ? ["LEGION_TEST_PG_DSN, naming a server this run may create a database on"]
-    : []),
-];
+ *  names it, and the `dispatch-ui` CI job names its Postgres service. The session protocol is
+ *  psql's answer to real statements, so the cases that need a database are skipped where no
+ *  server is named rather than faked against a mock psql that could agree with a wrong reading
+ *  of the protocol: skipped on a developer's run, and failed in CI, which never skips them
+ *  (`e2e/__tests__/postgres-provider.ts`). */
+const server = process.env[serverVariable] ?? "";
+/** Everything those cases need and this host or run does not have, in one list, so a host that
+ *  has neither psql nor a server reads one line naming both. */
+const missing = missingForServer("a server this run may create a database on");
 const live = missing.length === 0;
-if (!live) {
-  console.warn(
-    `Skipped the tests in ${import.meta.path} that need a database. This run does not have: ` +
-      `${missing.join("; ")}. Supply what is missing and run the tests again.`
-  );
-}
+const skipped = skipsWithout("e2e/__tests__/psql-session.test.ts", missing);
 
 /** The database of this run alone, made in `beforeAll` and dropped in `afterAll`. The cases here
  *  create temporary tables and read pg_stat_activity, so they run on a database nobody else is
@@ -106,9 +100,10 @@ test("refuses when neither PLAYWRIGHT_DATABASE_URL nor DATABASE_URL names a data
 
 // A temporary table lives in its own connection, so one that answers a later call is itself the
 // proof that every call ran on the one psql this process started.
-test.skipIf(!live)(
+test.skipIf(skipped)(
   "stops at the first failing statement, on a session that outlives the call",
   async () => {
+    requireNothingMissing(missing);
     await sql("CREATE TEMP TABLE statement_log (ran int)");
 
     await expect(
@@ -128,11 +123,11 @@ test.skipIf(!live)(
 
 // A table of its own, holding a row committed before the failed call, so the case reads only what
 // it wrote whichever case ran before it.
-test.skipIf(!live)(
+test.skipIf(skipped)(
   "rolls back the transaction a failure aborted before the next call",
   async () => {
+    requireNothingMissing(missing);
     await sql("CREATE TEMP TABLE rollback_log (ran int)", "INSERT INTO rollback_log VALUES (1)");
-
     await expect(
       sql(
         "BEGIN",
@@ -152,7 +147,8 @@ test.skipIf(!live)(
   }
 );
 
-test.skipIf(!live)("keeps each caller's statements together when two calls overlap", async () => {
+test.skipIf(skipped)("keeps each caller's statements together when two calls overlap", async () => {
+  requireNothingMissing(missing);
   const [first, second] = await Promise.all([
     sql("SELECT 'a1'", "SELECT 'a2'"),
     sql("SELECT 'b1'", "SELECT 'b2'"),
@@ -164,9 +160,10 @@ test.skipIf(!live)("keeps each caller's statements together when two calls overl
 // e2e/keyed-writes.e2e.ts holds a row locked in one call while it watches pg_stat_activity for
 // that wait in another, so an overlapping call must reach the database beside the session's
 // transaction rather than behind it.
-test.skipIf(!live)(
+test.skipIf(skipped)(
   "runs a call that overlaps another on a second connection",
   async () => {
+    requireNothingMissing(missing);
     await sql("CREATE TABLE overlap_release (released int)");
     // The held statement runs until a row of `overlap_release` is committed, which only a call
     // that runs beside it can write. Once the short bound has passed it stops waiting and fails,
@@ -211,7 +208,8 @@ test.skipIf(!live)(
 // A NOTICE and a WARNING go to the same pipe an error does, so what a statement wrote there is
 // not what it is judged by: e2e/failed-room.e2e.ts drops a trigger that is not there between its
 // rows, and Postgres answers that with a NOTICE.
-test.skipIf(!live)("keeps a statement psql only wrote a notice or a warning for", async () => {
+test.skipIf(skipped)("keeps a statement psql only wrote a notice or a warning for", async () => {
+  requireNothingMissing(missing);
   await sql("CREATE TEMP TABLE notice_log (ran int)");
   // psql prints a command's own tag before the next statement's rows, `-tA` and all.
   expect(await sql("DROP TRIGGER IF EXISTS never_made ON notice_log; SELECT 'dropped'")).toBe(
@@ -225,7 +223,8 @@ test.skipIf(!live)("keeps a statement psql only wrote a notice or a warning for"
 // Both spellings a caller sends: a statement it terminated itself leaves psql an empty query
 // after it, whose own verdict is success, and one it left open is run by the terminator the
 // session appends.
-test.skipIf(!live)("rejects a statement that really failed with psql's own text", async () => {
+test.skipIf(skipped)("rejects a statement that really failed with psql's own text", async () => {
+  requireNothingMissing(missing);
   await expect(sql("SELECT nosuchcolumn")).rejects.toThrow(/nosuchcolumn/);
   await expect(sql("SELECT nosuchcolumn;")).rejects.toThrow(/nosuchcolumn/);
   expect(await sql("SELECT 'alive'")).toBe("alive");

@@ -214,13 +214,13 @@ func (p *Process) WaitForOutput(t testing.TB, lines ...string) {
 	}
 }
 
-// HeldPort is a loopback TCP port the kernel chose, held by a listening socket from the moment
-// HoldPort returns until the process the test passes it to serves on it, so no other program can
-// take the port in between.
+// HeldPort is a TCP port the kernel chose, held by a listening socket from the moment HoldPort
+// returns until the process the test passes it to serves on it, so no other program can take the
+// port in between.
 type HeldPort struct {
 	// Port is the port the kernel chose.
 	Port int
-	// Addr is the address the socket listens on, 127.0.0.1:Port.
+	// Addr is the address the socket listens on, 127.0.0.1:Port for HoldPort.
 	Addr string
 	// file holds the listening socket until Start has handed it to the process.
 	file *os.File
@@ -231,16 +231,24 @@ type HeldPort struct {
 // when the test ends.
 func HoldPort(t testing.TB) *HeldPort {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	return HoldPortOn(t, "tcp", "127.0.0.1:0")
+}
+
+// HoldPortOn is HoldPort on address, whose port 0 the kernel chooses, on network: "tcp4" and
+// "0.0.0.0:0" hold a port on every IPv4 interface, for a process that serves the machine's own
+// address as a pod serves its IP.
+func HoldPortOn(t testing.TB, network, address string) *HeldPort {
+	t.Helper()
+	listener, err := net.Listen(network, address)
 	if err != nil {
-		t.Fatalf("hold a loopback port: %v", err)
+		t.Fatalf("hold a port on %s %s: %v", network, address, err)
 	}
 	// The file is a descriptor of its own for the socket, so the socket stays listening once the
 	// listener is closed.
 	file, err := listener.(*net.TCPListener).File()
 	_ = listener.Close()
 	if err != nil {
-		t.Fatalf("hold a loopback port: take the listening socket's descriptor: %v", err)
+		t.Fatalf("hold a port on %s %s: take the listening socket's descriptor: %v", network, address, err)
 	}
 	// A File closed twice closes its descriptor once, so this is safe after Start has closed it.
 	t.Cleanup(func() { _ = file.Close() })

@@ -66,16 +66,19 @@ func Run(ctx context.Context, cfg harness.Config) error {
 
 	harness.Fact("restate-server-version", env.Version)
 	harness.Fact("restate-server-started-by-this-experiment", env.StartedServer)
-	harness.Fact("restate-ingress-address", cfg.RestateIngress)
-	harness.Fact("restate-admin-address", cfg.RestateAdmin)
+	harness.Fact("restate-ingress-address", env.IngressAddress)
+	harness.Fact("restate-admin-address", env.AdminAddress)
 	harness.Fact("invocation-status-read-from",
 		"POST /query against the server's sys_invocation and sys_journal views: restate-server 1.8.1's admin API has no GET /invocations, only the per-invocation pause, resume, kill, cancel and purge operations")
 
-	port, err := restatex.FreePort()
+	// The endpoint's port is held until the experiment ends, so the replacement that
+	// takes over the open wait serves the very URL the killed process served.
+	endpoint, err := restatex.HoldEndpoint()
 	if err != nil {
 		return err
 	}
-	service, err := startService(ctx, "service1", serviceBinary, workDir, port)
+	defer endpoint.Close()
+	service, err := startService(ctx, "service1", serviceBinary, workDir, endpoint)
 	if err != nil {
 		return err
 	}
@@ -88,7 +91,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	harness.Fact("service-endpoint", service.URL())
 	harness.Fact("deployment-id", deployment.ID)
 
-	replacement, err := runWait(ctx, cfg, env, service, serviceBinary, workDir, port)
+	replacement, err := runWait(ctx, env, service, serviceBinary, workDir, endpoint)
 	if replacement != nil {
 		defer replacement.Stop()
 	}
@@ -98,7 +101,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 	if err := runPause(ctx, env, attemptFile, fixFile); err != nil {
 		return err
 	}
-	if err := runSelfPause(ctx, cfg, env, selfFile, selfRelease); err != nil {
+	if err := runSelfPause(ctx, env, selfFile, selfRelease); err != nil {
 		return err
 	}
 
@@ -107,7 +110,7 @@ func Run(ctx context.Context, cfg harness.Config) error {
 }
 
 // runWait is the first half: the wait for a person.
-func runWait(ctx context.Context, cfg harness.Config, env *restatex.Env, service *restatex.Service, serviceBinary, workDir string, port int) (*restatex.Service, error) {
+func runWait(ctx context.Context, env *restatex.Env, service *restatex.Service, serviceBinary, workDir string, endpoint *restatex.Endpoint) (*restatex.Service, error) {
 	askFile, decisionFile := AskFile(workDir), DecisionFile(workDir)
 	goroutinesAtRest := latest(service, "goroutines")
 
@@ -170,7 +173,7 @@ func runWait(ctx context.Context, cfg harness.Config, env *restatex.Env, service
 	harness.Fact("invocation-after-the-waiting-process-was-killed", afterKill)
 	harness.Fact("suspended-wait-survived-the-kill", afterKill.Found && afterKill.Status == "suspended")
 
-	replacement, err := startService(ctx, "service2", serviceBinary, workDir, port)
+	replacement, err := startService(ctx, "service2", serviceBinary, workDir, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +203,7 @@ func runWait(ctx context.Context, cfg harness.Config, env *restatex.Env, service
 	if err := env.Ingress.ResolveAwakeable(ctx, awakeableID, "approved"); err != nil {
 		return nil, err
 	}
-	harness.Fact("awakeable-resolved-over", "POST http://"+cfg.RestateIngress+"/restate/awakeables/<id>/resolve")
+	harness.Fact("awakeable-resolved-over", "POST /restate/awakeables/<id>/resolve on the ingress at "+env.IngressAddress)
 
 	decided, err := restatex.WaitForLines(ctx, decisionFile, 1, terminalWait)
 	if err != nil {
@@ -355,9 +358,9 @@ func runPause(ctx context.Context, env *restatex.Env, attemptFile, fixFile strin
 // runSelfPause measures whether a handler can put itself into `paused` while it is
 // running, which the admin API documents as PATCH /invocations/{id}/pause against a
 // running invocation.
-func runSelfPause(ctx context.Context, cfg harness.Config, env *restatex.Env, logFile, releaseFile string) error {
+func runSelfPause(ctx context.Context, env *restatex.Env, logFile, releaseFile string) error {
 	invocationID, err := env.Ingress.Send(ctx, SelfPauseServiceName, SelfPauseHandlerName, SelfPauseParams{
-		AdminAddress: cfg.RestateAdmin, LogFile: logFile, ReleaseFile: releaseFile,
+		AdminAddress: env.AdminAddress, LogFile: logFile, ReleaseFile: releaseFile,
 	})
 	if err != nil {
 		return err
@@ -414,11 +417,11 @@ func runSelfPause(ctx context.Context, cfg harness.Config, env *restatex.Env, lo
 	return nil
 }
 
-// startService runs one cmd/restateservice process in experiment 11's mode.
-func startService(ctx context.Context, name, binary, workDir string, port int) (*restatex.Service, error) {
-	address := restatex.Address(port)
-	args := []string{"-mode", "exp11", "-address", address, "-work-dir", workDir}
-	return restatex.StartService(ctx, name, binary, args, workDir, address, restatex.ServiceReady)
+// startService runs one cmd/restateservice process in experiment 11's mode on endpoint, a
+// loopback port the driver holds.
+func startService(ctx context.Context, name, binary, workDir string, endpoint *restatex.Endpoint) (*restatex.Service, error) {
+	args := []string{"-mode", "exp11", "-work-dir", workDir}
+	return restatex.StartService(ctx, name, binary, args, workDir, endpoint, restatex.ServiceReady)
 }
 
 // awakeableFrom pulls the published awakeable id out of the line the handler wrote.

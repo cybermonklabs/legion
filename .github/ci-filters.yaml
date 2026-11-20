@@ -90,7 +90,6 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/listenerwire/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/listenfd/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
@@ -358,6 +357,15 @@ daemon_go_tests:
   - 'scripts/e2e/lib/held-port.py'
   - 'scripts/e2e/lib/process-tree.sh'
   - 'scripts/e2e/lib/built-from.sh'
+  # why: .github/ci-notes/ci.md#daemon_go_tests-the-removal-of-each-gone-test-stacks-postgres
+  - 'scripts/e2e/lib/leftovers.sh'
+  - 'packages/dispatch/e2e/postgres-mark.ts'
+  - 'packages/dispatch/e2e/harness-postgres-marks.ts'
+  - 'packages/dispatch/e2e/harness-postgres-removal.ts'
+  - 'packages/dispatch/e2e/harness-postgres-container-removal.ts'
+  - 'packages/dispatch/e2e/harness-postgres-processes.ts'
+  - '.bun-version'
+  - '.github/actions/setup-bun/**'
   - 'packages/pi-legion/package.json'
   - 'packages/pi-envoy/package.json'
   - 'deploy/kubernetes/daemon/controller.yaml.example'
@@ -419,7 +427,6 @@ plugin_pack:
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
@@ -1052,6 +1059,21 @@ test:
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
   - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
   - 'packages/envoy-client/test/fake-dispatch.ts'
+  # why: .github/ci-notes/ci.md#test-each-shell-stacks-start-which-the-sweep-order-test-runs
+  - 'packages/dispatch/e2e/postgres-mark.ts'
+  - 'packages/dispatch/e2e/harness-postgres-marks.ts'
+  - 'packages/dispatch/e2e/harness-postgres-removal.ts'
+  - 'packages/dispatch/e2e/harness-postgres-container-removal.ts'
+  - 'packages/dispatch/e2e/harness-postgres-processes.ts'
+  - 'packages/pi-legion/scripts/skill-scenarios/rig.sh'
+  # why: .github/ci-notes/ci.md#test-the-hook-that-removes-the-e2e-libraries-scratch
+  - 'packages/dispatch/e2e/__tests__/step-end.ts'
+  # why: .github/ci-notes/ci.md#test-the-rows-the-row-waits-test-reads-outside-its-own-directory
+  - 'packages/pi-envoy/extensions/envoy.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-elsewhere.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-container-removal.test.ts'
+  - 'packages/dispatch/e2e/__tests__/harness-postgres-waits.test.ts'
   - 'scripts/dispatch/**'
   - 'scripts/github-apps/**'
   - 'scripts/sessions/**'
@@ -1384,6 +1406,8 @@ dispatch_ui:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-browser-workflow-the-provider-test-reads
+  - '.github/workflows/dispatch-browser.yaml'
   - *bun_install
   - 'packages/dispatch/**'
   - 'packages/proof-editor/**'
@@ -1511,6 +1535,8 @@ dispatch_browser:
   - *go_workspace
   - *dispatch_server
   - 'scripts/e2e/lib/held-port.py'
+  # why: .github/ci-notes/ci.md#dispatch_browser-the-shell-stack-the-visual-jobs-image-rows-start
+  - 'scripts/e2e/lib/leftovers.sh'
   - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
   - 'packages/envoy/internal/dispatch/testlimits/*'
   - 'scripts/third-party-notices.ts'
@@ -1606,7 +1632,6 @@ envoy_infra_go:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testpg/*'
   - 'packages/envoy/internal/testpg/testdb/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - 'packages/envoy/internal/weborigin/*'
   - '.github/actions/pull-test-images/**'
@@ -1749,7 +1774,6 @@ dispatch_memory:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
@@ -1786,7 +1810,6 @@ dispatch_multiprocess:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
@@ -1825,7 +1848,6 @@ dispatch_two_builds_go:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -1917,7 +1939,6 @@ dispatch_two_builds:
   - *dispatch_command_tests
   - 'packages/envoy/internal/githubtest/*'
   - 'packages/envoy/internal/testnats/*'
-  - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -2330,7 +2351,6 @@ envoy_e2e_local:
   - *listener_command
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testnats/cmd/natsd/*'
-  - 'packages/envoy/internal/testport/*'
   # why: .github/ci-notes/ci.md#envoy_e2e_local-the-job-reads-no-markdown-file-the-listener-the-renderer
   - '!**/*.md'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -2351,6 +2371,9 @@ envoy_session_stall:
   - 'packages/contracts/**'
   - 'packages/test-fixtures/src/**'
   - 'packages/broker-client/**'
+  # why: .github/ci-notes/ci.md#envoy_session_stall-the-held-socket-the-role-takeover-smoke-serves-on
+  - 'scripts/e2e/lib/held-port.py'
+  - 'scripts/e2e/lib/port-file.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
   # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.

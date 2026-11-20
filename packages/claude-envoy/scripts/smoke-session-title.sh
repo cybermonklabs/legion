@@ -106,6 +106,9 @@ readonly nats_port
 
 (cd "${repo_root}/packages/envoy" && go build -o "${workdir}/envoy-listener" ./cmd/listener) ||
   fail "the Envoy listener did not build"
+# The log is made before the listener starts: the background shell opens it only after its fork,
+# and the first read below, which `set -e` ends the run on when it fails, can come before that.
+: >"${workdir}/listener.log"
 env PORT=0 ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID=session-title-smoke \
   NATS_URLS="nats://127.0.0.1:${nats_port}" \
   "${workdir}/envoy-listener" >"${workdir}/listener.log" 2>&1 &

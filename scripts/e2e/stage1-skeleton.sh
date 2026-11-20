@@ -17,6 +17,18 @@
 # so the OMP it names is a stub that answers the gate's load probe and nothing else, under a home
 # of the run's own that holds the checkout's plugin manifest where the gate reads it.
 set -euo pipefail
+root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, on every run, before each command of the start but one
+# that reads only its own inputs (lib/sweep-order.ts), as each start of a stack removes it: under
+# set -e a command that fails ends the start, and one that fails for what a dead run left would end
+# every later start with that Postgres still there. CI passes its service's DSN; the devbox brings
+# its own container on an ephemeral port, which carries this run's mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 
 pid=
 # lib/rig.sh's start_kept and keep_port set these: each daemon's pid, copied to pid on each start,
@@ -84,7 +96,6 @@ stop_daemon() {
   pid=
 }
 
-root=$(cd "$(dirname "$0")/../.." && pwd)
 trap cleanup EXIT
 mkdir -p "$work/state" "$work/xdg" "$work/home"
 # The daemon runs from here, so mise resolves its tmux from here too, whatever directory the run
@@ -184,12 +195,12 @@ keep_port daemon_keeper port
 go build -o "$work/legion" ./cmd/legion
 bash "$root/scripts/e2e/lib/built-from.sh" "$root" "$work/legion" | sed 's/^/   /'
 
-# CI passes its service's DSN; the devbox brings its own container on an ephemeral port.
 if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   docker ps >/dev/null # a broken docker is a failure of this run, not of the daemon
   # ghcr.io/cybermonklabs/legion/ci, the copy of PostgreSQL 18 (.github/ci-images.yaml), the major
   # version CI's service and Cloud SQL run
-  docker run -d --name "$container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+  pg_mark=$(postgres_mark "$work" "$container") || fail "the mark of $container could not be made"
+  docker run -d --name "$container" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
     -e POSTGRES_USER=legion -e POSTGRES_PASSWORD=legion \
     -e POSTGRES_DB=legion -p 127.0.0.1::5432 ghcr.io/cybermonklabs/legion/ci@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
   # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the

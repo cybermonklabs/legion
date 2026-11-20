@@ -27,6 +27,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import net from "node:net";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import {
@@ -93,6 +94,8 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { nativesEnvironment } from "@legion/test-fixtures/natives-environment";
+import { rowMs, rowOf, type Wait } from "@legion/test-fixtures/row-waits";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -103,6 +106,7 @@ import { version as packageVersion } from "../package.json" with { type: "json" 
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { netCallAddress } from "../test/net-call-address";
 import { runSessionPod } from "../test/session-pod-report";
 import {
   type BranchEntry,
@@ -873,34 +877,52 @@ function createPi(options: { readonly clipboardError?: Error; readonly zod?: typ
 /** nats.js's own default server, the one it dials when a connect is handed none. */
 const NATS_DEFAULT_PORT = 4222;
 
+/** One TCP dial a stand-in of `node:net` was handed: the port and the host it names. */
+interface Dial {
+  readonly port: number;
+  readonly host: string;
+}
+
 /**
- * A listener on `127.0.0.1:<port>` that counts the connections made to it and closes each, or
- * null when something already listens there. `Bun.listen` binds synchronously and throws
- * `EADDRINUSE`, so a `describe` body can read the answer and hand it to `test.skipIf`, and the
- * listener it returns holds the port from that moment: no second bind, so no race with whatever
- * else on the machine might take the port between the question and the row that asks it.
+ * Runs `body` with `node:net`'s `createConnection` and `connect` replaced by a stand-in that
+ * records the port and host of each TCP dial, and answers the dials. nats.js makes every dial of
+ * its node transport through `net.createConnection(port, hostname)` (nats@2.29.3,
+ * `lib/src/node_transport.js:111`), so a connect this process makes is counted where the client
+ * makes it. A dial of nats.js's default port is refused at once (ECONNREFUSED), so it reaches no
+ * NATS of the machine; every other dial goes on to `node:net`. Nothing is bound, so the count is
+ * the same with 127.0.0.1:4222 free, taken by a local NATS, or taken by another run of this file.
+ * A dial that does not go through `node:net`, such as `Bun.connect`, is not counted.
  */
-function listenCountingDials(
-  port: number
-): { readonly dialed: () => number; readonly stop: () => void } | null {
-  let dialed = 0;
+async function dialsDuring(body: () => Promise<void>): Promise<readonly Dial[]> {
+  const dials: Dial[] = [];
+  const { createConnection, connect } = net;
+  const standIn = ((...args: Parameters<typeof net.createConnection>) => {
+    const dial = netCallAddress(args);
+    if (dial !== undefined) {
+      dials.push(dial);
+      if (dial.port === NATS_DEFAULT_PORT) {
+        const socket = new net.Socket();
+        queueMicrotask(() =>
+          socket.destroy(
+            Object.assign(new Error(`a dial of ${NATS_DEFAULT_PORT}, refused by this test`), {
+              code: "ECONNREFUSED",
+            })
+          )
+        );
+        return socket;
+      }
+    }
+    return createConnection(...args);
+  }) as typeof net.createConnection;
+  net.createConnection = standIn;
+  net.connect = standIn;
   try {
-    const listener = Bun.listen({
-      hostname: "127.0.0.1",
-      port,
-      socket: {
-        open(socket) {
-          dialed += 1;
-          socket.end();
-        },
-        data() {},
-      },
-    });
-    return { dialed: () => dialed, stop: () => listener.stop(true) };
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") return null;
-    throw error;
+    await body();
+  } finally {
+    net.createConnection = createConnection;
+    net.connect = connect;
   }
+  return dials;
 }
 
 /** Every callback the default `sessionContext()` timer ran, awaited after each test. */
@@ -4995,7 +5017,14 @@ describe("envoy OMP extension", () => {
   // laid over it, so the child would act as the other session. "" lies over the value there, and
   // every reader takes "" as unset. The process here starts with the variable, loads the entry
   // (with the host package stood in by the role takeover smoke's preload), runs its session_start
-  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`.
+  // for a session with no id, and starts `env` the PTY's way: `env K=V … env`. That process, which
+  // its own bound ends, is what the row waits for, and the row's limit is the sum of its waits
+  // (`rowMs` of `@legion/test-fixtures/row-waits`).
+  const theEntry: Wait = {
+    what: "the process that loads the entry and starts env",
+    ms: 30_000,
+  };
+  const oneEntry = [theEntry];
   test("a session with no id hands a PTY child no inherited DISPATCH_SESSION_ID", () => {
     const marker = "dispatch-session-report ";
     const script = `
@@ -5033,12 +5062,16 @@ describe("envoy OMP extension", () => {
     `;
     const hostStub = join(import.meta.dir, "..", "scripts", "role-takeover", "host-stub.ts");
     const { ENVOY_URL: _url, ENVOY_NATS_URL: _nats, ...rest } = process.env;
+    rowOf(oneEntry).charge(theEntry);
+    // The entry loads @oh-my-pi/pi-natives, so the child gets the worker count of
+    // nativesEnvironment: beside this process, a child that starts one worker for each CPU of a
+    // large machine cannot start them under a limit of tasks, and exits 1 having printed nothing.
     const run = Bun.spawnSync([process.execPath, "--preload", hostStub, "-e", script], {
       cwd: import.meta.dir,
-      env: { ...rest, DISPATCH_SESSION_ID: "parent-session" },
+      env: nativesEnvironment({ ...rest, DISPATCH_SESSION_ID: "parent-session" }),
       stdout: "pipe",
       stderr: "pipe",
-      timeout: 30_000,
+      timeout: theEntry.ms,
     });
     const report = run.stdout
       .toString()
@@ -5046,11 +5079,11 @@ describe("envoy OMP extension", () => {
       .find((line) => line.startsWith(marker));
     if (run.exitCode !== 0 || report === undefined) {
       throw new Error(
-        `the process that loaded the entry reported nothing: ${run.stderr.toString()}`
+        `the process that loaded the entry exited ${run.exitCode}${run.signalCode ? ` on ${run.signalCode}` : ""} and reported nothing: ${run.stderr.toString()}`
       );
     }
     expect(JSON.parse(report.slice(marker.length))).toEqual({ processEnv: "", pty: "" });
-  });
+  }, rowMs(oneEntry));
 
   /** A context for `ses_title` whose live session name is `name()`, as agent `kind` runs it. */
   const titledContext = (kind: "main" | "sub", name: () => string | undefined): SessionContext => ({
@@ -20234,18 +20267,11 @@ console.log(JSON.stringify(args));
 
   // nats.js dials 127.0.0.1:4222 when handed no server, so a subscription with inbound off must
   // refuse before any connect: one that reached it would attach to whatever NATS this machine runs.
-  // The refusals are checked on every machine. That nothing was dialed is checked against a
-  // listener of this file's own on that one port — the kernel cannot pick it, 4222 being the
-  // default under proof — bound once here and held for the rows that count its connections. Where
-  // something else already listens there (a local NATS, a CI service), those rows skip, named.
-  const dialProbe = listenCountingDials(NATS_DEFAULT_PORT);
-  if (dialProbe === null) {
-    console.warn(
-      `127.0.0.1:${NATS_DEFAULT_PORT} is already in use: the rows that count what dials nats.js's ` +
-        "default port are skipped. Every other row of this file still runs."
-    );
-  }
-  afterAll(() => dialProbe?.stop());
+  // The refusals are checked on every machine. That nothing was dialed is counted where nats.js
+  // makes its dial, `node:net`'s `createConnection` (`dialsDuring`), with nats.js's own connect
+  // behind the extension's, so a connect that got past the extension's seam is counted too. Those
+  // rows bind nothing, so they count the same on every machine: with 127.0.0.1:4222 free, held by
+  // a local NATS, or held by another run of this file.
 
   for (const { slug, name, configure, why } of [
     {
@@ -20302,19 +20328,11 @@ console.log(JSON.stringify(args));
       await bothSubscribesRefuse("refusals");
     });
 
-    test.skipIf(dialProbe === null)(
-      `with ${name}, nothing dials nats.js's default 127.0.0.1:${NATS_DEFAULT_PORT}`,
-      async () => {
-        if (dialProbe === null) {
-          throw new Error(`nothing of this file's own listens on 127.0.0.1:${NATS_DEFAULT_PORT}`);
-        }
-        // nats.js's own connect, so a dial that got through reaches the probe, not the mock.
-        natsState.realConnect = true;
-        const before = dialProbe.dialed();
-        await bothSubscribesRefuse("dials");
-        expect(dialProbe.dialed()).toBe(before);
-      }
-    );
+    test(`with ${name}, nothing dials nats.js's default 127.0.0.1:${NATS_DEFAULT_PORT}`, async () => {
+      natsState.realConnect = true;
+      const dials = await dialsDuring(() => bothSubscribesRefuse("dials"));
+      expect(dials.filter((dial) => dial.port === NATS_DEFAULT_PORT)).toEqual([]);
+    });
   }
 
   // The daemon sends a role's every task and notice to its role topic, which reaches a session only

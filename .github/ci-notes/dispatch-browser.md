@@ -527,8 +527,9 @@ names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the 
 while it measures. The full lane alone: a pull request runs no clock row, since a shard
 job's machine cannot hold one still enough to measure.
 
-Its steps are the shard job's, with three differences - one worker rather than four, the
-Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, and no file store on the machine - and their commands are kept
+Its steps are the shard job's, with four differences - one worker rather than four, the
+Playwright command of .github/scripts/dispatch-browser-alone-suite.sh, no file store on the machine,
+and the chromium-alone leg's test of the Postgres binaries provider - and their commands are kept
 the same everywhere else, so the two can be diffed; the two bodies that are really shared
 are scripts both jobs call, the sampler and the PostgreSQL reading, which is part of what
 keeps them so. They are not one composite action for the reason this file's head gives.
@@ -608,9 +609,11 @@ The shard job's note "THE TWO NETWORK READS, AT A BUSY HOUR" holds here too, and
 two legs is this job's: in run 44213916667 alone (chromium-alone) spent 355 s pulling the
 image, and the 6-minute budget cancelled it 3 s into its checkout. The download carries the
 same budget and second attempt as there, and the pull is counted at that 355 s. The job's
-budget is the browser step's 180 s, the two download attempts' 120 s each, and the steps
-without a budget at 137 - 5 - 45 + 355 = 442 s: 862 s, 14 min 22 s, rounded up to the 15
-minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
+budget, one figure for the three legs, is the browser step's 180 s, the binaries step's 120 s
+(the chromium-alone leg's test of the Postgres binaries provider, which came after every run
+above and takes the rule's floor, two minutes, until runs of it give a maximum), the two
+download attempts' 120 s each, and the steps without a budget at 137 - 5 - 45 + 355 = 442 s:
+982 s, 16 min 22 s, rounded up to the 17 minutes of the alone job's `timeout-minutes`, whose 38 s left over hold the new step that places the binaries
 (.github/ci-notes/dispatch-browser.md#what-the-shard-job-places-and-what-its-budget-leaves-for-it).
 The browser step's own budget is unchanged, and it still
 fires first.
@@ -772,7 +775,12 @@ two steps: the image's pull, which has no budget and counts at the 120 s the vis
 counts its pull of the same digest at (the time a browser step spent before its stack's
 first output on the run that found the need; the pull took 13 s in run 44480885813), and the
 connections read, which takes the two-minute floor until runs of it are measured. 4 + 4 +
-2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The dashboard step now also starts
+2 + 2 min plus 135 s and 120 s = 16 min 15 s -> 17 min. The two-stack test's step (the
+multiprocess job's test of a second globalSetup in one process) came after those runs, so none
+of them measured it: the test took 39 s on a shared Linux machine under a load of about 200
+(2026-11-17), with the Go build cache warm and the image present, as they are there. So its step
+takes the rule's floor, two minutes, until runs of it give a maximum: 4 + 4 + 2 + 2 + 2 min plus
+135 s and 120 s = 18 min 15 s -> 19 min. The dashboard step now also starts
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
@@ -844,8 +852,8 @@ nothing can make it launch another engine, and so keeps this one download.
 
 The image the harness starts each Playwright run's Postgres from, pulled here so the
 browser steps of its job after it do not pay for it inside their own budgets, as the visual job pulls
-it. The digest is the browser steps', written three times, and the three must stay the
-same: a pull of another digest leaves the browser step to pull its own. Each new step's
+it. The digest is the browser steps' and the two-stack test's, written four times, and the
+four must stay the same: a pull of another digest leaves those steps to pull their own. Each new step's
 name carries the lane, as the embedder job's build step's does, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
 
@@ -1010,13 +1018,19 @@ The step "Pull the stack's Postgres image" was added later, for the reason
 .github/ci-notes/dispatch-browser.md#the-stacks-postgres-image-pulled-here-for-the-same-reason gives,
 and its pull is counted at the 120 s the browser step spent before the stack's first output
 on the run that found it: 240 + 314 + 120 = 674 s, 11 min 14 s, rounded up to the 12 minutes
-it had. The reverse-order browser step runs the same rows on a new stack of the same size, with
-a new seed, and has the first step's 4-minute budget, so the job budget is 12 + 4 = 16 minutes.
+it had. The image provider's step came after those runs, so none of them measured it, and it
+runs after that pull, so it pulls nothing: its four files read about 67 s on a shared machine
+under a load of about 300 (67 x 1.15 = 77 s, under the rule's floor), so it takes the floor, two
+minutes, until runs of it give a maximum. The reverse-order browser step runs the same rows on a
+new stack of the same size, with a new seed, and has the first step's 4-minute budget, which the
+next paragraph adds to the sum of the other steps: 14 + 4 = 18 minutes, the job's limit.
 
 #4383 counted the steps without a budget at 314 s, the five columns' figure before the sixth
 was added (240 + 314 + 120 = 674 s), where #2856 had already re-measured them at 333 s over the
 six columns above, the sixth being run 42614920253 (job 129152410516). So the sum is
-240 + 333 + 120 = 693 s, 11 min 33 s, and the budget stays 12 minutes.
+240 + 333 + 120 = 693 s, 11 min 33 s, and the budget was 12 minutes; with the image provider's
+step's 120 s it is 813 s, 13 min 33 s, rounded up to 14, and 14 + 4 = 18 minutes with the
+reverse-order browser step.
 
 ## Why the visual job restores go-envoy-test
 
@@ -1261,3 +1275,50 @@ nothing, the verdict being ci.yaml's `ci-ok` job's own check run
 needs every other job of this workflow, and the step is its last, which is the shape
 .github/scripts/ci_filter_coverage.py's check_ci_ok holds a called workflow to. The
 nightly workflow passes no `ci-ok-changes`, and the step skips.
+
+## Why the alone job's chromium-alone leg tests the Postgres binaries provider
+
+The binaries row of e2e/__tests__/harness-postgres-leftover.test.ts: the next start of a
+stack removes the postmaster of a stack killed hard, with its data and socket directories,
+and no postmaster of a stack that runs. It needs DISPATCH_E2E_PG_BIN naming a PostgreSQL
+with pgvector, which this image is and no runner job has, and it never skips in CI
+(e2e/__tests__/postgres-provider.ts); the dispatch-ui job, which names no provider,
+leaves the file out of its run, and the visual job runs its image row. One leg is enough
+for a row that reads no clock, and chromium-alone is the one. It runs before the browser
+step, so that step starts no stack on a provider this row has just failed. TMPDIR and the
+provider are exported on the command line for the reason the shard job's head gives. The
+row may wait far longer than this step's limit within its parts' own bounds, so the step
+exports when that limit ends it, in whole seconds since the epoch, as its script's first
+line (LEGION_TEST_STEP_ENDS_AT), and the row ends there, naming what it waited for, and
+removes what it made (the dispatch-ui job's test step says more).
+
+## Why the multiprocess job tests a second globalSetup in one process
+
+e2e/__tests__/second-global-setup.test.ts: a second globalSetup in one process starts a
+Postgres of its own rather than reading the first's. Its child runs the hook twice, two
+whole stacks, so it needs what the multiprocess job and no other job on the runner has
+together: the Chromium the hook refuses to start without (that job's install step; the
+visual job's browsers are in its container), the Go toolchain run-server.sh builds the
+server with, warm from that job's build step, and Docker with the image provider's digest,
+which its pull step pulled, with its connections step's number. It never skips in CI
+(e2e/__tests__/postgres-provider.ts), and the dispatch-ui job, which names no provider,
+leaves it out of its run. The variables are exported on the command line, not in an
+`env:`, for the reason the shard job's head gives.
+
+## Why the visual job tests the Postgres image provider
+
+The image provider's own tests: e2e/__tests__/harness-postgres-image-port.test.ts holds it
+to a host port it never takes, harness-postgres-image-mount.test.ts to run directories
+whose path holds a `:`, a `"` or a `,`, harness-postgres-image-ready.test.ts to a start
+that answers only once the image's own init has stopped its temporary server, and the
+image row of harness-postgres-leftover.test.ts to removing the container of a stack killed
+hard and no container of a stack that runs. None of them skips in CI
+(e2e/__tests__/postgres-provider.ts), and the dispatch-ui job, which runs e2e/__tests__
+with no provider, leaves them out of its run; this job sets the image for its own stack.
+The leftover file's binaries row runs in the alone job's chromium-alone leg, whose
+container has the binaries and no Docker; `-t` selects each provider's rows by the title
+that names it. They run here on the runner, with the browser step's TMPDIR, image digest
+and connections, and before that step, so it starts no stack on a provider these tests
+have just failed. The variables are exported on the command line for the reason the job's
+head gives; LEGION_TEST_STEP_ENDS_AT is when this step's limit ends it, as the alone job's
+binaries step exports it, since these rows too may wait longer within their parts' bounds.

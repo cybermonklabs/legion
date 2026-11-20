@@ -53,10 +53,11 @@ type Config struct {
 	// experiments 7, 8 and 9 start as a second process. Empty means "the dbosworker
 	// next to the running binary".
 	DBOSWorker string
-	// RestateIngress and RestateAdmin are the loopback addresses of the Restate
-	// server that experiments 10, 11 and 12 measure: the ingress an invocation is
-	// started through, and the admin API a deployment is registered with and an
-	// invocation's state is read from.
+	// RestateIngress and RestateAdmin are the loopback addresses of a Restate server
+	// somebody else runs, which experiments 10, 11 and 12 measure when they start
+	// none: the ingress an invocation is started through, and the admin API a
+	// deployment is registered with and an invocation's state is read from. A server
+	// an experiment starts serves both on unix sockets of its own instead.
 	RestateIngress string
 	RestateAdmin   string
 	// RestateServer is the absolute path of a restate-server executable. When it

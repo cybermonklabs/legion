@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  `test/envoy-stack` and `test/dispatch-stack` start each server on a port that no other program can take between its choice and its bind, so many stacks can start at one time on one machine. Before, a stack chose a free port, let it go, and handed the number to the server, which then exited with `bind: address already in use` when another program had taken it. The Dispatch server and the listener now serve on a socket the stack holds from the choice of the port and hands them as descriptor 3 (`DISPATCH_LISTEN_FD`, `ENVOY_LISTEN_FD`; `startOnHeldPort`), and natsd binds ports the kernel chooses (`-p -1 -m -1`), which the stack reads from natsd's log.
+
+  `freePorts` is removed. Both stacks take a `portChosen` option, called with each port the stack chooses before the server it is for starts, which `src/__tests__/stack-ports.live.test.ts` uses to make the race certain.

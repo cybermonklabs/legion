@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2317 # cleanup is trap-invoked
+# shellcheck disable=SC2317,SC2329 # cleanup is trap-invoked (SC2329 is the half of SC2317 that
+# version 0.11 of shellcheck split out)
 # e2e-refill.sh — Proves on the real listener and a real NATS server that the listener keeps its
 # copy of a bucket while it reads the bucket again, and refuses its two list routes, with no
 # active-sessions sample, while it cannot stand behind that copy (INFRA-261).
@@ -51,7 +52,8 @@ Run the listener and a throwaway NATS server and prove, per scenario:
 
 Options:
   --listener-bin, --natsd-bin  run these binaries instead of building them from this checkout,
-                               e.g. a build of the merge base for a negative control
+                               e.g. a build of the merge base for a negative control; the
+                               listener must take ENVOY_LISTEN_FD
   --out <dir>                  evidence directory (default $TMPDIR/envoy-e2e-refill); its contents
                                are replaced
   --during-refuse <command>    run with bash -c while both lists refuse with NATS down, with
@@ -61,7 +63,10 @@ Options:
                                (<out>/refuse/after-refuse.log)
 
 Exit status: 0 every verdict PASS, 1 a FAIL, 4 an INVALID and no FAIL, 2 usage, 3 environment.
-Ports: E2E_REFILL_NATS_PORT (14232), E2E_REFILL_PORT (19030).
+Ports: none is chosen before its server binds it. The listener serves on a socket a keeper holds
+for the whole run (ENVOY_LISTEN_FD), and natsd binds a port the kernel chooses at each start,
+which a held front on a second kept port forwards to (scripts/e2e/lib/held-front.sh), so a
+restart of either keeps the URL every client was given.
 EOF
 }
 
@@ -127,12 +132,22 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly script_dir
 envoy_dir="$(cd "${script_dir}/.." && pwd)"
 readonly envoy_dir
+repo_root="$(cd "${envoy_dir}/../.." && pwd)"
+readonly repo_root
+readonly held_port="${repo_root}/scripts/e2e/lib/held-port.py"
+# lib/port-file.sh for read_port_file, which waits for a keeper's port file, and lib/held-front.sh
+# for natsd's front (held_front_argv, held_front_answers). Neither reads a variable of this shell.
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/port-file.sh
+. "${repo_root}/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=../../../scripts/e2e/lib/held-front.sh
+. "${repo_root}/scripts/e2e/lib/held-front.sh"
 
-nats_port="${E2E_REFILL_NATS_PORT:-14232}"
-listener_port="${E2E_REFILL_PORT:-19030}"
-readonly nats_port listener_port
-readonly nats_url="nats://127.0.0.1:${nats_port}"
-readonly listener_url="http://127.0.0.1:${listener_port}"
+# The two kept ports, assigned once their keepers hold them (start_keeper): natsd's front's, which
+# every client of NATS is given, and the listener's.
+nats_port=""
+listener_port=""
+nats_url=""
+listener_url=""
 
 # Record counts. A re-read has to last long enough for polls to land inside it, and an interrupted
 # one long enough for the interruption to land before its scan ends. A recreated bucket of the
@@ -171,6 +186,10 @@ readonly lock_file="${out_dir}/run.lock"
 readonly rig="${bin_dir}/refillrig"
 
 nats_pid=""
+natsd_port=""
+front_pid=""
+keeper_pids=()
+ports_dir=""
 listener_pid=""
 pollers=()
 awaiter=""
@@ -192,7 +211,8 @@ cleanup() {
   local rc=$1
   trap - EXIT INT TERM
   set +e
-  for pid in "${pollers[@]}" "$awaiter" "$listener_pid" "$nats_pid"; do
+  stop_front
+  for pid in "${pollers[@]}" "$awaiter" "$listener_pid" "$nats_pid" "${keeper_pids[@]}"; do
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
       kill -CONT "$pid" 2>/dev/null
       kill "$pid" 2>/dev/null
@@ -200,10 +220,11 @@ cleanup() {
     fi
   done
   rm -rf "$nats_store_dir"
+  [[ -z "$ports_dir" ]] || rm -rf "$ports_dir"
   exit "$rc"
 }
 
-for command in curl flock go jq setsid; do
+for command in curl flock go jq python3 setsid socat; do
   command -v "$command" >/dev/null || {
     printf 'ERR: required command is unavailable: %s\n' "$command" >&2
     exit 3
@@ -237,39 +258,94 @@ readonly listener_binary natsd_binary
 say "listener: ${listener_binary}"
 say "natsd: ${natsd_binary}"
 
-# start_nats starts NATS on the rig's port and store, each start with a log of its own, and returns
-# once this server, not another one holding the port, answers (e2e-local.sh's wait_for_nats). NATS
-# runs in a session of its own (setsid): a stopped process in this script's own process group can
-# have the whole group hung up (an orphaned group with a stopped member gets SIGHUP), which would
-# end this script the moment the interrupt scenario stops NATS.
+# start_keeper NAME VAR starts the keeper NAME (held-port.py keep), which holds one socket listening
+# on 127.0.0.1 for the whole run and hands a copy to each server started with
+# `held-port.py exec --from <ports_dir>/NAME.sock`, and assigns VAR its port. It runs in a session
+# of its own, as NATS and the listener do (start_nats).
+start_keeper() {
+  local name=$1 status=0
+  setsid python3 "$held_port" keep --port-file "${ports_dir}/${name}.port" \
+    --socket "${ports_dir}/${name}.sock" >>"${out_dir}/${name}.log" 2>&1 &
+  keeper_pids+=("$!")
+  read_port_file "${ports_dir}/${name}.port" "$!" "$2" || status=$?
+  if ((status != 0)); then
+    say "ERR: the keeper ${name} held no port (status ${status}); see ${out_dir}/${name}.log"
+    exit 3
+  fi
+}
+
+# The keepers' unix sockets go in a short directory of /tmp: a socket path holds 107 bytes at most
+# (docs/testing.md, "Unix sockets in Go tests"), and the output directory sits under a TMPDIR that
+# can be long.
+ports_dir="$(mktemp -d /tmp/e2e-refill.XXXXXX)"
+start_keeper nats-keeper nats_port
+start_keeper listener-keeper listener_port
+readonly nats_port listener_port
+nats_url="nats://127.0.0.1:${nats_port}"
+listener_url="http://127.0.0.1:${listener_port}"
+readonly nats_url listener_url
+say "NATS on ${nats_url} (a held front), the listener on ${listener_url} (a held socket)"
+
+# start_nats starts NATS on a port the kernel chooses and the rig's store, each start with a log of
+# its own, reads that port from the log once the server is ready, and starts the held front that
+# serves the kept port by forwarding to it (lib/held-front.sh). It returns once a connection
+# through the kept port reads this server's INFO line. NATS and its front each run in a session of
+# their own (setsid): a stopped process in this script's own process group can have the whole group
+# hung up (an orphaned group with a stopped member gets SIGHUP), which would end this script the
+# moment the interrupt scenario stops NATS.
 start_nats() {
   nats_starts=$((nats_starts + 1))
-  local nats_log="${run_dir}/nats-${nats_starts}.log"
+  local nats_log="${run_dir}/nats-${nats_starts}.log" line
+  local -a front
   : >"$nats_log"
-  setsid "$natsd_binary" -p "$nats_port" -store_dir "$nats_store_dir" >"$nats_log" 2>&1 &
+  setsid "$natsd_binary" -p -1 -store_dir "$nats_store_dir" >"$nats_log" 2>&1 &
   nats_pid=$!
-  local deadline=$((SECONDS + 60)) banner
+  local deadline=$((SECONDS + 60))
   while ((SECONDS < deadline)); do
     if ! kill -0 "$nats_pid" 2>/dev/null; then
       say "ERR: the NATS server this script started ended before it was ready"
       cat "$nats_log" >&2
       return 1
     fi
-    if grep -q 'Server is ready' "$nats_log"; then
-      banner="$(curl -s --max-time 1 "telnet://127.0.0.1:${nats_port}" </dev/null 2>/dev/null || true)"
-      if [[ "$banner" == 'INFO '* ]]; then
-        return 0
-      fi
+    if [[ -z "$front_pid" ]] && grep -q 'Server is ready' "$nats_log"; then
+      line="$(grep -m1 -oE 'Listening for client connections on [^ ]*:[0-9]+' "$nats_log")" || {
+        say "ERR: NATS logged no client port; see ${nats_log}"
+        return 1
+      }
+      natsd_port="${line##*:}"
+      held_front_argv front "${ports_dir}/nats-keeper.sock" "$natsd_port"
+      setsid "${front[@]}" >>"${run_dir}/nats-front.log" 2>&1 &
+      front_pid=$!
+    fi
+    if [[ -n "$front_pid" ]] && held_front_answers "$nats_port" INFO; then
+      return 0
     fi
     sleep 0.25
   done
-  say "ERR: NATS did not accept connections on 127.0.0.1:${nats_port} within 60 seconds"
+  say "ERR: NATS did not answer through 127.0.0.1:${nats_port} within 60 seconds"
   return 1
 }
 
-# stop_nats ends NATS with SIGTERM, which closes its clients' connections, continuing it first if
-# it was stopped.
+# stop_front ends natsd's front and every connection through it (its whole session's process
+# group: socat forks one process per connection), continuing the group first, as stop_nats does
+# NATS: a stopped process acts on no SIGTERM, and the awaiter stops the group before it kills it
+# (refillrig await -front). The front lives only while NATS does: stop_nats stops it before NATS,
+# and the awaiter that kills NATS in the interrupt scenario kills it first (run_interrupt), so it
+# never forwards to a port NATS released, which another program could bind; until the next front
+# starts, the kept port queues each connection, and a client sees a hang rather than a refusal.
+stop_front() {
+  if [[ -n "$front_pid" ]] && kill -0 "$front_pid" 2>/dev/null; then
+    kill -CONT -- -"$front_pid" 2>/dev/null || true
+    kill -- -"$front_pid" 2>/dev/null || true
+    wait "$front_pid" 2>/dev/null || true
+  fi
+  front_pid=""
+}
+
+# stop_nats ends NATS's front and then NATS with SIGTERM, which closes its clients' connections,
+# continuing it first if it was stopped.
 stop_nats() {
+  stop_front
   if [[ -n "$nats_pid" ]] && kill -0 "$nats_pid" 2>/dev/null; then
     kill -CONT "$nats_pid" 2>/dev/null || true
     kill "$nats_pid" 2>/dev/null || true
@@ -278,10 +354,12 @@ stop_nats() {
   nats_pid=""
 }
 
-# start_listener starts the listener on the rig's NATS. Every start of a scenario appends to the
-# scenario's one listener.log, so it records where its own lines begin (listener_start_offset). It
-# runs in a session of its own, as NATS does (start_nats), since the reread and interrupt scenarios
-# stop it.
+# start_listener starts the listener on the rig's NATS, serving a copy of the socket its keeper
+# holds (ENVOY_LISTEN_FD; held-port.py exec executes the listener in place, so listener_pid is the
+# listener's), so a restart serves the same port and no other program can take it in between.
+# Every start of a scenario appends to the scenario's one listener.log, so it records where its own
+# lines begin (listener_start_offset). It runs in a session of its own, as NATS does (start_nats),
+# since the reread and interrupt scenarios stop it.
 start_listener() {
   listener_log="${run_dir}/listener.log"
   touch "$listener_log"
@@ -289,7 +367,8 @@ start_listener() {
   PORT="$listener_port" \
     ENVOY_MACHINE_ID=e2e-refill \
     NATS_URLS="$nats_url" \
-    setsid "$listener_binary" >>"$listener_log" 2>&1 &
+    setsid python3 "$held_port" exec --from "${ports_dir}/listener-keeper.sock" --fd-env ENVOY_LISTEN_FD -- \
+    "$listener_binary" >>"$listener_log" 2>&1 &
   listener_pid=$!
 }
 
@@ -522,9 +601,12 @@ run_reread() {
 # run_interrupt interrupts the read of a recreated 41,000-record session bucket the moment it
 # begins: the listener is stopped while the rig recreates and fills the bucket, and the read its
 # watcher begins once it runs again is the one interrupted, by SIGSTOP (mode stop) or SIGKILL and a
-# restart (mode restart) of NATS, sent the moment that read's install line appears.
+# restart (mode restart) of NATS, sent the moment that read's install line appears. Before its
+# SIGKILL the awaiter kills NATS's front and waits until the front has exited (refillrig await
+# -front), as stop_nats stops the front before NATS.
 run_interrupt() {
   local mode=$1 n=$interrupt_count side=$interrupt_side_count offset line interrupted signal=STOP
+  local -a front_first=()
   fresh "interrupt-${mode}"
   start_listener
   wait_ready
@@ -545,9 +627,12 @@ run_interrupt() {
     verdict "interrupt(${mode})" "INVALID the rig could not recreate the session bucket"
     return 0
   fi
-  [[ "$mode" == stop ]] || signal=KILL
+  [[ "$mode" == stop ]] || {
+    signal=KILL
+    front_first=(-front "$front_pid")
+  }
   await_start "${run_dir}/read.await" -offset "$offset" -match 'session registry bucket was recreated;' \
-    -timeout 75s -signal "$signal" -pid "$nats_pid"
+    -timeout 75s -signal "$signal" -pid "$nats_pid" "${front_first[@]}"
   sleep 0.2
   kill -CONT "$listener_pid"
   if await_finish; then
@@ -568,7 +653,10 @@ run_interrupt() {
       say "interrupt (stop): NATS continued $((($(date +%s%N) - interrupted) / 1000000)) ms after it was stopped"
       ;;
     restart)
-      # A run whose read never began killed nothing: kill NATS here, so the wait cannot hang.
+      # A run whose read never began killed nothing, and one whose awaiter killed the front and
+      # NATS left both unreaped and front_pid set, which start_nats needs empty to start the next
+      # front: in either case stop the front and kill NATS here, in that order, so no wait hangs.
+      stop_front
       kill -KILL "$nats_pid" 2>/dev/null || true
       wait "$nats_pid" 2>/dev/null || true
       nats_pid=""

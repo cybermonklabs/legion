@@ -137,7 +137,7 @@ func TestMainInAClusterStartsWithItsRangesAndItsProxyRefusesThem(t *testing.T) {
 	if granted.GrantID == nil {
 		t.Fatalf("the pod's request for %s = %+v, want a grant at once", secretName, granted)
 	}
-	password, _ := airlockOf(api, p, *granted.GrantID)
+	_, password, _ := airlockOf(api, p, *granted.GrantID)
 	if password == "" {
 		t.Fatal("the release carries no proxy password")
 	}

@@ -41,7 +41,8 @@ func TestALeakCheckRedirectTokenReachesNoClaimStoreStateOrLog(t *testing.T) {
 		answer: func(w http.ResponseWriter, permissions map[string]string) {
 			mintedToken(w, leakCheckLease, permissions)
 		}})
-	dead := fmt.Sprintf("127.0.0.1:%d", idleRigFreePort(t))
+	// A port nothing listens on, so the read redirected there fails at its dial.
+	const dead = "127.0.0.1:1"
 	download := "http://" + dead + "/" + leakCheckSetting.Repository.String() + "/legacy.tar.gz/refs/tags/" + leakCheckTag
 	repo := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != leakCheckTarballRoute+leakCheckTag {

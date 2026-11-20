@@ -94,9 +94,12 @@
 #   8  max-age-change-reaches-both-listeners
 #
 # ---- what the run starts, and what stops it ------------------------------------------------------
-# A NATS server (internal/testnats/cmd/natsd), two Envoy listeners on ports held from the kernel's
-# choice until each serves on it (lib/held-port.py through lib/rig.sh), a Dispatch server, up to
-# two agent processes and two short-lived listeners of the run's own. Every one of them is
+# A NATS server (internal/testnats/cmd/natsd) on a port the kernel chooses, which every client
+# reaches through a held front on a port a keeper holds for the whole run (lib/held-front.sh), so
+# the outage check's restart of natsd, on a port the kernel chooses again, keeps every client's
+# URL; two Envoy listeners on ports held from the kernel's choice until each serves on it
+# (lib/held-port.py through lib/rig.sh), a Dispatch server, up to two agent processes and two
+# short-lived listeners of the run's own. Every one of them is
 # stopped on any exit, by the pid it was started as; the run's database is dropped and its work
 # directory removed. The run is re-runnable: it takes a work directory of its own each time and
 # inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
@@ -222,6 +225,8 @@ fail() {
 begin() { echo "== $1"; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/held-front.sh
+. "$root/scripts/e2e/lib/held-front.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
@@ -264,6 +269,8 @@ case " $needs " in *" model "*) needs_model=1 ;; esac
 
 # ---- the run's state ----------------------------------------------------------------------------
 natsd_pid=
+nats_keeper_pid=
+nats_front_pid=
 listener_a_pid=
 listener_b_pid=
 listener_a_keeper_pid=
@@ -280,6 +287,7 @@ claude_pid=
 claude_fd=
 database=
 nats_port=
+natsd_port=
 nats_url=
 port_a=
 port_b=
@@ -375,6 +383,8 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
+  stop_tree "$nats_front_pid"
+  stop_pid "$nats_keeper_pid"
   stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$natsd_pid"
   # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
@@ -597,7 +607,7 @@ omp_bin=${LEGION_E2E_OMP_PATH:-}
 claude_pin=${LEGION_E2E_CLAUDE_CODE_PIN:-/opt/legion/claude-code}
 
 note "selection: $selection (${#selected[@]} checks)"
-for tool in bun curl go jq npm od openssl python3 tar; do
+for tool in bun curl go jq npm od openssl python3 socat tar; do
   command -v "$tool" >/dev/null || fail "$tool is required and is not on PATH"
 done
 
@@ -722,13 +732,29 @@ fi
 echo "ok build"
 
 # ---- services ---------------------------------------------------------------------------------------
+# start_nats_front starts the held front (lib/held-front.sh) that serves the port nats_keeper holds
+# and forwards each connection to natsd's own port, natsd_port, and waits until a connection
+# through it reads natsd's INFO line. It lives only while natsd does: the outage check stops it
+# with natsd (stop_tree, which cuts every connection through it) and starts it again once natsd
+# serves on its new port.
+start_nats_front() {
+  local -a front
+  held_front_argv front "$work/nats_keeper.sock" "$natsd_port"
+  start_process nats_front "${front[@]}"
+  await_start nats_front "$nats_front_pid" 30 "the NATS front to forward to natsd" \
+    held_front_answers "$nats_port" INFO
+}
+
 begin services
 start_process natsd "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
 await_start natsd "$natsd_pid" 60 "natsd to be ready" grep -q 'Server is ready' "$evidence/logs/natsd.log"
-nats_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
+natsd_port=$(report_port "$evidence/logs/natsd.log" 'Listening for client connections on [^ ]*:') ||
   fail "natsd logged no client port; see $evidence/logs/natsd.log"
+# Every client is given the kept port, and the front forwards it to natsd's own (lib/held-front.sh).
+keep_port nats_keeper nats_port
+start_nats_front
 nats_url=nats://127.0.0.1:$nats_port
-note "NATS on $nats_url, its JetStream store in $work/nats-store"
+note "NATS on $nats_url (natsd itself on 127.0.0.1:$natsd_port), its JetStream store in $work/nats-store"
 
 # start_listener NAME KEEPER starts one of the two running listeners on the port its keeper holds,
 # so a listener stopped and started again comes back on the same port and nothing can take it in
@@ -1164,13 +1190,21 @@ check_bus_outage_keeps_claims() {
   wait_until 180 "both sessions to read unresponsive" state_is "$port_a" "$first" unresponsive unresponsive || return 1
   state_is "$port_a" "$second" unresponsive unresponsive ||
     refuse "the second session did not reach unresponsive before the outage" || return 1
+  stop_tree "$nats_front_pid"
+  nats_front_pid=
   stop_pid "$natsd_pid"
   natsd_pid=
   note "stopped NATS for ${outage}s with both sessions stalled and both claims held"
   sleep "$outage"
-  start_process natsd "$work/bin/natsd" -p "$nats_port" -store_dir "$work/nats-store"
+  # natsd binds a port the kernel chooses again, and the front comes back on the kept port, so every
+  # client's URL still reaches it. natsd.log gathers both starts, and the client line read is the
+  # second start's: the last one, where report_port reads the first.
+  start_process natsd "$work/bin/natsd" -p -1 -store_dir "$work/nats-store"
   wait_until 120 "natsd to be ready again" \
     log_count_at_least "$evidence/logs/natsd.log" 'Server is ready' 2 || return 1
+  natsd_port=$(grep -oE 'Listening for client connections on [^ ]*:[0-9]+' "$evidence/logs/natsd.log" | tail -n 1)
+  natsd_port=${natsd_port##*:}
+  start_nats_front
   wait_until 180 "listener A to serve again after the outage" serving "$port_a" || return 1
   # Still unresponsive, not gone: the records stood through the outage, and so did both claims.
   wait_until 180 "the first session to read unresponsive after the outage" \

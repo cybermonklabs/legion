@@ -25,15 +25,23 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_
 
 pg_name=verifiers-e2e-pg
 nats_name=verifiers-e2e-nats
-work=/tmp/verifiers-e2e
+# The run's own directory (mktemp, below): a fixed one let a second run, or a run of another
+# session, remove the directory a live run works in and its Postgres's mark names.
+work=
 dispatch_pid=
+# The id this run's `docker run` of Postgres printed, which cleanup removes it by: the name is one
+# a run of another session may hold.
+pg_id=
 listener_pid=
 
 # cleanup never returns non-zero: a trap that fails under set -e would mask the real status.
 cleanup() {
   if [ -n "${dispatch_pid:-}" ]; then kill -TERM "$dispatch_pid" 2>/dev/null || true; fi
   if [ -n "${listener_pid:-}" ]; then kill -TERM "$listener_pid" 2>/dev/null || true; fi
-  docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || true
+  [ -z "${pg_id:-}" ] || docker rm -f -v "$pg_id" >/dev/null 2>&1 || true
+  docker rm -f -v "$nats_name" >/dev/null 2>&1 || true
+  # The two binaries go; the logs and the last response body stay for the operator.
+  [ -z "${work:-}" ] || rm -f -- "$work/dispatch" "$work/listener"
   return 0
 }
 
@@ -112,7 +120,14 @@ for tool in go docker kubectl jq curl python3 base64; do
 done
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
-rm -rf "$work"
+# The Postgres of a dead run goes first, before each check of the start but one of its own inputs
+# (lib/sweep-order.ts), and one of a run that still runs stays, so this run's start of a container
+# of that name then fails (lib/leftovers.sh); this run's carries its mark.
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+work=$(mktemp -d /tmp/verifiers-e2e.XXXXXXXX)
+echo "== the run's directory: $work"
 mkdir -p "$work/home"
 body="$work/body.json"
 
@@ -134,11 +149,13 @@ absent_issuer="${issuer%/*}/00000000000000000000000000000000"
 echo "== pgvector/pgvector (pinned digest) and the hub's nats-server (lib/nats-image.sh) on ephemeral loopback ports"
 # shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
 . "$root/scripts/e2e/lib/nats-image.sh"
-docker rm -f -v "$pg_name" "$nats_name" >/dev/null 2>&1 || docker ps >/dev/null # a missing container is fine; a broken docker is not
+docker rm -f -v "$nats_name" >/dev/null 2>&1 || docker ps >/dev/null # a missing container is fine; a broken docker is not
 trap cleanup EXIT
-docker run -d --name "$pg_name" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
+pg_mark=$(postgres_mark "$work" "$pg_name") || fail "the mark of $pg_name could not be made"
+pg_id=$(docker run -d --name "$pg_name" --label "$pg_mark" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
   -e POSTGRES_USER=dispatch -e POSTGRES_PASSWORD=dispatch \
-  -e POSTGRES_DB=dispatch -p 127.0.0.1::5432 mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 >/dev/null
+  -e POSTGRES_DB=dispatch -p 127.0.0.1::5432 mirror.gcr.io/pgvector/pgvector@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11) ||
+  fail "docker could not start the Postgres container $pg_name"
 docker run -d --name "$nats_name" --cpus 1 --memory 512m -p 127.0.0.1::4222 -p 127.0.0.1::8222 "$nats_image" -js -m 8222 >/dev/null
 # Over TCP, not the container's unix socket: the entrypoint's bootstrap phase answers on the
 # socket while nothing listens on 5432 yet, and a client that connects then is reset.

@@ -33,7 +33,7 @@ name: CI job daemon-go
 #     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
 #     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
 #     steps compile a scratch module and the envoy listener instead.
-# No Bun and no install: the tests of this module that needed the workspace built, or the
+# No install: the tests of this module that needed the workspace built, or the
 # repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
 # `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
 # partition of skills/ with scripts/pi-plugin-prepack.sh — which are
@@ -42,6 +42,10 @@ name: CI job daemon-go
 # `//go:build e2e`, which no step here compiles. So this job's filter names no lockfile, no
 # workspace manifest and no skill, and a change to bun.lock or to one skill runs the plugin-pack
 # tests and no test of this job (dispatch://INFRA-1413, A4).
+# The one Bun of this job is the Stage 1 proof's: its start removes the Postgres of each test
+# stack that is gone, and marks its own, through packages/dispatch/e2e/postgres-mark.ts
+# (scripts/e2e/lib/leftovers.sh), which imports node: builtins alone and so needs Bun and no
+# install.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -71,7 +75,7 @@ jobs:
     # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
     # prints the goroutine dump that names it. A step's worst case is therefore its largest
     # measured green duration plus its own -timeout: the setup before the plain step is now this
-    # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
+    # job's alone (no install, no changie, no Bun suite), then that step's 839 s and its 15
     # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
     # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
@@ -133,7 +137,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:184-187).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
@@ -244,7 +248,10 @@ jobs:
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
       # belongs with the Go steps rather than with the script harnesses: it is the daemon's own
       # code under test, and leaving it behind would keep the service and the Go build in the job
-      # this split exists to shrink.
+      # this split exists to shrink. Its start runs the removal of the Postgres of each test stack
+      # that is gone through Bun (scripts/e2e/lib/leftovers.sh), which needs no install.
+      - uses: ./.github/actions/setup-bun
+
       - name: Stage 1 live proof
         run: bash scripts/e2e/stage1-skeleton.sh
 

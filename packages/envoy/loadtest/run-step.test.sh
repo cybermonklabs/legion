@@ -12,11 +12,16 @@
 # profile. So the second run must be refused before it touches the stack:
 # before `stack.sh setup`, whose first build is the fake `go` call this test watches for.
 #
+# The test is the operator of its own runs, so it gives the stack's ports (LOADTEST_PORT_BASE):
+# stack.sh chooses no port of its own, and its setup refuses before any build a first setup that
+# gives a key no port (README.md, Ports). No run here starts a stack, so no program binds them.
+#
 # Asserts that: (a) a second run-step.sh is refused while a run-step.sh holds the root; (b) a
 # run-series.sh is refused while a run-step.sh holds it; (c) a run-step.sh is refused while a
 # run-series.sh holds it; (d) once the first run has exited, a new run on the root is not refused;
 # (e) a --replay step refuses --events, a --dispatch-commit that names no commit, and a missing
-# LOADTEST_REPLAY_ISSUE, before its build.
+# LOADTEST_REPLAY_ISSUE, before its build; (f) a run-step.sh and a run-series.sh given no port are
+# refused before their build, naming LOADTEST_PORT_BASE.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,6 +70,7 @@ export PATH="${fake_bin_dir}:${PATH}"
 export LOADTEST_SRC="$src"
 export LOADTEST_TEST_CALLS="$calls_file"
 export LOADTEST_TEST_RELEASE="$release_fifo"
+export LOADTEST_PORT_BASE=20000
 
 step_args=(--events 0 --sessions 1 --requests 0)
 
@@ -166,3 +172,7 @@ expect_refused_before_build "a --replay step with --dispatch-commit deadbeef" "-
   bash "$run_step" replay-step --replay --dispatch-commit deadbeef
 expect_refused_before_build "a --replay step without LOADTEST_REPLAY_ISSUE" "LOADTEST_REPLAY_ISSUE is required" \
   env -u LOADTEST_REPLAY_ISSUE bash "$run_step" replay-step --replay
+expect_refused_before_build "a run-step.sh given no port" "the stack chooses no port of its own: set LOADTEST_PORT_BASE" \
+  env -u LOADTEST_PORT_BASE bash "$run_step" no-port-step "${step_args[@]}"
+expect_refused_before_build "a run-series.sh given no port" "the stack chooses no port of its own: set LOADTEST_PORT_BASE" \
+  env -u LOADTEST_PORT_BASE bash "$run_series"

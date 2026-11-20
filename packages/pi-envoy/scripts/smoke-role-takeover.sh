@@ -8,8 +8,9 @@
 #
 # It builds natsd (packages/envoy/internal/testnats/cmd/natsd) and the listener
 # (packages/envoy/cmd/listener) from this checkout with `go build` and runs both on loopback ports
-# of its own, exactly as packages/envoy-client/test/envoy-stack.ts does, and then drives each row
-# with real client processes:
+# no other program can take, exactly as packages/envoy-client/test/envoy-stack.ts does: natsd on
+# ports the kernel chooses, the listener on a socket held until it serves (local-stack.sh). Then it
+# drives each row with real client processes:
 #
 #   - one Bun process per Oh My Pi Envoy extension instance (scripts/role-takeover/omp-client.ts),
 #     each loading this checkout's extensions/envoy.ts against the stand-in host the package's own
@@ -18,9 +19,10 @@
 #     `claude` process, spawned and driven over MCP by scripts/role-takeover/claude-client.ts,
 #     which is also the parent whose handoff file a `/clear` writes.
 #
-# No model provider, no credential and no container: `go` and `bun`. Every client reaches the
-# listener through a recording proxy of its own (scripts/role-takeover/listener-proxy.ts), so what
-# each client sent and what the listener answered it is read from a log rather than inferred.
+# No model provider, no credential and no container: `go`, `bun` and `python3`. Every client
+# reaches the listener through a recording proxy of its own (scripts/role-takeover/listener-proxy.ts),
+# so what each client sent and what the listener answered it is read from a log rather than
+# inferred.
 #
 # The listener runs with a live window of seconds (`session_live_window`), because every row now
 # turns on whether a claim's holder is still answering for it: a holder renews its claim by
@@ -86,6 +88,9 @@
 # `--listener-bin <path>` runs that built listener in place of building one, so a control can run
 # a scratch build; natsd is still built from this checkout. A path that is not an executable file
 # is refused, and so is `--listener-bin` beside `--base-rev`, since each chooses the listener.
+# Either listener must serve on the socket it is handed (ENVOY_LISTEN_FD, legion-envoy-v18.5.0 and
+# later): an earlier one binds a port of its own, exits with `address already in use`, and the run
+# refuses with that line.
 #
 # SMOKE_DROP_ROLE_FROM_COPY=1 turns the INFRA-2747 row into its own control (c-live-restart of
 # dispatch://INFRA-2747/verification): once the restarted process's claim is granted, the row asks
@@ -182,9 +187,7 @@ readonly drivers="${script_dir}/role-takeover"
 readonly channel_server="${repo_root}/packages/claude-envoy/bin/envoy-channel.ts"
 
 # The loopback stack this smoke shares with smoke-registration-stall.sh (--local-stack): the
-# ports, the two builds, what each service is run as and when it is up. `pick_port` reports an
-# exhausted range the way everything else here refuses.
-local_stack_fail=refuse
+# ports, the two builds, what each service is run as and when it is up.
 # shellcheck source=packages/pi-envoy/scripts/local-stack.sh
 source "${script_dir}/local-stack.sh"
 
@@ -233,7 +236,7 @@ readonly drop_role_from_copy
 
 [[ -n "${EPOCHREALTIME:-}" ]] || refuse "bash 5 or later is required (EPOCHREALTIME)"
 
-required=(go bun curl jq)
+required=(go bun curl jq python3)
 [[ -z "$base_rev" ]] || required+=(jj git tar)
 for tool in "${required[@]}"; do
   command -v "$tool" >/dev/null 2>&1 || refuse "${tool} is required"
@@ -247,8 +250,6 @@ done
   refuse "the Claude Code channel server (${channel_server}) is not readable"
 [[ -f "${repo_root}/node_modules/nats/package.json" ]] ||
   refuse "${repo_root}/node_modules has no nats package: run bun install in the checkout"
-
-port_range
 
 # ---- scratch, processes and teardown ----------------------------------------------------------
 work="$(mktemp -d "${TMPDIR:-/tmp}/smoke-role-takeover.XXXXXX")"
@@ -407,31 +408,33 @@ readonly listener_exe listener_under_test
 ((drop_role_from_copy == 0)) ||
   note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
-pick_port nats_port
-pick_port monitor_port
-pick_port listener_port
-readonly nats_port monitor_port listener_port
-readonly envoy_url="http://127.0.0.1:${listener_port}"
-readonly nats_url="nats://127.0.0.1:${nats_port}"
-
-set_natsd_argv "${work}/bin/natsd" "$nats_port" "$monitor_port" "${work}/nats-store"
+set_natsd_argv "${work}/bin/natsd" "${work}/nats-store" --monitor
 (exec env -i PATH="$PATH" HOME="${work}/nats-home" "${natsd_argv[@]}") \
   >"${work}/logs/natsd.log" 2>&1 &
 service_pids+=($!)
 wait_for 60 natsd_serving "${work}/logs/natsd.log" ||
   refuse "natsd did not start: $(tail -n 5 "${work}/logs/natsd.log")"
+natsd_ports "${work}/logs/natsd.log" && [[ -n "$monitor_port" ]] ||
+  refuse "natsd logged no client or monitoring port: $(tail -n 5 "${work}/logs/natsd.log")"
+readonly nats_port monitor_port
+readonly nats_url="nats://127.0.0.1:${nats_port}"
 note "natsd serves ${nats_url} (monitoring 127.0.0.1:${monitor_port})"
 
 # The two windows this run's listener carries are appended to the assignments local-stack.sh
 # hands out, so the two smokes that share that file are run exactly as they were.
-set_listener_env "$listener_port" "$nats_url" "smoke-role-takeover-$$"
+set_listener_env "$nats_url" "smoke-role-takeover-$$"
 listener_env+=(
   ENVOY_SESSION_LIVE_WINDOW="$session_live_window"
   ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_claim_reap_interval"
 )
-(exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
+set_listener_held_argv "${work}/listener.port"
+(exec "${listener_held_argv[@]}" env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
   "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
 service_pids+=($!)
+read_port_file "${work}/listener.port" "${service_pids[-1]}" listener_port ||
+  refuse "the listener held no port: $(tail -n 5 "${work}/logs/listener.log")"
+readonly listener_port
+readonly envoy_url="http://127.0.0.1:${listener_port}"
 wait_for 90 listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
 note "the listener is healthy at ${envoy_url}"

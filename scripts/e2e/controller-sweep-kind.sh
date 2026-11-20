@@ -22,6 +22,16 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
+# The Postgres of a dead stack goes first, before each command of the start but one that reads only
+# its own inputs (lib/sweep-order.ts): under set -e a command that fails ends the start, and one that
+# fails for what a dead run left would end every later start with that Postgres still there. This
+# run's own carries its mark (lib/leftovers.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/leftovers.sh
+. "$root/scripts/e2e/lib/leftovers.sh"
+remove_leftover_postgres || {
+  echo "FAIL setup: the removal of the Postgres of dead stacks could not run" >&2
+  exit 1
+}
 evidence=${CONTROLLER_SWEEP_EVIDENCE_DIR:-$(mktemp -d /tmp/legion-e2e-controller-sweep-evidence.XXXXXXXX)}
 mkdir -p "$evidence"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
@@ -126,7 +136,8 @@ kind_sandbox_internal_kubeconfig "$work/kubeconfig-internal"
 pass
 
 begin store
-docker run -d --name "$pg" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
+pg_mark=$(postgres_mark "$work" "$pg") || fail "the mark of $pg could not be made"
+docker run -d --name "$pg" --label "$pg_mark" --cpus 2 --memory 2g --network kind --tmpfs /var/lib/postgresql -e POSTGRES_PASSWORD=p "$pg_image" >/dev/null
 for _ in $(seq 1 60); do
   docker exec "$pg" pg_isready -h 127.0.0.1 -p 5432 -U postgres >/dev/null 2>&1 && break
   sleep 1

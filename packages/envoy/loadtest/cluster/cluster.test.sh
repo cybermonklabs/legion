@@ -154,7 +154,8 @@
 # failures, and the wait stops its job and then keeps polling until the job records an exit
 # status, SIGKILLing once a job that ignored the TERM; and a TERM that lands while the watcher
 # acts is taken, not lost, with pg_disk_watch_stop killing a watcher that outlasts its bound
-# and saying which step's it was; (ee) a runner pod that stops answering exec bounds the wait
+# and saying which step's it was, and the watcher it killed inside its read of the lock leaving
+# no file of that read in its TMPDIR; (ee) a runner pod that stops answering exec bounds the wait
 # past its deadline: no SIGTERM delivered within RUNNER_STOP_GRACE_SECONDS of the deadline, no
 # SIGKILL within two of them of the SIGTERM, and no exit status read within one of them of a
 # SIGKILL the pod took before it went, each end the wait non-zero, naming the runner pod and
@@ -3645,6 +3646,11 @@ stop_watchdog_end() {
   grep -qF "no exit status within $RUNNER_STOP_GRACE_SECONDS s of the SIGTERM" "$oneread_out" ||
     fail "that wait did not say that it sent the SIGKILL its grace ran out on: $(cat "$oneread_out")"
   unset FAKE_RC_UNTIL_KILL
+  # Both watchers below read the lock with a TMPDIR of their own, which must hold nothing once
+  # each has ended: the second is killed at its bound while it is inside that read.
+  dd_tmp=$tmp/dd-tmpdir
+  mkdir -p -- "$dd_tmp"
+  export TMPDIR=$dd_tmp
   # The TERM that lands while the watcher is inside its read of the lock. Every read fails and
   # each takes a real second (FAKE_LOCK_GET_DELAY), so the watcher's three tries are some 7 s
   # long and the TERM, sent once the first of them has failed, lands inside that act. The
@@ -3697,11 +3703,38 @@ stop_watchdog_end() {
     fail "the disk watcher still runs after pg_disk_watch_stop reached its bound: $(cat "$oneread_out")"
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
+  # The same bound with the watcher inside its read of the disk, pg_disk's kube_read of df, which
+  # FAKE_PG_DF_DELAY holds open until pg_disk_watch_stop's SIGKILL at the bound lands in it.
+  unset FAKE_LOCK_GET_FAIL FAKE_LOCK_GET_DELAY
+  rm -f -- "$fake/pg-df-started" "$fake/pg-df-go" "$oneread_dir/step-failed.json"
+  export FAKE_PG_DF_DELAY=60
+  df_seq "$pg_size $pg_used_high $pg_free_high"
+  pg_disk_watch pgdfkill "$oneread_dir" step-pgdfkill "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
+  PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgdfkill
+  watcher=$PG_DISK_WATCHER
+  until [ -f "$fake/pg-df-started" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  [ -f "$fake/pg-df-started" ] ||
+    fail "the watcher ended before its read of the disk, so no kill of this case lands inside one: $(cat "$oneread_out")"
+  PG_DISK_STOP_SECONDS=2
+  stop_watchdog 25 "$watcher"
+  pg_disk_watch_stop 2>"$oneread_stop"
+  stop_watchdog_end
+  grep -qF "step pgdfkill: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed" "$oneread_stop" ||
+    fail "pg_disk_watch_stop did not kill the watcher inside its read of the disk, so this case shows nothing of that read: $(cat "$oneread_stop")"
+  # The fake's read of df, which the kill left running, answers now and ends.
+  : >"$fake/pg-df-go"
+  unset FAKE_PG_DF_DELAY
+  # A kill inside a read -- of the lock, then of the disk, each pg_disk_watch_stop's SIGKILL at
+  # the bound, which no trap can take -- leaves no file of that read behind in the watcher's
+  # TMPDIR.
+  dd_left=$(find "$dd_tmp" -mindepth 1 -printf '%f ')
+  [ -z "$dd_left" ] ||
+    fail "the disk watchers left ${dd_left}in their TMPDIR $dd_tmp: a kill inside a read leaves a file of that read behind"
 )
 run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks"
-pass "each poll of the disk watcher and of the runner-job wait reads the lock once and kills by that one answer, a wait keeps polling until the job it stopped records an exit status and SIGKILLs one that ignored the TERM, and a TERM that lands while the watcher acts is taken, with pg_disk_watch_stop killing a watcher that outlasts its bound and saying so"
+pass "each poll of the disk watcher and of the runner-job wait reads the lock once and kills by that one answer, a wait keeps polling until the job it stopped records an exit status and SIGKILLs one that ignored the TERM, and a TERM that lands while the watcher acts is taken, with pg_disk_watch_stop killing a watcher that outlasts its bound and saying so, and leaving no file of that watcher's read of the lock or of the disk in its TMPDIR"
 
 # (ee) A runner pod no exec reaches bounds the wait, so the step ends and stops holding the lock.
 # Past its deadline the wait stops the job and then polls that job's .rc for the exit status the

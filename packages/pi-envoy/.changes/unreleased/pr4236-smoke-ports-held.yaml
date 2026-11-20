@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  The local Envoy stack of `scripts/smoke-role-takeover.sh` and `scripts/smoke-registration-stall.sh --local-stack` (`scripts/local-stack.sh`) no longer picks free port numbers: natsd binds ports the kernel chooses and the scripts read them from its log, the listener serves on a socket `scripts/e2e/lib/held-port.py` holds until it serves, and each recording proxy of the role takeover smoke binds a port of its own and names it. Both smokes now need `python3`, and a `--base-rev` or `--listener-bin` listener must take `ENVOY_LISTEN_FD` (legion-envoy-v18.5.0 and later).

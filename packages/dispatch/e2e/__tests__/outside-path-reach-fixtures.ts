@@ -14,7 +14,8 @@
  *  Dispatch answers from a process beside this one, as `fakeDispatch` says. A closed port is one
  *  taken from below the kernel's ephemeral range and found refusing: a port a listener held and
  *  gave back can be handed by the kernel to the next listener any concurrent row, or any other
- *  test file, starts, and the closed target would then read REACHED.
+ *  test file, starts, and the closed target would then read REACHED. A target that a row closes is
+ *  held on such a port from the moment the row learns it (`closedRangeHoldingTarget`).
  *  The script lets `http` through only with `OUTSIDE_PATH_ALLOW_HTTP=1` and a `127.0.0.1` origin,
  *  which these rows set. HOME is a directory of the run's own, or of the `driveEach` call's own
  *  for the runs that call starts, so no `~/.curlrc` of the host's reaches the script's curl unless
@@ -253,28 +254,42 @@ if (!(closedRange.span > 2000)) {
 }
 const closedStart = Math.floor(Math.random() * closedRange.span);
 let closedIssued = 0;
-/** The UDP sockets that reserve the ports `closedPort` issued, kept here so none is collected. */
+/** The UDP sockets that reserve the ports `closedPort` and `closedRangeHoldingTarget` issued,
+ *  kept here so none is collected. */
 const closedReservations: udp.Socket<"buffer">[] = [];
+
+/** A UDP socket bound to `port` on 127.0.0.1, or undefined where another socket holds it. It is
+ *  what keeps a port of the closed range to this process: the kernel frees it however the process
+ *  ends, and every other process's `closedPort` and `closedRangeHoldingTarget` bind the same
+ *  number first, so none of them issues it meanwhile. */
+async function reserve(port: number): Promise<udp.Socket<"buffer"> | undefined> {
+  try {
+    // A failed bind throws here at once rather than rejecting the promise.
+    return await Bun.udpSocket({ hostname: "127.0.0.1", port });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") return undefined;
+    throw error;
+  }
+}
+
+/** Holds `reservation` for the rest of this process's life. Unreferenced, it holds the port
+ *  without keeping the process running. */
+function keep(reservation: udp.Socket<"buffer">) {
+  reservation.unref();
+  closedReservations.push(reservation);
+}
 
 /** A port that refuses a connection: the next of the range, wrapping round it, past any a host
  *  program holds. The kernel hands none of them to a `port: 0` listener.
- *  It reserves a port before it connects to it: it binds a UDP socket to the same number on
- *  127.0.0.1 and holds it for the rest of this process's life, and the kernel frees it however the
- *  process ends. So no other process's `closedPort` can issue it meanwhile. Unreserved, another
- *  process could issue it too and listen on it, as the row that closes a holding target does, and
- *  this process's closed target would read REACHED. It tests by connecting, not by binding a TCP
+ *  It reserves a port before it connects to it (`reserve`). Unreserved, another process could
+ *  issue it too and listen on it, as the row that closes a holding target does, and this
+ *  process's closed target would read REACHED. It tests by connecting, not by binding a TCP
  *  listener, since on the BSDs a bind on 127.0.0.1 succeeds beside a listener on every address. */
 export async function closedPort(): Promise<number> {
   while (closedIssued < closedRange.span) {
     const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
-    let reservation: udp.Socket<"buffer">;
-    try {
-      // A failed bind throws here at once rather than rejecting the promise.
-      reservation = await Bun.udpSocket({ hostname: "127.0.0.1", port });
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "EADDRINUSE") continue;
-      throw error;
-    }
+    const reservation = await reserve(port);
+    if (reservation === undefined) continue;
     const refused = await Bun.connect({ hostname: "127.0.0.1", port, socket: { data() {} } }).then(
       (socket) => {
         socket.end();
@@ -286,9 +301,7 @@ export async function closedPort(): Promise<number> {
       reservation.close();
       continue;
     }
-    // Unreferenced, it holds the port without keeping the process running.
-    reservation.unref();
-    closedReservations.push(reservation);
+    keep(reservation);
     return port;
   }
   throw new Error(`no refused port between ${closedRange.low} and the ephemeral range`);
@@ -308,11 +321,41 @@ export function closingTarget() {
   });
 }
 
-/** A target that accepts, speaks first and holds the connection open, as NATS does, on `port`. */
-export function holdingTarget(port = 0) {
+/** A target that accepts, speaks first and holds the connection open, as NATS does. */
+export function holdingTarget() {
+  return listenHolding(0, false);
+}
+
+/** A holding target on a port of the closed range, for a row that closes it to leave a port that no
+ *  `port: 0` listener is handed: the next port of the range that it reserves (`reserve`) and that a
+ *  listen of its own then takes. The listen is the test of the port, so no other program can take
+ *  the port between the test and the bind, as it could between `closedPort`'s refused connect and a
+ *  later listen, and the reservation keeps it from every other process's `closedPort` once the row
+ *  closes the target. It is exclusive, so that no kernel lets another socket share the port while
+ *  it holds it. */
+export async function closedRangeHoldingTarget() {
+  while (closedIssued < closedRange.span) {
+    const port = closedRange.low + ((closedStart + closedIssued++) % closedRange.span);
+    const reservation = await reserve(port);
+    if (reservation === undefined) continue;
+    try {
+      const target = listenHolding(port, true);
+      keep(reservation);
+      return target;
+    } catch (error) {
+      reservation.close();
+      if (!(error instanceof Error && "code" in error && error.code === "EADDRINUSE")) throw error;
+    }
+  }
+  throw new Error(`no free port between ${closedRange.low} and the ephemeral range`);
+}
+
+/** A holding target's listener on `port`, exclusive or not. */
+function listenHolding(port: number, exclusive: boolean) {
   return Bun.listen({
     hostname: "127.0.0.1",
     port,
+    exclusive,
     socket: {
       open(socket) {
         socket.write("INFO {}\r\n");

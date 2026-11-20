@@ -1,7 +1,10 @@
-/** Playwright's `globalTeardown` (`e2e/playwright.config.ts`): it stops the stacks
- *  `e2e/global-setup.ts` started, whatever the run did. A run that started none - the stubbed
- *  layer alone, or a run against servers a person started - stops nothing here, since the pool
- *  holds nothing to stop.
+/** Playwright's `globalTeardown` (`e2e/playwright.config.ts`): it stops the stacks and the
+ *  stubbed layer's static file server that `e2e/global-setup.ts` started, whatever the run did. A
+ *  run that started no stack - the stubbed layer alone, or a run against servers a person started
+ *  - stops no stack here, since the pool holds nothing to stop. Playwright runs this hook even
+ *  when the setup hook failed part of the way (it queues each teardown before it runs the setup,
+ *  node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:6340-6341), so
+ *  a server the setup started before its failure is stopped here too.
  *
  *  It runs on a Ctrl-C as well as at the end of a run, which is what keeps an interrupted run
  *  from leaving a Postgres and a Go server serving loopback ports.
@@ -23,8 +26,9 @@
 import { stopStacks } from "./harness-pool";
 import { stacksVariable } from "./harness-ports";
 import { runPassed } from "./run-outcome";
+import { stopStubServer } from "./stub/server";
 
 export default async function globalTeardown(): Promise<void> {
-  await stopStacks(!runPassed());
+  await Promise.all([stopStacks(!runPassed()), stopStubServer()]);
   delete process.env[stacksVariable];
 }

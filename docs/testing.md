@@ -94,6 +94,36 @@ itself, whose tests import its sources by relative path.
   on the 0555 directories and 0444 files a Go module cache writes, and because a file in such a
   tree can be a hard link to one outside it.
 
+- An e2e test file whose own `afterAll` or `afterEach` removes a directory removes it through
+  `removeScratch` of `packages/dispatch/e2e/__tests__/step-end.ts`, and gives that hook the limit
+  `noHookLimit` (`Infinity`). A removal in the test process cannot be stopped by its hook's limit,
+  since Bun judges a synchronous hook only after it returns, so `removeScratch` runs `rm -rf` in a
+  process of its own. That process may take what the CI step leaves, or, where no step says when
+  it ends, the limit of the file's own rows; one that does not end by then is killed, and the hook
+  fails naming its directories. A step says when it ends in `LEGION_TEST_STEP_ENDS_AT`, in whole
+  seconds since the epoch, which its script's first line exports from its own `timeout-minutes`.
+  The limit is `Infinity` and not 0: Bun 1.4.4 reads 0 as no limit for the hook, but kills a
+  process the hook waits for at its own 5 s, as a dangling process.
+
+- A row that starts a process and waits for it states its limit as the sum of what it waits for,
+  `rowMs` of `@legion/test-fixtures/row-waits`: each wait named, with the bound of the code that
+  ends it, read from that code's own constant (a command's client deadline, a probe's
+  `--timeout`), or `commandMs` for a process nothing else bounds, and room for the row's own work
+  above them. Bun's own 5 s is a guess the next load runs past. The row counts each wait as it
+  makes it (`rowOf(waits).charge(wait)`, mostly inside the helper that starts the process), so a
+  limit that leaves a wait out fails the row on every machine, naming that wait.
+  `scripts/e2e/lib/row-waits.test.ts` reads the files whose rows do this and refuses a row or hook
+  there that starts a process and states no limit, or a `rowMs` its row does not count.
+
+- A test that starts a process which loads `@oh-my-pi/pi-natives` gives it the environment
+  `nativesEnvironment` of `@legion/test-fixtures/natives-environment` returns, which sets
+  `TOKIO_WORKER_THREADS` and `RAYON_NUM_THREADS` to 1 where the caller sets neither. Such a process
+  is a Bun process whose modules import `@oh-my-pi/pi-utils` or `@oh-my-pi/pi-tui` (every extension
+  of pi-envoy, pi-legion and pi-shared does), or the `omp` binary, which embeds the addon. The
+  addon's Tokio runtime starts a worker for each CPU as it loads, and its Rayon pool does the same
+  at its first parallel call, 288 each on a shared dev box. Under a limit of tasks a second such
+  process cannot start its threads: it exits 1 having printed nothing.
+
 - Put a variable back with `restoreEnvironment` or `captureEnvironment`
   (`@legion/test-fixtures/environment`), which set and delete the names themselves. A name that held
   no value is captured as unset and the restore deletes it again; setting it to the empty string

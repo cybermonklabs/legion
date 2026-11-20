@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { command, type Row, rowMs, rowOf } from "@legion/test-fixtures/row-waits";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { expectNoMissingHelpers, nameMissingHelpers, scriptFunctions } from "./script-functions";
 
@@ -178,7 +179,8 @@ pass`;
 const stage3 = (tail: string) => `${shell3.set}
 root=${JSON.stringify(root)} work="$RUN/work" evidence="$RUN/evidence" profile_agent="$RUN/no-profile" model_route=gateway
 check=setup check_started=2026-10-08T00:00:00Z
-ok= audited= prod_baseline= watcher_pid= daemon_pid= dispatch_pid= listener_pid= bridge_pid= daemon_keeper_pid= dispatch_keeper_pid= pg_container=none nats_container=none
+ok= audited= prod_baseline= watcher_pid= daemon_pid= dispatch_pid= listener_pid= bridge_pid= daemon_keeper_pid= dispatch_keeper_pid=
+containers=(stage3-pg-id stage3-nats-id)
 project=S312345678 ptoken=s312345678 repo=sjawhar/legion-smoke
 mkdir -p "$work" "$evidence/model-gateway" "$evidence/transcripts"
 ${guard3}
@@ -222,8 +224,16 @@ interface RunResult {
 // still removes (smoke_main_leftovers).
 const leftovers = [".legion/LEGION-1/plan.json", "docs/solutions/testing/smoke.md"];
 
+/** What each row of this file that runs a teardown waits for, which its limit is the sum of
+ *  (`rowMs` of `@legion/test-fixtures/row-waits`) and which `run` counts as the row makes it
+ *  (`rowOf`): the stage's teardown, one bash, a process of its own, whose stand-in `gh` answers at
+ *  once. */
+const theTeardown = command("the stage's teardown");
+const oneTeardown = [theTeardown];
+
 let runs = 0;
 function run(
+  row: Row,
   script: string,
   name: string,
   branches: string[],
@@ -241,6 +251,7 @@ function run(
   writeFileSync(join(state, "prs.json"), JSON.stringify(seeded));
   writeFileSync(join(state, "calls"), "");
   writeFileSync(join(state, "comments"), "");
+  row.charge(theTeardown);
   const result = Bun.spawnSync(["bash", "-c", script, name], {
     env: {
       PATH: `${bin}:${process.env.PATH}`,
@@ -299,110 +310,170 @@ const others4b = {
 };
 
 describe("Stage 4b's teardown of done's cleanup pull request", () => {
-  test("a merge GitHub answers with a 504: the teardown closes the run's pull request and deletes its branch", () => {
-    const r = run(stage4b(done4b), "stage4b-sandbox-tree.sh", others4b.branches, others4b.prs, {
-      mergeFails: gateway504,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain(`   closed the run's cleanup pull request ${url(4)}\n`);
-    expect(r.stdout).toContain(
-      "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
-    );
-    expect(r.stdout).toContain("stage 4b e2e: FAIL (fixture teardown, in check done)");
-    expect(r.stdout).not.toContain("cleanup warning:");
-    expect(r.pr(4)).toBe("CLOSED");
-    expect(r.branches).not.toContain("proof/clean-main-legsmoke");
-    expect(r.comments).toEqual([
-      expect.stringMatching(
-        /^#4 Closed by the run that opened it \(stage4b-sandbox-tree\.sh, project LEGSMOKE, pid \d+\), at its teardown\.$/
-      ),
-    ]);
-    untouched(r, others4b.branches, [2, 3]);
-  });
+  test(
+    "a merge GitHub answers with a 504: the teardown closes the run's pull request and deletes its branch",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b(done4b),
+        "stage4b-sandbox-tree.sh",
+        others4b.branches,
+        others4b.prs,
+        {
+          mergeFails: gateway504,
+        }
+      );
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain(`   closed the run's cleanup pull request ${url(4)}\n`);
+      expect(r.stdout).toContain(
+        "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
+      );
+      expect(r.stdout).toContain("stage 4b e2e: FAIL (fixture teardown, in check done)");
+      expect(r.stdout).not.toContain("cleanup warning:");
+      expect(r.pr(4)).toBe("CLOSED");
+      expect(r.branches).not.toContain("proof/clean-main-legsmoke");
+      expect(r.comments).toEqual([
+        expect.stringMatching(
+          /^#4 Closed by the run that opened it \(stage4b-sandbox-tree\.sh, project LEGSMOKE, pid \d+\), at its teardown\.$/
+        ),
+      ]);
+      untouched(r, others4b.branches, [2, 3]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a close GitHub refuses prints the pull request's URL, and the branch still goes", () => {
-    const r = run(stage4b(done4b), "stage4b-sandbox-tree.sh", others4b.branches, others4b.prs, {
-      mergeFails: gateway504,
-      closeFails: close502,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      `   could not close the run's cleanup pull request ${url(4)}: ${close502}\n`
-    );
-    expect(r.stdout).toContain(
-      "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
-    );
-    expect(r.stdout).not.toContain("cleanup warning:");
-    untouched(r, others4b.branches, [2, 3]);
-  });
+  test(
+    "a close GitHub refuses prints the pull request's URL, and the branch still goes",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b(done4b),
+        "stage4b-sandbox-tree.sh",
+        others4b.branches,
+        others4b.prs,
+        {
+          mergeFails: gateway504,
+          closeFails: close502,
+        }
+      );
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain(
+        `   could not close the run's cleanup pull request ${url(4)}: ${close502}\n`
+      );
+      expect(r.stdout).toContain(
+        "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
+      );
+      expect(r.stdout).not.toContain("cleanup warning:");
+      untouched(r, others4b.branches, [2, 3]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a listing GitHub refuses prints the recorded pull request's URL", () => {
-    const r = run(stage4b(done4b), "stage4b-sandbox-tree.sh", [], [], {
-      mergeFails: gateway504,
-      listFails: close502,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      `   could not list the open pull requests on sjawhar/legion-smoke, so the run's cleanup pull request ${url(1)} may still be open (gh's reason is on stderr)\n`
-    );
-    expect(r.pr(1)).toBe("OPEN");
-  });
+  test(
+    "a listing GitHub refuses prints the recorded pull request's URL",
+    () => {
+      const r = run(rowOf(oneTeardown), stage4b(done4b), "stage4b-sandbox-tree.sh", [], [], {
+        mergeFails: gateway504,
+        listFails: close502,
+      });
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain(
+        `   could not list the open pull requests on sjawhar/legion-smoke, so the run's cleanup pull request ${url(1)} may still be open (gh's reason is on stderr)\n`
+      );
+      expect(r.pr(1)).toBe("OPEN");
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a branch create whose answer was lost is still the run's to delete", () => {
-    const r = run(stage4b(done4b), "stage4b-sandbox-tree.sh", others4b.branches, others4b.prs, {
-      createLost: true,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
-    );
-    expect(r.calls.filter((c) => c.includes(" pr create "))).toEqual([]);
-    untouched(r, others4b.branches, [2, 3]);
-  });
+  test(
+    "a branch create whose answer was lost is still the run's to delete",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b(done4b),
+        "stage4b-sandbox-tree.sh",
+        others4b.branches,
+        others4b.prs,
+        {
+          createLost: true,
+        }
+      );
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain(
+        "   deleted the run's cleanup branch proof/clean-main-legsmoke from sjawhar/legion-smoke\n"
+      );
+      expect(r.calls.filter((c) => c.includes(" pr create "))).toEqual([]);
+      untouched(r, others4b.branches, [2, 3]);
+    },
+    rowMs(oneTeardown)
+  );
 
   // Every Stage 4b run's cleanup branch is proof/clean-main-legsmoke, so an earlier run's leftover
   // carries this run's name: the run that never reached done leaves it, and done refuses it.
-  test("a run that never reached the cleanup touches no cleanup branch, an earlier run's included", () => {
-    const r = run(
-      stage4b('begin tree-moved\nfail "tree 2 did not move"'),
-      "stage4b-sandbox-tree.sh",
-      ["proof/clean-main-legsmoke", ...others4b.branches],
-      [...others4b.prs, { number: 9, headRefName: "proof/clean-main-legsmoke", state: "OPEN" }]
-    );
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain("stage 4b e2e: FAIL (check tree-moved)");
-    expect(r.calls.filter((c) => c.includes("clean-main"))).toEqual([]);
-    untouched(r, ["proof/clean-main-legsmoke", ...others4b.branches], [2, 3, 9]);
-  });
+  test(
+    "a run that never reached the cleanup touches no cleanup branch, an earlier run's included",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b('begin tree-moved\nfail "tree 2 did not move"'),
+        "stage4b-sandbox-tree.sh",
+        ["proof/clean-main-legsmoke", ...others4b.branches],
+        [...others4b.prs, { number: 9, headRefName: "proof/clean-main-legsmoke", state: "OPEN" }]
+      );
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain("stage 4b e2e: FAIL (check tree-moved)");
+      expect(r.calls.filter((c) => c.includes("clean-main"))).toEqual([]);
+      untouched(r, ["proof/clean-main-legsmoke", ...others4b.branches], [2, 3, 9]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("done refuses an earlier run's cleanup branch by name, and its teardown leaves it", () => {
-    const r = run(
-      stage4b(done4b),
-      "stage4b-sandbox-tree.sh",
-      ["proof/clean-main-legsmoke"],
-      [{ number: 9, headRefName: "proof/clean-main-legsmoke", state: "OPEN" }]
-    );
-    expect(r.code).toBe(1);
-    expect(r.stdout).toContain(
-      "CHECK done: FAIL: sjawhar/legion-smoke already has the branch proof/clean-main-legsmoke, which this run did not make"
-    );
-    expect(r.calls.filter((c) => c.includes("matching-refs"))).toHaveLength(1);
-    untouched(r, ["proof/clean-main-legsmoke"], [9]);
-  });
+  test(
+    "done refuses an earlier run's cleanup branch by name, and its teardown leaves it",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b(done4b),
+        "stage4b-sandbox-tree.sh",
+        ["proof/clean-main-legsmoke"],
+        [{ number: 9, headRefName: "proof/clean-main-legsmoke", state: "OPEN" }]
+      );
+      expect(r.code).toBe(1);
+      expect(r.stdout).toContain(
+        "CHECK done: FAIL: sjawhar/legion-smoke already has the branch proof/clean-main-legsmoke, which this run did not make"
+      );
+      expect(r.calls.filter((c) => c.includes("matching-refs"))).toHaveLength(1);
+      untouched(r, ["proof/clean-main-legsmoke"], [9]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a run whose cleanup merged makes no teardown call for it", () => {
-    const r = run(stage4b(done4b), "stage4b-sandbox-tree.sh", others4b.branches, others4b.prs, {
-      until: "done",
-    });
-    expect(r.code).toBe(0);
-    expect(r.stdout).toContain("stage 4b e2e: development run until done finished (not the proof)");
-    expect(r.pr(4)).toBe("MERGED");
-    expect(r.branches).not.toContain("proof/clean-main-legsmoke");
-    const merged = r.calls.findIndex((c) => c.startsWith("-R sjawhar/legion-smoke pr merge 4 "));
-    expect(merged).toBeGreaterThan(-1);
-    expect(r.calls.slice(merged + 1).filter((c) => c.includes("clean-main"))).toEqual([]);
-    untouched(r, others4b.branches, [2, 3]);
-  });
+  test(
+    "a run whose cleanup merged makes no teardown call for it",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage4b(done4b),
+        "stage4b-sandbox-tree.sh",
+        others4b.branches,
+        others4b.prs,
+        {
+          until: "done",
+        }
+      );
+      expect(r.code).toBe(0);
+      expect(r.stdout).toContain(
+        "stage 4b e2e: development run until done finished (not the proof)"
+      );
+      expect(r.pr(4)).toBe("MERGED");
+      expect(r.branches).not.toContain("proof/clean-main-legsmoke");
+      const merged = r.calls.findIndex((c) => c.startsWith("-R sjawhar/legion-smoke pr merge 4 "));
+      expect(merged).toBeGreaterThan(-1);
+      expect(r.calls.slice(merged + 1).filter((c) => c.includes("clean-main"))).toEqual([]);
+      untouched(r, others4b.branches, [2, 3]);
+    },
+    rowMs(oneTeardown)
+  );
 });
 
 // This run's held-worker pull request, another lane's issue pull request, and its cleanup.
@@ -417,51 +488,78 @@ const others3 = {
 };
 
 describe("Stage 3's teardown of smoke-main-clean's cleanup pull request", () => {
-  test("a merge GitHub answers with a 504: the EXIT trap closes the run's pull request and deletes its branch", () => {
-    const r = run(stage3(clean3), "stage3-devbox-workflow.sh", others3.branches, others3.prs, {
-      mergeFails: gateway504,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
-    expect(r.stderr).toContain(`closed the run's cleanup pull request ${url(5)}\n`);
-    expect(r.stderr).toContain(
-      "deleted the run's cleanup branch proof/clean-main-s312345678 from sjawhar/legion-smoke\n"
-    );
-    expect(r.stderr).toContain("stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean)");
-    expect(r.stderr).not.toContain("cleanup warning:");
-    expect(r.pr(5)).toBe("CLOSED");
-    expect(r.branches).not.toContain("proof/clean-main-s312345678");
-    expect(r.comments).toContainEqual(
-      expect.stringMatching(
-        /^#5 Closed by the run that opened it \(stage3-devbox-workflow\.sh, project S312345678, pid \d+\), at its teardown\.$/
-      )
-    );
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
-  });
+  test(
+    "a merge GitHub answers with a 504: the EXIT trap closes the run's pull request and deletes its branch",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage3(clean3),
+        "stage3-devbox-workflow.sh",
+        others3.branches,
+        others3.prs,
+        {
+          mergeFails: gateway504,
+        }
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
+      expect(r.stderr).toContain(`closed the run's cleanup pull request ${url(5)}\n`);
+      expect(r.stderr).toContain(
+        "deleted the run's cleanup branch proof/clean-main-s312345678 from sjawhar/legion-smoke\n"
+      );
+      expect(r.stderr).toContain("stage 3 e2e: FAIL (fixture teardown, check smoke-main-clean)");
+      expect(r.stderr).not.toContain("cleanup warning:");
+      expect(r.pr(5)).toBe("CLOSED");
+      expect(r.branches).not.toContain("proof/clean-main-s312345678");
+      expect(r.comments).toContainEqual(
+        expect.stringMatching(
+          /^#5 Closed by the run that opened it \(stage3-devbox-workflow\.sh, project S312345678, pid \d+\), at its teardown\.$/
+        )
+      );
+      untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a close GitHub refuses prints the pull request's URL", () => {
-    const r = run(stage3(clean3), "stage3-devbox-workflow.sh", others3.branches, others3.prs, {
-      mergeFails: gateway504,
-      closeFails: close502,
-    });
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain(
-      `could not close the run's cleanup pull request ${url(5)}: ${close502}\n`
-    );
-    expect(r.stderr).not.toContain("cleanup warning:");
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
-  });
+  test(
+    "a close GitHub refuses prints the pull request's URL",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage3(clean3),
+        "stage3-devbox-workflow.sh",
+        others3.branches,
+        others3.prs,
+        {
+          mergeFails: gateway504,
+          closeFails: close502,
+        }
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain(
+        `could not close the run's cleanup pull request ${url(5)}: ${close502}\n`
+      );
+      expect(r.stderr).not.toContain("cleanup warning:");
+      untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
+    },
+    rowMs(oneTeardown)
+  );
 
-  test("a run that never reached the cleanup closes only its issue pull requests", () => {
-    const r = run(
-      stage3('begin rework\nfail "round 2 was not pushed"'),
-      "stage3-devbox-workflow.sh",
-      others3.branches,
-      others3.prs
-    );
-    expect(r.code).toBe(1);
-    expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
-    expect(r.calls.filter((c) => c.includes("clean-main"))).toEqual([]);
-    untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
-  });
+  test(
+    "a run that never reached the cleanup closes only its issue pull requests",
+    () => {
+      const r = run(
+        rowOf(oneTeardown),
+        stage3('begin rework\nfail "round 2 was not pushed"'),
+        "stage3-devbox-workflow.sh",
+        others3.branches,
+        others3.prs
+      );
+      expect(r.code).toBe(1);
+      expect(r.stderr).toContain("closed sjawhar/legion-smoke#2 and deleted its branch\n");
+      expect(r.calls.filter((c) => c.includes("clean-main"))).toEqual([]);
+      untouched(r, ["legion/S387654321-5", "proof/clean-main-s387654321"], [3, 4]);
+    },
+    rowMs(oneTeardown)
+  );
 });

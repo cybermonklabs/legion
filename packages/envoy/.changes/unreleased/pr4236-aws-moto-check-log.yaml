@@ -1,0 +1,3 @@
+kind: Fixed
+body: |-
+  `scripts/aws-moto-check.sh` makes moto's log before it starts moto. On a busy machine its first read of the log could come before the background start had made it, and the script then ended with `awk: fatal: cannot open file … moto.log` before it ran the check.

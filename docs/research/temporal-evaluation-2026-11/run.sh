@@ -8,7 +8,7 @@
 # The directory is named temporal-evaluation because the issue started as a question
 # about Temporal; the evaluation now measures five products:
 #
-#   1 to 6, 19 to 21  Temporal, against a dev server this script installs and runs
+#   1 to 6, 19 to 21  Temporal, against a dev server this script installs and runs in a container
 #   7 to 9          DBOS Transact, a Go library on the pod's PostgreSQL
 #   10 to 12        Restate, against a restate-server this script installs
 #   13 to 15        go-workflows, a Go library on the pod's PostgreSQL
@@ -151,32 +151,76 @@ say 'LEGION_TEST_PG_DSN is set'
 
 # --- the trap -----------------------------------------------------------------------
 
-server_pid=''
+# The cleanup signals no process by its name or its command line, only the ones this
+# script started and recorded: the experiment running now, by the pid and the start time
+# (/proc/<pid>/stat field 22) it was started with, and the dev server's container, by the
+# id its own `docker create` printed. An experiment stops what it started itself on
+# SIGTERM (its deferred stops, which hold those processes' own pids), so SIGTERM comes
+# first.
+container_id=''
+experiment_pid=''
+experiment_started=''
+
+# start_time PID: the start time of PID, field 22 of /proc/PID/stat, or nothing when PID
+# is gone.
+start_time() {
+	local stat fields
+	stat=$(cat "/proc/$1/stat" 2>/dev/null) || return 0
+	stat=${stat##*) }
+	read -r -a fields <<<"$stat"
+	printf '%s\n' "${fields[19]}"
+}
+
+# bounded SECONDS COMMAND...: COMMAND under `timeout SECONDS`, in the background so a
+# signal to this script interrupts the wait, its pid and start time recorded for the
+# cleanup; returns COMMAND's status (124 when the bound ran out). timeout leads a process
+# group of its own, which holds COMMAND.
+bounded() {
+	local status=0
+	timeout "$@" &
+	experiment_pid=$!
+	experiment_started=$(start_time "$experiment_pid")
+	wait "$experiment_pid" || status=$?
+	experiment_pid='' experiment_started=''
+	return "$status"
+}
+
+# experiment_running: the recorded experiment still runs, as the process it was started
+# as: its pid is live with the start time recorded for it, so a pid the kernel has reused
+# is never signalled.
+experiment_running() {
+	[[ -n "$experiment_started" && "$(start_time "$experiment_pid")" == "$experiment_started" ]]
+}
+
+stop_experiment() {
+	experiment_running || return 0
+	local waited=0
+	kill -TERM -- "-$experiment_pid" 2>/dev/null || true
+	while experiment_running && ((waited < 100)); do
+		sleep 0.2
+		waited=$((waited + 1))
+	done
+	if experiment_running; then
+		kill -KILL -- "-$experiment_pid" 2>/dev/null || true
+	fi
+	wait "$experiment_pid" 2>/dev/null || true
+	experiment_pid='' experiment_started=''
+}
 
 stop_dev_server() {
-	[[ -n "$server_pid" ]] || return 0
-	if kill -0 "$server_pid" 2>/dev/null; then
-		kill -TERM "$server_pid" 2>/dev/null || true
-		# Give it a moment to close its database, then insist.
-		local waited=0
-		while kill -0 "$server_pid" 2>/dev/null && ((waited < 50)); do
-			sleep 0.2
-			waited=$((waited + 1))
-		done
-		kill -KILL "$server_pid" 2>/dev/null || true
-	fi
-	wait "$server_pid" 2>/dev/null || true
-	server_pid=''
+	[[ -n "$container_id" ]] || return 0
+	docker logs "$container_id" >"$server_log" 2>&1 || true
+	# Give it a moment to close its database, then insist.
+	docker stop --time 10 "$container_id" >/dev/null 2>&1 || true
+	docker rm --force --volumes "$container_id" >/dev/null 2>&1 || true
+	container_id=''
 }
 
 cleanup() {
 	local status=$?
 	trap - EXIT INT TERM
+	stop_experiment
 	stop_dev_server
-	# Any experiment, worker or restate-server still running was started from this
-	# run's directory, whose path is in its command line and in no other process's.
-	pkill -KILL -f -- "$bin_dir/" 2>/dev/null || true
-	pkill -KILL -f -- "$run_dir/" 2>/dev/null || true
 	exit "$status"
 }
 trap cleanup EXIT
@@ -308,67 +352,72 @@ say "built experiments, sessionworker, dbosworker, restateservice, gwworker and 
 
 # --- 9. the dev server ----------------------------------------------------------------
 
-# A free port, found rather than written down: several agents share this pod and a
-# literal port collides with another run of this same script.
-port_is_free() {
-	local port=$1
-	! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null
-}
-
-# The ports this run has already handed out. free_port runs in a command
-# substitution, which is a subshell, so it cannot record anything itself: every
-# caller adds what it was given to this list, and the next subshell inherits it.
-taken_ports=()
-
-port_taken() {
-	local port=$1 taken
-	for taken in ${taken_ports[*]:-}; do
-		[[ "$taken" == "$port" ]] && return 0
-	done
-	return 1
-}
-
-free_port() {
-	local port
-	for _ in {1..200}; do
-		port=$((20000 + RANDOM % 20000))
-		if ! port_taken "$port" && port_is_free "$port"; then
-			printf '%s\n' "$port"
-			return 0
-		fi
-	done
-	return 1
-}
-
-grpc_port=$(free_port) || die 'found no free port for the server'
-taken_ports+=("$grpc_port")
-metrics_port=$(free_port) || die 'found no free port for the metrics endpoint'
-taken_ports+=("$metrics_port")
-readonly grpc_port metrics_port
-readonly server_address="127.0.0.1:$grpc_port"
-readonly metrics_url="http://127.0.0.1:$metrics_port/metrics"
+# The dev server runs in a container of its own: the pinned Temporal command above, a
+# static binary mounted read-only, on the pinned base image below. Inside the container
+# it listens on fixed ports, in a network namespace that nothing else uses. Docker
+# publishes each of the two on 127.0.0.1 at a host port that Docker chooses and binds
+# itself (`-p 127.0.0.1::<port>`), and the script reads each host port back with
+# `docker port`, so this script chooses no port: the dev server takes no listening socket
+# from its caller, and it refuses port 0 ("missing frontend port"). The base image is the
+# Debian that the repository's CI images pin (.github/ci-images.yaml, debian-trixie-slim),
+# through Google's mirror, as the devbox proofs that no CI job runs take theirs (AGENTS.md).
+readonly server_image='mirror.gcr.io/library/debian@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4'
+readonly grpc_container_port=7233 metrics_container_port=9090
+docker version >/dev/null 2>&1 ||
+	die 'docker does not answer: the dev server runs in a container, whose ports Docker publishes at host ports it chooses itself'
 
 namespace_flags=()
 for ns in "${namespaces[@]}"; do
 	namespace_flags+=(--namespace "$ns")
 done
 
-say "starting the dev server on $server_address, metrics on $metrics_url"
-"$temporal_bin" server start-dev \
+# host_port CONTAINER_PORT: the host port Docker published the container's port at.
+host_port() {
+	docker port "$container_id" "$1/tcp" 2>/dev/null | awk -F: 'NR == 1 { print $NF }'
+}
+
+say "starting the dev server in a container of $server_image"
+# `docker create` prints the container's id before anything binds a port, so a start that
+# fails still leaves the id recorded, and the cleanup removes that container by it. The
+# container runs as this script's own user, so the dev server's database stays this
+# user's to remove; that uid has no passwd entry in the image, so USER names it for the
+# server's own lookup of its user (a static binary has no cgo to read one otherwise).
+container_id=$(docker create --label created-by=temporal-evaluation-run.sh \
+	--user "$(id -u):$(id -g)" --env HOME=/tmp --env USER=temporal-evaluation --workdir /data \
+	--publish "127.0.0.1::$grpc_container_port" --publish "127.0.0.1::$metrics_container_port" \
+	--volume "$cli_dir:/opt/temporal:ro" --volume "$server_dir:/data" \
+	"$server_image" /opt/temporal/temporal server start-dev \
 	--headless \
-	--port "$grpc_port" \
-	--metrics-port "$metrics_port" \
-	--db-filename "$server_dir/dev.db" \
+	--ip 0.0.0.0 \
+	--port "$grpc_container_port" \
+	--metrics-port "$metrics_container_port" \
+	--db-filename /data/dev.db \
 	"${namespace_flags[@]}" \
-	--log-level warn \
-	>"$server_log" 2>&1 &
-server_pid=$!
+	--log-level warn) || {
+	container_id=''
+	die "docker could not create the dev server's container from $server_image"
+}
+[[ "$container_id" =~ ^[0-9a-f]{64}$ ]] || {
+	container_id=''
+	die "docker create printed no container id"
+}
+docker start "$container_id" >/dev/null ||
+	die "docker could not start the dev server's container ${container_id:0:12}"
+grpc_port=$(host_port "$grpc_container_port")
+metrics_port=$(host_port "$metrics_container_port")
+[[ "$grpc_port" =~ ^[1-9][0-9]*$ && "$metrics_port" =~ ^[1-9][0-9]*$ ]] ||
+	die "docker port names no host port for the dev server's ports $grpc_container_port and $metrics_container_port"
+readonly grpc_port metrics_port
+readonly server_address="127.0.0.1:$grpc_port"
+readonly metrics_url="http://127.0.0.1:$metrics_port/metrics"
+say "the dev server's container ${container_id:0:12} publishes gRPC at $server_address, metrics at $metrics_url"
 
 # Ready means: the last namespace exists and the metrics endpoint answers. Both are
 # what an experiment needs, and the server reports both only once it is serving.
 ready=''
 for _ in $(seq 1 "$server_ready_timeout"); do
-	if ! kill -0 "$server_pid" 2>/dev/null; then
+	if [[ "$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null)" != true ]]; then
+		docker logs "$container_id" >"$server_log" 2>&1 || true
 		cat -- "$server_log" >&2 || true
 		die "the dev server stopped while starting; its log is above and in $server_log"
 	fi
@@ -381,6 +430,7 @@ for _ in $(seq 1 "$server_ready_timeout"); do
 	sleep 1
 done
 [[ -n "$ready" ]] || {
+	docker logs "$container_id" >"$server_log" 2>&1 || true
 	cat -- "$server_log" >&2 || true
 	die "the dev server did not answer on $server_address within ${server_ready_timeout}s; its log is above and in $server_log"
 }
@@ -388,28 +438,13 @@ say "the dev server answers on $server_address"
 
 # --- 10. the twenty-one experiments ----------------------------------------------------
 
-# The flags one Restate run needs, and the label naming the ports it was given. Each
-# run of a Restate experiment -- and each control of one -- holds a restate-server of
-# its own, so each reserves a pair of ports for itself. They are globals rather than
-# printed output because every caller of free_port has to record what it was handed,
-# and a command substitution is a subshell that could not.
-restate_flags=()
-restate_label=''
-
-reserve_restate() {
-	local what=$1 ingress admin
-	ingress=$(free_port) || die "found no free port for $what's Restate ingress"
-	taken_ports+=("$ingress")
-	admin=$(free_port) || die "found no free port for $what's Restate admin API"
-	taken_ports+=("$admin")
-	restate_label=" (restate ingress 127.0.0.1:$ingress, admin 127.0.0.1:$admin)"
-	restate_flags=(
-		-restate-server "$restate_bin"
-		-restate-service "$bin_dir/restateservice"
-		-restate-ingress "127.0.0.1:$ingress"
-		-restate-admin "127.0.0.1:$admin"
-	)
-}
+# The flags one Restate run needs. Each run of a Restate experiment -- and each control
+# of one -- starts a restate-server of its own, which serves its admin API, its ingress
+# and its node's own channel on unix sockets in the experiment's directory and binds no
+# TCP port, and holds the loopback port of each service endpoint it starts from the
+# kernel's choice to the end of the run (prototype/internal/restatex), so this script
+# chooses no port for them.
+readonly restate_flags=(-restate-server "$restate_bin" -restate-service "$bin_dir/restateservice")
 
 # Every experiment is given a scratch directory of its own and the flags its own
 # product needs. Experiments 19, 20 and 21 run straight after experiment 6 because they
@@ -418,7 +453,7 @@ reserve_restate() {
 # timeout of four hours, which nothing in it waits for, and every wait it takes is
 # bounded in seconds, so the bound every other experiment shares covers it. The
 # Restate experiments start and stop their own restate-server, one per experiment, on
-# ports this script reserves for them.
+# unix sockets of its own.
 #
 # Each kill experiment that passed is followed by its control: the same experiment,
 # the same flags, -no-kill added, a scratch directory of its own so it neither reads
@@ -467,8 +502,6 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 		flags+=(-postgres-dsn "$postgres_dsn" -dbos-worker "$bin_dir/dbosworker")
 		;;
 	10 | 11 | 12)
-		reserve_restate "experiment $n"
-		label=$restate_label
 		flags+=("${restate_flags[@]}")
 		;;
 	13 | 14 | 15)
@@ -481,7 +514,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 
 	printf '\n=== experiment %d%s ===\n' "$n" "$label"
 	status=0
-	timeout "$bound" "$bin_dir/experiments" \
+	bounded "$bound" "$bin_dir/experiments" \
 		-experiment "$n" -work-dir "$work_dir" "${flags[@]}" || status=$?
 	if ((status != 0)); then
 		failed+=("$n")
@@ -498,19 +531,10 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 		else
 			control_dir="$run_dir/work/e$n-control"
 			mkdir -p -- "$control_dir"
-			control_flags=("${flags[@]}")
-			control_label=$label
-			# A Restate control holds a restate-server of its own, as its
-			# experiment does, so it gets ports of its own the same way.
-			if ((n == 10)); then
-				reserve_restate "experiment $n's control"
-				control_flags=("${restate_flags[@]}")
-				control_label=$restate_label
-			fi
-			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
+			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$label"
 			control_status=0
-			timeout "$bound" "$bin_dir/experiments" \
-				-experiment "$n" -work-dir "$control_dir" "${control_flags[@]}" -no-kill ||
+			bounded "$bound" "$bin_dir/experiments" \
+				-experiment "$n" -work-dir "$control_dir" "${flags[@]}" -no-kill ||
 				control_status=$?
 			if ((control_status == 0)); then
 				controls_that_passed+=("$n")

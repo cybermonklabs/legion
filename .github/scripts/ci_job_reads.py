@@ -2162,7 +2162,7 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-# The steps that read the stacks' connection limit before a browser step starts its stacks
+# The steps that read the stacks' connection limit before a step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
 # two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
@@ -2636,15 +2636,21 @@ GATES = [
         ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
-        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:152 sources it"),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:163 sources it"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/port-file.sh\"` line)"),
         ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh's keep_port and _held_exec (start_held, start_kept) run it to hold a port for the daemon"),
         ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` line, the last)"),
-        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:185 runs it over the checkout"),
-        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:267 copies its name, version and legion "
+        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:196 runs it over the checkout"),
+        ("scripts/e2e/lib/leftovers.sh", "scripts/e2e/stage1-skeleton.sh:27 sources it, and :28 runs its remove_leftover_postgres"),
+        ("packages/dispatch/e2e/postgres-mark.ts", "scripts/e2e/lib/leftovers.sh runs it with bun to read and remove marks"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts imports it"),
+        ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts imports it"),
+        ("packages/dispatch/e2e/harness-postgres-container-removal.ts", "packages/dispatch/e2e/harness-postgres-removal.ts imports it"),
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts imports it"),
+        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:278 copies its name, version and legion "
                                             "block with jq into the pi-legion plugin the proof's home holds"),
-        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:268 copies its name and version with jq "
+        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:279 copies its name and version with jq "
                                            "into the pi-envoy plugin the proof's home holds"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
@@ -2653,7 +2659,8 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} consts Image, SkippingImage"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
+      + setup_bun("daemon-go")),
 
     # The plugin-pack job: the three tests of internal/daemon in PLUGIN_PACK_TESTS, which the
     # daemon-go race step skips by name - the one that packs the two plugin releases and loads
@@ -2732,6 +2739,20 @@ GATES = [
         # and scripts/dispatch/ask-census.ts:10-18 import @legion/envoy-client/*, and the
         # scripts/dispatch typecheck holds seven broker-client sources in its own program.
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
+        ("packages/dispatch/e2e/postgres-mark.ts", f"{at('test', 'bun test scripts/e2e/lib')}: scripts/e2e/lib/sweep-order.test.ts:631-632 "
+                                                   "runs each driver, whose lib/leftovers.sh runs it with bun for the driver's mark (leftovers.sh:24,32)"),
+        ("packages/dispatch/e2e/harness-postgres-marks.ts", "packages/dispatch/e2e/postgres-mark.ts:21-27 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-removal.ts", "packages/dispatch/e2e/postgres-mark.ts:28 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-container-removal.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:85-92 imports it"),
+        ("packages/dispatch/e2e/harness-postgres-processes.ts", "packages/dispatch/e2e/harness-postgres-removal.ts:111-121 imports it"),
+        ("packages/pi-legion/scripts/skill-scenarios/rig.sh", "scripts/e2e/lib/sweep-order.test.ts:80,106,589,631 reads and runs it, a shell stack's start"),
+        ("packages/dispatch/e2e/__tests__/step-end.ts", "scripts/e2e/lib/sweep-order.test.ts:15, nats-image.test.ts:5, "
+                                                        "dispatch-keyed-comment.test.ts:7 and dispatch-live-events.test.ts:6 import it by path"),
+        ("packages/pi-envoy/extensions/envoy.test.ts", "scripts/e2e/lib/row-waits.test.ts:44,170 reads its rows"),
+        ("packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts", "scripts/e2e/lib/row-waits.test.ts:45,170 reads its rows"),
+        ("packages/dispatch/e2e/__tests__/harness-postgres-elsewhere.test.ts", "scripts/e2e/lib/row-waits.test.ts:46,170 reads its rows"),
+        ("packages/dispatch/e2e/__tests__/harness-postgres-container-removal.test.ts", "scripts/e2e/lib/row-waits.test.ts:47,170 reads its rows"),
+        ("packages/dispatch/e2e/__tests__/harness-postgres-waits.test.ts", "scripts/e2e/lib/row-waits.test.ts:48,170 reads its rows"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test; "
                                 "scripts/priorities-seed.test.ts:3 imports __tests__/held-deadlines.ts"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
@@ -2857,7 +2878,7 @@ GATES = [
     gate("test_fixtures", "test-fixtures", reads=reads(
         ("packages/test-fixtures/**", f"{at('test-fixtures', 'Typecheck the shared test fixtures')} and test in "
                                       "packages/test-fixtures (its own biome.json among them); its modules import only "
-                                      "one another, node: and bun:"),
+                                      "one another, node:, bun: and its own devDependency typescript (src/row-sums.ts)"),
     ) + bun_job("test-fixtures")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
@@ -2975,7 +2996,7 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :199"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :200"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:204-208, a root of the list at :201"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:275 sources scripts/e2e/lib/rig.sh"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:6 imports scripts/e2e/lib/script-functions; rig.sh:283 sources scripts/e2e/lib/rig.sh"),
         (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:1168-1170 copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:29-30)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
@@ -3008,6 +3029,11 @@ GATES = [
                                             f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
+        (".github/workflows/dispatch-browser.yaml",
+         "packages/dispatch/e2e/__tests__/postgres-provider.test.ts reads every step of it, which "
+         f"{at('dispatch-ui', 'Test dispatch dashboard')} runs: each test that starts a stack's "
+         "Postgres must be run by a step there that names a provider, since this job's lane "
+         "leaves those tests out"),
     ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
                          "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
                          "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
@@ -3094,6 +3120,9 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80,89 holds each stack's server port through it"),
+        ("scripts/e2e/lib/leftovers.sh", "packages/dispatch/e2e/__tests__/harness-postgres-provider-children.ts sources it "
+                                         "in the shell stacks the visual job's image rows start, and "
+                                         "packages/dispatch/e2e/__tests__/harness-postgres-leftover.test.ts runs its removal"),
         (".github/scripts/dispatch-browser-samples.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
          "start it and read its two summaries"),
@@ -3330,8 +3359,9 @@ GATES = [
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
+        (f"{ENVOY}/loadtest/stack.sh", "packages/envoy/loadtest/common.sh prepare_stack runs its setup, whose port refusal and first build run-step.test.sh watches"),
         (f"{ENVOY}/loadtest/common.test.sh", at("envoy-go-checks", LOADTEST_LOCK)),
-        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
+        (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh, run-series.sh, stack.sh, cluster/cluster.sh and vm/vm.sh source it, and cluster.test.sh and vm.test.sh run those two"),
         # The chart archive render-nats.sh renders, vendored so that the step downloads no chart.
         (f"{ENVOY}/loadtest/cluster/nats-*.tgz",
          f"{at('envoy-go-checks', LOADTEST_CLUSTER)}: cluster.test.sh runs render-nats.sh, which checks "
@@ -3689,6 +3719,8 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts's imports of brokerTokenClient, chooseSignIn and isFinalRefusal"),
+        ("scripts/e2e/lib/held-port.py", f"{at(STALL, 'Role takeover smoke')}: packages/pi-envoy/scripts/local-stack.sh starts the listener on the socket it holds"),
+        ("scripts/e2e/lib/port-file.sh", f"{at(STALL, 'Role takeover smoke')}: packages/pi-envoy/scripts/local-stack.sh sources it to read the listener's port"),
     ) + ceiling_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(

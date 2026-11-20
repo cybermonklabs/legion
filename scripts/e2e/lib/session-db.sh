@@ -5,7 +5,8 @@
 # (internal/ompsessions). session_db_start starts it; every read goes through the database's own
 # container, with no client on the devbox.
 #
-# Sourced, never run, after lib/rig.sh, whose until_true session_db_start waits with. The caller
+# Sourced, never run, after lib/rig.sh, whose until_true session_db_start waits with, and
+# lib/leftovers.sh, whose mark and removal of a stack's Postgres it runs. The caller
 # sets
 #   session_db_container   the container running the session database, whose owner is legion and
 #                          whose database is sessions
@@ -24,10 +25,11 @@
 # DOCKER_RUN_ARG…, the caller's CPU and memory limits. Its password is the run's own and reaches
 # docker through the owner-only env file $work/session-db.env, never an argument; the pod-facing
 # URL, at host on port_session_db, is written only to the owner-only file $work/session-dsn, which
-# the providers Secret reads, and is never printed. It returns once the database accepts
+# the providers Secret reads, and is never printed. The Postgres of a dead stack goes first, and
+# this one carries the run's mark (lib/leftovers.sh). It returns once the database accepts
 # connections, and fails when docker cannot start the container.
 session_db_start() {
-  local bind=$1 password
+  local bind=$1 password session_db_mark
   shift
   password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
   (
@@ -35,7 +37,9 @@ session_db_start() {
     printf 'POSTGRES_USER=legion\nPOSTGRES_DB=sessions\nPOSTGRES_PASSWORD=%s\n' "$password" >"$work/session-db.env"
     printf 'postgres://legion:%s@%s:%s/sessions?sslmode=disable\n' "$password" "$host" "$port_session_db" >"$work/session-dsn"
   )
-  docker run -d --name "$session_db_container" "$@" --mount type=tmpfs,destination=/var/lib/postgresql \
+  remove_leftover_postgres || fail "the removal of the Postgres of dead stacks could not run"
+  session_db_mark=$(postgres_mark "$work" "$session_db_container") || fail "the mark of $session_db_container could not be made"
+  docker run -d --name "$session_db_container" --label "$session_db_mark" "$@" --mount type=tmpfs,destination=/var/lib/postgresql \
     --env-file "$work/session-db.env" -p "$bind:$port_session_db:5432" "$session_db_image" >/dev/null ||
     fail "docker could not start the scratch session database $session_db_container on $bind:$port_session_db"
   until_true 60 "the session database to accept TCP connections" docker exec "$session_db_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d sessions

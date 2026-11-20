@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  The broker takes port `0` in `BROKER_AIRLOCK_PROXY_URL` for a local run, as it already did in `BROKER_PUBLIC_URL`: each release then carries the airlock proxy's URL with the port the proxy bound (`BROKER_AIRLOCK_LISTEN_ADDR` of port 0), so a test that starts the broker reads both ports from its log and no other program can take one first. A production broker still refuses port `0` in either URL at startup.

@@ -261,6 +261,13 @@ With its manifest, which the Stage 1 proof (ci-job-daemon-go.yaml's "Stage 1 liv
 pi-legion this suite reads. The pack and prompt probes, which read the rest of
 it, are the plugin-pack job's.
 
+## daemon_go_tests: The removal of each gone test stack's Postgres
+
+The removal of each gone test stack's Postgres, which the Stage 1 proof's start runs with Bun
+(scripts/e2e/stage1-skeleton.sh:27-28, through scripts/e2e/lib/leftovers.sh), and the modules that
+command imports; and the Bun that runs it, its version (.bun-version) and the action that installs
+it (.github/actions/setup-bun).
+
 ## plugin_pack: The plugin-pack job: internal/daemon's three tests of
 
 The plugin-pack job: internal/daemon's three tests of PLUGIN_PACK_TESTS
@@ -393,6 +400,27 @@ three patterns the `test` filter already names, `*ci_router`, `*ci_filters_data`
 The guide-layout step's own files, for that same reason: its gate is
 the guide_layout filter, and a guide-only change has to select this job for it.
 
+## test: Each shell stack's start, which the sweep order test runs
+
+scripts/e2e/lib/sweep-order.test.ts runs each shell stack's start, the skill scenarios' batch
+among them (packages/pi-legion/scripts/skill-scenarios/rig.sh), and the mark command that
+scripts/e2e/lib/leftovers.sh runs with Bun, with the modules that command imports:
+packages/dispatch/e2e/postgres-mark.ts and the four harness-postgres modules it reaches.
+
+## test: The hook that removes the e2e libraries' scratch
+
+Four of the e2e libraries' tests (sweep-order, nats-image, dispatch-keyed-comment and
+dispatch-live-events) remove their scratch in a hook through
+packages/dispatch/e2e/__tests__/step-end.ts, which they import by path.
+
+## test: The rows the row-waits test reads outside its own directory
+
+scripts/e2e/lib/row-waits.test.ts reads the rows of packages/pi-envoy/extensions/envoy.test.ts and
+of packages/dispatch/e2e/__tests__/harness-postgres-removal.test.ts and the three files split from
+it by concern (harness-postgres-elsewhere.test.ts, harness-postgres-container-removal.test.ts and
+harness-postgres-waits.test.ts) beside its own directory's, and holds them to the rule
+packages/test-fixtures/src/row-sums.ts reads.
+
 ## guide_layout: The guides' layout step of the test job (ci-job-test.yaml's
 
 The guides' layout step of the test job (ci-job-test.yaml's
@@ -458,6 +486,11 @@ The dashboard's and the proof editor's fast checks (dispatch-ui): what their lin
 typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
 Dispatch server: the job runs neither.
 
+## dispatch_ui: The browser workflow the provider test reads
+
+e2e/__tests__/postgres-provider.test.ts reads every step of .github/workflows/dispatch-browser.yaml:
+each test this job's harness lane leaves out must be run by a step there that names a provider.
+
 ## dispatch_ui: The one markdown fixture table, read through `web/src/__tests__/pmdoc-fixtures.ts`
 
 The one markdown fixture table, read through `web/src/__tests__/pmdoc-fixtures.ts`'s
@@ -498,6 +531,12 @@ dispatch_ui's set, which the SPA and the e2e helpers load, with the bundle of th
 dispatch command its rows spawn (e2e/dispatch-cli.ts:8,39), dispatch_two_builds_go's
 set (ci_ts_programs.py, LISTED, says why). Its jobs' contracts build
 (`build:dispatch`) compiles nothing outside the first: not legion-api.ts.
+
+## dispatch_browser: The shell stack the visual job's image rows start
+
+The visual job's image rows of packages/dispatch/e2e/__tests__/harness-postgres-leftover.test.ts
+start a shell stack that marks its Postgres, and run its removal, through
+scripts/e2e/lib/leftovers.sh.
 
 ## dispatch_browser: The workflow that holds every browser step, which this job
 
@@ -742,6 +781,12 @@ pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
 The job reads no Markdown file: the listener, the renderer and the contracts
 between them are its whole input, so a guide written under one of the directory
 patterns of the envoy_e2e_local filter (`'packages/envoy-client/src/**'`, `'packages/broker-client/**'` and the rest) would start it for nothing.
+
+## envoy_session_stall: The held socket the role takeover smoke serves on
+
+The role takeover smoke's listener serves on the socket scripts/e2e/lib/held-port.py holds, and
+scripts/e2e/lib/port-file.sh reads its port (packages/pi-envoy/scripts/local-stack.sh sources
+it), so a change to either runs this job.
 
 ## worker_image: Every file packages/daemon/docker/worker.Dockerfile builds
 
@@ -1638,7 +1683,8 @@ The dashboard's and the proof editor's lint, typecheck, unit tests, build and as
 They were split out of the browser suite (the dispatch-browser job), whose full lane - the one
 the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
 ten suites that label holds back, while these checks must come back on every push.
-No Postgres service and no Go, but contracts is built
+A Postgres service, for the suites' database cases (ci-job-dispatch-ui.yaml says which), and
+no Go, but contracts is built
 before the suites: one case of the dashboard's test run spawns Playwright, whose own
 resolution reads contracts' built dist/ (the comment on the step "Build contracts for the
 suites that spawn Playwright" of .github/workflows/ci-job-dispatch-ui.yaml says what failed
