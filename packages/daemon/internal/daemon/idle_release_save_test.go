@@ -96,6 +96,26 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 				attempts, lease, lastErr)
 		}
 	}
+	// The next pass, with the rows the first one retried made due in SQL, so no clock decides it:
+	// the save runs first, by id, and the teardown it held back runs after it in the same pass.
+	nextPass := func(t *testing.T, rig *idleRig) {
+		t.Helper()
+		if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() - interval '1 minute' where issue = $1`,
+			rig.issue.Key); err != nil {
+			t.Fatalf("make the release's rows due: %v", err)
+		}
+		runOnce(t, rig)
+	}
+	// releaseRowsLeft is how many of the release's save and teardown are still in the outbox.
+	releaseRowsLeft := func(t *testing.T, rig *idleRig) int {
+		t.Helper()
+		var left int
+		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1
+			and kind in ('issue_bundle', 'issue_release')`, rig.issue.Key).Scan(&left); err != nil {
+			t.Fatalf("count the release's save and teardown: %v", err)
+		}
+		return left
+	}
 
 	t.Run("the save's cancel fails", func(t *testing.T) {
 		rig := newIdleRig(t)
@@ -110,6 +130,29 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 			t.Fatal("the failed save did not attempt its cancellation")
 		}
 		pendingSaveKeepsPod(t, rig, 1)
+
+		// The cancel answers again. The save's retry still cannot build the bundle and now
+		// cancels the release, so the teardown it held back reads the release as over and
+		// finishes without a teardown, and the implementer's resume is queued.
+		faults.cancelErr = nil
+		nextPass(t, rig)
+		if left := releaseRowsLeft(t, rig); left != 0 {
+			t.Fatalf("%d of the save and the teardown are left, want both finished once the save's retry cancelled the release", left)
+		}
+		if rig.marked(t) {
+			t.Fatal("the release's mark outlived its cancel")
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 0 {
+			t.Fatalf("Sandbox teardowns = %d, want none: the cancelled release keeps the pod", teardowns)
+		}
+		var resumes int
+		if err := rig.pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise'
+			and payload->>'op' = 'start' and payload->>'role' = 'implementer'`, rig.issue.Key).Scan(&resumes); err != nil {
+			t.Fatal(err)
+		}
+		if resumes != 1 {
+			t.Fatalf("queued resumes of the implementer = %d, want the one the cancel queues", resumes)
+		}
 	})
 
 	t.Run("the save's authorization fails once", func(t *testing.T) {
@@ -124,6 +167,22 @@ func TestAFailedSaveWhoseCancelFailsCannotDeleteThePod(t *testing.T) {
 			t.Fatal("the save authorization fault was not exercised")
 		}
 		pendingSaveKeepsPod(t, rig, 0)
+
+		// The save's authorization answers again: the save stores the bundle and leaves the
+		// outbox, and the teardown it held back tears the pod down once in the same pass.
+		nextPass(t, rig)
+		if left := releaseRowsLeft(t, rig); left != 0 {
+			t.Fatalf("%d of the save and the teardown are left, want both finished once the save stored its bundle", left)
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want one once the save has left the outbox", teardowns)
+		}
+		if !rig.bundled(t) {
+			t.Fatal("the save's retry stored no bundle")
+		}
+		if rig.marked(t) {
+			t.Fatal("the finished release left its mark behind")
+		}
 	})
 
 	t.Run("control: a healthy save still tears down", func(t *testing.T) {
