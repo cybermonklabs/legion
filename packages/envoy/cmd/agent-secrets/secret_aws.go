@@ -176,6 +176,97 @@ func awsSignInFailure(what string, err error) error {
 	return fmt.Errorf("%s: %w", what, redact.Masked(err, awsSDKWords(err)))
 }
 
+// awsStore is a Secrets Manager client whose every failure prints as awsStoreFailure: the store
+// calls' errors reach the forms' refusals, and the SDK's text quotes AWS's own message and, for a
+// request that did not complete, the address AWS_ENDPOINT_URL or AWS_ENDPOINT_URL_SECRETS_MANAGER
+// names, with its user, password and query. openSecretBackend wraps every AWS store in it.
+type awsStore struct{ api secretsAPI }
+
+func (s awsStore) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, o ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	out, err := s.api.ListSecrets(ctx, in, o...)
+	return out, awsStoreFailure("ListSecrets", err)
+}
+
+func (s awsStore) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
+	out, err := s.api.DescribeSecret(ctx, in, o...)
+	return out, awsStoreFailure("DescribeSecret", err)
+}
+
+func (s awsStore) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	out, err := s.api.GetSecretValue(ctx, in, o...)
+	return out, awsStoreFailure("GetSecretValue", err)
+}
+
+func (s awsStore) CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
+	out, err := s.api.CreateSecret(ctx, in, o...)
+	return out, awsStoreFailure("CreateSecret", err)
+}
+
+func (s awsStore) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
+	out, err := s.api.PutSecretValue(ctx, in, o...)
+	return out, awsStoreFailure("PutSecretValue", err)
+}
+
+func (s awsStore) TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error) {
+	out, err := s.api.TagResource(ctx, in, o...)
+	return out, awsStoreFailure("TagResource", err)
+}
+
+func (s awsStore) UntagResource(ctx context.Context, in *secretsmanager.UntagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.UntagResourceOutput, error) {
+	out, err := s.api.UntagResource(ctx, in, o...)
+	return out, awsStoreFailure("UntagResource", err)
+}
+
+func (s awsStore) DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
+	out, err := s.api.DeleteSecret(ctx, in, o...)
+	return out, awsStoreFailure("DeleteSecret", err)
+}
+
+func (s awsStore) RestoreSecret(ctx context.Context, in *secretsmanager.RestoreSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.RestoreSecretOutput, error) {
+	out, err := s.api.RestoreSecret(ctx, in, o...)
+	return out, awsStoreFailure("RestoreSecret", err)
+}
+
+// awsStoreFailure is err, the failure of the Secrets Manager call operation, as a message prints
+// it: the call, and the code AWS answered it with, never AWS's message, which whoever answers at
+// the store's address writes what it likes in, and which can repeat a value the call sent (a
+// ValidationException quotes the field it refused); a call its context ended by that end alone; a
+// request that did not complete by its class beside the address settings that are set
+// (awsAddressesSet); and anything else in fixed words. It unwraps to err, so isAccessDenied,
+// awsDefiniteRefusal and every errors.As and errors.Is still read the SDK's own error.
+func awsStoreFailure(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	call := "Secrets Manager " + operation
+	if words, ok := awsAPIWords(err); ok {
+		return redact.Masked(err, call+": "+words)
+	}
+	var request *url.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return redact.Masked(err, call+" failed: context deadline exceeded")
+	case errors.Is(err, context.Canceled):
+		return redact.Masked(err, call+" failed: context canceled")
+	case errors.As(err, &request):
+		return redact.Masked(err, call+" failed: "+redact.Class(err).Error()+awsAddressesSet())
+	}
+	return redact.Masked(err, call+" failed (the AWS SDK's message is not printed: it can quote an AWS setting's value)")
+}
+
+// awsAPIWords is err's AWS API error as a message prints it, and whether err is one: its code
+// alone, where the code has the shape of one AWS registers (awsCode), never AWS's message.
+func awsAPIWords(err error) (string, bool) {
+	var api smithy.APIError
+	if !errors.As(err, &api) {
+		return "", false
+	}
+	if code := api.ErrorCode(); awsCode.MatchString(code) {
+		return "AWS refused it: " + code + " (AWS's message is not printed)", true
+	}
+	return "AWS refused it (its code and message are not printed)", true
+}
+
 // awsCode is the shape of an error code AWS registers (AccessDenied, ExpiredToken,
 // InvalidClientTokenId): a word of letters and digits, at most 64 long.
 var awsCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._]{0,63}$`)
@@ -197,17 +288,14 @@ var awsCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._]{0,63}$`)
 //     set, never their values;
 //   - anything else in fixed words that say where to look.
 func awsSDKWords(err error) string {
-	var api smithy.APIError
+	if words, ok := awsAPIWords(err); ok {
+		return words
+	}
 	var invalid *ssocreds.InvalidTokenError
 	var load config.SharedConfigLoadError
 	var path *fs.PathError
 	var request *url.Error
 	switch {
-	case errors.As(err, &api):
-		if code := api.ErrorCode(); awsCode.MatchString(code) {
-			return "AWS refused it: " + code + " (AWS's message is not printed)"
-		}
-		return "AWS refused it (its code and message are not printed)"
 	case errors.As(err, &invalid):
 		return "the IAM Identity Center (SSO) session has expired or is invalid: run `aws sso login` again"
 	case errors.As(err, &load):

@@ -415,7 +415,7 @@ func TestGCPStoreCallUnderARefusedTokenRefreshPrintsItsClass(t *testing.T) {
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
 			}
-			wantNamedNotPrinted(t, "stderr", stderr, []string{"code = Unauthenticated", "the server answered HTTP 400"}, []string{secret, "Response:", "error_description"}...)
+			wantNamedNotPrinted(t, "stderr", stderr, []string{"Secret Manager GetSecret answered Unauthenticated: fetch an access token with the credentials file: the server answered HTTP 400"}, []string{secret, "Response:", "error_description"}...)
 		})
 	}
 	t.Run("control: a token endpoint that answers, the real dial", func(t *testing.T) {

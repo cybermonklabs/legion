@@ -583,10 +583,11 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 	return b, nil
 }
 
-// storeCredentials is the credential the Secret Manager client signs its calls with: b.creds,
-// except that a credentials file's token source - Google's libraries' own - fails as the
-// failure's class alone (redactedTokens). Those libraries keep the body of the token endpoint's
-// answer in the error a refused refresh answers (x/oauth2's RetrieveError, and
+// storeCredentials is the credential the Secret Manager client signs its calls with: b.creds's,
+// through storeTokens (b.tokens), which keeps the token source's last failure for storeFailure,
+// and for a credentials file through redactedTokens too, so its token source - Google's
+// libraries' own - fails as the failure's class alone. Those libraries keep the body of the token
+// endpoint's answer in the error a refused refresh answers (x/oauth2's RetrieveError, and
 // cloud.google.com/go/auth's Error, into which oauth2adapt turns any error that wraps one), and
 // gRPC prints that error into the call's status message with %v, so by the time a form prints the
 // store's error the body is text no redaction can tell apart; the status code stays gRPC's. The
@@ -594,11 +595,13 @@ func newGCPBackend(ctx context.Context, settings Settings) (*gcpBackend, error) 
 // googleidentity's, and a lent token that never refreshes. b.creds itself is unchanged, so
 // gcpUserinfo still classifies a refused refresh by its RetrieveError.
 func (b *gcpBackend) storeCredentials() *google.Credentials {
-	if b.source != sourceCredentialsFile && b.source != sourceWellKnownFile {
-		return b.creds
+	tokens := b.creds.TokenSource
+	if b.source == sourceCredentialsFile || b.source == sourceWellKnownFile {
+		tokens = redactedTokens{tokens}
 	}
+	b.tokens = &storeTokens{TokenSource: tokens}
 	return &google.Credentials{
-		ProjectID: b.creds.ProjectID, TokenSource: redactedTokens{b.creds.TokenSource}, JSON: b.creds.JSON,
+		ProjectID: b.creds.ProjectID, TokenSource: b.tokens, JSON: b.creds.JSON,
 		UniverseDomainProvider: b.creds.GetUniverseDomain,
 	}
 }
@@ -805,6 +808,8 @@ type gcpBackend struct {
 	// a credentials file source read and signed in with: a command the form prints for running
 	// again carries it (signInPrefix, gcloudPin).
 	credentialsFile string
+	// tokens is the token source the Secret Manager client signs with (storeCredentials).
+	tokens *storeTokens
 }
 
 // id is the Secret Manager resource name of the secret whose name under the prefix is slug.
@@ -908,7 +913,7 @@ func (b *gcpBackend) hasCurrentVersion(ctx context.Context, id string) (bool, er
 		return false, nil
 	}
 	if err != nil {
-		return false, err
+		return false, b.storeFailure("GetSecretVersion", err)
 	}
 	return version.GetState() == secretmanagerpb.SecretVersion_ENABLED, nil
 }
@@ -943,7 +948,7 @@ func (b *gcpBackend) list(ctx context.Context) ([]secretView, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("list the agent secrets: %w", err)
+			return nil, fmt.Errorf("list the agent secrets: %w", b.storeFailure("ListSecrets", err))
 		}
 		if !strings.HasPrefix(secret.GetName(), b.settings.SecretsPrefix) {
 			continue // the parent held more than the namespace
@@ -968,7 +973,7 @@ func (b *gcpBackend) versionsOf(ctx context.Context, id string) (map[string][]st
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, b.storeFailure("ListSecretVersions", err)
 		}
 		number := v.GetName()[strings.LastIndex(v.GetName(), "/")+1:]
 		versions[number] = []string{v.GetState().String()}
@@ -980,7 +985,7 @@ func (b *gcpBackend) show(ctx context.Context, slug string) (secretView, error) 
 	id := b.id(slug)
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: id})
 	if err != nil {
-		return secretView{}, err
+		return secretView{}, b.storeFailure("GetSecret", err)
 	}
 	view, err := b.viewOf(ctx, secret)
 	if err != nil {
@@ -1003,13 +1008,13 @@ func (b *gcpBackend) addVersion(ctx context.Context, parent, value string) error
 		Parent:  parent,
 		Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)},
 	})
-	return err
+	return b.storeFailure("AddSecretVersion", err)
 }
 
 func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, error) {
 	secret, err := b.client.GetSecret(ctx, &secretmanagerpb.GetSecretRequest{Name: b.id(slug)})
 	if err != nil {
-		return heldTags{}, err
+		return heldTags{}, b.storeFailure("GetSecret", err)
 	}
 	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
 }
@@ -1021,7 +1026,7 @@ func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error)
 	latest := b.id(slug) + "/versions/latest"
 	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})
 	if err != nil {
-		return "", err
+		return "", b.storeFailure("AccessSecretVersion", err)
 	}
 	data := out.GetPayload().GetData()
 	if len(data) == 0 || !utf8.Valid(data) {
@@ -1077,6 +1082,7 @@ func (b *gcpBackend) updateAnnotations(ctx context.Context, slug string, held he
 		},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"annotations"}},
 	})
+	err = b.storeFailure("UpdateSecret", err)
 	if status.Code(err) == codes.FailedPrecondition {
 		return fmt.Errorf("%w, so the store refused this write: %w", errTagsChanged, err)
 	}
@@ -1093,7 +1099,7 @@ func (b *gcpBackend) delete(ctx context.Context, slug string) (*time.Time, error
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
 	if err != nil {
-		return nil, err
+		return nil, b.storeFailure("UpdateSecret", err)
 	}
 	return &expire, nil
 }
@@ -1105,11 +1111,61 @@ func (b *gcpBackend) restore(ctx context.Context, slug string) error {
 		Secret:     &secretmanagerpb.Secret{Name: b.id(slug)},
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"expire_time"}},
 	})
-	return err
+	return b.storeFailure("UpdateSecret", err)
 }
 
 func (b *gcpBackend) isAccessDenied(err error) bool {
 	return status.Code(err) == codes.PermissionDenied
+}
+
+// storeFailure is err, the failure of the Secret Manager call method, as a message prints it: the
+// call and the gRPC code Secret Manager answered, never its message, which the server writes what
+// it likes in, an echo of what the call sent among it; and a failure that is no answer of Secret
+// Manager's by its class (redact.Class). An Unauthenticated whose cause was this client's own
+// token source failing prints that failure (storeTokens): gRPC writes it into the status message,
+// and its words are this program's own (redactedTokens, gcloudToken, googleidentity). Every
+// Secret Manager call's failure goes through it, and it unwraps to err, so status.Code,
+// isAccessDenied and gcpDefiniteRefusal still read the code.
+func (b *gcpBackend) storeFailure(method string, err error) error {
+	if err == nil {
+		return nil
+	}
+	call := "Secret Manager " + method
+	answer, ok := status.FromError(err)
+	switch {
+	case !ok:
+		return redact.Masked(err, call+" failed: "+redact.Class(err).Error())
+	case answer.Code() == codes.Unauthenticated && b.tokens.failure() != nil:
+		return redact.Masked(err, call+" answered Unauthenticated: "+b.tokens.failure().Error())
+	}
+	return redact.Masked(err, call+" answered "+answer.Code().String()+" (its message is not printed)")
+}
+
+// storeTokens is the token source the Secret Manager client signs its calls with, which keeps its
+// last failure (failure) so a call gRPC refuses as Unauthenticated can say why in this program's
+// own words (storeFailure). A token it fetches clears the failure.
+type storeTokens struct {
+	oauth2.TokenSource
+	mu   sync.Mutex
+	last error
+}
+
+func (s *storeTokens) Token() (*oauth2.Token, error) {
+	token, err := s.TokenSource.Token()
+	s.mu.Lock()
+	s.last = err
+	s.mu.Unlock()
+	return token, err
+}
+
+// failure is the last failure of s's token source, nil after a token it fetched or for no s.
+func (s *storeTokens) failure() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.last
 }
 
 // close releases the Secret Manager client's underlying gRPC connection.

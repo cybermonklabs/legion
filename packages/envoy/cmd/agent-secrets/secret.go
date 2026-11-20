@@ -883,7 +883,7 @@ func openSecretBackend(ctx context.Context, settings Settings) (secretBackend, e
 		if err != nil {
 			return nil, err
 		}
-		return &awsBackend{settings: settings, sm: sm, st: st, source: awsSourceOf(sources)}, nil
+		return &awsBackend{settings: settings, sm: awsStore{sm}, st: st, source: awsSourceOf(sources)}, nil
 	case secrets.StoreGCP:
 		if err := checkSettingsKMSKeyName(settings); err != nil {
 			return nil, err
