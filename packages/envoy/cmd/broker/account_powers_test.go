@@ -47,9 +47,9 @@ const (
 	powersApprover = "ada@example.com"
 	unknownID      = "00000000-0000-4000-8000-000000000000"
 	// unknownRecord is that same id nothing has, in a record id's own shape: a lowercase-hex
-	// sha256 hash. The two decide routes authenticate their own caller after they have read the
-	// record's kind, so an id of any other shape is refused 400 before the authority this test
-	// reads is reached; every other route refuses the caller first and takes either shape.
+	// sha256 hash, so the record routes the caller reaches answer for the record (404) rather than
+	// refusing the id's shape (400); every route refuses a caller without its power first, and
+	// takes either shape for that.
 	unknownRecord = "0000000000000000000000000000000000000000000000000000000000000000"
 	// lacksPower is the refusal a listed caller gets on a route its name does not carry, as
 	// against ACCOUNT_NOT_LISTED for an account the broker does not list at all.

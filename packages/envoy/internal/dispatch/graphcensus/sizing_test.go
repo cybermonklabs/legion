@@ -541,7 +541,7 @@ const (
 	receiptDrive       = "outbox/publisher.go#recordBatch, the receipt of the comment's mention"
 	fallbackDrive      = "outbox/mentions.go#recordFallbackCopies"
 	objectBatchDrive   = "graphcensus/projects_backfill.go#writeObjectBatch"
-	scopeBatchDrive    = "graphcensus/projects_backfill.go#writeScopeBatch"
+	scopeBatchDrive    = "graphstore/scope.go#FillScopes"
 	orphanSweepDrive   = "graphcensus/orphans.go#StateOrphanedGone"
 )
 
@@ -672,7 +672,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 		// before the project stored it - no project on its row and no project tuple in its log, as
 		// the column is the projection of its tuples - and the fill states its project. The
 		// comment row stays, so the sized window holds the writes it held.
-		Name: scopeBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeScopeBatch", "graphstore/scope.go#FillScopes"},
+		Name: scopeBatchDrive, Sites: []string{"graphstore/scope.go#FillScopes"},
 		Database: database,
 		Ready: func(t *testing.T) {
 			if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {

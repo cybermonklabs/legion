@@ -4,10 +4,29 @@
 #
 #   e2e/visual-run.sh                      # compare every baseline
 #   e2e/visual-run.sh --update-snapshots   # take them again
+#   DISPATCH_E2E_VISUAL_ORDER=reverse e2e/visual-run.sh   # compare them with the rows reversed
 #
 # Every argument it is given is passed on to Playwright, so the update path is the same command
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
 # run of the same binaries in the same image, which is the whole point of the layer.
+#
+# A baseline comes from this command alone. A machine with no container, an issue pod among
+# them, takes one from the full lane's run in CI instead:
+#
+#   1. gh run download <failed full-lane run id> --repo <owner>/<repo> \
+#        --name dispatch-browser-visual-<attempt>
+#   2. A failed row's -actual.png is under the results directory this script names on a failed
+#      run, at the same path inside the download.
+#   3. Copy it over e2e/__screenshots__/<project>/<route>-<scheme>.png only if every pixel that
+#      moved was meant to and a second run gave the same bytes (else the page is not settled),
+#      and say why in the commit message.
+#
+# WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
+# changes what every row after it compares. The review seed writes each such mark before any row
+# runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
+# with `DISPATCH_E2E_VISUAL_ORDER=reverse` (e2e/visual-order.ts): the phone rows first, and each
+# project's rows last first. A row that reads another row's write then fails one of the two runs
+# by its own name. The variable reaches the container through the `DISPATCH_E2E_` sweep below.
 #
 # WHY THE SEED RUNS ON THE HOST AND THE SHOTS IN THE CONTAINER. `e2e/psql.ts` spawns the `psql`
 # binary, and both `resetDatabase()` (e2e/seed.ts) and the delivery fixtures
@@ -163,5 +182,84 @@ docker run --rm --network host --ipc=host --user "$(id -u):$(id -g)" \
   ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
+
+# A failed run says where its shots are, and what a failure in reverse order alone means.
+# Playwright writes a failed row's `-actual.png`, `-expected.png` and `-diff.png` under the run's
+# output directory: `e2e/test-results` (e2e/playwright.config.ts's `outputDir`) unless `--output`
+# names another, as CI's reverse step names `e2e/test-results-reverse`. Both are relative to this
+# package, where the run works, so the line names them from the repository root, as a CI log's
+# reader and the job's upload do (`packages/dispatch/e2e/test-results-reverse`); an absolute
+# `--output` is printed as given. A row that fails in the reverse order and passes in the normal
+# one most likely reads a mark another row writes as it draws (a run under load can also draw a
+# frame mid-change, so run the row again before acting). Its fix is that mark in the seed
+# (`markWhatTheShotPagesRead`, e2e/review-seed.ts), not a new baseline: a baseline taken from the
+# reverse run's shot holds the state the normal order never draws, and fails that run instead.
+# The loop reads the arguments as Playwright's `test` command does: `--output=DIR` and `--output
+# DIR`, the last one wins, an empty value names nothing, arguments after `--` are no options, and
+# the word after an option that takes a value is that value, whatever it looks like - so
+# `--grep-invert --output=x` names no output directory, as Playwright reads it. The two lists are
+# the options of `playwright test` at the version the run uses (@playwright/test 1.64.1, the
+# package.json pin; the image runs this tree's node_modules), copied from its own help (`bun
+# node_modules/@playwright/test/cli.js test --help`): those written with `<value>`, which take the
+# next word always, and those written with `[value]`, which take it only when it starts with no
+# dash, so never an `--output`, and which end a cluster of short options. A short option that
+# takes a value takes the rest of its cluster where there is one (`-Gx`), else the next word.
+# e2e/__tests__/visual-run.test.ts reads both lists against that help and fails when they differ.
+# The status stays the container's however the lines go: a write to a closed stderr fails and is
+# ignored, and a write to a pipe whose reader has gone would raise SIGPIPE and end this shell
+# before the EXIT trap stopped the stack, so the signal is ignored from here on - after `docker`
+# has returned, so neither the container nor the stack inherits that.
+playwright_value_options=" --add-reporter --browser -c --config -g --grep -G --grep-invert --global-timeout -j --workers --last-failed-file --max-failures --output --project --repeat-each --reporter --retries --run-agents --shard --test-list --test-list-invert --timeout --trace --tsconfig --ui-host --ui-port --update-source-method "
+playwright_optional_options=" --debug --only-changed --shuffle -u --update-snapshots "
+if [ "$status" -ne 0 ]; then
+  trap '' PIPE
+  output=""
+  next=""
+  for arg in "$@"; do
+    case $next in
+      output) output=$arg ;;
+    esac
+    if [ -n "$next" ]; then
+      next=""
+      continue
+    fi
+    case $arg in
+      --) break ;;
+      --output=*) output=${arg#--output=} ;;
+      --output) next=output ;;
+      --*=*) ;;
+      --*)
+        case $playwright_value_options in
+          *" $arg "*) next=value ;;
+        esac
+        ;;
+      -?*)
+        cluster=${arg#-}
+        while [ -n "$cluster" ]; do
+          letter=${cluster%"${cluster#?}"}
+          cluster=${cluster#?}
+          case $playwright_value_options in
+            *" -$letter "*)
+              [ -n "$cluster" ] || next=value
+              break
+              ;;
+          esac
+          case $playwright_optional_options in
+            *" -$letter "*) break ;;
+          esac
+        done
+        ;;
+    esac
+  done
+  case $output in
+    "") output=packages/dispatch/e2e/test-results ;;
+    /*) ;;
+    *) output=packages/dispatch/${output#./} ;;
+  esac
+  printf '%s\n' "e2e/visual-run.sh: the run failed; a failed row's shots (-actual.png, -expected.png, -diff.png) are under ${output%/}/." >&2 || :
+  if [ "${DISPATCH_E2E_VISUAL_ORDER:-}" = reverse ]; then
+    printf '%s\n' "e2e/visual-run.sh: these rows ran in reverse order. A row that fails here and passes in the normal order most likely reads a mark another row writes: run it again, and if it still fails, write that mark in the seed (markWhatTheShotPagesRead, e2e/review-seed.ts), and take no new baseline from this run." >&2 || :
+  fi
+fi
 
 exit "$status"

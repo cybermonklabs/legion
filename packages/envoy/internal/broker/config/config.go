@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/netip"
 	"net/url"
@@ -471,6 +472,15 @@ type Config struct {
 	// each answering its service. A token whose subject is not listed is refused, and a credential
 	// an account's login issued stops authenticating once its entry is gone. Needs
 	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
+	//
+	// A login of an account that BROKER_POD_OPERATORS maps to a person acts for that person, when
+	// the login token is bound to a pod of the account. No other login of this setting acts for a
+	// person: the credential of each other login has no operator. A mapped account is held to
+	// rules that no other account of this setting is held to, and PodOperators lists them. Among
+	// them are these two. BROKER_SERVICES must not bind a mapped account, though the paragraph
+	// above lets BROKER_SERVICES bind any other account listed here. A mapped account
+	// authenticates none of the routes a service calls as itself: serviceAuth refuses it
+	// 403 PERSON_ACCOUNT.
 	ServiceLogins map[string]string
 	// BROKER_POD_REGISTRARS: who may register which pods at POST /v1/oauth/exchange/pod-sessions,
 	// whitespace-separated <registrar account>=<pod account> entries, such as
@@ -488,9 +498,10 @@ type Config struct {
 	// route still refuses it the pod it runs in (403 POD_CALLER_IS_THE_POD). Refused at start,
 	// naming the setting and the entry: an entry without exactly one "=", an account of any other
 	// form (a google: one included), a namespace's default account, which every pod there whose
-	// spec names no account runs as, and a pair given twice; and the list set without
-	// BROKER_K8S_OIDC_ISSUER, whose tokens both accounts present. A registrar BROKER_SERVICE_LOGINS
-	// does not list is not refused, since the list may be derived from another source than the
+	// spec names no account runs as, and a pair given twice; the list set without
+	// BROKER_K8S_OIDC_ISSUER, whose tokens both accounts present; and a registrar that
+	// BROKER_POD_OPERATORS maps to a person (mappedAccountRefusal). A registrar
+	// BROKER_SERVICE_LOGINS does not list is not refused, since the list may be derived from another source than the
 	// logins and a refusal would turn that into an outage: it registers nothing, and the boot
 	// logs a WARN line naming it. Unset, the broker starts and the route admits no registration,
 	// so a deployment sets this list before its first daemon sets exchange_audience. The token
@@ -511,6 +522,54 @@ type Config struct {
 	// it would then be spendable on that setting's routes too. Unset, the route accepts the
 	// broker's own audience alone.
 	PodRegistrationAudience string
+	// BROKER_POD_OPERATORS: the Kubernetes accounts whose pods act for a person,
+	// whitespace-separated <email>=system:serviceaccount:<namespace>:<name> entries, such as
+	// ada@example.com=system:serviceaccount:example-ns:ada. The email is the person, in lower
+	// case, as the person signs in (record.CanonicalLogin). A mapped account is an account that
+	// this setting names. A person may have several mapped accounts. Keyed by account, each
+	// answering its person.
+	//
+	// A pod of a mapped account logs in with its own projected token, bound to that pod, and
+	// enrols itself (agent-secrets enroll --pod --service <its login service>) under no session
+	// name. That pod acts as the person at the broker, on the terms of the person's dev box. The
+	// broker serves the person's own agent-tier secrets to the pod with no approval. A request for
+	// one of the person's human-tier secrets waits for the person to approve each grant. A request
+	// for another person's secret waits for its owner to approve it. Each mapped account logs in
+	// under a login service of its own, which BROKER_SERVICE_LOGINS names for that account. A token
+	// of a mapped account that is bound to no pod, such as one kubectl create token mints, logs in
+	// for no person. An account that this setting does not name acts for no person at the broker,
+	// also when BROKER_EXCHANGE_ACCOUNTS maps it to a person for Dispatch.
+	//
+	// The operator routes that list and revoke the person's machine logins and grants refuse such a
+	// pod's login 403 PERSON_POD_LOGIN. The routes a service calls as itself refuse the mapped
+	// account 403 PERSON_ACCOUNT. The broker reads this setting at each decision of what
+	// the pod may do. So after the deployment removes an entry, or moves it to another person, the
+	// enrollment that a pod of that account already holds acts for no person from its next call.
+	//
+	// The broker refuses to start in each case below, and the refusal names the entry or the
+	// account. It refuses an entry that is not of the form above. It refuses a person that is not a
+	// lower-case email. It refuses an account that is not system:serviceaccount:<namespace>:<name>.
+	// It refuses a namespace's default account, because every pod of the namespace that names no
+	// account runs as it. It refuses an account given twice, because one account acts for one
+	// person. It refuses a mapped account that BROKER_SERVICE_LOGINS does not name. It refuses a
+	// mapped account whose login service a BROKER_SERVICES entry names, because a secret could then
+	// name that service as its owner. It refuses a mapped account that a BROKER_SERVICES entry
+	// binds, because a launcher logged in as that service could then enrol the person's pods as its
+	// own workers, with that service's secrets. It refuses a mapped account whose login service a
+	// BROKER_VM_SERVICES entry names, because the broker registers the services of BROKER_SERVICES
+	// and BROKER_VM_SERVICES alike as owners a secret may name. It refuses a mapped account that a
+	// BROKER_EXCHANGE_ACCOUNTS entry maps to another person. It refuses a mapped account that a
+	// BROKER_POD_REGISTRARS entry names as its registrar, because the person's pod would then
+	// choose the session names other pods exchange under. It refuses a mapped account that a
+	// BROKER_EXCHANGE_READ_ACCOUNTS entry names, because the exchange would mint the person's pod a
+	// token that names a service and no person. It refuses a mapped account that a
+	// BROKER_API_ACCOUNTS entry names, because that caller's routes relay decisions in the name the
+	// caller gives. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because
+	// the NATS auth service would then answer a connection of the person's pod with a service's
+	// NATS grant. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS
+	// pair names, because a pair lets the session names the token exchange binds for the account
+	// and for the other account cross. Unset, the setting maps no account.
+	PodOperators map[string]string
 	// BROKER_SESSION_ACCOUNT_PAIRS: pairs of Kubernetes service accounts that take each other's
 	// session names, whitespace-separated <account>=<account> entries, each account
 	// system:serviceaccount:<namespace>:<name> as BROKER_SERVICES writes one, such as
@@ -528,8 +587,9 @@ type Config struct {
 	// BROKER_EXCHANGE_ACCOUNTS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_EXCHANGE_WORKFLOWS or
 	// BROKER_VM_EXCHANGE_ACCOUNTS names, is never taken. An account may be in several pairs. An
 	// entry not of that form, a namespace's default account, an account paired with itself and a
-	// pair given twice, in either order, are refused. Each pair is held as its two accounts, in
-	// the order the setting gives them.
+	// pair given twice, in either order, are refused, and so is an account BROKER_POD_OPERATORS
+	// maps to a person, on either side, since a person's account shares no session name with
+	// another account. Each pair is held as its two accounts, in the order the setting gives them.
 	//
 	// It is for an operator moving a deployment's pods from one account to another, and it must
 	// be live on the broker before the deployment moves its pods to the new account: until then
@@ -1321,15 +1381,182 @@ func exchangeFields(text string, want int) ([]string, bool) {
 }
 
 // podAccountRefusal refuses, naming setting and the entry text, an account no exchange entry for
-// a pod, and no side of a session account pair, may name: one that is not
-// system:serviceaccount:<namespace>:<name>, and a namespace's default account. It answers nil for
-// an account such an entry may name, and is to a pod's account what vmAccountRefusal is to a VM's.
+// a pod, no BROKER_POD_OPERATORS entry and no side of a session account pair may name: one that
+// is not system:serviceaccount:<namespace>:<name>, and a namespace's default account. It answers
+// nil for an account such an entry may name, and is to a pod's account what vmAccountRefusal is
+// to a VM's.
 func podAccountRefusal(setting, text, account string) error {
 	switch {
 	case !principal.ServiceAccountSubject.MatchString(account):
 		return fmt.Errorf("%s must name system:serviceaccount:<namespace>:<name> accounts, got %q", setting, text)
 	case isDefaultServiceAccount(account):
 		return fmt.Errorf("%s names a namespace's default service account, got %q: every pod in that namespace whose spec names no account runs as it, so its token says nothing about which pod is asking; name a dedicated account", setting, text)
+	}
+	return nil
+}
+
+// parsePodOperators reads setting's whitespace-separated <person>=<ServiceAccount subject>
+// entries, the accounts BROKER_POD_OPERATORS maps to a person. It answers them keyed by account,
+// each answering its person, which is the map Config.PodOperators holds. It cuts each entry at
+// its first "=", because the person comes first and no account holds an "=". Each refusal names
+// setting and the entry text. It refuses an entry with no "=". It refuses a person that is not a
+// lower-case email in record.CanonicalLogin's form, because every login comparison of the broker
+// reads that form. It refuses an account podAccountRefusal refuses. It refuses an account given
+// twice, because one account acts for one person. A person may have several accounts. No entry
+// gives a nil map, as an unset setting does. Load checks the mapped accounts against the other
+// settings (mappedAccountRefusal).
+func parsePodOperators(setting, value string) (map[string]string, error) {
+	var people map[string]string
+	for _, text := range strings.Fields(value) {
+		person, account, ok := strings.Cut(text, "=")
+		if !ok {
+			return nil, fmt.Errorf("%s must be <email>=system:serviceaccount:<namespace>:<name> entries, such as ada@example.com=system:serviceaccount:example-ns:ada, got %q", setting, text)
+		}
+		if record.CanonicalLogin(person) != person || !policy.ValidPersonOwner(person) {
+			return nil, fmt.Errorf("%s must name each person by their email in lower case, as they sign in, such as ada@example.com, got %q", setting, text)
+		}
+		if err := podAccountRefusal(setting, text, account); err != nil {
+			return nil, err
+		}
+		if _, twice := people[account]; twice {
+			return nil, fmt.Errorf("%s names the service account %s twice, got %q again; one account acts for one person, so name it once", setting, account, text)
+		}
+		if people == nil {
+			people = map[string]string{}
+		}
+		people[account] = person
+	}
+	return people, nil
+}
+
+// mappedAccountRefusal refuses an account that BROKER_POD_OPERATORS maps (cfg.PodOperators) when
+// another setting gives that account, or its login service, a role that a person's account must
+// not have. Load calls it after it reads each setting it checks. Each refusal names the account
+// and both settings, and says what to change. It examines the mapped accounts in sorted order, so
+// one configuration always gets the same refusal first.
+//
+// The class is every setting that gives a Kubernetes account a role of its own, a service, a
+// caller, a token of its own, a registrar's choice of session names or another account's session
+// names, since a mapped account acts for its person and for nothing else. The settings it checks
+// are BROKER_SERVICE_LOGINS, BROKER_SERVICES, BROKER_VM_SERVICES, BROKER_EXCHANGE_ACCOUNTS,
+// BROKER_POD_REGISTRARS, BROKER_EXCHANGE_READ_ACCOUNTS, BROKER_API_ACCOUNTS, BROKER_NATS_SERVICES
+// and BROKER_SESSION_ACCOUNT_PAIRS, in the order it checks them. A setting that Load reads through
+// getenv on the two configurations of TestEveryBrokerSettingLoadReadsIsMarked (the person sign-in
+// on and off, each with every condition in front of a read set) fails that test until its author
+// marks it, as giving a Kubernetes account a role, beside its refusal here and its row in
+// TestPodOperatorsRefusesAMappedAccountAnotherSettingGivesARole, or as giving none. A setting read
+// under a condition those configurations do not set, or read other than through getenv, is outside
+// the test: cmd/broker's BROKER_FAKE_SECRETS_FILE and the PG* variables pgconn.ParseConfig reads in
+// databaseIAM are two today. For such a setting the class is a convention rather than a rule.
+//
+// It refuses a mapped account that BROKER_SERVICE_LOGINS does not name, because a mapped account
+// logs in with its own token. It refuses a mapped account whose login service a BROKER_SERVICES
+// entry names, because a secret could then name that service as its owner. It refuses a mapped
+// account that a BROKER_SERVICES entry binds, because a launcher logged in as that service could
+// then enrol the person's pods as its own workers (enroll.Service.launches). It refuses a mapped
+// account whose login service a BROKER_VM_SERVICES entry names, because cmd/broker's serviceNames
+// gives the policy loader the services of BROKER_SERVICES and BROKER_VM_SERVICES alike. It refuses
+// a mapped account that a BROKER_EXCHANGE_ACCOUNTS entry maps to another person, after it writes
+// both people in record.CanonicalLogin's form. It refuses a mapped account that a
+// BROKER_POD_REGISTRARS entry names as its registrar (cfg.PodRegistrars), because a registrar
+// chooses the session names that the pods it registers exchange under, and each name stays bound to
+// the registrar's account for good (oauthstore.Store.RegisterPodSession), so the person's pod would
+// choose the session names other pods exchange under. The registration routes refuse a mapped
+// account already (api's serviceCaller, 403 PERSON_ACCOUNT), so such an entry could register
+// nothing. A mapped account on the pod side of an entry is not refused: a registration of its pod
+// is admitted only under a BROKER_EXCHANGE_ACCOUNTS entry that fixes no session (the pod-session
+// policy's 409 SESSION_FIXED), and every BROKER_EXCHANGE_ACCOUNTS entry for the account names the
+// same person (the refusal above), so the pod acts for that person alone. It refuses a mapped
+// account that a BROKER_EXCHANGE_READ_ACCOUNTS entry names (cfg.ExchangeReadAccounts), because the
+// exchange would then mint the person's pod a read-only token that names that entry's service and
+// no person. It refuses a mapped account that a BROKER_API_ACCOUNTS entry names (cfg.APIAccounts),
+// because the named-caller routes it reaches act on the caller's word: the approval relays take the
+// deciding person's name from the caller, so the person's pod could decide any request in any
+// person's name. It refuses a mapped account that a BROKER_NATS_SERVICES entry names, because the
+// NATS auth service (internal/broker/natscallout) would then answer a connection of the person's
+// pod with that entry's service grant. It reads each entry's account with CutNATSServiceEntry, the
+// reading natscallout.ParseServices makes too, which holds the account to ParseAccount's form at
+// the boot. It refuses a mapped account that either side of a BROKER_SESSION_ACCOUNT_PAIRS pair
+// names (cfg.SessionAccountPairs), because a pair lets one account take the session names the other
+// holds. A person's pod login enrols under no session name (enroll.Service.podUnderTokenLogin), so
+// a pair moves no enrollment of it, but the session names the token exchange binds for the account
+// would cross: the other account could take the person's, and the person's pod the other account's.
+func mappedAccountRefusal(cfg *Config) error {
+	const setting = "BROKER_POD_OPERATORS"
+	if len(cfg.PodOperators) == 0 {
+		return nil
+	}
+	services := make(map[string]bool, len(cfg.ServicesByAccount))
+	for _, service := range cfg.ServicesByAccount {
+		services[service] = true
+	}
+	vmServices := make(map[string]bool, len(cfg.VMServicesByAccount))
+	for _, service := range cfg.VMServicesByAccount {
+		vmServices[service] = true
+	}
+	exchangePeople := make(map[string]string, len(cfg.ExchangeAccounts))
+	for _, entry := range cfg.ExchangeAccounts {
+		exchangePeople[entry.Account] = entry.Person
+	}
+	natsEntries := make(map[string]string)
+	for _, text := range strings.Fields(cfg.NATS.Services) {
+		if _, account, ok := CutNATSServiceEntry(text); ok {
+			natsEntries[account] = text
+		}
+	}
+	pairs := make(map[string]string)
+	for _, pair := range cfg.SessionAccountPairs {
+		for _, side := range pair {
+			if _, named := pairs[side]; !named {
+				pairs[side] = pair[0] + "=" + pair[1]
+			}
+		}
+	}
+	// Each registrar's entry with the first pod account in sort order, so one configuration always
+	// names the same entry.
+	registrarPods := make(map[string]string, len(cfg.PodRegistrars))
+	for pair := range cfg.PodRegistrars {
+		if pod, named := registrarPods[pair.Registrar]; !named || pair.Pod < pod {
+			registrarPods[pair.Registrar] = pair.Pod
+		}
+	}
+	readServices := make(map[string]string, len(cfg.ExchangeReadAccounts))
+	for _, entry := range cfg.ExchangeReadAccounts {
+		readServices[entry.Account] = entry.Service
+	}
+	for _, account := range slices.Sorted(maps.Keys(cfg.PodOperators)) {
+		person := cfg.PodOperators[account]
+		login, listed := cfg.ServiceLogins[account]
+		if !listed {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICE_LOGINS does not name it; a mapped account logs in with its own token under a login service of the person's own, so add <service>=%s to BROKER_SERVICE_LOGINS", setting, account, person, account)
+		}
+		if services[login] {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICES names its login service %q (BROKER_SERVICE_LOGINS); a secret could then name that service as its owner, and a person's login service must grant nothing by itself, so log the account in under a service BROKER_SERVICES does not name", setting, account, person, login)
+		}
+		if bound, binds := cfg.ServicesByAccount[account]; binds {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_SERVICES binds it to the service %q; a launcher logged in as that service would enrol the person's pods as its own workers, with that service's secrets, so take the account out of BROKER_SERVICES or out of %s", setting, account, person, bound, setting)
+		}
+		if vmServices[login] {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_VM_SERVICES names its login service %q (BROKER_SERVICE_LOGINS); the broker registers that setting's services as owners a secret may name, as it does BROKER_SERVICES', and a person's login service must grant nothing by itself, so log the account in under a service BROKER_VM_SERVICES does not name", setting, account, person, login)
+		}
+		if other, exchanges := exchangePeople[account]; exchanges && record.CanonicalLogin(other) != record.CanonicalLogin(person) {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_ACCOUNTS maps it to %s; one account acts for one person, so map it to the same person in both settings or take it out of one of them", setting, account, person, other)
+		}
+		if pod, registers := registrarPods[account]; registers {
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_POD_REGISTRARS entry %q names it as a registrar; a registrar chooses the session names that the pods it registers exchange under, and each name stays bound to the registrar's account for good, so take the account out of BROKER_POD_REGISTRARS as a registrar or out of %s", setting, account, person, account+"="+pod, setting)
+		}
+		if service, reads := readServices[account]; reads {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_EXCHANGE_READ_ACCOUNTS names it as a reader of the service %q; the exchange would mint the person's pod a read-only token that names that service and no person, so take the account out of BROKER_EXCHANGE_READ_ACCOUNTS or out of %s", setting, account, person, service, setting)
+		}
+		if caller, calls := cfg.APIAccounts[account]; calls {
+			return fmt.Errorf("%s maps the service account %s to %s, and BROKER_API_ACCOUNTS names it as the caller %q; that caller's routes act on the caller's word, and the approval relays take the deciding person's name from it, so take the account out of BROKER_API_ACCOUNTS or out of %s", setting, account, person, caller.Name, setting)
+		}
+		if entry, names := natsEntries[account]; names {
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_NATS_SERVICES entry %q names it; the NATS auth service would answer a connection of the person's pod with that service's NATS grant, so take the account out of BROKER_NATS_SERVICES or out of %s", setting, account, person, entry, setting)
+		}
+		if pair, paired := pairs[account]; paired {
+			return fmt.Errorf("%s maps the service account %s to %s, and the BROKER_SESSION_ACCOUNT_PAIRS pair %q names it; a pair lets either account take the session names the other holds, so the session names the token exchange binds for the person's account and for the other account would cross, and a person's account shares no session name with another account, so take the account out of the pair or out of %s", setting, account, person, pair, setting)
+		}
 	}
 	return nil
 }
@@ -1983,7 +2210,8 @@ func Load(getenv func(string) string) (Config, error) {
 	// service's own account logging the service in with its own projected token and enrolling
 	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
 	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
-	// doc says.
+	// doc says. An account BROKER_POD_OPERATORS maps is the exception: mappedAccountRefusal,
+	// below, refuses it.
 	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.SessionAccountPairs, err = parseSessionAccountPairs("BROKER_SESSION_ACCOUNT_PAIRS", getenv("BROKER_SESSION_ACCOUNT_PAIRS")); err != nil {
 		return Config{}, err
@@ -2187,6 +2415,14 @@ func Load(getenv func(string) string) (Config, error) {
 				return Config{}, fmt.Errorf("BROKER_POD_REGISTRATION_AUDIENCE is %q, which %s is too: a token of the registration audience is accepted at POST /v1/oauth/exchange/pod-sessions alone, so give it an audience no other setting names", cfg.PodRegistrationAudience, other.setting)
 			}
 		}
+	}
+	// BROKER_POD_OPERATORS is read after every setting mappedAccountRefusal checks it against, so
+	// a refusal added there reads a setting this function has already read.
+	if cfg.PodOperators, err = parsePodOperators("BROKER_POD_OPERATORS", getenv("BROKER_POD_OPERATORS")); err != nil {
+		return Config{}, err
+	}
+	if err := mappedAccountRefusal(&cfg); err != nil {
+		return Config{}, err
 	}
 	var sessionSeconds int
 	ints := []struct {

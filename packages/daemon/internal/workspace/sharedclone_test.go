@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 // colorRunner runs every command through runner under a jj user configuration that colors all
@@ -115,11 +117,13 @@ func TestProvisioningSnapshotsTheSharedCloneOnlyInWorkspaceAdd(t *testing.T) {
 	}
 }
 
-// Provisioning from a feed, as `workspace-init provision` does in a pod, turns git's ambiguous-ref
-// warning off in the shared clone (configureCloneReads): the clone and the issue's workspace both
-// read core.warnAmbiguousRefs as false. The feed is left as Fetch wrote it: it reads no such key,
-// and the next Fetch keeps it, since its configuration still holds only feedConfigKeys.
-func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *testing.T) {
+// Provisioning from a feed, as `workspace-init provision` does in a pod, marks origin as gh's
+// default repository in the shared clone (configureCloneDefaultRepository) and turns git's
+// ambiguous-ref warning off there (configureCloneReads): the clone and the issue's workspace each
+// read one gh-resolved line, `remote.origin.gh-resolved base`, and core.warnAmbiguousRefs as
+// false. The feed is left as Fetch wrote it: it reads no core.warnAmbiguousRefs, and the next
+// Fetch keeps it, since its configuration still holds only feedConfigKeys, which name neither key.
+func TestProvisionFromAFeedMarksOriginAndTurnsOffTheAmbiguousRefWarningLeavingTheFeedAlone(t *testing.T) {
 	run := newLocalRunner(t)
 	fetch := fetchRequest(t)
 	first, err := Fetch(context.Background(), run, fetch)
@@ -132,30 +136,19 @@ func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *t
 	if err != nil {
 		t.Fatalf("provision from the feed: %v", err)
 	}
-	// read runs `git <args> config --get core.warnAmbiguousRefs` in dir under the fixtures'
-	// environment and returns what it printed and its exit code. git exits 1, printing nothing,
-	// for a key no configuration sets.
-	read := func(dir string, args ...string) (string, int) {
-		t.Helper()
-		command := exec.Command("git", append(args, "config", "--get", "core.warnAmbiguousRefs")...)
-		command.Dir = dir
-		command.Env = setupEnvironment()
-		output, err := command.CombinedOutput()
-		var exit *exec.ExitError
-		if err != nil && !errors.As(err, &exit) {
-			t.Fatalf("git config --get core.warnAmbiguousRefs in %s: %v", dir, err)
-		}
-		return string(output), command.ProcessState.ExitCode()
-	}
 	for _, place := range []struct{ name, dir string }{
 		{"the shared clone", working.Clone},
 		{"the issue's workspace", working.Dir},
 	} {
-		if output, code := read(place.dir); output != "false\n" || code != 0 {
+		if output, code := gitConfigRead(t, place.dir, "config", "--get", "core.warnAmbiguousRefs"); output != "false\n" || code != 0 {
 			t.Errorf("%s %s reads core.warnAmbiguousRefs as %q (exit %d), want false", place.name, place.dir, output, code)
 		}
+		if output, code := gitConfigRead(t, place.dir, "config", "--get-regexp", `^remote\..*\.gh-resolved$`); output != "remote.origin.gh-resolved base\n" || code != 0 {
+			t.Errorf("%s %s reads its gh-resolved lines as %q (exit %d), want origin's base alone", place.name, place.dir, output, code)
+		}
 	}
-	if output, code := read(first.Feed, "--git-dir="+first.Feed); output != "" || code != 1 {
+	// git exits 1, printing nothing, for a key no configuration sets.
+	if output, code := gitConfigRead(t, first.Feed, "--git-dir="+first.Feed, "config", "--get", "core.warnAmbiguousRefs"); output != "" || code != 1 {
 		t.Errorf("the feed %s reads core.warnAmbiguousRefs as %q (exit %d), want nothing and exit 1", first.Feed, output, code)
 	}
 	// Fetch removes a feed whose configuration holds a key outside feedConfigKeys and clones it
@@ -167,4 +160,67 @@ func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *t
 	if again.Cloned {
 		t.Errorf("Fetch after provisioning reported %+v: it cloned the feed again whole, want the feed kept", again)
 	}
+}
+
+// gitConfigRead runs `git <args>` in dir under the fixtures' environment and returns what it
+// printed and its exit code. A git that could not run fails the test.
+func gitConfigRead(t *testing.T, dir string, args ...string) (string, int) {
+	t.Helper()
+	output, err := fixturegit.Runner{TB: t, Env: setupEnvironment()}.Try(dir, append([]string{"git"}, args...)...)
+	var exit *exec.ExitError
+	switch {
+	case errors.As(err, &exit):
+		return output, exit.ExitCode()
+	case err != nil:
+		t.Fatalf("git %s in %s: %v", strings.Join(args, " "), dir, err)
+	}
+	return output, 0
+}
+
+// Every provision marks origin as gh's default repository in the shared clone
+// (configureCloneDefaultRepository), on both runtimes' paths: from GitHub, as the tmux daemon
+// does, and from a pod's feed, as `workspace-init provision` does, whose first provision
+// TestProvisionFromAFeedMarksOriginAndTurnsOffTheAmbiguousRefWarningLeavingTheFeedAlone reads.
+// The clone and the issue's workspace each read one gh-resolved line, `remote.origin.gh-resolved
+// base`. A clone that already holds a marker, here the one `gh repo fork --remote` leaves on the
+// remote it renames origin to, keeps it at its next provision and gets no origin line beside it.
+func TestProvisionMarksOriginAsGhsDefaultRepository(t *testing.T) {
+	// readsOnly fails the test unless the shared clone and the issue's workspace each print the
+	// one line want from `git config --get-regexp '^remote\..*\.gh-resolved$'`, the read gh makes
+	// of every remote's default marker (cli/cli git/client.go, populateResolvedRemotes). git exits
+	// 1, printing nothing, where no key matches.
+	readsOnly := func(t *testing.T, working Workspace, want string) {
+		t.Helper()
+		for _, place := range []struct{ name, dir string }{
+			{"the shared clone", working.Clone},
+			{"the issue's workspace", working.Dir},
+		} {
+			if output, code := gitConfigRead(t, place.dir, "config", "--get-regexp", `^remote\..*\.gh-resolved$`); output != want || code != 0 {
+				t.Errorf("%s %s reads its gh-resolved lines as %q (exit %d), want %q", place.name, place.dir, output, code, want)
+			}
+		}
+	}
+	const marked = "remote.origin.gh-resolved base\n"
+	t.Run("from GitHub", func(t *testing.T) {
+		run := newLocalRunner(t)
+		working, err := Provision(context.Background(), run, provisionRequest(t))
+		if err != nil {
+			t.Fatalf("provision from GitHub: %v", err)
+		}
+		readsOnly(t, working, marked)
+	})
+	t.Run("over a marker the clone holds", func(t *testing.T) {
+		run := newLocalRunner(t)
+		request := feedRequest(t, run, provisionRequest(t))
+		working, err := Provision(context.Background(), run, request)
+		if err != nil {
+			t.Fatalf("first provision: %v", err)
+		}
+		runSetup(t, working.Clone, "git", "config", "--unset", "remote.origin.gh-resolved")
+		runSetup(t, working.Clone, "git", "config", "remote.upstream.gh-resolved", "base")
+		if _, err := Provision(context.Background(), run, request); err != nil {
+			t.Fatalf("provision the existing workspace: %v", err)
+		}
+		readsOnly(t, working, "remote.upstream.gh-resolved base\n")
+	})
 }

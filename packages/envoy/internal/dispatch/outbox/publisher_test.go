@@ -1919,8 +1919,11 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 	`, issueKey, authorJSON, question).Scan(&id); err != nil {
 		t.Fatalf("create ask: %v", err)
 	}
+	if author.Kind != "session" || author.ID == "" {
+		return id
+	}
 	inFollowTransaction(t, database, func(tx pgx.Tx) error {
-		_, err := asks.FollowAuthor(context.Background(), tx, id, author, time.Now(), graphstore.NoEvent)
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
 		return err
 	})
 	return id

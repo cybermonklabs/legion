@@ -10,6 +10,9 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # a Legion pane exports ENVOY_URL (the real listener), DISPATCH_URL and
 # DISPATCH_TOKEN_FILE, and a developer's shell can retain a GitHub App, a
 # cookie signing key, an Envoy token or a dashboard origin from other work.
+# Dispatch presents e2e/fake-listener-account-token as its identity at the fake
+# listener, which checks no bearer: a Dispatch with no identity refuses every
+# send for a role: route, and the rows mention roles.
 #
 # DATABASE_URL is the one required caller input. The harness has no fake
 # Postgres and e2e/seed.ts truncates the named database before every scenario,
@@ -443,6 +446,7 @@ exec "${listen[@]}" env \
   DISPATCH_TEST_UNRECORDED_MARK_TTL="$unrecorded_mark_ttl" \
   DISPATCH_WEB_DIST="$web_dist" \
   ENVOY_URL="http://127.0.0.1:$fake_envoy_port" \
+  ENVOY_ACCOUNT_TOKEN_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fake-listener-account-token" \
   "${gomaxprocs_env[@]}" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \

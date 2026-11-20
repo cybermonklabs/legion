@@ -537,7 +537,7 @@ func namedVersion(payload any) bool {
 // Quiet is asked of one event from two payload shapes, and must answer the same for both: at
 // append time (Broker.Notify) the payload is the typed value the caller built, and at publish
 // time it is the event the outbox scanned out of Postgres, whose payload JSON decodes into a
-// map[string]any (outbox/batch.go, readBatch). quietAskEdit and namedVersion read
+// map[string]any (outbox/batch_read.go, readRows). quietAskEdit and namedVersion read
 // their field the same way.
 func targetedMessage(payload any) bool {
 	switch message := payload.(type) {

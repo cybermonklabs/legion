@@ -8,22 +8,29 @@
 //
 // An error of a request built from that URL (Error, Cause) prints text of its own only beside a
 // clean URL and a request URL Call prints, and only where that text is a transport failure's, text
-// the allow-list passes, or the broker's own OAuth words. Those words are trusted, not checked, so
-// whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) with a
-// nonempty error code and an empty error_uri prints its error code and error_description whole,
-// as the broker wrote them, since they are the reason for a refusal a person acts on. No other
-// field of an OAuth answer ever prints: an answer that carries an error_uri, or one with no error
-// code (whose text is the response body x/oauth2 kept), prints as the failure's class alone, "the
-// broker answered HTTP <n>", as every answer does where its text may not print; Error puts the
-// *url.Error's operation and URL, through Call, before it. What prints is always the checked
-// error's own text: words a caller wrapped around the failure or the *url.Error, with
-// fmt.Errorf's %w or an error type of its own, are no part of what was checked, so they never
-// print. The one error type whose words print over a trusted answer is one that vouches for them
-// (Printable): its text is fixed words, words of its own that neither the answer nor a caller
-// writes, and that answer's fields alone. Nothing under an error this package already put in
-// words is checked again: what Error and Cause return keeps the failure they withheld reachable
-// for errors.As, so a second Error or Cause of it, beside any URL and under any wrapper, prints as
-// its class, never the answer the first one withheld.
+// the allow-list passes, or the broker's own OAuth words; beside any other URL it prints the
+// failure's class alone, except words an earlier Error, Cause or Named already gave, which print
+// as given (below). The broker's OAuth words are trusted, not checked, so
+// whatever the broker puts in them prints: an OAuth error answer (*oauth2.RetrieveError) of the
+// broker's own with a nonempty error code and an empty error_uri prints its error code and
+// error_description whole, as the broker wrote them, since they are the reason for a refusal a
+// person acts on. It is never one that Class or Masked holds, another server's, because printable
+// checks nothing under an error this package already put in words; BrokerAnswer, for printers
+// outside it, finds the same answer. No other field of an OAuth answer ever prints: an answer that
+// carries an error_uri, or one with no error code (whose text is the response body x/oauth2 kept),
+// prints as the failure's class alone, "the broker answered HTTP <n>", as every answer does where
+// its text may not print; Error puts the *url.Error's operation and URL, through Call, before it,
+// or the caller's own name for the call (Named). A class is fixed text alone: Cause and Class of
+// such an error print the class, never the line that names its call, and a later Error prints
+// that same line, never the URL anew. What prints is always the checked error's own text: words a
+// caller wrapped around the failure or the *url.Error, with fmt.Errorf's %w or an error type of
+// its own, are no part of what was checked, so they never print. The one error type whose words
+// print over a trusted answer is one that vouches for them (Printable): its text is fixed words,
+// words of its own that neither the answer nor a caller writes, and that answer's fields alone.
+// Nothing under an error this package already put in words is checked again: what Error, Cause,
+// Named, Class, Masked and File return keeps the failure they withheld reachable for errors.As, so
+// a second Error or Cause of it, beside any URL and under any wrapper, prints the words already
+// given, never the answer the first one withheld.
 package redact
 
 import (
@@ -63,6 +70,12 @@ const NotPrinted = "(not printed: the value carries a credential or is not a pla
 // https://xxxxx@host: a value whose password holds an '@' and that names no host at all
 // (https://user:p@ssword) would print the password's tail as the host, and no check on the text
 // can tell the two apart.
+//
+// agent-secrets prints each URL setting through URL, beside the variable that names it, so a
+// value URL withholds still says where to look: the sign-in issuer as
+// "(AGENT_SECRETS_SIGNIN_ISSUER names <URL>)", the approval page beside AGENT_SECRETS_APPROVE_URL,
+// and the metadata identity's audience as "<URL> (AGENT_SECRETS_MACHINE_AUDIENCE)" where it is
+// clean and as "the audience AGENT_SECRETS_MACHINE_AUDIENCE names" otherwise.
 func URL(raw string) string {
 	if raw == "" || clean(raw) {
 		return raw
@@ -202,24 +215,66 @@ func callClean(base, callURL string) bool {
 // error's text names only the class of the failure (a URL that did not parse, failed name
 // resolution, a refused connection, a timeout, a TLS failure, an HTTP status, or a request that
 // failed otherwise), found on err itself, and the *url.Error's operation with its URL through Call.
-// It unwraps to err, so errors.Is and errors.As still classify the failure.
+// A line that names a call sits over the text printed of its failure (a called), so Cause and Class
+// of the result print that text and never the line. A call already named, by Error or by a
+// caller's own words for it (Named), keeps that name: its URL is not named again, so a part of it
+// that Named left out does not come back. It unwraps to err, so errors.Is and errors.As still
+// classify the failure.
 func Error(err error, raw string) error {
 	if err == nil {
 		return nil
 	}
 	ue, checked, printable := printable(err, raw)
-	text := class(err)
+	text := class(err, "the broker")
 	if printable {
 		text = checked
 	}
-	if ue != nil {
-		text = ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text
+	var named *called
+	switch {
+	case errors.As(err, &named):
+		// A called always holds a classified, which printable never passes, so text is the class
+		// beneath its line.
+		return &called{named.text, &classified{text, err}}
+	case ue != nil:
+		// The call's line names the URL as Call prints it; the text under it stays URL-free, so Cause
+		// and Class of this error print that text alone, and a later Error prints this same line.
+		line := ue.Op + " " + strconv.Quote(Call(raw, ue.URL)) + ": " + text
+		if printable && line == err.Error() {
+			return err
+		}
+		return &called{line, &classified{text, err}}
 	}
 	if printable && text == err.Error() {
 		return err
 	}
 	return &classified{text, err}
 }
+
+// Named is err, from a request built from raw, named in the caller's own words rather than by its
+// URL: name, ": " and Cause's text of err. It is for a request URL that ends in what a caller
+// typed, such as an id the broker never issued, which Call prints as part of a plain path. Error
+// over the result prints this line again, never the URL under it; Cause and Class of it print its
+// class, never this line, since printable checks nothing under the classified it holds. It
+// unwraps to err, so errors.Is and errors.As still classify the failure. Named(nil, raw, name) is
+// nil.
+func Named(err error, raw, name string) error {
+	if err == nil {
+		return nil
+	}
+	return &called{name + ": " + Cause(err, raw).Error(), &classified{class(err, "the broker"), err}}
+}
+
+// called is a line that names a failed call: its operation and URL as Call prints it (Error), or
+// a caller's own words for it (Named), over the text printed of its failure: its class, or the
+// text printable checked. class() reads that text beneath it, never this line, and Error over it
+// prints this line rather than name the URL again.
+type called struct {
+	text string
+	err  error
+}
+
+func (c *called) Error() string { return c.text }
+func (c *called) Unwrap() error { return c.err }
 
 // Cause is Error without the *url.Error's own wrapper, for a message that names the call itself:
 // the error the *url.Error wraps when that error's text is the text printable checked, and
@@ -231,7 +286,7 @@ func Cause(err error, raw string) error {
 	ue, checked, printable := printable(err, raw)
 	switch {
 	case !printable:
-		return &classified{class(err), err}
+		return &classified{class(err, "the broker"), err}
 	case ue != nil && ue.Err != nil && ue.Err.Error() == checked:
 		return ue.Err
 	case ue == nil && err.Error() == checked:
@@ -244,11 +299,12 @@ func Cause(err error, raw string) error {
 // printable answers the *url.Error err holds, if any, the text of the failure under it that may
 // print, given raw (Error), and whether any may. All of these must hold:
 //   - raw is clean;
-//   - err holds no error this package already put in words (classified): what Error and Cause
-//     return still unwraps to the failure they withheld, beside an address that may carry a
-//     credential, so checking that failure again beside a clean one would print the very text
-//     they withheld - the broker's answer echoing the credential, say. Such an error prints as
-//     its class;
+//   - err holds no error this package already put in words (classified, which Error, Cause,
+//     Class, Masked and File make and every called holds): what they return still unwraps to the
+//     failure they withheld, beside an address that may carry a credential or for another server,
+//     so checking that failure again beside a clean one would print the very text they withheld -
+//     the broker's answer echoing the credential, say, or another server's answer. Such an error
+//     prints the words already given (class);
 //   - the URL the *url.Error names is raw followed by a plain path (callClean): net/http names a
 //     redirect's target there, which can sit on another host or path and carry a query;
 //   - the error the *url.Error wraps (err itself, with none) is one whose text names no URL, or
@@ -393,19 +449,23 @@ func transport(err error) bool {
 // text is the broker's error code and error_description alone: an *oauth2.RetrieveError with a
 // nonempty ErrorCode and an empty ErrorURI. printable asks only beside a clean base and a request
 // URL Call prints, and only on a chain that holds no error this package already put in words
-// (classified), so an answer an earlier Error or Cause withheld beside a URL that carries a
-// credential is never one: there those two fields print whole, trusted rather than checked, since
-// they are the broker's reason for a refusal and the only part a person can act on. Any other OAuth
-// answer is not one, so it prints as its class alone ("the broker answered HTTP <n>"): an
-// error_uri is a URL by RFC 6749, which may carry a credential or point anywhere, and for an
-// answer with no error code x/oauth2's text is the response body it kept, up to 1 MiB with its
-// line breaks, which can forge a log line.
+// (classified), so neither an answer an earlier Error or Cause withheld beside a URL that carries
+// a credential nor one that Class or Masked holds, another server's, is ever one: there those two
+// fields print whole, trusted rather than checked, since they are the broker's reason for a
+// refusal and the only part a person can act on. Any other OAuth answer is not one, so it prints
+// as its class alone ("the broker answered HTTP <n>"): an error_uri is a URL by RFC 6749, which
+// may carry a credential or point anywhere, and for an answer with no error code x/oauth2's text
+// is the response body it kept, up to 1 MiB with its line breaks, which can forge a log line.
 func trustedAnswer(err error) bool {
 	re, ok := err.(*oauth2.RetrieveError)
 	return ok && re.ErrorCode != "" && re.ErrorURI == ""
 }
 
-// classified is an error whose text is its class alone.
+// classified is an error whose text is its class alone: fixed text naming the kind of failure,
+// which Error, Cause, Class and File make and Masked takes from its caller, or the text printable
+// checked of the failure beneath a caller's wrapper (Error, Cause), and never a URL, a path, an
+// id or other detail of a request. class() reads it as the failure's class, so text that named a
+// call here would print again in every line made from the error; that text is a called.
 type classified struct {
 	text string
 	err  error
@@ -414,13 +474,20 @@ type classified struct {
 func (c *classified) Error() string { return c.text }
 func (c *classified) Unwrap() error { return c.err }
 
-// class names the kind of failure err is, in fixed text.
-func class(err error) string {
+// class names the kind of failure err is, in fixed text; server is who answered an HTTP status,
+// "the broker" for Error and Cause and "the server" for Class. A failure Error, Cause, Class,
+// Masked or File already put in words (a classified) keeps those words: they name the server that
+// answered, which another server's answer under them would otherwise lend the broker's name. A
+// call's line (a called) is not one: only the class beneath it is read.
+func class(err error, server string) string {
 	var ue *url.Error
 	var dns *net.DNSError
 	var timeout interface{ Timeout() bool }
 	var re *oauth2.RetrieveError
+	var worded *classified
 	switch {
+	case errors.As(err, &worded):
+		return worded.text
 	case errors.As(err, &ue) && ue.Op == "parse":
 		return "not a valid URL"
 	case errors.As(err, &dns):
@@ -432,7 +499,7 @@ func class(err error) string {
 	case tlsFailure(err):
 		return "TLS failed"
 	case errors.As(err, &re) && re.Response != nil:
-		return fmt.Sprintf("the broker answered HTTP %d", re.Response.StatusCode)
+		return fmt.Sprintf("%s answered HTTP %d", server, re.Response.StatusCode)
 	default:
 		return "the request failed"
 	}

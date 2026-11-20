@@ -88,6 +88,7 @@ export function GroupsSection(): ReactNode {
     inline: true,
     label: (input) => `New group ${input.name}`,
     write: (input, bounds) => api.putAccessGroup(input.name, { members: input.members }, bounds),
+    method: "PUT",
     onSuccess: (group, input) => {
       if (group !== null) {
         queryClient.setQueryData<AccessGroup[]>(groupsKey, (rows) => withGroup(rows, group));
@@ -289,6 +290,7 @@ function GroupRow({
       }
       return api.putAccessGroup(group.name, { members: change.members }, bounds);
     },
+    method: (change) => (change.kind === "delete" ? "DELETE" : "PUT"),
     onSuccess: (answer, change) => {
       if (change.kind === "delete") {
         queryClient.setQueryData<AccessGroup[]>(groupsKey, (rows) =>

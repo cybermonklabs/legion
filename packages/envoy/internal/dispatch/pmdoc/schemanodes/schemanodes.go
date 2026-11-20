@@ -25,8 +25,9 @@ const (
 	// KindSupertag is the node kind of a type: its id is the type's name.
 	KindSupertag = "supertag"
 	// KindAttribute is the node kind of one attribute of one type: its id is
-	// `<supertag>/<store name>` (StoreName), and it carries that store name as `store_name`, so a
-	// reader takes it from the node rather than from the spelling of the id.
+	// `<supertag>/<store name>` (the store name migration 20261109051232_graph_supertags gives
+	// it), and it carries that store name as `store_name`, so a reader takes it from the node
+	// rather than from the spelling of the id.
 	KindAttribute = "attribute"
 	// TupleAttributeOf is the tuple kind tying an attribute node to the supertag that holds it.
 	// It is the tie a reader follows; an id's spelling is not.
@@ -35,31 +36,6 @@ const (
 	// (the triggers of 20261109051232). Each server's reinstall waits on its wake.
 	Channel = "dispatch_block_schema"
 )
-
-// StoreName is the name the store holds the values of attribute name of block type typeName
-// under: the kind of each tuple that states one of its values (R1), the `store_name` its
-// attribute node carries, and what follows the `/` in that node's id. A document, the editor and
-// the schema Read builds know the attribute by name alone, so a writer or an indexer that stores
-// one of its values maps name to this, and a reader of the store maps it back. It is name itself
-// except where name is a base attribute every node carries (graphstore.IsBaseAttribute), whose
-// value tuple would read as the node's own visibility or state: ask's `state` is stored as
-// `answer_state`, and any other such attribute as its type's name, `_` and its own name.
-//
-// The mapping exists only while a markdown attribute carries a base attribute's name, as ask's
-// `state` does. Once no type declares such an attribute, StoreName goes and every attribute's
-// store name is its name. The seed of the type nodes
-// (store/migrations/20261109051232_graph_supertags.up.sql) writes what this answers, and
-// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt holds the two together.
-func StoreName(typeName, name string) string {
-	switch {
-	case !graphstore.IsBaseAttribute(name):
-		return name
-	case typeName == "ask" && name == "state":
-		return "answer_state"
-	default:
-		return typeName + "_" + name
-	}
-}
 
 // supertagAttributes is what a supertag node carries. A node without BlockType is a type the
 // block schema does not declare - a person, a comment, an issue - which this reader skips: the
@@ -84,9 +60,9 @@ type supertagAttributes struct {
 // attributeAttributes is what an attribute node carries: the name its type declares it under,
 // its place among that type's attributes, and the schema's own fields - the kind, the choices,
 // the default, whether the server owns it, what it may point at, its scope and its element
-// versions. The node carries its store name (StoreName) beside them, which is no field of the
-// block schema and is not read here: a document and the editor know an attribute by its name
-// alone.
+// versions. The node carries its store name (migration 20261109051232_graph_supertags) beside
+// them, which is no field of the block schema and is not read here: a document and the editor
+// know an attribute by its name alone.
 type attributeAttributes struct {
 	Name     string `json:"name"`
 	Position int    `json:"position"`

@@ -16,11 +16,11 @@ import (
 const handLaunchedAccount = "system:serviceaccount:legion:k8s-session"
 
 // TestAPodsAutomaticGrantIsOnEveryPersonsGrantList: a pod takes a shared agent-tier secret without
-// asking, so its grant has no approver, and a pod acts for no person, so its enrollment has no
-// operator. Such a grant matched neither half of the Live-grants filter and was on nobody's page
-// at all: nobody could see what a pod had taken. It is now on every signed-in person's, the people
-// who already list and revoke the service login behind it. The operator's own automatic grant is
-// unmoved: theirs, and nobody else's.
+// asking, so its grant has no approver, and a service's pod acts for no person, so its enrollment
+// has no operator. Such a grant matched neither half of the Live-grants filter and was on nobody's
+// page at all: nobody could see what a pod had taken. It is now on every signed-in person's, the
+// people who already list and revoke the service login behind it. The operator's own automatic
+// grant is unmoved: theirs, and nobody else's.
 func TestAPodsAutomaticGrantIsOnEveryPersonsGrantList(t *testing.T) {
 	m, session, sessionKey, operator := newFixture(t)
 	withSharedToken(t, m)

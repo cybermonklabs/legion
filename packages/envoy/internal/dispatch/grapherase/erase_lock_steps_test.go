@@ -693,7 +693,7 @@ func followTheErase(t *testing.T, database *store.Store, kind, id string, holds 
 }
 
 // requireOwnersAscending holds the owner rows the run queued behind to the order lockInStoreOrder
-// takes several of them in, ascending owner key as events' eventOwnerLock spells it. The store's
+// takes several of them in, ascending owner key as events' eventOwnerKey spells it. The store's
 // lock order puts the owner rows first and leaves their order among themselves to the writer, so
 // lockstep.RequireTheStoreLockOrder does not read it.
 func requireOwnersAscending(t *testing.T, queued []*lockstep.Hold) {

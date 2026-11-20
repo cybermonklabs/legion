@@ -8,7 +8,7 @@ import {
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { api, apiErrorMessage, type WriteBounds, type WriteMethod } from "../../api/client";
 import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -27,7 +27,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { dropSettledWrites } from "../writes/settled-writes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One change of a project's access, as the owner presses it: the project given to another
  *  owner, one person or group named on its access list or taken off it, or the Slack channels
@@ -38,28 +38,33 @@ type AccessChange =
   | { readonly kind: "add-group" | "remove-group"; readonly name: string }
   | { readonly kind: "slack-channels"; readonly channels: readonly string[] };
 
-type AccessSave = Mutation<ProjectAccess | null, Error, AccessChange>;
+/** One save as the mutation cache holds it: the press the keyed write made of a change
+ *  (`KeyedPress`), the change inside it. */
+type AccessSave = Mutation<ProjectAccess | null, Error, KeyedPress<AccessChange>>;
 
 /** Which part of the panel a change belongs to, and so where its refusal is shown. */
 type AccessPart = "owner" | "people" | "groups" | "slack";
 
-/** What one change of a project's access is: the request that makes it, what the shell's
- *  pending-writes indicator names it, the part of the panel its refusal shows in, and what that
- *  refusal says when Dispatch gave no reason of its own (the request never reached it). */
+/** What one change of a project's access is: the request that makes it and that request's
+ *  method, what the shell's pending-writes indicator names it, the part of the panel its refusal
+ *  shows in, and what that refusal says when Dispatch gave no reason of its own (the request
+ *  never reached it). */
 interface AccessOperation {
   readonly write: (bounds: WriteBounds) => Promise<ProjectAccess>;
+  readonly method: WriteMethod;
   readonly label: string;
   readonly part: AccessPart;
   readonly refusal: string;
 }
 
-/** The operation of one change. Every kind returns all four, so a kind added to `AccessChange`
+/** The operation of one change. Every kind returns all five, so a kind added to `AccessChange`
  *  does not compile until it says each of them. */
 function accessOperation(project: string, change: AccessChange): AccessOperation {
   switch (change.kind) {
     case "owner":
       return {
         write: (bounds) => api.patchProjectAccess(project, { owner: change.owner }, bounds),
+        method: "PATCH",
         label: `Give ${project} to ${change.owner}`,
         part: "owner",
         refusal: `Couldn't give ${project} to ${change.owner}.`,
@@ -67,6 +72,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
     case "add-person":
       return {
         write: (bounds) => api.putProjectAccessPerson(project, change.email, bounds),
+        method: "PUT",
         label: `Add ${change.email} to ${project}`,
         part: "people",
         refusal: `Couldn't add ${change.email}.`,
@@ -74,6 +80,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
     case "remove-person":
       return {
         write: (bounds) => api.deleteProjectAccessPerson(project, change.email, bounds),
+        method: "DELETE",
         label: `Remove ${change.email} from ${project}`,
         part: "people",
         refusal: `Couldn't remove ${change.email}.`,
@@ -81,6 +88,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
     case "add-group":
       return {
         write: (bounds) => api.putProjectAccessGroup(project, change.name, bounds),
+        method: "PUT",
         label: `Add group ${change.name} to ${project}`,
         part: "groups",
         refusal: `Couldn't add group ${change.name}.`,
@@ -88,6 +96,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
     case "remove-group":
       return {
         write: (bounds) => api.deleteProjectAccessGroup(project, change.name, bounds),
+        method: "DELETE",
         label: `Remove group ${change.name} from ${project}`,
         part: "groups",
         refusal: `Couldn't remove group ${change.name}.`,
@@ -96,6 +105,7 @@ function accessOperation(project: string, change: AccessChange): AccessOperation
       return {
         write: (bounds) =>
           api.patchProjectAccess(project, { slack_channels: [...change.channels] }, bounds),
+        method: "PATCH",
         label: `Name ${project}'s Slack channels`,
         part: "slack",
         refusal: `Couldn't name ${project}'s Slack channels.`,
@@ -149,6 +159,7 @@ function useAccessWrite(
     inline: true,
     label: (change) => accessOperation(project, change).label,
     write: (change, bounds) => accessOperation(project, change).write(bounds),
+    method: (change) => accessOperation(project, change).method,
     // A read already out was asked before this save and could land over its answer.
     onMutate: () => queryClient.cancelQueries({ queryKey: accessKey }),
     onSuccess: (answer, change) => {
@@ -173,7 +184,7 @@ function useAccessWrite(
   >({
     filters: { exact: true, mutationKey },
     select: (save) => ({
-      change: save.state.variables,
+      change: save.state.variables?.variables,
       error: save.state.error,
       status: save.state.status,
     }),

@@ -61,7 +61,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 
 // WriteArmsUncaused is WriteArms for a writer whose cause is appended after these arms run: the
 // nodes it makes state no base attribute here and are made at the sentinel, marked as made
-// (nodeMarks), and the write it answers holds them for that event, which QueueCaused moves them
+// (nodeMark), and the write it answers holds them for that event, which QueueCaused moves them
 // onto and appends their base attributes under, read off that mark. No tuple may be updated to
 // learn its cause, and the node row moves onto the event, so a node made at the sentinel whose
 // base attributes were stated here would be a row naming one event and base tuples naming
@@ -164,7 +164,7 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // moves no stored state, so there is never a state of a node already there for it to state.
 //
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
-// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMarks), as
+// nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMark), as
 // made, so the append that cause comes with states those same attributes for that event.
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")

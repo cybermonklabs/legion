@@ -176,10 +176,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // spec block `e2e/review-seed.ts` points the decision at.
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
-    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
-    // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
-    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
-    // alone.
+    // below it, shut until a button opens it (`web/src/features/margin/MarginSheet.tsx`), so the
+    // card is on the screen at a desktop width and nowhere narrower. The phone row of this page
+    // waits on the dot alone, as the Inbox row waits on its heading alone.
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
       const wideEnoughForMargin = wideLayout(page);
@@ -432,8 +431,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // Shot in light and dark as well as scanned, which is what `c-person-page` requires of the
     // page this child adds: a scan reads the DOM, so a page drawn wrongly passes it. The two
     // baselines under `e2e/__screenshots__/visual/` were written by the `visual` job's own
-    // container, the only renderer whose pixels this comparison is ever against
-    // (`packages/dispatch/AGENTS.md`, the four steps for a route this layer gains).
+    // container, the only renderer whose pixels this comparison is ever against.
     layers: bothLayers,
     name: "person",
     path: (seed) => `/people/${encodeURIComponent(seed.person)}`,
@@ -556,7 +554,7 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  and the `visual-phone` project runs. Derived from the layer each entry carries, as
  *  `shotRoutes` is, so a page joins this set by saying so in its own row.
  *
- *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
+ *  A phone width is one under 768 px (`packages/dispatch/README.md`, "Projects"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
@@ -666,10 +664,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the

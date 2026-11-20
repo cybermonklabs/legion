@@ -168,10 +168,11 @@ jobs:
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
       # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
-      # are built from the same list.
+      # are built from the same list. So are the backend count's four tests of cmd/agent-secrets,
+      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -182,7 +183,8 @@ jobs:
       # ./internal/broker/api/. This step runs only those tests in only those two packages (-run,
       # under backend-count.sh's own 5-minute -timeout, which the budget above counts) and counts
       # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
-      # neither package, reads aws=0 and fails, as the verification's check c8 requires.
+      # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
+      # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
@@ -213,10 +215,11 @@ jobs:
       # package's test binary, and the packages run several at a time, so one that starts late
       # ends up to 20 minutes after its own start: the step's own limit of 30 minutes leaves a
       # package that starts within the first 10 its whole -timeout, and so its dump. Measured in
-      # that same job, before cmd/broker joined this step: 355 s for the step.
+      # that same job, before cmd/broker joined this step: 355 s for the step. Its --skip leaves
+      # out the backend count's test of ./internal/broker/api/, which the count step above runs.
       - name: Count the database broker suites' skips
         timeout-minutes: 30
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)

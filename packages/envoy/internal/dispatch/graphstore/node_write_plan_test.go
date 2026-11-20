@@ -172,7 +172,7 @@ func TestTheClaimArmsProbeEachClaimOfTheirBatchOnce(t *testing.T) {
 	claimArms := explaintest.Statement{SQL: "with " + arms + "\nselect 1", Args: params}
 	explaintest.RequireEachRowProbedOnce(t, ctx, pool, keys, storeKeys, "the claim arms", prior, claimArms)
 	explaintest.RequireTheCheckFails(t, ctx, pool, keys, storeKeys, "the claim arms as they stood",
-		explaintest.PlanCacheModes, prior, explaintest.Statement{SQL: "with " + claimArmsBefore(first, "") + "\nselect 1", Args: params})
+		explaintest.PlanCacheModes, prior, explaintest.Statement{SQL: "with " + claimArmsBefore(first) + "\nselect 1", Args: params})
 }
 
 // analyzeNearEmpty analyzes the store's two tables as the migrations left them, before the test
@@ -238,10 +238,7 @@ func settledBefore(mark, sentinel string) explaintest.Part {
 // claimArmsBefore is claimArms as it stood before its probes, written with the helpers claimArms
 // is written with: the claims joined to the far ends they read, and their stated rows to
 // themselves and to graph_tuples.
-func claimArmsBefore(first int, where string) string {
-	if where != "" {
-		where = "\n\t  and " + where
-	}
+func claimArmsBefore(first int) string {
 	return `graph_claims as (
 	select claim.from_kind, claim.from_id, claim.kind, claim.to_kind, claim.to_id, claim.at, claim.who,
 	       ` + causeOf("claim.source_event") + ` as source_event, claim.position
@@ -284,7 +281,7 @@ graph_claims_written as (
 			and once.source_event = restated.source_event and once.asserted = restated.asserted
 			and once.to_kind <> '` + KindValue + `' and once.source_event <> 0
 		where restated.position = stated.position
-	)` + where + `
+	)
 	order by position, step` + relationRepeatKey + `
 )`
 }
