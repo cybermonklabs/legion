@@ -2,7 +2,7 @@
  *  and the address that drive the selection, and what the narrow widths and the drawer keep.
  *
  *  Each reads what the page draws, so each runs against a recording rather than against a
- *  harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The rows that answer or approve,
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). The rows that answer or approve,
  *  the two the server withdraws a question under, the refusal that reads the Inbox back, and the
  *  two that read a decision block out of the live document editor stayed in
  *  `inbox-reading-pane.e2e.ts`.

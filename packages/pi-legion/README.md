@@ -8,10 +8,10 @@ lifecycle, which boots a root architect or a phase worker from the daemon's pane
 worker is in open until its `handoff_complete`. A session without that environment gets nothing from
 it. The Envoy messaging and Dispatch tools every session uses are `@sjawhar/pi-envoy`'s, and this
 plugin reaches them through the in-process interface that package publishes
-(`packages/pi-shared/AGENTS.md`): in a Legion session the entry refuses to run, naming the remedy,
-when no `@sjawhar/pi-envoy` is loaded, when the loaded one speaks another interface version, or
-when the pre-split package is still installed beside it (`AGENTS.md`, "What this plugin needs from
-pi-envoy").
+(`packages/pi-shared/src/interface.ts`): in a Legion session the entry refuses to run, naming the
+remedy, when no `@sjawhar/pi-envoy` is loaded, when the loaded one speaks another interface
+version, or when the pre-split package is still installed beside it (`envoyPluginRefusal` in
+`extensions/legion.ts`), and exits the process, which the daemon sees as a failed launch.
 
 ## Installing both into the daemon's profile
 
@@ -81,3 +81,21 @@ The two cross-entry tests (`extensions/legion-role-claim.test.ts`,
 the pinned Oh My Pi (`LEGION_TEST_OMP`). Each release's changelog entries are in its GitHub release
 notes; `CHANGELOG.md` is the history before that, and the history before the split is in
 `packages/pi-envoy/CHANGELOG.md`.
+
+## Local checks
+
+From this directory:
+
+```sh
+bun run test
+bun test src/tools.test.ts   # one file
+bunx tsc --noEmit
+bunx biome check extensions/ src/
+```
+
+The real-binary tests (`extensions/*-omp.test.ts`) skip unless `LEGION_TEST_OMP` names an Oh My Pi
+binary and `LEGION_TEST_NATS_URL` a NATS server, except on GitHub Actions, where they never skip:
+
+```sh
+LEGION_TEST_OMP=<omp> LEGION_TEST_NATS_URL=<nats> bun test ./extensions/*-omp.test.ts
+```

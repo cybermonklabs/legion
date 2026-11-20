@@ -677,11 +677,15 @@ function resultProblem(value: unknown): string | undefined {
 }
 
 /**
- * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
- * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
- * key rule are what keep the tool's URL under the load balancer's limit;
- * `packages/contracts/AGENTS.md` "Search limits" owns that budget. Generated into Go as
- * `contracts.SearchQueryMax`, which the server enforces.
+ * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units.
+ * Generated into Go as `contracts.SearchQueryMax`, which the server enforces.
+ *
+ * The URL budget: `dispatch search` sends its query and filters in the URL (`q` beside `project`,
+ * `limit` and `offset`), and the load balancer in front of Dispatch answers a path and query over
+ * 16,369 bytes with a bare `414` before the server runs. This limit and `PROJECT_KEY_PATTERN` (at
+ * most 10 characters) keep the largest call the tool accepts at a 9,069-byte path and query, since
+ * percent-encoding costs at most 9 bytes a unit. Raising either, or adding a parameter, means
+ * redoing that sum.
  */
 export const SEARCH_QUERY_MAX = 1000;
 
