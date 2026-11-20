@@ -48,6 +48,10 @@ Read `skill://legion-controller/references/wakes-worker-stalled.md` on this wake
 
 Read `skill://legion-controller/references/wakes-provider-errors.md` on this wake.
 
+## `project-paused`, `project-resumed`
+
+Read `skill://legion-controller/references/wakes-project-pause.md` on this wake.
+
 ## GitHub mentions
 
 Read the mention and its artifact. Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Send any other to the owning architect: `envoy_publish` its URL, its text and the issue key to that architect's role, never to a token built from a partial issue reference. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names: the `Approve` control in that document's header, or the `Approval requested` card the architect's request put in their Inbox. A project that wants no gate sets `gates.design: []` in `legion.yaml`.
