@@ -3895,6 +3895,23 @@ else
         "replay-command: f-github-read ran its command and a read inside it failed: .*exited 22, and GitHub answered 404: Not Found" "$out"
 fi
 
+# 127. A candidate page names one landing component (test round 39). R9's page carries "the
+# landing component, which is Legion, Envoy or Dispatch", one of the three. At 672d71db --shape
+# reads a page's first Landing component line alone (grep -m1), so a page whose first line
+# names Legion and whose second names Envoy passed every assertion, although it names two
+# components, as the single line 'Legion and Envoy' that case 120's rule refuses does. The case
+# writes a second line naming Envoy under the first page of the fixture's judgement whose
+# landing component is Legion, and runs --shape, which must fail, naming the page and its
+# landing component.
+dir="$(fresh landing-two-lines)"
+sed -i '0,/^- \*\*Landing component:\*\* Legion$/s//- **Landing component:** Legion\n- **Landing component:** Envoy/' "$dir/judgement.md"
+[ "$(grep -c '^- \*\*Landing component:\*\* Envoy$' "$dir/judgement.md")" -ge 2 ] || {
+    printf 'FAIL the second landing component could not be planted in the fixture judgement\n'
+    exit 1
+}
+case_result "a page with two Landing component lines naming two components fails --shape, naming the page" \
+    'page-[a-z-]+: .*[Ll]anding component' "$(fixture_run "$dir" --shape)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
