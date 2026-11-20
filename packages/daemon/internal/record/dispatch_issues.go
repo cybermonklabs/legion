@@ -8,62 +8,104 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, row DispatchIssueRow) error {
-	// A zero sequence is no observation of Dispatch's at all: it is a fact the daemon minted from
-	// its own record, and the insert of a brand-new key has no conflict for the fence below to
-	// catch, so it would land as the row of record and then refuse every real observation that
-	// Dispatch has already made. Such a fact writes nothing, and the next event, the periodic turn
-	// or the next boot writes the row Dispatch means.
-	if row.Seq == 0 {
+func (s *Postgres) PutDispatchIssue(ctx context.Context, tx pgx.Tx, reading DispatchReading) error {
+	if !reading.Status.Carried && !reading.Parent.Carried && !reading.Blockers.Carried &&
+		!reading.Labels.Carried && !reading.Rank.Carried {
+		return fmt.Errorf("put the Dispatch copy of %s: the reading at %d carries no value", reading.Key, reading.Seq)
+	}
+	// A zero sequence is no reading of Dispatch's at all: it is a fact the daemon minted from its
+	// own record. Written, it would put a value the daemon means into the copy as Dispatch's, on a
+	// new row or over a value no reading has written yet, which any reading fills (sequence 0).
+	// Such a fact writes nothing, and the next event, the periodic turn or the next boot writes
+	// what Dispatch says.
+	if reading.Seq == 0 {
 		return nil
 	}
-	blockers := row.Blockers
+	// A value the reading does not carry goes into a new row as its column's default, and a nil
+	// list it carries as the empty list, since neither list column takes null; a parent of none
+	// is null.
+	status, rank := carriedOr(reading.Status, ""), carriedOr(reading.Rank, "")
+	blockers, labels := carriedOr(reading.Blockers, nil), carriedOr(reading.Labels, nil)
 	if blockers == nil {
 		blockers = []string{}
 	}
-	var parent *string
-	if row.Parent != "" {
-		parent = &row.Parent
+	if labels == nil {
+		labels = []string{}
 	}
-	// status_seq is the sequence at which the mirror last saw the status change: the row's first
-	// write sets it, and a newer observation moves it only when its status differs from the row's,
-	// so a rename or a re-rank leaves it where the status last moved (DispatchStatusSeq). A row
-	// written before the column holds none, and an observation with the status it holds leaves
-	// that as it is.
-	tag, err := tx.Exec(ctx, `insert into dispatch_issues (key, project, status, blockers, dispatch_seq, parent, status_seq)
-		values ($1, $2, $3, $4, $5, $6, $5)
-		on conflict (key) do update set project = excluded.project, status = excluded.status,
-			blockers = excluded.blockers, dispatch_seq = excluded.dispatch_seq,
-			parent = excluded.parent,
-			status_seq = case when dispatch_issues.status is distinct from excluded.status then excluded.dispatch_seq
-				else dispatch_issues.status_seq end
-		where dispatch_issues.dispatch_seq < excluded.dispatch_seq`,
-		row.Key, row.Project, row.Status, blockers, row.Seq, parent)
+	parent := ParentOf(carriedOr(reading.Parent, ""))
+	// Each value carried is inserted at the reading's sequence, and each one not carried at 0.
+	// Over a row that exists, each value the reading carries changes, with its sequence, only where
+	// no reading has written it (0) or an older one did; the where clause skips a reading that
+	// changes no value, so the project and the row's sequence move only with a value.
+	// status_changed_seq, the sequence at which the copy last saw the status change
+	// (DispatchStatusChangedSeq), starts where status_seq does and then moves to the reading's
+	// sequence only with a status the reading writes that differs from the one the row held, so a
+	// rename or a re-rank that carries the same status leaves it where the status last moved.
+	if _, err := tx.Exec(ctx, `insert into dispatch_issues as held (key, project, dispatch_seq,
+			status, status_seq, status_changed_seq, parent, parent_seq, blockers, blockers_seq, labels, labels_seq, rank, rank_seq)
+		values ($1, $2, $3::bigint,
+			$4, case when $5 then $3 else 0 end, case when $5 then $3 else 0 end,
+			$6, case when $7 then $3 else 0 end,
+			$8, case when $9 then $3 else 0 end,
+			$10, case when $11 then $3 else 0 end,
+			$12, case when $13 then $3 else 0 end)
+		on conflict (key) do update set project = excluded.project,
+			dispatch_seq = greatest(held.dispatch_seq, excluded.dispatch_seq),
+			status = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then excluded.status else held.status end,
+			status_seq = case when $5 and (held.status_seq = 0 or held.status_seq < $3) then $3 else held.status_seq end,
+			status_changed_seq = case when $5 and (held.status_seq = 0 or held.status_seq < $3)
+				and held.status is distinct from excluded.status then $3 else held.status_changed_seq end,
+			parent = case when $7 and (held.parent_seq = 0 or held.parent_seq < $3) then excluded.parent else held.parent end,
+			parent_seq = case when $7 and (held.parent_seq = 0 or held.parent_seq < $3) then $3 else held.parent_seq end,
+			blockers = case when $9 and (held.blockers_seq = 0 or held.blockers_seq < $3) then excluded.blockers else held.blockers end,
+			blockers_seq = case when $9 and (held.blockers_seq = 0 or held.blockers_seq < $3) then $3 else held.blockers_seq end,
+			labels = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then excluded.labels else held.labels end,
+			labels_seq = case when $11 and (held.labels_seq = 0 or held.labels_seq < $3) then $3 else held.labels_seq end,
+			rank = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then excluded.rank else held.rank end,
+			rank_seq = case when $13 and (held.rank_seq = 0 or held.rank_seq < $3) then $3 else held.rank_seq end
+		where ($5 and (held.status_seq = 0 or held.status_seq < $3))
+			or ($7 and (held.parent_seq = 0 or held.parent_seq < $3))
+			or ($9 and (held.blockers_seq = 0 or held.blockers_seq < $3))
+			or ($11 and (held.labels_seq = 0 or held.labels_seq < $3))
+			or ($13 and (held.rank_seq = 0 or held.rank_seq < $3))`,
+		reading.Key, reading.Project, reading.Seq,
+		status, reading.Status.Carried,
+		parent, reading.Parent.Carried,
+		blockers, reading.Blockers.Carried,
+		labels, reading.Labels.Carried,
+		rank, reading.Rank.Carried); err != nil {
+		return fmt.Errorf("put the Dispatch copy of %s: %w", reading.Key, err)
+	}
+	return s.PutDispatchClaim(ctx, tx, reading.Key, reading.ClaimedBy, reading.ClaimSeq)
+}
+
+// carriedOr is the value a reading carries, or none when it does not carry one.
+func carriedOr[T any](value Carried[T], none T) T {
+	if value.Carried {
+		return value.Value
+	}
+	return none
+}
+
+func (s *Postgres) TakeDispatchRefill(ctx context.Context, tx pgx.Tx, project string) ([]string, bool, error) {
+	tag, err := tx.Exec(ctx, `update dispatch_issue_refills set refilled_at = now()
+		where project = $1 and refilled_at is null`, project)
 	if err != nil {
-		return fmt.Errorf("put the Dispatch mirror of %s: %w", row.Key, err)
+		return nil, false, fmt.Errorf("take the Dispatch copy's refill mark of %s: %w", project, err)
 	}
-	if tag.RowsAffected() > 0 {
-		return s.PutDispatchClaim(ctx, tx, row.Key, row.ClaimedBy, row.ClaimSeq)
+	if tag.RowsAffected() == 0 {
+		return nil, false, nil
 	}
-	// The write above sets the parent the observation saw, and no parent is one of the things it
-	// can have seen: a person who takes the parent off a child ends that parent's children-first
-	// wait exactly as a move to another parent does, so the observation's parent is written
-	// rather than coalesced with the one the row held.
-	//
-	// The parent stands outside the sequence fence as well, which is what this statement is for:
-	// the fence above refused this observation, so nothing of it has landed. An observation at
-	// the sequence the row already holds is the same state said again — a listing of a project
-	// whose issue has had no event since, which is the only way the parent of an issue the daemon
-	// has never recorded reaches the mirror — and the fence refuses it, since it refuses
-	// everything that is not strictly newer. So the parent alone is written here, leaving the
-	// status, the blockers and the sequence of the fresher observation the row holds as they are.
-	// An observation strictly older than the row writes nothing even here: the row's own saw the
-	// parent later, so this one would undo what Dispatch has since said.
-	if _, err := tx.Exec(ctx, `update dispatch_issues set parent = $2
-		where key = $1 and dispatch_seq <= $3 and parent is distinct from $2`, row.Key, parent, row.Seq); err != nil {
-		return fmt.Errorf("put the Dispatch parent of %s: %w", row.Key, err)
+	rows, err := tx.Query(ctx, `with removed as (delete from dispatch_issues where project = $1 returning key)
+		select key from removed order by key`, project)
+	if err != nil {
+		return nil, false, fmt.Errorf("empty the Dispatch copy of %s: %w", project, err)
 	}
-	return s.PutDispatchClaim(ctx, tx, row.Key, row.ClaimedBy, row.ClaimSeq)
+	removed, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, false, fmt.Errorf("empty the Dispatch copy of %s: %w", project, err)
+	}
+	return removed, true, nil
 }
 
 func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder string, seq int64) error {
@@ -79,8 +121,8 @@ func (s *Postgres) PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder 
 	return nil
 }
 
-// DispatchIssueSeq is the sequence of the latest Dispatch event of key the mirror holds, and whether
-// it holds one: every issue event the daemon applies writes its row first (blockers.Mirror).
+// DispatchIssueSeq is the highest sequence of any reading of key the copy took, and whether it
+// holds a row of key: every issue event the daemon applies writes its row first (blockers.Mirror).
 func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error) {
 	var seq int64
 	err := tx.QueryRow(ctx, `select dispatch_seq from dispatch_issues where key = $1`, key).Scan(&seq)
@@ -93,21 +135,18 @@ func (s *Postgres) DispatchIssueSeq(ctx context.Context, tx pgx.Tx, key string) 
 	return seq, true, nil
 }
 
-// DispatchStatusSeq is the sequence of the Dispatch event at which the mirror last saw key's
-// status change (PutDispatchIssue), and whether it holds one: false for no row, and for a row
-// written before the mirror kept it.
-func (s *Postgres) DispatchStatusSeq(ctx context.Context, tx pgx.Tx, key string) (int64, bool, error) {
-	var seq *int64
-	err := tx.QueryRow(ctx, `select status_seq from dispatch_issues where key = $1`, key).Scan(&seq)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
-		return 0, false, nil
-	case err != nil:
-		return 0, false, fmt.Errorf("read the Dispatch status sequence of %s: %w", key, err)
-	case seq == nil:
-		return 0, false, nil
+// DispatchStatusChangedSeq is the sequence of the reading at which the copy last saw key's status
+// change (PutDispatchIssue): 0 for no row, and for a row no reading carrying a status wrote.
+func (s *Postgres) DispatchStatusChangedSeq(ctx context.Context, tx pgx.Tx, key string) (int64, error) {
+	var seq int64
+	err := tx.QueryRow(ctx, `select status_changed_seq from dispatch_issues where key = $1`, key).Scan(&seq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
 	}
-	return *seq, true, nil
+	if err != nil {
+		return 0, fmt.Errorf("read the Dispatch status change sequence of %s: %w", key, err)
+	}
+	return seq, nil
 }
 
 func (s *Postgres) DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (string, error) {
@@ -123,7 +162,7 @@ func (s *Postgres) DispatchClaim(ctx context.Context, tx pgx.Tx, key string) (st
 }
 
 func (s *Postgres) DispatchIssues(ctx context.Context, tx pgx.Tx, project string) ([]DispatchIssueRow, error) {
-	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, '')
+	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, ''), i.labels, i.rank
 		from dispatch_issues i left join dispatch_claims c on c.key = i.key
 		where i.project = $1 order by i.key`, project)
 	if err != nil {
@@ -147,7 +186,7 @@ func (s *Postgres) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []strin
 	if len(keys) == 0 {
 		return nil, nil
 	}
-	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, '')
+	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, ''), i.labels, i.rank
 		from dispatch_issues i left join dispatch_claims c on c.key = i.key
 		where i.key = any(array(
 			select unnest($1::text[])
@@ -168,7 +207,7 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	if len(parents) == 0 {
 		return children, nil
 	}
-	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, '')
+	mirrored, err := queryDispatchIssues(ctx, tx, `select i.key, i.project, i.status, i.blockers, i.dispatch_seq, coalesce(c.claimed_by, ''), coalesce(c.claim_seq, 0), coalesce(i.parent, ''), i.labels, i.rank
 		from dispatch_issues i left join dispatch_claims c on c.key = i.key
 		where i.project = $1 and i.parent = any($2) order by i.key`, project, parents)
 	if err != nil {
@@ -180,7 +219,8 @@ func (s *Postgres) DispatchChildren(ctx context.Context, tx pgx.Tx, project stri
 	return children, nil
 }
 
-// queryDispatchIssues is every mirrored row query selects with args, in its order.
+// queryDispatchIssues is every row of the copy query selects with args, in its order; an empty
+// list of blockers or labels reads as an empty list.
 func queryDispatchIssues(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]DispatchIssueRow, error) {
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
@@ -190,7 +230,7 @@ func queryDispatchIssues(ctx context.Context, tx pgx.Tx, query string, args ...a
 	var mirrored []DispatchIssueRow
 	for rows.Next() {
 		var row DispatchIssueRow
-		if err := rows.Scan(&row.Key, &row.Project, &row.Status, &row.Blockers, &row.Seq, &row.ClaimedBy, &row.ClaimSeq, &row.Parent); err != nil {
+		if err := rows.Scan(&row.Key, &row.Project, &row.Status, &row.Blockers, &row.Seq, &row.ClaimedBy, &row.ClaimSeq, &row.Parent, &row.Labels, &row.Rank); err != nil {
 			return nil, err
 		}
 		mirrored = append(mirrored, row)

@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// The two kinds of row pull_request_settled_heads holds (migration 20261120001432): the pull
+// The two kinds of row pull_request_settled_heads holds (migration 20261120144241): the pull
 // request's own memory of its settled heads (PullRequest.SettledHeads), and the memory its open
 // head run was anchored with (HeadRun.Settled).
 const (

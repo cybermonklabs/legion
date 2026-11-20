@@ -5,7 +5,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryAttemptState,
   type MessageDeliveryMode,
-  RECEIPT_TIMEOUT_CAUSE,
+  POSSIBLY_DELIVERED_CAUSES,
 } from "@legion/contracts";
 
 import type { AgentPart } from "../refs/AgentName";
@@ -246,13 +246,16 @@ export function queuedParts(session: AgentPart): AgentPart[] {
  * "Retry won't deliver it twice" holds for any in-window failure but a restarted session's: if
  * the send landed, its repeat is recognised and dropped, and if it never landed there is nothing
  * to duplicate. The second clause does not. "Sending in a different mode delivers it again" is
- * only true of a send that may already have reached the recipient — a receipt timeout — so it is
- * keyed on that cause. It is also withheld on the mention surface, which has no mode-change
- * button to name.
+ * only true of a send that may already have reached the recipient — a receipt timeout, or a send
+ * whose store the listener could not confirm (`POSSIBLY_DELIVERED_CAUSES`) — so it is keyed on
+ * those causes. It is also withheld on the mention surface, which has no mode-change button to
+ * name.
  */
 export function safeRetryGuidance(surface: "card" | "mention", cause?: string | null): string {
   const safe = `Retry won't deliver it twice ${unlessRestarted}`;
-  if (surface === "mention" || cause !== RECEIPT_TIMEOUT_CAUSE) return `${safe}.`;
+  if (surface === "mention" || cause == null || !POSSIBLY_DELIVERED_CAUSES.includes(cause)) {
+    return `${safe}.`;
+  }
   return `${safe}; sending in a different mode delivers it again.`;
 }
 

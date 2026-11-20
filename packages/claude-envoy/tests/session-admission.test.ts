@@ -1,7 +1,7 @@
 // Which id the channel server's connection is admitted as, under a broker token that admits one
 // session at a time: what the live view waits on before it takes a `/clear`'s control subject.
 import { expect, test } from "bun:test"
-import { sessionAdmission } from "../src/envoy-channel-server"
+import { sessionAdmission } from "../src/channel-connection"
 
 /** Whether `promise` has settled after the turns already queued have run. */
 async function settled(promise: Promise<void>): Promise<boolean> {

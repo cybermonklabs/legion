@@ -22,7 +22,7 @@ import (
 // intakeFailuresVersion is the version of the migration this file tests, so the tests can migrate
 // through everything before it whatever lands beside it. Its header also carries the way back of
 // the release that gives up on intake messages, which the two way-back tests below run.
-const intakeFailuresVersion = 20261120001432
+const intakeFailuresVersion = 20261120144241
 
 // intakeGiveUpRelease names the release whose way back the header of intakeFailuresVersion
 // carries, as a failure to read that block names it. docs/kubernetes.md carries the same block
@@ -71,17 +71,17 @@ func columnShape(t *testing.T, store *Store, table, column string) string {
 	return shape
 }
 
-// The column 20261120001432 adds to a table an earlier daemon writes, in the shape that daemon's
-// writes keep working with: dispatch_issues.status_seq, a sequence that is null on every row
-// written before it.
+// The column 20261120144241 adds to a table an earlier daemon writes, in the shape that daemon's
+// writes keep working with: dispatch_issues.status_changed_seq, which has a default, so an insert
+// that does not name it still lands.
 var intakeFailuresColumns = map[[2]string]string{
-	{"dispatch_issues", "status_seq"}: "bigint nullable=YES default=",
+	{"dispatch_issues", "status_changed_seq"}: "bigint nullable=NO default=0",
 }
 
-// intakeFailuresTables is the tables 20261120001432 creates.
+// intakeFailuresTables is the tables 20261120144241 creates.
 var intakeFailuresTables = []string{"intake_failures", "cleared_pull_requests", "pull_request_settled_heads"}
 
-// 20261120001432 creates the tables intakeFailuresTables names and adds the column
+// 20261120144241 creates the tables intakeFailuresTables names and adds the column
 // intakeFailuresColumns names in its shape, none of which the database before it holds (the
 // negative control), and adds no column to pull_requests: what a pull request remembers of its
 // settled heads is a table of its own. A record takes the shapes the intake writes — an open
@@ -92,7 +92,7 @@ var intakeFailuresTables = []string{"intake_failures", "cleared_pull_requests", 
 // columns set apart. A second row of one message, and a second clear of one pull request, are
 // refused by their keys. A settled head is a row of a pull request the record holds, of one of
 // two kinds, once for each kind and head, and it goes with its pull request's row.
-func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
+func TestMigration20261120144241KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, intakeFailuresVersion-1)
@@ -249,6 +249,55 @@ func TestMigration20261120001432KeepsEachIntakeFailureToItsRules(t *testing.T) {
 	}
 	if left := rowsAsText(t, store, `select row(pull_request_settled_heads.*)::text from pull_request_settled_heads`); len(left) != 0 {
 		t.Errorf("deleting the pull request left its settled heads %v, want them deleted with it", left)
+	}
+}
+
+// 20261120144241 starts the status change sequence of each row of the copy of Dispatch's issues it
+// finds (dispatch_issues.status_changed_seq, which a person's late approval of a parked root is
+// weighed against through record.Store.DispatchStatusChangedSeq) at that row's status_seq: the
+// sequence of the newest reading of its status the copy holds (20261120055717). The copy never
+// kept when a status last changed, so the fence starts at what the record already holds, and an
+// approval older than that reading queues nothing. The rows come from the two releases before it,
+// each as that release leaves it: one the release before 20261120055717 wrote, whose
+// status_seq that migration took from its dispatch_seq; a root whose park the copy read at 10; a
+// root the copy read parked and then renamed at 11, whose status_seq the rename's reading moved,
+// as that release's rule moves it with every reading that carries the status; and a row no
+// reading carrying a status wrote, which starts at 0. The database migrates through both
+// migrations, in version order, as a fresh database does.
+func TestMigration20261120144241StartsEachRowsStatusChangeAtItsStatusSequence(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, valueSequencesVersion-1)
+	if _, err := store.Pool().Exec(ctx, `insert into dispatch_issues (key, project, status, blockers, dispatch_seq, parent)
+		values ('LEGION-207', 'LEGION', 'backlog', '{}', 7, null)`); err != nil {
+		t.Fatalf("write the release before 20261120055717's row: %v", err)
+	}
+	migrateThrough(t, store, intakeFailuresVersion-1)
+	if _, err := store.Pool().Exec(ctx, `insert into dispatch_issues (key, project, dispatch_seq, status, status_seq, blockers, blockers_seq)
+		values ('LEGION-208', 'LEGION', 10, 'icebox', 10, '{}', 10),
+			('LEGION-209', 'LEGION', 11, 'icebox', 11, '{}', 11),
+			('LEGION-210', 'LEGION', 12, '', 0, '{LEGION-207}', 12)`); err != nil {
+		t.Fatalf("write the rows of 20261120055717's release: %v", err)
+	}
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the intake's failures: %v", err)
+	}
+	want := map[string]int64{"LEGION-207": 7, "LEGION-208": 10, "LEGION-209": 11, "LEGION-210": 0}
+	got := map[string]int64{}
+	if err := store.Tx(ctx, func(tx pgx.Tx) error {
+		for key := range want {
+			seq, err := record.NewStore().DispatchStatusChangedSeq(ctx, tx, key)
+			if err != nil {
+				return err
+			}
+			got[key] = seq
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the status change sequences: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the status change sequence of each row after the migration = %v, want %v: each row's status_seq", got, want)
 	}
 }
 

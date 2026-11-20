@@ -1044,7 +1044,7 @@ func populatedState(t *testing.T) State {
 		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
 		state.Issues[key] = issue
 	}
-	// The intake's open give-ups (contract 184): the Dispatch consumer has two, a decoded event
+	// The intake's open give-ups (contract 195): the Dispatch consumer has two, a decoded event
 	// given up at its bound and a newer message that did not decode, which carries no event id;
 	// the GitHub consumer has one, which the sweep gave up once its durable was made again past it.
 	// Each consumer's newest sequence is the `throughSeq` of a bulk replay or discard of all of

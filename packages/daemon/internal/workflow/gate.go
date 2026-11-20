@@ -779,16 +779,19 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 }
 
 // statusMovedSince says whether the issue key's status changed after seq: the sequence at which
-// the Dispatch mirror, which every issue event the daemon applies writes first (blockers.Mirror),
-// last saw its status change is later (record.Store.DispatchStatusSeq). A seq of zero, a review
-// from a read that carries no sequence, cannot be placed, and a mirror row that keeps no status
-// sequence says nothing: neither is a change since.
+// the copy of Dispatch's issues, which every issue event the daemon applies writes first
+// (blockers.Mirror), last saw its status change is later (record.Store.DispatchStatusChangedSeq).
+// A seq of zero, a review from a read that carries no sequence, cannot be placed, and a status
+// change sequence of zero, a row no reading carrying a status wrote, is no change: neither is a
+// change since. A row the copy held when it began keeping that sequence, and a row a boot's refill
+// writes, start at the reading that wrote their status, so an approval older than that reading
+// counts as one the status moved after.
 func (e *Engine) statusMovedSince(ctx context.Context, tx pgx.Tx, key string, seq int64) (bool, error) {
 	if seq <= 0 {
 		return false, nil
 	}
-	moved, known, err := e.store.DispatchStatusSeq(ctx, tx, key)
-	return known && moved > seq, err
+	moved, err := e.store.DispatchStatusChangedSeq(ctx, tx, key)
+	return moved > seq, err
 }
 
 // copyTakes says whether a carried copy of another root's gate takes an event of that root's

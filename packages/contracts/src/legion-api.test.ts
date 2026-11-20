@@ -124,7 +124,7 @@ const schemas: Record<string, z.ZodType> = {
   "project-pause-refused.json": LegionPauseFailureResponse,
   "project-paused.json": LegionPauseFailureResponse,
   "project-resume-refused.json": LegionPauseFailureResponse,
-  // The replay and the discard of the intake's give-ups (contract 184), written by internal/api's
+  // The replay and the discard of the intake's give-ups (contract 195), written by internal/api's
   // TestIntakeReplayAnswerGolden and TestIntakeDiscardAnswerGolden from what each route answers:
   // a replay with one record of each outcome and one left, and the ids a discard closed.
   "intake-replay.json": LegionIntakeReplayResponse,
@@ -2508,10 +2508,10 @@ test("a pause rejects an empty reason", () => {
   expect(LegionOperatorProjectPauseRequest.safeParse({ reason: "" }).success).toBeFalse();
 });
 
-// The intake's open give-ups (contract 184). The golden counts two consumers' and lists three
+// The intake's open give-ups (contract 195). The golden counts two consumers' and lists three
 // records, one that did not decode, whose event id is null; every other state golden is of an
 // intake with none open, and carries two empty lists rather than no key. A state served to a
-// caller below 184 carries no key at all and still parses. A count with no newest sequence, and a
+// caller below 195 carries no key at all and still parses. A count with no newest sequence, and a
 // record with no id, are refused.
 test("the state golden counts and lists the intake's open give-ups, and a state without them parses", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));

@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 184: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 195: INFRA-1575 -- the intake gives up on a message whose handling keeps failing, keeps it
 // whole, tells the controller, and lets the operator or the controller replay it or discard it.
 // `GET /legion/v1/state` gains `intakeGiveUps` (`api.IntakeGiveUpsView`), written on every body:
 // `consumers`, each durable consumer with an open give-up as `{name, open, newestSeq}`, the newest
@@ -2464,7 +2473,7 @@ package api
 // streamSeq, storedAt, eventId, deliveries, gaveUpAt, reason, lastError}`, where `eventId` is null
 // for a message that did not decode and `lastError` is the first 300 characters of the record's
 // error; both lists are empty rather than null. A caller from a pod whose claims record a contract
-// below 184 is served the state without the key (api's stateFor, withoutIntakeGiveUps), composed
+// below 195 is served the state without the key (api's stateFor, withoutIntakeGiveUps), composed
 // with every narrowing below it, which is why `packages/contracts/src/legion-api.ts` declares it
 // optional, as it declares `wakesWaiting`. The controller's two routes, `POST
 // /legion/v1/intake/replay` and `POST /legion/v1/intake/discard` (`api.IntakeReplayRequest`,
@@ -2491,9 +2500,9 @@ package api
 // registration, so the controller never calls the two routes there; only this release's operator
 // command `legion intake` reaches an older daemon, which answers it 404.
 //
-// The change carries store migration `20261120001432_intake_failures`, which adds the tables
+// The change carries store migration `20261120144241_intake_failures`, which adds the tables
 // `intake_failures`, `cleared_pull_requests` and `pull_request_settled_heads` and the column
-// `dispatch_issues.status_seq`. An older daemon binary put back on this schema
+// `dispatch_issues.status_changed_seq`. An older daemon binary put back on this schema
 // decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), so
 // an unsent `intake-gave-up` notice row is refused at every attempt and logged `outbox row failed`
 // each time; and it applies or drops a message with an open failure without telling the table, so
@@ -2503,8 +2512,8 @@ package api
 // stopped, delete the project's unsent `intake-gave-up` controller notices and its open failures,
 // each statement naming the project. The given-up records, the three tables and the column stay,
 // which the older binary never reads and a roll forward finds in place.
-// (This entry takes 184: the base of this branch, which merged main, declares 178, as main did when
-// it was read on 2026-11-20, and the open pull requests read that day declared 179, 180, 181, 182
-// and 183, so 184 is the lowest number above main's that no open head declares. Read main's own
-// number and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 184
+// (This entry takes 195: main declared 188 when it was read on 2026-11-20, and the open pull
+// requests read that day declared 189 to 194, so 195 is the lowest number above main's that no
+// open head declares. Read main's own number and every open pull request again at the next merge
+// rather than from this line.)
+const DaemonAPIVersion = 195

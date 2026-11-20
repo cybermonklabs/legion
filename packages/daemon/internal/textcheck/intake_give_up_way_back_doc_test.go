@@ -3,7 +3,7 @@ package textcheck
 import "testing"
 
 // The way back of the release that gives up on intake messages stands in two files: the header of
-// store migration 20261120001432_intake_failures, which ships the block with the migration, and a
+// store migration 20261120144241_intake_failures, which ships the block with the migration, and a
 // fenced block of docs/kubernetes.md, under "Rolling back the release that gives up on intake
 // messages", which is where an operator reads it at a rollback. internal/store's
 // TestTheIntakeGiveUpWayBackLeavesWhatTheReleaseBeforeReads and
@@ -20,7 +20,7 @@ const (
 	// intakeGiveUpVersion is the version of the migration whose header carries the block, which
 	// migrations.WayBack reads it by and whose name the embedded set gives (migrationNames), so
 	// the header this test reads and the entry it holds the guide to are one migration.
-	intakeGiveUpVersion = 20261120001432
+	intakeGiveUpVersion = 20261120144241
 	// intakeGiveUpWayBackSection is the heading of the guide's section that gives the way back.
 	intakeGiveUpWayBackSection = "Rolling back the release that gives up on intake messages"
 	// intakeGiveUpWayBackMark is the line that deletes the open failures of the project that rolls

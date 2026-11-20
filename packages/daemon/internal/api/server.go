@@ -1239,12 +1239,12 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // intakeGiveUpsContract is the daemon contract that added `intakeGiveUps`, the intake's open
-// give-ups, each consumer's count and the newest records (version.go's 184). A plugin before it is
+// give-ups, each consumer's count and the newest records (version.go's 195). A plugin before it is
 // served the state without the key: one built before sjawhar/legion#2788 reads it with a strict
 // schema and would refuse the whole body for a key it does not name, and one built after strips
 // the key instead, so the strip is what keeps the give-ups from a caller that did not ask for them
 // rather than what keeps such a caller reading at all.
-const intakeGiveUpsContract = 184
+const intakeGiveUpsContract = 195
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

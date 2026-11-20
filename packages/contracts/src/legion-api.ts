@@ -1138,7 +1138,7 @@ const LEGION_INTAKE_GIVE_UP_REASONS = [
   "consumer moved past",
 ] as const;
 
-/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 184): its `name`,
+/** `api.IntakeGiveUpCountView` — one durable consumer's open give-ups (contract 195): its `name`,
  * how many are `open`, and `newestSeq`, the newest stream sequence among them, which a replay or a
  * discard of all of them names as its `throughSeq`. A consumer with none open is not listed. */
 const legionIntakeGiveUpCount = z.object({
@@ -1165,7 +1165,7 @@ const legionIntakeGiveUp = z.object({
   lastError: z.string(),
 });
 
-/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 184), the messages it gave up on
+/** `api.IntakeGiveUpsView` — the intake's open give-ups (contract 195), the messages it gave up on
  * that no replay or discard has closed: `consumers`, each consumer with one open, by name, and
  * `newest`, the newest of them, latest given up first, at most 50. Both lists are never null, and
  * both are empty while nothing is open. */
@@ -1288,9 +1288,9 @@ const legionPaused = z.object({
  * and for that caller alone (`api.stateFor`, `withoutPause`), so a reader in such a pod learns
  * nothing of the pause from a state that carries neither. `intakeGiveUps` is the intake's open
  * give-ups, the messages it gave up on that no replay or discard has closed, counted by consumer
- * and the newest of them listed (contract 184). The daemon writes it on every body, its two lists
+ * and the newest of them listed (contract 195). The daemon writes it on every body, its two lists
  * empty while nothing is open, and it is optional for the reason `wakesWaiting` is: the route
- * strips it for a caller in a pod below 184, and for that caller alone (`api.stateFor`,
+ * strips it for a caller in a pod below 195, and for that caller alone (`api.stateFor`,
  * `withoutIntakeGiveUps`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo,
@@ -1818,7 +1818,7 @@ const LEGION_INTAKE_REPLAY_OUTCOMES = ["applied", "already applied", "no fact", 
 
 /** `api.IntakeReplayResponse`, the answer to a replay of give-ups, the controller's `POST
  * /legion/v1/intake/replay` and the operator's `POST /legion/v1/operator/intake/replay` alike
- * (contract 184): `replayed`, each record the replay took, in stream order, with its id, consumer,
+ * (contract 195): `replayed`, each record the replay took, in stream order, with its id, consumer,
  * stream sequence and outcome, and for `failed` the `error`, which the record keeps as its last
  * error; and `remaining`, the open records of the selection left after it, which another call
  * takes. */
@@ -1839,7 +1839,7 @@ export type LegionIntakeReplay = z.output<typeof LegionIntakeReplayResponse>;
 
 /** `api.IntakeDiscardResponse`, the answer to a discard of give-ups, the controller's `POST
  * /legion/v1/intake/discard` and the operator's `POST /legion/v1/operator/intake/discard` alike
- * (contract 184): `discarded`, the id of each record it closed, in stream order. */
+ * (contract 195): `discarded`, the id of each record it closed, in stream order. */
 export const LegionIntakeDiscardResponse = z.object({
   discarded: z.array(z.number().int().positive()),
 });

@@ -122,7 +122,7 @@ type State struct {
 	// discard has closed, counted per consumer with the newest stream sequence among each
 	// consumer's (the `throughSeq` a bulk replay or discard of them all names), and the newest of
 	// them listed (IntakeGiveUpsView). Always written, its lists empty rather than null; a daemon
-	// with no workflow has none (contract 184).
+	// with no workflow has none (contract 195).
 	IntakeGiveUps IntakeGiveUpsView `json:"intakeGiveUps"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below server.go's
@@ -435,7 +435,7 @@ type AgentSecretsLoginView struct {
 // not write the empty array, since an empty slice is what `omitempty` drops, so the pointer is
 // what lets one type serve every key — each field set when its key is not hidden and left nil
 // when it is — rather than a struct per set of flags. The bands compose, so a caller below
-// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (184)
+// wakesWaitingContract (53) is below claimsToRefreshContract (73) and intakeGiveUpsContract (195)
 // as well and is served none of the three.
 //
 // A body that hides none of them is marshaled through the embedded value alone. The shadow's own

@@ -1,4 +1,4 @@
--- 20261120001432_intake_failures.up.sql — the intake's record of each message whose handling
+-- 20261120144241_intake_failures.up.sql — the intake's record of each message whose handling
 -- fails, the record of each pull request a new generation clears, and what a pull request
 -- remembers of the heads it settled (dispatch://INFRA-1575).
 --
@@ -51,14 +51,27 @@
 -- the table: a pull request row it deletes takes that pull request's rows with it (on delete
 -- cascade), and the way back keeps the rest.
 --
--- dispatch_issues.status_seq is the sequence of the Dispatch event at which the mirror last saw the
--- issue's status change (record.Postgres.PutDispatchIssue): set when a row is written first, and
--- moved, only forward, by an applied event whose status differs from the row's. A person's approval
--- of a parked root's spec that reaches the daemon late queues the root as their handover only when
--- no status change came after the approval (workflow's personHandoverQueues). It is null on every
--- row written before it, which reads as no such change, as before. An earlier daemon neither reads
--- nor writes it, so the way back keeps it; a roll forward finds it at a sequence older than the
--- row's newest status change, which only lets a late approval queue the root, as before.
+-- dispatch_issues.status_changed_seq is the sequence of the reading of Dispatch at which the copy
+-- last saw the issue's status change (record.Store.PutDispatchIssue). The status_seq of
+-- 20261120055717_dispatch_issue_value_sequences is another thing: the sequence of the newest
+-- reading that carried the status, changed or not, so a rename or a re-rank that carries the same
+-- status moves it. A reading moves status_changed_seq to its own sequence only when it carries the
+-- status, the copy takes that status by status_seq's rule, and the status differs from the one the
+-- row held; a new row starts at the sequence of the reading that makes it when that reading carries
+-- the status, and at 0 when it carries none. A person's approval of a parked root's spec that
+-- reaches the daemon late queues the root as their handover only when no status change came after
+-- the approval (workflow's personHandoverQueues), and 0 is no change.
+--
+-- A row that exists at this migration starts at its status_seq, the sequence of the newest reading
+-- of its status the copy holds. The copy never kept when that status last changed, and the fence
+-- starts at what the record already holds: an approval older than that reading, however late it
+-- comes, queues nothing, so no stale fact unparks a root, and the person can still move it to todo.
+-- The rows the first boot of each project refills on 20261120055717's mark are new rows, and start
+-- at the sequence of the listing that writes them. This migration sorts after that one, so it
+-- finds status_seq on every database. An earlier daemon neither reads nor writes the column: a row
+-- it inserts takes 0 and a status it changes leaves the column as it stands, so the way back keeps
+-- it, and after a roll forward it can stand older than the row's newest status change, which only
+-- lets a late approval queue the root, as the earlier daemon did.
 --
 -- A rollback of one project to an earlier image first deletes two kinds of that project's row,
 -- with its daemon stopped. Its intake-gave-up controller notices go, because the earlier image
@@ -161,7 +174,8 @@ create table pull_request_settled_heads (
   primary key (issue, kind, head)
 );
 
-alter table dispatch_issues add column status_seq bigint;
+alter table dispatch_issues add column status_changed_seq bigint not null default 0 check (status_changed_seq >= 0);
+update dispatch_issues set status_changed_seq = status_seq;
 
 -- There is no down file: migrations here are forward-only. The way back above is what a rollback
 -- runs.

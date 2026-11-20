@@ -31,7 +31,7 @@ import (
 // watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
 // pending whose callback can send on the channels the subscription's end has just closed, a "send
 // on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
-// `(*kvs).WatchFiltered`, unfixed through v1.55.0), while the jetstream package's watcher has no
+// `(*kvs).WatchFiltered` in v1.55.0). The jetstream package's watcher has no
 // such timer and closes its updates only on the subscription goroutine's own exit (its own
 // `(*kvs).WatchFiltered`). So the legacy handle is held unexported and KeyValue forwards only the
 // calls it checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History,
@@ -130,8 +130,8 @@ const (
 // ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
 // caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
-// under its own lock, on a request whose budget is two seconds, and a read that kept it waiting
-// longer would stop every role and session read of the process rather than save a start.
+// for a read whose caller waits two seconds for it, and an open that kept sending would leave that
+// read and every one after it unanswered rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {
@@ -193,15 +193,15 @@ func refusedAfterOn[T any](kv KeyValue, subjects func() []string, call func() (T
 	return refusedAfter(kv.owner, subjects, call)
 }
 
-// keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.53.1
-// kv.go, the default KV prefix).
+// keySubjects is the subject a write of key publishes to: "$KV.<bucket>.<key>" (nats.go@v1.55.0
+// kv.go:383-385, the default KV prefix).
 func (kv KeyValue) keySubjects(key string) func() []string {
 	return func() []string { return []string{"$KV." + kv.Bucket() + "." + key} }
 }
 
 // getSubjects are the requests a read of key's last value can send: a direct get of the key's last
 // message, on a bucket that allows direct gets, and a get from the stream's leader on one that
-// does not (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetLastBySubjectT).
+// does not (nats.go@v1.55.0 kv.go:642-686, js.go:216-217).
 func (kv KeyValue) getSubjects(key string) func() []string {
 	return func() []string {
 		stream := "KV_" + kv.Bucket()
@@ -210,7 +210,7 @@ func (kv KeyValue) getSubjects(key string) func() []string {
 }
 
 // revisionSubjects are the requests a read of one revision can send: a direct get by sequence and
-// a get from the stream's leader (nats.go@v1.53.1 kv.go getRevision, js.go apiDirectMsgGetT).
+// a get from the stream's leader (nats.go@v1.55.0 kv.go:642-686, js.go:214).
 func (kv KeyValue) revisionSubjects() []string {
 	stream := "KV_" + kv.Bucket()
 	return []string{jsAPI("DIRECT.GET", stream), jsAPI("STREAM.MSG.GET", stream)}
@@ -251,14 +251,14 @@ func (kv KeyValue) Bucket() string {
 
 // WatchKeys watches the keys matching keys (jetstream.AllKeys for every key) through kv's jetstream
 // handle, checking keys against the subject a watcher's create request builds. nats.go ties the
-// subscription's life to ctx, which it also uses for the consumer's create request (js.go:
-// 1951-1952, 2052-2058): the watcher ends at ctx's deadline, so one that follows the bucket takes a
-// ctx without one, and the caller cancels ctx once it has stopped the watcher, or the goroutine
-// nats.go parks on ctx.Done() outlives the watch. A ctx without a deadline still bounds the create,
-// by the JetStream request wait of the handle's legacy push context, 5 s (jsm.go:1791-1795,
-// js.go:299). The watcher sends a nil entry once it has delivered every existing key, and closes
-// its updates only once its subscription has ended; whoever stops it keeps reading it until then,
-// since nats.go's delivery blocks on a full 256-entry buffer.
+// subscription's life to ctx, which it uses for the consumer's create request (js.go:1970-1973)
+// and subscription lifetime (js.go:2072-2077). The watcher ends at ctx's deadline, so one that
+// follows the bucket takes a ctx without one, and the caller cancels ctx once it has stopped the
+// watcher, or the goroutine nats.go parks on ctx.Done() outlives the watch. A ctx without a
+// deadline still bounds the create by the JetStream request wait of the handle's legacy push
+// context, 5 s (js.go:303, jsm.go:1844-1846). The watcher sends a nil entry once it has delivered
+// every existing key, and closes its updates only once its subscription has ended; whoever stops it
+// keeps reading it until then, since nats.go's delivery blocks on a full 256-entry buffer.
 func (kv KeyValue) WatchKeys(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	if err := kv.check(keys, watchOverhead(kv.Bucket())); err != nil {
 		return nil, err
