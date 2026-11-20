@@ -23,8 +23,8 @@ import (
 func seedMirror(t *testing.T, pool *pgxpool.Pool, key, status string, waits ...string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{
-			Key: key, Project: "LEGION", Status: status, Blockers: waits, Seq: 1})
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	})
 }
 
