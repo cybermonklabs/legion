@@ -650,13 +650,13 @@ const PodEndRunes = 400
 
 // PodEnd is reason and message as Observation.PodEnd holds them, bounded at PodEndRunes: the
 // reason alone when there is no message, "" when there is no reason, and a value cut at the
-// bound with an ellipsis when the two together pass it. The URL rule (redact.URLCredentials)
-// reads the joined text before the cut, so a URL the cut falls inside has lost its userinfo and
-// its query already: a cut made first could end inside a URL's userinfo, before its "@", and
-// leave the start of a user name or a password where the rule the claim keeps the value under
-// (storetext.FarSideText) reads it as the URL's host. Both the runtime that observes a pod and
-// any test that asserts on the field build the value here, so one rule decides what a claim and
-// a notice carry.
+// bound with an ellipsis when the two together pass it. The joined text is cut by redact.Runes,
+// which gives it whole through the URL rule (redact.URLCredentials) before the cut, so a URL the
+// cut falls inside has lost its userinfo and its query already: a cut made first could end inside
+// a URL's userinfo, before its "@", and leave the start of a user name or a password where the
+// rule the claim keeps the value under (storetext.FarSideText) reads it as the URL's host. Both
+// the runtime that observes a pod and any test that asserts on the field build the value here, so
+// one rule decides what a claim and a notice carry.
 func PodEnd(reason, message string) string {
 	if reason == "" {
 		return ""
@@ -665,12 +665,7 @@ func PodEnd(reason, message string) string {
 	if message != "" {
 		end += ": " + message
 	}
-	end = redact.URLCredentials(end)
-	runes := []rune(end)
-	if len(runes) <= PodEndRunes {
-		return end
-	}
-	return string(runes[:PodEndRunes-1]) + "…"
+	return redact.Runes(end, PodEndRunes)
 }
 
 // GitIdentity is the author a worker's commits carry.

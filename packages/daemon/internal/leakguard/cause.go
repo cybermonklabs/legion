@@ -2,8 +2,8 @@ package leakguard
 
 import (
 	"strings"
-	"unicode/utf8"
 
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
@@ -27,8 +27,9 @@ var oneLine = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ")
 // prefixed a second time. The whole sentence is kept as the daemon keeps a far side's text
 // (storetext.FarSideText): an HTTP client's error carries the URL it last asked, and a read
 // GitHub redirected to its download host carries that host's `?token=`. Newlines become spaces,
-// so the sentence stays one line, and it is cut to at most maxCauseBytes at a rune boundary. The
-// cut comes last, so it can never leave a part of a query or a userinfo behind.
+// so the sentence stays one line, and it is cut to at most maxCauseBytes at a rune boundary by
+// redact.Bytes, which reads the whole sentence through the URL rule before the cut, so the cut can
+// never leave a part of a query or a userinfo behind.
 func Cause(what string, err error) string {
 	sentence := what
 	if !strings.HasPrefix(sentence, RefusalPrefix) {
@@ -37,13 +38,6 @@ func Cause(what string, err error) string {
 	if err != nil {
 		sentence += ": " + err.Error()
 	}
-	sentence = oneLine.Replace(storetext.FarSideText(sentence))
-	if len(sentence) <= maxCauseBytes {
-		return sentence
-	}
-	cut := maxCauseBytes
-	for cut > 0 && !utf8.RuneStart(sentence[cut]) {
-		cut--
-	}
-	return sentence[:cut]
+	sentence, _ = redact.Bytes(oneLine.Replace(storetext.Text(sentence)), maxCauseBytes)
+	return sentence
 }

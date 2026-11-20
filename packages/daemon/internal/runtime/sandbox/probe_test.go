@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The probe Sandbox testImage gets in testProject: the project, then the digest's first 12 hex.
@@ -1804,6 +1805,43 @@ func TestLastBytesKeepsTheEndOfTheTail(t *testing.T) {
 			t.Fatalf("lastBytes of an exactly-keep stream was not returned unchanged (len %d, want %d)", len(got), keep)
 		}
 	})
+}
+
+// A tail whose cut falls inside a URL of one long line, with no newline after the cut, keeps no
+// part of that URL's user name or query: lastBytes starts the tail after the first byte that ends
+// a URL, where the line it cut holds no newline to start from. A tail started at the cut leaves
+// the user name or the query's tail with no "://" or "?" before it, where the URL rule probeLog
+// gives the tail through (redact.Read) finds neither.
+func TestLastBytesKeepsNoPartOfAURLItsCutFallsInside(t *testing.T) {
+	const keep = 4 << 10
+	const user, query = "legion-reader", "token=planted-query-token-9"
+	rest := " the image said more " + strings.Repeat("z", keep)
+	for _, tc := range []struct {
+		name string
+		// head is the line up to the cut, and after the part of the URL the tail starts with.
+		head, after, planted string
+	}{
+		{"a cut inside the user name", strings.Repeat("w", 100) + " https://legion-", "reader@h.example/p?" + query, user},
+		{"a cut inside the query", strings.Repeat("w", 100) + " https://" + user + "@h.example/p?token=planted-", "query-token-9", query},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			line := tc.head + tc.after + rest
+			line = line[:len(tc.head)+keep]
+			got, err := lastBytes(strings.NewReader(line), keep)
+			if err != nil {
+				t.Fatalf("lastBytes = %v", err)
+			}
+			if !strings.HasPrefix(got, "…\n") || !strings.Contains(got, "the image said more") {
+				t.Fatalf("lastBytes = %q, want the … line and the words after the URL", got[:min(len(got), 80)])
+			}
+			ruled := redact.Read(got, false)
+			for _, part := range []string{tc.planted[len(tc.planted)-6:], "@h.example"} {
+				if strings.Contains(ruled, part) {
+					t.Fatalf("lastBytes, through the URL rule, starts %q, which holds %q of the URL", ruled[:min(len(ruled), 80)], part)
+				}
+			}
+		})
+	}
 }
 
 // tailBytes holds a log's newest keep bytes and no more, however long the log: a log of a hundred

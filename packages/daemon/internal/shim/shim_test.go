@@ -1645,11 +1645,11 @@ func TestTheShimLogsAnExtensionError(t *testing.T) {
 	sh.log.awaitLine(t, "extension_error /opt/legion/pi-legion/dist/legion.js session_start: LEGION_DAEMON_URL is required for Legion", 1)
 }
 
-// A tool call's summary is its arguments cut to 80 runes, and the URL rule runs on them before
-// the cut: a cut inside a userinfo, before its "@", would leave a start of the user name that no
-// rule after it reads as a userinfo. Wherever the cut of the arguments as written falls, inside
-// the userinfo or inside the query, the summary holds no part of either: it is the cut of the
-// arguments the rule left.
+// A tool call's summary is its arguments cut to 80 runes, the last of them "…" where the cut took
+// any (redact.Runes), and the URL rule runs on them before the cut: a cut inside a userinfo, before
+// its "@", would leave a start of the user name that no rule after it reads as a userinfo. Wherever
+// the cut of the arguments as written falls, inside the userinfo or inside the query, the summary
+// holds no part of either: it is the cut of the arguments the rule left.
 func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 	const url = "https://legion-reader@github.com/o/r.git?token=planted-query-token-4463"
 	for _, tc := range []struct {
@@ -1675,7 +1675,11 @@ func TestAToolCallSummaryCutsTheArgumentsAfterTheURLRule(t *testing.T) {
 				}
 			}
 			left := []rune(head + `https://github.com/o/r.git"}`)
-			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+string(left[:min(len(left), 80)]), 1)
+			summary := string(left)
+			if len(left) > 80 {
+				summary = string(left[:79]) + "…"
+			}
+			sh.log.awaitLine(t, shimwire.TypeToolExecutionStart+" bash "+summary, 1)
 		})
 	}
 }

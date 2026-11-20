@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -172,10 +173,13 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
 			s.Forget()
 		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
+		// One byte past the bound, so a body the bound cut is known to be cut: the bound can stop
+		// inside a URL before its "@", which redact.Read drops rather than quote.
+		read, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes+1))
+		body := redact.Read(string(read[:min(len(read), refusalBodyBytes)]), len(read) > refusalBodyBytes)
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
-		if strings.TrimSpace(string(body)) != "" {
-			what += ": " + firstLine(string(body))
+		if strings.TrimSpace(body) != "" {
+			what += ": " + firstLine(body)
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}

@@ -248,20 +248,11 @@ func FarSideText(s string) string {
 
 // FarSideError is a far side's error text as the daemon stores it: FarSideText, then, when that is
 // more than FarSideErrorRunes runes, its first FarSideErrorRunes-1 runes and "…". The result is at
-// most FarSideErrorRunes runes, and FarSideError(FarSideError(s)) == FarSideError(s). The
-// credentials are removed before the cut, so a cut can never leave a part of a userinfo or a query
-// behind.
+// most FarSideErrorRunes runes, and FarSideError(FarSideError(s)) == FarSideError(s). Text makes
+// the text valid first, and redact.Runes then removes the credentials before it cuts, so a cut can
+// never leave a part of a userinfo or a query behind.
 func FarSideError(s string) string {
-	s = FarSideText(s)
-	if utf8.RuneCountInString(s) <= FarSideErrorRunes {
-		return s
-	}
-	cut := 0
-	for range FarSideErrorRunes - 1 {
-		_, size := utf8.DecodeRuneInString(s[cut:])
-		cut += size
-	}
-	return s[:cut] + "…"
+	return redact.Runes(Text(s), FarSideErrorRunes)
 }
 
 // logPartBytes bounds one part of the text LogWhole writes. A JSON handler writes a character of a

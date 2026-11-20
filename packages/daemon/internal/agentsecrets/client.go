@@ -31,6 +31,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // launcherService is the authorization_details "service" this daemon's token logins always
@@ -272,10 +274,10 @@ func (c *Client) tokenLogin(ctx context.Context) (*credential, error) {
 		return nil, err
 	}
 	if status >= 500 && status <= 599 {
-		return nil, &brokerUnavailableError{err: refusal(status, body)}
+		return nil, &brokerUnavailableError{err: refusal(status, body, answerBytes)}
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, body)
+		return nil, refusal(status, body, answerBytes)
 	}
 	var answer struct {
 		CredentialID string    `json:"credential_id"`
@@ -453,7 +455,7 @@ func (b enrollmentBody) withoutNewFields() enrollmentBody {
 // its readJSON decodes the body with DisallowUnknownFields.
 func refusesAnUnknownField(status int, raw []byte) bool {
 	var api *APIError
-	return status == http.StatusBadRequest && errors.As(refusal(status, raw), &api) &&
+	return status == http.StatusBadRequest && errors.As(refusal(status, raw, answerBytes), &api) &&
 		api.Code == "INVALID_ENROLLMENT" && strings.Contains(api.Message, "unknown field")
 }
 
@@ -497,7 +499,7 @@ func (c *Client) Enroll(ctx context.Context, e PodEnrollment) (Enrollment, error
 		}
 	}
 	if status != http.StatusCreated && status != http.StatusOK {
-		return Enrollment{}, refusal(status, raw)
+		return Enrollment{}, refusal(status, raw, answerBytes)
 	}
 	var answer enrollmentAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
@@ -519,7 +521,7 @@ func (c *Client) Revoke(ctx context.Context, id string) error {
 	if status == http.StatusNoContent || status == http.StatusNotFound {
 		return nil
 	}
-	return refusal(status, raw)
+	return refusal(status, raw, answerBytes)
 }
 
 // CarriedEnrollment is one enrollment POST /v1/enrollments/carried answers: a pod enrollment this
@@ -574,7 +576,7 @@ func (c *Client) Carried(ctx context.Context, sessionIDs []string) ([]CarriedEnr
 		return nil, err
 	}
 	if status != http.StatusOK {
-		return nil, refusal(status, raw[:min(len(raw), carriedAnswerBytes)])
+		return nil, refusal(status, raw, carriedAnswerBytes)
 	}
 	if len(raw) > carriedAnswerBytes {
 		return nil, &CarriedAnswerTooLargeError{Limit: carriedAnswerBytes}
@@ -637,7 +639,7 @@ func (c *Client) RegisterPodSession(ctx context.Context, podUID, podToken, sessi
 		return time.Time{}, err
 	}
 	if status != http.StatusOK {
-		return time.Time{}, refusal(status, raw)
+		return time.Time{}, refusal(status, raw, answerBytes)
 	}
 	var answer struct {
 		PodUID     string    `json:"pod_uid"`
@@ -880,7 +882,8 @@ const answerBytes = 1 << 16
 
 // do sends one broker call and reads its answer: at most limit bytes and one more, so a caller
 // that must tell a whole answer from one cut short (Carried) reads a body longer than limit as
-// one that was; every other caller reads the cut body as its contract's shape or not.
+// one that was, and so does refusal, which quotes a body that is not the contract's shape; every
+// other caller reads the cut body as its contract's shape or not.
 func (c *Client) do(ctx context.Context, method, path string, body any, limit int, mutate func(*http.Request)) (int, []byte, error) {
 	var payload io.Reader
 	if body != nil {
@@ -917,14 +920,16 @@ func (c *Client) do(ctx context.Context, method, path string, body any, limit in
 }
 
 // refusal is the broker's error body as an *APIError; a body that is not the contract's shape
-// still yields one, with the status and the raw text as its message.
-func refusal(status int, raw []byte) error {
+// still yields one, with the status and the body's text as its message. raw is the body as do read
+// it for a call bounded at limit, so a raw longer than limit is one that bound cut, which can stop
+// inside a URL before its "@": the message is what redact.Read keeps of raw's first limit bytes.
+func refusal(status int, raw []byte, limit int) error {
 	var body struct {
 		Code  string `json:"code"`
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil || body.Code == "" {
-		return &APIError{Status: status, Code: "UNKNOWN", Message: string(raw)}
+		return &APIError{Status: status, Code: "UNKNOWN", Message: redact.Read(string(raw[:min(len(raw), limit)]), len(raw) > limit)}
 	}
 	return &APIError{Status: status, Code: body.Code, Message: body.Error}
 }

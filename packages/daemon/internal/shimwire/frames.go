@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // The frame type names, verbatim from the shipped protocol.
@@ -1656,7 +1658,8 @@ func (f AgentSecretsToken) Validate() error {
 func Decode(line []byte) (Frame, error) {
 	trimmed := bytes.TrimSpace(line)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, fmt.Errorf("%w: %.80q", ErrNotAFrame, line)
+		// The line is the far side's: the URL rule reads it whole before it is cut (redact.Runes).
+		return nil, fmt.Errorf("%w: %q", ErrNotAFrame, redact.Runes(string(line), 80))
 	}
 	var head struct {
 		Type string `json:"type"`
