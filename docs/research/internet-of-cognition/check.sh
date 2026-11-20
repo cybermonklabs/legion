@@ -129,7 +129,8 @@
 # judges: the judgement and the two records under check from Dispatch, whose copies every
 # row that reads a record reads too, Dispatch's answer to each dispatch:// reference, the
 # Dispatch API, the GitHub budget, GitHub's answer to git ls-remote of the private
-# repository rows read, the default branch and its fetch, the fetch of each
+# repository rows read, the default branch and its fetch, the fetch of each commit a
+# landed step merged in another pull request names, the fetch of each
 # pinned clone, and the run of coordination/count.py, the walker of the count, which
 # reads the feed of the count's window, so that a read inside it that fails is that feed
 # not answering. A source that does not answer is a mode that cannot run, naming the
@@ -295,7 +296,17 @@
 # in their files; the mode runs the committed command, reads each sentence in its file in
 # this checkout's own tree, ROOT, and fails a page whose Landed commit or Proven by command
 # differs from the committed entry for its title, and a sentence its file does not carry,
-# naming both. A step whose state is not_landed commits the R12 condition that stops it,
+# naming both. A landed step names either a commit of this pull request or the merge
+# commit on main of another pull request of this tree, as the architect's reading of
+# c-landed-steps records (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760):
+# an entry of the second kind carries merged_in, "<owner>/<repository>#<n>", and its
+# 40-hex commit, which the mode fetches from our_repository.url into a git directory of
+# its scratch through live_read, so a fetch that gets no answer is a mode that cannot run;
+# the commit's subject ends "(#<n>)", each published sentence stands in its file at that
+# commit, the page's Landed line names the commit and "(<owner>/<repository>#<n>)", and
+# the committed command passes with IOC_MERGED_REPO naming the fetched directory;
+# landed-no-refusal and landed-third-change read that commit's own diff beside this pull
+# request's. A step whose state is not_landed commits the R12 condition that stops it,
 # one of R12_CONDITIONS word for word, and its records, the dispatch:// references and pull
 # requests that record why; its page says Not landed with that condition word for word and
 # names each record, and each dispatch:// record resolves through live_read, since
@@ -306,16 +317,20 @@
 # takes a page's first line of a kind is fooled by a second, and a page carrying a state
 # whose title the list does not name fails too, so the list stays the committed set of the
 # pages that carry one; the list names each step once, and a title it names twice fails.
-# Every page whose Cost line gives its first step one engineer-day or less, read from the
-# figure before the first "engineer-day" on the line, in digits or in words (one, a, an,
-# half a, half an, two to ten), carries one of the three states, as R12 asks; a Cost line
-# that names engineer-days with a figure the gate cannot read fails, and so does a page
-# carrying its Cost on more than one line; the line that passes counts the pages at one
-# engineer-day or less and those above. The order of the two steps is judged only when
-# every step of the list is landed, on the one commit of this pull request that carries
-# each step's subject, and two commits of one subject fail, naming them; otherwise
-# landed-order passes naming the steps that are not landed, and that the order is not
-# judged for that reason.
+# Every page gives its first step one cost in engineer-days, on one Cost line, as R9 does:
+# --shape's page-parts fails a Cost line that names no engineer-days, and --landed reads
+# the cost by cost_read, the figure before the first "engineer-day" on the line, its two
+# words joined by a hyphen, an en dash, an em dash or spaces, in digits or in words (one,
+# a, an, half a, half an, two to ten). Every page at one engineer-day or less carries one
+# of the three states, as R12 asks; a Cost line with a figure the gate cannot read, or in
+# no engineer-days, fails, and so does a page carrying its Cost on more than one line or
+# none; the line that passes counts the pages at one engineer-day or less and those above.
+# The order of the two steps is judged only when every step of the list is landed, on the
+# one commit of this pull request that carries each step's subject, and two commits of one
+# subject fail, naming them; steps merged in another pull request are judged by their
+# commits, in the list's order: one commit holds the order, since a commit is its own
+# ancestor, and two are held to ancestry on main as fetched; otherwise landed-order passes
+# naming the steps that are not landed, and that the order is not judged for that reason.
 #
 # --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
 # it classifies the command of every row of claims.jsonl, prints each entry with the
@@ -631,7 +646,7 @@ count-class|replay|the count classes are the three the specification names, in c
 count-denominator|replay|every class of the count carries its denominator, and the count coordination/count.py prints again reads a whole number of records above zero|a class with no denominator
 count-zero-premise|replay|a class of zero over a denominator above zero is stated on the front page as a premise that failed|a class of zero with no failed premise
 page-count|shape|the judgement carries at least three and at most seven candidate pages|an eighth candidate page
-page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
+page-parts|shape|every candidate page carries each of its eleven parts on exactly one line, its Cost names engineer-days, and its landing component is Legion, Envoy or Dispatch|a page short of its reversal cost
 page-verdict|shape|every candidate page carries exactly one verdict word of vendor, depend, port and reject|a page with two verdict words
 verdict-commitment|shape|a depend names its upstream owner, a port names the change in our code, a reject names its reason|a reject with no reason
 fixed-page|shape|the three pages the specification fixes exist and each answers by name the design already written for it|a fixed page that answers no named design
@@ -645,9 +660,9 @@ citation-published|citations|every citation of a published document names a comm
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|every line of claims.jsonl is a row the one parse reads, and the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
 citation-figures|citations|every figure the judgement states in a sentence that cites a row of claims.jsonl, a date among them, is printed by the recorded output or the command of a row that sentence cites, unless its clause marks it as an estimate by our estimate|a figure no row its sentence cites prints
-landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, a Cost that names engineer-days gives a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
+landed-proof|landed|each step of sources.json's landed list is named once and has a page carrying the state the list commits for it, every page carrying a state is a step of the list, every page carries its Cost on one line, in engineer-days and with a figure the gate reads, in digits or in words, every page whose Cost gives its first step one engineer-day or less carries a state, and no page carries two states or a line of one twice: a landed page names the commit and the command sources.json commits for its title, the commit is one this pull request added and not one the base branch held, each sentence the step published stands in its file in this tree, and the committed command passes, or, for a step merged in another pull request of this tree, the page names that pull request beside its merge commit, fetched from our repository, whose subject ends with that pull request's number and which carries each sentence the step published; a page not landed names the R12 condition and every record sources.json commits for it, and each dispatch:// record resolves|a page whose proof command differs from the committed one
 landed-refutation|landed|a page that refutes a step carries a command with output, never a search that found nothing|a refutation that rests on a search alone
-landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
+landed-order|landed|when every step of sources.json's landed list is landed, one commit of this pull request carries the subject of each of the two steps, and the commit of the shortfall rows is an ancestor of the commit of the combining rule, or the steps merged in another pull request land in one commit or in commits each an ancestor of the next on main; otherwise the order is not judged, and the line names the steps not landed|the two commits in the other order
 landed-no-refusal|landed|no landed step's diff reaches a refusal path of the daemon or of Dispatch, and none adds a refusal constant|a landed step that touches a refusal path
 landed-third-change|landed|the third change, a refusal of a reviewer completion with no pair result, is not landed in any form|the third change landed as prose in a skill
 published-tree|published|the default branch carries the evidence directory, the committed transcript, this script and every file a page links to|-
@@ -716,7 +731,7 @@ citations|tool|python3|runs citations.py, the one extraction rule|apt-get instal
 citations|tool|curl|reads each published page's live address|apt-get install curl
 citations|tool|dispatch|resolves each dispatch:// reference and reads the judgement|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 citations|clone|IOC_CLONES|the mode clones each repository a project-code row cites under it|export IOC_CLONES=<a directory this user can write>, or leave it unset for $TMPDIR/ioc-clones
-landed|tool|git|reads the commits of this pull request|apt-get install git
+landed|tool|git|reads the commits of this pull request, and fetches the commit of each step merged in another pull request from our repository|apt-get install git
 landed|tool|jq|reads the landed list of sources.json|apt-get install jq
 landed|tool|dispatch|reads the judgement and resolves the dispatch:// records of each step not landed|the dispatch command of a Legion pod, /opt/legion/pi-envoy/bin/dispatch on its PATH
 landed|tool|bun|runs the committed proof of a landed step, bun test in packages/pi-legion|curl -fsSL https://bun.sh/install | bash -s bun-v1.4.4
@@ -4786,6 +4801,53 @@ page_blocks() {
     judgement_text | awk '/^### /{if(n)printf "\f"; n=1} n{print} END{if(n)printf "\f"}'
 }
 
+# cost_read; reads one candidate page on stdin and prints the cost of its first step from
+# its Cost line, the one reader --shape and --landed both read a Cost by, as one line:
+#   low<TAB><figure>     one engineer-day or less, as "1 engineer-day" or "half an engineer-day"
+#   high<TAB><figure>    more than one engineer-day
+#   unread<TAB><line>    the line names engineer-days with a figure this reader cannot read
+#   none<TAB><line>      the line names no engineer-days, as "about half a day" or "4 hours"
+# and nothing for a page with no Cost line. A caller holds the page to one Cost line first,
+# and this reads the first. R9 gives a page "the cost in engineer-days", so the unit is
+# "engineer-day" or "engineer-days", its two words joined by a hyphen, an en dash, an em
+# dash or spaces, in any case, and the cost is the figure before its first occurrence on
+# the line, the word that stands just before it: in digits, as "1 engineer-day", "about 1
+# engineer-day, by our estimate" or "about 2 engineer-days", or in words, one engineer-day
+# or less as "one", "a" or "an", or "half a" and "half an", and above one as "two" to
+# "ten". Unlike citation-figures, which reads no number word because a row prints digits
+# and a word names no spelling to look for in its output, this reader reads them: the Cost
+# line is the page's own estimate, which no row prints, and R12's test of one engineer-day
+# reads it, so a figure written in words is the same cost and a reader of digits alone
+# would pass "about one engineer-day" as no cost. Any other word before the unit, as in "a
+# few engineer-days", "eleven engineer-days" or "the engineer-days a converter took", is a
+# figure this reader cannot read, and the caller fails it rather than count it as no cost.
+cost_read() {
+    awk '
+        /\*\*Cost:\*\*/ {
+            said = $0
+            sub(/^.*\*\*Cost:\*\*[ \t]*/, "", said)
+            line = said
+            gsub("\342\200\223|\342\200\224", "-", line)
+            line = tolower(line)
+            if (!match(line, /engineer(-|[ \t]+)days?/)) { print "none\t" substr(said, 1, 240); exit }
+            unit = substr(line, RSTART, RLENGTH)
+            figure = substr(line, 1, RSTART - 1)
+            gsub(/[^a-z0-9.]+/, " ", figure)
+            sub(/^ +/, "", figure)
+            sub(/[ .]+$/, "", figure)
+            n = split(figure, word, / +/)
+            last = (n > 0) ? word[n] : ""
+            before = (n > 1) ? word[n - 1] : ""
+            if (last ~ /^[0-9]+(\.[0-9]+)?$/) value = last + 0
+            else if ((last == "a" || last == "an") && before == "half") { value = 0.5; last = "half " last }
+            else if (last == "one" || last == "a" || last == "an") value = 1
+            else if (last != "" && index(" two three four five six seven eight nine ten ", " " last " ")) value = 2
+            else { print "unread\t" substr(said, 1, 240); exit }
+            print ((value <= 1) ? "low" : "high") "\t" last " " unit
+            exit
+        }'
+}
+
 mode_shape() {
     local text
     judgement_load
@@ -4810,7 +4872,7 @@ mode_shape() {
     [ "$missing" -eq 0 ] && pass front-page "the front page carries the ranking, the one thing to do first, the paragraph on where the two accounts differ, and what was not read"
 
     local parts=("**Question:**" "**Proposal:**" "**Verdict:**" "**Landing component:**" "**Cost:**" "**Deletes or replaces:**" "**Cost of reversing it:**" "**Default if nobody answers:**" "**Owner:**" "**Node model:**" "**Test:**")
-    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict verdicts landing count read_pages=0
+    local bad_parts=0 bad_verdict=0 bad_commitment=0 page title verdict verdicts landing count cost read_pages=0
     while IFS= read -r -d $'\f' page; do
         read_pages=$((read_pages + 1))
         title="$(printf '%s\n' "$page" | head -1 | sed 's/^### //')"
@@ -4828,6 +4890,18 @@ mode_shape() {
                 fail page-parts "the page '$title' carries $part on $count lines, and R9 gives a page each of its fields once"
             fi
         done
+        # R9 gives a page "the cost in engineer-days", so a page's one Cost line names
+        # engineer-days, as cost_read reads the unit; a Cost line that names none, as "about
+        # half a day" or "about 4 hours", fails, naming the page and the line, since its cost
+        # is no cost R12's test of one engineer-day can read. A page with no Cost line, or two,
+        # fails above.
+        if [ "$(printf '%s\n' "$page" | grep -cF -- '**Cost:**')" -eq 1 ]; then
+            cost="$(printf '%s\n' "$page" | cost_read)"
+            if [ "${cost%%$'\t'*}" = none ]; then
+                bad_parts=$((bad_parts + 1))
+                fail page-parts "the page '$title' gives its cost in no engineer-days, '${cost#*$'\t'}' on its Cost line, and R9 gives a page its cost in engineer-days"
+            fi
+        fi
         # R9 names the landing component as Legion, Envoy or Dispatch, so the value of every
         # line that carries the field, after its label and with the whitespace around it and
         # a trailing full stop trimmed, is exactly one of the three; a page with no such line
@@ -4894,7 +4968,7 @@ mode_shape() {
         fail page-verdict "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so its verdicts are not judged"
         fail verdict-commitment "the judgement carries $read_pages candidate pages, fewer than the floor of $PAGE_FLOOR, so what its verdicts commit us to is not judged"
     fi
-    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, and its landing component is Legion, Envoy or Dispatch"
+    [ "$bad_parts" -eq 0 ] && pass page-parts "each of the $read_pages candidate pages carries each of its eleven parts on exactly one line, its cost in engineer-days, and its landing component is Legion, Envoy or Dispatch"
     [ "$bad_verdict" -eq 0 ] && pass page-verdict "each of the $read_pages candidate pages carries exactly one verdict word"
     [ "$bad_commitment" -eq 0 ] && pass verdict-commitment "the verdict of each of the $read_pages candidate pages names what it commits us to"
 
@@ -5736,11 +5810,36 @@ landed_state_words() {
     esac
 }
 
+# landed_merged_commits; the commits of the landed steps another pull request of this tree
+# made and main merged, the entries of sources.json's landed list that carry merged_in, one
+# whole commit id per line, each once. An entry whose commit is no whole commit id is not
+# printed, and mode_landed fails it by name.
+landed_merged_commits() {
+    jq -r '.landed // [] | .[] | select(.state == "landed" and (.merged_in // "") != "") | .commit // ""' "$EVIDENCE/sources.json" 2>/dev/null |
+        grep -xE '[0-9a-f]{40}' | sort -u
+}
+
+# merged_diff <git diff arguments>; the diff of each commit landed_merged_commits prints
+# against its first parent, read in IOC_MERGED_REPO, the scratch repository mode_landed
+# fetched them into, so landed-no-refusal and landed-third-change read the steps another
+# pull request made as they read this pull request's own. It returns 1, printing nothing,
+# when a commit's parent is not there to diff against.
+merged_diff() {
+    local merged
+    for merged in $(landed_merged_commits); do
+        git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$merged^{commit}" >/dev/null 2>&1 &&
+            git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$merged^^{commit}" >/dev/null 2>&1 || return 1
+    done
+    for merged in $(landed_merged_commits); do
+        git -C "$IOC_MERGED_REPO" diff "$merged^" "$merged" "$@"
+    done
+}
+
 mode_landed() {
-    local bad_proof=0 bad_refutation=0 refuted=0 page title commit command history entry want_commit want_command named
+    local bad_proof=0 bad_refutation=0 refuted=0 page title commit command history entry want_commit want_command named merged_in
     local read_pages=0 found="$RUN_SCRATCH/landed-titles" steps="$RUN_SCRATCH/landed-steps"
     local unresolved="$RUN_SCRATCH/landed-unresolved" record resolved=0 state carried
-    local n_landed n_proven n_refuted n_not n_cost line said condition cost cost_low=0 cost_high=0 cost_none=0
+    local n_landed n_proven n_refuted n_not n_cost line said condition cost cost_low=0 cost_high=0
     history="$(history_ref)"
     judgement_load
     : >"$found"
@@ -5756,6 +5855,27 @@ mode_landed() {
         live_read "Dispatch, the read of $record" "$RUN_SCRATCH/landed-record.out" dispatch_ref_read "$record" ||
             printf '%s\t%s\n' "$record" "$(cat "$RUN_SCRATCH/landed-record.out" "$RUN_SCRATCH/landed-record.out.err" | head -1 | head -c 160)" >>"$unresolved"
     done < <(jq -r 'select(.state == "not_landed") | .record // [] | if type == "array" then .[] else empty end | strings | select(startswith("dispatch://"))' "$steps" | sort -u)
+    # A landed step another pull request of this tree made and main merged names that merge
+    # commit (merged_in), which this pull request's history does not hold, as the
+    # architect's reading of c-landed-steps records
+    # (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760). Each such commit
+    # is fetched from our_repository.url of sources.json, as --published fetches the default
+    # branch, into a git directory of this run's scratch and never into this repository's
+    # own object store, through live_read, so a fetch that gets no answer is a mode that
+    # cannot run. One commit is fetched with its parent, for its own diff; two or more are
+    # fetched whole, so the order between them is read by ancestry. IOC_MERGED_REPO names the
+    # directory for the committed proof, which reads the commit there.
+    local merged_commits merged_remote merged_depth=(--depth 2)
+    export IOC_MERGED_REPO="$RUN_SCRATCH/merged-repo"
+    merged_commits="$(landed_merged_commits)"
+    if [ -n "$merged_commits" ]; then
+        merged_remote="$(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json")"
+        [ "$(printf '%s\n' "$merged_commits" | wc -l)" -gt 1 ] && merged_depth=()
+        git init --quiet "$IOC_MERGED_REPO" 2>/dev/null || cannot_run environment " --landed: git init of the scratch repository of the merged-in steps failed."
+        # shellcheck disable=SC2086
+        live_read "$merged_remote, the fetch of $(printf '%s\n' "$merged_commits" | paste -sd' ' -), the commit of a step merged in another pull request" \
+            "$RUN_SCRATCH/merged-fetch.log" git -C "$IOC_MERGED_REPO" fetch --quiet "${merged_depth[@]}" --no-tags "$merged_remote" $merged_commits || :
+    fi
     # The list names each step once: a page is held to the entry of its title, so a title the
     # list named twice would hold the page to the first entry jq finds and leave the other's
     # commit and proof unread.
@@ -5780,59 +5900,37 @@ mode_landed() {
         # page whose first step is one engineer-day or less to a state: landed, with its
         # commit and its proof, or not landed, with the condition of R12 that stops it and its
         # record; not made, with its refutation, refutes the step and states it too. The cost
-        # is the figure before the first "engineer-day" or "engineer-days" on the page's Cost
-        # line, the word that stands just before it, written in digits, as "1 engineer-day",
-        # "about 1 engineer-day, by our estimate" or "about 2 engineer-days", or in words: one
-        # engineer-day or less as "one", "a" or "an", or "half a" and "half an", and above one
-        # as "two" to "ten". Unlike citation-figures, which reads no number word because a row
-        # prints digits and a word names no spelling to look for in its output, this reader
-        # reads them: the Cost line is the page's own estimate, which no row prints, and R12's
-        # test of one engineer-day reads it, so a figure written in words is the same cost and
-        # a reader of digits alone would pass "about one engineer-day" as no cost. A Cost line
-        # that names engineer-days with a figure this reader cannot read, as "a few
-        # engineer-days", "eleven engineer-days" or "the engineer-days a converter took", fails,
-        # naming the page and the line, rather than counting as no cost; a Cost line that names
-        # no engineer-day at all, as "one commit", is no failure here and is counted apart. A
-        # page gives its first step one cost, on one Cost line, as page-parts of --shape holds
-        # every field once, so a page carrying the label on more than one line is a defect of
-        # the page and fails here too, naming it, and none of its lines is read as its cost.
+        # is the one cost_read reads from the page's one Cost line, in digits or in words. A
+        # Cost line that names engineer-days with a figure cost_read cannot read fails, naming
+        # the page and the line, rather than counting as no cost. Every page gives its first
+        # step one cost in engineer-days, as R9 does and page-parts of --shape holds, so a page
+        # that reaches --landed has one, and no page is counted as one with no cost: a page
+        # with no Cost line, with the label on more than one line, or with a Cost line that
+        # names no engineer-days fails here too, naming it, and none of its lines is read as
+        # its cost.
         n_cost="$(printf '%s\n' "$page" | grep -cF '**Cost:**')"
         if [ "$n_cost" -gt 1 ]; then
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the page '$title' carries its Cost on $n_cost lines, and a page gives its first step one cost, so none of them is read as its cost"
-            cost=two
+            cost=failed
+        elif [ "$n_cost" -eq 0 ]; then
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' carries no Cost line, and R9 gives a page the cost of its first step in engineer-days"
+            cost=failed
         else
-            cost="$(printf '%s\n' "$page" | awk '
-                /\*\*Cost:\*\*/ {
-                    said = $0
-                    sub(/^.*\*\*Cost:\*\*[ \t]*/, "", said)
-                    line = tolower(said)
-                    if (!match(line, /engineer[- ]days?/)) next
-                    unit = substr(line, RSTART, RLENGTH)
-                    figure = substr(line, 1, RSTART - 1)
-                    gsub(/[^a-z0-9.]+/, " ", figure)
-                    sub(/^ +/, "", figure)
-                    sub(/[ .]+$/, "", figure)
-                    n = split(figure, word, / +/)
-                    last = (n > 0) ? word[n] : ""
-                    before = (n > 1) ? word[n - 1] : ""
-                    if (last ~ /^[0-9]+(\.[0-9]+)?$/) value = last + 0
-                    else if ((last == "a" || last == "an") && before == "half") { value = 0.5; last = "half " last }
-                    else if (last == "one" || last == "a" || last == "an") value = 1
-                    else if (last != "" && index(" two three four five six seven eight nine ten ", " " last " ")) value = 2
-                    else { print "unread\t" substr(said, 1, 240); exit }
-                    print ((value <= 1) ? "low" : "high") "\t" last " " unit
-                }')"
+            cost="$(printf '%s\n' "$page" | cost_read)"
         fi
         case "${cost%%$'\t'*}" in
         low) cost_low=$((cost_low + 1)) ;;
         high) cost_high=$((cost_high + 1)) ;;
-        two) ;;
         unread)
             bad_proof=$((bad_proof + 1))
             fail landed-proof "the page '$title' gives its first step a cost whose figure this gate cannot read, '${cost#*$'\t'}' on its Cost line: a cost is written in digits, or as one, a, an, half a, half an, or two to ten, before engineer-day"
             ;;
-        *) cost_none=$((cost_none + 1)) ;;
+        none)
+            bad_proof=$((bad_proof + 1))
+            fail landed-proof "the page '$title' gives its first step its cost in no engineer-days, '${cost#*$'\t'}' on its Cost line, and R9 gives a page its cost in engineer-days, which R12's test of one engineer-day reads"
+            ;;
         esac
         if [ $((n_landed + n_proven + n_refuted + n_not)) -eq 0 ]; then
             if [ "${cost%%$'\t'*}" = low ]; then
@@ -5912,22 +6010,39 @@ mode_landed() {
         fi
         want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
         want_command="$(printf '%s' "$entry" | jq -r '.command // ""')"
+        merged_in="$(printf '%s' "$entry" | jq -r '.merged_in // ""')"
         commit="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Landed:\*\*[[:space:]]*[0-9a-f]{7,40}' | grep -oE '[0-9a-f]{7,40}')"
         # The page may write the commit abbreviated; it names the committed one when git
-        # reads the two as the same commit.
-        named="$([ -n "$commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
-        if [ -z "$named" ] || [ "$named" != "$(git -C "$ROOT" rev-parse --verify --quiet "$want_commit^{commit}" 2>/dev/null)" ]; then
-            bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit' as the commit of that step"
-            continue
-        fi
-        # A commit of this pull request is one this branch added (pr_commits): a commit of
-        # the base branch, whether before the fork or brought in by a forward merge, is on
-        # main and lands nothing here, so naming one is no proof of a step.
-        if ! pr_commits | grep -qx "$named"; then
-            bad_proof=$((bad_proof + 1))
-            fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: it is not on the pull request's own line of $history, past $(our_commit) and the base commits its forward merges brought in"
-            continue
+        # reads the two as the same commit: in this repository for a commit of this pull
+        # request, and in IOC_MERGED_REPO for one another pull request merged.
+        if [ -n "$merged_in" ]; then
+            named="$([ -n "$commit" ] && git -C "$IOC_MERGED_REPO" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
+            if [ -z "$named" ] || [ "$named" != "$want_commit" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit', which $merged_in merged, as the commit of that step"
+                continue
+            fi
+            # The page says which pull request made the step, beside its commit.
+            if ! printf '%s\n' "$page" | grep -m1 -E '\*\*Landed:\*\*' | grep -qF -- "($merged_in)"; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit' and not '($merged_in)', the pull request sources.json says merged it, on its Landed line"
+                continue
+            fi
+        else
+            named="$([ -n "$commit" ] && git -C "$ROOT" rev-parse --verify --quiet "$commit^{commit}" 2>/dev/null)"
+            if [ -z "$named" ] || [ "$named" != "$(git -C "$ROOT" rev-parse --verify --quiet "$want_commit^{commit}" 2>/dev/null)" ]; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', and sources.json commits '$want_commit' as the commit of that step"
+                continue
+            fi
+            # A commit of this pull request is one this branch added (pr_commits): a commit
+            # of the base branch, whether before the fork or brought in by a forward merge, is
+            # on main and lands nothing here, so naming one is no proof of a step.
+            if ! pr_commits | grep -qx "$named"; then
+                bad_proof=$((bad_proof + 1))
+                fail landed-proof "the page '$title' names the commit '$commit', which this pull request did not add: it is not on the pull request's own line of $history, past $(our_commit) and the base commits its forward merges brought in"
+                continue
+            fi
         fi
         command="$(printf '%s\n' "$page" | grep -m1 -oE '\*\*Proven by:\*\*[[:space:]]*`[^`]+`' | sed 's/.*`\(.*\)`/\1/')"
         if [ -z "$want_command" ] || [ "$command" != "$want_command" ]; then
@@ -5945,15 +6060,20 @@ mode_landed() {
     # not_landed or refuted, the last a page that says Landed: not made with its Refuted by
     # line, so a judgement that lost a Landed or Not landed line, or a page, or every page,
     # is no pass, and neither is a page that says Landed for a step the list says is not. A
-    # list with no step is no pass either. A landed step stands in this tree: each sentence
-    # it published is in its file in the checkout, ROOT, so a change the tree no longer
-    # carries is no landed step, whatever its commit and its proof say.
-    local steps_read=0 steps_landed=0 steps_not=0 steps_refuted=0 not_landed="" page_state path sentence published
+    # list with no step is no pass either. A landed step stands where it was made: each
+    # sentence a step of this pull request published is in its file in the checkout, ROOT,
+    # so a change the tree no longer carries is no landed step, whatever its commit and its
+    # proof say; and a step another pull request of this tree made (merged_in) stands in its
+    # file at the merge commit sources.json commits, read in IOC_MERGED_REPO, whose subject
+    # ends "(#<n>)" with the number merged_in names, a fixed fact of that commit.
+    local steps_read=0 steps_landed=0 steps_merged=0 steps_not=0 steps_refuted=0 not_landed="" page_state path sentence published subject merged_prs=""
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
         steps_read=$((steps_read + 1))
         title="$(printf '%s' "$entry" | jq -r '.title // ""')"
         state="$(printf '%s' "$entry" | jq -r '.state // ""')"
+        merged_in="$(printf '%s' "$entry" | jq -r '.merged_in // ""')"
+        want_commit="$(printf '%s' "$entry" | jq -r '.commit // ""')"
         page_state=""
         while IFS=$'\t' read -r carried line; do
             [ "$line" = "$title" ] && page_state="$carried" && break
@@ -5965,12 +6085,34 @@ mode_landed() {
                 bad_proof=$((bad_proof + 1))
                 fail landed-proof "the step '$title', which sources.json's landed list commits, has no page of the judgement that carries its Landed line${page_state:+: $(landed_state_words "$page_state")}"
             }
+            if [ -n "$merged_in" ]; then
+                steps_merged=$((steps_merged + 1))
+                case " $merged_prs " in *" $merged_in "*) ;; *) merged_prs="${merged_prs:+$merged_prs }$merged_in" ;; esac
+                if ! [[ "$merged_in" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+$ ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' is merged in '$merged_in' in sources.json, which names no pull request as <owner>/<repository>#<number>"
+                elif ! [[ "$want_commit" =~ ^[0-9a-f]{40}$ ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title', merged in $merged_in, commits '$want_commit' in sources.json, which is no whole commit id"
+                elif ! subject="$(git -C "$IOC_MERGED_REPO" log -1 --format=%s "$want_commit" 2>/dev/null)" || [ -z "$subject" ]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' commits $want_commit, merged in $merged_in, and the fetch of $(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json") did not bring that commit"
+                elif [[ "$subject" != *"(#${merged_in##*#})" ]]; then
+                    bad_proof=$((bad_proof + 1))
+                    fail landed-proof "the landed step '$title' commits $want_commit, whose subject '$subject' does not end '(#${merged_in##*#})', and sources.json says $merged_in merged it"
+                fi
+            fi
             published=0
             while IFS=$'\t' read -r path sentence; do
                 published=$((published + 1))
                 if [ -z "$path" ] || [ -z "$sentence" ]; then
                     bad_proof=$((bad_proof + 1))
                     fail landed-proof "the landed step '$title' lists a published entry with no path or no sentence in sources.json"
+                elif [ -n "$merged_in" ]; then
+                    git -C "$IOC_MERGED_REPO" show "$want_commit:$path" 2>/dev/null | grep -qF -- "$sentence" || {
+                        bad_proof=$((bad_proof + 1))
+                        fail landed-proof "the landed step '$title' published '$sentence' in $path, and $path at $want_commit, which $merged_in merged, does not carry it, so the step is not in that commit"
+                    }
                 elif ! grep -qF -- "$sentence" "$ROOT/$path" 2>/dev/null; then
                     bad_proof=$((bad_proof + 1))
                     fail landed-proof "the landed step '$title' published '$sentence' in $path, and this tree's $path does not carry it, so the step is not in the tree"
@@ -5978,7 +6120,11 @@ mode_landed() {
             done < <(printf '%s' "$entry" | jq -r '.published // [] | if type == "array" then .[] else empty end | [(.path // ""), (.sentence // "")] | @tsv')
             [ "$published" -gt 0 ] || {
                 bad_proof=$((bad_proof + 1))
-                fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read in this tree"
+                if [ -n "$merged_in" ]; then
+                    fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read at its commit"
+                else
+                    fail landed-proof "the landed step '$title' lists no sentence it published in sources.json, so nothing of it is read in this tree"
+                fi
             }
             ;;
         not_landed)
@@ -6028,8 +6174,8 @@ mode_landed() {
         local verdict="the steps of sources.json's landed list, $steps_read in all, are $steps_landed landed and $steps_not not landed"
         [ "$steps_refuted" -gt 0 ] && verdict="$verdict, and $steps_refuted more not made"
         verdict="$verdict, each with a page that carries the state the list commits for it, and no page carries two states or a line of one twice; of the $read_pages candidate pages, $cost_low give their first step a cost of one engineer-day or less and each of them carries a state, and $cost_high a cost above one engineer-day"
-        [ "$cost_none" -gt 0 ] && verdict="$verdict, and $cost_none give their cost in no engineer-days on their Cost line"
-        [ "$steps_landed" -gt 0 ] && verdict="$verdict; each of the $steps_landed landed pages names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
+        [ "$((steps_landed - steps_merged))" -gt 0 ] && verdict="$verdict; each of the $((steps_landed - steps_merged)) pages landed in this pull request names the commit and the command sources.json commits for it, the commit is one this pull request added, each sentence its step published stands in its file in this tree, and the committed command passes"
+        [ "$steps_merged" -gt 0 ] && verdict="$verdict; each of the $steps_merged pages landed in another pull request of this tree, $merged_prs, names the commit and the pull request sources.json commits for it, the commit's subject ends with that pull request's number, each sentence its step published stands in its file at that commit, fetched from $(jq -r '.our_repository.url // ""' "$EVIDENCE/sources.json"), and the committed command passes with IOC_MERGED_REPO naming the fetched repository"
         [ "$steps_not" -gt 0 ] && verdict="$verdict; each of the $steps_not pages not landed names the condition and every record sources.json commits for it, and Dispatch resolves every dispatch:// record among them, $resolved distinct: $not_landed"
         pass landed-proof "$verdict"
     fi
@@ -6052,12 +6198,18 @@ landed_commit_of() {
 # reviewer's two graders, is between the steps of sources.json's landed list, and is judged
 # only when every one of them is landed: a step not landed has no commit in this tree to be
 # ordered, and the line that passes says which steps are not and that the order is not
-# judged for that reason. A list with no step holds no order and fails. Each step is one
-# commit of this pull request, found by its subject: when more than one commit carries the
+# judged for that reason. A list with no step holds no order and fails. A step of this pull
+# request is one commit of it, found by its subject: when more than one commit carries the
 # subject of a step, the order is not judged on one of them, and the assertion fails,
-# naming them.
+# naming them. Steps another pull request of this tree made (merged_in) are read by the
+# commits sources.json commits, in the list's order, which is R12's, the shortfall rows
+# first: steps that name one commit hold their order, since a commit is its own ancestor
+# (dispatch://INFRA-3134/comment/0c3c9fb7-7127-43c6-a37d-1b52be4e9760), and different
+# commits are held to ancestry on main as fetched into IOC_MERGED_REPO, each an ancestor of
+# the next. A list that lands some steps here and some merged in fails, since no ancestry
+# is read between a commit of this pull request, which main does not hold, and one on main.
 landed_order() {
-    local rows rule not_landed which phrase commits many=0
+    local rows rule not_landed which phrase commits many=0 all merged chain=() i
     if [ "$(jq '.landed // [] | length' "$EVIDENCE/sources.json" 2>/dev/null || printf 0)" -eq 0 ]; then
         fail landed-order "sources.json's landed list names no step, so no step of the order is held to a commit"
         return
@@ -6065,6 +6217,27 @@ landed_order() {
     not_landed="$(jq -r --arg q "'" '[.landed[] | select(.state != "landed") | $q + (.title // "") + $q] | join(", ")' "$EVIDENCE/sources.json")"
     if [ -n "$not_landed" ]; then
         pass landed-order "the order of the shortfall rows' commit and the combining rule's is not judged, because it is judged only when every step of sources.json's landed list is landed, and these are not: $not_landed"
+        return
+    fi
+    all="$(jq '.landed | length' "$EVIDENCE/sources.json")"
+    merged="$(jq '[.landed[] | select((.merged_in // "") != "")] | length' "$EVIDENCE/sources.json")"
+    if [ "$merged" -gt 0 ]; then
+        if [ "$merged" -ne "$all" ]; then
+            fail landed-order "of the $all landed steps of sources.json's landed list, $merged are merged in another pull request and $((all - merged)) landed in this one, and no ancestry is read between a commit of this pull request, which main does not hold, and one on main"
+            return
+        fi
+        mapfile -t chain < <(jq -r '.landed[] | .commit // ""' "$EVIDENCE/sources.json")
+        if [ "$(printf '%s\n' "${chain[@]}" | sort -u | wc -l)" -eq 1 ]; then
+            pass landed-order "the $all steps of sources.json's landed list land in one commit, ${chain[0]}, merged in $(jq -r '[.landed[].merged_in] | unique | join(", ")' "$EVIDENCE/sources.json"), and a commit is its own ancestor, so their order holds"
+            return
+        fi
+        for ((i = 0; i + 1 < ${#chain[@]}; i++)); do
+            git -C "$IOC_MERGED_REPO" merge-base --is-ancestor "${chain[$i]}" "${chain[$((i + 1))]}" 2>/dev/null || {
+                fail landed-order "the commit ${chain[$i]} of step $((i + 1)) of sources.json's landed list is not an ancestor of ${chain[$((i + 1))]}, the commit of step $((i + 2)), on main as fetched, and the list names the steps in R12's order"
+                return
+            }
+        done
+        pass landed-order "the commits of the $all steps of sources.json's landed list, each merged in another pull request, stand on main as fetched each an ancestor of the next, in the list's order, the shortfall rows first"
         return
     fi
     rows="$(landed_commit_of 'two graders are recorded as two rows')"
@@ -6091,15 +6264,27 @@ landed_order() {
     fi
 }
 
+# landed_no_refusal and landed_third_change read this pull request's own diff, against the
+# base its last forward merge brought in, and the diff of each commit another pull request
+# of this tree merged, against its parent (merged_diff), so a step made there is read as one
+# made here.
 landed_no_refusal() {
-    local touched
-    touched="$(git -C "$ROOT" diff --name-only "$(pr_base)" "$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)"
+    local touched merged
+    merged="$(merged_diff --name-only -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)" || {
+        fail landed-no-refusal "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so what it touches is not read"
+        return
+    }
+    touched="$(git -C "$ROOT" diff --name-only "$(pr_base)" "$(history_ref)" -- packages/daemon/internal/api packages/daemon/internal/workflow packages/envoy/internal/dispatch/api)${merged:+$'\n'$merged}"
     if [ -n "$touched" ]; then
         fail landed-no-refusal "a landed step touches a refusal path: $(printf '%s' "$touched" | tr '\n' ' ')"
         return
     fi
     local added
-    added="$(git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- '*.go' '*.ts' '*.sql' | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
+    merged="$(merged_diff -- '*.go' '*.ts' '*.sql')" || {
+        fail landed-no-refusal "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so what it adds is not read"
+        return
+    }
+    added="$({ git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- '*.go' '*.ts' '*.sql'; printf '%s\n' "$merged"; } | grep -E '^\+' | grep -cE '"[A-Z][A-Z_]{4,}"' || true)"
     if [ "${added:-0}" -eq 0 ]; then
         pass landed-no-refusal "no landed step touches a refusal path of the daemon or of Dispatch, and none adds a refusal constant"
     else
@@ -6111,13 +6296,17 @@ landed_third_change() {
     # The third change the earlier reading proposed is a page with a cost and a default,
     # and the gate reads it by name rather than by the diff rule, because it could be
     # landed as prose in a skill and the diff rule alone would pass it.
-    local hits
-    hits="$(git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- skills packages/daemon/internal/prompts |
+    local hits merged
+    merged="$(merged_diff -- skills packages/daemon/internal/prompts)" || {
+        fail landed-third-change "the diff of a merged-in step's commit against its parent is not there to read in $IOC_MERGED_REPO, so whether it lands the third change is not read"
+        return
+    }
+    hits="$({ git -C "$ROOT" diff "$(pr_base)" "$(history_ref)" -- skills packages/daemon/internal/prompts; printf '%s\n' "$merged"; } |
         grep -E '^\+' | grep -ciE 'refus(e|ed|es|al).{0,80}(reviewer|review) completion|completion .{0,40}no pair result|REVIEWER_PAIR_REQUIRED' || true)"
     if [ "${hits:-0}" -eq 0 ]; then
-        pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form"
+        pass landed-third-change "the third change, a refusal of a reviewer completion with no pair result, is landed in no form, in this pull request or in a commit another pull request of this tree merged"
     else
-        fail landed-third-change "the third change is landed in this tree in $hits place(s), and it is a page with a cost and a default"
+        fail landed-third-change "the third change is landed in this tree or in a merged-in step's commit in $hits place(s), and it is a page with a cost and a default"
     fi
 }
 
