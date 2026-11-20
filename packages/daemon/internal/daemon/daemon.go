@@ -236,6 +236,10 @@ type overrides struct {
 	// the decision would hold the machine's lock, which an agent's request waits on at its grant
 	// check (supervise.Machine.Claim).
 	beforeDecision func(claim.Token, supervise.Event)
+	// afterRefreshAdmit runs in refreshStalePlugins between the Admit and the supervisor.post for
+	// each admitted claim, naming the claim and its credit, with no lock held. nil, in production,
+	// is nothing. It is the seam a test removes a claim at to prove the post-drop release.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -908,6 +912,8 @@ type plan struct {
 	streamWaitBegan func(claim.Token)
 	// beforeDecision is overrides.beforeDecision; nil runs nothing.
 	beforeDecision func(claim.Token, supervise.Event)
+	// afterRefreshAdmit is overrides.afterRefreshAdmit; nil runs nothing.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1047,7 +1053,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
+		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, afterRefreshAdmit: o.afterRefreshAdmit,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1381,6 +1387,9 @@ type supervision struct {
 	// hand gives it supervise.NewRefreshGate(0), the gate of a daemon that paces nothing, which
 	// grants every refresh.
 	refreshGate supervise.RefreshAdmitter
+	// afterRefreshAdmit is the test seam between Admit and supervisor.post in
+	// refreshStalePlugins, as overrides.afterRefreshAdmit describes. No production path sets it.
+	afterRefreshAdmit func(claim.Token, *supervise.RefreshCredit)
 	// pauses is the project's pause (projectPause), nil without a workflow: the boot loads its
 	// flag before it restores any claim, and asks the stop of every claim it finds live while the
 	// project is paused (start).
@@ -1694,7 +1703,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate, pauses: pauses,
-		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
+		afterRefreshAdmit: p.afterRefreshAdmit,
+		cancel:            cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
@@ -2206,6 +2216,9 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 		if credit == nil {
 			refused++
 			continue
+		}
+		if s.afterRefreshAdmit != nil {
+			s.afterRefreshAdmit(c.Token, credit)
 		}
 		if !s.supervisor.post(c.Token, supervise.StalePlugin{Claim: c.Token, Trigger: trigger, Credit: credit}) {
 			credit.Release()

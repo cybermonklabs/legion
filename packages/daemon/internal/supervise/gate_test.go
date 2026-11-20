@@ -254,3 +254,31 @@ func TestACreditReleasedTwiceAndPublishedAfterReleaseChangesNothingMore(t *testi
 		t.Fatalf("got %d free, want %d", got, gateRate)
 	}
 }
+
+// A credit that the caller releases because the post was dropped (the claim was removed between
+// Admit and post) lowers the floor. Without the caller's release, the credit stays on the floor
+// forever and the gate never empties, which is the production defect this PR fixes.
+func TestADroppedPostsCreditIsReleasedByTheCaller(t *testing.T) {
+	g := NewRefreshGate(gateRate)
+	credits := make([]*RefreshCredit, gateRate)
+	for i := range gateRate {
+		credits[i] = admit(t, g)
+	}
+	// One claim is removed between Admit and post. The caller releases its credit.
+	dropped := credits[3]
+	dropped.Release()
+	// The other 7 are posted and their wakes are published.
+	for i, c := range credits {
+		if i == 3 {
+			continue
+		}
+		c.Publish()
+	}
+	g.Correct(7) // 7 wakes published, 0 unpublished: held = 7
+	if g.held != 7 {
+		t.Fatalf("held %d after the dropped post's release and 7 publishes, want 7", g.held)
+	}
+	if got := admissions(t, g, 2); got != 1 {
+		t.Fatalf("got %d free after a dropped post, want 1: the released credit freed one slot", got)
+	}
+}
