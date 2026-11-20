@@ -234,8 +234,8 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		marker := writePendingMarker(t, r.keyDir(), 0)
 		fixture := t.TempDir()
 		writeSessionFiles(t, fixture, "launcher-enrollment")
-		// A day, so that nothing but the launcher's two files ends the wait; the launcher writes
-		// each once the call says it waits for it (playTheLauncher).
+		// A day, so that the bound cannot end the wait within the shared test wait; the launcher
+		// writes each file once the call says it waits for it (playTheLauncher).
 		r.env["AGENT_SECRETS_ENROLL_WAIT"] = "24h"
 
 		grantID := uuid.NewString()

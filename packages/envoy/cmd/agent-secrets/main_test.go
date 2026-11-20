@@ -15,7 +15,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -742,45 +741,27 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 				cmd := exec.Command(binary, name, "--wait", "200ms", "--", "sh", "-c", "echo ran-the-child")
 				cmd.Env = append(os.Environ(), "AGENT_SECRETS_URL="+broker.URL, "AGENT_SECRETS_KEY_DIR="+keyDir,
 					"AGENT_SECRETS_APPROVE_URL="+approveURL)
-				var stdout strings.Builder
-				cmd.Stdout = &stdout
-				pipe, err := cmd.StderrPipe()
-				if err != nil {
-					t.Fatalf("stderr pipe: %v", err)
-				}
-				if err := cmd.Start(); err != nil {
-					t.Fatalf("start agent-secrets: %v", err)
-				}
-				stderr := bufio.NewReader(pipe)
-				lines := make(chan string, 1)
-				go func() {
-					first, _ := stderr.ReadString('\n')
-					second, _ := stderr.ReadString('\n')
-					lines <- first + second
-				}()
+				c := startCall(t, cmd)
 				want := "agent-secrets: request " + requestID + " to " + fakeSourceText(broker) + " is waiting for approval; waiting up to 200ms\n" +
 					"agent-secrets: " + sentence + "\n"
-				select {
-				case got := <-lines:
-					if got != want {
-						t.Errorf("stderr began %q, want %q", got, want)
-					}
-				case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
-					release()
-					t.Errorf("stderr said nothing while the status poll was held, and %q once it returned; want %q before the wait",
-						<-lines, want)
+				// The first two lines arrive while the poll is held, or never: the shared wait only
+				// guards against a call that says nothing and does not end.
+				testwait.Eventually(t, "the call's first two stderr lines while the status poll was held", func() bool {
+					return strings.Count(c.stderr.String(), "\n") >= 2 || c.ended()
+				})
+				if got := c.stderr.String(); !strings.HasPrefix(got, want) {
+					t.Errorf("stderr while the status poll was held began %q, want %q before the wait", got, want)
 				}
 				release()
-				rest, _ := io.ReadAll(stderr)
-				err = cmd.Wait()
-				var exitErr *exec.ExitError
-				if !errors.As(err, &exitErr) || exitErr.ExitCode() != exitPending {
-					t.Fatalf("exit = %v, want %d (pending): stdout=%q stderr=%q", err, exitPending, stdout.String(), rest)
+				exit := c.end(t)
+				stdout, rest := c.stdout.String(), strings.TrimPrefix(c.stderr.String(), want)
+				if exit != exitPending {
+					t.Fatalf("exit = %d, want %d (pending): stdout=%q stderr=%q", exit, exitPending, stdout, rest)
 				}
-				if strings.Contains(stdout.String(), "ran-the-child") {
-					t.Fatalf("child ran while request was still pending: stdout=%q", stdout.String())
+				if strings.Contains(stdout, "ran-the-child") {
+					t.Fatalf("child ran while request was still pending: stdout=%q", stdout)
 				}
-				if !strings.Contains(string(rest), "agent-secrets status "+requestID) {
+				if !strings.Contains(rest, "agent-secrets status "+requestID) {
 					t.Fatalf("stderr = %q, want the request id and the status command to check it", rest)
 				}
 			})
@@ -1308,8 +1289,10 @@ const enrollmentWaitLine = "agent-secrets: still waiting for the launcher's enro
 // for key.pem and enrollment, then fixture's enrollment once the call says it still waits for
 // that, and then it removes the marker, as the launcher does. Each file is written whole
 // (writeFileAtomic), as the launcher writes it, so the call never reads one half-written. It fails
-// the test when the call ends before either line, or had ended by the time the enrollment was
-// there.
+// the test when the call ends before either line, or has ended by the time the launcher is about
+// to write the enrollment. Once the enrollment is written the call may end at any moment, which is
+// what it waited for: a call still running just before that write and exiting 0 afterwards ended
+// after the write, since it cannot sign without the enrollment.
 func playTheLauncher(t *testing.T, c *call, keyDir, fixture, wait string) {
 	t.Helper()
 	marker := filepath.Join(keyDir, pendingMarker)
@@ -1326,10 +1309,10 @@ func playTheLauncher(t *testing.T, c *call, keyDir, fixture, wait string) {
 	c.says(t, launcherWaitLine(marker, wait), "before it waited for the launcher")
 	copyFile(keyFile)
 	c.says(t, enrollmentWaitLine, "once key.pem was there and before the launcher wrote the enrollment")
-	copyFile(enrollmentFile)
 	if c.ended() {
-		t.Fatalf("the call had ended (exit %d) by the time the launcher wrote the enrollment: stderr=%q", c.cmd.ProcessState.ExitCode(), c.stderr.String())
+		t.Fatalf("the call ended (exit %d) while it waited for the enrollment, before the launcher wrote it: stderr=%q", c.cmd.ProcessState.ExitCode(), c.stderr.String())
 	}
+	copyFile(enrollmentFile)
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
@@ -1341,8 +1324,9 @@ func playTheLauncher(t *testing.T, c *call, keyDir, fixture, wait string) {
 // and enrollment to appear instead of failing at once. The row decides by the order of events,
 // never by a span: the launcher writes each file only once the call says it waits for it
 // (playTheLauncher), and the call must exit 0 after the enrollment is there. Its bound is a day,
-// so nothing but the two files can end its wait, and a call that does not wait for the marker
-// ends before it says so, which fails the row.
+// so the bound cannot end the wait within the shared test wait; the marker, fresh for 160 s and
+// removed only after the enrollment is written, cannot either. A call that does not wait for the
+// marker ends before it says so, which fails the row.
 func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
@@ -1390,8 +1374,8 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 // empty key dir (a machine session's, a pod's), a marker older than the launcher's own setup bound
 // (a launcher killed outright), and a failed enrollment the launcher has already reported
 // (enrollment.error, marker removed) all fail at once, as they did before the wait existed. Each
-// call is given a day to wait in, so a call that waited at all would never come back and the
-// shared wait would fail naming it, and none may say that it waits.
+// call is given a day to wait in, so a call that waited at all would not come back within the
+// shared wait, which would fail naming it, and none may say that it waits.
 func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 	binary := buildAgentSecrets(t)
 	broker, _ := fakeBroker(t)
