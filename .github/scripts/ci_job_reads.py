@@ -638,9 +638,17 @@ RULES = {
     # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
-        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
+        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../.."),
         ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
+         "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/walkthrough.md",
+         "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../.."),
+        ("docs/site/src/content/docs/legion/using-legion.md",
+         "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../.."),
+        ("scripts/e2e/stage3-devbox-workflow.sh",
+         "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../.."),
+        ("scripts/e2e/stage4b-sandbox-tree.sh",
+         "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:51,281 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
