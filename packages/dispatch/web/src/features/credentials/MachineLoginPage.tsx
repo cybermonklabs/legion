@@ -65,7 +65,7 @@ function MachineLoginDecision({
  * deadline passed before anybody decided it reads as expired, before the broker's sweep ends it
  * and after, and the broker refuses every decision of it: it shows that in one line, with no
  * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
- * their own machines' and every service's.
+ * their own machines', their own pods' and every service's.
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
