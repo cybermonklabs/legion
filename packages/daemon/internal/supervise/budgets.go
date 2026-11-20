@@ -68,11 +68,11 @@ const (
 	CauseStalePlugin FailureCause = "stale_plugin"
 	// CausePromptRetiresExhausted: the prompt retirements ran out (chargePrompt).
 	CausePromptRetiresExhausted FailureCause = "prompt_retires_exhausted"
-	// CauseProviderError: a provider error that cannot clear ended the claim's turn
-	// (providerErrored), or the claim's producer reported a run of refused turns that reached the
-	// launch failure limit (turnOutcome). Both are the provider refusing to run this session's
-	// turns, which is the one thing a reader of the word has to act on, and the sentence beside
-	// it says which of the two it was.
+	// CauseProviderError: a provider error that cannot clear ended the claim's turn, as the HTTP
+	// status on the turn's prompt result (providerErrored) or on the producer's report of the turn
+	// (turnOutcome) says; both decide by one rule (holdOnProviderError). It is the provider refusing
+	// to run this session's turns, which is the one thing a reader of the word has to act on, and
+	// the sentence beside it names the status.
 	CauseProviderError FailureCause = "provider_error"
 	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
 	// it; the migration that adds the column writes it for every stored failure whose sentence

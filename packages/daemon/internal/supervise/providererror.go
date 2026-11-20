@@ -55,28 +55,57 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The decision is made here, from this prompt's own result and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
-// answered either holds the issue (holdsTheIssue) or the task goes to the same session again on
-// the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone decides.
+// answered either holds the issue (holdOnProviderError) or the task goes to the same session
+// again on the ladder. Oh My Pi's Retryable flag is logged and read by nothing: the status alone
+// decides.
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// behind and in the controller's notice. The notice goes when this result's own count takes the
+// run to six, or when the refused report left to this result did (Machine.awaitingRefusal), so it
+// goes once on the turn that takes the run to six whichever of the two reports came first. That
+// report is this turn's when it names this result's status, and the result decides it; one that
+// names another status ended another turn, and is decided on its own status after this result
+// (decideLeftRefusal).
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
+	before := m.claim.errorRun()
+	left := m.awaitingRefusal
+	if left != nil && left.status == r.HTTPStatus {
+		m.awaitingRefusal = nil
+	}
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
 		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
-	m.tellControllerOfProviderErrors(r.Model, cause)
+	m.tellControllerOfProviderErrors(m.claim.reachedNotice(before) || (left != nil && left.reached), r.Model, cause)
+	if left != nil {
+		left.reached = false // told above
+	}
 	// The prompt's turn ran and is over, and its result has ended the wait for results
 	// (promptResulted), so nothing of the task is left outstanding.
 	if err := m.takeBackPending(ctx, taskRead); err != nil {
 		return err
 	}
-	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
+	if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
+		return err
 	}
 	return m.providerErrorClears(ctx, cause)
+}
+
+// holdOnProviderError is the one decision a turn that a provider error ended gets from the HTTP
+// status the provider answered (zero for none): a status that cannot clear (holdsTheIssue) fails
+// the claim, so that the workflow holds the issue for its architect, and this reports whether it
+// did. Both reports of such a turn decide by it. The prompt result decides a turn a daemon prompt
+// ran (providerErrored), after it has taken the task back. The producer's turn-outcome report
+// decides a turn no daemon prompt ran (turnOutcome) — a phase reminder's, an Envoy message's, the
+// agent's own continuation — whose report is all the daemon learns of it; a report that arrives
+// while a prompt's result is still to come leaves the decision to that result.
+func (m *Machine) holdOnProviderError(ctx context.Context, status int) (bool, error) {
+	if !holdsTheIssue(status) {
+		return false, nil
+	}
+	return true, m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+providerErrorCause(status))
 }
 
 // holdsTheIssue is whether an error of this HTTP status fails the claim, so that the workflow
@@ -159,23 +188,31 @@ func providerErrorTask(cause string) string {
 		"issue's branch. Then continue the task."
 }
 
-// tellControllerOfProviderErrors tells the project's controller, once, when the claim's run of
-// provider-error turns reaches providerErrorRunTold; a turn with no error puts the run back to
-// zero, and only then can another notice go. It is the one exit from a run of such turns, and it
-// is a notice rather than a hold: R2 forbids an attempt limit. model is the model the failed
-// request went to, and is empty when the error named none.
-func (m *Machine) tellControllerOfProviderErrors(model, cause string) {
-	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
+// tellControllerOfProviderErrors tells the project's controller when reached says the turn the
+// caller has just counted took the claim's run of provider-error turns (Claim.errorRun) to
+// providerErrorRunTold (Claim.reachedNotice), so the notice goes once, on the turn that takes the
+// run to six, whichever of the turn's two reports counted it first. A turn with no error puts that
+// run back to zero, and only then can another notice go. It is the one exit from a run of such
+// turns, and it is a notice rather than a hold: R2 forbids an attempt limit. model is the model
+// the failed request went to, and is empty when the report named none (the turn-outcome report
+// names none). The notice says what the daemon does next: it sends the task again when the claim
+// holds one, and it has nothing to send when the run is of turns no daemon prompt ran.
+func (m *Machine) tellControllerOfProviderErrors(reached bool, model, cause string) {
+	if !reached || m.deps.ProviderErrorRunReached == nil {
 		return
 	}
+	run := m.claim.errorRun()
 	on := ""
 	if model != "" {
 		on = " on " + model
 	}
-	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
-		m.claim.ProviderErrorRun, on, cause, promptRetryMax)
+	next := "the daemon keeps the task and sends it again every " + promptRetryMax.String() + " at most"
+	if m.claim.Pending == nil {
+		next = "the claim holds no task, so the daemon has nothing to send again"
+	}
+	reason := fmt.Sprintf("%d turns in a row%s ended in %s; %s", run, on, cause, next)
 	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
+		"providerErrorRun", m.claim.ProviderErrorRun, "refusedRun", m.claim.RefusedRun(), "model", model, "reason", reason)
 	m.deps.ProviderErrorRunReached(m.current(), reason)
 }
 

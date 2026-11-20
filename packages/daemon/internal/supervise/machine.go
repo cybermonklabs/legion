@@ -328,10 +328,11 @@ type Claim struct {
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
-	// reported, in (generation, sequence) order and bounded by the launch failure limit
-	// (recordTurnOutcome). They are the window RefusedRun derives the run of refused turns from,
-	// and they are persisted, so a daemon restart reads the run the reports before it left rather
-	// than starting the count again. They go with the session whose turns they are (freshRun).
+	// reported, in (generation, sequence) order: the newest launch failure limit of them, and past
+	// that bound the whole trailing run of refused turns, one key a turn, so the run reads whole and
+	// each of its turns counts once (recordTurnOutcome). They are a record: what decides is the
+	// status a refused report carries (turnOutcome). They go with the session whose turns they are
+	// (freshRun).
 	TurnOutcomes []TurnOutcome
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster
@@ -1373,6 +1374,16 @@ type Machine struct {
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
+	// awaitingRefusal is a refused turn-outcome report that arrived while a prompt's result was
+	// still to come (turnOutcome's promptAwaited), and nil when there is none: the report counted
+	// the turn in the run of refused reports (Claim.RefusedRun) and left its decision and the
+	// controller's notice to the result, which names the model, because its turn may be that
+	// prompt's. The result decides it when it names the report's status (providerErrored), and
+	// the refusal is decided on its own status when the claim learns its turn was another
+	// (turnOutcome, decideLeftRefusal), so each report decides its own turn. It is memory only, as
+	// outstanding is: a daemon restarted between the two reports finds none, and a run that this
+	// one turn took to six then goes untold.
+	awaitingRefusal *awaitingRefusal
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
@@ -3466,10 +3477,9 @@ func deathCause(observation runtime.Observation) string {
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
 // for it, why it was left behind, and when. Why is the sentence whoever abandoned it wrote — the
-// failure of a claim the provider refused out of its budget, the reason an operator's retry gave,
-// the runtime's account of a session no store holds — and it is what the agent that replaces the
-// session is told, so it reads the provider's own words for the refusal, the context size in them
-// included, rather than a sentence the daemon invented.
+// failure of the claim, the reason an operator's retry gave, the runtime's account of a session
+// no store holds — and it is what the agent that replaces the session is told, rather than a
+// sentence the daemon invented.
 type AbandonedSession struct {
 	Session     string    `json:"session"`
 	SessionFile string    `json:"sessionFile,omitempty"`

@@ -14,10 +14,12 @@ import (
 const testCompactInstructions = "Write the summary as text."
 
 // ladderStuck is the claim the provider-errors notice names, idle between the ladder's sends:
-// six turns of it in a row ended in a provider error, so the project's controller has been told
-// once, the task it owes is unconfirmed on the claim, and the ladder's next step is ten minutes
-// away. ladderSends is how many prompts the connection has seen by then. set, when it is given,
-// changes the dependencies before the machine is built, as workingClaim's own does.
+// six turns of it in a row ended in a provider error, each reported by the producer as well as by
+// its prompt's result, as pi-legion and the Claude bridge report every turn, so the project's
+// controller has been told once, the task it owes is unconfirmed on the claim, and the ladder's
+// next step is ten minutes away. ladderSends is how many prompts the connection has seen by then.
+// set, when it is given, changes the dependencies before the machine is built, as workingClaim's
+// own does.
 const ladderSends = providerErrorRunTold
 
 func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
@@ -27,6 +29,7 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 	}}, set...)...)
 	for turn := range providerErrorRunTold {
 		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.reportRefused(uint64(turn+1), "overloaded_error", 529)
 		if turn+1 < providerErrorRunTold {
 			h.climbs(turn+1, promptRetryDelay(turn+1))
 		}
@@ -44,10 +47,11 @@ func ladderStuck(t *testing.T, notices *int, set ...func(*Deps)) *harness {
 	return h
 }
 
-// A compaction that ran starts the claim's run of provider-error turns again, so the project's
-// controller is told a second time after six more refused turns. Without the reset the
-// controller would be told once and never again until a turn of that claim ended with no error
-// at all, and the compaction it asked for would buy it no second look.
+// A compaction that ran starts the claim's run of provider-error turns again, both counts of it
+// (the prompt results' and the producer's reports'), so the project's controller is told a second
+// time after six more refused turns. Without the reset the controller would be told once and
+// never again until a turn of that claim ended with no error at all, and the compaction it asked
+// for would buy it no second look.
 //
 // The owed task goes again at once rather than at the end of the ladder step the compaction
 // interrupted: the next step of that ladder is ten minutes away, and putting the task in front
@@ -68,6 +72,9 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecon
 	if got := h.store.load(h.token).ProviderErrorRun; got != 0 {
 		t.Fatalf("the stored run of provider errors is %d after the compaction, want 0", got)
 	}
+	if kept := h.claim().TurnOutcomes; len(kept) != 0 {
+		t.Fatalf("the compacted claim keeps the reports %+v, want none: they were of the session before it", kept)
+	}
 	if got := h.claim().Session; got != session {
 		t.Fatalf("the compacted claim records session %q, want the session it had, %q", got, session)
 	}
@@ -79,6 +86,7 @@ func TestACompactionStartsTheRunOfProviderErrorsAgainSoTheControllerIsToldASecon
 
 	for turn := range providerErrorRunTold {
 		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.reportRefused(uint64(providerErrorRunTold+turn+1), "overloaded_error", 529)
 		if turn+1 < providerErrorRunTold {
 			h.climbs(sent+1+turn, promptRetryMax)
 		}

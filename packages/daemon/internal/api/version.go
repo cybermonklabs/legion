@@ -2505,4 +2505,26 @@ package api
 // #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
 // #4030, and nothing at 189. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 189
+//
+// 197: a refused turn's report carries the provider's HTTP status. `POST
+// /legion/v1/claims/turn-outcome` (`claim.TurnOutcomeRequest`, contracts'
+// `LegionTurnOutcomeRequest`) takes an optional `httpStatus`, from 100 to 599, beside a `refused`
+// outcome: the status the provider answered the turn's failed request with, which Oh My Pi puts
+// on the assistant message (`errorStatus`) and Claude Code on the result (`api_error_status`).
+// pi-legion's agent_end hook and the Claude bridge send it, each for a turn its harness yields
+// only: an attempt Oh My Pi goes on from by itself (`willContinue`, a retry or a walk down the
+// fallback chain) and one Claude Code retries (`api_retry`) is no turn and is not reported, so
+// one turn is one report. A status on a clean turn, or one outside 100 to 599, is refused 400 and
+// records nothing. The daemon fails the claim on a refused turn whose status cannot clear (a 4xx
+// other than 401, 403, 408 and 429), as it does on a prompt result with that status, so a turn no
+// daemon prompt ran — a phase reminder's, an Envoy message's — fails its claim and holds its issue
+// for its architect, and the answer's `failed` says so. The answer's `refusedRun` counts the whole
+// run, past the window of reports the claim keeps. `readBody` refuses an unknown field, so a
+// plugin sending `httpStatus` to a daemon below 197 would have every refused turn's report
+// refused; the bump is why the two never meet. No shape of `GET /legion/v1/state` moves, so no
+// caller is served a narrower one.
+// (This entry takes 197, the next number above main's 189 and every number an open pull request
+// declares: a reading of `const DaemonAPIVersion` at the head of each of the 284 open pull
+// requests of cybermonklabs/legion, fetched on 2026-11-20 at 16:34:08Z, found 196 the highest
+// any of them declares, with 190 this pull request's own earlier number.)
+const DaemonAPIVersion = 197

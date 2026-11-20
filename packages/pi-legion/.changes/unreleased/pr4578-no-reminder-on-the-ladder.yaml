@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  The phase reminder sends nothing after a refused turn while the daemon's provider-error ladder
+  holds the claim's task. A refused turn armed a reminder five minutes out, which, from the
+  ladder's fifth rung on (an eight-minute pause, then ten minutes), put one more prompt into a
+  session the provider was refusing before the ladder's own pause was over. The ladder's next send
+  starts a turn, and that turn's end decides the next reminder.
+
+  The report of each turn's outcome carries the HTTP status the provider answered a refused turn
+  with (the assistant message's `errorStatus`), so the daemon fails the claim on an error that
+  cannot clear on a turn the daemon's prompt did not start, such as the phase reminder's own. A
+  turn is an end Oh My Pi yields: an `agent_end` the host goes on from by itself (`willContinue`,
+  a retry of the same model or a walk down `retry.fallbackChains`) is reported as nothing, so a
+  400 the host walks past to its fallback model fails no claim, and one overloaded prompt under the
+  default retry counts one refused turn rather than one for each attempt. This plugin speaks
+  daemon API contract 197.

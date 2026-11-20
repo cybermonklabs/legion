@@ -376,10 +376,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the
 // project's controller can be told a second time if the compacted session's turns go the same
 // way; without it the controller would be told once and never again until a turn ended with no
-// error at all. It is this action's own reset and this action's own write: forgetSession's reset
-// belongs to a claim that is losing its session, and a compaction keeps it. A compaction that
-// was refused or skipped resets nothing — the session is as it was, so the run of refused turns
-// it carried still stands.
+// error at all. Both counts of that run go back (Claim.errorRun, which the notice reads): the
+// prompt results' (Claim.ProviderErrorRun) and the producer's reports' (freshRun). It is this
+// action's own reset and this action's own write: forgetSession's reset belongs to a claim that
+// is losing its session, and a compaction keeps it. A compaction that was refused or skipped
+// resets nothing — the session is as it was, so the run of refused turns it carried still stands.
 //
 // The ladder's wait goes whatever the compaction did (TimerPromptRetry), so the owed task is
 // sent from here rather than at the end of a wait that was counted against the transcript this
@@ -411,6 +412,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerPromptRetry)
 	if ended.Compacted {
 		m.claim.ProviderErrorRun = 0
+		m.freshRun()
 	}
 	m.log.Info("supervise: the compaction of the claim's session is over", "compacted", ended.Compacted,
 		"providerErrorRun", m.claim.ProviderErrorRun, "inTurn", run.inTurn)

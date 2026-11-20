@@ -1,0 +1,18 @@
+kind: Fixed
+body: |-
+  A turn the provider refused with an error that can clear fails no claim, however long the run.
+  The report of a refused turn (`POST /legion/v1/claims/turn-outcome`) now carries the HTTP status
+  the provider answered (`httpStatus`), from pi-legion and from the Claude bridge, and the daemon
+  decides it by the rule it decides a prompt result by: an overload goes back to the same session
+  on the provider-error ladder, and a 4xx other than 401, 403, 408 and 429 fails the claim at once
+  and holds the issue for its architect. That includes a turn no daemon prompt started, such as a
+  phase reminder's or an Envoy message's, which gets no prompt result. A refusal that names no
+  status fails nothing. Such turns count toward the run the project's controller is told of at six,
+  and the report's answer counts the whole run in `refusedRun`. Each turn counts once, whenever its
+  report arrives: a repeat changes nothing, and a late report lands in its turn's place. A refused
+  report that lands after the next task was sent still decides its own turn, so a phase reminder's
+  400 fails the claim then too. The Claude bridge sends an `api_error_status` outside 100 to 599 as
+  a refusal with no status, so the turn is still recorded. A claim failed at its third refused
+  turn before, at the shipped `launch_failure_limit`. A retry starts a new session only when its
+  caller asks for one (`legion claims retry --fresh-session`, the controller's `fresh_session`). The
+  daemon API contract is 197, so install the plugins built from this release with this daemon.

@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -149,66 +148,6 @@ func (r *freshSessionRig) operator(method, target string, body any) *httptest.Re
 	return recorder
 }
 
-// refuseEveryTurn works the claim's pending task through turns the provider refuses, until the
-// trailing run of refusals reaches the launch failure limit and the claim fails.
-func (r *freshSessionRig) refuseEveryTurn(message string) {
-	r.t.Helper()
-	for turn := 1; turn <= r.sup.deps.Limits.LaunchFailures; turn++ {
-		generation := r.machine.Claim().Generation
-		r.must(supervise.StreamTurnStart{Claim: r.implementer})
-		r.must(supervise.RequestTurnOutcome{Claim: r.implementer, Generation: generation, Sequence: uint64(turn), Refused: true, Message: message})
-		if r.machine.Claim().State == supervise.StateFailed {
-			return
-		}
-		r.must(supervise.StreamTurnEnd{Claim: r.implementer})
-	}
-}
-
-// told is one notice the workflow queued, whether for the issue's architect or for the
-// controller, as this rig reads it: its kind, the `reason` it carries and the `detail` of the
-// failure record beside it, which is where the sentence the failure wrote stands
-// (record.NoticeFailure; a notice with no record reads "").
-type told struct{ kind, reason, detail string }
-
-// failureDetail is the sentence a notice's failure record carries, and "" for a notice with no
-// record: the tree architect's own, a production-check look's, and a fact that carried no cause.
-func failureDetail(failure *record.NoticeFailure) string {
-	if failure == nil {
-		return ""
-	}
-	return failure.Detail
-}
-
-// notices are the notices the workflow has queued, in the order it queued them.
-func (r *freshSessionRig) notices() []told {
-	r.t.Helper()
-	rows, err := r.pool.Query(context.Background(), "select id, kind, issue, payload from outbox where kind in ('notice', 'controller_notice') order by id")
-	if err != nil {
-		r.t.Fatalf("read the notice rows: %v", err)
-	}
-	defer rows.Close()
-	var notices []told
-	for rows.Next() {
-		var row record.OutboxRow
-		if err := rows.Scan(&row.ID, &row.Kind, &row.Issue, &row.Payload); err != nil {
-			r.t.Fatalf("scan a notice row: %v", err)
-		}
-		payload, err := record.DecodeOutboxPayload(row)
-		if err != nil {
-			r.t.Fatalf("decode notice row %d: %v", row.ID, err)
-		}
-		switch notice := payload.(type) {
-		case record.Notice:
-			notices = append(notices, told{kind: string(notice.Kind), reason: notice.Reason, detail: failureDetail(notice.Failure)})
-		case record.ControllerNotice:
-			notices = append(notices, told{kind: string(notice.Kind) + " (controller)", reason: notice.Reason, detail: failureDetail(notice.Failure)})
-		default:
-			r.t.Fatalf("outbox row %d is no notice: %#v", row.ID, payload)
-		}
-	}
-	return notices
-}
-
 // recordedPhase is the issue's phase and the phase it is held from, as the record holds them.
 func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 	r.t.Helper()
@@ -221,76 +160,6 @@ func (r *freshSessionRig) recordedPhase() (phase.Phase, phase.Phase) {
 		return current, ""
 	}
 	return current, *from
-}
-
-// A claim the provider refused out of its budget fails; its issue is held, so the tree's architect
-// can retry it. That one retry must reach a working agent: a new session, because every turn of
-// the recorded one was refused, and the phase's task in it.
-func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *testing.T) {
-	rig := newFreshSessionRig(t)
-	ctx := context.Background()
-	refusal := "Refusal (reasoning_extraction): this request was blocked"
-
-	rig.refuseEveryTurn(refusal)
-
-	if got := rig.machine.Claim(); got.State != supervise.StateFailed || got.Session != oldSession {
-		t.Fatalf("after its refused turns the implementer is %s on session %q, want failed with the refused session still recorded", got.State, got.Session)
-	}
-	current, from := rig.recordedPhase()
-	if current != phase.Held || from != phase.Implementing {
-		t.Fatalf("after the refusals the issue is in %s held from %q, want held from implementing", current, from)
-	}
-	notices := rig.notices()
-	var kinds []string
-	for _, notice := range notices {
-		kinds = append(kinds, notice.kind)
-		// The sentence the failure wrote rides in the failure record's `detail`, where every
-		// reader of the notice finds it beside the cause word; `reason` is the escalation's own.
-		if !strings.Contains(notice.detail, refusal) {
-			t.Errorf("the %s notice's failure detail says %q, want the provider's refusal in it", notice.kind, notice.detail)
-		}
-	}
-	if want := []string{"held", "held (controller)", "worker-died"}; !slices.Equal(kinds, want) {
-		t.Fatalf("the failure queued %v, want %v", kinds, want)
-	}
-
-	// The one command: the architect's retry of the held phase.
-	if _, err := intake.ApplyFact(ctx, rig.pool, "api", "retry:"+rig.issue.Key,
-		intake.RetryOrEscalate{Issue: rig.issue.Key, Decision: intake.RetryDecision}, rig.engine); err != nil {
-		t.Fatalf("the architect's retry: %v", err)
-	}
-	// A start is two rows now (workflow.StartOrOwe): the relaunch leaves a failed claim to the row
-	// that carries the task, so the drain runs until both have run.
-	for range 3 {
-		if err := rig.runner.RunOnce(ctx); err != nil {
-			t.Fatalf("run what the retry queued: %v", err)
-		}
-	}
-	rig.machine.Wait()
-
-	if got := rig.machine.Claim(); got.State != supervise.StateLaunching || got.Session != "" || got.SessionFile != "" {
-		t.Fatalf("after the retry the implementer is %s on session %q (%s), want it launching with no session to resume", got.State, got.Session, got.SessionFile)
-	}
-	if resumes := resumesOf(rig.rt, rig.implementer); len(resumes) != 0 {
-		t.Fatalf("the retry resumed %+v, want the refused session left alone", resumes)
-	}
-	spawns := rig.rt.CallsOf("Spawn")
-	if len(spawns) != 2 || spawns[1].Spec.ResumeSessionFile != "" {
-		t.Fatalf("the retry's launch = %+v, want a spawn resuming no session file", spawns)
-	}
-	rig.register(newSession, newSessionFile)
-	if got := rig.machine.Claim(); got.Session != newSession || got.Session == oldSession {
-		t.Fatalf("the retried implementer registered session %q, want the new %q", got.Session, newSession)
-	}
-	// The task of the retried phase, behind the sentence that says this session replaced one the
-	// provider refused: a worker reading an empty transcript would otherwise take the task for a
-	// fresh start and do again what the abandoned session already pushed.
-	prompts := rig.conn.Prompts()
-	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
-	}
-	wantsAbandonment(t, prompts[1].Message, refusal)
 }
 
 // An operator who stops a worker whose agent can do nothing — a provider that refuses its session,

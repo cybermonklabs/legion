@@ -245,10 +245,11 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 }
 
 // turnOutcome is a producer reporting how one turn of its agent ended, clean or refused by the
-// provider, with its own sequence within the launch generation. The daemon keeps the report and
-// derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
-// failing the claim once that run reaches the launch failure limit; the answer says what the run
-// now is and whether this report failed the claim.
+// provider, with its own sequence within the launch generation, and, for a refusal, the HTTP
+// status the provider answered where the harness gave one. The daemon keeps the report as a
+// record, and decides a refused turn from its status by the rule a prompt result is decided by
+// (supervise's turnOutcome): a status that cannot clear fails the claim. The answer gives the run
+// of refused reports and whether the claim is failed.
 //
 // The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
 // registration's secret and names the claim with it, as the ready and the exit do. The Claude
@@ -272,6 +273,12 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused)))
 		return
 	}
+	if req.HTTPStatus != 0 && (req.Outcome != claim.TurnRefused || req.HTTPStatus < 100 || req.HTTPStatus > 599) {
+		// A status is the provider's answer to a refused turn's failed request: a clean turn has
+		// none, and a number outside HTTP's would be decided as if the provider had answered it.
+		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("httpStatus %d is given only with outcome %q, from 100 to 599", req.HTTPStatus, claim.TurnRefused)))
+		return
+	}
 	token, m, ok := s.turnOutcomeCaller(w, r, req)
 	if !ok {
 		return
@@ -280,7 +287,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	defer decided()
 	err := m.Handle(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
-		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
+		Refused: req.Outcome == claim.TurnRefused, Message: req.Message, HTTPStatus: req.HTTPStatus,
 	})
 	if err != nil {
 		s.claimFailure(w, "turn outcome", token, err)
@@ -288,10 +295,6 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	c := m.Claim()
 	run := c.RefusedRun()
-	if c.State == supervise.StateFailed {
-		s.log.Error("api: a claim's provider refused its turns out of their budget", "claim", token,
-			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
-	}
 	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
 }
 

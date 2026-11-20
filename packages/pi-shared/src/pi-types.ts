@@ -333,6 +333,13 @@ export interface AgentEndMessage {
    * `packages/ai/src/types.ts:1492-1500` at the pinned tag). `classifyProviderTurn`
    * (`./provider-refusal`) reads it to tell a content filter from any other provider failure. */
   readonly errorMessage?: string;
+  /** The HTTP status the provider answered the failed request of an `error` stop with, absent when
+   * it answered none (a content filter's refusal, a key that could not be read): Oh My Pi's
+   * `AssistantMessage.errorStatus` (`packages/ai/src/types.ts:1518` at the pinned tag, set by every
+   * provider's catch block), the same field its RPC prompt result's `httpStatus` is read from
+   * (`packages/coding-agent/src/modes/rpc/rpc-prompt-results.ts:230`). pi-legion's turn-outcome
+   * report carries it (`packages/pi-legion/src/turn-outcome.ts`). */
+  readonly errorStatus?: number;
 }
 
 /**

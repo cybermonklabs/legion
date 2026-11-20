@@ -194,7 +194,10 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// would put some other binary on a real resolver's path and claim it is Claude Code. The
 	// map is written after the boot that read it because a Config's WorkerBackends is a map and
 	// every copy of the Config shares it, which is how internal/daemon's own pod-update tests
-	// put a role on this backend too (podupdate_test.go:1986).
+	// put a role on this backend too (podupdate_test.go:1986). It is written only once the boot's
+	// relaunch of every seeded claim has started its pane (awaitBootLaunches): each relaunch reads
+	// the map (specs.launchBackend) before it hands the runtime its spec, so a write before then
+	// raced that read, and the race detector failed a run on it.
 	r.cfg.WorkerBackends = r.backends
 	version, err := exec.Command(omp, "--version").Output()
 	if err != nil {
@@ -225,10 +228,30 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
 	r.registerController()
+	r.awaitBootLaunches()
 	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",
 		r.onClaude, runtime.Backends[runtime.BackendClaude].Name, r.onClaude, r.ladder)
 	return r
+}
+
+// awaitBootLaunches waits until the boot's relaunch of each seeded claim has started its pane. The
+// local runtime records a pane under its lock once the spec is built, and this reads under the
+// same lock, so every read of the backends map those relaunches made is over before this returns,
+// in the order the race detector reads as well as in time. The fourth role's claim is stopped and
+// never launched, so nothing else reads the map until a step asks for a launch.
+func (r *claimCompactionLive) awaitBootLaunches() {
+	r.t.Helper()
+	r.await("the boot's relaunch of every seeded claim to start its pane", paneReady, func() bool {
+		r.rt.mu.Lock()
+		defer r.rt.mu.Unlock()
+		for _, seeded := range r.seededPanes() {
+			if _, started := r.rt.panes[r.token(seeded.issue, seeded.role)]; !started {
+				return false
+			}
+		}
+		return true
+	})
 }
 
 // seededPane is one of the proof's live claims: the issue it works, the phase that issue stands
@@ -580,8 +603,13 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	r.awaitReady(token)
 	r.awaitStartTaskAnswered(token)
 	r.answeredTurn(token, "WARM")
+	session := r.claim(token).Session
 	for run := 1; run <= 6; run++ {
 		r.erroredTurn(token, run)
+	}
+	if after := r.claim(token); after.State == string(supervise.StateFailed) || after.Session != session {
+		t.Fatalf("%s is %s in session %s after six refused 529 turns, want a live claim in session %s",
+			token, after.State, after.Session, session)
 	}
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
@@ -696,8 +724,12 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	from := r.daemon.count()
 	started := time.Now()
 	answered := make(chan compactRun, 1)
+	// The command waits as long as the daemon's own bound on a compaction. At the pin Oh My Pi
+	// asks for the history summary and a split turn's prefix together, then for a short summary
+	// (compaction.ts's generateShortSummary), so a held compaction takes two holds, past the
+	// one minute `legion claims` waits for by default (--wait).
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", runtime.CompactTimeout.String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {

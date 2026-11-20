@@ -3,7 +3,6 @@ package supervise
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -12,15 +11,22 @@ import (
 
 // TurnOutcome is one turn of a claim's agent as the backend's producer reported it when that turn
 // ended: the launch generation it ran at, the producer's own sequence within that generation,
-// whether the provider refused the turn, and what the provider said about a refusal.
+// whether the provider refused the turn, and what the provider said about a refusal. The daemon
+// keeps each outcome as a record, and decides a refused turn from the HTTP status its report
+// carries (turnOutcome): a status that cannot clear fails the claim, and any other refusal, one
+// that names no status among them, fails nothing however long the run.
 //
 // The producer is the one counter. Oh My Pi's turns are reported by pi-legion's agent_end hook and
-// Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome; the turn's end
-// on the worker stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in
-// this, so no two counters can drift. A turn no report arrived for — the process died before it
-// could send one — is a key the window never holds, which counts neither way.
+// Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome, one report for
+// each turn its harness yields: an attempt the harness goes on from by itself — Oh My Pi's
+// willContinue end of a retry or of a walk down its fallback chain, Claude Code's api_retry — is no
+// turn and is not reported, so a turn moves the run of refused reports by one, as its prompt result
+// moves the run of provider errors (Claim.ProviderErrorRun) by one. The turn's end on the worker
+// stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in this, so no two
+// counters can drift. A turn no report arrived for — the process died before it could send one —
+// is a key the claim never holds, which counts neither way.
 //
-// The tags are the shape the store keeps the window in (the claims table's turn_outcomes), which
+// The tags are the shape the store keeps the reports in (the claims table's turn_outcomes), which
 // is the one place a report is written.
 type TurnOutcome struct {
 	Generation uint64 `json:"generation"`
@@ -30,8 +36,8 @@ type TurnOutcome struct {
 }
 
 // compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
-// the producer's own sequence. It is the order the window is kept in and the run is derived in, so
-// a report that arrives late or out of order lands in its own place rather than at the end.
+// the producer's own sequence. It is the order the reports are kept in and the run is derived in,
+// so a report that arrives late or out of order lands in its own place rather than at the end.
 func compareTurnOutcomes(a, b TurnOutcome) int {
 	if by := cmp.Compare(a.Generation, b.Generation); by != 0 {
 		return by
@@ -39,49 +45,68 @@ func compareTurnOutcomes(a, b TurnOutcome) int {
 	return cmp.Compare(a.Sequence, b.Sequence)
 }
 
-// maxRefusalMessage bounds, in runes, the provider's message a report carries. The message reaches
-// the claim's failure, which is read back in notices and in every state answer, so a provider that
-// returns a page of diagnostics leaves a sentence rather than a page in the store. A message past
-// the bound keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
+// maxRefusalMessage bounds, in runes, the provider's message a report carries. The store keeps
+// the newest reports for readers that inspect the provider's outcome, so a provider that returns a
+// page of diagnostics leaves a sentence rather than a page in the store. A message past the bound
+// keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
 const maxRefusalMessage = 500
 
-// turnOutcomeWindow is how many reports a claim keeps: the launch failure limit
-// (launch_failure_limit, 3 by default), which is the length the trailing run has to reach to fail
-// the claim. A longer run cannot exist, since the claim fails the moment it reaches the limit, so
-// the newest limit reports are everything RefusedRun can read; a report older than all of them
-// cannot shorten a run derived over them, and is dropped. That bound is why a claim whose agent
-// works for a week carries a handful of rows rather than a turn-by-turn history nothing reads.
-func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures }
+// turnOutcomeWindow is how many reports a claim keeps whole, the provider's words included, and
+// how many it keeps at all when its newest report is clean. The launch failure limit supplies the
+// bound; the trailing run of refused turns is kept past it, one key a turn (recordTurnOutcome).
+func (m *Machine) turnOutcomeWindow() int { return max(m.deps.Limits.LaunchFailures, 1) }
 
-// recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
-// trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
-// replaces it, so a producer that repeats one changes nothing. No count is kept anywhere: every
-// reader derives what it needs from the window as it stands (RefusedRun), which is what makes a
-// late report and an in-order one leave the same answer.
+// recordTurnOutcome puts a report among the claim's reports, in (generation, sequence) order, and
+// trims them. A report whose key the claim already keeps replaces it, so a producer that repeats
+// one changes nothing.
+//
+// The trim keeps the newest turnOutcomeWindow reports and, past them, every report from the
+// newest clean one on: the trailing run of refused turns, and the clean turn before it that it
+// started after. So every turn the run a reader derives (RefusedRun) counts is a key the claim
+// still keeps, for as long as the run can grow, and each counts once whenever its report arrives:
+// a repeat of a turn of the run finds its key and changes nothing, a late report of a turn inside
+// the run lands in its own place and joins it, and a late clean one ends the run there. A report
+// older than the newest clean one is in no run a reader reads, so the trim drops it once the bound
+// is reached. A clean turn ends the run, and the trim then drops the old run's keys down to the
+// bound. Past the bound a kept report keeps its key and outcome and drops the provider's words, so
+// a long run costs a key a turn and no more. No count is kept anywhere: every reader derives what
+// it needs from the reports as they stand, which is what makes a late report and an in-order one
+// leave the same answer.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
 // (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
-// it, so the window in memory is the window the store holds, and the cut cannot leave half a
+// it, so the reports in memory are the reports the store holds, and the cut cannot leave half a
 // credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 	o.Message = redact.Runes(storetext.FarSideText(o.Message), maxRefusalMessage)
-	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
-	if found {
-		m.claim.TurnOutcomes[at] = o
+	outcomes := m.claim.TurnOutcomes
+	if at, found := slices.BinarySearchFunc(outcomes, o, compareTurnOutcomes); found {
+		outcomes[at] = o
 	} else {
-		m.claim.TurnOutcomes = slices.Insert(m.claim.TurnOutcomes, at, o)
+		outcomes = slices.Insert(outcomes, at, o)
 	}
-	if extra := len(m.claim.TurnOutcomes) - m.turnOutcomeWindow(); extra > 0 {
-		m.claim.TurnOutcomes = slices.Delete(m.claim.TurnOutcomes, 0, extra)
+	window := m.turnOutcomeWindow()
+	newestClean := -1
+	for i := len(outcomes) - 1; i >= 0; i-- {
+		if !outcomes[i].Refused {
+			newestClean = i
+			break
+		}
 	}
+	if drop := min(len(outcomes)-window, newestClean); drop > 0 {
+		outcomes = slices.Delete(outcomes, 0, drop)
+	}
+	for i := range len(outcomes) - window {
+		outcomes[i].Message = ""
+	}
+	m.claim.TurnOutcomes = outcomes
 }
 
-// RefusedRun is the run of refused turns the claim's reports end with, in the order the turns ran.
-// It is derived on every read and stored nowhere, so no count is ever mutated and a report that
-// arrives late lands in its place and is counted there. The run carries across generations: a
-// session the provider refused is refused again when it is resumed, which is why the retry of a
-// claim this failed starts a new session (freshSession), and a new session starts a fresh run
-// (freshRun).
+// RefusedRun is the run of refused turns the claim's reports end with, in the order the turns
+// ran: the refused reports after the newest clean one, each of which the claim keeps however long
+// the run gets (recordTurnOutcome). It is derived on every read and stored nowhere. It is a record:
+// the controller's notice reads it beside the prompt results' run (Claim.errorRun), and it bounds
+// nothing.
 func (c Claim) RefusedRun() int {
 	run := 0
 	for i := len(c.TurnOutcomes) - 1; i >= 0 && c.TurnOutcomes[i].Refused; i-- {
@@ -90,8 +115,24 @@ func (c Claim) RefusedRun() int {
 	return run
 }
 
+// errorRun is the claim's run of turns in a row that a provider error ended, as the larger of the
+// two counts that see such turns: the prompt results' (Claim.ProviderErrorRun), which see every
+// turn a daemon prompt ran, and the producer's reports' (RefusedRun), which see every turn, the
+// turns no daemon prompt ran among them. A turn both see moves each by one, so the larger is the
+// run with no turn counted twice; where the producer reports nothing, the prompt results' count
+// stands alone. The controller's notice reads it (tellControllerOfProviderErrors).
+func (c Claim) errorRun() int { return max(c.ProviderErrorRun, c.RefusedRun()) }
+
+// reachedNotice is whether the turn just counted took the claim's run of provider-error turns
+// (errorRun) to the length the project's controller is told at, from before, the run as it stood
+// before that count. A turn with no error puts the run back to zero, and only a run that reaches
+// the length again reaches it a second time.
+func (c Claim) reachedNotice(before int) bool {
+	return before < providerErrorRunTold && c.errorRun() >= providerErrorRunTold
+}
+
 // LastRefusal is what the provider said about the newest refused turn the claim keeps, and "" when
-// it keeps none or the provider said nothing: the sentence the claim's failure names.
+// it keeps none or the provider said nothing.
 func (c Claim) LastRefusal() string {
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		if c.TurnOutcomes[i].Refused {
@@ -101,59 +142,126 @@ func (c Claim) LastRefusal() string {
 	return ""
 }
 
-// freshRun drops every turn the claim has reports for, so its refused run starts again. The run
-// belongs to the session whose turns were refused, and a claim leaves a session only by forgetting
-// it (forgetSession): every relaunch resumes the session the claim recorded, and a registration
-// naming another is refused, so the forgetting is the one moment a fresh run begins.
-func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
+// freshRun drops every turn the claim has reports for. The reports belong to the session that
+// produced them: a claim that forgets its session drops them, and so does a compaction that ran,
+// which starts the session's run of refused turns again (compactEnded). A refusal left to a
+// prompt's result (Machine.awaitingRefusal) goes with them.
+func (m *Machine) freshRun() {
+	m.claim.TurnOutcomes = nil
+	m.awaitingRefusal = nil
+}
 
-// turnOutcome records the turn its producer reported and derives the claim's trailing run of
-// refused turns from the window that leaves. At the launch failure limit the claim fails: the
-// provider has refused every turn since the last one it took, so nothing of the issue's work is
-// being done and every later turn of that session would be refused the same way
-// (dispatch://INFRA-714). A run short of the limit is the report written and nothing else.
+// awaitingRefusal is a refused report whose decision waits on the result of the prompt in flight,
+// because the turn it ends may be that prompt's (turnOutcome): the turn's key, the HTTP status the
+// report names, and whether counting it took the claim's run of provider-error turns to the length
+// the controller is told at (Claim.reachedNotice), a notice it then owes whoever decides it.
+type awaitingRefusal struct {
+	generation, sequence uint64
+	status               int
+	reached              bool
+}
+
+// turnOutcome keeps the turn its producer reported as a record, and decides a refused one from
+// the HTTP status its report carries, by the rule a prompt result is decided by
+// (holdOnProviderError): a status that cannot clear fails the claim at once, and so holds the
+// issue for its architect. That is the one decision a turn no daemon prompt ran gets, since no
+// prompt result follows it: a phase reminder's turn, an Envoy message's, the agent's own. A
+// refusal whose status can clear, and one whose report names no status, fails nothing however
+// long the run; it counts toward the run the project's controller is told of at six
+// (tellControllerOfProviderErrors), as a turn a prompt ran does.
+//
+// A report decides the turn it ends, whenever it arrives. One that arrives while a prompt of the
+// claim's task is in flight or waits on its result (promptAwaited) may be that prompt's turn's —
+// the pinned Oh My Pi and the Claude bridge each run one prompt at a time, and the prompt's turn
+// is the newest — so it is left to that result (Machine.awaitingRefusal), which decides the
+// prompt's turn with what only it carries: Oh My Pi's retryable flag, the model, and the task it
+// takes back. It may instead be an earlier turn's, sent before the prompt and landing after it,
+// as a phase reminder's turn does when the task it ended in front of is sent at its end. So the
+// refusal left to the result is decided on its own status as soon as the claim learns its turn
+// was another: a newer report arrives while the prompt is awaited (the prompt's turn is the newest
+// one), no prompt is awaited any more when the next report arrives, or the result shows a turn
+// other than the report's (decideLeftRefusal). A report that arrives after the prompt's result
+// is decided on its own status at once: a failed claim takes no report, and a status that can
+// clear fails nothing.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})
-	run := m.claim.RefusedRun()
+	report := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message}
+	awaited := m.promptAwaited()
+	if left := m.awaitingRefusal; left != nil && (!awaited || compareTurnOutcomes(left.turn(), report) < 0) {
+		m.awaitingRefusal = nil
+		if held, err := m.decideRefusal(ctx, left.status, left.reached); held || err != nil {
+			return err
+		}
+	}
+	before := m.claim.errorRun()
+	m.recordTurnOutcome(report)
+	left := m.awaitingRefusal
+	leaves := r.Refused && awaited && (left == nil || compareTurnOutcomes(left.turn(), report) == 0)
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
-		"refused", r.Refused, "refusedRun", run, "limit", m.deps.Limits.LaunchFailures)
-	if run < m.deps.Limits.LaunchFailures {
-		return m.persist(ctx)
+		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun(), "promptResultDecides", leaves)
+	switch {
+	case leaves && left == nil:
+		m.awaitingRefusal = &awaitingRefusal{
+			generation: r.Generation, sequence: r.Sequence, status: r.HTTPStatus, reached: m.claim.reachedNotice(before),
+		}
+	case r.Refused && !leaves:
+		if held, err := m.decideRefusal(ctx, r.HTTPStatus, m.claim.reachedNotice(before)); held || err != nil {
+			return err
+		}
 	}
-	return m.fail(ctx, CauseProviderError, refusalCause(run, m.claim.LastRefusal()))
+	return m.persist(ctx)
 }
 
-// refusalCause is the failure a spent run of refused turns names: what refused the claim, how many
-// turns in a row, and the provider's own words for the newest of them, which is the one fact a
-// person reading the failed claim can act on. The wording is the architect's own
-// (dispatch://INFRA-714/artifact/review-rounds-md, item 2 of the refusal section), and the
-// architect's notice of the failure quotes it.
-func refusalCause(run int, message string) string {
-	if message == "" {
-		return fmt.Sprintf("the provider refused %d turns in a row, and said nothing about why", run)
-	}
-	return fmt.Sprintf("the provider refused %d turns in a row: %s", run, message)
+// turn is the key of the turn the refusal ends, in the shape the reports are ordered by.
+func (a *awaitingRefusal) turn() TurnOutcome {
+	return TurnOutcome{Generation: a.generation, Sequence: a.sequence}
 }
 
-// freshSession is whether a retry starts a new session rather than relaunching the recorded one,
-// and why, for the line it logs. An operator asks for one with `legion claims retry
-// --fresh-session`. A claim the provider refused out of its budget takes one whoever retried it —
-// its architect's retry_or_escalate, the next start of its role, or that operator — because
-// resuming the session those turns were refused in is what would be refused again.
-func freshSession(ev Event, c Claim, limit int) (bool, string) {
-	asked := false
+// decideRefusal is the decision a refused report makes on its own status, for a turn no prompt's
+// result decides: the controller is told when counting the turn took the run to six (reached),
+// and a status that cannot clear fails the claim (holdOnProviderError), which this reports.
+func (m *Machine) decideRefusal(ctx context.Context, status int, reached bool) (bool, error) {
+	cause := providerErrorCause(status)
+	m.tellControllerOfProviderErrors(reached, "", cause)
+	return m.holdOnProviderError(ctx, status)
+}
+
+// decideLeftRefusal decides, on its own status, the refusal left to a prompt's result
+// (Machine.awaitingRefusal) once that result has shown the refusal's turn was not the prompt's:
+// it ended clean, it named another status (providerErrored keeps the refusal for this), or Oh My
+// Pi ran no turn for it. It is left alone while the result was Oh My Pi running no turn for this
+// prompt because the turn of an earlier prompt of the task is still running, since that turn is
+// the one the refusal may end, and that prompt's result settles it.
+func (m *Machine) decideLeftRefusal(ctx context.Context, r StreamPromptResult) error {
+	left := m.awaitingRefusal
+	if left == nil || (!r.AgentInvoked && m.awaitsResult()) {
+		return nil
+	}
+	m.awaitingRefusal = nil
+	if m.claim.State == StateFailed {
+		return nil
+	}
+	_, err := m.decideRefusal(ctx, left.status, left.reached)
+	return err
+}
+
+// promptAwaited is whether a prompt of the claim's task is in flight (Machine.send) or
+// acknowledged and waiting on its result (awaitsResult): the turn running or just ended may be
+// that prompt's, and its result is still to come.
+func (m *Machine) promptAwaited() bool { return m.send != nil || m.awaitsResult() }
+
+// freshSession is whether a retry explicitly asks to start a new session, and why, for the line it
+// logs. A provider refusal does not choose a new session.
+func freshSession(ev Event) (bool, string) {
 	switch ev := ev.(type) {
 	case RequestRetry:
-		asked = ev.FreshSession
+		if ev.FreshSession {
+			return true, "the retry asked for a new session"
+		}
 	case RequestOperatorRetry:
-		asked = ev.FreshSession
-	}
-	switch {
-	case asked:
-		return true, "the retry asked for a new session"
-	case c.RefusedRun() >= limit:
-		return true, "the provider refused the recorded session out of its launch budget"
+		if ev.FreshSession {
+			return true, "the retry asked for a new session"
+		}
 	}
 	return false, ""
 }

@@ -616,7 +616,7 @@ func (e *heldElsewhereError) Unwrap() error { return e.err }
 //
 // The lookup is one bounded call (Timeouts.RPC) inside the decision, on a claim with no process,
 // so nothing else of this claim waits behind it but whoever asked: an operator's forget or
-// retry, the controller keeper's retry, or a workflow start row's (review round 16 of #4220, #66).
+// retry, the controller's fresh session, or a workflow start row's (review round 16 of #4220, #66).
 func (m *Machine) mayForget(ctx context.Context, request string) error {
 	session := m.claim.Session
 	if session == "" {
@@ -683,9 +683,9 @@ const roleFreedBound = "max(min(ENVOY_SESSION_MAX_AGE, ENVOY_SESSION_GONE_HORIZO
 // who does. It is a wait (it matches wait.ErrWaiting too), which ends when the process under that
 // session stops and the listener frees the role: in the case it exists for, another claim's live
 // process runs under the session, and only an operator's suspend of that claim stops it, so a
-// caller that retries on a backoff of its own logs it where an operator sees it (the controller
-// keeper at Warn; settle raises a waiting row to Warn from waitWarnAttempts). A lookup the listener
-// refuses for good is no wait but a fault (notify.RoleLookupRefused).
+// caller that retries on a backoff of its own logs it where an operator sees it (settle raises a
+// waiting row to Warn from waitWarnAttempts). A lookup the listener refuses for good is no wait
+// but a fault (notify.RoleLookupRefused).
 var ErrForgetWaitsForRole = errors.New("the clear of the session waits for the Envoy listener to free the claim's role")
 
 // forgetWait is a mayForget refusal's sentence, which errors.Is reads as ErrForgetWaitsForRole

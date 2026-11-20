@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -88,9 +89,9 @@ func (r *rig) untilTurnEnds() {
 }
 
 // The bridge reports every turn it ends, clean and refused alike, with its own sequence counted
-// from 1 within the launch generation and the launch's boot token as its name: the daemon's count
-// of refused turns is made of these reports and of nothing else. A step Claude Code ended with an
-// error is the turn's refusal, carrying what it said.
+// from 1 within the launch generation and the launch's boot token as its name: the daemon's run of
+// refused reports is made of these reports and of nothing else. A step Claude Code ended with an
+// error is the turn's refusal, carrying what it said and the status it named.
 func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
@@ -114,8 +115,75 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	if refused.Outcome != claim.TurnRefused || refused.Sequence != 2 || refused.Generation != 4 {
 		t.Fatalf("the refused turn was reported %+v, want the second turn of generation 4 refused", refused)
 	}
-	if refused.Message == "" || refused.BootToken != testBootToken {
-		t.Fatalf("the refused turn was reported %+v, want the provider's message and the launch's boot token", refused)
+	if refused.Message == "" || refused.BootToken != testBootToken || refused.HTTPStatus != 529 {
+		t.Fatalf("the refused turn was reported %+v, want the provider's message, its status 529 and the launch's boot token", refused)
+	}
+}
+
+// Claude Code retries a request the provider refused inside the turn, and writes an `api_retry`
+// line for each attempt it retries (testdata/api-error-529.jsonl:2-3) before the one result that
+// ends the turn. The bridge reports the turn at that result and at nothing else, so an attempt
+// Claude Code goes on from is no turn: one turn is one report, as pi-legion reports only the ends
+// Oh My Pi yields, and the daemon's run of refused turns moves by one for it.
+func TestAnAttemptClaudeCodeRetriesIsNoTurnOfItsOwn(t *testing.T) {
+	r := newReportingRig(t, "-p", "--resume", sessionID)
+
+	r.prompt("p1", "replay api-error-529.jsonl")
+	r.open()
+	r.untilTurnEnds()
+	r.prompt("p2", "say hello")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+
+	var got []claim.TurnOutcomeRequest
+	for len(got) == 0 || got[len(got)-1].Outcome != claim.TurnClean {
+		got = append(got, r.reported())
+	}
+	want := []claim.TurnOutcomeRequest{
+		{BootToken: testBootToken, Generation: 4, Sequence: 1, Outcome: claim.TurnRefused, HTTPStatus: 529},
+		{BootToken: testBootToken, Generation: 4, Sequence: 2, Outcome: claim.TurnClean},
+	}
+	for i := range got {
+		got[i].Message = "" // Claude Code's words; the case is about how many turns are reported
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("a turn Claude Code retried twice inside, then a clean turn, were reported %+v, want %+v", got, want)
+	}
+}
+
+// A turn the daemon's prompt did not start — one an Envoy delivery started, here — ends with no
+// prompt_result, so its report is the one thing the daemon decides it by: the report carries the
+// status Claude Code named for the refusal (api_error_status), and the daemon fails the claim on
+// one that cannot clear. A content filter's refusal names no status, and its report carries none;
+// nor does a refusal whose api_error_status is no HTTP status (outside 100 to 599), which the
+// daemon's route would refuse with the whole report, leaving the turn unrecorded.
+func TestARefusedTurnIsReportedWithTheStatusClaudeCodeNamedForIt(t *testing.T) {
+	r := newReportingRig(t, "-p", "--resume", sessionID)
+	inbox := r.dialInbox()
+
+	inbox.deliver("ev1", "api-error-400 the request is malformed")
+	r.expect("agent_start", nil)
+	for r.next()["type"] != "agent_end" {
+	}
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 400 || report.Message == "" {
+		t.Fatalf("the Envoy delivery's refused turn was reported %+v, want it refused with status 400 and the provider's words", report)
+	}
+	if answer := inbox.answer(); !answer.OK || answer.ID != "ev1" {
+		t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+	}
+
+	r.prompt("p1", "refusal the content filter refused")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 0 || report.Sequence != 2 {
+		t.Fatalf("the content filter's refusal was reported %+v, want the second turn refused with no status", report)
+	}
+
+	r.prompt("p2", "api-error-999 the provider named no HTTP status")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 0 || report.Sequence != 3 || report.Message == "" {
+		t.Fatalf("the refusal whose api_error_status is 999 was reported %+v, want the third turn refused with the provider's words and no status", report)
 	}
 }
 
@@ -123,8 +191,8 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 // reason as the pinned Claude Code writes it (providerFailed): a step
 // Claude Code ended with its own cap on the steps of one turn (error_max_turns) is the worker
 // having worked, not the provider refusing, and a turn whose newest step ran is the provider
-// having answered after all. Counting either would walk a working claim to the launch failure
-// limit, fail it, and abandon the session it is working in (dispatch://INFRA-714).
+// having answered after all. Counting either would tell the project's controller of a run of
+// refused turns that the provider never refused.
 func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 

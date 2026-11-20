@@ -153,11 +153,8 @@ export function stepPhaseStall(state: PhaseStallState, input: PhaseStallInput): 
     case "refused":
       // The provider, not the worker, ended this turn: nothing was read and nothing was said, so
       // the count stands where the last real turn left it and the settling itself earns no
-      // reminder. Reminding such a session at once only buys another refusal, which is what left
-      // the implementer of dispatch://INFRA-264 reminded for ever; the runner arms a delayed one
-      // instead, by which time the daemon — which counts these turns over
-      // `POST /legion/v1/claims/turn-outcome` — has failed the claim if the provider refused it
-      // out of its budget, and a failed claim is reminded of nothing.
+      // reminder. Reminding such a session at once only buys another refusal; the runner arms a
+      // delayed one instead, and each delivered reminder counts toward the architect's notice.
       return { state };
     case "reminded":
       return state.state === "closed"

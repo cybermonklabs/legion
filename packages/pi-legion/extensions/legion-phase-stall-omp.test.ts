@@ -367,14 +367,14 @@ test.skipIf(skip)(
     // implement record from the pane's Dispatch, held the head that record names to the commit
     // the pane's workspace stands on, pushed to legion/STALL-2@origin, with the pane's jj, minted
     // a grant in-process and posted the completion at that head with the record: no grant file,
-    // no `legion` command, and no handoff file. Each of the two runs the host settled also
-    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
-    // tool call ends no run of its own, so it earns no report.
+    // no `legion` command, and no handoff file. The run reported the turn it ended to the daemon
+    // once, at the end the host yielded (`src/turn-outcome.ts`): the end that ended on the tool
+    // call written as text is one the reminder continues (`willContinue`), so it is no turn of its
+    // own, and the turn that ended on the real tool call ends no run of its own either.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
       "/legion/v1/state",
-      "/legion/v1/claims/turn-outcome",
       "/legion/v1/state",
       "/legion/v1/grants",
       "/legion/v1/handoff/complete",

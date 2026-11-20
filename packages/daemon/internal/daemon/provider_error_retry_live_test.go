@@ -383,53 +383,51 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 //
 // The task is the one the planner's claim has held pending since the daemon booted, which is
 // what its phase's start left there (seed), so the first send is the daemon's own and this step
-// waits for it rather than delivering a task of its own. It is read off the delivery's read
-// mark, the instant the shim acknowledged that first prompt, which a provider error keeps
-// (supervise's takeBackPending) — so every gap below is measured from the send that began the
-// ladder and not from a later rung.
+// waits for it rather than delivering a task of its own. Each rung is measured on the daemon's own
+// log, from the record that armed its wait to the record of the send that wait made, both stamped
+// by the daemon as it wrote them, so how late this driver reads either cannot move the gap: a
+// driver that read a send's time off the claim (the delivery's read mark, which every
+// acknowledged send sets again) read the second send's time as the first's when its own read came
+// after that send, and found every later rung one step out.
 func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
 	r.awaitReady(token)
+	session := r.claim(token).Session
 	marker, task := r.seededFor(r.ladder).marker, r.ladderTask
-	sent := []time.Time{r.awaitFirstSend(token, task)}
-	r.note("the daemon held the task %q for %s from the moment it booted and sent it at %s",
-		task, token, sent[0].Format(time.RFC3339))
+	r.awaitFirstSend(token, task)
+	r.note("the daemon held the task %q for %s from the moment it booted and sent it", task, token)
 
 	for attempt := 1; attempt < ladderSends; attempt++ {
 		delay := ladderDelays[attempt-1]
-		within := delay + ladderTolerance
-		if driven, ok := ladderDriven(delay); ok {
-			within = driven + ladderTolerance
+		waits := delay
+		driven, isDriven := ladderDriven(delay)
+		if isDriven {
+			waits = driven
 		}
-		r.awaitLog("the ladder's send "+strconv.Itoa(attempt+1), within+time.Minute, func(record loggedRecord) bool {
-			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
-				record.at.After(sent[attempt-1])
-		})
-		armed := r.lastLog(func(record loggedRecord) bool {
+		armed := r.awaitLogFrom("the ladder's wait before send "+strconv.Itoa(attempt+1), 0, waits+ladderTolerance+time.Minute, func(record loggedRecord) bool {
 			return record.Message == "supervise: this provider error can clear; the task goes to the same session again after a wait" &&
-				record.Attrs["attempt"] == float64(attempt)
+				record.Attrs["claim"] == string(token) && record.Attrs["attempt"] == float64(attempt)
 		})
-		if armed == nil {
-			t.Fatalf("the daemon armed no wait for send %d of the ladder", attempt+1)
-		}
 		if wait, want := armed.Attrs["wait"], delay.String(); wait != want {
 			t.Fatalf("the ladder armed %v before send %d, want %s", wait, attempt+1, want)
 		}
-		now := time.Now()
-		gap := now.Sub(sent[attempt-1])
-		sent = append(sent, now)
-		if driven, ok := ladderDriven(delay); ok {
-			r.note("send %d came %s after send %d; its %s wait was driven on the daemon's clock to %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, driven)
+		send := r.awaitLogFrom("the ladder's send "+strconv.Itoa(attempt+1), 0, waits+ladderTolerance+time.Minute, func(record loggedRecord) bool {
+			return record.Message == "supervise: the wait after a provider error is over; the task goes again" &&
+				record.Attrs["claim"] == string(token) && !record.at.Before(armed.at)
+		})
+		gap := send.at.Sub(armed.at)
+		if isDriven {
+			r.note("send %d went %s after its wait was armed; its %s wait was driven on the daemon's clock to %s",
+				attempt+1, gap.Round(time.Second), delay, driven)
 			continue
 		}
 		if gap < delay || gap > delay+ladderTolerance {
-			t.Fatalf("send %d of the ladder came %s after send %d, want between %s and %s",
-				attempt+1, gap.Round(time.Second), attempt, delay, delay+ladderTolerance)
+			t.Fatalf("send %d of the ladder went %s after its wait was armed, want between %s and %s",
+				attempt+1, gap.Round(time.Second), delay, delay+ladderTolerance)
 		}
-		r.note("send %d came %s after send %d, and the daemon had armed %s (cause %q)",
-			attempt+1, gap.Round(time.Second), attempt, delay, armed.Attrs["cause"])
+		r.note("send %d went %s after the 529 that armed its %s wait (cause %q)",
+			attempt+1, gap.Round(time.Second), delay, armed.Attrs["cause"])
 	}
 
 	errors := r.logs(func(record loggedRecord) bool {
@@ -449,16 +447,44 @@ func (r *providerErrorLive) ladderWalks() {
 	if held.State == string(supervise.StateFailed) {
 		t.Fatalf("%s failed while the ladder ran: %+v", token, held)
 	}
+	if held.Session != session {
+		t.Fatalf("%s changed from session %s to %s while the 529 ladder ran", token, session, held.Session)
+	}
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held while the ladder ran: %+v", r.ladder, issue)
 	}
 	r.note("%s is %s, still holding its task (%d re-sends counted on the delivery), and %s is %s",
 		token, held.State, ladderSends-1, r.ladder, r.issue(r.ladder).Phase)
-	if got := r.stands[overloadedProvider].requestsHolding(marker); got < ladderSends {
-		t.Fatalf("the overloaded stand-in was asked %d times for a request carrying the task, want %d", got, ladderSends)
-	}
+	asked := r.awaitRequestsHolding(overloadedProvider, marker, ladderSends)
 	r.note("the overloaded stand-in answered 529 to %d requests, %d of them carrying the task itself",
-		r.stands[overloadedProvider].count(), r.stands[overloadedProvider].requestsHolding(marker))
+		r.stands[overloadedProvider].count(), asked)
+}
+
+// ladderRequestBound is how long the last send's model request may follow the daemon's record of
+// that send: the pane starts the turn the send began and only then asks the model, so the request
+// trails the record by the pane's own start, which a loaded box stretches. It is far inside the
+// ten minutes the ladder waits after the sixth turn's error before it sends again
+// (supervise/providererror.go's promptRetryMax), so a request counted inside it is that send's
+// and never a later send's.
+const ladderRequestBound = time.Minute
+
+// awaitRequestsHolding waits up to ladderRequestBound for the stand-in of provider to have been
+// asked want requests carrying marker, and answers how many it was asked. A count still short at
+// the bound fails the step with the count it saw.
+func (r *providerErrorLive) awaitRequestsHolding(provider, marker string, want int) int {
+	r.t.Helper()
+	stand := r.stands[provider]
+	deadline := time.Now().Add(ladderRequestBound)
+	asked := stand.requestsHolding(marker)
+	for asked < want && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		asked = stand.requestsHolding(marker)
+	}
+	if asked < want {
+		r.t.Fatalf("the %s stand-in was asked %d times for a request carrying the task within %s of the ladder's last send, want %d",
+			provider, asked, ladderRequestBound, want)
+	}
+	return asked
 }
 
 // controllerIsTold reads the one notice the run of provider errors earns: at the sixth turn in a
@@ -679,22 +705,15 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 }
 
 // awaitFirstSend waits until the claim's pending task is task and the daemon has put it in front
-// of its agent, and answers the instant it did: the delivery's read mark, which the shim's
-// acknowledgement of that first prompt set. A provider error keeps the mark while it takes the
-// task back (supervise's takeBackPending), so the instant answered here stays the first send's
-// however far the ladder climbs afterwards.
-func (r *providerErrorLive) awaitFirstSend(token claim.Token, task string) time.Time {
+// of its agent: the delivery carries a read mark, which the shim's acknowledgement of a prompt of
+// it sets. It answers no time: the mark is the latest acknowledged send's, which every re-send of
+// the ladder sets again, so a read made after the second send would answer that send's time.
+func (r *providerErrorLive) awaitFirstSend(token claim.Token, task string) {
 	r.t.Helper()
-	var at time.Time
 	r.await(string(token)+" to be sent the task its start left pending", paneReady, func() bool {
 		held := r.claim(token)
-		if held.Pending == nil || held.Pending.Task != task || held.Pending.DeliveredAt == nil {
-			return false
-		}
-		at = *held.Pending.DeliveredAt
-		return true
+		return held.Pending != nil && held.Pending.Task == task && held.Pending.DeliveredAt != nil
 	})
-	return at
 }
 
 // awaitWarmedUp waits until the claim has answered the warm-up task its seed left pending and

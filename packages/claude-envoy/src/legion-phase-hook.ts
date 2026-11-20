@@ -543,8 +543,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // provider refusing the turn, and the machine takes it as one: it earns no
           // continuation, because the next turn would be refused the same way, and one timer,
           // because nothing else would wake this worker once the task that turn carried ended
-          // with it. What ends a session the provider keeps refusing is the daemon failing its
-          // claim on the outcomes the bridge reports, which the timer's own record check reads.
+          // with it. What ends a session the provider refuses with an error that cannot clear is
+          // the daemon failing its claim on the status the bridge reports for the turn, which the
+          // timer's own record check reads; an error that can clear fails nothing, and the
+          // daemon's ladder sends the task again.
           // Claude Code ignores whatever this hook returns, which costs nothing now that there
           // is nothing to return.
           await reminder.settle({ kind: "refused", message: event.lastAssistantMessage ?? "" })

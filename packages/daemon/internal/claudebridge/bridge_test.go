@@ -58,6 +58,8 @@ func TestMain(m *testing.M) {
 //   - "api-error-529 <text>": the same text, then the result a provider failure ends a turn with
 //     — `terminal_reason` "api_error" and `api_error_status` 529 — as the recordings carry it
 //     (testdata/api-error-529.jsonl:5);
+//   - "api-error-400 <text>": the same, with `api_error_status` 400, an error that cannot clear;
+//   - "api-error-999 <text>": the same, with `api_error_status` 999, which is no HTTP status;
 //   - "refusal <text>": the result a content filter's refusal ends a turn with, which is the
 //     same but names no `api_error_status` (testdata/refusal-turn.jsonl:5);
 //   - "max-turns": a result Claude Code's own turn limit ended, which is no provider failure;
@@ -180,6 +182,14 @@ func fakeClaude() int {
 		case strings.HasPrefix(body, "api-error-529 "):
 			assistant(text(strings.TrimPrefix(body, "api-error-529 ")))
 			providerFailed(529)
+			continue
+		case strings.HasPrefix(body, "api-error-400 "):
+			assistant(text(strings.TrimPrefix(body, "api-error-400 ")))
+			providerFailed(400)
+			continue
+		case strings.HasPrefix(body, "api-error-999 "):
+			assistant(text(strings.TrimPrefix(body, "api-error-999 ")))
+			providerFailed(999)
 			continue
 		case strings.HasPrefix(body, "refusal "):
 			assistant(text(strings.TrimPrefix(body, "refusal ")))

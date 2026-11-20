@@ -37,8 +37,14 @@ import (
 // The plugins' real-binary tests keep the same copy (packages/pi-shared/test/omp-natives.ts): the
 // same directory, name, layout, lock and fill, so either language fills it for the other. A change
 // to one is a change to both.
+//
+// It also ends, when the test ends, every process still running under home, and waits until
+// each has gone, before the TempDir holding home is removed (stopAtEnd): Oh My Pi's daemon
+// broker and the browser it runs lead sessions of their own, so no process group a test signals
+// holds them, and they write under home as they shut down.
 func OMPHome(t *testing.T, omp, home string) {
 	t.Helper()
+	stopAtEnd(t, home, homeStopGrace)
 	cache, err := nativesCache(omp)
 	if err != nil {
 		t.Fatalf("the natives cache for %s: %v", omp, err)

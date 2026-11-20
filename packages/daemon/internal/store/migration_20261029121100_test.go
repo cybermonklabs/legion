@@ -58,3 +58,31 @@ func TestAClaimsTurnOutcomesRoundTrip(t *testing.T) {
 			got.RefusedRun(), got.LastRefusal())
 	}
 }
+
+// A run of refused turns longer than the launch failure limit round-trips whole. The claim keeps
+// a key for each turn of the run while it goes on, and the provider's words on the newest few
+// (supervise's recordTurnOutcome), and those keys are the one thing that carries the run through a
+// restart: a restarted daemon reads the run of 25 the one before it counted, from these rows, not
+// the newest few.
+func TestALongRunOfRefusedTurnsRoundTripsWhole(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	c.TurnOutcomes = []supervise.TurnOutcome{{Generation: 1, Sequence: 4}}
+	for sequence := uint64(5); sequence <= 29; sequence++ {
+		o := supervise.TurnOutcome{Generation: 1, Sequence: sequence, Refused: true}
+		if sequence > 26 {
+			o.Message = "the provider is overloaded"
+		}
+		c.TurnOutcomes = append(c.TurnOutcomes, o)
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim with its reports: %v", err)
+	}
+
+	got := onlyClaim(t, store)
+	if got.RefusedRun() != 25 {
+		t.Fatalf("the claim read back derives a run of %d from %d reports, want the 25 it was written with", got.RefusedRun(), len(got.TurnOutcomes))
+	}
+	sameClaim(t, got, c)
+}

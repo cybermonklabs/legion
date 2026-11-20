@@ -1676,9 +1676,8 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "child-rerun.json", EmptyResponse{})
 }
 
-// The turn outcome's answer is what a producer's report of one turn comes back as: the run of
-// refused turns the claim's reports now end with, and whether this report took that run to the
-// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
+// The turn outcome's answer gives the run of refused turns the retained reports end with and the
+// claim's state after the report. It is a golden because `@legion/contracts` reads it
 // (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
 func TestTurnOutcomeResponseGolden(t *testing.T) {
 	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})

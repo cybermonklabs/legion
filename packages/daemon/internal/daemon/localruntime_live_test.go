@@ -38,8 +38,11 @@
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
 // Every child is started in a process group of its own (Setpgid) and every stop signals that
-// group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
-// behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
+// group, so Oh My Pi and the shim go together: the test's cleanup kills every group the runtime
+// ever started, whatever the proof did. What Oh My Pi starts in a session of its own, its daemon
+// broker and the browser that broker runs, is in no such group; the cleanup testbin.OMPHome
+// registers for the run's Oh My Pi HOME ends it after this one, so a failed or finished run
+// leaves no process behind.
 //
 // Two things here are a step's rather than a runtime's, and both are of that process group: a
 // step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
@@ -66,6 +69,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/testbin"
 )
 
 // localStopGrace is how long a stop waits for a child to end after the shutdown frame and then
@@ -679,29 +683,13 @@ func parseLocalIncarnation(s string) (pid int, ticks uint64, err error) {
 	return pid, ticks, nil
 }
 
-// startTicks is pid's start ticks — field 22 of /proc/<pid>/stat, counted after the parenthesised
-// command name, which may itself hold spaces and brackets — or running=false when the process is
-// gone.
+// startTicks is pid's start ticks (testbin.ProcessStat, the decoder of /proc/<pid>/stat the tests
+// share), or running=false when the process is gone. A zombie still counts as running here: its
+// pid is not free until it is reaped.
 func startTicks(pid int) (ticks uint64, running bool, err error) {
-	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, false, nil
-		}
+	_, ticks, gone, err := testbin.ProcessStat(pid)
+	if err != nil || gone {
 		return 0, false, err
-	}
-	_, rest, ok := strings.Cut(string(stat), ") ")
-	if !ok {
-		return 0, false, fmt.Errorf("malformed /proc/%d/stat line: %s", pid, strings.TrimSpace(string(stat)))
-	}
-	// Field 3 (state) onwards, so starttime (field 22) is index 22-3.
-	fields := strings.Fields(rest)
-	const starttime = 22 - 3
-	if len(fields) <= starttime {
-		return 0, false, fmt.Errorf("malformed /proc/%d/stat line (no starttime field)", pid)
-	}
-	if ticks, err = strconv.ParseUint(fields[starttime], 10, 64); err != nil {
-		return 0, false, fmt.Errorf("malformed /proc/%d/stat starttime: %w", pid, err)
 	}
 	return ticks, true, nil
 }
@@ -710,4 +698,44 @@ func startTicks(pid int) (ticks uint64, running bool, err error) {
 func alive(pid int) bool {
 	_, running, err := startTicks(pid)
 	return err == nil && running
+}
+
+// The local runtime tells a child it started from a later process given the same pid by the start
+// ticks it read at the launch (startTicks, through testbin.ProcessStat). A child whose command name
+// holds spaces and parentheses reads the ticks its record holds, and a reaped one reads as gone.
+func TestTheLocalRuntimeReadsAChildsStartTicksWhateverItIsNamed(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("no sleep on PATH to name")
+	}
+	const name = "a (b) c"
+	named := filepath.Join(t.TempDir(), name)
+	if err := os.Symlink(sleep, named); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(named, "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start %q: %v", named, err)
+	}
+	pid := cmd.Process.Pid
+	record, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, found := strings.CutPrefix(string(record), strconv.Itoa(pid)+" ("+name+") ")
+	if !found {
+		t.Fatalf("the record of %s does not name it %q: %s", named, name, record)
+	}
+	want, err := strconv.ParseUint(strings.Fields(after)[22-3], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ticks, running, err := startTicks(pid); err != nil || !running || ticks != want {
+		t.Fatalf("startTicks(%d) = %d, running %t, %v; want %d, running", pid, ticks, running, err, want)
+	}
+	_ = cmd.Process.Kill()
+	_ = cmd.Wait()
+	if _, running, err := startTicks(pid); running || err != nil {
+		t.Fatalf("startTicks(%d) after the reap = running %t, %v; want gone", pid, running, err)
+	}
 }

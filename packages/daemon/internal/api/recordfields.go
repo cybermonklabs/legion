@@ -160,7 +160,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "LastReady", Column: ColumnAgents, Keys: []string{"lastReady"},
 		Reason: "when the agent last said it could be prompted, which is what dates the two causes above"},
 	{Field: "TurnOutcomes", Column: ColumnWithheld,
-		Reason: "the window the run of refused turns is derived from, whose count reaches a reader as the failure's own sentence"},
+		Reason: "the window the run of refused turns is derived from, which reaches a reader as the turn-outcome answer's refusedRun and as the run the controller's notice names"},
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
