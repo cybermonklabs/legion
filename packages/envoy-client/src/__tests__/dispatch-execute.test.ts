@@ -12235,7 +12235,7 @@ describe("executeDispatchTool", () => {
   test("names a difference past character 200 of its line whole", async () => {
     const control = `negative_control="${"Without the check, a reordered block is refused. ".repeat(5)}The count of refusals goes from 0 to > 0."`;
     // The store writes a `>` in an attribute's value as `&gt;` (escapeDirectiveAttribute).
-    const storedControl = control.replace(">", "&gt;");
+    const storedControl = control.replaceAll(">", "&gt;");
     const opener = (attribute: string) =>
       `:::check{#c-long serves="dispatch://DSP-42/spec#b-r-one" surface="cli" when="before_merge" ${attribute}}`;
     const document = (attribute: string) =>
