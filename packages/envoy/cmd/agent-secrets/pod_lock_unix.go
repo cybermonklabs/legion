@@ -14,18 +14,21 @@ import (
 	"os"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // lockEnrollDir takes an exclusive flock on path, waiting for whoever holds it, and answers the
-// release.
+// release. Its errors name the lock by the directory's flag (outDir), never its path: the
+// directory holds key.pem.
 func lockEnrollDir(path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open the enrollment lock %s: %w", path, err)
+		return nil, fmt.Errorf("open the enrollment lock in %s: %w", outDir, redact.File(err))
 	}
 	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("lock %s: %w", path, err)
+		return nil, fmt.Errorf("lock the enrollment lock in %s: %w", outDir, err)
 	}
 	return func() {
 		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
