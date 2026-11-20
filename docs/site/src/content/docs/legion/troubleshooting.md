@@ -1726,9 +1726,15 @@ notice comes once per handoff commit, from whichever read finds it first.
     applied` (with `classification`, `stale` or `conflict`). A settlement delivered again after
     it applied writes no line.
 
-  A published settlement with no `CI settled` message and no drop line was lost between the
-  listener and the daemon. No line at all for a finished head means that no event of that head
-  reached the listener's record.
+  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  - The daemon applied it, and the line it would tell is the line it already told for that head,
+    so it tells nobody again. The earlier `CI settled` message of that head stands for it.
+  - The daemon applied it on a tree that lingers after its root left the workflow, where the
+    daemon tells nobody.
+  - In every other case, it was lost between the listener and the daemon.
+
+  No line at all for a finished head means that no event of that head reached the listener's
+  record.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
