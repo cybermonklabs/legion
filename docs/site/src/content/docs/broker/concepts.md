@@ -893,12 +893,13 @@ The broker evaluates every name
   hands the command a placeholder, and the proxy mints the profile's token itself, for the grant's
   target and with the same cut, keeps it until five minutes before it expires, and puts it in
   place of the placeholder only in the requests the block allows.
-  The exec form's `--github-token` narrows nothing: the release holds the
-  same JSON object of installations, and the flag decides what the exec form puts in the
-  command's environment. With it the name holds that one installation's token alone, which is
-  what a command sends to GitHub, and without it the name holds the whole object.
-  `--github-token` needs `--github-owner`, and nothing runs where the release holds other than
-  one installation or where no name of the grant released a github-app value. A Google login
+  The exec form puts a profile's release in the command's environment under the profile's name
+  as the broker hands it over: the JSON object of installations, or that one account's bare token
+  for a profile whose `github.value` is `token`, which is what a command sends to GitHub.
+  `agent-secrets NAME --target ACCOUNT -- command`, or one `--target ACCOUNT/REPOSITORY` for each
+  repository of one account, signs the target into the request and narrows a run of that one
+  name; the client refuses a target of two accounts, or a run of two names with a target, with
+  exit 2 before it sends anything. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare
