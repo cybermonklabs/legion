@@ -130,7 +130,7 @@ test("a read of the Inbox asked while a bulk snooze is out waits until the last 
       await settle();
     });
     expect(await submitted).toEqual({
-      failed: [{ askId: "ask-2", reason: "snoozed_until is too far" }],
+      failed: [{ askId: "ask-2", reason: "snoozed_until is too far", stopped: false }],
     });
     await waitFor(() => expect(getInbox.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() => expect(hook.result.current.inbox).toEqual(served.rows));
@@ -707,7 +707,7 @@ test("a bulk snooze waits for no event of an ask Dispatch refused, and the next 
       await settle();
     });
     expect(await submitted).toEqual({
-      failed: [{ askId: "ask-1", reason: "snoozed_until is too far" }],
+      failed: [{ askId: "ask-1", reason: "snoozed_until is too far", stopped: false }],
     });
     expect(getInbox).toHaveBeenCalledTimes(1);
     expect(snoozedUntil(hook.result.current.inbox)).toEqual([null, UNTIL, UNTIL]);

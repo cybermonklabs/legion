@@ -65,6 +65,7 @@ const idlePriorityWrite: IssuePriorityWrite = {
   pending: false,
   retry: () => undefined,
   shown: null,
+  stopped: undefined,
   submit: () => undefined,
 };
 
