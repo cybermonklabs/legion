@@ -674,8 +674,10 @@ func movedCarriedRole(t *testing.T, afterMove bool) {
 	ctx, pool, records, trees, sup, rt, engine, admission := fixture.ctx, fixture.pool, fixture.records, fixture.trees, fixture.sup, fixture.rt, fixture.engine, fixture.admission
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		for _, put := range []error{
-			records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: childKey, Project: "LEGION", Status: "done", Blockers: []string{blockerKey}, Seq: 1}),
-			records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: blockerKey, Project: "LEGION", Status: "todo", Seq: 1}),
+			records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: childKey, Project: "LEGION", Seq: 1,
+				Status: record.Carry("done"), Parent: record.Carry(""), Blockers: record.Carry([]string{blockerKey})}),
+			records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: blockerKey, Project: "LEGION", Seq: 1,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}),
 		} {
 			if put != nil {
 				return put
