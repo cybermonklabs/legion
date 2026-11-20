@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 173: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 182: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
 // in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
 // entry for each repository a live record names, under the name the records keep, sorted by its
@@ -2438,7 +2471,7 @@ package api
 // the live records hold. `owners`, `mapped` and `refused` are gone, and with them each entry's
 // `default`, which the daemon no longer knows. A plugin of 152 reads the block with a schema that
 // requires those three keys and would refuse the whole state without them, so a caller in a pod
-// whose claims record a contract below 173 is served the block in 152's shape, written from the
+// whose claims record a contract below 182 is served the block in 152's shape, written from the
 // same entries (api's repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped`
 // are the entries both role Apps are installed on, under the name each is served under, every
 // `default` false; `refused` is each other entry with its `readError`, the App not installed on
@@ -2447,18 +2480,14 @@ package api
 // controller start`, a tmux pane — is served the new block whatever its plugin, and the boot gate
 // and `legion probe-image` keep a tmux pane's plugin at this contract.
 // `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
-// `state-narrowed-repositories.json` is the body a pod at 172 is served.
-// (This change takes 173, a number above main's 168 that no other open pull request declares: a
-// census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 244 open pull requests of
-// this repository, taken at 2026-11-19T16:55:11Z, reads above main's 168: 169 (#3831 and #4065),
-// 170 (#2230, #4030, #4173, #4180 and #4193), 171 (#4115, #4485 and #4495), 172 (#3659), 173 (this
-// pull request, #4493 alone) and 174 (#4273). This entry stood at 167, the lowest number above
-// main's 152 that no open head declared at the census of 2026-11-19T00:00:15Z, then at 169 from
-// the census of 2026-11-19T09:09:18Z, and at 173 from the census of 2026-11-19T14:55:51Z, when
-// main stood at 160 and two other heads, #3831 and #4065, had taken 169 as well. Each of those
-// numbers is the number that head declared at that reading and no head's for good. Read main's
-// own number and every open pull request's again at the next forward merge rather than from this
-// line, as
+// `state-narrowed-repositories.json` is the body a pod at 181 is served.
+// (This change takes 182, the lowest number above main's 178 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 241 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T01:09:39Z to 01:20:55Z, which named above main's
+// 178: 179 (#4392 and #4540), 180 (#4049 and #4175) and 181 (#4553). This entry stood at 167, 169
+// and 173 before, each the number it took at an earlier census and no head's for good. Read
+// main's own number and every open pull request's again at the next forward merge rather than
+// from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 173
+const DaemonAPIVersion = 182

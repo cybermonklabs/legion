@@ -97,6 +97,7 @@ on:
       - 'packages/daemon/internal/ompdirs/*'
       - 'packages/daemon/internal/omplaunch/*'
       - 'packages/daemon/internal/ompsessions/*'
+      - 'packages/daemon/internal/pause/*'
       - 'packages/daemon/internal/phase/*'
       - 'packages/daemon/internal/pods/**'
       - 'packages/daemon/internal/podsafety/**'

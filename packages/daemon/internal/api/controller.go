@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/controller"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -391,7 +392,8 @@ func (s *server) registerLaunchedController(w http.ResponseWriter, r *http.Reque
 
 // controllerSessionGrant is the grants route's controller-session form: the session registered
 // with the current capability, proving the secret its registration was issued, mints a controller
-// grant. Anything else answers the claim form's refusal.
+// grant that names that session (credential.Grant.Session). Anything else answers the claim form's
+// refusal.
 func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, req GrantRequest) {
 	s.controllerMu.Lock()
 	defer s.controllerMu.Unlock()
@@ -408,7 +410,8 @@ func (s *server) controllerSessionGrant(w http.ResponseWriter, r *http.Request, 
 	if s.refuseIfStaleController(w, r, stored) {
 		return
 	}
-	s.mintControllerGrant(w)
+	grant, err := s.grants.MintController(req.SessionID)
+	s.writeControllerGrant(w, grant, err)
 }
 
 // controllerSessionRegistered is the one authentication of a controller session against its
@@ -465,9 +468,10 @@ func (s *server) refuseIfStaleControllerSession(w http.ResponseWriter, r *http.R
 	return s.refuseIfStaleController(w, r, record)
 }
 
-// mintControllerGrant answers a controller grant for a caller its route has authorised.
-func (s *server) mintControllerGrant(w http.ResponseWriter) {
-	grant, err := s.grants.MintController()
+// writeControllerGrant answers the controller grant a route minted for a caller it has authorised:
+// the operator's bearer (grant's empty form) or the registered controller session
+// (controllerSessionGrant), or the failure of that mint.
+func (s *server) writeControllerGrant(w http.ResponseWriter, grant credential.Grant, err error) {
 	if err != nil {
 		s.log.Error("api: mint controller grant", "error", err)
 		writeFailure(w, http.StatusInternalServerError, "GRANT_MINT_FAILED", "could not mint grant")

@@ -1202,13 +1202,17 @@ WORKDIR /home/legion
 #    first run in the image, so the CodeGraph link also extracts OMP's native module from the
 #    binary (no network) into /home/legion/.omp/natives/<version>/ — the build's success is the
 #    check. From 18.11.0 OMP writes only the variant the CPU selects, so this is the build runner's
-#    (ubuntu-24.04, AVX2), 116 MiB; this layer ships it, so a pod whose node selects the same
+#    (ubuntu-24.04, AVX2), 123 MiB; this layer ships it, so a pod whose node selects the same
 #    variant extracts nothing, while a node that selects the other has each role write that one into
 #    its own home overlay's upper layer, on the pod's role-homes volume, at its first OMP run: up to
 #    six copies in an issue pod. The probes in the final step never wait on it.
-# Any failure fails the build: a broken image never publishes.
+# Any failure fails the build: a broken image never publishes. The pinned omp must list
+# --session-id in its help, which the fork's 18.18.6 builds do from 18.18.6-sami.20261117-074351
+# on: a pin older than that, such as 18.18.6-sami.20261117-013345, fails here. Nothing of Legion's
+# passes the flag yet; the check is a floor on the pin and does not prove the session leases that
+# OMP_SESSION_EXCLUSIVE relies on, which come with 18.18.6-sami.20261118-101239.
 RUN set -eu; \
-    bun --version; omp --version; jj --version; gh --version; git --version; codegraph --version; \
+    bun --version; omp --version; omp --help | grep -q -e '--session-id'; jj --version; gh --version; git --version; codegraph --version; \
     scratch="$(mktemp -d)"; \
     MISE_CACHE_DIR="$scratch/mise-cache" MISE_DATA_DIR="$scratch/mise-data" mise --version; \
     git init --quiet --bare "$scratch/origin.git"; \

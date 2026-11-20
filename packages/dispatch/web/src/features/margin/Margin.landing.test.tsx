@@ -7,6 +7,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
+import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
@@ -124,14 +125,6 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
       </QueryClientProvider>
     </MemoryRouter>
   );
-}
-
-/** One rendering frame. happy-dom runs animation frames as immediates, so this is one turn of the
- *  event loop - and a frame is the unit the hold's relayout window counts. */
-async function nextFrame(): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  requestAnimationFrame(() => done.resolve());
-  await done.promise;
 }
 
 /** Longer than the hold's relayout window, so what follows is judged on its own: whatever the

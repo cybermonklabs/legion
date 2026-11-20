@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnkeys"
@@ -398,11 +399,15 @@ exit %[2]d
 	if err := os.WriteFile(omp, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the recording omp: %v", err)
 	}
+	// Oh My Pi's directories are this HOME's: the plugin gate reads the process environment through
+	// ompdirs.ProfileRoot, so each variable that would move them is cleared, OMP_CONFIG_ROOT, which
+	// ProfileRoot honours over PI_CONFIG_DIR, included.
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("OMP_PROFILE", "")
 	t.Setenv("PI_CONFIG_DIR", "")
+	t.Setenv("OMP_CONFIG_ROOT", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("LEGION_OMP_PATH", omp)
@@ -1615,6 +1620,23 @@ func TestControllerStartDropsInheritedSlackChannels(t *testing.T) {
 	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
 		if value, set := env["LEGION_SLACK_CHANNELS"]; set {
 			t.Errorf("the %s's environment carries LEGION_SLACK_CHANNELS=%q", kind, value)
+		}
+	}
+}
+
+// A start from inside a resumed Legion pane inherits OMP_SESSION_EXCLUSIVE=1, the pair the runtime
+// tells a pane that resumes a recorded session. This controller resumes none, so neither it nor
+// its load probe is handed the variable, which would stop it where Oh My Pi moves a held session.
+func TestControllerStartDropsAnInheritedSessionExclusive(t *testing.T) {
+	d := newControllerDaemon(t)
+	c := newControllerStart(t, d, controllerOptions{})
+	t.Setenv(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
+	if code, _, errb := c.run(); code != 0 {
+		t.Fatalf("legion controller start = %d, stderr %q", code, errb)
+	}
+	for kind, env := range map[string]map[string]string{"load probe": c.probeEnv(), "controller": c.env()} {
+		if value, set := env[runtime.SessionExclusiveVariable]; set {
+			t.Errorf("the %s's environment carries %s=%q", kind, runtime.SessionExclusiveVariable, value)
 		}
 	}
 }

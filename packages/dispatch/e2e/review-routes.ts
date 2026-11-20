@@ -625,10 +625,12 @@ export function topBarInboxBadge(page: Page): Locator {
  *  it is the sum of reads that answer on their own time, so a page whose own content has settled
  *  can still draw a count that is about to change.
  *
- *  Measured on the review corpus: the broadcast page marks the planner's reply read as it draws
- *  it, and the rail's 7 becomes 6 once that write's event refetches the unread total. Three runs
- *  of the shot rows, waiting only for the page's own content, read that row as 7 in light and 6
- *  in dark, as 7 in both, and as 6 in both.
+ *  Measured on the review corpus while the broadcast page's read mark was still its own: the page
+ *  marked the planner's reply read as it drew it, and the rail's 7 became 6 once that write's event
+ *  refetched the unread total. Three runs of the shot rows, waiting only for the page's own
+ *  content, read that row as 7 in light and 6 in dark, as 7 in both, and as 6 in both. The seed
+ *  now writes that mark first (`e2e/review-seed.ts`), so the page's own write moves nothing; the
+ *  wait stays, since any page's number is still the sum of reads that answer on their own time.
  *
  *  A stable value alone is not enough, because a value can hold for any window while the read
  *  that will change it is in flight; an idle network alone is not enough either, because the

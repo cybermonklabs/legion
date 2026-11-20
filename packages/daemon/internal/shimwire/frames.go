@@ -677,11 +677,19 @@ type Prompt struct {
 
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
+//
+// Code is Oh My Pi's class of a refusal: a refused request's error response carries it at the
+// top level, right after Error (`RpcResponse` in packages/coding-agent/src/modes/rpc/rpc-types.ts
+// of cybermonklabs/oh-my-pi at the pinned tag). For a `prompt` or `abort_and_prompt` its one value
+// is `session_busy`: the prompt was refused, or failed, because the agent was busy (docs/rpc.md
+// there). Nothing in the daemon reads it; it is modelled so the frame survives this package
+// whole, as PromptError.Code is.
 type Response struct {
 	ID      string          `json:"id"`
 	Command string          `json:"command"`
 	Success bool            `json:"success"`
 	Error   string          `json:"error,omitempty"`
+	Code    string          `json:"code,omitempty"`
 	Data    json.RawMessage `json:"data,omitempty"`
 }
 
@@ -742,25 +750,34 @@ type PromptResult struct {
 }
 
 // PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable}`, the "failure detail of a `prompt_result` with
-// `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended with
-// stopReason "error" — a provider request its own retries could not get through, where
-// Retryable says it may still succeed later — and for one it failed outright before any turn.
+// provider?, model?, httpStatus?, retryable, code?}`, the "failure detail of a `prompt_result`
+// with `status: \"error\"`" (`RpcPromptError` in packages/coding-agent/src/modes/rpc/rpc-types.ts,
+// and docs/rpc.md, of cybermonklabs/oh-my-pi at the pinned tag). Oh My Pi writes it for a prompt
+// whose last assistant message ended with stopReason "error" — a provider request its own retries
+// could not get through, where Retryable says it may still succeed later — and for one it failed
+// outright before any turn.
 //
-// Only Message is read, as the reason a failed prompt is recorded with (PromptResult.Reason).
-// The other members are modelled so the frame survives this package whole, the way every other
-// frame does: a decode that kept only what today's reader wants would quietly drop the provider,
-// the model and the status behind a failure from anything that re-encodes it.
+// Code is Oh My Pi's class of the failure, when it gives one, and it declares two values there:
+// `cost_cap`, the session reached `session.maxCost`, and `session_busy`, the agent was busy: the
+// prompt was refused, or it waited at least 30 s and another run still held the agent.
+//
+// Message is the reason a failed prompt is recorded with (PromptResult.Reason), and
+// internal/stream carries Retryable, HTTPStatus, Provider and Model onto its own PromptResult
+// event. Nothing in the daemon reads Code: it is modelled, as the other members are, so the frame
+// survives this package whole, the way every other frame does. A decode that kept only what
+// today's reader wants would quietly drop the class, the provider, the model and the status
+// behind a failure from anything that re-encodes it.
 type PromptError struct {
 	Message    string `json:"message"`
 	Provider   string `json:"provider,omitempty"`
 	Model      string `json:"model,omitempty"`
 	HTTPStatus int    `json:"httpStatus,omitempty"`
 	Retryable  bool   `json:"retryable"`
+	Code       string `json:"code,omitempty"`
 }
 
 // Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the one thing the daemon reads of the failure.
+// that did not: the reason a failed prompt is recorded with.
 func (f PromptResult) Reason() string {
 	if f.Error == nil {
 		return ""

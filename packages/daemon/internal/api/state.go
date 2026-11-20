@@ -83,6 +83,15 @@ type State struct {
 	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
 	// for each of those claims (supervise.NoPluginSourceMessage).
 	ClaimsToRefresh int `json:"claimsToRefresh"`
+	// Paused is the project's open pause while the project is paused (dispatch://INFRA-3759,
+	// decision 25): who paused, since when and why, the claims whose stop it still waits on, and
+	// every row it holds (PausedView, PauseStateTx). Absent while the project runs, and from a body
+	// served a caller below pauseContract (server's withoutPause).
+	Paused *PausedView `json:"paused,omitempty"`
+	// LastPause is the project's newest ended pause while the project runs, with who ended it and
+	// when; absent while the project is paused, before any pause has ended, and from a body served
+	// a caller below pauseContract.
+	LastPause *PauseView `json:"lastPause,omitempty"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -436,7 +445,10 @@ type AgentSecretsLoginView struct {
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
 // name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead.
+// its own block a downgrade hides, with `omitzero` on those fields instead. The optional keys need
+// none of this: `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers
+// with `omitempty`, absent wherever the state holds none, which is how a band hides them too
+// (withoutPause).
 //
 // One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty

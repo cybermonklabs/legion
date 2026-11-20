@@ -556,11 +556,13 @@ provider_keys:
 - **`pane_env`** refuses `PATH` (the runtime composes it), every name the runtime sets on a pane
   (its own `LEGION_*` names, the XDG directories, the gh variables, `PI_CONFIG_FILES`,
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
-  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
+  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
+  resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
+  session it resumes), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
   gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
-  `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
+  `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
   `…_PASSWORD`, `…_PAT`, `…_GRANT`, `…_CREDENTIALS`, `PRIVATE_KEY`), and any value holding a URL
   with a password in it (`scheme://user:password@…`). A value on tmux's command line is readable by
@@ -732,6 +734,12 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
+  `_FILE` pointer every pane carries, and, with the reason `pane_env` gives, a key named for a
+  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
+  resumed Oh My Pi pane after the operator's variables, or a launch secret's pointer.
+  The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
+  `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs

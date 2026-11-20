@@ -165,10 +165,14 @@ on:
   workflow_dispatch:
     inputs:
       # The commit main pointed at before the push the bypass check read: envoy-go-checks compares
-      # every migration it holds with this run's tree, the range the push landed. A dispatch
-      # without it fails that check, which cannot tell what the run lands.
+      # every migration it holds with this run's tree, the range the push landed. A dispatch on
+      # main without it fails that check, which cannot tell what the run lands. A dispatch on
+      # another branch without it, a full run started by hand, compares with the branch's merge
+      # base with main (.github/scripts/edited-migrations-base.sh).
       migration-base:
-        description: The commit main pointed at before the push this run tests.
+        description: >-
+          The commit main pointed at before the push this run tests. A run on main must name it;
+          a run on another branch that names none compares with the branch's merge base with main.
         type: string
         required: false
 
@@ -379,6 +383,7 @@ jobs:
       find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
@@ -860,6 +865,7 @@ jobs:
               - 'packages/daemon/internal/ompdirs/*'
               - 'packages/daemon/internal/omplaunch/*'
               - 'packages/daemon/internal/ompsessions/*'
+              - 'packages/daemon/internal/pause/*'
               - 'packages/daemon/internal/phase/*'
               - 'packages/daemon/internal/pods/**'
               - 'packages/daemon/internal/podsafety/**'
@@ -1063,6 +1069,7 @@ jobs:
               - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/process-tree.sh'
               - 'scripts/e2e/lib/built-from.sh'
               - 'packages/pi-legion/package.json'
               - 'packages/pi-envoy/package.json'
@@ -1216,6 +1223,7 @@ jobs:
               - '!packages/daemon/internal/ompdirs/**/*_test.go'
               - '!packages/daemon/internal/omplaunch/**/*_test.go'
               - '!packages/daemon/internal/ompsessions/**/*_test.go'
+              - '!packages/daemon/internal/pause/**/*_test.go'
               - '!packages/daemon/internal/phase/**/*_test.go'
               - '!packages/daemon/internal/podsafety/**/*_test.go'
               - '!packages/daemon/internal/procgroup/**/*_test.go'
@@ -1663,6 +1671,12 @@ jobs:
               # :198-210 holds every run: step of the bypass workflow to a shell with pipefail,
               # and :216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload.
               - '.github/workflows/main-bypass-check.yaml'
+            edited_migrations_base_test: &edited_migrations_base_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/edited-migrations-base.test.sh'
+              - '.github/scripts/edited-migrations-base.sh'
             dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1819,6 +1833,7 @@ jobs:
               - *find_pr_payload_test
               - *merge_group_cancels_test
               - *main_bypass_check_test
+              - *edited_migrations_base_test
               - *dispatch_browser_latest_blobs_test
               - *dispatch_browser_run_reads_test
               - *dispatch_browser_samples_test
@@ -4468,6 +4483,7 @@ jobs:
               - 'packages/daemon/internal/ompdirs/*'
               - 'packages/daemon/internal/omplaunch/*'
               - 'packages/daemon/internal/ompsessions/*'
+              - 'packages/daemon/internal/pause/*'
               - 'packages/daemon/internal/phase/*'
               - 'packages/daemon/internal/pods/**'
               - 'packages/daemon/internal/podsafety/**'
@@ -5327,6 +5343,7 @@ jobs:
       find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
+      edited_migrations_base_test: ${{ needs.changes.outputs.edited_migrations_base_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
       dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}

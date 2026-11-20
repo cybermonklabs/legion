@@ -74,6 +74,10 @@ export interface ExecuteDispatchToolInput {
    *  off, or no answer from its listener); called only by a write that would name its owner as
    *  unsubscribed. A write names the owner the session is not subscribed to only from this. */
   readonly subscriptions?: () => Promise<readonly string[] | null>;
+  /** The CLI's `--dry-run` of a call whose dry run Dispatch answers (`dryRunAsksDispatch`): the
+   *  command asks Dispatch what its write would answer and writes nothing. No other call is run
+   *  with it (`executeDispatchTool`). */
+  readonly dryRun?: boolean;
 }
 
 export interface DispatchToolResult {

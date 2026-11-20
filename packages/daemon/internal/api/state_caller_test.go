@@ -263,6 +263,22 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPausedKey is a state body with no `paused`, which is what a caller below pauseContract is
+// served of a state (api's withoutPause). It serves the table below as withoutQuietKeys does.
+func withoutPausedKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "paused")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its pause: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -484,6 +500,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// that added them), so a pod at it or above is served them and every older pod is not.
 		// The three leave together (withoutEntryTimes), so one column answers for all of them.
 		times bool
+		// pause is whether the caller is served the project's pause, `paused` here
+		// (pauseContract, the contract that added it beside `lastPause`), so a pod at it or above
+		// is served the key and every older pod is not.
+		pause bool
 		// repos is whether the caller is served the repositories block this contract writes,
 		// `live` beside `caches` and `withoutWebhookApp` (repositoriesLiveContract), so a pod at
 		// it or above is served that block and every older pod the block in contract 152's shape,
@@ -525,18 +545,24 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// too, and the assignments and every key a later row adds are still held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
 		// The band from assignmentsContract to below entryTimesContract: the assignments are
-		// served too, and the entry times and the architect-stalled arms are held back, at the
-		// band's foot and at its top alike.
+		// served too, the entry times, the architect-stalled arms and the pause are held back,
+		// and the repositories block is served in contract 152's shape, at the band's foot and
+		// at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		// The band from entryTimesContract to below repositoriesLiveContract, the last band under
-		// the declared contract: the entry times are served too, and the repositories block is
-		// served in contract 152's shape, at the band's foot and at its top alike.
+		// The band from entryTimesContract to below pauseContract: the entry times and the arms
+		// are served too, the pause is held back, and the repositories block is served in
+		// contract 152's shape, at the band's foot and at its top alike.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod just below repositoriesLiveContract", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, repos: true},
+		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		// The band from pauseContract to below repositoriesLiveContract, the last band under the
+		// declared contract: the pause is served too, and the repositories block is served in
+		// contract 152's shape, at the band's foot and at its top alike.
+		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
+		{name: "a pod just below repositoriesLiveContract", remote: statePodAddr + ":41000", claims: podClaims(repositoriesLiveContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, repos: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, repos: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, repos: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -589,6 +615,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.times {
 					want = withoutEntryTimeKeys(t, want)
 				}
+				if !tc.pause {
+					want = withoutPausedKey(t, want)
+				}
 				if !tc.repos {
 					want = withRepositoriesAt152(t, want)
 				}
@@ -635,7 +664,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
-			// and with the repositories block in contract 152's shape, the block
+			// with the project's pause gone, the `paused` contract 178 added (withoutPause), and
+			// with the repositories block in contract 152's shape, the block
 			// repositoriesLiveContract replaced (withoutRepositoriesLive).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
@@ -651,6 +681,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(want, ClaimsToRefreshField)
 			}
 			delete(want, "contract")
+			delete(want, "paused")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
@@ -1027,7 +1058,7 @@ func TestTheStateServedToAPodBeforeTheRepositoriesContractLeavesTheNextCallersSt
 // is either number moved: a constant left at 152, or renumbered without its entry, fails the
 // first check, and a DaemonAPIVersion renumbered below it fails the second.
 func TestTheRepositoriesContractIsTheContractThatChangedTheBlock(t *testing.T) {
-	const changedTheBlock = 173
+	const changedTheBlock = 182
 	if repositoriesLiveContract != changedTheBlock {
 		t.Fatalf("repositoriesLiveContract = %d, want %d, the contract whose entry in version.go made the block `live`, `caches` and `withoutWebhookApp`",
 			repositoriesLiveContract, changedTheBlock)

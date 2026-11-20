@@ -464,7 +464,7 @@ func TestTheNextPodAfterARenameWorksTheNewNameWithTheSavedWorkspace(t *testing.T
 		t.Errorf("the next launch's spec works %s at %s, want %s at main: the pod after the rename works the new name",
 			spec.Repository, spec.DefaultBranch, renameTo)
 	}
-	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute))
+	saved, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, "legion", key, "pod-after-the-rename", time.Now().UTC().Add(time.Minute))
 	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != "PACK" || saved.Head != "abc" || saved.PodUID != releasedPodUID {
 		t.Errorf("the next pod's restore took %v of a bundle with head %q off %q (%v), want the bundle the release saved off %s sent to it",
 			take, saved.Head, saved.PodUID, err, releasedPodUID)
@@ -627,6 +627,11 @@ func (c closeAuthority) IssueSuspension(context.Context, string, store.IssueClos
 	return c.authorized, nil
 }
 
+// EndPausePodHold: the stand-in holds no pause, so the end of a pod's hold finds none.
+func (c closeAuthority) EndPausePodHold(context.Context, string, string, store.PausePodHoldEnd, time.Time) (bool, error) {
+	return false, nil
+}
+
 // An issue close the store authorizes ends the issue's pod, and its end writes the new name and
 // drops the repository kept for the issue without reading the Sandbox the runtime may still hold;
 // a close the store refuses finishes without acting, may leave the pod standing, and ends
@@ -653,7 +658,7 @@ func TestAnIssueCloseEndsItsPodOnlyWhenTheStoreAuthorizedIt(t *testing.T) {
 			w := &workflowRuntime{pool: pool, dispatchProject: "LEGION", stateDir: t.TempDir(), repositories: transferredRepositories(),
 				log: quietLogger(), launched: map[string]ghbranch.Repository{strings.ToLower(key): {Name: ghrepo.MustParse(renameFrom), DefaultBranch: "main"}}}
 			runner := &outbox{pool: pool, records: record.NewStore(), project: "legion", dispatchProject: "LEGION", supervisor: sup,
-				trees: closeAuthority{authorized: tc.authorized}, log: quietLogger()}
+				trees: closeAuthority{authorized: tc.authorized}, log: quietLogger(), now: time.Now}
 			runner.podEnded = w.podEndsOn(rt)
 
 			if err := runner.execute(ctx, mustOutboxRow(t, key, record.IssueSuspend{Tree: key, Generation: 1, TreeGeneration: 1}, time.Now())); err != nil {

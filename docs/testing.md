@@ -143,7 +143,7 @@ itself, whose tests import its sources by relative path.
   -v`, and give it the CPU and memory limits "Containers a test starts" below requires.
 
 - Two caches stay where their tool puts them, under the user's cache directory, and this is the one
-  rule here that holds only under a condition. Oh My Pi's native modules, about 116 MiB a pin, are
+  rule here that holds only under a condition. Oh My Pi's native modules, about 123 MiB a pin, are
   hardlinked into each test's fresh HOME from one copy per binary at
   `$XDG_CACHE_HOME/legion/test-omp-natives`, or `$HOME/.cache/legion/test-omp-natives` where
   `XDG_CACHE_HOME` is unset (`nativesCacheRoot` in `packages/pi-shared/test/omp-natives.ts`);
@@ -162,6 +162,27 @@ itself, whose tests import its sources by relative path.
   it. So the permission holds only while `XDG_CACHE_HOME` is honoured and the pod points it at its
   own volume, which Legion's runtime does for every role (`/legion/scratch/cache`). With
   `XDG_CACHE_HOME` unset in a pod, that cache is no longer a tool's cache but the pod's death.
+
+## A test that looks for a process it started
+
+A test, and each script library that a test runs, reads one process by its pid: its command line
+from `/proc/<pid>/cmdline`, its parent, process group and session from `/proc/<pid>/stat`, and its
+children from `/proc/<pid>/task/*/children`. `scripts/e2e/lib/process-tree.sh`, which
+`scripts/e2e/lib/rig.sh` sources, has `proc_parent`, `proc_group`, `proc_children` and
+`proc_describe`. Each of them asks `ps` or `pgrep` only on a host with no `/proc`, but for
+`proc_children`, which also asks `pgrep -P` where a process's `task/<tid>/children` file is
+missing (a kernel built without `CONFIG_PROC_CHILDREN`).
+
+`pgrep` reads every process on the machine, and so does procps-ng's `ps` with `-p`: one
+`ps -o args= -p PID` opened `/proc/<pid>/stat` 12,564 times on the dev box at 12,086 to 13,662
+processes. There one `pgrep` or `ps -p` took 0.59 to 0.97 s at a load of 365 to 375, and a read of
+one process's file took 1 to 3 ms. A `Bun.spawnSync` holds the test file's one event loop until its
+child ends, so each such read also holds every timer of the file, Bun's timeout of the row
+included.
+
+When a test waits for a process that the code under test starts, the code tells the test that
+process's pid. A command that a test hands to the code, such as a `!` token command or a stand-in,
+writes its own pid (`echo $$ >FILE`) as its first act.
 
 ## A Dispatch unit test runs in random order
 
