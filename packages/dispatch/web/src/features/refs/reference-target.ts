@@ -66,6 +66,17 @@ const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryS
 
 export { refetchFailedOnFocus };
 
+/**
+ * The options of a read that events keep fresh, spread into its query: window focus fetches it
+ * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
+ * neither a focus nor a mount reads it again while it holds an answer. What reads it again is an
+ * event whose refresh rule names its key (`api/event-refresh.ts`), or a gap in the feed.
+ */
+export const EVENT_FRESH = {
+  refetchOnWindowFocus: refetchFailedOnFocus,
+  staleTime: Number.POSITIVE_INFINITY,
+} as const;
+
 export interface ReferenceTarget {
   readonly title: string | undefined;
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's

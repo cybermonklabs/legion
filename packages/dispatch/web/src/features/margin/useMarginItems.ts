@@ -27,6 +27,8 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useMarginDrawer } from "../issue-page/margin-slot";
+import { EVENT_FRESH } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -343,6 +345,11 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
+  // The drawer is the new issue page's alone, whose outline reads these comments under this key
+  // and keeps them fresh by events (`useIssueTree.ts`): there a window focus 30 s after the read,
+  // the app's staleness, would fetch them again for nothing. Every other page keeps the app's
+  // defaults.
+  const drawer = useMarginDrawer();
   const comments = useQuery({
     enabled: owner !== undefined,
     queryKey: commentsQueryKey,
@@ -354,6 +361,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    ...(drawer === undefined ? undefined : EVENT_FRESH),
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
