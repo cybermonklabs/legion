@@ -99,6 +99,24 @@ expect_status() {
   [ "$status" = "$1" ] || fail "$2: HTTP $status, want $1: $(head -c 600 "$work/body")"
 }
 
+# event_log_reaches BUILD CALLER ID: BUILD's event log, as CALLER reads it, holds an event at ID or
+# above.
+event_log_reaches() {
+  send "$1" "$2" GET "/api/v1/events/log?after=$(($3 - 1))&limit=1"
+  [ "$status" = 200 ] && jq -e --argjson id "$3" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
+}
+
+# indexed BUILD...: each BUILD's meaning index, as carol reads it, owes no vector: no searchable
+# item lacks one (GET /api/v1/search/coverage's total.lacking). A build with no embedder has
+# nothing current, so every item lacks one and it never reads indexed.
+indexed() {
+  local build
+  for build in "$@"; do
+    send "$build" carol GET /api/v1/search/coverage
+    [ "$status" = 200 ] && jq -e '.total.items > 0 and .total.lacking == 0' "$work/body" >/dev/null || return 1
+  done
+}
+
 # remember BUILD LABEL VALUE records VALUE, an id BUILD's seed wrote new, under LABEL: the mask
 # reads it as <LABEL>, and a path names it as {LABEL} (resolve). The mask replaces VALUE wherever it
 # stands in an answer, so a value shorter than eight bytes, which could stand inside other text, is
@@ -275,13 +293,31 @@ mask() {
       | reduce $epoch_instants[] as $member (.; gsub("\"\($member)\":[0-9]+"; "\"\($member)\":<time>"))' "$file"
 }
 
+# The response headers are compared beside the status and the body, each `name: value` line with
+# the name in lower case, the status line left out, sorted, and masked as the body is. The value of
+# each header below is masked as <masked>, with why it differs between two answers of one server,
+# and its line is kept, so a header one answer sends and the other does not still differs:
+#   date            the answer's own time
+#   content-length  the raw body's length; the bodies are compared masked, and an id or a duration
+#                   the mask names can be a byte longer in one answer
+#   etag            a digest of the raw body, which holds each server's own ids
+readonly masked_headers='date|content-length|etag'
+
 # keep_answer NAME BUILD [EXTRA] keeps the last answer, masked as BUILD's (mask), as
-# $work/answers/NAME.status and NAME.body, for same_answers, and the body as it was sent as
-# NAME.raw.
+# $work/answers/NAME.status, NAME.body and NAME.headers (masked_headers), for same_answers, and
+# the body as it was sent as NAME.raw. A socket's answer, whose status is no HTTP status, has no
+# headers.
 keep_answer() {
   printf '%s' "$status" >"$work/answers/$1.status"
   cp "$work/body" "$work/answers/$1.raw"
   mask "$2" "$work/body" "${3:-}" >"$work/answers/$1.body"
+  if [[ "$status" =~ ^[0-9]{3}$ ]]; then
+    tr -d '\r' <"$work/headers" | sed -E '1d; /^$/d; s/^([^:]+):[[:space:]]*/\L\1\E: /' |
+      sed -E "s/^($masked_headers): .*/\1: <masked>/" | LC_ALL=C sort >"$work/answers/$1.header-lines"
+    mask "$2" "$work/answers/$1.header-lines" "${3:-}" >"$work/answers/$1.headers"
+  else
+    : >"$work/answers/$1.headers"
+  fi
 }
 
 # first_difference A B prints the 1-based offset of the first byte at which the files A and B
@@ -302,28 +338,56 @@ first_difference() {
 # name more answers that differ than it judged.
 compared=0
 differed=0
-# same_answers WHAT LEFT RIGHT: the answers kept as LEFT and RIGHT (keep_answer) are the same
-# status and the same bytes. Bytes the two requests were sent alike are the same answer before any
-# mask: a caller cannot tell them apart, and a mask could only part them (a refusal that names the
-# caller's own list, which a fill also names). Other bytes are compared masked, each with its own
-# fill. A pair that differs is written to $work/differences under WHAT, with both answers around
-# the first byte that differs; no_difference reads that file.
+# same_answers WHAT LEFT RIGHT [LEFT_LINE RIGHT_LINE]: the answers kept as LEFT and RIGHT
+# (keep_answer) are the same status, the same bytes and the same headers. Bytes the two requests
+# were sent alike are the same answer before any mask: a caller cannot tell them apart, and a mask
+# could only part them (a refusal that names the caller's own list, which a fill also names). Other
+# bytes are compared masked, each with its own fill. LEFT_LINE and RIGHT_LINE, each a header line
+# or empty, are the lines the two servers are declared to answer apart: LEFT's headers must hold
+# LEFT_LINE and RIGHT's RIGHT_LINE, and each line is dropped from both before they are compared. A
+# pair that differs, however many of these it breaks, counts once, and is written to
+# $work/differences under WHAT, with both answers around the first byte that differs or both
+# headers that differ; no_difference reads that file.
 same_answers() {
-  local what=$1 left=$work/answers/$2 right=$work/answers/$3 at
+  local what=$1 left=$work/answers/$2 right=$work/answers/$3 at differs=0 side line
+  local -a drop=()
   compared=$((compared + 1))
   printf '%s\n' "$(<"$right.status")" >>"$work/statuses"
   if [ "$(<"$left.status")" != "$(<"$right.status")" ]; then
-    differed=$((differed + 1))
+    differs=1
     printf '%s: %s answered HTTP %s, %s HTTP %s\n   %s: %s\n   %s: %s\n' "$what" "$2" "$(<"$left.status")" \
       "$3" "$(<"$right.status")" "$2" "$(head -c 400 "$left.body")" "$3" "$(head -c 400 "$right.body")" >>"$work/differences"
   elif cmp -s "$left.raw" "$right.raw"; then
     :
   elif at=$(first_difference "$left.body" "$right.body"); then
-    differed=$((differed + 1))
+    differs=1
     printf '%s (HTTP %s): the answers differ at byte %s\n   %s: %s\n   %s: %s\n' "$what" "$(<"$right.status")" "$at" \
       "$2" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$left.body" | head -c 240)" \
       "$3" "$(tail -c +"$((at > 120 ? at - 120 : 1))" "$right.body" | head -c 240)" >>"$work/differences"
   fi
+  for side in "$2" "$3"; do
+    line=${4:-}
+    [ "$side" = "$2" ] || line=${5:-}
+    [ -n "$line" ] || continue
+    drop+=(-e "$line")
+    grep -qxF "$line" "$work/answers/$side.headers" && continue
+    differs=1
+    printf '%s: %s answered no "%s": %s\n' "$what" "$side" "$line" \
+      "$(grep -i "^${line%%:*}:" "$work/answers/$side.headers" || echo 'the header is absent')" >>"$work/differences"
+  done
+  for side in "$left" "$right"; do
+    if [ ${#drop[@]} -gt 0 ]; then
+      grep -vxF "${drop[@]}" "$side.headers" >"$side.headers.compared" || true
+    else
+      cp "$side.headers" "$side.headers.compared"
+    fi
+  done
+  if ! cmp -s "$left.headers.compared" "$right.headers.compared"; then
+    differs=1
+    printf '%s: the headers differ:\n%s\n' "$what" "$(diff "$left.headers.compared" "$right.headers.compared" |
+      sed -nE "s/^< /   $2: /p; s/^> /   $3: /p")" >>"$work/differences"
+  fi
+  [ "$differs" = 0 ] || differed=$((differed + 1))
 }
 
 # judge STATUS PROBLEM counts one answer held to a rule of its own rather than beside another (a
