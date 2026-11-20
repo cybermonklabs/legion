@@ -178,19 +178,27 @@ func (s *Store) OpenPausePodHolds(ctx context.Context, project string) ([]PauseP
 	return holds, nil
 }
 
-// PausePodHoldsSince is every hold of project's pods that stands, that ended after since, or whose
-// pause let out a launch of the pod after since, by issue and then by when it began, each with its
-// latest let-out (PausePodHold.LetOut), read in the one statement: what one sweep of the update
-// rounds reads (decision 12 of dispatch://INFRA-3759). A round waits over a pod a hold stands on,
-// and its bound moves by the time a hold kept its pod after the round opened, which runs on to the
-// let-out of the last launch its pause held for a role of the pod, so since is the opening of the
-// oldest round the sweep reads. project is the Dispatch key.
+// PausePodHoldsSince is every hold of project's pods that stands, that ended after since, whose
+// pause let out a launch of the pod after since, or whose pause still owes a launch of the pod, by
+// issue and then by when it began, each with its latest let-out (PausePodHold.LetOut), read in the
+// one statement: what one sweep of the update rounds reads (decision 12 of dispatch://INFRA-3759).
+// A round waits over a pod a hold stands on, and its bound moves by the time a hold kept its pod
+// after the round opened, which runs on to the let-out of the last launch its pause held for a
+// role of the pod, so since is the opening of the oldest round the sweep reads.
+//
+// A launch the pause still owes is an open resume of that pause for the issue: no first turn
+// stamped it and nothing closed it (OpenPodResume). Its stuck clock is the moment of the project's
+// resume (SetProjectResumeClocksTx) until the wake pacing lets the launch out (SetResumeClock).
+// That moment can be before since: a round can open after the hold ended and before the launch is
+// let out. The pause keeps the pod for that launch until its let-out, so the read returns such a
+// hold whatever since. project is the Dispatch key.
 func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since time.Time) ([]PausePodHold, error) {
 	rows, err := s.pool.Query(ctx, `select h.id, h.pause_id, h.project, h.issue, h.held_at, h.ended_at, coalesce(h.ended_why, ''), l.let_out
 		from project_pause_pod_holds h
-		left join lateral (select max(r.clock_at) as let_out from pod_resumes r
+		left join lateral (select max(r.clock_at) as let_out, bool_or(r.first_turn_at is null and r.closed_at is null) as owed
+			from pod_resumes r
 			where r.project = lower(h.project) and r.issue = h.issue and r.pause_id = h.pause_id) l on true
-		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2) order by h.issue, h.held_at`, project, since)
+		where h.project = $1 and (h.ended_at is null or h.ended_at > $2 or l.let_out > $2 or l.owed) order by h.issue, h.held_at`, project, since)
 	if err != nil {
 		return nil, fmt.Errorf("read the pod holds of %s since %s: %w", project, since.Format(time.RFC3339), err)
 	}

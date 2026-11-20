@@ -560,13 +560,21 @@ func TestTheResumeEndsNoPodHoldForAClaimWithNoProcessYet(t *testing.T) {
 // holds carries with each hold the latest let-out of a launch its own pause held for a role of the
 // pod, the greatest stuck clock of the issue's resumes that pause held, and reads a hold that ended
 // before since where that let-out came after it. A resume no pause held moves nothing.
+//
+// A hold whose pause still owes a launch of the pod is read whatever since: the resume of that
+// launch is open (no first turn, not closed), and its stuck clock is still the moment of the
+// project's resume until the wake pacing lets the launch out. The third pod's hold is that hold. A
+// round that opened after the hold ended reads it, so the round keeps the pod for the owed launch
+// (internal/daemon's podHolds.keeping). Each launch the other two pods' holds owed has taken its
+// first turn, so those holds are read by their let-outs alone. Without the read of the open
+// resume, the third pod's hold is missing from every read since a moment after the resume.
 func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	pause, _ := pauseLegion(t, st, pausedAt)
-	const other = "LEGION-300"
+	const other, owed = "LEGION-300", "LEGION-301"
 	resumedAt := pausedAt.Add(time.Hour)
-	for _, issue := range []string{rootIssue, other} {
+	for _, issue := range []string{rootIssue, other, owed} {
 		if _, err := holdPod(st, pause, issue, pausedAt); err != nil {
 			t.Fatalf("hold the pod of %s: %v", issue, err)
 		}
@@ -579,30 +587,40 @@ func TestTheSweepsReadOfTheHoldsCarriesTheLatestLetOutOfTheirPause(t *testing.T)
 		role    claim.Role
 		letOut  time.Duration
 		byPause bool
+		// launched is whether the launch took its first turn a minute after its let-out
+		// (MarkPodResumeFirstTurn), which ends the resume's wait.
+		launched bool
 	}{
-		{rootIssue, claim.RoleImplementer, 3 * time.Minute, true},
-		{rootIssue, claim.RoleArchitect, 10 * time.Minute, true},
-		{rootIssue, claim.RoleTester, 20 * time.Minute, false},
-		{other, claim.RoleImplementer, 5 * time.Minute, true},
+		{rootIssue, claim.RoleImplementer, 3 * time.Minute, true, true},
+		{rootIssue, claim.RoleArchitect, 10 * time.Minute, true, true},
+		{rootIssue, claim.RoleTester, 20 * time.Minute, false, false},
+		{other, claim.RoleImplementer, 5 * time.Minute, true, true},
+		{owed, claim.RoleImplementer, 0, true, false},
 	} {
 		var held *int64
 		kind := "delivery"
 		if resume.byPause {
 			held, kind = &pause.ID, pods.WakePause
 		}
-		if _, err := st.Pool().Exec(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
-			values (0, 'legion', $1, $2, $3, $4, $5, $6)`, resume.issue, string(resume.role), kind, pausedAt.Add(time.Minute),
-			resumedAt.Add(resume.letOut), held); err != nil {
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into pod_resumes (release_id, project, issue, role, kind, at, clock_at, pause_id)
+			values (0, 'legion', $1, $2, $3, $4, $5, $6) returning id`, resume.issue, string(resume.role), kind, pausedAt.Add(time.Minute),
+			resumedAt.Add(resume.letOut), held).Scan(&id); err != nil {
 			t.Fatalf("record the resume of %s's %s: %v", resume.issue, resume.role, err)
+		}
+		if resume.launched {
+			if err := st.MarkPodResumeFirstTurn(ctx, id, resumedAt.Add(resume.letOut+time.Minute)); err != nil {
+				t.Fatalf("stamp the first turn of %s's %s: %v", resume.issue, resume.role, err)
+			}
 		}
 	}
 	for _, tc := range []struct {
 		since time.Duration
 		want  map[string]time.Duration
 	}{
-		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute}},
-		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute}},
-		{since: 10 * time.Minute},
+		{since: -time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, other: 5 * time.Minute, owed: 0}},
+		{since: 7 * time.Minute, want: map[string]time.Duration{rootIssue: 10 * time.Minute, owed: 0}},
+		{since: 10 * time.Minute, want: map[string]time.Duration{owed: 0}},
 	} {
 		holds, err := st.PausePodHoldsSince(ctx, "LEGION", resumedAt.Add(tc.since))
 		if err != nil {

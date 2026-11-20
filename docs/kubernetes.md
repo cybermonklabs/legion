@@ -6382,7 +6382,7 @@ Four things hold it:
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
-- before the round's bound, a claim that a project's pause stopped, while the pause still keeps the pod for it (`podHolds.keeping`): until the wake pacing lets out the last launch that the pause held for a role of the pod, the work on the disk is the pause's, whether or not an ask of the round reached that claim;
+- before the round's bound, a claim the round waits for that records no process, while a project's pause still keeps the pod (`podHolds.keeping`): a role the pause stopped, still suspended or with its launch parked in the wake pacing; until the wake pacing lets out the last launch that the pause held for a role of the pod, the work on the disk is the pause's, whether or not an ask of the round reached that claim;
 
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
