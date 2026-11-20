@@ -6328,15 +6328,17 @@ and where the claims record the round's pod but no live claim records a process 
 
 A pod with no role process in it has no process to replace it through, and a role launched into it would have its first turn ended by the round's replacement and be launched a second time, as INFRA-4455's tester was on 2026-11-19 (dispatch://INFRA-4109 R7).
 So the daemon replaces such a pod before any launch goes into it, wherever nothing holds the pod (`roundPodEnds`).
-Three things hold it:
+Four things hold it:
 
 - an operator's suspension of a claim the round asks, at any time;
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
+- before the round's bound, a claim that a project's pause stopped, while the pause still keeps the pod for it (`podHolds.keeping`): until the wake pacing lets out the last launch that the pause held for a role of the pod, the work on the disk is the pause's, whether or not an ask of the round reached that claim;
+
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
-A claim that the ask never reached holds nothing, and neither does a claim the round passes over, even one the daemon suspended after its ask reached it.
+Any other claim that the ask never reached holds nothing, and neither does a claim the round passes over, even one the daemon suspended after its ask reached it.
 The sweep makes that replacement after its walk, through the runtime's `ReplaceIssuePod` (`replaceIssuePodForRound`), which ends the round's own pod of the issue's Sandbox as `ReplacePod` ends a pod, and replaces nothing where the issue has no Sandbox, where the Sandbox is suspended, or where it holds another pod.
 It reads the claims again before the pod's launch turn and under it, and gives the replacement up for that sweep while a claim's machine is in a decision, which can be a launch into the pod that has not recorded its process yet, while a claim records a process in the pod, or while something above holds the pod.
 No process can read the workspace first, so the replacement's line, and one message on the issue, name each member of the round with a session that had not answered and say that nobody read the workspace; a round every member of which had answered writes nothing on the issue.
@@ -6346,6 +6348,8 @@ A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox r
 Under the pod's launch turn, a launch that would keep the live pod of its issue asks the daemon whether the round over that pod ends by this rule, so the round's bound is read when the launch runs and not when its claim was resumed.
 Where no role process runs in the pod and nothing holds it, the launch replaces the pod as the round's own replacement and starts its role in a new pod, so the role is launched once.
 Before the bound, the launch also keeps the pod where the launching claim itself holds the round's ask and has not answered it.
+Before the bound, the launch keeps the pod as well where it is the launch that a project's pause held for its claim on this pod: the claim's open resume names a pause that has a hold on the pod that no deletion ended (`pod_resumes.pause_id`).
+The pause kept the pod for that role's work, so the role's own launch at its let-out does not replace it.
 The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).
 In every other case the launch goes into the kept pod: a launching claim that holds the ask is not asked again, any other launching claim is asked once its agent is ready, and before its bound the round waits for their answers and their turns, as for any claim.
 Once the round replaces that pod, each role launched into it is launched a second time, through the wake pacing: that is what keeping the pod for an unanswered ask, an operator's hold or a pause's hold costs.

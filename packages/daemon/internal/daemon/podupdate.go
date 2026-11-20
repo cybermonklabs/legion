@@ -1360,10 +1360,11 @@ func refusedReason(err error) string {
 // replaceIssuePodForRound), and that replacement ends the round: a launch into the pod before then
 // would have its first turn cut by it (dispatch://INFRA-4109 R7), so a launch that comes first
 // reads the same rule as it runs and replaces the pod itself (roundPodEndsAtLaunch). Before the
-// bound, a claim the round waits for that holds the round's ask and has not answered it keeps the
-// pod, and the round waits. A runtime that replaces no pod by issue (runtime.IssuePodReplacer)
-// leaves the round waiting too, and such a pod holds the round past its bound, so the operator's
-// side is told of it once the bound has come (tellLateRound, noProcessReason).
+// bound, a claim a project's pause stopped keeps the pod while the pause still keeps it, and so
+// does a claim the round waits for that holds the round's ask and has not answered it; the round
+// then waits. A runtime that replaces no pod by issue (runtime.IssuePodReplacer) leaves the round
+// waiting too, and such a pod holds the round past its bound, so the operator's side is told of it
+// once the bound has come (tellLateRound, noProcessReason).
 //
 // held is the claims of the round an operator's suspension holds (readReplacement), and it is
 // weighed here, after the pod is read, never before. A gone pod ends its round whatever the
@@ -1563,22 +1564,31 @@ func (s *supervision) replacementByIssue(issue string, live []supervise.Claim, r
 // the launch runs, so the bound is read then rather than when the claim was resumed
 // (roundPodEndsAtLaunch).
 //
-// Three things hold the pod, read in this order:
+// Four things hold the pod, read in this order:
 //
 //   - An operator's suspension of a claim the round asks (heldByOperator), whatever the round's
 //     bound: it is a person's hold (dispatch://INFRA-2981 R5).
 //   - A project's pause's hold that stands on the pod (roundClock.held), whatever the round's
 //     bound: the pause kept the pod for the work on its disk (decision 12 of
 //     dispatch://INFRA-3759).
-//   - Before the round's bound, a claim the round waits for (waitingClaims) that holds an ask of
-//     this round that reached its session (supervise.Claim.UpdateTaskedAt) and that it has not
-//     answered. Its process went while it held the ask, so its unpushed work may be on the pod's
-//     disk. A claim the ask never reached holds nothing: nothing asked it to push. A claim the
+//   - Before the round's bound, a claim the round waits for (waitingClaims) that a project's
+//     pause stopped, while the pause still keeps the pod (supervise.Claim.Released,
+//     podHolds.keeping): no hold stands, but the let-out of a launch the pause held for a role of
+//     the pod is still ahead. The pause, not the claim, keeps the claim from a turn, and the
+//     pause kept the pod for the work on its disk (decision 12 of dispatch://INFRA-3759,
+//     roundClock.passesOver). This holds whether or not an ask of the round reached the claim.
+//     No round opens while a hold stands, so a round that opened after the hold ended never
+//     asked a role the pause stopped. Without this reading, the pod and that role's unpushed work
+//     would go when the last process left the pod before the let-out.
+//   - Before the round's bound, a claim the round waits for that holds an ask of this round that
+//     reached its session (supervise.Claim.UpdateTaskedAt) and that it has not answered. Its
+//     process went while it held the ask, so its unpushed work may be on the pod's disk. Any
+//     other claim the ask never reached holds nothing: nothing asked it to push. A claim the
 //     round passes over holds nothing either, even where the daemon suspended it after its ask
-//     reached it (roundClock.passesOver, dispatch://INFRA-4109 R1). A claim a project's pause
-//     stopped is one the round waits for while the pause keeps the pod, so its ask holds the pod.
+//     reached it (roundClock.passesOver, dispatch://INFRA-4109 R1).
 //
-// Past the bound only the first two hold the pod: the bound ends every other wait of a round.
+// Past the bound only the first two hold the pod: the bound ends every other wait of a round. The
+// bound has already moved by the time the pause held the pod (roundClock.roundBound).
 func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool, string) {
 	if held := heldByOperator(group, round, clock); len(held) > 0 {
 		return false, "an operator's suspension holds " + strings.Join(namesOf(held), ", ")
@@ -1589,11 +1599,18 @@ func roundPodEnds(group []supervise.Claim, round string, clock roundClock) (bool
 	if clock.pastBound(group, round) {
 		return true, ""
 	}
-	var asked []supervise.Claim
+	pauseKeeps := clock.holds.keeping(clock.now)
+	var stopped, asked []supervise.Claim
 	for _, c := range waitingClaims(group, round, clock) {
-		if holdsUnansweredAsk(c, round) {
+		switch {
+		case pauseKeeps && c.Released():
+			stopped = append(stopped, c)
+		case holdsUnansweredAsk(c, round):
 			asked = append(asked, c)
 		}
+	}
+	if len(stopped) > 0 {
+		return false, "a project's pause keeps the pod for the " + strings.Join(namesOf(stopped), ", ") + " it stopped"
 	}
 	if len(asked) > 0 {
 		return false, strings.Join(namesOf(asked), ", ") + " holds the ask of the round and has not answered it"
@@ -1755,26 +1772,47 @@ func (s *supervision) issueReplacementDue(issue, round string, holds podHolds, e
 //     keep the round's pod for two launches at once, and neither would replace it. A launch the
 //     wake pacing parked is in no decision and keeps nothing.
 //   - Something holds the pod (roundPodEnds): an operator's suspension of a member, a project
-//     pause's hold, or, before the bound, a member the round waits for that holds the round's ask
-//     it has not answered.
+//     pause's hold that stands, or, before the bound, a member a project's pause stopped while the
+//     pause still keeps the pod, or a member the round waits for that holds the round's ask it has
+//     not answered.
 //   - Before the bound, the launching claim holds the round's ask itself and has not answered it:
 //     its process went while it held the ask, and its work may be on the disk. That holds of the
 //     launch of a fresh session too. Such a claim records no session until its new agent
 //     registers, so the round's sets (roundAsks) do not read it as a member yet, but its ask mark
 //     stays across the fresh session, since only the round's end clears it.
+//   - Before the bound, the launch is the one a project's pause held for the launching claim on
+//     this pod (pauseHeldLaunch): the pause kept the pod for that claim's work (decision 12 of
+//     dispatch://INFRA-3759). At its let-out the claim is launching, not suspended, and the
+//     pause's keep has ended (podHolds.keeping), so the round's sets no longer read the claim as
+//     the pause's, and the round never asked it. Without this case the launch would replace the
+//     pod that the pause kept for that very work.
 //
 // The project pause's holds are read from the store as the sweep reads them (podPauseHolds), so
 // the bound is read moved by the time the pause held the pod. A read of the holds that fails keeps
-// the pod, since a reading nobody took may not delete a disk, and it is logged. A read of the
-// claims that fails is the launch's error, which fails the launch as any of its steps does.
+// the pod, since a reading nobody took may not delete a disk, and it is logged. The launching
+// claim's open resume is read from the store too (pauseHeldLaunch), and a read of it that fails
+// keeps the pod and is logged in the same way. A read of the claims that fails is the launch's
+// error, which fails the launch as any of its steps does.
 //
 // It runs inside the launching machine's decision and under the pod's launch turn. So it reads
 // which claims there are from the store and what each holds from its machine's published view and
 // Deciding alone, never from Machine.Claim, which waits out a decision that may wait on this very
-// launch turn (replacementDue). The siblings are read through the deciding mask, as every reader
-// that may delete a disk reads them (roundGroup). The launching claim is read unmasked: its
-// decision is this launch, which starts no turn, and an answer it gave before its process went
-// stands.
+// launch turn (replacementDue). It reads every claim unmasked (roundGroup with no mask), unlike
+// the other readers that may delete a disk. They mask the answer of a claim whose machine is
+// deciding, because that decision may start a turn in the pod that the view does not show yet.
+// No sibling here can start such a turn unseen. A sibling with no process in this pod cannot
+// start a turn in it: it waits for this launch turn and asks this hook itself, or it went into a
+// pod that replaced this one. A sibling with a process in the pod keeps the pod already
+// (inRoundPod). A sibling's launch that this hook kept the pod for, and that let the launch turn
+// go, keeps the pod too (launchKept). So the mask has no job here, and it would do harm. Two
+// members that had answered, which the daemon suspended and then resumed at once, would each keep
+// the pod: the launch that reads the round first would read the other, which waits for the launch
+// turn in its decision, as a member that holds the round's ask and has not answered it, and the
+// other would then find that launch kept or its process in the pod. Both would start in the
+// round's pod and be launched again once the round replaced it (row 8b of the plan's state table,
+// dispatch://INFRA-4109 R7). The launching claim is read in the same group, unmasked as its
+// siblings are: its decision is this launch, which starts no turn, and an answer it gave before
+// its process went stands.
 //
 // Most launches it is asked about find no round recorded over the pod, and the store's whole
 // claims table is not read for them under the launch turn. The launching claim's issue is read
@@ -1783,9 +1821,9 @@ func (s *supervision) issueReplacementDue(issue, round string, holds podHolds, e
 // answer is no, and the store is not read. A token no machine holds is no launch of this daemon's,
 // and it keeps the pod. The views suffice for that no. The boot's restore builds a machine for
 // every claim the store holds, and Create adds one for every claim it writes, so every claim of
-// the store has a machine; and a machine's view is at least as fresh as the store's row
-// (roundGroup), which is what the read of the group below takes for that claim in any case
-// (viewedGroup). The rounds TestALaunchUnderARoundWithNoProcessIsLaunchedOnce and
+// the store has a machine; and a machine's view is at least as fresh as the store's row, which is
+// what the read of the group below takes for that claim in any case (roundGroup). The rounds
+// TestALaunchUnderARoundWithNoProcessIsLaunchedOnce and
 // TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk launch under are
 // recorded on restored claims and read through the views, and the second of the two launches at
 // once in the first test reads no round over the pod the first launch built, and keeps that pod.
@@ -1810,19 +1848,16 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if err != nil {
 		return false, fmt.Errorf("read the claims of the update round over pod %s: %w", podUID, err)
 	}
-	group := s.viewedGroup(claims, issue)
+	group := s.roundGroup(claimsOf(claims, issue), false)
 	if !recordsRound(group, round) {
 		return false, nil
 	}
 	var launching supervise.Claim
-	for i, c := range group {
+	for _, c := range group {
 		m, held := s.supervisor.Machine(c.Token)
 		switch {
 		case c.Token == token:
-			if held {
-				group[i] = m.View().Claim
-			}
-			launching = group[i]
+			launching = c
 		case inRoundPod(c, round):
 			return s.keepAtLaunch(issue, round, token, fmt.Sprintf("the claim %s records a process in the pod", c.Token))
 		case held && m.Deciding() != nil && s.launchKept(issue, round, c.Token):
@@ -1840,13 +1875,46 @@ func (s *supervision) roundPodEndsAtLaunch(ctx context.Context, token claim.Toke
 	if ends, held := roundPodEnds(group, round, clock); !ends {
 		return s.keepAtLaunch(issue, round, token, held)
 	}
-	if holdsUnansweredAsk(launching, round) && !clock.pastBound(group, round) {
-		return s.keepAtLaunch(issue, round, token, "the launching claim holds the ask of the round and has not answered it")
+	if !clock.pastBound(group, round) {
+		if holdsUnansweredAsk(launching, round) {
+			return s.keepAtLaunch(issue, round, token, "the launching claim holds the ask of the round and has not answered it")
+		}
+		pauseHeld, err := s.pauseHeldLaunch(ctx, issue, launching.Role, holds[issue])
+		if err != nil {
+			s.log.Error("supervise: read the open resume of the launching claim; the launch keeps the pod of the update round over it",
+				"issue", issue, "round", round, "claim", token, "error", err)
+			return s.keepAtLaunch(issue, round, token, "the open resume of the launching claim cannot be read")
+		}
+		if pauseHeld {
+			return s.keepAtLaunch(issue, round, token,
+				fmt.Sprintf("the launch of the %s is the one a project's pause held, and the pause kept the pod for its work", launching.Role))
+		}
 	}
 	s.replacedAtLaunch(issue, round, readRoundEnd(group, round, clock))
 	s.log.Info("supervise: no role process runs in the pod of this update round, and nothing holds the pod; the launch replaces the pod and starts its role in a new pod",
 		"issue", issue, "round", round, "pod", podUID, "claim", token)
 	return true, nil
+}
+
+// pauseHeldLaunch is whether the launch of the issue's role is the one a project's pause held for
+// it on the issue's pod (roundPodEndsAtLaunch). The role's open resume names the pause that held
+// its wake (store.Store.OpenPodResume, pod_resumes.pause_id), and holds, what the pauses did to
+// the pod as the sweep reads it (podPauseHolds), has a hold of that pause on the pod that no
+// deletion ended: a pod a deletion ended the hold of is gone, and the pause keeps nothing of it.
+// pod_resumes holds the project token, so the resume is read by the plan's project, not by the
+// Dispatch key the holds are read by. Where holds has no hold, no pause held this pod, and the
+// store is not read.
+func (s *supervision) pauseHeldLaunch(ctx context.Context, issue string, role claim.Role, holds podHolds) (bool, error) {
+	if len(holds) == 0 {
+		return false, nil
+	}
+	_, pause, open, err := s.supervisor.store.OpenPodResume(ctx, s.plan.project, issue, role)
+	if err != nil || !open || pause == 0 {
+		return false, err
+	}
+	return slices.ContainsFunc(holds, func(hold store.PausePodHold) bool {
+		return hold.Pause == pause && hold.End != store.PausePodHoldDeleted
+	}), nil
 }
 
 // keepAtLaunch is the answer of roundPodEndsAtLaunch that keeps round's pod for token's launch, for
@@ -2957,18 +3025,20 @@ func noticeClaims(group []supervise.Claim) []supervise.Claim {
 	return of
 }
 
-// notWaitedFor is every claim of the group with a session that the round did not wait for and
-// that had not answered it: a failed claim (roundAsks) and a claim the round passed over at the
-// clock's now (roundClock.passesOver). Neither runs a process in the pod, so what either left
-// unpushed on the pod's disk goes with the pod, and the replacement names each of them on its
-// line and, where the read of the workspace found work or failed, on the issue
-// (replacePodForRound). A claim that answered pushed its work first, and a claim that left the
-// round's pod (supervise's Claim.LeftPodRound) has no work on this pod's disk, so neither is
-// named.
+// notWaitedFor is every claim of the group with a session that the round does not ask (roundAsks)
+// and that has neither answered the round nor left it. It reads the one predicate of the round's
+// two sets (dispatch://INFRA-4109 R2), so each claim it names is one the round neither asks nor
+// waits for. Over a group a replacement reads, which holds no retired claim (roundGroup), each is
+// a failed claim or a claim the round passes over at the clock's now (roundClock.passesOver).
+// Neither runs a process in the pod, so what either left unpushed on the pod's disk goes with the
+// pod, and the replacement names each of them on its line and, where the read of the workspace
+// found work or failed, on the issue (replacePodForRound). A claim that answered pushed its work
+// first, and a claim that left the round's pod (supervise's Claim.LeftPodRound) has no work on
+// this pod's disk, so neither is named.
 func notWaitedFor(group []supervise.Claim, round string, clock roundClock) []supervise.Claim {
 	var of []supervise.Claim
 	for _, c := range sessionClaims(group) {
-		if (c.State == supervise.StateFailed || clock.passesOver(c)) && !answered(c, round) && !c.LeftPodRound(round) {
+		if !roundAsks(c, round, clock) && !c.LeftPodRound(round) && !answered(c, round) {
 			of = append(of, c)
 		}
 	}
