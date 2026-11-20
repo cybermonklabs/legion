@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -95,14 +94,7 @@ func runAsPIDOne(t *testing.T, helper string) string {
 func namespaceRig(t *testing.T, grace time.Duration) *rig {
 	t.Helper()
 	prefix := pidNamespace(t)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
-	if err := listener.(*net.TCPListener).SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
+	listener := listenForLauncher(t, "launcher-token")
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
 	self, err := os.Executable()
 	if err != nil {
@@ -122,7 +114,11 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	g.cancel = func() { _ = stdin.Close() }
-	go func() { g.result <- command.Wait() }()
+	go func() {
+		err := command.Wait()
+		listener.launcherReturned(err)
+		g.result <- err
+	}()
 	t.Cleanup(func() {
 		g.cancel()
 		select {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -420,11 +419,7 @@ func TestLauncherProcess(t *testing.T) {
 // processRig is a launcher in a process of its own, and kill its SIGKILL.
 func processRig(t *testing.T) (g *rig, kill func()) {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	listener := listenForLauncher(t, "launcher-token")
 	private := shortTempDir(t)
 	self, err := os.Executable()
 	if err != nil {
@@ -445,7 +440,11 @@ func processRig(t *testing.T) (g *rig, kill func()) {
 		t.Fatal(err)
 	}
 	exited := make(chan struct{})
-	go func() { _ = command.Wait(); close(exited) }()
+	go func() {
+		err := command.Wait()
+		listener.launcherReturned(err)
+		close(exited)
+	}()
 	kill = func() {
 		_ = command.Process.Signal(syscall.SIGKILL)
 		<-exited

@@ -4,11 +4,15 @@
 // binary's own deadline rather than a fixed span: on a loaded machine a step that is merely slow
 // is not a failure, and a condition that never holds still fails, naming what it waited for.
 // Eventually is the wait a test usually wants; WithinPolling takes a bound and a pace of its
-// own; Holds answers rather than fails, for a caller whose failure text is its own; and Bounded
-// is the clamp alone, for a wait that holds the rest itself.
+// own; Holds answers rather than fails, for a caller whose failure text is its own; Bounded
+// is the clamp alone, for a wait that holds the rest itself; and Receive waits for a channel
+// with no bound but the test binary's deadline.
 package testwait
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -71,4 +75,43 @@ func waitUntil(deadline time.Time, poll time.Duration, condition func() bool) bo
 		time.Sleep(poll)
 	}
 	return condition()
+}
+
+// margin is how long before the test binary's deadline Receive gives up: the time the failing
+// test's cleanups have to stop what it ran (a launcher, its connections) before Go's alarm
+// panics the binary.
+const margin = 30 * time.Second
+
+// Receive waits for one receive from ch (a value, or the close of ch, which gives the zero
+// value) and returns it. Its one bound is the test binary's deadline, the one go test's -timeout
+// sets: it gives up margin before it and at no other moment, and under -timeout 0 it has no end.
+// A wait that gives up writes "testwait: <test>: gave up waiting for <what> 30s before the test
+// binary's deadline" to stderr at once and then fails the test with the same text, since Go's
+// alarm panics without printing a running test's log, so a cleanup that outlasted the margin
+// would otherwise take the failure with it.
+func Receive[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	var expired <-chan time.Time
+	if deadline, ok := t.Deadline(); ok {
+		timer := time.NewTimer(time.Until(deadline.Add(-margin)))
+		defer timer.Stop()
+		expired = timer.C
+	}
+	select {
+	case value := <-ch:
+		return value
+	case <-expired:
+	}
+	// The margin has passed: a value that came beside the timer is still taken.
+	select {
+	case value := <-ch:
+		return value
+	default:
+	}
+	text := strings.NewReplacer("\n", `\n`, "\r", `\r`).Replace(
+		fmt.Sprintf("testwait: %s: gave up waiting for %s %s before the test binary's deadline", t.Name(), what, margin))
+	_, _ = os.Stderr.WriteString(text + "\n")
+	t.Fatalf("%s", text)
+	var zero T
+	return zero
 }

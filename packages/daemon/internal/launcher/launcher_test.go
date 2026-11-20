@@ -66,7 +66,7 @@ func TestLauncherChild(t *testing.T) {
 // rig is one single-role launcher under test and the daemon end of its connection.
 type rig struct {
 	t        *testing.T
-	listener net.Listener
+	listener *daemonEnd
 	private  string
 	cancel   context.CancelFunc
 	result   chan error
@@ -113,18 +113,16 @@ func shortTempDir(t *testing.T) string {
 // in for the Cloud SQL connector, besides the fields every rig's launcher is given.
 func newSessionRig(t *testing.T, cfg Config) *rig {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = listener.Close() })
+	listener := listenForLauncher(t, "launcher-token")
 	private := shortTempDir(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &rig{t: t, listener: listener, private: private, cancel: cancel, result: make(chan error, 1), stderr: &lockedBuffer{}}
 	cfg.Connect, cfg.Token, cfg.Sandbox = "tcp://"+listener.Addr().String(), "launcher-token", "legion-legion-legion-208"
 	cfg.Role, cfg.PodUID, cfg.PrivateDir, cfg.Stderr = "tester", "pod-1", g.private, g.stderr
 	go func() {
-		g.result <- Run(ctx, cfg)
+		err := Run(ctx, cfg)
+		listener.launcherReturned(err)
+		g.result <- err
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -156,29 +154,6 @@ func (g *rig) accept() shimwire.LauncherState {
 	return conn.acknowledge()
 }
 
-// acceptRole takes one launcher connection up to its hello: the daemon end of the role that
-// hello names, which has not been acknowledged yet.
-func acceptRole(t *testing.T, listener net.Listener) *roleConn {
-	t.Helper()
-	if tcp, ok := listener.(*net.TCPListener); ok {
-		if err := tcp.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	conn, err := listener.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
-	hello, ok := c.next().(shimwire.LauncherHello)
-	if !ok || hello.Role == "" || hello.LauncherID == "" {
-		t.Fatalf("hello = %#v", hello)
-	}
-	c.hello = hello
-	return c
-}
-
 // acknowledge admits the connection's hello with the empty acknowledgement and reads the
 // launcher's first state on it.
 func (g *roleConn) acknowledge() shimwire.LauncherState {
@@ -200,16 +175,25 @@ func (g *roleConn) acknowledgeWith(ack shimwire.LauncherHelloAck) shimwire.Launc
 	return state
 }
 
+// next is the launcher's next frame on the connection. Its read waits through the shared wait
+// (testwait.Receive), so the test binary's deadline is its one bound; a read the wait gave up on
+// stays blocked until the case's cleanup closes the connection.
 func (g *roleConn) next() shimwire.Frame {
 	g.t.Helper()
-	if err := g.conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		g.t.Fatal(err)
+	type read struct {
+		line []byte
+		err  error
 	}
-	line, err := g.reader.ReadBytes('\n')
-	if err != nil {
-		g.t.Fatal(err)
+	reads := make(chan read, 1)
+	go func() {
+		line, err := g.reader.ReadBytes('\n')
+		reads <- read{line, err}
+	}()
+	got := testwait.Receive(g.t, "the launcher's next frame on the connection of role "+g.hello.Role, reads)
+	if got.err != nil {
+		g.t.Fatal(got.err)
 	}
-	frame, err := shimwire.Decode(line)
+	frame, err := shimwire.Decode(got.line)
 	if err != nil {
 		g.t.Fatal(err)
 	}
@@ -429,17 +413,8 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	}
 
 	_ = g.conn.Close()
-	unacknowledged, err := g.listener.Accept()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := unacknowledged.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := bufio.NewReader(unacknowledged).ReadBytes('\n'); err != nil {
-		t.Fatalf("the hello of the connection the daemon ends unacknowledged: %v", err)
-	}
-	_ = unacknowledged.Close()
+	// The redial's hello, read and then dropped without an acknowledgement.
+	_ = acceptRole(t, g.listener).conn.Close()
 	g.accept()
 	if lines := connected(); len(lines) != 2 {
 		t.Fatalf("after a dropped and an acknowledged hello the launcher logged %q, want a second line for the acknowledged one alone", lines)
@@ -617,7 +592,7 @@ func roleToken(role string) string { return "launcher-token-" + role }
 // resident role — and the daemon end of every role's connection.
 type fleet struct {
 	t        *testing.T
-	listener net.Listener
+	listener *daemonEnd
 	// rolesDir is the container-level per-role root, home the directory each role's own home
 	// overlay covers, and fixed the root its own directories are bound back under.
 	rolesDir, home, fixed string
@@ -689,18 +664,20 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 		}
 	}
 	useRoleLayout(t, f.home, filepath.Join(scratch, "home-mounts"), f.fixed)
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	tokens := make([]string, 0, len(roles))
+	for _, role := range roles {
+		tokens = append(tokens, roleToken(role))
 	}
+	listener := listenForLauncher(t, tokens...)
 	f.listener = listener
-	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
 	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
 	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
-		f.result <- Run(ctx, cfg)
+		err := Run(ctx, cfg)
+		listener.launcherReturned(err)
+		f.result <- err
 	}()
 	t.Cleanup(func() {
 		cancel()
