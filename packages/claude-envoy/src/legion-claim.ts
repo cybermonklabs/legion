@@ -319,6 +319,8 @@ export function startLegionClaim(deps: {
       firstTurnBoundMs: claimFirstTurnBoundMs(deps.env ?? process.env, paneReminderLog(deps.log)),
       onRoleRegained: (listener) => deps.session.onRoleRegained(listener),
       log: deps.log,
+      // The server's shutdown: a claim answered 503 is not made again once it aborts.
+      signal: deps.signal,
       stopping: "stopping the pane so the daemon launches it again",
       // A boot the shutdown aborted stops nothing: this server is already going, and `stop`
       // would SIGTERM the `claude` it runs under on its way out.

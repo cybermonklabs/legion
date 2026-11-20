@@ -325,6 +325,11 @@ LISTENER_TOKEN_FILE="$WORK_DIR/listener-token"
 EXCHANGE_TOKEN_FILE="$WORK_DIR/exchange-token"
 REGISTRAR_TOKEN_FILE="$WORK_DIR/registrar-token"
 POD_TOKEN_FILE="$WORK_DIR/pod-token"
+# Dispatch's identity at the listener: its own account's token for the listener's audience, which
+# the listener verifies to take a send's role mark from Dispatch alone (ENVOY_DISPATCH_PRINCIPAL),
+# as the cluster's projected token is; without it Dispatch refuses every send for a `role:` route.
+LISTENER_AUDIENCE="legion-envoy-listener"
+DISPATCH_LISTENER_TOKEN_FILE="$WORK_DIR/dispatch-listener-token"
 APPROVER_LOGIN="ada@example.com"
 OPERATOR_FILE="$WORK_DIR/operator"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
@@ -602,6 +607,7 @@ env -i PATH="$PATH" "$BIN_DIR/dev-oidc-issuer" "${callout_issuer_args[@]}" \
   --token "$EXCHANGE_AUDIENCE=$EXCHANGE_ACCOUNT=$EXCHANGE_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$EXCHANGE_ACCOUNT=$POD_TOKEN_FILE" \
   --token "$BROKER_AUDIENCE=$REGISTRAR_ACCOUNT=$REGISTRAR_TOKEN_FILE" \
+  --token "$LISTENER_AUDIENCE=$API_ACCOUNT=$DISPATCH_LISTENER_TOKEN_FILE" \
   --code-flow "$SIGNIN_CLIENT_ID=$SIGNIN_SECRET_FILE" \
   --device-flow "$DEVICE_CLIENT_ID=$DEVICE_SECRET_FILE" \
   --device-flow "$MACHINE_CLIENT_ID=$MACHINE_SECRET_FILE" \
@@ -754,12 +760,21 @@ python3 "$HELD_PORT" keep --host 127.0.0.1 --port-file "$LISTENER_KEEPER_PORT_FI
 LISTENER_KEEPER_PID=$!
 await 'the listener port keeper' "$LISTENER_KEEPER_PID" "$LISTENER_KEEPER_LOG" \
   "$LISTENER_KEEPER_PORT_FILE" 'the port it holds' kept_port_in
+# The listener takes a bearer: the shared token every session and the banner's shell present, and
+# Dispatch's own account token for its audience, the identity it takes a send's role mark from
+# (ENVOY_DISPATCH_PRINCIPAL), as a deployment's listener does. A verifier closes /v1 to a caller
+# with no bearer, so the shared token is exported in the banner (ENVOY_TOKEN).
+LISTENER_API_TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 start_listener() {
   : >"$LISTENER_LOG"
   python3 "$HELD_PORT" exec --from "$LISTENER_KEEPER_SOCKET" --fd-env ENVOY_LISTEN_FD -- \
     env -i PATH="$PATH" \
     ENVOY_LISTEN_FD=3 \
     ENVOY_LISTEN_HOST=127.0.0.1 \
+    ENVOY_API_TOKEN="$LISTENER_API_TOKEN" \
+    ENVOY_OIDC_ISSUER="$ISSUER_URL" \
+    ENVOY_OIDC_AUDIENCE="$LISTENER_AUDIENCE" \
+    ENVOY_DISPATCH_PRINCIPAL="$API_ACCOUNT" \
     ENVOY_MACHINE_ID="$LISTENER_MACHINE_ID" \
     ENVOY_HOST_BRIDGE=127.0.0.1 \
     ENVOY_PUBLIC_URL="http://127.0.0.1:{port}" \
@@ -805,6 +820,8 @@ python3 "$HELD_PORT" exec --from "$KEEPER_SOCKET" --fd-env DISPATCH_LISTEN_FD --
   DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$ACCOUNT_TOKEN_FILE" \
   DISPATCH_WEB_DIST="$REPO_ROOT/packages/dispatch/web/dist" \
   ENVOY_URL="$LISTENER_URL" \
+  ENVOY_TOKEN="$LISTENER_API_TOKEN" \
+  ENVOY_ACCOUNT_TOKEN_FILE="$DISPATCH_LISTENER_TOKEN_FILE" \
   NATS_URLS="$NATS_URL" \
   "${callout_dispatch_env[@]}" \
   "$BIN_DIR/dispatch" >"$DISPATCH_LOG" 2>&1 &
@@ -955,6 +972,7 @@ dev-stack: ready.
   export DISPATCH_URL=$DISPATCH_URL
   export DISPATCH_TOKEN=$DISPATCH_TOKEN_VALUE
   export ENVOY_URL=$LISTENER_URL
+  export ENVOY_TOKEN=$LISTENER_API_TOKEN
   export NATS_URLS=$NATS_URL
   export DEV_STACK_DIR=$WORK_DIR
   export DEV_STACK_PID=$$

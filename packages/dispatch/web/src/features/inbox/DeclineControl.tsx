@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
 import { apiErrorMessage, type DeclineAskInput, type WriteBounds } from "../../api/client";
+import { replaceQueryData } from "../../api/query-client";
 import type { Ask, AskRead } from "../../api/types";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -184,9 +185,11 @@ export function DeclineControl({
     onSettled: () => submitGuard.release(),
     onSuccess: (declined, press) => {
       setOpen(false);
-      // The card reads its ask from the thread, so the record it swaps to is this decline.
+      // The card reads its ask from the thread, so the record it swaps to is this decline, over
+      // any read of the thread still out, which was asked before it and would put back the open
+      // ask (`replaceQueryData`).
       if (declined !== null) {
-        queryClient.setQueryData<AskRead>(["ask-thread", press.ask.id], (current) =>
+        replaceQueryData<AskRead>(queryClient, ["ask-thread", press.ask.id], (current) =>
           current === undefined ? undefined : { ...current, ask: declined }
         );
       }

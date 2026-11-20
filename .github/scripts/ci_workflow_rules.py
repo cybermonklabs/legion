@@ -101,7 +101,7 @@ def ci_only_documents(documents: dict) -> dict:
     file two workflows call is live under each caller's events, and a file with a trigger of its
     own has runs no caller starts at all. Both cases are in this repository today:
     .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
-    to main, and docs-site.yaml:189 carries `github.event_name == 'push'` for exactly that
+    to main, and docs-site.yaml's cache save step carries `github.event_name == 'push'` for that
     caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
     .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
     other case: nothing else calls them and they run on workflow_call alone, so a push condition
@@ -156,7 +156,8 @@ def check_push_conditions(documents: dict, problems: list) -> None:
 # job's check run is a passing required check, so the term that saves every other job from a dead
 # group would hand that group the check it merges on, concluded by nothing. Each of those jobs
 # runs on every attempt and refuses an attempt above the first in a step, which fails and makes
-# the check a failure; the comment above each one's `if:` in ci.yaml says so.
+# the check a failure; .github/ci-notes/ci.md#why-pr-title-refuses-a-re-run-attempt-in-a-step-of-its-own
+# and .github/ci-notes/ci.md#why-a-re-run-attempt-of-a-merge-group-run-is-refused-in-a-step say so.
 RERUN_GUARD = ("(github.event_name != 'merge_group' || github.run_attempt == '1')",
                re.compile(r"\(\s*github\.event_name\s*!=\s*'merge_group'\s*\|\|"
                           r"\s*github\.run_attempt\s*==\s*'1'\s*\)"))

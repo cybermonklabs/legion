@@ -568,7 +568,7 @@ func checkExperiments(cfg Config) error {
 // (runtime.SpendAttributeLimit): a launch names one arm of each experiment it runs in
 // (runtime.SpendArmsValue), so the longest value is each experiment with its longest arm's name,
 // and a value past the bound throws in the detector and costs every launch of that unit every
-// attribute it carries, the operator's theorem.project among them. Every name is ASCII
+// attribute it carries, including the operator's project attribute. Every name is ASCII
 // (experimentNamePattern), so its length in bytes is its length in the detector's UTF-16 units.
 func checkSpendArms(declared []Experiment, key string) error {
 	longest := make([]runtime.Variant, 0, len(declared))

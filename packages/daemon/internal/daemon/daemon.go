@@ -91,9 +91,9 @@ const (
 	stopBudget = 10 * time.Second
 	// natsCloseTimeout bounds the close of the workflow's Envoy NATS connection on the stop path
 	// (closeWorkflowNATS). nats.Conn.Close flushes the outbound buffer while it holds the
-	// connection's own lock (nats.go v1.53.1, nats.go:6098-6101: nc.bw.flush() when the socket is
+	// connection's own lock (nats.go v1.55.0, nats.go:6242-6312: nc.bw.flush() when the socket is
 	// up and no reconnect is in progress), that write goes through timeoutWriter, whose deadline
-	// is Opts.FlusherTimeout (nats.go:2295-2296, :6827), and the default is a minute
+	// is Opts.FlusherTimeout (nats.go:2341-2346, :7026-7029), and the default is a minute
 	// (nats.go:67), which natsauth.Connect leaves as it is. So a server that has stopped reading
 	// from a full send buffer would hold the stop there for up to that minute. A connection the
 	// daemon stops waiting for costs nothing: the process is ending, and the server drops the
@@ -297,6 +297,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	if err != nil {
 		return err
 	}
+	logLeakCheck(log, cfg.LeakCheck)
 	if cfg.Runtime.Name == "kubernetes" {
 		logPlugins(log, plan.plugins, plan.pluginsSource)
 		logProbeBudget(log, cfg)
@@ -1284,23 +1285,25 @@ func claimRepository(issueOf func(context.Context, claim.Token) (string, error),
 // tmuxOptions translates the configuration into the tmux runtime's Options, all but the worker
 // stream and the GitHub credential function, which boot hands the factory: the `runtime.tmux`
 // block's pane variables, Oh My Pi overlays and take_over among them, each role's own overlays
-// (role_config_files), and every declared experiment's arms (experiment.DeclaredVariants).
+// (role_config_files), every declared experiment's arms (experiment.DeclaredVariants), and the
+// checker of the deployment's shared leak check (leak_check), which every pane is told.
 func tmuxOptions(cfg config.Config, project string, launchers map[runtime.Backend]tmux.Launcher, providerEnvDir, dispatchTokenFile string, log *slog.Logger) tmux.Options {
 	opts := tmux.Options{
-		Project:           project,
-		StateDir:          cfg.StateDir,
-		DaemonURL:         cfg.DaemonURL,
-		EnvoyURL:          cfg.EnvoyURL,
-		NatsURLs:          cfg.NatsURLs,
-		DispatchURL:       cfg.DispatchURL,
-		DispatchTokenFile: dispatchTokenFile,
-		Launchers:         launchers,
-		StopGrace:         cfg.WorkerStopTimeout,
-		ProbeInterval:     cfg.ProbeInterval,
-		AdoptTimeout:      cfg.SlowCommandTimeout,
-		ProviderEnvDir:    providerEnvDir,
-		RoleConfigFiles:   cfg.RoleConfigFiles,
-		Log:               log,
+		Project:                 project,
+		StateDir:                cfg.StateDir,
+		DaemonURL:               cfg.DaemonURL,
+		EnvoyURL:                cfg.EnvoyURL,
+		NatsURLs:                cfg.NatsURLs,
+		DispatchURL:             cfg.DispatchURL,
+		DispatchTokenFile:       dispatchTokenFile,
+		Launchers:               launchers,
+		StopGrace:               cfg.WorkerStopTimeout,
+		ProbeInterval:           cfg.ProbeInterval,
+		AdoptTimeout:            cfg.SlowCommandTimeout,
+		ProviderEnvDir:          providerEnvDir,
+		RoleConfigFiles:         cfg.RoleConfigFiles,
+		LeakCheckManifestSHA256: cfg.LeakCheck.ManifestSHA256,
+		Log:                     log,
 	}
 	if block := cfg.Runtime.Tmux; block != nil {
 		opts.PaneEnv, opts.PiConfigFiles, opts.TakeOver = block.PaneEnv, block.PiConfigFiles, block.TakeOver

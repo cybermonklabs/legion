@@ -190,8 +190,8 @@ func TestAClosedTreeKeepsOnlyTheMembersThatLeftTheWorkflow(t *testing.T) {
 func seedMirrorChild(t *testing.T, pool *pgxpool.Pool, key, status, parent string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{
-			Key: key, Project: "LEGION", Status: status, Seq: 1, Parent: parent})
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry[[]string](nil)})
 	})
 }
 

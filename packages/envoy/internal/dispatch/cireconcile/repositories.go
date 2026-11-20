@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -86,7 +85,8 @@ func (repository reconciled) head(number int64, sha string) pullHead {
 // about it, a name that is not owner/name, and a mapped repository the App is not installed on
 // -- is a GitHub read the pass gave up, which it notes on its attempt (githubreads); a name that
 // is not owner/name is the database's, and asks GitHub nothing, and a repository only an issue
-// names that the App is not on is no fault.
+// names that the App is not on is no fault. A mapped name that is not owner/name is named with
+// the requests that mend it (Reconciler.MappingRepairs).
 //
 // read is the repositories this pass has read the heads of already, by the id GitHub gives
 // them, which is this pass's own: two rows naming one repository are read once within a pass,
@@ -96,7 +96,11 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	owner, name, ok := splitRepo(row)
 	if !ok {
 		c.mappingsSkipped++
-		r.Logger.Warn("ci reconcile skipped a repository whose name is not owner/name", "repository", row)
+		fields := []any{"repository", row}
+		if mapped && r.MappingRepairs != nil {
+			fields = append(fields, r.MappingRepairs(ctx, row)...)
+		}
+		r.Logger.Warn("ci reconcile skipped a repository whose name is not an owner/name GitHub allows", fields...)
 		return reconciled{}, nil
 	}
 	see(&r.seenRows, row)
@@ -236,7 +240,7 @@ func (r *Reconciler) appAbsent(ctx context.Context, row string, mapped bool, err
 // covered is every repository a pass covers, each named as the repository is called today: every
 // repository repo_projects maps to a project, and every repository an issue names as its own.
 // A name is the row's or the issue's own `owner/name`, lower-cased with any `.git` stripped as
-// both are stored (api's canonicalRepo), or, where a mapping names a rename, what its
+// both are stored (refs.ExternalRepo), or, where a mapping names a rename, what its
 // renamed_to names. The two halves are read as one statement, which answers each distinct name
 // once -- a repository a mapping names and an issue names too is one repository to read, as
 // are two issues naming one repository -- and the answer is ordered, so two passes read GitHub
@@ -388,11 +392,13 @@ func (r *Reconciler) openPullRequests(ctx context.Context, id int64, owner, name
 }
 
 // splitRepo is the owner and the name of an `owner/name`, and false for anything that is not
-// one: no slash, or a side of it empty.
+// one GitHub allows (refs.SplitGitHubRepo, the one rule every place that builds a GitHub path
+// reads): no slash, a side of it empty, a character GitHub's names do not take, a name past 100
+// characters, or a name of `.` or `..` before or after a trailing `.git` is trimmed. A mapping or
+// a renamed_to stored before the settings route held it to that rule is such a name, and `..` in
+// a path would ask GitHub about the one above the repository's, so the pass skips it before it
+// asks GitHub anything.
 func splitRepo(full string) (owner, name string, ok bool) {
-	owner, name, found := strings.Cut(full, "/")
-	if !found || owner == "" || name == "" {
-		return "", "", false
-	}
-	return owner, name, true
+	owner, name, err := refs.SplitGitHubRepo(full)
+	return owner, name, err == nil
 }

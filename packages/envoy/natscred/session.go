@@ -27,12 +27,13 @@ type Keeper interface {
 
 // untilClosed is ctx, ended as well once nc closes, and the stop that ends it and hands nc's
 // status listener back, which each Keep defers: a keeper lives no longer than its connection. It
-// watches nc's own CLOSED status event (Conn.StatusChanged), which nats.go sends on every close
-// (nats.go v1.53.1, close), and not nc's ClosedCB, which an owner can clear (internal/bus clears
+// watches nc's own CLOSED status event (Conn.StatusChanged), which nats.go v1.55.0 sends on every
+// close (nats.go:6242-6321), and not nc's ClosedCB, which an owner can clear (internal/bus clears
 // it on a replacement connection it discards) and which NoCallbacksAfterClientClose skips on the
-// owner's own Close. nats.go puts the event in the listener's buffer without waiting for a reader
-// (sendStatusEvent), so a close that lands while the keeper is busy is kept until it is read; a
-// close before the listener was registered is seen by IsClosed.
+// owner's own Close. StatusChanged allocates a ten-event channel, and sendStatusEvent sends a status
+// only to the listeners of that status and drops an event only while the channel is full
+// (nats.go:6828-6883). This listener is for CLOSED alone, and a connection closes once, so its one
+// CLOSED event is always kept; a close before the listener was registered is seen by IsClosed.
 func untilClosed(ctx context.Context, nc *nats.Conn) (context.Context, func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	closed := nc.StatusChanged(nats.CLOSED)

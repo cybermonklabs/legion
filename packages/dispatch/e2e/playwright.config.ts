@@ -495,9 +495,10 @@ const parallelProjects = [
  *
  * Each still caps its own workers at one, which holds a project's own rows to one at a time
  * however wide the run is: the `workers: 1` below is this config's default, which a command
- * line replaces, and CI names its own (.github/workflows/dispatch-browser.yaml). Playwright
- * 1.64.1 takes that cap per project - `testProject.workers`, "The maximum number of concurrent
- * worker processes to use for parallelizing tests from this project"
+ * line replaces, and CI names its own (.github/scripts/dispatch-browser-shard-suite.sh and
+ * dispatch-browser-alone-suite.sh). Playwright 1.64.1 takes that cap per project -
+ * `testProject.workers`, "The maximum number of concurrent worker processes to use for
+ * parallelizing tests from this project"
  * (node_modules/.bun/playwright@1.64.1/node_modules/playwright/types/test.d.ts:761), which its
  * dispatcher holds a project's running jobs to (`_workerLimitPerProjectId`,
  * `playwright/lib/runner/index.js`) - and the run's own `workers` stays what it was given, so
@@ -716,9 +717,10 @@ export default defineConfig({
   // (e2e/run-outcome.ts says why no other way reaches it). It is in every run that takes this
   // list - and a `--reporter` on the command line REPLACES this list rather than adding to it,
   // which is why a run given one keeps its logs whatever it did, and why
-  // .github/workflows/dispatch-browser.yaml names this file in both of its own. With
-  // E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the list
-  // reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
+  // .github/scripts/dispatch-browser-shard-suite.sh and dispatch-browser-alone-suite.sh name
+  // this file in theirs. With E2E_MEASURE_FILE set, the timing fixture's reporter writes one
+  // row per test beside the list reporter's own output (e2e/measure-reporter.ts); without it
+  // the run is untouched.
   reporter: [
     ["list"],
     [fileURLToPath(new URL("./failure-reporter.ts", import.meta.url))],

@@ -8,6 +8,14 @@
 // and builds, so that CI compiles and vets it. It is still a plain Go client over the standard
 // library alone, reading the proxy it CONNECTs to, its trust roots and its header from its own
 // flags, which is what makes the figures it prints a Go consumer's.
+//
+// The proxy URL carries the grant's proxy password and the header carries its placeholder, so
+// both come from files (--proxy-file, --header-file), which the check gives as `<(printf …)`
+// paths: a command's arguments are in /proc/<pid>/cmdline, which every process of the pod reads
+// for as long as the command runs. The flags that took them as arguments, --proxy and --header,
+// are refused rather than read. Their one caller, airlock-check.sh, moved to the file flags in
+// the same change, and a run that still passes one would put the credential in that very
+// command line, so a warning would come too late to protect it.
 package main
 
 import (
@@ -32,7 +40,8 @@ import (
 	"time"
 )
 
-// loadOptions is what the flags say, and the roots read out of the file --ca names. Every mode
+// loadOptions is what the flags say, the proxy URL and the header read out of the files
+// --proxy-file and --header-file name, and the roots read out of the file --ca names. Every mode
 // reads the same set and ignores the ones it has no use for, as the one flag set of the program
 // this was does.
 type loadOptions struct {
@@ -50,6 +59,10 @@ type loadOptions struct {
 	pool     *x509.CertPool
 }
 
+// refusedLoadFlags are the flags that took a credential as an argument, each with the flag that
+// takes it from a file instead.
+var refusedLoadFlags = map[string]string{"proxy": "proxy-file", "header": "header-file"}
+
 // runLoad is `dev-airlock-stands load <mode>`.
 func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -57,13 +70,25 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	mode := args[0]
+	switch mode {
+	case "load", "tunnel", "upload", "gap", "upgrade":
+	default:
+		fmt.Fprintf(stderr, "dev-airlock-stands load: %s is no mode of this program\n", mode)
+		return exitUsageError
+	}
 	fs := flag.NewFlagSet("dev-airlock-stands load", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	var o loadOptions
-	fs.StringVar(&o.proxyURL, "proxy", "", "the proxy to CONNECT through, credential and all")
+	var proxyFile, headerFile, refused string
+	fs.StringVar(&proxyFile, "proxy-file", "", "a file holding the proxy to CONNECT through, credential and all")
 	fs.StringVar(&o.host, "host", "", "the bound host, which is reached on port 443")
 	fs.StringVar(&o.caFile, "ca", "", "a PEM file of roots to verify the host with")
-	fs.StringVar(&o.header, "header", "", "the Authorization header each request carries")
+	fs.StringVar(&headerFile, "header-file", "", "a file holding the bearer each request's Authorization header carries")
+	for name, instead := range refusedLoadFlags {
+		// Defined so that a run passing one is refused by name below. A flag.Func refusing it
+		// here would have the flag package print the value, the credential, in its error.
+		fs.StringVar(&refused, name, "", "refused: give it in a file with --"+instead)
+	}
 	fs.IntVar(&o.rate, "rate", 50, "connections a second")
 	fs.IntVar(&o.seconds, "seconds", 600, "how long to keep opening them")
 	fs.IntVar(&o.size, "size", 50<<20, "how many bytes to upload")
@@ -75,6 +100,37 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return exitUsageError
+	}
+	usage := false
+	fs.Visit(func(f *flag.Flag) {
+		if instead, ok := refusedLoadFlags[f.Name]; ok {
+			fmt.Fprintf(stderr, "dev-airlock-stands load: --%s is refused: a command's arguments are in /proc/<pid>/cmdline for every process to read, so give it in a file with --%s, such as a <(printf …) path\n", f.Name, instead)
+			usage = true
+		}
+	})
+	if usage {
+		return exitUsageError
+	}
+	for _, file := range []struct {
+		flag, path string
+		value      *string
+	}{{"proxy-file", proxyFile, &o.proxyURL}, {"header-file", headerFile, &o.header}} {
+		if file.path == "" {
+			continue
+		}
+		text, err := os.ReadFile(file.path)
+		if err != nil {
+			fmt.Fprintln(stderr, "dev-airlock-stands load:", err)
+			return 1
+		}
+		if *file.value = strings.TrimSpace(string(text)); *file.value == "" {
+			fmt.Fprintf(stderr, "dev-airlock-stands load: --%s names %s, which holds nothing\n", file.flag, file.path)
+			return exitUsageError
+		}
+	}
+	if mode != "tunnel" && o.proxyURL == "" {
+		fmt.Fprintf(stderr, "dev-airlock-stands load: %s opens its connections with a CONNECT, so it needs the proxy in --proxy-file\n", mode)
 		return exitUsageError
 	}
 	if o.caFile != "" {
@@ -104,9 +160,6 @@ func runLoad(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		o.gapMode(stdout)
 	case "upgrade":
 		o.upgrade(stdout)
-	default:
-		fmt.Fprintf(stderr, "dev-airlock-stands load: %s is no mode of this program\n", mode)
-		return exitUsageError
 	}
 	return 0
 }
@@ -123,9 +176,11 @@ func (o *loadOptions) say(stdout io.Writer, result map[string]any) {
 // connect opens one tunnel to the bound host through the proxy and answers the connection the
 // CONNECT left behind.
 func (o *loadOptions) connect(timeout time.Duration) (net.Conn, error) {
+	// url.Parse's error quotes the whole URL, the grant's proxy password with it, so the error names
+	// the flag the URL came from instead.
 	u, err := url.Parse(o.proxyURL)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("--proxy-file: the proxy URL is not a valid URL")
 	}
 	conn, err := net.DialTimeout("tcp", u.Host, timeout)
 	if err != nil {

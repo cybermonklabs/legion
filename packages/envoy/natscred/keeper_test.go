@@ -19,7 +19,7 @@ import (
 
 // statusListeners is how many status listeners nc holds (Conn.StatusChanged). nats.go reports the
 // number nowhere, so it is read from the connection's own map (Conn.statListeners, nats.go
-// v1.53.1), and only after the goroutine that last wrote it has handed over through a channel.
+// v1.55.0), and only after the goroutine that last wrote it has handed over through a channel.
 func statusListeners(t *testing.T, nc *nats.Conn) int {
 	t.Helper()
 	listeners := reflect.ValueOf(nc).Elem().FieldByName("statListeners")
