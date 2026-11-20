@@ -48,7 +48,8 @@ var credentialHeader = regexp.MustCompile(`(?i)(?:^|[^\w-])(?:-H|--header|--prox
 // `--socks4`, `--socks4a`, `--socks5`, `--socks5-hostname`), or a whole header
 // (`-H`, `--header`, `--proxy-header`). It is written case-sensitive, since `-D`, `-X`, `-B` and
 // `-e` are other flags; `--token-file`, `--github-token`, `--proxy-file` and `--header-file` are
-// actionsCredential is a GitHub Actions credential expression, which workflowCredential finds
+// other flags too, and match nothing.
+//
 // given to a command as an argument. Actions writes its value into the command as a shell writes a
 // variable's, so tokenValue and passwordWord take it as a flag's value where they take a variable.
 const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
@@ -64,11 +65,6 @@ const actionsCredential = `\$\{\{\s*(?:github\.token|secrets\.\w+)\s*\}\}`
 // unquoted or after `=` (`--token=${{ github.token }}`), is credentialFlag's to find.
 var workflowCredential = regexp.MustCompile(`(?:\brun:\s(?:.*[^:=\s])?\s+["']?|(?:^|[^:=\s])\s+["'])` + actionsCredential)
 
-// credentialFlag finds the flags whose next word is a user's password (`-u`, `--user`), a
-// request's body (`-d`, the `--data` family, wget's `--post-data`, `-F`, `--form`) or a token
-// itself (`--token`, kubectl's and gh's, and curl's `--oauth2-bearer`). It is written
-// case-sensitive, since `-D` and `-U` are other flags; `--token-file` and `--github-token` are
-// other flags too, and match nothing.
 var credentialFlag = regexp.MustCompile(`(?:^|[^\w-])(-u|--user|-U|--proxy-user|-d|--data|--data-binary|--data-raw|--data-urlencode|--data-ascii|--json|--post-data|-F|--form|--form-string|--url-query|--variable|--token|--oauth2-bearer|--pass|--proxy-pass|--tlspassword|--proxy-tlspassword|--ftp-account|-E|--cert|--proxy-cert|-b|--cookie|-x|--proxy|--preproxy|--proxy1\.0|--socks4|--socks4a|--socks5|--socks5-hostname|-H|--header|--proxy-header)(?:=|[ \t]+)`)
 
 // curlCommand matches a line that runs curl, the one command whose `-E` is a client certificate
