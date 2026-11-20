@@ -8,7 +8,6 @@ import {
   DispatchQueryClient,
   hearLiveEvent,
   holdBackReads,
-  LATE_EVENT_GRACE_MS,
   QUERY_RETRY_DELAY_MS,
   queryRetry,
   queryRetryDelay,
@@ -393,11 +392,12 @@ function snoozeEvent(): DispatchEvent {
   } as DispatchEvent;
 }
 
-// A bulk snooze of two asks goes past its deadline still out, and a snooze is pressed after it.
-// Dispatch then answers the bulk snooze, one of whose asks moved nothing, so one of its two events
-// never comes. It takes the snooze events that come within `LATE_EVENT_GRACE_MS` of its answer,
-// and then waits for none: the event after that ends the later snooze's hold.
-test("a hold past its deadline takes its write's events until LATE_EVENT_GRACE_MS after its answer, and none after", async () => {
+// A bulk snooze of two asks goes past its deadline still out, and Dispatch then answers it; one of
+// its asks moved nothing, so one of its two events never comes. The live feed can bring a write's
+// event seconds after its answer, so the hold takes the snooze events that come within
+// `SEND_DEADLINE_MS` of its answer, ahead of a snooze pressed after the answer, and then waits for
+// none: the event after that ends the later snooze's hold.
+test("a hold past its deadline takes its write's events until SEND_DEADLINE_MS after its answer, and none after", async () => {
   jest.useFakeTimers();
   const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
   const server = heldServer("rows");
@@ -414,14 +414,16 @@ test("a hold past its deadline takes its write's events until LATE_EVENT_GRACE_M
       keys: [["inbox"]],
     });
     jest.advanceTimersByTime(SEND_DEADLINE_MS);
-    const later = holdBackReads(queryClient, { endsOn: snoozeWritten, keys: [["inbox"]] });
     bulk();
+    // Pressed halfway through the bulk snooze's wait, so its own deadline is after that wait.
+    jest.advanceTimersByTime(SEND_DEADLINE_MS / 2);
+    const later = holdBackReads(queryClient, { endsOn: snoozeWritten, keys: [["inbox"]] });
     void queryClient.invalidateQueries({ queryKey: ["inbox"] });
     await settle();
     expect(server.requests()).toBe(1);
 
-    // An event just within the grace is the bulk snooze's, and the read waits for the later's.
-    jest.advanceTimersByTime(LATE_EVENT_GRACE_MS - 1);
+    // An event just within the wait is the bulk snooze's, and the read waits for the later's.
+    jest.advanceTimersByTime(SEND_DEADLINE_MS / 2 - 1);
     hearLiveEvent(queryClient, snoozeEvent(), "alice");
     await settle();
     expect(server.requests()).toBe(1);
