@@ -1112,7 +1112,7 @@ func (s *Service) docTree(ctx context.Context, artifactID string) (*pmdoc.Node, 
 		valid, err := s.readForkTree(fork)
 		return valid.Node(), err
 	}
-	if !s.roomHoldsDocument(artifactID) {
+	if !s.roomHeld(artifactID) {
 		if !s.budget.openServerRoom(artifactID) {
 			return s.storedTree(ctx, artifactID)
 		}

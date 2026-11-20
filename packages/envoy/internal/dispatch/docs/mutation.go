@@ -2176,7 +2176,7 @@ func (s *Service) captureLiveTextAndAuthors(ctx context.Context, room string, ac
 	// (withoutInflight). The opening is taken without waiting for one, since this runs inside
 	// the caller's write transaction and holds one of the shared pool's connections.
 	fromStore := false
-	if !s.roomHoldsDocument(room) {
+	if !s.roomHeld(room) {
 		if s.budget.openServerRoom(room) {
 			defer s.budget.closeServerRoom()
 		} else {

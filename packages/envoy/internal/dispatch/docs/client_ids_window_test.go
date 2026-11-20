@@ -135,9 +135,10 @@ func TestALaterBootDoesNotMoveWhenClientIDsWereFirstGivenOut(t *testing.T) {
 }
 
 // An id no edit used and no admission presented for 30 days is swept, and a page presenting it
-// after that is given a fresh one; an id an edit landed under is never swept, however long ago its
-// page was last admitted, and is given back.
-func TestAnIDNoEditUsedIsSweptAndGivenAfreshWhileOneThatWroteIsKept(t *testing.T) {
+// after that is minted it again, as a row stored afresh that says no edit landed under it; an id
+// an edit landed under is never swept, however long ago its page was last admitted, and is given
+// back.
+func TestAnIDNoEditUsedIsSweptAndMintedAgainWhileOneThatWroteIsKept(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	reader := openPage(t, serverURL, artifactID, "bob")
 	awaitAnswer(t, reader, "the document")
@@ -177,10 +178,12 @@ func TestAnIDNoEditUsedIsSweptAndGivenAfreshWhileOneThatWroteIsKept(t *testing.T
 		return crdt.New(crdt.WithClientID(given))
 	})
 	awaitAnswer(t, back, "the document")
-	if back.Given == reader.Doc.ClientID() {
-		t.Fatalf("the reader's swept id %d was given back", back.Given)
+	if back.Given != reader.Doc.ClientID() {
+		t.Fatalf("the reader's page presenting its swept id %d was given %d", reader.Doc.ClientID(), back.Given)
 	}
-	requireGiven(t, back.Given)
+	if landed, stored := clientIDLanded(t, service, artifactID, back.Given); !stored || landed {
+		t.Fatalf("the reader's swept id, minted again, is stored %t and says an edit landed %t", stored, landed)
+	}
 	again := reopenPage(t, serverURL, artifactID, "alice", writer.Doc)
 	awaitAnswer(t, again, "the document")
 	sendTyped(t, again, 1, "x")

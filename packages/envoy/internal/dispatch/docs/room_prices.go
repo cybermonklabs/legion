@@ -82,9 +82,13 @@ const roomCopies = 2
 // reports it at the end of each apply that commits - the structs its store holds with those
 // parked in its pending queue beside them (crdt.ApplyReport.Structs, roomApplies.structsHeld),
 // read off the room's own record with neither an encode nor a walk, so the second term costs
-// nothing to read. The
-// parked structs are counted because the room stores them and its next load decodes them, so a
-// room holding a backlog costs the pod what that backlog costs it.
+// nothing to read. The parked structs are counted because the live document holds each of them
+// in its pending queue, with the record of the apply that parked it (crdt.Doc.parkedBy), until it
+// lands or a refused drain discards it, and none of that is in the encoded state the state term
+// reads, nor in the stored state (leaveParkedOut): so a room holding a backlog costs the pod what
+// that backlog holds of its heap. The term charges a parked struct in both copies where only the
+// live one holds it - the replica applies only what each commit integrated
+// (renderedReplica.takeLocked) - which errs on the side of the budget.
 //
 // A caller that can reach no document passes no structs, and zero means the state term alone
 // decides, which is what every site that weighs bytes of a stored history before anything has

@@ -518,10 +518,11 @@ type Service struct {
 	// waiting for an edit the room has not received, which sit in ygo's pending queue inside the
 	// room's document until they integrate or the room unloads - are not counted; parked rows
 	// already stored are part of the history a later load decodes, and count there. ygo bounds
-	// the parked ones per room by Server.MaxPendingItems, which this service sets to
-	// maxUpdateItems (1<<20; New, below, and persistence.go), refusing an update that would park
-	// more items, or more delete ranges, than that (ygo v1.55.1-sami.8,
-	// provider/websocket/server.go:1264-1266): a count, not bytes.
+	// the parked ones per room in counts, not bytes: its structs by Server.MaxPendingItems, which
+	// this service sets to maxUpdateItems (1<<20; New, below, and persistence.go), and its delete
+	// ranges apart by Server.MaxPendingDeleteRanges, set to maxParkedDeleteRanges (4,096), each
+	// refusing an update that would park past it (theorem-labs/ygo v1.55.1-theorem.10,
+	// provider/websocket/server.go:1378-1384, :2042-2043).
 	// Each load's bytes are counted against that load's token, and each unload of a name ends the
 	// name's oldest token, so a room that loaded again before an earlier room of the same name
 	// reported its unload keeps its own; two ended rooms that unload out of order each end the
@@ -1132,8 +1133,8 @@ func New(deps Deps) *Service {
 //     states waiting for their room's load; ResidentBytes, the encoded bytes the loads ygo holds
 //     took (each load's history and every update it committed since, taken back when an unload
 //     of the name ends that load's token): loaded state only, without the parked updates ygo
-//     bounds per room by MaxPendingItems, a count of items and delete ranges, not bytes
-//     (Service.residentBytes);
+//     bounds per room by MaxPendingItems for their structs and MaxPendingDeleteRanges for their
+//     delete ranges, counts and not bytes (Service.residentBytes);
 //   - SettlementWakeups, the wakes of the waits for a room's appends.
 type RoomFigures struct {
 	ResidentRooms      int64             `json:"resident_rooms"`

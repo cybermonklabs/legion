@@ -241,39 +241,50 @@ func TestRV8AForgedDeleteOfAnotherPersonsFutureClocksDropsHerNextKeystrokeInSile
 // it (claimClients, sweepUnusedClientIDs). Asserts the bound the rule says holds (maxClaimsADay in
 // client_ids.go), so it fails where the defect stands.
 //
-// Review 8's repro is kept as it was up to its tail, its 192 updates included. Round 9 holds every
-// claim, on every kind of socket, to maxClaimsASocket and maxClaimsADay, 64 each, and that changed
-// the assertions after the updates: the repro required the room to hold a struct under all 192
-// ids and the page to stay connected, which only an uncapped claim allows. Now the first 64
-// claims land, update 65 is refused 4413 DOC_CLIENT_ID_REFUSED with nothing claimed for it, and the
-// repro's own last assertion stands: at most 64 landed rows remain. Its message names the socket's
-// bound by the constant round 9 gave it, maxClaimsASocket, in place of maxConfirmedClients, which
-// is now the size of a cache alone.
+// Review 8's repro made one page's 192 updates each claim an id. Round 9 holds every claim, on
+// every kind of socket, to maxClaimsASocket and maxClaimsADay, 64 each, and one socket meets the
+// socket's bound at the same claim it meets the day's, before the claim reaches the day's count
+// (judgeClients asks mayClaim first): so the repro, kept as one socket, passed with the day's
+// count taken out of claimClients (the round 9 class search, D3). So mallory's claims now come
+// from two pages of hers, half of the day's bound from each, and neither socket comes near its own
+// bound: her second page's next claim, the day's 65th and that socket's 33rd, can be refused by
+// the day's count alone. It is refused 4413 DOC_CLIENT_ID_REFUSED with nothing claimed for it, and
+// the repro's own last assertion stands: 64 landed rows remain, each stored landed so no sweep
+// takes it.
 func TestRV8APageOfThisBuildClaimsPastTheDaysBoundInsideTheWindow(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	setClientIDsSince(t, service, time.Now().Add(-24*time.Hour))
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
-	page := openPage(t, serverURL, artifactID, "mallory")
-	awaitAnswer(t, page, "the document")
-	const n = 3 * maxClaimsADay
-	claimed := make([]crdt.ClientID, n)
-	for i := range claimed {
-		claimed[i] = crdt.ClientID(1_800_000_001 + i)
-		writeUnder(t, page, claimed[i])
+	const half = maxClaimsADay / 2
+	pages := make([]*docstest.Peer, 2)
+	for socket := range pages {
+		pages[socket] = openPage(t, serverURL, artifactID, "mallory")
+		awaitAnswer(t, pages[socket], "the document")
+		claimed := make([]crdt.ClientID, half)
+		for i := range claimed {
+			claimed[i] = crdt.ClientID(1_800_000_001 + half*socket + i)
+			writeUnder(t, pages[socket], claimed[i])
+		}
+		awaitHeld(t, room, claimed, "one of mallory's pages' claims")
+		requireConnected(t, pages[socket], "mallory's page after its claims")
 	}
-	awaitRefused(t, page, "mallory's page at its 65th claim")
-	awaitHeld(t, room, claimed[:maxClaimsADay], "the page's first 64 claims")
-	requireNothingClaimed(t, service, artifactID, claimed[maxClaimsADay])
+	if got := claimsOf(t, service, artifactID, "mallory"); got != maxClaimsADay {
+		t.Fatalf("mallory holds %d claims after her two pages' %d each, want %d", got, half, maxClaimsADay)
+	}
+	over := crdt.ClientID(1_800_000_001 + maxClaimsADay)
+	writeUnder(t, pages[1], over)
+	awaitRefused(t, pages[1], "mallory")
+	requireNothingClaimed(t, service, artifactID, over)
 	var landed int
 	if err := service.store.Pool.QueryRow(t.Context(), `
 		select count(*) from document_client_ids where artifact_id = $1 and actor_id = 'mallory' and not minted and landed
 	`, artifactID).Scan(&landed); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("one socket of mallory's made %d claims in one document today, each stored landed", landed)
+	t.Logf("two pages of mallory's made %d claims in one document today, each stored landed", landed)
 	if landed > maxClaimsADay {
-		t.Fatalf("one page of this build made %d claims in one document in one day, past maxClaimsADay %d and maxClaimsASocket %d, each stored landed so no sweep takes it",
-			landed, maxClaimsADay, maxClaimsASocket)
+		t.Fatalf("pages of this build made %d claims in one document in one day, past maxClaimsADay %d, each stored landed so no sweep takes it",
+			landed, maxClaimsADay)
 	}
 }
 

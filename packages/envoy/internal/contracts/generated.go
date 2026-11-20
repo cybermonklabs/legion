@@ -360,10 +360,11 @@ const DocumentSchemaCloseReason = "DOC_SCHEMA"
 // DocumentTooLargeCloseCode and DocumentTooLargeCloseReason close the one browser whose update
 // would grow a document past a bound of its own; with the same code, DocumentTooTangledCloseReason
 // closes the one whose update would scan more of the document than the room allows one apply to
-// scan, DocumentNeedsRebuildCloseReason the one whose update the document cannot take until it
-// is rebuilt - it would carry the room's encoded state past the most one room may hold, or the
-// document past the structs ygo decodes in one update, or its history has used up what the room
-// lets its applies scan - DocumentRebuiltCloseReason
+// scan, with the browsers whose parked edits a drain held that would scan, or split, more than
+// the apply releasing it may, DocumentNeedsRebuildCloseReason the one whose update the document
+// cannot take until it is rebuilt - it would carry the room's encoded state past the most one
+// room may hold, or the document past the structs ygo decodes in one update, or its history has
+// used up what the room lets its applies scan - DocumentRebuiltCloseReason
 // the one that still holds a history a rebuild replaced, DocumentUpdateRefusedCloseReason the
 // one whose update holds content the document does not take - bytes the decoder refuses, content
 // the Proof editor never sends, or a document this build cannot render, with the browsers whose

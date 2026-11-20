@@ -29,8 +29,7 @@ import (
 //
 // The hook does not run applyLive's checks. Those weigh what a write leaves, which costs a fork
 // of the document, a tree build and a full markdown render - about 420 ms for the fork alone at
-// 1 MiB and a whole further copy of the document, with the render about 160 ms (AGENTS.md:563-602,
-// :780-781) - against a keystroke on such a document that already takes between half a second and
+// 1 MiB and a whole further copy of the document, with the render about 160 ms (applyLive, buildForkHeld) - against a keystroke on such a document that already takes between half a second and
 // a second. What it does instead is hand ygo an allowance built from what it can see without
 // reading the update at all - the update's own length, the structs the room's last committed
 // apply reported it holding (crdt.ApplyReport.Structs, roomApplies.structsHeld), what its
@@ -348,11 +347,14 @@ type peerAllowance struct {
 
 // parkJudge answers ygo's question for one browser's apply, whether a delete range it carries may
 // park under client (crdt.ApplyBudget.MayParkDeletes): only under a client the sender's socket
-// holds, the id its admission gave its page or one an earlier update showed is its person's
-// (socketClients.holds). ygo asks only where a range, or the part of one, reaches past the clocks
-// the room holds of its client, once for each such client, and refuses the whole apply at the
-// first false (crdt.ErrParkedDeleteRefused); a delete of clocks the room holds asks nothing, so a
-// person deletes other people's text as before, and a keystroke never asks at all. What parks
+// holds, the id its admission gave its page or one an earlier update, or this one, showed is its
+// person's (socketClients.holds). The socket keeps every one of them while it is open, so no id
+// its updates have written under is refused for having been forgotten; an update that would
+// make it hold more than maxConfirmedClients is refused before its apply (judgeClients). ygo asks
+// only where a range, or the part of one, reaches past the clocks the room holds of its client,
+// once for each such client, and refuses the whole apply at the first false
+// (crdt.ErrParkedDeleteRefused); a delete of clocks the room holds asks nothing, so a person
+// deletes other people's text as before, and a keystroke never asks at all. What parks
 // under another person's id waits for the clocks that person types next and deletes each as it
 // lands, while that person is answered saved and told nothing: a frame of about 10 bytes over
 // alice's next thousand clocks dropped her next keystrokes in silence
@@ -1745,9 +1747,13 @@ func documentBusy() *websocket.PeerClose {
 }
 
 // documentTooTangled is the refusal of an update the room's document could not merge within its
-// scan allowance while the room's scan total was not used up (roomScans.reserve), or was used up
-// in a room the rebuild route would not take (rebuildTakes), permanent as documentTooLarge is and
-// under the same code, with a reason of its own so the editor can say why the edit was dropped.
+// scan allowance (refusedByApply, crdt.ErrIntegrateScanBudget) while the room's scan total was not
+// used up (roomScans.reserve), or was used up in a room the rebuild route would not take
+// (rebuildTakes); and the close of every browser whose parked frame a drain held, where the room
+// took that drain back because its scans or its splits passed the allowance of the apply that
+// released it (closeDiscardedSenders, crdt.DrainDiscardedError). Permanent as documentTooLarge is
+// and under the same code, with a reason of its own so the editor can say why the edit was
+// dropped.
 func documentTooTangled() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,
@@ -1778,10 +1784,15 @@ func documentRebuilt() *websocket.PeerClose {
 	}
 }
 
-// documentUpdateRefused is the refusal of an update the room will not read: one whose bytes ygo
-// refuses, and one naming a root the editor never writes - a subdocument, an unknown root, the
-// retired clients' list only a rebuild writes. Permanent as documentTooLarge is and under the
-// same code, with a reason of its own: the client that sent it sends it again on every reconnect
+// documentUpdateRefused is the refusal of an update holding what the document does not take:
+// bytes ygo refuses (crdt.ErrInvalidUpdate); a root the editor never writes - a subdocument, an
+// unknown root, the retired clients' list only a rebuild writes (crdt.ErrRootNotAllowed); a kind
+// of content the editor never sends (crdt.ErrContentNotAllowed, peerRefusedContent); and a
+// document this build cannot render, the render check's refusal (renderRefusal.close), which is
+// also the close of the browsers whose parked frames a drain refused for it held
+// (closeDiscardedSenders). The test hook's armed refusal closes with it too
+// (refusesNextPeerUpdateForTest). Permanent as documentTooLarge is and under the same code, with a
+// reason of its own: the client that sent it sends it again on every reconnect
 // (@hocuspocus/provider 2.x reconnects at once after a close it does not read as permanent), so
 // the one answer that ends the exchange is the one the editor drops the edit for.
 func documentUpdateRefused() *websocket.PeerClose {
@@ -1791,10 +1802,16 @@ func documentUpdateRefused() *websocket.PeerClose {
 	}
 }
 
-// documentClientIDRefused is the refusal of an update carrying structs under a client id that is
-// not its sender's (judgeClients, client_ids_judgement.go), permanent as documentTooLarge is and
-// under the same code, with a reason of its own: the editor drops the refused edit and rebuilds
-// its document under a fresh client id.
+// documentClientIDRefused is the refusal of an update carrying an edit under a client id its
+// sender may not write under, every one of them made by refuseClient (client_ids_judgement.go):
+// structs under another person's id, under one no admission gave out, under one it may not claim
+// or past the claims' bounds, or under more ids than its socket may hold (judgeClients); structs
+// at clocks another person claimed that differ from what the room holds there, and a legacy
+// socket's update carrying structs at such clocks under more than maxComparedClaims claimed ids
+// (refusedDuplicates); and a delete range that would park under a client its socket does not hold
+// (parkJudge, refusedByApply). Permanent as documentTooLarge is and under the same code, with a
+// reason of its own: the editor drops the refused edit and rebuilds its document under a fresh
+// client id.
 func documentClientIDRefused() *websocket.PeerClose {
 	return &websocket.PeerClose{
 		Code:   contracts.DocumentTooLargeCloseCode,
@@ -1828,7 +1845,7 @@ func logRefusal(info websocket.PeerUpdateInfo, refusal *websocket.PeerClose, mes
 // roomWeighingOf is what the hook reads of the room holding live (keepReplica), or nil for a
 // document no room's load listed. It is a load off the listing the room's reads already go through
 // (holdLive), so the peer's read loop takes neither the replica's lock, which every browser in the
-// room waits behind (AGENTS.md:559-562), nor the room's state lock; and the listing holds the
+// room waits behind (renderedReplica.mu), nor the room's state lock; and the listing holds the
 // weighing strongly, so the read makes no weak pointer strong, which the collector can block for
 // the rest of a mark phase (roomWeighing).
 func (s *Service) roomWeighingOf(live *crdt.Doc) *roomWeighing {

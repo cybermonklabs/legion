@@ -517,7 +517,7 @@ func TestAStateAnswerAtMidSizesHoldsNoMoreLiveHeapThanItsGrant(t *testing.T) {
 // begins those afresh (crdt/split.go, newPiece and encodePiece), so what is held at once is one
 // update's scratch and the updates written so far, while what is allocated grows with every
 // update. Garbage is not the pool's to bound but the Go memory limit's, which the collector
-// steers the whole heap to (AGENTS.md, the memory limit). The pool bounds what copies hold at
+// steers the whole heap to (cmd/dispatch's memlimit.Set, memory_bounds.go). The pool bounds what copies hold at
 // once, and this holds the cut's grant to that for the rooms whose answers allocate the most past
 // it - each row is checked to allocate more than its grant, and to hold less: a run of 50,000 and
 // one of 200,000 GC structs of one client, the smallest struct a browser can send, which

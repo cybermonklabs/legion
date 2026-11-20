@@ -131,9 +131,10 @@ func refuseMintsLive(w http.ResponseWriter, r *http.Request, room string, cause 
 // did, without taking the connection. It asks gorilla's Upgrader itself, called as ygo's upgrade
 // calls it - no response header, and the same-origin rule ygo keeps with no AllowedOrigins
 // configured (sameOrigin) - so it refuses what that upgrade refuses, with the status that upgrade
-// gives (Upgrader.Upgrade, gorilla/websocket server.go): 400 for no `Connection: upgrade`, 426 for
-// no `Upgrade: websocket`, 405 for a method other than GET, 400 for a version other than 13, 403
-// for another origin, and 400 for a Sec-WebSocket-Key that is not 16 bytes in base64. The
+// gives (Upgrader.Upgrade, gorilla/websocket server.go): 400 for no `Connection: upgrade`, 405 for
+// a method other than GET, 400 for a version other than 13, 403 for another origin, 400 for a
+// Sec-WebSocket-Key that is not 16 bytes in base64, and for no `Upgrade: websocket` 400 in
+// gorilla/websocket v1.5.3 and 426 in later commits, whichever the build resolves. The
 // upgrader checks the whole request before it takes the connection, and is handed a writer it
 // cannot take (unhijackable), so a request that passes every check meets the one refusal after
 // them, the 500 of a writer that is no http.Hijacker, where nothing is written and this reports
@@ -248,7 +249,11 @@ func socketRoom(r *http.Request) string {
 // other than GET, a websocket version or key it does not take, or one from another origin - is
 // answered as that upgrade answers it before either (refusedAtUpgrade), and stores nothing; and a
 // page whose person holds every unlanded id the document allows them, each held by an open
-// socket, is closed at its upgrade with 4503 DOC_BUSY (refuseMintsLive).
+// socket, is closed at its upgrade with 4503 DOC_BUSY (refuseMintsLive). What ygo's ServeHTTP
+// still refuses comes after the id: authorize's 401 for a failed room, ygo's 500 for a room whose
+// load fails, a client dropped for bytes sent before its 101, and a socket whose room ygo dropped
+// before it joined. The row such a refusal leaves for a page that may write is an unlanded mint,
+// which lapses once no socket presents it and is held by maxUnlandedMintsADocument (client_ids.go).
 //
 // The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
 // and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
@@ -402,10 +407,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)
 		return
 	}
-	// The page's client id is decided last, once nothing above can refuse the socket, so an id is
-	// given out only to a socket that is served (admitClients, client_ids_admission.go): a request
-	// ygo's upgrade would refuse is answered as it would answer it first, and the page's write is
-	// decided before its id, so a read-only page is given one stored nowhere.
+	// The page's client id is decided last, once nothing above can refuse the socket
+	// (admitClients, client_ids_admission.go): a request ygo's upgrade would refuse is answered as
+	// it would answer it first, and the page's write is decided before its id, so a read-only page
+	// is given one stored nowhere. ygo's ServeHTTP below can still refuse the request after the id
+	// - a 401 for a failed room (authorize), a 500 for a room whose load fails - and the unlanded
+	// row that leaves lapses once no socket presents it (maxUnlandedMintsADocument).
 	if refusedAtUpgrade(w, r) {
 		return
 	}

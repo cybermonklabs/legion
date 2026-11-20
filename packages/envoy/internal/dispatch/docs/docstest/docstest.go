@@ -288,14 +288,15 @@ type Admission struct {
 }
 
 // GivingClientIDs serves room, a room's websocket handler (ygo's websocket server on Hocuspocus
-// framing), as internal/dispatch/docs admits a document socket's page (admitClients): a socket
-// that presents contracts.DocumentClientIdParameter is given back an id it presents where this
-// handler gave that id to the same person, and a fresh one otherwise, from 2^32 up in order (docs
-// draws its own at random at mintedClientFloor, 2^32, or above), and the id is the stateless
-// message of the socket's first frame, written in the one write of the upgrade's answer
-// (clientIDWriter and clientIDConn; the frame as clientIDFrame encodes it). A socket that presents
-// no parameter is served as docs serves a legacy page: given nothing, with no such frame. It
-// stores nothing and judges no update's client ids (judgeClients).
+// framing), with a reduced form of how internal/dispatch/docs admits a document socket's page
+// (admitClients): a socket that presents contracts.DocumentClientIdParameter is given back an id
+// it presents where this handler gave that id to the same person, and a fresh one otherwise, from
+// 2^32 up in order. docs draws its own at random at mintedClientFloor, 2^32, or above, and also
+// gives back a presented id from 2^32 up that no row names, which this handler, keeping no rows,
+// does not. The id is the stateless message of the socket's first frame, written in the one write
+// of the upgrade's answer (clientIDWriter and clientIDConn; the frame as clientIDFrame encodes it).
+// A socket that presents no parameter is served as docs serves a legacy page: given nothing, with
+// no such frame. It stores nothing and judges no update's client ids (judgeClients).
 func GivingClientIDs(room http.Handler) *ClientIDRoom {
 	return &ClientIDRoom{room: room, next: 1 << 32, owners: map[crdt.ClientID]string{}}
 }

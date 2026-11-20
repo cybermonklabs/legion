@@ -80,7 +80,7 @@ Each item below names a variable, then its purpose.
   `POST /api/v1/artifacts/{id}/_test/near-decode-cap` leaves it a history of deleted characters near the decode cap, which the rebuild takes and the dashboard's `/text` read reports (`near_decode_cap`);
   and `POST /api/v1/writes/_test/slow` `{method, path, delay_ms}` makes every keyed run of that method and exact path wait `delay_ms` once its key is claimed.
   The first four act on every process serving the database, whichever one the call reached (Running more than one process, below), and the flag costs each process one more Postgres connection outside the shared pool, the one those hooks listen on.
-  The routes table in `AGENTS.md` has each one's rules.
+  Each is a row of `routes()` in `internal/dispatch/api/routes_table.go`, mounted only under the flag (`TestHooksEnabled`), and its summary and handler there give its rules.
   Leave unset in every real deployment.
 
 - `DISPATCH_DEV_SIGNIN`
@@ -5422,12 +5422,16 @@ Each item below names a status and code, then its meaning.
   The same close for an update carrying an edit under a Yjs client id that is not its sender's:
   one the document's admissions gave another person, one another person's edit claimed first, or one at 2^32 or above that no admission gave out;
   for an edit under an id below 2^32 that another person claimed, at clocks the room already holds from the claim on, whose content differs from what the room holds there;
-  and for a claim past the bounds below.
+  and for a claim past the bounds below, or an edit under more ids than one socket may hold.
 
   - Each document socket's admission gives its page a client id of its own, stored with the person the socket is signed in as (`document_client_ids`) where the page may write, and names it in the socket's first frame, a stateless message starting `dispatch.client_id:` (`DOCUMENT_CLIENT_ID_MESSAGE_PREFIX`);
     the page presents that id again on every reconnect (`client_id`, `DOCUMENT_CLIENT_ID_PARAMETER`) and is given it back, so a tab keeps one id across reconnects and offline edits.
-    A page admitted read-only writes under no id, and its admission stores nothing: it is given back an id its person's row names, or sent one drawn as a fresh one is that no row names, and a page that writes nothing under it takes the fresh id its next writable admission gives it.
-    A request that never becomes a socket is answered as the websocket upgrade answers it, and no id is given out for it: `400` for one with no `Connection: upgrade`, a websocket version other than 13 or no valid `Sec-WebSocket-Key`, `403` for one from another origin, `405` for a method other than `GET`, and `426` for one with no `Upgrade: websocket`.
+    A page admitted read-only writes under no id, and its admission stores nothing: it is given back an id its person's row names, or sent one drawn as a fresh one is that no row names, which it presents again at each read-only reconnect and is given back while no row names it, since its editor writes under it as it reads even though nothing it writes there lands.
+    A writable admission presented an id from 2^32 up and below 2^35 that no row names stores that id as the page's, counted against the 64 below as a fresh one is: the one a read-only admission sent, so a page admitted read-only and then writable keeps its id and what its editor wrote under it lands, or the page's own whose row was given back or swept (below).
+    Where another person's row names the id, the page is given a fresh one.
+    No id is given out for a request the server refuses before its admission gives one: the sign-in, a document it cannot find, its caps and waits, a schema or newer-content close, the room budget, a read or a decision that failed, and every request the websocket upgrade would refuse, which is answered as that upgrade answers it before any id is given: `400` for one with no `Connection: upgrade`, a websocket version other than 13 or no valid `Sec-WebSocket-Key`, `403` for one from another origin, `405` for a method other than `GET`, and, for one with no `Upgrade: websocket`, `400` in gorilla/websocket v1.5.3 and `426` in later commits, whichever the build takes.
+    Four refusals come after the id is given, inside the websocket server, which the admission cannot ask first: the `401` for a room whose load failed, the `500` where the room's load fails or the request ends waiting for it, the drop with no answer of a client that sent bytes before its `101`, and the close of a socket upgraded into a room the server dropped before it joined.
+    The id each of those four gives a page that may write is stored, and no socket presents it, so it lapses after 15 minutes as an id a page has left does, and is given back or swept as below.
 
   - An id below 2^32 that no row names - one a page of a build from before client ids, or a client that presents no `client_id` at all, drew for itself - may be claimed by the first person whose browser lands an edit under it, so such a tab, the rows it saved, and the clients deployed without an id still land, and by a page of this build that presents it, at its writable admission:
     every claim, on every kind of socket, counts against 64 claims a person makes in one document in one UTC day, counted from `document_client_ids`, and the claims one socket's updates make against 64 a socket besides, past either of which the update is refused and nothing in it is claimed, and an update's claim is given back where its update does not stand and kept where it stands, its edit parked or not, so the id stays its claimant's;
@@ -5446,10 +5450,11 @@ Each item below names a status and code, then its meaning.
 
   - A delete past the clocks the room holds of a client id waits in the room for that client's next edits and would delete each as it landed, while its writer was answered saved, so it is taken only under an id the socket holds, judged where it would wait (`parkJudge`), and refused the same way otherwise, with the id in the refusal's log line;
     the close is this permanent one even where the room is behind another process's rows that carry those clocks, since the room cannot tell that exactly, and the page that sent it rebuilds from the room and loses only that delete.
+    A socket holds the id its page was given and each id its edits showed is its person's, claimed or named theirs in `document_client_ids`, and keeps every one while it is open, up to 128 besides its own, its claims among them: so a delete waits under any id the socket has written under, and an edit that would make the socket hold more is refused the same way.
 
   - A person holds at most 64 client ids in a document that no edit landed under - integrated, not only parked behind a clock the room lacks - and an admission past them gives back, in the statement that stores its own, the one presented least recently, never one an open socket holds: an open socket presents its id again every 5 minutes until an edit lands under it, and only an id no admission or socket presented for 15 minutes is given back; where every one of them is that fresh, the admission is closed `4503 DOC_BUSY` for the editor to retry.
-    A page whose id was given back is given a fresh one at its next admission, and loses only what it typed offline under the old one that never landed.
-    A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given a fresh one.
+    A page whose id was given back is given that id again at its next admission where no other row names it by then, and keeps what it typed offline under it; where one does, it is given a fresh one, and loses only what it typed offline under the old one that never landed.
+    A client id no edit landed under and nothing presented for 30 days is deleted by the hourly compaction sweep, and a page that presents it after that is given it again the same way.
     The socket's awareness carries presence only under the id its page was given, so a cursor cannot be announced under another person's id either.
 
   Permanent like `DOC_TOO_LARGE`: the dashboard drops the refused edit and every edit it saved under the same id, which would each meet the same refusal, says how many it dropped, re-reads the document and takes a fresh client id with it.

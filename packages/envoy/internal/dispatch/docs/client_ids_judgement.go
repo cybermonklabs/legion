@@ -55,9 +55,11 @@ func roomHolds(room *crdt.Doc, client crdt.ClientID) bool {
 // judgeClients is the rule above for one browser update: it returns the refusal of an update
 // carrying structs under a client id that is not its sender's, or carrying, under a claimed id
 // that is not its sender's, an edit at clocks the room holds that differs from what it holds
-// there, and otherwise what it decided (clientJudgement). An update whose context names no socket
-// of this service's admission - a test's call of the hook - is judged by nothing here, and neither
-// is one whose header does not read: the apply refuses its bytes.
+// there, or carrying structs under ids its socket does not hold yet that would make it hold more
+// than maxConfirmedClients besides its own, and otherwise what it decided (clientJudgement). An
+// update whose context names no socket of this service's admission - a test's call of the hook -
+// is judged by nothing here, and neither is one whose header does not read: the apply refuses its
+// bytes.
 //
 // A keystroke costs a read of its header's first three numbers and nothing more: an update of
 // one client's structs under the id the socket was given passes there, and only an update
@@ -120,6 +122,12 @@ func (s *Service) judgeClients(info websocket.PeerUpdateInfo) (judged clientJudg
 			claims = append(claims, client)
 			claimFrom = append(claimFrom, heldTo)
 		}
+	}
+	// The socket keeps every id it holds, so a delete range parks under any of them and no other
+	// (parkJudge); each id asked is one it does not hold yet (beyondHeld).
+	if !clients.mayHold(len(asked)) {
+		return clientJudgement{}, s.refuseClient(info, connection, asked[0],
+			fmt.Sprintf("its socket holds %d ids besides its own, the most it may", maxConfirmedClients))
 	}
 	if len(claims) > 0 {
 		if !clients.mayClaim(len(claims)) {
@@ -293,11 +301,12 @@ func (s *Service) settleClients(info websocket.PeerUpdateInfo, judged clientJudg
 }
 
 // refuseClient is the refusal of an update carrying an edit under client - structs, or a delete
-// range that would park (parkJudge) - which is not the sender's for why.
+// range that would park (parkJudge) - which is not the sender's for why. Its line names no person:
+// the socket's own request line names its caller, and the room and the two ids join them.
 func (s *Service) refuseClient(info websocket.PeerUpdateInfo, connection *connectionState, client uint64, why string) *websocket.PeerClose {
 	refusal := documentClientIDRefused()
 	logRefusal(info, refusal, "dispatch: refused a browser's update carrying an edit under a client id that is not its sender's",
-		"client", client, "why", why, "actor", ActorRef(connection.actor), "own_client", uint64(connection.clients.own),
+		"client", client, "why", why, "own_client", uint64(connection.clients.own),
 		"legacy_page", connection.clients.legacy)
 	return refusal
 }

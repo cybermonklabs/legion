@@ -230,7 +230,7 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	updates := make(chan struct{}, 1)
 	var unsubscribe func()
 	watch, booked := true, false
-	if !s.roomHoldsDocument(artifactID) {
+	if !s.roomHeld(artifactID) {
 		booked = s.budget.openServerRoom(artifactID)
 		watch = booked
 	}
@@ -801,7 +801,7 @@ func forgetMarkAuthorDeparture(state *roomState, actor model.Actor) {
 // says so: the marks stay expired, and the next settlement's pass finds them again, which is
 // what a refusal of the decode cap already leaves it doing.
 func (s *Service) unmarkExpired(room string, expired []pmdoc.MarkRef) error {
-	if !s.roomHoldsDocument(room) {
+	if !s.roomHeld(room) {
 		if !s.budget.openServerRoom(room) {
 			slog.Debug("dispatch: the unrecorded-mark sweep found no opening for a room no browser holds",
 				"room", room, "marks", len(expired))

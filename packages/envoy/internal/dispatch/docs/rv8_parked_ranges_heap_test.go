@@ -9,23 +9,30 @@ package docs
 // parked ranges takes to within four times what the room's charge grew by, plus 1 MiB.
 //
 // Review 8's repro is kept as it was written, and only its two reads of the charge moved: each
-// reads the charge the budget holds for the room through the function the budget calls
-// (roomChargeWeight, roomCharge.weigh), where the repro read the two copies' weight alone
-// (roomWeight). The fix charges a parked range outside roomCopies by design, since only the live
-// copy holds one, so roomWeight cannot carry it.
+// reads the charge the room budget holds for the room (chargedWeight), as
+// TestParkedDeleteRangesAreChargedToTheRoomBudgetUntilTheyLand does, the room charged as a load
+// charges it (chargeLoadedRoom), where the repro read the two copies' weight alone (roomWeight).
+// Round 8's fix computed roomChargeWeight itself here, over a room the budget charged nothing,
+// so it passed with the hook's re-weigh of the room taken out (the round 9 class search, D4). The
+// fix charges a parked range outside roomCopies by design, since only the live copy holds one, so
+// roomWeight cannot carry it.
 
 import (
 	"runtime"
 	"testing"
+
+	"github.com/reearth/ygo/crdt"
 )
 
 func TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge(t *testing.T) {
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
 	defer runtime.KeepAlive(replica)
+	service.budget.limit = roomBudgetBytes
+	charge := service.chargeLoadedRoom("room", replica, int64(len(crdt.EncodeStateAsUpdateV1(room, nil))))
 	applies := service.roomWeighingOf(room).applies()
 	n := capHeadroom(heldStructs(room)) - 1
 	frame := deleteRangesFrom(8_200_001, n)
-	chargedBefore := roomChargeWeight(applies.residentBytes(), int64(heldStructs(room)), applies.parkedRangeCount())
+	chargedBefore := chargedWeight(charge)
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.GC()
@@ -40,8 +47,8 @@ func TestRV8ParkedDeleteRangesHoldHeapTheRoomBudgetDoesNotCharge(t *testing.T) {
 		t.Fatalf("the frame was refused: %v", err)
 	}
 	held := int64(after.HeapAlloc) - int64(before.HeapAlloc)
-	chargedAfter := roomChargeWeight(applies.residentBytes(), int64(heldStructs(room)), applies.parkedRangeCount())
-	t.Logf("one frame of %d parked delete ranges: pending %+v; live heap grew %d bytes (%.1f a range); the room's budget weight %d -> %d (+%d); resident %d, structs %d",
+	chargedAfter := chargedWeight(charge)
+	t.Logf("one frame of %d parked delete ranges: pending %+v; live heap grew %d bytes (%.1f a range); the room's budget charge %d -> %d (+%d); resident %d, structs %d",
 		n, room.PendingStats(), held, float64(held)/float64(n), chargedBefore, chargedAfter, chargedAfter-chargedBefore, applies.residentBytes(), heldStructs(room))
 	if held > 4*(chargedAfter-chargedBefore)+(1<<20) {
 		t.Fatalf("the room holds %d more bytes of live heap for %d parked delete ranges and the budget charges it %d more", held, n, chargedAfter-chargedBefore)

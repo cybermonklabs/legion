@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -133,15 +134,17 @@ func TestATabWhoseRowIsTheOldestKeepsWritingThroughMintsPastTheCap(t *testing.T)
 	awaitLanded(t, service, artifactID, tab.Given, "alice's tab")
 }
 
-// A read-only admission stores no row and claims nothing, and the page it admits writes with no
-// loss once it is admitted writable. Bob's page opens while the issue is closed: it is sent an id
-// drawn at mintedClientFloor or above that no row names, and so is his page presenting an id below
-// it that he could claim if he could write. Alice's page, whose id has a row of hers, is given that
-// id back read-only, and adds no row. Once the issue reopens, bob's page presents the id it was
-// sent, finds no row, and is given one afresh, which the page takes since it wrote nothing under
-// the first (the dashboard's takeClientId); what it types lands under the fresh id, and its row
-// says so.
-func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(t *testing.T) {
+// A read-only admission stores no row and claims nothing, and the page it admits keeps its id and
+// writes with no loss once it is admitted writable. Bob's page opens while the issue is closed: it
+// is sent an id drawn at mintedClientFloor or above that no row names, and so is his page
+// presenting an id below it that he could claim if he could write. Bob's page writes under the id
+// it was sent, as the dashboard's editor does while it reads, and the read-only room takes none of
+// it. Alice's page, whose id has a row of hers, is given that id back read-only, and adds no row.
+// Once the issue reopens, bob's page presents the id it was sent, finds no row, and is minted it:
+// its row is stored then, the page keeps the id its document wrote under, rather than a fresh one
+// the dashboard's takeClientId would rebuild the document for, and what it wrote while read-only
+// lands under it with its answer to the room's sync step 1, and its row says so.
+func TestAReadOnlyAdmissionStoresNoRowAndItsPageKeepsItsIDOnceWritable(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	setClientIDsSince(t, service, time.Now().Add(-24*time.Hour))
 	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
@@ -168,6 +171,8 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 	if stored := storedClientIDs(t, service, artifactID, reader.Given); stored != 0 {
 		t.Fatalf("bob's read-only page was given id %d, stored in %d rows", reader.Given, stored)
 	}
+	sendTyped(t, reader, 0, "b")
+	requireConnected(t, reader, "bob's read-only page after it wrote")
 	const unclaimed = crdt.ClientID(1_234_572_001)
 	presenting := docstest.DialGiven(t, socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"="+strconv.FormatUint(uint64(unclaimed), 10),
 		pageHeader("bob"), artifactID, func(given crdt.ClientID) *crdt.Doc { return crdt.New(crdt.WithClientID(given)) })
@@ -187,27 +192,65 @@ func TestAReadOnlyAdmissionStoresNoRowAndItsPageWritesUnderAFreshIDOnceWritable(
 
 	writeIssueClosed(t, service.store, "DOC-1", false)
 	drawn := reader.Given
-	again := docstest.DialGiven(t, socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"="+strconv.FormatUint(uint64(drawn), 10),
-		pageHeader("bob"), artifactID, func(given crdt.ClientID) *crdt.Doc { return crdt.New(crdt.WithClientID(given)) })
+	again := reopenPage(t, serverURL, artifactID, "bob", reader.Doc)
 	awaitAnswer(t, again, "bob's page reconnected writable")
-	if again.Given == drawn {
-		t.Fatalf("bob's writable reconnect was given back %d, the id a read-only admission drew and stored nowhere", drawn)
+	if stored := storedClientIDs(t, service, artifactID, drawn); stored != 1 {
+		t.Fatalf("bob's writable page kept id %d, stored in %d rows", drawn, stored)
 	}
-	requireGiven(t, again.Given)
-	if stored := storedClientIDs(t, service, artifactID, again.Given); stored != 1 {
-		t.Fatalf("bob's writable page was given id %d, stored in %d rows", again.Given, stored)
-	}
-	sendTyped(t, again, 0, "b")
-	awaitRendering(t, room, "# Title\n\nbwAlice's paragraph.\n", "the room after bob's page typed")
+	awaitRendering(t, room, "# Title\n\nbwAlice's paragraph.\n", "the room after bob's page reconnected writable")
 	requireConnected(t, again, "bob's writable page")
-	awaitLanded(t, service, artifactID, again.Given, "bob's writable page")
+	awaitLanded(t, service, artifactID, drawn, "bob's writable page")
+}
+
+// A read-only page keeps the id its admission sent it across its read-only reconnects. The
+// dashboard's editor writes under the id its document holds as it reads - it gives the document's
+// headings ids - and the read-only room takes none of that, so a reconnect that sent the page
+// another id would find its document had written under the first, and the page would rebuild it
+// and tell a reader who typed nothing that it held edits under an identity Dispatch did not give
+// them (the dashboard's takeClientId; e2e/doc-reload-line.e2e.ts). So bob's read-only page, which
+// has written under the id it was sent, presents that id while the issue is still closed and is
+// given it back, and no row is stored for it. A read-only page presenting an id another person's
+// row names is not given that id.
+func TestAReadOnlyPageKeepsTheIDItWasSentAcrossReadOnlyReconnects(t *testing.T) {
+	service, artifactID, serverURL := clientIDRoom(t)
+	writer := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, writer, "alice's page")
+	writer.Close()
+	writeIssueClosed(t, service.store, "DOC-1", true)
+
+	reader := openPage(t, serverURL, artifactID, "bob")
+	awaitAnswer(t, reader, "bob's read-only page")
+	requireGiven(t, reader.Given)
+	sendTyped(t, reader, 0, "r")
+	requireConnected(t, reader, "bob's read-only page after it wrote")
+	reader.Close()
+	again := reopenPage(t, serverURL, artifactID, "bob", reader.Doc)
+	awaitAnswer(t, again, "bob's page reconnected read-only")
+	if stored := storedClientIDs(t, service, artifactID, again.Given); stored != 0 {
+		t.Fatalf("bob's read-only reconnect was given back id %d, stored in %d rows", again.Given, stored)
+	}
+	again.Close()
+
+	presenting := docstest.DialGiven(t, socketURL(serverURL, artifactID)+"&"+contracts.DocumentClientIdParameter+"="+strconv.FormatUint(uint64(writer.Given), 10),
+		pageHeader("bob"), artifactID, func(given crdt.ClientID) *crdt.Doc { return crdt.New(crdt.WithClientID(given)) })
+	awaitAnswer(t, presenting, "bob's read-only page presenting alice's id")
+	if presenting.Given == writer.Given {
+		t.Fatalf("a read-only admission gave bob's page id %d, which alice's row names", writer.Given)
+	}
+	requireGiven(t, presenting.Given)
+	if stored := storedClientIDs(t, service, artifactID, presenting.Given); stored != 0 {
+		t.Fatalf("bob's read-only page presenting alice's id was given id %d, stored in %d rows", presenting.Given, stored)
+	}
 }
 
 // A request that never becomes a socket stores nothing: each request ygo's upgrade refuses is
-// answered with the status that upgrade gives it (gorilla's Upgrader.Upgrade), and with the
-// websocket version beside it as gorilla writes a refusal, before the admission gives out a
-// client id (refusedAtUpgrade). Each row is a real HTTP request carrying a websocket upgrade's
-// headers with the one change its name says. A same-origin upgrade is then given one id.
+// answered exactly as gorilla's own Upgrader.Upgrade answers it, with the same origin rule
+// (sameOrigin), before the admission gives out a client id (refusedAtUpgrade). Each row is a real
+// HTTP request carrying a websocket upgrade's headers with the one change its name says, and
+// what it wants is what a plain gorilla Upgrader writes for that same request, in whichever
+// gorilla the build resolves: the status for a request naming no websocket in its Upgrade header
+// is 400 in gorilla/websocket v1.5.3 and 426 in later commits. A same-origin upgrade is then given
+// one id.
 func TestARequestThatNeverBecomesASocketStoresNoClientID(t *testing.T) {
 	service, artifactID, serverURL := clientIDRoom(t)
 	address := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
@@ -216,15 +259,14 @@ func TestARequestThatNeverBecomesASocketStoresNoClientID(t *testing.T) {
 		name   string
 		method string
 		header func(http.Header)
-		want   int
 	}{
-		{"a plain GET, no websocket upgrade", http.MethodGet, func(h http.Header) { h.Del("Connection"); h.Del("Upgrade") }, http.StatusBadRequest},
-		{"an upgrade naming no websocket", http.MethodGet, func(h http.Header) { h.Del("Upgrade") }, http.StatusUpgradeRequired},
-		{"a HEAD, which the socket's GET route takes too", http.MethodHead, func(http.Header) {}, http.StatusMethodNotAllowed},
-		{"a websocket version other than 13", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Version", "8") }, http.StatusBadRequest},
-		{"a key that is not 16 bytes in base64", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Key", "c2hvcnQ=") }, http.StatusBadRequest},
-		{"no key", http.MethodGet, func(h http.Header) { h.Del("Sec-WebSocket-Key") }, http.StatusBadRequest},
-		{"another origin", http.MethodGet, func(h http.Header) { h.Set("Origin", "https://elsewhere.example") }, http.StatusForbidden},
+		{"a plain GET, no websocket upgrade", http.MethodGet, func(h http.Header) { h.Del("Connection"); h.Del("Upgrade") }},
+		{"an upgrade naming no websocket", http.MethodGet, func(h http.Header) { h.Del("Upgrade") }},
+		{"a HEAD, which the socket's GET route takes too", http.MethodHead, func(http.Header) {}},
+		{"a websocket version other than 13", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Version", "8") }},
+		{"a key that is not 16 bytes in base64", http.MethodGet, func(h http.Header) { h.Set("Sec-WebSocket-Key", "c2hvcnQ=") }},
+		{"no key", http.MethodGet, func(h http.Header) { h.Del("Sec-WebSocket-Key") }},
+		{"another origin", http.MethodGet, func(h http.Header) { h.Set("Origin", "https://elsewhere.example") }},
 	} {
 		request, err := http.NewRequest(row.method, "http"+strings.TrimPrefix(address, "ws"), nil)
 		if err != nil {
@@ -236,15 +278,24 @@ func TestARequestThatNeverBecomesASocketStoresNoClientID(t *testing.T) {
 		request.Header.Set("Sec-WebSocket-Version", "13")
 		request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
 		row.header(request.Header)
+		// gorilla's own answer to the same request. The recorder is no http.Hijacker, so a request
+		// gorilla would take is answered 500 here: every row must be one it refuses.
+		gorilla := httptest.NewRecorder()
+		_, _ = (&gws.Upgrader{CheckOrigin: sameOrigin}).Upgrade(gorilla, request.Clone(context.Background()), nil)
+		want, wantVersion := gorilla.Code, gorilla.Header().Get("Sec-WebSocket-Version")
+		if want < 400 || want >= 500 {
+			t.Fatalf("%s: gorilla's own upgrade answered %d, not a refusal of the request", row.name, want)
+		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
 			t.Fatalf("%s: %v", row.name, err)
 		}
 		_ = response.Body.Close()
-		if response.StatusCode != row.want || response.Header.Get("Sec-WebSocket-Version") != "13" {
-			t.Errorf("%s was answered %d with Sec-WebSocket-Version %q, want %d with 13 as ygo's upgrade answers it",
-				row.name, response.StatusCode, response.Header.Get("Sec-WebSocket-Version"), row.want)
+		if response.StatusCode != want || response.Header.Get("Sec-WebSocket-Version") != wantVersion {
+			t.Errorf("%s was answered %d with Sec-WebSocket-Version %q, want %d with %q as gorilla's own upgrade answers it",
+				row.name, response.StatusCode, response.Header.Get("Sec-WebSocket-Version"), want, wantVersion)
 		}
+		t.Logf("%s: answered %d, as gorilla's own upgrade answers it", row.name, response.StatusCode)
 		if rows := unlandedMintsOf(t, service, artifactID, "eve"); rows != stored {
 			t.Errorf("%s never became a socket and stored %d rows for eve", row.name, rows-stored)
 			stored = rows

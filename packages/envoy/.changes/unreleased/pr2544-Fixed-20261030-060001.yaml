@@ -70,21 +70,27 @@ body: |-
     under an id given to another person, or under an id from 2^32 up that no admission gave out, is
     refused `4413 DOC_CLIENT_ID_REFUSED`, and nothing of it is stored or relayed. So is a delete past
     what the room holds under any id the socket does not hold, which would otherwise wait in the
-    room and delete that person's next edits as they landed, each answered saved. A sync step 2 is
-    judged the same way, so a reconnect that hands back another person's edit the room relayed and
-    then lost is refused too, rather than answered saved without it. The dashboard then drops every
-    saved edit under the refused id, reloads the document, takes a fresh id and sends its own saved
-    edits again; after a refused sync step 2 it drops none, since the step 2 names no edit of its
-    own, and an edit of its own that waits on the lost one is held by the room, answered not
-    applied, and lands once the other person's browser sends the lost edit again. A socket given an
+    room and delete that person's next edits as they landed, each answered saved. A socket holds
+    the id it was given and each id its edits showed is its person's, and keeps every one while it
+    is open, up to 128 besides its own; an edit that would make it hold more is refused the same
+    way. A sync step 2 is judged the same way, so a reconnect that hands back another person's edit
+    the room relayed and then lost is refused too, rather than answered saved without it. The
+    dashboard then drops every saved edit under the refused id, reloads the document, takes a fresh
+    id and sends its own saved edits again; after a refused sync step 2 it drops none, since the
+    step 2 names no edit of its own, and an edit of its own that waits on the lost one is held by
+    the room, answered not applied, and lands once the other person's browser sends the lost edit
+    again. A socket given an
     id carries presence only under that id, and a read-only socket's presence, which ygo discards,
     is not read at all; its sync step 2 over 2 MiB is answered not applied without being decoded,
     and one under it stops decoding at the apply's value limit. A page admitted read-only stores no
-    id: it is sent one
-    that no row names, and takes a fresh one once it is admitted writable. A person holds at most 64
+    id: it is sent one that no row names, is given that one back at each read-only reconnect, so a
+    reader's page is not reloaded at each, and keeps it once it is admitted writable, when it is
+    stored. A person holds at most 64
     ids in a document that no edit has landed under; past that a new page's admission gives back the
     one presented longest ago, never one an open page holds, and where every one is held it is
-    refused `4503 DOC_BUSY` for the editor to retry. An edit counts as landed only once it is in the
+    refused `4503 DOC_BUSY` for the editor to retry. A page whose id was given back, or swept after
+    30 days unused, is given the same id at its next admission while no other person holds it. An
+    edit counts as landed only once it is in the
     document, not while it waits behind an edit the room has not received. A socket that presents
     no id, such as a page of an earlier build, still writes: it claims an id below 2^32 that no
     stored history names. Every claim, on every kind of socket, counts against 64 claims a socket

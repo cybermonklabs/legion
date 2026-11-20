@@ -53,9 +53,13 @@ import (
 // apply (parkJudge, crdt.ApplyBudget.MayParkDeletes): it parks only under a client the socket
 // holds, and under any other the whole update is refused with the same close, since what it
 // parked would delete that person's next keystrokes as they land while that person is answered
-// saved. The stored row is the binding, so a reload, a restart and every other process read the
-// same one, and the person a row names never changes, so a binding read at any moment before an
-// apply is the binding at that apply.
+// saved. A socket holds the id its admission gave its page and each id its updates showed is its
+// person's, claimed or named theirs by the table, and keeps every one while it is open, so a
+// delete range parks under every id the socket has written under; an update that would make it
+// hold more than maxConfirmedClients besides its own is refused with the same close. The stored
+// row is the binding, so a reload, a restart and every other process read the same one, and the
+// person a row names never changes, so a binding read at any moment before an apply is the
+// binding at that apply.
 //
 // A sync step 2 is judged as an incremental update is: ygo hands the hook both alike, and a large
 // one is judged inside the load slot its apply takes (weighPeerUpdate). Structs the room already
@@ -134,12 +138,50 @@ import (
 //
 // A row is stored only for a page that may write. A read-only admission - a closed issue, a page
 // the live fleet does not admit - is decided before its id (ServeHTTP, decideWritable), and is
-// given back an id the table names its person for or else sent one drawn at mintedClientFloor or
-// above that is stored nowhere and claims nothing: its page cannot write under it, and a page
-// admitted writable later presents it, finds no row and is given one afresh, which its document
-// takes while it has written nothing under the first (connection.ts, takeClientId). A request
-// that never becomes a socket - one ygo's upgrade refuses, whatever it refuses it for
-// (refusedAtUpgrade) - stores nothing either.
+// given back an id the table names its person for, or else sent one drawn at mintedClientFloor or
+// above that is stored nowhere and claims nothing. Its page presents that id again at each
+// read-only reconnect and is given it back while no row names it (keepsClient), since its
+// document writes under the id as it reads, though nothing written under it lands. Once admitted
+// writable, the page presents it, finds no row and is minted it (mintClient), so its document
+// keeps the id it wrote under, and what it wrote lands, rather than meeting a fresh id it must
+// rebuild for (connection.ts, takeClientId).
+//
+// A writable admission mints the id its page presents wherever that id is in
+// [mintedClientFloor, mintedClientCeiling) and no row names it: the one a read-only admission
+// drew, or the page's own whose row a give-back or the sweep took, which the page gets back with
+// the edits it saved under it. Minting it gives the page no other person's edit to write over.
+// Every id in that range the history names was given out by a mint, as no claim and no write of
+// the server's own takes one (claimable; crdt.NewClientID draws a uint32), and a row whose id
+// landed an edit is neither given back nor swept. The history can still name an id whose row
+// went: a frame that only parked leaves its row unmarked, and so does a landing whose mark the
+// store refused before its socket closed (settleClients, recordLanded). Even then the person that
+// row named had no socket presenting it - a give-back takes a row unpresented for
+// clientPresenceLapses intervals, and the sweep one unpresented for unusedClientIDAge - and what
+// the room holds under the id lands nothing when sent again. Where someone else is minted the id
+// first, the page of the person the row named presents it at its next admission, finds the new
+// row, is given a fresh id, and drops the rows it saved under the old one, saying how many
+// (takeClientId); its frames under the id that only parked were answered not applied, and are
+// among those rows. The one page still writing under an id a mint gives out again is one whose
+// socket stayed open while its row was given back or swept, which takes every presentation that
+// socket made failing for clientPresenceLapses intervals, and for a give-back its person holding
+// maxUnlandedMintsADocument rows in the document besides: both pages then write under the id,
+// and the room drops the later of two structs at one clock as a duplicate.
+//
+// A request refused before its id is given out stores nothing: every refusal ServeHTTP makes
+// before admitClients (the sign-in, a document it cannot find, its caps and waits, a schema or
+// newer-content close, the room budget, a read or a decision that failed), and every request
+// ygo's upgrade would refuse, which is answered as that upgrade answers it first
+// (refusedAtUpgrade). Four come after the id, inside ygo's ServeHTTP, which the
+// admission cannot ask first (theorem-labs/ygo v1.55.1-theorem.10,
+// provider/websocket/server.go:2207-2323): authorize's 401 for a room whose load failed, ygo's 500
+// where the room's load fails or the request ends waiting for it, the upgrade's drop of a client
+// that sent bytes before its 101, and the close of a socket upgraded into a room ygo dropped
+// before it joined. ygo's 503s for its own room and connection caps never come, since none of
+// those caps is set here (MaxRooms, MaxPeersPerRoom, MaxConnections). The row each of the four
+// leaves for a page that may write is an unlanded mint, which maxUnlandedMintsADocument holds: no
+// socket presents it once its request has ended (keepPresenting), so it lapses after
+// clientPresenceLapses intervals and the person's next mint past the cap gives it back, or the
+// hourly sweep deletes it after unusedClientIDAge (sweepUnusedClientIDs).
 //
 // Every writable page load is given an id, and most never type. So a person holds at most
 // maxUnlandedMintsADocument rows in a document that no edit landed under: a mint past that gives
@@ -148,10 +190,12 @@ import (
 // editor retries. A row is live while an open socket holds it: the socket presents it again every
 // clientPresenceInterval until an edit lands under it (keepPresenting), and a row presented within
 // clientPresenceLapses intervals is no mint's to give back, on this process or another. A page
-// whose row was given back is given a fresh id at its next admission, and loses only what it
-// typed offline under the old one that never landed. A row no edit landed under that nothing has
-// presented for unusedClientIDAge is deleted by the hourly compaction sweep
-// (sweepUnusedClientIDs). A row whose id landed an edit is neither given back nor swept, and
+// whose row was given back is minted the same id at its next admission where no other row names
+// it by then, and keeps what it typed offline under it; otherwise it is given a fresh id, and
+// loses only what it typed offline under the old one that never landed. A row no edit landed
+// under that nothing has presented for unusedClientIDAge is deleted by the hourly compaction
+// sweep (sweepUnusedClientIDs), and a page presenting its id after that is minted it as a page
+// whose row was given back is. A row whose id landed an edit is neither given back nor swept, and
 // neither is a claimed row: a socket marks its own row once the room holds a struct under the id
 // after one of its applies (recordLanded), which a frame that only parked leaves it holding none
 // of, and a claim is stored as landed. A claim is bounded by the claim window and the claims'
@@ -173,12 +217,17 @@ const (
 	// update makes. The update's wait is on the peer's own read loop, so it holds that one
 	// browser and no other; past it, the update is refused transiently and the browser retries.
 	clientCheckTimeout = 5 * time.Second
-	// maxConfirmedClients is the most client ids one socket remembers as its own beyond the one
-	// it was given (socketClients.confirmed): the ids of the saved rows its page replays, each
-	// read from the table once rather than once a frame. Past it an id is read again on each
-	// update that carries it, which costs a query and changes no answer: it is the size of a
-	// cache, and bounds nothing anyone stores.
-	maxConfirmedClients = 64
+	// maxConfirmedClients is the most client ids one socket holds besides the one it was given
+	// (socketClients.confirmed): the ids its updates claimed and have not given back, and the ids
+	// its updates showed the table names its person for, such as those of the saved rows its page
+	// replays, each read from the table once rather than once a frame. The socket keeps every one
+	// of them while it is open, so it holds every id it has written under, and a delete range parks
+	// under any of them (parkJudge), which asks the socket alone. An update that would make it
+	// hold more is refused and nothing it carries is claimed (judgeClients), which bounds what
+	// one socket remembers. An honest page holds one id for each tab of the earlier build whose
+	// saved rows its browser replays, which is a few; this is room for the maxClaimsASocket
+	// claims a socket may hold and as many of its person's ids again.
+	maxConfirmedClients = 2 * maxClaimsASocket
 	// maxClaimsASocket is the most claims one socket's updates hold (socketClients.claims), on
 	// every kind of socket: each claim an update made that was not given back (settleClients). An
 	// honest page claims one id for each tab of the earlier build whose saved rows its browser
@@ -191,8 +240,11 @@ const (
 	claimWindow = 30 * 24 * time.Hour
 	// maxClaimsADay is the most claims one person makes in one document in one UTC day, counted
 	// from the stored rows: every claim, on every kind of socket, an update's and an admission's
-	// alike (claimClients). With maxClaimsASocket and claimWindow, the bound on the claimed rows,
-	// which no sweep takes.
+	// alike (claimClients). It is the bound on the claimed rows, which no sweep takes. The kinds
+	// of claim claimWindow ends add at most maxClaimsADay of them a day until it has passed, and
+	// none after; a legacy socket's claim of an id the stored history does not name has no window
+	// (claimable), so for those rows the bound is a rate alone, maxClaimsADay a person a document
+	// a UTC day, every one of them kept.
 	maxClaimsADay = 64
 	// maxUnlandedMintsADocument is the most rows one person holds in one document of ids an
 	// admission gave out that no edit has landed under (mintClient). The most ids given to one

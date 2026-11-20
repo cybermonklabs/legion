@@ -42,21 +42,24 @@ func presenceInterval() time.Duration {
 // admission gave its page, and the ids its page has since shown are that person's too. legacy is
 // a page that presented no client id at all, a build from before Dispatch gave them out, which
 // has no id of its own here. stored is whether a row names own as the socket's person's: false
-// for a legacy socket and for a read-only admission's id, drawn and stored nowhere. landed is
-// whether own's row says an edit landed under it: read at the admission (keepsClient), and set
-// once this socket's mark of the row is written (recordLanded), after an apply that left the room
-// holding a struct under own. marking is whether that mark is in flight, so the socket makes one
-// at a time; a mark the store refused leaves landed false, so the socket goes on presenting the
-// row (keepPresenting) and its next such apply marks it again (settleClients).
+// for a legacy socket and for a read-only admission's id, drawn or kept and stored nowhere.
+// landed is whether own's row says an edit landed under it: read at the admission (keepsClient),
+// and set once this socket's mark of the row is written (recordLanded), after an apply that left
+// the room holding a struct under own. marking is whether that mark is in flight, so the socket
+// makes one at a time; a mark the store refused leaves landed false, so the socket goes on
+// presenting the row (keepPresenting) and its next such apply marks it again (settleClients).
 type socketClients struct {
 	legacy  bool
 	own     crdt.ClientID
 	stored  bool
 	landed  atomic.Bool
 	marking atomic.Bool
-	// mu guards confirmed and claims: the hook changes them on the peer's read loop, and nothing
-	// else reads them, so the lock is never contended.
-	mu        sync.Mutex
+	// mu guards confirmed and claims: the hook changes them on the peer's read loop, and reads
+	// confirmed inside the apply it waits for there (parkJudge), so the lock is never contended.
+	mu sync.Mutex
+	// confirmed is every id this socket holds besides own: the ids its updates claimed and have
+	// not given back, and those its updates showed the table names its person for. It keeps each
+	// while it is open, and holds at most maxConfirmedClients (mayHold).
 	confirmed map[crdt.ClientID]struct{}
 	// claims is how many claims this socket's updates hold: made by its updates (judgeClients)
 	// and not given back (settleClients). A socket holds at most maxClaimsASocket of them.
@@ -70,8 +73,9 @@ func (c *socketClients) isOwn(client crdt.ClientID) bool {
 	return !c.legacy && client == c.own
 }
 
-// holds is whether client is one this socket may write under without asking the table: the id
-// its page was given, or one an earlier update showed is this person's.
+// holds is whether this socket holds client: the id its page was given, or one its updates showed
+// is this person's (confirm). It keeps every one of them while it is open, so it holds every id
+// its updates have written under.
 func (c *socketClients) holds(client crdt.ClientID) bool {
 	if c.isOwn(client) {
 		return true
@@ -82,14 +86,18 @@ func (c *socketClients) holds(client crdt.ClientID) bool {
 	return held
 }
 
-// confirm remembers clients as this socket's person's, up to maxConfirmedClients.
+// mayHold is whether this socket may hold n ids more besides its own (maxConfirmedClients).
+func (c *socketClients) mayHold(n int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.confirmed)+n <= maxConfirmedClients
+}
+
+// confirm remembers clients as this socket's person's. The judgement asks mayHold first.
 func (c *socketClients) confirm(clients []uint64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, client := range clients {
-		if len(c.confirmed) >= maxConfirmedClients {
-			return
-		}
 		if c.confirmed == nil {
 			c.confirmed = make(map[crdt.ClientID]struct{})
 		}
@@ -138,11 +146,16 @@ func (c *socketClients) announces(client uint64) bool {
 // DocumentClientIdParameter; otherwise the id the page presented where the table names the same
 // person for it, or, for a page that may write, one below mintedClientFloor that no row names and
 // the page may claim (claimable: a page of this build whose first socket reached a process of the
-// earlier build and kept the id its document drew); and in every other case an id given out
-// afresh (mintClient) to a page that may write, and to one that may not an id drawn as a mint
-// draws it that is stored nowhere and claims nothing (drawClient). A read-only page writes under
-// no id - ygo hands the hook nothing it sends - so a read-only admission adds no row, and the
-// page that is admitted writable later presents that id, finds no row and is given one afresh.
+// earlier build and kept the id its document drew), or, for a page that may not, one from
+// mintedClientFloor up that no row names (keepsClient: the id an earlier read-only admission sent
+// it); and in every other case an id given out afresh (mintClient) to a page that may write - the
+// one it presented first, where that is in [mintedClientFloor, mintedClientCeiling) - and to one
+// that may not an id drawn as a mint draws it that is stored nowhere and claims nothing
+// (drawClient). A read-only page writes under no id - ygo hands the hook nothing it sends - so a
+// read-only admission adds no row, and the page that is admitted writable later presents that
+// id, finds no row and is minted it, so it keeps the id its document has written under as it
+// read, and what it wrote lands (client_ids.go says why minting a presented id gives the page
+// nothing of anyone's).
 func (s *Service) admitClients(ctx context.Context, room string, actor model.Actor, r *http.Request, writable bool) (*socketClients, error) {
 	presented, takes := r.URL.Query()[contracts.DocumentClientIdParameter]
 	if !takes {
@@ -150,11 +163,16 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 	}
 	ctx, cancel := context.WithTimeout(ctx, clientCheckTimeout)
 	defer cancel()
+	// asked is the presented id a mint gives out first, where it is one a mint could draw.
+	var asked crdt.ClientID
 	if presented[0] != "" {
 		if client, err := strconv.ParseUint(presented[0], 10, 64); err == nil {
 			kept, err := s.keepsClient(ctx, room, actor, client, writable)
 			if err != nil || kept != nil {
 				return kept, err
+			}
+			if client >= mintedClientFloor && client < mintedClientCeiling {
+				asked = crdt.ClientID(client)
 			}
 		}
 	}
@@ -165,7 +183,7 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 		}
 		return &socketClients{own: client}, nil
 	}
-	client, err := s.mintClient(ctx, room, actor)
+	client, err := s.mintClient(ctx, room, actor, asked)
 	if err != nil {
 		return nil, err
 	}
@@ -176,14 +194,27 @@ func (s *Service) admitClients(ctx context.Context, room string, actor model.Act
 // nil where it may not. It may keep an id the table names actor for, which this records as a
 // presentation (presented_at) in the same statement, reading back whether an edit landed under
 // it (socketClients.landed), so a socket whose id has landed an edit already writes nothing more
-// on its first edit; a read-only page keeps such an id too, which adds no row. And a page that
-// may write (writable) may keep an id below mintedClientFloor no row names that actor may claim
+// on its first edit; a read-only page keeps such an id too, which adds no row. A page that may
+// write (writable) may keep an id below mintedClientFloor no row names that actor may claim
 // (claimable, as a page of this build), which this claims from the clock the document holds it
 // to, in the stored history or the room where this server holds it, held to maxClaimsADay with
 // actor's other claims in the document (claimClients): a claim it refuses keeps nothing, and the
-// page is given an id afresh. An id at mintedClientCeiling or above is neither: no admission
-// gives one out and no claim takes one, so it is not kept and the table is not asked, as a
-// presented id that does not read is not.
+// page is given an id afresh.
+//
+// A page that may not write keeps an id from mintedClientFloor up that no row names: the one an
+// earlier read-only admission drew for it (drawClient), stored nowhere and claiming nothing. The
+// page's document writes under the id it holds as it reads - the dashboard's editor gives the
+// document's headings ids (e2e/doc.e2e.ts) - and a read-only room takes none of that, so a
+// read-only reconnect that drew it another id would find the document had written under the
+// first, and the page would rebuild it at every such reconnect, telling a reader who typed
+// nothing that it held edits under an identity Dispatch did not give them (takeClientId, in the
+// dashboard's connection.ts; e2e/doc-reload-line.e2e.ts). A read-only socket carries nothing
+// under the id it keeps: ygo hands the hook none of its updates and discards its awareness
+// (awareness_limit.go). One a row names for another person is not kept all the same.
+//
+// An id at mintedClientCeiling or above is none of these: no admission gives one out and no
+// claim takes one, so it is not kept and the table is not asked, as a presented id that does not
+// read is not.
 func (s *Service) keepsClient(ctx context.Context, room string, actor model.Actor, client uint64, writable bool) (*socketClients, error) {
 	if client >= mintedClientCeiling {
 		return nil, nil
@@ -201,7 +232,10 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 		return kept, nil
 	case !errors.Is(err, pgx.ErrNoRows):
 		return nil, fmt.Errorf("give the page its client id back: %w", err)
-	case client >= mintedClientFloor || !writable:
+	case client >= mintedClientFloor && writable, client < mintedClientFloor && !writable:
+		// A writable page's id from mintedClientFloor up that no row of actor's names is a mint's
+		// to give out, which takes it first where no row names it (admitClients, mintClient).
+		// Below it, only a page that may write claims an id.
 		return nil, nil
 	}
 	owners, err := s.clientOwners(ctx, room, []uint64{client})
@@ -210,6 +244,9 @@ func (s *Service) keepsClient(ctx context.Context, room string, actor model.Acto
 	}
 	if _, bound := owners[client]; bound {
 		return nil, nil
+	}
+	if !writable {
+		return &socketClients{own: crdt.ClientID(client)}, nil
 	}
 	live := s.srv.GetDoc(room)
 	heldTo, err := s.claimable(ctx, room, live, heldBy(live), actor, false, client)
@@ -242,8 +279,13 @@ func drawClient() (crdt.ClientID, error) {
 // then a row whose socket has gone has lapsed, or the person's open pages have typed.
 var errMintsLive = errors.New("dispatch: every client id the person holds in the document unlanded is held by an open socket")
 
-// mintClient gives actor a client id for room, stored before it is returned: a random id in
-// [mintedClientFloor, mintedClientCeiling) the document has not given out (drawClient).
+// mintClient gives actor a client id for room, stored before it is returned: asked, where it is
+// not 0 - the id the page presented, in [mintedClientFloor, mintedClientCeiling), which no row of
+// actor's names (admitClients) - and otherwise, or where another person's row names asked, a
+// random id in that range the document has not given out (drawClient). An asked id no row names
+// is the one an earlier read-only admission drew for the page, or the page's own whose row a
+// give-back below or the sweep took; one another person's row names stores nothing, as a draw
+// the document gave out already does, and the mint draws.
 //
 // It is held to maxUnlandedMintsADocument: where actor holds that many rows in room of ids an
 // admission gave out that no edit landed under, the same statement gives back the one presented
@@ -258,14 +300,23 @@ var errMintsLive = errors.New("dispatch: every client id the person holds in the
 // runs in, so two mints of one person in one document count each other's rows; the statement
 // reads them off document_client_ids_unlanded_mints. The delete reads its row's presentation and
 // landing again as it deletes, so a row presented or landed since the statement's snapshot is
-// not given back. A draw of an id the document gave out already stores nothing and is drawn
-// again, a row given back with it or not.
-func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor) (crdt.ClientID, error) {
+// not given back. An id the document gave out already stores nothing and is drawn again, a row
+// given back with it or not.
+//
+// A landed row is not held to any count of its own: it is the record of whose structs the stored
+// history holds under its id, and is never given back or swept. A person adds one for each page
+// that writes under a fresh id, and the history gains that client's structs beside it, so such
+// rows grow with the history and stop with it at the decode cap (maxUpdateItems).
+func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor, asked crdt.ClientID) (crdt.ClientID, error) {
 	lapse := clientPresenceLapses * presenceInterval()
-	for range mintTries {
-		client, err := drawClient()
-		if err != nil {
-			return 0, err
+	for try := range mintTries {
+		client := asked
+		if try > 0 || asked == 0 {
+			drawn, err := drawClient()
+			if err != nil {
+				return 0, err
+			}
+			client = drawn
 		}
 		var atCap bool
 		var givenBack, minted *int64
@@ -305,7 +356,7 @@ func (s *Service) mintClient(ctx context.Context, room string, actor model.Actor
 		}
 		if givenBack != nil {
 			slog.Info("dispatch: gave back a person's least recently presented client id no edit landed under, to give out another",
-				"room", room, "actor", ActorRef(actor), "given_back", *givenBack, "most", maxUnlandedMintsADocument)
+				"room", room, "given_back", *givenBack, "most", maxUnlandedMintsADocument)
 		}
 		switch {
 		case minted != nil:
