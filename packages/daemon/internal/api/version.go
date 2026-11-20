@@ -2412,10 +2412,11 @@ package api
 // route can name a stale caller (`readBody`'s identity check), as for any body that does not
 // decode. A route that stored such a string answered 500 before, and one that only compared it
 // took it; every route now refuses it before it reads the body.
-// (This entry takes 169, the lowest number above main's 168 that this change declares. It changes
-// no wire shape: the public description of the operator-provided resource attribute contract
-// changes from company-named examples to neutral ones, and the version guard makes a plugin built
-// from an earlier description rate before a daemon built from this description admits it. A reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head for each open pull request must happen before
-// the merge, as the entry above says.)
-const DaemonAPIVersion = 169
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 168

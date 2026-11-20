@@ -1,5 +1,0 @@
-kind: Changed
-body: The plugin declares daemon API contract 169. Public resource-attribute examples use neutral `acme.*` keys; operators still pass their own attributes through `OTEL_RESOURCE_ATTRIBUTES`.
-time: 2026-11-20T00:53:43.970681530Z
-custom:
-    Issue: pr4543
