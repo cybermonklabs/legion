@@ -151,9 +151,15 @@ URL). The command's own repository counts too whenever gh resolves it, because n
 it, and for `repo set-default`, which reads every remote's network, whatever names it: `GH_REPO`
 for a command that reads it (`gh api`'s `{owner}` and `:owner` placeholders among them), and
 otherwise every `github.com` remote and `gh-resolved` setting of the working directory, read with
-gh's own URL parser, whatever the scheme. A command naming no owner, in a directory whose remotes
-name none, runs at the issue owner's. A command whose last `--help` is true, and `gh --version`
-alone, only print. It fails closed: a command it cannot read for certain (an option the leaf's
+gh's own URL parser, whatever the scheme. One working directory counts `origin` alone: one whose
+only `gh-resolved` line gh reads is `remote.origin.gh-resolved base`, on an `origin` whose fetch
+URL gh keeps as `github.com` and is not ssh, for a command of the 14 groups gh resolves through
+that marker (`agent-task`, `api`, `browse`, `cache`, `discussion`, `issue`, `label`, `org`, `pr`,
+`release`, `repo`, `ruleset`, `run` and `workflow`, as gh's `pkg/cmd/root/root.go` builds them;
+`repo set-default` only with `--view` or `--unset`), because gh itself acts on `origin` there. A
+command naming no owner, in a directory whose remotes name none, runs at the issue owner's. A
+command whose last `--help` is true, and `gh --version` alone, only print. It fails closed: a
+command it cannot read for certain (an option the leaf's
 help does not list or names a repository with in a way it does not know, a subcommand gh does not
 know, a first word gh's own help does not list, anything before the command but `-R` and
 `--help`, an argument the leaf's usage has no place for or names in a way it does not know, a
@@ -161,16 +167,34 @@ search qualifier gh or GitHub could read otherwise, a gh alias or an extension, 
 `gh help`'s target, whose help it never reads since reading it runs them, `gh copilot` and `gh
 extension exec`), one whose repositories route to two directories (two owners' repositories, an
 option or a second repository naming one owner while gh acts on another's, a workspace whose
-remotes name two, or a repository a configured rename moved beside another of the owner it moved
-from, which run under one directory's token would answer for the other's with less than GitHub
-holds and no error; a moved repository named by both of its names is one directory), one naming
-an owner the bundle holds no directory for, one naming a repository a configured rename moved to
-an owner the bundle holds no directory for, which names the pair, every command where `PATH`'s
-first `gh` is not
+remotes name two but for the marked `origin` above, or a repository a configured rename moved
+beside another of the owner it moved from, which run under one directory's token would answer for
+the other's with less than GitHub holds and no error; a moved repository named by both of its
+names is one directory), one naming an owner the bundle holds no directory for but for the read
+below, one naming a
+repository a configured rename moved to an owner the bundle holds no directory for, which names
+the pair, every command where `PATH`'s first `gh` is not
 Legion's wrapper (a script
 that execs `legion gh` by its absolute path), and every command under a `GH_HOST` other than
 `github.com` or a set `GH_TOKEN` or `GITHUB_TOKEN` are refused with exit 2, naming the argument,
 and send nothing.
+A read that names only owners the bundle holds no directory for runs, rather than being refused,
+with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
+(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
+`ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
+`-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
+string or a comment too, its other fields given with `-f` or with `-F` values that read no file
+and none of them with a key that holds `query`, no `-H` naming a method override or
+`Content-Length`, and no option but `-f`, `-F`, `-H`, `-q`, `-t`, `--paginate` and `--slurp`, by
+either spelling, each value in its own word), where no repository it names is one a configured
+rename moves and no `github.com` remote of the working directory was read for it.
+The GraphQL rule reads no GraphQL syntax: GitHub's lexer (graphql-ruby's `BLOCK_STRING_REGEXP`)
+ends a block string at other quotes than the GraphQL specification does, and a document runs a
+mutation or a subscription only through that word, so one that holds neither word writes nothing
+however a lexer reads it.
+An installation's token reads public data and that installation's own repositories alone, and
+GitHub answers 404 for another owner's private repository. Every other command naming such an
+owner is refused as above.
 It refuses the same way, before gh runs: `--editor`/`-e` on any command, because gh runs the
 editor after the leak guard has read the call and posts what it wrote; `gh gist edit`, which opens
 an editor unless a file is named; `gh agent-task`, which sends the token to the Copilot API host
@@ -250,6 +274,10 @@ The shared clone's `credential.helper` is `!legion git-credential` with `credent
 on, so a pane's `git` and `jj git push` read the hosts.yml of the owner of the repository in the
 path git asks about — of the owner a configured rename moved that repository to where a pair
 names it — and nothing else.
+Every provision, a pane's and a pod's, also writes `remote.origin.gh-resolved base`, gh's own
+default-repository marker, into the clone's own configuration where that configuration holds no
+`gh-resolved` line, so a worker who adds an `upstream` remote keeps gh's choice, and `legion gh`'s,
+on the issue's repository; a marker a person set, or one a renamed remote carries, stays.
 
 In a pod, the sweep that knives runs after each write to a fork's shared ledger (`knives ledger
 sweep`) pushes this machine's own ref, `refs/knives/<machine>`, to the fork's ledger repository
@@ -548,11 +576,13 @@ provider_keys:
 - **`pane_env`** refuses `PATH` (the runtime composes it), every name the runtime sets on a pane
   (its own `LEGION_*` names, the XDG directories, the gh variables, `PI_CONFIG_FILES`,
   `LEGION_CONTROLLER`, `LEGION_SLACK_CHANNELS`), the variables it sets on every Claude Code pane
-  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the git
+  (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
+  resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
+  session it resumes), the git
   identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
   gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
-  `OMP_SESSION_SQL_DSN_FILE`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
+  `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
   `…_PASSWORD`, `…_PAT`, `…_GRANT`, `…_CREDENTIALS`, `PRIVATE_KEY`), and any value holding a URL
   with a password in it (`scheme://user:password@…`). A value on tmux's command line is readable by
@@ -725,6 +755,12 @@ provider_keys:
   other secret file the daemon reads follows: one that cannot be read, is not a regular file, holds
   nothing, or is readable by its group or others refuses the boot, naming the variable and the
   file. Kubernetes refuses the form: a file on the daemon's disk reaches no pod.
+  Under tmux the boot also refuses a key named for a variable every pane carries, a key whose
+  `_FILE` pointer every pane carries, and, with the reason `pane_env` gives, a key named for a
+  variable that places the session a resume reads, one the runtime tells a Claude Code pane or a
+  resumed Oh My Pi pane after the operator's variables, or a launch secret's pointer.
+  The shim exports every provider key into the environment of the agent it starts (Oh My Pi, or
+  `legion claude-bridge` on a Claude Code pane), where it acts as the pane variable of that name.
 - **`controller: daemon`** works under tmux too: the daemon launches the controller in a pane of
   its own window, `controller`, working in `<state_dir>/controller`, told `LEGION_CONTROLLER=1` and
   an empty `LEGION_SLACK_CHANNELS`, and supervises it like a root architect. It needs

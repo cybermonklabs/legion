@@ -58,6 +58,19 @@ type Deps struct {
 	Machine             *requests.Machine
 	MachineLogin        *machine.Service
 	Proof               *proof.Verifier
+	// PodRegistrars is BROKER_POD_REGISTRARS, the registrar and pod account pairs POST
+	// /v1/oauth/exchange/pod-sessions admits: a registration whose caller's login account no
+	// entry pairs with the account of the pod it registers is 403 POD_REGISTRAR_NOT_LISTED,
+	// whatever BROKER_SERVICE_LOGINS lists. Nil, the setting unset, lists no pair, so the route
+	// admits no registration at all.
+	PodRegistrars PodRegistrars
+	// PodRegistrationTokens verifies a registration's pod token at
+	// BROKER_POD_REGISTRATION_AUDIENCE, against the cluster issuer and key set Enroll.Pod verifies
+	// the broker's own audience with (cmd/broker builds both on one oidc.Keys). Only POST
+	// /v1/oauth/exchange/pod-sessions reads it, beside Enroll.Pod, so no other route accepts a
+	// token of that audience. Nil is a broker with no such audience, whose registration route
+	// accepts the broker's own audience alone.
+	PodRegistrationTokens enroll.PodVerifier
 	// Policy is the live agent-secret policy, which POST /v1/secrets/{name}/reread rereads one
 	// name of (policy.Current.RefreshOne).
 	Policy *policy.Current
@@ -120,9 +133,9 @@ type Deps struct {
 	TrustedProxyHeader string
 	// OAuth is the machine login's OAuth provider and the token exchange. POST
 	// /v1/oauth/device_authorization, POST /v1/oauth/token, POST /v1/oauth/introspect, POST
-	// /v1/oauth/revoke and POST /v1/oauth/exchange/pod-sessions are
-	// mounted only when it is set, with DeviceLogin and both TokenHooks, which it then requires
-	// (Register panics without them).
+	// /v1/oauth/revoke, POST /v1/oauth/exchange/pod-sessions and POST
+	// /v1/oauth/exchange/pod-sessions/release are mounted only when it is set, with DeviceLogin
+	// and both TokenHooks, which it then requires (Register panics without them).
 	OAuth *oauth.Provider
 	// DeviceLogin opens a device login's record from the device authorization request's form and
 	// the user code the provider minted, in the provider's transaction (oauthstore.TxFrom on ctx);
@@ -258,8 +271,9 @@ const (
 // (serviceAuth) — first spends its source address's bucket (DefaultAccountLimit), a refusal
 // being 429 RATE_LIMITED with Retry-After, so a flood of forged tokens past that bucket costs no
 // verification and no fetch of the issuer's keys; a listed caller must then hold the power its
-// row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists. The
-// approval page's routes spend that same bucket, for the same reason: see the authSignIn case.
+// row declares, and a service's token must name an account BROKER_SERVICE_LOGINS lists and
+// BROKER_POD_OPERATORS does not map (serviceCaller). The approval page's routes spend that same
+// bucket, for the same reason: see the authSignIn case.
 func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiRoute) (caller, bool) {
 	auth := route.Handler.auth
 	switch auth {
@@ -505,6 +519,11 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a broker that
 // trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's routes then
 // authenticate no one. No refusal repeats the token.
+//
+// A verified account that BROKER_POD_OPERATORS maps to a person (machine.ServiceAccount.Person)
+// is 403 PERSON_ACCOUNT, and the refusal names the account. A mapped account is a person's
+// account, and it is never a service's caller. So a person's pod calls no route of this class.
+// The refusal is the same for a token bound to a pod and for a token bound to no pod.
 func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, bool) {
 	account, err := s.deps.MachineLogin.VerifyServiceToken(r.Context(), bearer(r))
 	switch {
@@ -522,6 +541,11 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		return caller{}, false
 	case err != nil:
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
+		return caller{}, false
+	}
+	if account.Person != "" {
+		writeError(w, http.StatusForbidden, "PERSON_ACCOUNT",
+			fmt.Sprintf("BROKER_POD_OPERATORS maps the ServiceAccount %s to a person, and a person's account calls no service route", account.Subject))
 		return caller{}, false
 	}
 	return caller{service: account}, true

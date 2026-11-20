@@ -78,10 +78,12 @@ var systemTrustFiles = []string{
 // bundle variable points at, and the wgetrc that carries that bundle to wget, which reads no
 // bundle variable at all.
 //
-// Neither file holds a credential — the bundle is the public roots plus the proxy's public
-// certificate, and the wgetrc is the inherited one plus a path — so the tidying in
-// tidyAirlockDirs is hygiene, not containment: nothing is disclosed by a directory that outlives
-// its grant.
+// Neither file holds a credential of the grant's — the bundle is the public roots plus the
+// proxy's public certificate, and the wgetrc is the inherited one plus a path, so it holds no
+// more than the WGETRC the command already had (an http_password among it, where that one has
+// one), mode 0600 in a directory this user alone reads — so the tidying in tidyAirlockDirs is
+// hygiene, not containment: a directory that outlives its grant holds nothing its user could not
+// already read.
 type airlockFiles struct {
 	bundle string // the trust bundle: the inherited or system roots, plus the proxy's certificate
 	wgetrc string // a wgetrc naming that bundle, after the lines of an inherited one
@@ -186,6 +188,14 @@ const airlockBuildLifetime = time.Hour
 // Every element of the root this CLI makes is checked before any of this (makeAirlockRoot): a
 // directory another user holds is one the command's trust bundle may not be written in or read
 // from, and the run answers an error rather than writing one.
+//
+// An error here names the path it failed on, as checkAirlockRoot's do: every such path is the
+// root (airlockRootParts: XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory)
+// with names this CLI made below it and the grant's id, which this CLI prints wherever it names
+// the grant, and none of those is a setting a person points at a secret's file. The files a
+// person's own settings name are another matter: WGETRC's can hold http_password, so no error
+// names the file WGETRC or a bundle variable names or quotes what it holds - readTrustFile and
+// wgetrcFor skip a file they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
 	// a "." or a ".." would make this run tidy or write somewhere else entirely.
@@ -499,14 +509,16 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 // airlockProxyURL is the proxy URL the command gets: the broker's own, with this grant's proxy
 // password as the password of its credential. net/url writes the credential, so a password
 // holding a character that must be percent-encoded is encoded once and exactly, and the URL
-// parses back into the same password.
+// parses back into the same password. A proxy URL it cannot use is refused without the URL, and
+// without net/url's words, which quote it whole: it is the broker's answer, and beside an
+// AGENT_SECRETS_URL that is not clean whoever answers can put that address's credential in it.
 func airlockProxyURL(release *AirlockRelease) (string, error) {
 	parsed, err := url.Parse(release.ProxyURL)
 	if err != nil {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q cannot be read: %w", release.ProxyURL, err)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) is not a URL")
 	}
 	if parsed.Host == "" {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q names no host", release.ProxyURL)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) names no host")
 	}
 	parsed.User = url.UserPassword(airlockProxyUser, release.ProxyPassword)
 	return parsed.String(), nil

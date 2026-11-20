@@ -3,22 +3,40 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
 import { act, fireEvent, type RenderResult, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { type ReactNode, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
+import { nextFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
+import { useDrawerPage } from "../issue-page/drawer-page";
+import {
+  type MarginDrawer,
+  type MarginDrawerPage,
+  type MarginFill,
+  MarginSlotProvider,
+  useFillMarginSlot,
+} from "../issue-page/margin-slot";
 import { buildIssuePath } from "../refs/routes";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { type KeyBindingDescription, useKeymap } from "../shell/keymap";
+import { ShortcutHelp } from "../shell/ShortcutHelp";
 import { Margin } from "./Margin";
 import { MarginProvider } from "./margin-context";
 import {
   anchoredAsk,
   CommentLink,
   comment,
+  DESKTOP_WIDTH,
   issue,
+  KeptDetailsLinks,
+  markedCommentPath,
+  PHONE_WIDTH,
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
-  stubMatchMedia,
+  stubViewport,
 } from "./margin-fixture";
 import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 
@@ -111,14 +129,6 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
   );
 }
 
-/** One rendering frame. happy-dom runs animation frames as immediates, so this is one turn of the
- *  event loop - and a frame is the unit the hold's relayout window counts. */
-async function nextFrame(): Promise<void> {
-  const done = Promise.withResolvers<void>();
-  requestAnimationFrame(() => done.resolve());
-  await done.promise;
-}
-
 /** Longer than the hold's relayout window, so what follows is judged on its own: whatever the
  *  margin is still rendering lands first, then the window's frames run out. */
 async function settled(): Promise<void> {
@@ -145,7 +155,7 @@ test("a phone comment deep link highlights its card without expanding it or open
   // reader finds it when they open the review panel, but a thread on a phone opens only in the
   // Thread dialog: an inline expansion left behind here would strand a Reply composer whose Cancel
   // opens the fullscreen thread (#1239).
-  const restoreMatchMedia = stubMatchMedia(true);
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
   const view = render(
     <MemoryRouter
       initialEntries={[buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" })]}
@@ -173,6 +183,298 @@ test("a phone comment deep link highlights its card without expanding it or open
   }
 });
 
+/** The new page's fill of the margin's slot, at its plainest: the margin's own content. */
+const passThrough: MarginFill = (content) => content;
+
+/** What the new issue page's root does for Details while it is mounted: it sets the drawer's
+ *  words and its address rule (`drawer-page.ts`), and, where `fills`, fills the margin's slot so
+ *  the margin's cards are drawn in Details. */
+function NewPageRoot({ fills }: { fills: boolean }): null {
+  useDrawerPage(issue);
+  useFillMarginSlot(fills ? passThrough : undefined);
+  return null;
+}
+
+/** The shell's Details drawer as `app.tsx` holds it, closed on the load unless `open`. */
+function Details({
+  children,
+  fills = false,
+  open: openAtLoad = false,
+}: {
+  children: ReactNode;
+  fills?: boolean;
+  open?: boolean;
+}): ReactNode {
+  const [open, setOpen] = useState(openAtLoad);
+  const [page, setPage] = useState<MarginDrawerPage | undefined>(undefined);
+  const drawer = useMemo<MarginDrawer>(() => ({ open, page, setOpen, setPage }), [open, page]);
+  return (
+    <MarginSlotProvider drawer={drawer} drawsSlot>
+      <NewPageRoot fills={fills} />
+      {children}
+    </MarginSlotProvider>
+  );
+}
+
+// R20: on the new issue page a comment's own route, and `?comment=` on an
+// issue's address, open the outline on the comment's node, focused. The margin in Details marks
+// its copy of the comment and expands nothing at a desktop width either: an expanded thread's
+// Reply box takes the focus off that node as it mounts.
+test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  // The card below the margin's view, as main's deep-link case puts it, so a hold on it would
+  // scroll the margin: only the address's rule keeps it still.
+  const restoreRects = stubRects(() => 900);
+  const scrollTo = stubScrollTo();
+  try {
+    for (const path of [
+      buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }),
+      `${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`,
+    ]) {
+      scrollTo.mockClear();
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <Details fills open>
+                <SelectedItemLabel />
+                <Margin />
+              </Details>
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        expect(
+          screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
+          `${path} expands the comment's thread`
+        ).toBe("false");
+        expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+        expect(scrollTo, `${path} scrolls the margin to the comment's card`).not.toHaveBeenCalled();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    restoreRects();
+    scrollTo.mockRestore();
+  }
+});
+
+// R14: Details is closed on every load, but a reader who follows a link to
+// a comment beside its document asked to see that comment's card, so the drawer opens for it -
+// once, so their Close keeps it closed. A link to a comment's node lands on the outline and
+// leaves Details closed.
+test("a link to a card beside its document opens Details on it, and a link to a node does not", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const scrollTo = stubScrollTo();
+  try {
+    for (const [path, opens] of [
+      [markedCommentPath(comment.id), true],
+      [buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }), false],
+      [`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`, false],
+    ] as const) {
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <Details>
+                <SelectedItemLabel />
+                <Margin />
+              </Details>
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        const details = screen.getByTestId("desktop-margin-shell");
+        expect(
+          details.hasAttribute("hidden"),
+          `${path} ${opens ? "left Details closed" : "opened Details"}`
+        ).toBe(!opens);
+        if (opens) {
+          await user.click(screen.getByRole("button", { name: "Close" }));
+          await settled();
+          expect(details.hasAttribute("hidden"), "Details opened again after its Close").toBe(true);
+        }
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
+  }
+});
+
+// R14: on a phone Details is a sheet over the whole page, so a link followed inside
+// it closes the sheet. The page draws its panels into the drawer through a portal, outside the
+// drawer's React tree, so the drawer must hear the link's click from the DOM.
+test("on a phone, a link followed in a panel portaled into Details closes the sheet", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const tree = (target: Element | null) => (
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <MarginProvider>
+          <Details open>
+            <Margin />
+          </Details>
+          {target === null
+            ? null
+            : createPortal(
+                <a href="/issues/CORE-2" onClick={(event) => event.preventDefault()}>
+                  a panel's link
+                </a>,
+                target
+              )}
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(null));
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    view.rerender(tree(details));
+    await user.click(screen.getByRole("link", { name: "a panel's link" }));
+    await waitFor(() =>
+      expect(
+        details.hasAttribute("hidden"),
+        "a link followed in a portaled panel left the phone's Details open"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+// A link that carries `KEEPS_DETAILS_ATTRIBUTE`, or stands inside an element that does, such as a
+// history turn's time link (`KeptDetailsLinks`), is followed with the phone's sheet left open; a
+// plain link beside it still closes the sheet.
+test("on a phone, a link that keeps Details open leaves the sheet open, and a plain link still closes it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(PHONE_WIDTH);
+  const tree = (target: Element | null) => (
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <MarginProvider>
+          <Details open>
+            <Margin />
+          </Details>
+          {target === null
+            ? null
+            : createPortal(
+                <>
+                  <KeptDetailsLinks />
+                  <a href="/issues/CORE-2" onClick={(event) => event.preventDefault()}>
+                    a panel's link
+                  </a>
+                </>,
+                target
+              )}
+        </MarginProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(tree(null));
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    await waitFor(() => expect(details.hasAttribute("hidden")).toBe(false));
+    view.rerender(tree(details));
+    for (const name of ["a turn's time", "a link inside a turn"]) {
+      await user.click(screen.getByRole("link", { name }));
+      await settled();
+      expect(
+        details.hasAttribute("hidden"),
+        `"${name}", which keeps Details open, closed the phone's Details`
+      ).toBe(false);
+    }
+    await user.click(screen.getByRole("link", { name: "a panel's link" }));
+    await waitFor(() =>
+      expect(
+        details.hasAttribute("hidden"),
+        "a plain link beside the kept ones left the phone's Details open"
+      ).toBe(true)
+    );
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
+/** The list of keys over the page, as `app.tsx` binds its `?`. */
+function ListOfKeys(): ReactNode {
+  const [snapshot, setSnapshot] = useState<readonly KeyBindingDescription[] | null>(null);
+  useKeymap("global", [
+    { id: "help", keys: "?", label: "Keyboard shortcuts", run: () => setSnapshot([]) },
+  ]);
+  return <ShortcutHelp onClose={() => setSnapshot(null)} snapshot={snapshot} />;
+}
+
+// R14: Escape closes the innermost layer. With the list of keys open over Details, Escape closes
+// the list alone, wherever the focus is: still on Details' Close in the frame before the list
+// takes it, or on the page after a press on the list's own text.
+test("with the list of keys over Details, Escape closes the list alone, the focus outside it", async () => {
+  const user = userEvent.setup();
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const view = render(
+    <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
+      <QueryClientProvider client={landingClient([])}>
+        <KeymapProvider>
+          <MarginProvider>
+            <Details open>
+              <Margin />
+            </Details>
+            <ListOfKeys />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    const details = await screen.findByTestId("desktop-margin-shell");
+    const close = await screen.findByTestId("details-close");
+    act(() => close.focus());
+    const list = () => screen.queryByRole("dialog", { name: "Keyboard shortcuts" });
+
+    // The list moves the focus into itself a frame after it opens; with that frame held, the
+    // Escape lands on Details' Close.
+    const frames = spyOn(window, "requestAnimationFrame").mockImplementation(() => 0);
+    try {
+      await user.keyboard("?");
+      expect(list(), "? drew no list of keys").not.toBeNull();
+      expect(document.activeElement, "the list took the focus in its first frame").toBe(close);
+      await user.keyboard("{Escape}");
+    } finally {
+      frames.mockRestore();
+    }
+    expect(list(), "Escape before the list took the focus left the list open").toBeNull();
+    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+
+    await user.keyboard("?");
+    await user.click(screen.getByRole("heading", { name: "Keyboard shortcuts" }));
+    expect(document.activeElement, "a press on the list's text kept the focus").toBe(document.body);
+    await user.keyboard("{Escape}");
+    expect(list(), "Escape with the focus on the page left the list open").toBeNull();
+    expect(details.hasAttribute("hidden"), "that Escape closed Details under the list").toBe(false);
+  } finally {
+    view.unmount();
+    restoreMatchMedia();
+  }
+});
+
 test("a desktop comment deep link activates Comments and scrolls its card from Pinned", async () => {
   const user = userEvent.setup();
   const queryClient = new QueryClient({
@@ -185,7 +487,7 @@ test("a desktop comment deep link activates Comments and scrolls its card from P
   const listComments = spyOn(api, "listComments").mockResolvedValue([comment]);
   const restoreRects = stubRects(() => 900);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: "CORE-1", kind: "issue" })]}>
@@ -234,7 +536,7 @@ test("a reader who lands on a comment link can still select another card", async
   // The URL keeps naming its item for the whole visit, so reading it ahead of the reader's own
   // selection - or re-applying it on every render - would pin the linked card as the selected one
   // and leave every later click with nothing to show for it.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment, secondComment], [anchoredAsk]);
@@ -265,7 +567,7 @@ test("a reader who lands on a comment link can still select another card", async
 
 test("a reader who lands on a comment link can select a Needs you ask", async () => {
   const user = userEvent.setup();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const getAsk = answerAnchoredAsk();
   const view = renderCommentLinkLanding([comment], [anchoredAsk]);
@@ -291,7 +593,7 @@ test("following the same comment link again brings the reader back to its card",
   // Once per link is once per navigation: the URL still names comment-1 after the reader has
   // moved to another card, so a link back to it has to be honoured rather than seen as already
   // applied.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const view = render(
     <MemoryRouter
@@ -334,7 +636,7 @@ test("following a second comment link selects the item that link names", async (
   const user = userEvent.setup();
   // The route selection is applied once per link, not once ever: a reader who follows another
   // link from the same page has to land on its card.
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const scrollTo = stubScrollTo();
   const view = render(
     <MemoryRouter
@@ -377,7 +679,7 @@ test("the margin holds a linked card in view while the margin is still filling i
   let cardTop = 0;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -422,7 +724,7 @@ test("the margin stops correcting a linked card once the reader scrolls the marg
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -476,7 +778,7 @@ test("a press in the document takes over once the document has reported an empty
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   // The spec's margin reads the issue's decisions, which this issue has none of.
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
@@ -522,7 +824,7 @@ test("a press in the document leaves the hold armed while the layout reported is
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderLandingWithReport("artifact-handbook");
 
   try {
@@ -556,7 +858,7 @@ test("a text update in the margin keeps its anchoring scroll from taking over", 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const view = renderCommentLinkLanding();
 
   try {
@@ -599,7 +901,7 @@ test("a scroll the margin did not perform, with nothing having changed, ends the
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -639,7 +941,7 @@ test("a relayout that scrolls the margin twice leaves the hold alone", async () 
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -679,7 +981,7 @@ test("a stream of scrolls after one relayout does not slide the window along", a
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 
@@ -725,7 +1027,7 @@ test("a relayout's own scroll that lands after a long task leaves the hold alone
   let cardTop = 900;
   const restoreRects = stubRects(() => cardTop);
   const scrollTo = stubScrollTo();
-  const restoreMatchMedia = stubMatchMedia(false);
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
 
   const view = renderCommentLinkLanding();
 

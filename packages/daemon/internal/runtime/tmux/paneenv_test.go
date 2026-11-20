@@ -108,13 +108,33 @@ func TestNewRefusesAPaneVariableThatMovesSessionsOrHoldsAPassword(t *testing.T) 
 			}
 		})
 	}
-	// The Claude Code pane's pairs are exactly the names refused: none is told after the operator's
-	// variables without the operator being refused it first.
-	pairs := claudeEnvironment("/state/claude/c")
-	for i := 1; i < len(pairs); i += 2 {
-		name, _, _ := strings.Cut(pairs[i], "=")
-		if checkPaneEnv(map[string]string{name: "x"}, nil) == nil {
-			t.Errorf("a Claude Code pane is told %s after the operator's variables, and the operator may set it", name)
+	// A launcher's own pairs, a Claude Code pane's and a resumed Oh My Pi pane's, are exactly names
+	// refused both as a pane variable and as a provider key: none is told after the operator's
+	// variables without the operator being refused it first, through pane_env or through a key the
+	// shim exports into Oh My Pi's environment.
+	_, ompPairs, err := NewOmpLauncher(nil, "omp").Launch(runtime.SpawnSpec{ResumeSessionFile: "/state/s.jsonl"}, Host{}, "/state/p.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for kind, pairs := range map[string][]string{
+		"a Claude Code pane":      claudeEnvironment("/state/claude/c"),
+		"a resumed Oh My Pi pane": ompPairs,
+	} {
+		if len(pairs) == 0 {
+			t.Errorf("%s carries no pair of its own", kind)
+		}
+		for i := 1; i < len(pairs); i += 2 {
+			name, _, _ := strings.Cut(pairs[i], "=")
+			if checkPaneEnv(map[string]string{name: "x"}, nil) == nil {
+				t.Errorf("%s is told %s after the operator's variables, and the operator may set it", kind, name)
+			}
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readProviderKeyNames(dir, true); err == nil {
+				t.Errorf("%s is told %s after the operator's variables, and a provider key may take its name", kind, name)
+			}
 		}
 	}
 	if err := checkPaneEnv(map[string]string{"WIDGETS_URL": "https://widgets.example/acme", "LEDGER_DSN_FILE": "/etc/legion-ledger/dsn",

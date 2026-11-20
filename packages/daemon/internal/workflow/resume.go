@@ -114,9 +114,10 @@ type suspendedOwner struct {
 	run   record.RoleRun
 }
 
-// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, of every project;
-// the roots of the project's trees that run (record.RunningRoots); and the suspended owners of
-// the project's unfinished phases in those trees, in the order the store lists the issues.
+// phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
+// store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
+// trees that run (record.RunningRoots); and the suspended owners of the project's unfinished
+// phases in those trees, in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
@@ -161,20 +162,16 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	own := make([]record.Issue, 0, len(issues))
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
-		if issue.Project == e.cfg.Project {
-			own = append(own, issue)
-		}
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, own, e.cfg.Steps)
+	facts, err := record.ReadLineFacts(ctx, tx, e.store, e.cfg.Project, issues, e.cfg.Steps)
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(own, facts)}
-	for _, issue := range own {
+	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
+	for _, issue := range issues {
 		role := phase.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {
 			continue
@@ -259,7 +256,7 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 		return err
 	}
 	for _, listed := range issues {
-		if listed.Project != e.cfg.Project || !awaitsMerge(listed) {
+		if !awaitsMerge(listed) {
 			continue
 		}
 		pr, err := e.store.PullRequest(ctx, tx, listed.Key)

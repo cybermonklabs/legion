@@ -369,7 +369,11 @@ func TestValidateSpawnSpecRefusesACollisionWithAProviderKey(t *testing.T) {
 
 // The runtime reads the provider-env directory once, at construction — boot, before any pane — and
 // refuses a key every pane already carries, or one whose pointer every pane carries, rather than
-// open panes whose shim would refuse to start or drop the key without a word.
+// open panes whose shim would refuse to start or drop the key without a word. It also refuses,
+// with runtime.PaneVariableRefusal's reason, a key that places the session a resume reads or that
+// a launcher tells a Claude Code pane or a resumed Oh My Pi pane after the operator's variables:
+// the shim exports a provider key into Oh My Pi's environment, where it would act as the pane
+// variable of that name, which pane_env refuses.
 func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -380,6 +384,10 @@ func TestNewRefusesAProviderKeyEveryPaneCarries(t *testing.T) {
 		{"a variable the runtime sets", "LEGION_TREE", "tmux runtime: provider key LEGION_TREE is a variable every pane already carries"},
 		{"PATH", "PATH", "tmux runtime: provider key PATH is a variable every pane already carries"},
 		{"one whose pointer every pane carries", "LEGION_BOOT_TOKEN", "tmux runtime: provider key LEGION_BOOT_TOKEN would not reach OMP: every pane carries LEGION_BOOT_TOKEN_FILE"},
+		{"one a resumed Oh My Pi pane is told", "OMP_SESSION_EXCLUSIVE", "tmux runtime: provider key OMP_SESSION_EXCLUSIVE: the runtime sets it on every resumed Oh My Pi pane itself, after the operator's variables"},
+		{"one a Claude Code pane is told", "CLAUDE_CONFIG_DIR", "tmux runtime: provider key CLAUDE_CONFIG_DIR: the runtime sets it on every Claude Code pane itself, after the operator's variables"},
+		{"Oh My Pi's config root", "OMP_CONFIG_ROOT", "tmux runtime: provider key OMP_CONFIG_ROOT: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
+		{"Oh My Pi's config directory", "PI_CONFIG_DIR", "tmux runtime: provider key PI_CONFIG_DIR: it decides where Oh My Pi keeps the session a resume reads, which the runtime places itself"},
 		{"a file not named for a variable", "KEY.tmp", `tmux runtime: provider-env entry "KEY.tmp" is not named for an environment variable`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -40,6 +40,7 @@ import type {
   MyReplyRow,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
@@ -130,13 +131,33 @@ export function dismissesThread(thread: MyReplyRow, body: InboxDismissRequest): 
   return inWriteScope(thread, body);
 }
 
+/** `count` threads, in the words the page says a press over them in. */
+function threadsOf(count: number): string {
+  return `${count} ${count === 1 ? "thread" : "threads"}`;
+}
+
 /** What the page says about a press the server refused: the rows are back, so it says what did
  *  not happen and the reason the server gave, as a refused bulk snooze does (`snoozeRefusalText`
  *  in `useInboxSelection.ts`). */
 export function dismissRefusalText(count: number, restore: boolean, reason: string): string {
-  const threads = `${count} ${count === 1 ? "thread" : "threads"}`;
-  const what = restore ? `move ${threads} back to the Inbox` : `dismiss ${threads}`;
+  const what = restore
+    ? `move ${threadsOf(count)} back to the Inbox`
+    : `dismiss ${threadsOf(count)}`;
   return `Could not ${what}: ${reason}.`;
+}
+
+/** What the page says about a press the reader stopped (`SendStoppedError`): the rows are back,
+ *  as after a refusal, but Dispatch may have made it, and the next press is one of its own, under
+ *  a key of its own. The error's own words are a composer's, of a message and its Retry. */
+export function dismissStoppedText(count: number, restore: boolean): string {
+  const them = count === 1 ? "it" : "them";
+  return restore
+    ? stoppedWriteNote(`the move of ${threadsOf(count)} back to the Inbox`, "made", {
+        anew: `Moving ${them} back again sends a new write.`,
+      })
+    : stoppedWriteNote(`the dismissal of ${threadsOf(count)}`, "made", {
+        anew: `Dismissing ${them} again sends a new write.`,
+      });
 }
 
 /** One row a press took out of a cached read, and where it stood in it, so a refusal puts it back
@@ -259,7 +280,11 @@ export function useInboxDismiss({
       // narrowing names no row, and a restore's rows come out of the Dismissed read rather than
       // the Inbox's, so the count is every row the optimistic apply took out, either side.
       const taken = "rows" in input ? input.rows.length : droppedRows(rollback).length;
-      setRefusal(dismissRefusalText(taken, input.restore === true, error.message));
+      setRefusal(
+        error instanceof SendStoppedError
+          ? dismissStoppedText(taken, input.restore === true)
+          : dismissRefusalText(taken, input.restore === true, error.message)
+      );
       if (rollback === undefined) return;
       queryClient.setQueryData<MyRepliesResponse>(inboxKey, (current) =>
         current === undefined ? current : withRows(current, rollback.inbox)
