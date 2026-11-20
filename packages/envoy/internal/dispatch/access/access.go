@@ -187,43 +187,25 @@ func PersonClause(loginExpr, viewerParam string) string {
 // tests, so a statement makes it once (an InitPlan), and only for an open viewer of a deployment
 // that holds a private project.
 //
-// The clause is SQL of the statement that binds it, never a call of a database function: a SQL
-// function whose body reads a table is not inlined (Postgres inlines a scalar SQL function only
-// when its body holds no subquery), so it would run once per row it tests, with no private
-// project as well, and EXPLAIN would not show what it reads. Written here, the planner plans its
-// reads with the statement: the listener record's read names no column of the row either, so it
-// too is one primary-key probe a statement makes (an InitPlan) at its first use, and a deployment
-// that holds no private project reads nothing for an open viewer
-// (TestTheListenerRecordUsesItsPrimaryKey).
+// The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
+// private project are answered in the statement's own SQL, so those rows call nothing and read
+// nothing (R9). Every other row asks session_clause_visible (the migration's function, which names
+// each table by its schema and sets no search_path). Postgres never inlines that function, since
+// its body reads tables, and runs it once per row it asks about; its declared cost is what keeps
+// the statements that bind this clause on their indexes, which the same decision written into the
+// statement does not (refs.TestBacklinkCountStatementReadsEveryArmThroughAnIndex). What one call
+// runs is in TestTheListenerRecordUsesItsPrimaryKey: the listener record read through its primary
+// key.
 func SessionClause(sessionExpr, viewerParam string) string {
-	listed := `((select listener.projects from route_roster_session_projects listener where listener.id = true) -> (` + sessionExpr + `))`
-	return clause("SessionClause", fmt.Sprintf(`case
-		when %[3]s or (%[1]s) = %[2]s::jsonb->>'session' then true
-		when %[4]s then case
-			when not %[5]s then true
-			when not exists (select 1 from session_projects_filled offset 0) then false
-			when exists (
-				select 1 from session_projects unseen
-				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
-				offset 0) then false
-			when exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0) then true
-			else coalesce(%[6]s <@ (%[2]s::jsonb->'sees'), false)
-		end
-		when exists (
-			select 1 from session_projects acted
-			where acted.session_id = (%[1]s) and (%[2]s::jsonb->'sees') ? acted.project_key
-			offset 0) then
-			not %[5]s or not exists (
-				select 1 from session_projects unseen
-				join projects hidden on hidden.key = unseen.project_key and hidden.visibility = 'private'
-				where unseen.session_id = (%[1]s) and not ((%[2]s::jsonb->'sees') ? unseen.project_key)
+	return clause("SessionClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
+		or (%[4]s and not %[5]s)
+		or session_clause_visible((%[1]s), %[2]s::jsonb,
+			case when %[4]s and %[5]s then exists (
+				select 1 from session_projects_filled
 				offset 0)
-		when %[5]s and not exists (select 1 from session_projects acted where acted.session_id = (%[1]s) offset 0) then
-			coalesce(%[6]s <> '[]'::jsonb and %[6]s <@ (%[2]s::jsonb->'sees'), false)
-		else false
-	end`,
+			else true end))`,
 		sessionExpr, viewerParam, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"),
-		ViewerFlag(viewerParam, "private"), listed))
+		ViewerFlag(viewerParam, "private")))
 }
 
 // roleProjectSQL is contracts.RoleProject in SQL, over the role name roleExpr gives: the project
