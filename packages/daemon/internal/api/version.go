@@ -2455,8 +2455,8 @@ package api
 // cybermonklabs/legion#3519 (dispatch://INFRA-2009) merged first, at 160, adding `volumeTrim`
 // beside `memoryGuard` in the same acknowledgement, so this change takes a number above it and
 // keeps every member of both: an issue pod's acknowledgement carries `memoryGuard` and
-// `volumeTrim`, and the controller pod's `memoryGuard` alone, since that pod's launcher runs no
-// trimmer.
+// `volumeTrim`, and the controller pod's carries `memoryGuard` and no `volumeTrim`, since that
+// pod's launcher runs no trimmer, and the second change, below, adds `kernelKills` to it.
 // (This change took 155 before #3519 merged, 168 at the forward merge that brought main in at
 // a573bac20ad2, and 167 at the one that brought it in at e5e4900fe70e. It took 174 at the forward
 // merge of 2026-11-19 that brought main in at a16c218ee3a4, which carries #4488 at 168, the entry
