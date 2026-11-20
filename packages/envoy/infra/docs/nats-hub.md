@@ -21,8 +21,7 @@ A hub whose `hostname` is `<h>` registers these resources, each a child of the h
 | `<h>-tailnet-auth-key-accessor` | `gcp:secretmanager/secretIamMember:SecretIamMember` | The service account's grant of `roles/secretmanager.secretAccessor` on that secret. |
 | `<h>-listener-seed-accessor` | `gcp:secretmanager/secretIamMember:SecretIamMember` | Only with `listener`: the same grant on `listener.seedSecret`, a secret the consumer declares and writes. |
 | `<h>-network` | `gcp:compute/network:Network` | Only without `network`: an auto-mode network, with a subnetwork in every region. |
-| `<h>-health-checks` | `gcp:compute/firewall:Firewall` | tcp/8222 from Google's health-check ranges, `130.211.0.0/22` and `35.191.0.0/16`, to the VM's network tag `<h>-hub`. |
-| `<h>-iap-monitor` | `gcp:compute/firewall:Firewall` | Only with `monitorThroughIap`: tcp/8222 alone from IAP TCP forwarding's range, `35.235.240.0/20`, to the instances that run as the hub's own service account `<h>-hub`, never to a tag. See [The monitoring port through IAP](#the-monitoring-port-through-iap). |
+| `<h>-health-checks` | `gcp:compute/firewall:Firewall` | The hub's one firewall rule: tcp/8222 from Google's health-check ranges, `130.211.0.0/22` and `35.191.0.0/16`, to the VM's network tag `<h>-hub`. |
 | `<h>-healthz` | `gcp:compute/healthCheck:HealthCheck` | An HTTP check of NATS's `/healthz` on port 8222, every 10 seconds, unhealthy after 6 failures. |
 | `<h>` | `gcp:compute/instanceTemplate:InstanceTemplate` | The VM: `machineType`, a boot disk from Container-Optimized OS's `cos-stable` image family, the data disk, an external address for its way out to the image registries and the tailnet (see [The VM's external address](#the-vms-external-address)), the service account with the `cloud-platform` scope, the tag `<h>-hub`, and the cloud-config as its `user-data` (see [What the hub's VM runs](#what-the-hubs-vm-runs)). |
 | `<h>` | `gcp:compute/instanceGroupManager:InstanceGroupManager` | The zonal group of that one VM, in `zone`. It keeps the data disk (see [The hub's data disk](#the-hubs-data-disk)), recreates the VM once the health check finds it unhealthy, from an initial delay after the VM is created that covers the first boot's read of the data disk (see [The first boot's read](#the-first-boots-read)), and replaces it when the template changes (see [Updating a hub](#updating-a-hub)). It is created after the key's version and the account's grants, since its first VM fetches the key when it boots and its listener fetches its seed when it starts, and `pulumi up` waits until it is `STABLE`. |
@@ -56,7 +55,6 @@ and `instanceGroup`, the group's name.
 | `sessionUser` | unset | `name` and `nkey`, the NATS user a client presenting no credential becomes, granted `SessionPermissions`. See [The hub's users](#the-hubs-users). |
 | `authCallout` | unset | The auth service's callout (dispatch://INFRA-840), a `nats:AuthCallout`, each of whose fields is required: `issuer`, the account public key whose seed signs the service's answers; `xkey`, the curve public key the server seals each request to, without which nats-server sends each connecting client's token to the service unsealed; and `serviceUser`, the `name` of the entry of `users` the service connects as. See [The auth service](#the-auth-service). Unset, the hub renders exactly what it rendered before callouts existed. |
 | `privateProjects` | `false` | The deployment may make a Dispatch project private (R12 of dispatch://INFRA-3862). Refused without `authCallout`, beside a `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, and when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant. See [The auth service](#the-auth-service). |
-| `monitorThroughIap` | `false` | IAP TCP forwarding reaches NATS's monitoring port, 8222: the firewall rule `<h>-iap-monitor` and the VM's own host firewall admit IAP's range, `35.235.240.0/20`, to 8222 alone. The component grants no one a tunnel. Taken beside `privateProjects` (see [The auth service](#the-auth-service) for why). Before turning it on beside `privateProjects`, list the project's and the instance's tunnel grants and condition or remove each that holds no `destination.port` condition: each reaches 8222 too (see [The monitoring port through IAP](#the-monitoring-port-through-iap)). A change of it rewrites the VM's user data, so the group replaces the VM. |
 
 Only `tailnetAuthKey`, `network` and `subnetwork` may come from another resource's output. Every
 other input takes a value the program knows when it runs, and the plugin refuses an output there,
@@ -313,16 +311,10 @@ on those pods admits only the ports its rules name, whatever name a caller diall
 hub needs 8222 from another namespace: the kubelet probes from the pod's own node, which the
 NetworkPolicy does not fence; the exporter in each pod reads `localhost:8222`; `kubectl
 port-forward` and `exec` reach a pod through the API server; and Managed Prometheus reads the
-exporter's port, 7777. `gcp:NatsHub` opens 8222 to Google Cloud's health-check probe ranges,
+exporter's port, 7777. `gcp:NatsHub` opens 8222 only to Google Cloud's health-check probe ranges,
 `130.211.0.0/22` and `35.191.0.0/16` (its firewall `<h>-health-checks` and the VM's own iptables
-rule), from which its group's health check reads `/healthz`, and, with `monitorThroughIap`, to IAP
-TCP forwarding's range, through which a principal IAM lets open a tunnel to the VM reaches it. The
-rule is this: a monitoring path checked by identity is allowed beside `privateProjects`, and one
-that depends only on network position is refused. `monitorNamespaces` admits every pod of a
-namespace, by its position, so it is refused; `kubectl port-forward` is checked by RBAC and an IAP
-tunnel by IAM, so both are allowed. The IAP rule opens tcp/8222 alone, from IAP's range alone, on
-the hub's own instance alone, and no input widens any of the three. Who holds a tunnel is the
-deployment's to bound before a project is private.
+rule), from which its group's health check reads `/healthz`; no input widens that, so it has
+nothing to refuse.
 
 `privateProjects` is checked when the hub is planned, and renders nothing itself. What it demands
 (the callout, no session user, no client user beside the auth service's) reaches a running server
@@ -464,7 +456,7 @@ order. They are started and never enabled, since `/etc` does not outlive the boo
 | `fetch-tailnet-key.service` | A oneshot, after `network-online.target`, that stays active once it exits: `/etc/envoy/fetch-secret /run/envoy/tailnet-auth-key <h>-tailnet-auth-key`. It runs only on a mounted data disk without `/mnt/disks/data/tailnet-joined`, so no boot after the node has joined fetches the key. |
 | `tailscaled.service` | `docker run --name tailscaled` of `tailscaleImage` on the host's network, with `NET_ADMIN` and `/dev/net/tun`, its state in `/mnt/disks/data/tailscale`, the key file mounted read-only, `TS_AUTHKEY=file:/run/envoy/tailnet-auth-key`, `TS_AUTH_ONCE=true`, kernel networking (`TS_USERSPACE=false`), `TS_HOSTNAME=<h>` and `--advertise-tags` with `tags`. It mounts `/etc/tailscale-serve` read-only and sets `TS_SERVE_CONFIG=/etc/tailscale-serve/serve.json`: containerboot applies that configuration once the node is up, and again whenever the file changes, watching its directory (tailscale v1.104.1 `cmd/containerboot/serve.go`). With a `listener`, the configuration forwards port 9020; without one it is `{}`, which clears a prior forward. It wants the fetch and starts after it ends, but does not require it. |
 | `tailnet-joined.service` | Started after `tailscaled`, on a mounted data disk without the marker: `/etc/envoy/tailnet-joined /mnt/disks/data/tailnet-joined /run/envoy/tailnet-auth-key`. Every 5 seconds the script asks the Tailscale container's CLI for `status --json`, and once its `BackendState` is `Running` it empties the key file, which stays for the container's bind mount, and only once that has succeeded writes the marker. A simple service, so its start returns at once; a run that fails, as one whose key drop fails does, is run again 10 seconds later. |
-| `nats-firewall.service` | A oneshot that stays active once it exits: it adds `INPUT -p tcp -s 130.211.0.0/22,35.191.0.0/16 --dport 8222 -j ACCEPT` and `INPUT -i tailscale0 -p tcp --dport 4222 -j ACCEPT` to the host's iptables with COS's own `/sbin/iptables`, each unless it is there, and with `monitorThroughIap` a third, `INPUT -p tcp -s 35.235.240.0/20 --dport 8222 -j ACCEPT`. COS's host firewall accepts incoming connections for SSH alone ([COS firewall](https://cloud.google.com/container-optimized-os/docs/how-to/firewall)): it filters with nf_tables and drops INPUT by default. So without the first rule the health check never reaches NATS, without the second the tailnet never does either, since Tailscale's image writes its own accept rule for `tailscale0` with iptables-legacy, which does not admit what nf_tables drops, and without the third no IAP tunnel reaches 8222 whatever the VPC firewall admits. |
+| `nats-firewall.service` | A oneshot that stays active once it exits: it adds `INPUT -p tcp -s 130.211.0.0/22,35.191.0.0/16 --dport 8222 -j ACCEPT` and `INPUT -i tailscale0 -p tcp --dport 4222 -j ACCEPT` to the host's iptables with COS's own `/sbin/iptables`, each unless it is there. COS's host firewall accepts incoming connections for SSH alone ([COS firewall](https://cloud.google.com/container-optimized-os/docs/how-to/firewall)): it filters with nf_tables and drops INPUT by default. So without the first rule the health check never reaches NATS, and without the second the tailnet never does either, since Tailscale's image writes its own accept rule for `tailscale0` with iptables-legacy, which does not admit what nf_tables drops. |
 | `nats.service` | `docker run --name nats` of `natsImage` on the host's network, with `/mnt/disks/data/nats` as `/data` and the configuration file mounted read-only, and the arguments `-c /etc/nats/nats-server.conf -js --store_dir /data -m 8222 --server_name <h>`. It is stopped with `docker stop -t 30`. It wants `nats-firewall` and starts after it. |
 | `envoy-listener.service` | Only with a `listener`. Before each start, `/etc/envoy/listener-seed-env /run/envoy/listener.env <seedSecret>` writes the seed to that env file; then `docker run --name envoy-listener` of `listener.image` on the host's network, with `--env-file /run/envoy/listener.env`, `PORT=9020`, `ENVOY_LISTEN_HOST=127.0.0.1`, `ENVOY_ALLOWED_HOSTS=<h>.<tailnetDnsName>` and each of `listener.allowedHosts` after it, comma-separated, `ENVOY_MACHINE_ID=<h>` and `NATS_URLS=nats://127.0.0.1:4222`, in that order, as `gcp/testdata/cloud-config.golden` shows. `TimeoutStartSec=600` exceeds the fetcher's 590-second maximum: six attempts, each with three 30-second curl limits, separated by five 10-second waits. A seed that cannot be fetched fails the start, and the restart fetches again. It is stopped with `docker stop -t 30`, since the listener's own shutdown takes up to about 20 seconds. It wants `nats` and starts after it. |
 
@@ -485,9 +477,8 @@ the secret's choosing to the listener's environment, and writes `NATS_NKEY_SEED=
 `/run/envoy/listener.env`, readable by root alone, removing the fetched file.
 
 NATS listens for clients on 4222 and serves its monitoring endpoints on 8222, on every interface.
-The hub's VPC firewall rule and `nats-firewall` admit Google's health checks to 8222, with
-`monitorThroughIap` IAP's TCP forwarding range too, and `nats-firewall` admits the tailnet's
-interface, `tailscale0`, to 4222; the hub opens nothing else. So
+The hub's VPC firewall rule and `nats-firewall` admit Google's health checks to 8222, and
+`nats-firewall` admits the tailnet's interface, `tailscale0`, to 4222; the hub opens nothing else. So
 the tailnet's policy decides which peers reach 4222. 8222's `/varz`, `/connz` and `/jsz` stay
 closed to the tailnet, as does every port that neither `nats-firewall`, Serve nor COS's own SSH
 rule (tcp/22, accepted on every interface) opens, since Tailscale's own accept rule for
@@ -498,29 +489,6 @@ publishes before the host's iptables sees it, and opens its own connection to `1
 On a Linux host with tailscaled 1.104.1 in kernel mode, a port Serve published still answered
 over the tailnet while iptables dropped that port on `tailscale0`, and a port Serve did not
 publish timed out. Serve publishes nothing else.
-
-### The monitoring port through IAP
-
-With `monitorThroughIap`, IAP TCP forwarding
-([TCP forwarding](https://cloud.google.com/iap/docs/using-tcp-forwarding)) reaches 8222, so an
-operator can read `/varz`, `/routez` and `/connz` with `gcloud compute start-iap-tunnel <vm> 8222`
-and no SSH. Two things open the path, and the component writes both: the VPC rule `<h>-iap-monitor`,
-from `35.235.240.0/20` to tcp/8222 alone, whose target is the hub's own service account rather than
-a tag, since a tag is any VM creator's to set while only a principal that may act as that account
-can start a VM the rule reaches; and `nats-firewall`'s third rule, without which COS's host firewall
-drops the tunnel's connection. Who may open a tunnel is IAM's alone
-(`iap.tunnelInstances.accessViaIAP`), which the consumer grants and the component never does: grant
-it to one principal, conditioned on `destination.port == 8222` alone. The rule's target account
-keeps the path to the hub's VM. A condition on the instance's name lets no tunnel through, and one
-on its numeric id stops working when the group recreates the VM. IAP admits every principal whose
-`iap.tunnelInstances.accessViaIAP` reaches the instance, not only the one this grant names: a
-tunnel grant already in place with no `destination.port` condition, such as a project-wide
-SSH-through-IAP grant to a team, or a role that holds every permission, reaches 8222 too once the
-firewall rule exists, and 8222 answers `/connz`, `/subsz` and `/jsz` with no authentication of its
-own. So before turning `monitorThroughIap` on beside `privateProjects`, list the project's and the
-instance's tunnel grants, and condition or remove every one that holds no `destination.port`
-condition. The health checks' rule and its `/healthz` are unchanged. The input rewrites the VM's
-user data, so turning it on or off replaces the VM (see [Updating a hub](#updating-a-hub)).
 
 ## The VM's external address
 
@@ -1031,8 +999,8 @@ moment, its pod's restart, with every connection's timer started fresh. The rout
 always arrives with a roll. A change of a user's grant or name alone leaves the lines and the pods
 as they were, and the reloader applies it. A
 `gcp:NatsHub` needs none of this: its configuration is the instance template's `user-data`
-(`gcp/natshub.go:832`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
-`RECREATE`: `gcp/natshub.go:859-865`), so any configuration change restarts its server already.
+(`gcp/natshub.go:795`), and the group replaces its VM on a new template (`PROACTIVE`, `REPLACE`,
+`RECREATE`: `gcp/natshub.go:822-828`), so any configuration change restarts its server already.
 
 <a id="two-ports-guarded-by-the-networkpolicy-alone"></a>
 

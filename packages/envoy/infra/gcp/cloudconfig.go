@@ -58,7 +58,6 @@ type vm struct {
 	tailscaleImage string
 	natsConf       string    // the rendered authorization, public keys only
 	listener       *listener // the hub's own Envoy listener, when the hub runs one
-	iapMonitor     bool      // monitorThroughIap: IAP TCP forwarding's range reaches the monitoring port
 }
 
 // listener is the hub's Envoy listener: its image, the secret id of its NATS seed, which the VM
@@ -167,7 +166,7 @@ func (v vm) units() []unitFile {
 		{fetchKeyService, v.fetchKeyUnit()},
 		{tailscaledService, v.tailscaledUnit()},
 		{joinedService, joinedUnit()},
-		{firewallService, v.firewallUnit()},
+		{firewallService, firewallUnit()},
 		{natsService, v.natsUnit()},
 	}
 	if v.listener != nil {
@@ -371,28 +370,24 @@ func (v vm) tailscaledUnit() string {
 
 // firewallUnit opens Container-Optimized OS's host firewall, which accepts incoming connections for
 // SSH alone (https://cloud.google.com/container-optimized-os/docs/how-to/firewall), to Google's
-// health checks on the monitoring port, the sources the VPC firewall rule admits, to the tailnet's
-// interface on the client port and, with monitorThroughIap, to IAP TCP forwarding's range on the
-// monitoring port, the source its own VPC rule admits. Each rule is added only when it is not
-// there yet, with the host's own /sbin/iptables. The tailnet's rule is needed because COS filters
-// with nf_tables and drops INPUT by default, while Tailscale's image writes its accept rule for
-// tailscale0 with iptables-legacy, which does not admit what nf_tables drops. Without
-// monitorThroughIap the unit is as it was before that input existed, so the user data, and the
-// VM, are left as they are.
-func (v vm) firewallUnit() string {
+// health checks on the monitoring port, the sources the VPC firewall rule admits, and to the
+// tailnet's interface on the client port. Each rule is added only when it is not there yet, with
+// the host's own /sbin/iptables. The tailnet's rule is needed because COS filters with nf_tables and
+// drops INPUT by default, while Tailscale's image writes its accept rule for tailscale0 with
+// iptables-legacy, which does not admit what nf_tables drops.
+func firewallUnit() string {
 	healthChecks := "INPUT -p tcp -s " + strings.Join(healthCheckRanges, ",") + " --dport " + strconv.Itoa(monitorPort) + " -j ACCEPT"
 	tailnet := "INPUT -i " + tailnetInterface + " -p tcp --dport " + strconv.Itoa(natsPort) + " -j ACCEPT"
-	description := "Description=Open the host firewall to Google's health checks on NATS's monitoring port, and to the tailnet on its client port"
-	rules := []string{healthChecks, tailnet}
-	if v.iapMonitor {
-		description = "Description=Open the host firewall to Google's health checks and IAP's TCP forwarding on NATS's monitoring port, and to the tailnet on its client port"
-		rules = append(rules, "INPUT -p tcp -s "+iapTunnelRange+" --dport "+strconv.Itoa(monitorPort)+" -j ACCEPT")
-	}
-	lines := []string{"[Unit]", description, "", "[Service]", "Type=oneshot", "RemainAfterExit=yes"}
-	for _, rule := range rules {
-		lines = append(lines, "ExecStart=/bin/sh -c '/sbin/iptables -w -C "+rule+" || /sbin/iptables -w -A "+rule+"'")
-	}
-	return unit(lines...)
+	return unit(
+		"[Unit]",
+		"Description=Open the host firewall to Google's health checks on NATS's monitoring port, and to the tailnet on its client port",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"ExecStart=/bin/sh -c '/sbin/iptables -w -C "+healthChecks+" || /sbin/iptables -w -A "+healthChecks+"'",
+		"ExecStart=/bin/sh -c '/sbin/iptables -w -C "+tailnet+" || /sbin/iptables -w -A "+tailnet+"'",
+	)
 }
 
 // natsUnit runs nats-server with JetStream's store on the data disk, once the host firewall lets

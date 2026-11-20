@@ -113,7 +113,7 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.ElementsMatch(t, []string{
 		"users", "tailnetAuthKey", "hostname", "tailnetDnsName", "tags", "zone", "machineType", "diskType",
 		"diskSizeGb", "natsImage", "tailscaleImage", "network", "subnetwork", "listener", "sessionUser",
-		"authCallout", "privateProjects", "monitorThroughIap",
+		"authCallout", "privateProjects",
 	}, slices.Collect(maps.Keys(hub.InputProperties)))
 	require.ElementsMatch(t, []string{"tailnetAuthKey", "hostname", "tags", "zone", "natsImage", "tailscaleImage"},
 		hub.RequiredInputs)
@@ -125,7 +125,6 @@ func TestSchemaServesTheNatsHubComponentWithASecretAuthKey(t *testing.T) {
 	require.Equal(t, "#/types/envoy-infra:gcp:SessionUser", hub.InputProperties["sessionUser"].Ref)
 	require.Equal(t, "#/types/envoy-infra:nats:AuthCallout", hub.InputProperties["authCallout"].Ref)
 	require.Equal(t, "boolean", hub.InputProperties["privateProjects"].Type)
-	require.Equal(t, "boolean", hub.InputProperties["monitorThroughIap"].Type)
 	// The listener's whole property set is pinned, not its required inputs alone, so a property
 	// added to it cannot stay invisible here.
 	require.ElementsMatch(t, []string{"image", "seedSecret", "nkey", "allowedHosts", "agentSecretsUrl", "agentSecretsAudience", "publicUrl"},
