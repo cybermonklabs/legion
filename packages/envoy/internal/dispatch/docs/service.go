@@ -144,12 +144,16 @@ type VersionedStore interface {
 
 // Service owns live Yjs documents and their durable Dispatch versions.
 type Service struct {
-	srv               *roomServer
-	store             *store.Store
-	persistence       VersionedStore
-	events            *events.Broker
-	identity          identity.Identity
-	serverURL         string
+	srv         *roomServer
+	store       *store.Store
+	persistence VersionedStore
+	events      *events.Broker
+	identity    identity.Identity
+	serverURL   string
+	// formGate is the form gate of The Spec that each carry of an approval asks (SetFormGate),
+	// nil until the API sets it: a process with no API names no root of The Spec, so its carry
+	// judges nothing.
+	formGate          atomic.Pointer[FormGate]
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration

@@ -1,8 +1,9 @@
 //go:build twobuild
 
 // The stored-document half of the two-build suite: each build reading, editing and keeping the
-// references of the other's documents, over the API and the document socket
-// (twobuild_harness_test.go holds the harness both halves start their builds with).
+// references of the other's documents, over the API and the document socket, and the list of
+// terms of The Spec that this build reads after the other build's moves (twobuild_harness_test.go
+// holds the harness both halves start their builds with).
 
 package main
 
@@ -450,6 +451,68 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 				requireReferencesKeptAcrossBuilds(t, builds, writer, reader, project)
 			})
 		})
+	}
+}
+
+// A move that the previous build makes changes no definition of the list of terms of The Spec
+// that this build reads. The previous build knows no root of The Spec: its move takes no lock of a
+// list and writes the issue and its events alone. This build orders each definition of a root's
+// list by when it joined the list, the later of its first approval and the event of the move that
+// brought it under the root, and both builds write that event (api/spec_form.go,
+// approvedSpecTexts). The row: through this build the person approves lease outside the root
+// first, then another definition under the root; the previous build then moves the first issue
+// under the root, and moves the keeper to a level inside the root. This build's list keeps the
+// definition approved under the root, and its read of the moved issue names that definition.
+func TestAMoveByThePreviousBuildChangesNoDefinitionOfTheListOfTerms(t *testing.T) {
+	builds := newTwoBuilds(t)
+	project := uniqueProjectKey(t, "XST")
+	root := project + "-1"
+	builds.startPrevious(t, nil)
+	builds.startCurrent(t, map[string]string{"DISPATCH_SPEC_ROOTS": root})
+	current, previous := builds.current(), builds.previous()
+	current.createProject(t, project, "The list of terms across two builds")
+	if key, _ := createDocument(t, current, project, "The root of the written account", "# The Spec\n\nThe design of the written account.\n"); key != root {
+		t.Fatalf("the first issue of %s is %s, want %s", project, key, root)
+	}
+	move := func(p *dispatchProcess, issue, parent string) {
+		t.Helper()
+		p.call(t, http.MethodPatch, "/api/v1/issues/"+issue, jsonBody(t, map[string]any{"parent": parent}), http.StatusOK)
+	}
+	approve := func(artifactID string) {
+		t.Helper()
+		current.call(t, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews", `{"state":"approved"}`, http.StatusCreated)
+	}
+	const (
+		earlierLease = "The time for which one session holds one work unit."
+		listedLease  = "The right of one session to one work unit for a time."
+	)
+	level, _ := createDocument(t, current, project, "A level under the root", "# Level\n\nA level of the written account.\n")
+	move(current, level, root)
+	earlier, earlierID := createDocument(t, current, project, "Defines lease outside the root, first", "# Spec\n\n## Terms\n\n- **lease**: "+earlierLease+"\n")
+	approve(earlierID)
+	keeper, keeperID := createDocument(t, current, project, "Defines lease under the root", "# Spec\n\n## Terms\n\n- **lease**: "+listedLease+"\n")
+	move(current, keeper, root)
+	approve(keeperID)
+
+	move(previous, earlier, root)
+	move(previous, keeper, level)
+
+	type specForm struct {
+		Terms    []struct{ Term, Definition, Issue string } `json:"terms"`
+		Findings []struct{ Rule, Detail string }            `json:"findings"`
+	}
+	var read specForm
+	getJSON(t, current, "/api/v1/artifacts/"+keeperID+"/spec-form", &read)
+	if len(read.Terms) != 1 || read.Terms[0].Term != "lease" || read.Terms[0].Issue != keeper || read.Terms[0].Definition != listedLease {
+		t.Errorf("after the %s moved %s under %s and %s under %s, the current build's list is %+v; want lease once, from %s: %q",
+			builds.previousName(), earlier, root, keeper, level, read.Terms, keeper, listedLease)
+	}
+	var moved specForm
+	getJSON(t, current, "/api/v1/artifacts/"+earlierID+"/spec-form", &moved)
+	if want := "spec.md version 1 of " + keeper + " already defines this term."; len(moved.Findings) != 1 || moved.Findings[0].Rule != "term-second-definition" ||
+		!strings.HasPrefix(moved.Findings[0].Detail, want) {
+		t.Errorf("the current build's read of %s, which the %s moved under the root, has findings %+v; want one term-second-definition that starts %q",
+			earlier, builds.previousName(), moved.Findings, want)
 	}
 }
 

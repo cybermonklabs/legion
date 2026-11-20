@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The plugin ships the skill `spec-statement-review`, which a fresh reviewer of a change request of
+  The Spec reads before its approval request. After `dispatch spec-form`, the reviewer names what no
+  program decides: a design principle, a noun of the system with no definition, a term with another
+  meaning, a new term that repeats a defined one, a claim wider than its statement, a statement that
+  only the choice of an agent makes true, and an agent check that a program can decide. The bundled
+  `dispatch spec-form` ends an answer about a document under The Spec with a line that names this
+  reviewer, and the `dispatch_request_approval` tool text names it too.
+custom:
+    Issue: pr4210

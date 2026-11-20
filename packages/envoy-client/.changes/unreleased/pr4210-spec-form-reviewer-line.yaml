@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `dispatch spec-form` ends an answer about a document under The Spec with "Before you request
+  approval, have a fresh reviewer read it with skill://spec-statement-review." With no
+  `--artifact`, the line comes once. `--terms` and `--root` print no such line.
+  Approval refusals keep their structured form findings while document uploads carry the token
+  of the version they replace. In the web app, the findings and suggested change-request reason
+  stay with the approval request while stopped writes retain their original request and Retry.
+custom:
+    Issue: pr4210

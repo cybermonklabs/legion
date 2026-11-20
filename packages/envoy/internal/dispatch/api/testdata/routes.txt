@@ -24,6 +24,7 @@ POST /api/v1/artifacts/{id}/rebuild any
 GET /api/v1/artifacts/{id}/references any
 GET /api/v1/artifacts/{id}/reviews any
 POST /api/v1/artifacts/{id}/reviews any
+GET /api/v1/artifacts/{id}/spec-form any
 GET /api/v1/artifacts/{id}/subscribers any
 DELETE /api/v1/artifacts/{id}/subscribers/{session_id} any
 GET /api/v1/artifacts/{id}/text any

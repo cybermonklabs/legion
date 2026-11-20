@@ -2,7 +2,7 @@
 // constants a statement is assembled from, and the text of such a statement. It carries no
 // build tag and declares no test of its own, and each of those is deliberate.
 //
-// No tag, because its callers are on both sides of one. The eight static guards, and
+// No tag, because its callers are on both sides of one. The nine static guards, and
 // one_expression_guard_test.go beside them, carry `//go:build !race` for what that saves the
 // race job (lock_level_test.go's header says what), while two tests of this package use its
 // declarations untagged and run in the race job: ask_asked_of_test.go:480 normalises a
@@ -12,7 +12,7 @@
 // build and the package's test binary stops compiling.
 //
 // No test, because a test declared here would run wherever this file compiles - the race job
-// included - and the seventeen tests of those nine files are the text-check job's to run, once
+// included - and the eighteen tests of those ten files are the text-check job's to run, once
 // each. What an untagged file of declarations costs the race build is its compile and the one
 // walk the census asks of it: nothing here walks or parses anything until a test calls it.
 
@@ -50,9 +50,9 @@ type moduleSource struct {
 // moduleRoot is the envoy module's root, from this package.
 const moduleRoot = "../../.."
 
-// sharedModuleSources is the module's parsed source, walked once per test binary: five of this
-// package's eight guards and one_expression_guard_test.go read the same files, and the text-check
-// job's step runs all six in one go test. In the race build its one caller is the item-writer
+// sharedModuleSources is the module's parsed source, walked once per test binary: six of this
+// package's nine guards and one_expression_guard_test.go read the same files, and the text-check
+// job's step runs all seven in one go test. In the race build its one caller is the item-writer
 // census, which carries no tag. A failed walk's error is kept and reported by each test that asks
 // for the sources, as the copy-lock guard's graph is.
 var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
@@ -176,6 +176,27 @@ func sqlStatements(file *ast.File, constants map[string]string) []string {
 	for index, statement := range located {
 		statements[index] = statement.statement
 	}
+	return statements
+}
+
+// sqlStatementsIn is sqlStatements over one node of a file of package pkg: a declaration, a
+// function body or one expression, which the census of the writers that open an ask names by the
+// declaration that holds it (askOpeningWriters).
+func sqlStatementsIn(node ast.Node, pkg string, constants map[string]string) []string {
+	var statements []string
+	ast.Inspect(node, func(visited ast.Node) bool {
+		expression, ok := visited.(ast.Expr)
+		if !ok {
+			return true
+		}
+		text, ok := literalText(expression, pkg, constants)
+		if !ok {
+			return true
+		}
+		statements = append(statements, sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "))
+		// The whole concatenation is one statement; its parts are not statements of their own.
+		return false
+	})
 	return statements
 }
 

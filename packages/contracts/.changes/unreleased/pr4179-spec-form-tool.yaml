@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  The `dispatch_spec_form` spec: `issue`, `project`, `artifact`, `version` (an integer from 1),
+  `root` (an issue key, which goes with no other argument) and `ref`. `DispatchServiceErrorShape`
+  gains `findings`, the texts that a `409 SPEC_FORM` refuses, and `changes_reason`, the reason that
+  a person's Request changes sends to the author.
+custom:
+    Issue: pr4179

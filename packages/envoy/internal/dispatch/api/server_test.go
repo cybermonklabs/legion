@@ -61,7 +61,10 @@ type testServerOptions struct {
 	// empty is the deployment that configured neither.
 	newIssueLabel   string
 	newIssueSession string
-	testHooks       bool
+	// specRoots names the roots of The Spec (DISPATCH_SPEC_ROOTS), issue keys separated by commas;
+	// empty is the deployment that names none, whose form gate covers no document.
+	specRoots string
+	testHooks bool
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -294,6 +297,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		DefaultProject:   options.defaultProject,
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
+		SpecRoots:        options.specRoots,
 		ServerURL:        testServerURL,
 		Docs:             documentService,
 		Events:           broker,

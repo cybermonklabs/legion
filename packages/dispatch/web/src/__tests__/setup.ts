@@ -8,6 +8,7 @@ import { configure } from "@testing-library/react";
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
+import { resetFormRefusals } from "../features/doc/form-refusals";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -167,10 +168,12 @@ notifyManager.setScheduler((callback) => callback());
 // (`outstanding-answers.ts`), which would keep the next test's reading column on that ask id.
 // What every draft store kept in the tab's storage goes too, the composers' own with it: their
 // stores go with the test's query client, and the next test's sign-in would take it up.
+// A kept form refusal belongs to its test too, not the next card of that request.
 afterEach(resetReplyDrafts);
 afterEach(resetAnswerDrafts);
 afterEach(resetDraftStorage);
 afterEach(resetOutstandingAnswers);
+afterEach(resetFormRefusals);
 
 // A write a test leaves out keeps writing what it keeps, and the next test's signed-in app would
 // take it up again (`Writes.resume`): each test's are let go, their trying stopped first, since a

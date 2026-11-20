@@ -1,5 +1,5 @@
 {
-  "commands": 37,
+  "commands": 38,
   "refusals": 29,
   "runs": [
     {
@@ -1804,6 +1804,39 @@
       "outcome": "result",
       "text": [
         "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; it reached that session as aside. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
+      ]
+    },
+    {
+      "tool": "dispatch_spec_form",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        },
+        {
+          "method": "GET",
+          "path": "/api/v1/artifacts/01234567-0000-4000-8000-00000000000a/spec-form",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "spec.md version 1:",
+        "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it.",
+        "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review."
       ]
     },
     {

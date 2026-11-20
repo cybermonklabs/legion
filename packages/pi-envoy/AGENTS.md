@@ -9,6 +9,8 @@ A Legion pane also loads `@sjawhar/pi-legion`, which reaches this plugin only th
 
 - `extensions/envoy.ts`: the plugin's one entry.
 
+- `src/skills-guard.test.ts`: guards the twelve staged Envoy skills, including `spec-statement-review`.
+
 - `src/registration-state.ts`: the session's queues, deadlines, and registration and role state.
 
 - `src/envoy-session.ts`: the sessions each top-level instance publishes, through which a `task` subagent finds its parent's reply address.

@@ -16,6 +16,8 @@
 
 - `scripts/build.ts`: builds the plugin's bundles.
 
+- `tests/packed-skills.test.ts`: guards the twelve packed skills, including `spec-statement-review`.
+
 ## Rules
 
 - Nothing commits `dist/` or `legion/`; the release builds them.

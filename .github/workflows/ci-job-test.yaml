@@ -561,6 +561,16 @@ jobs:
       - name: Test the approval-eval statistics
         run: bun test scripts/approval-eval
 
+      - name: Lint the statement review evaluation
+        run: bunx biome check --error-on-warnings scripts/spec-review-eval
+
+      # scripts/spec-review-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the statement review evaluation
+        run: bunx tsc --noEmit -p scripts/spec-review-eval
+
+      - name: Test the statement review evaluation
+        run: bun test scripts/spec-review-eval
+
       # scripts/e2e/lib is no workspace either: its tsconfig.json holds the plan ratings read's
       # test, whose answer is typed to the contract, and the root package pins its TypeScript and
       # Bun types. The test itself runs in this job's bun test of scripts/e2e/lib.

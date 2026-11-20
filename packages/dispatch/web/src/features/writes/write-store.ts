@@ -233,7 +233,8 @@ interface WriteSpecBase<D, K> {
   readonly detail: D;
   readonly label: string;
   readonly presentation: Presentation;
-  readonly inline?: boolean;
+  /** A surface may own all refusals, or only the ones its predicate recognizes. */
+  readonly inline?: boolean | ((refusal: Error) => boolean);
   /** Writes to one target go out in press order: a later one waits while an earlier one is still
    *  being tried. A write of a kind that is made again from its request (no `resume`) is made
    *  from its `request` alone when it names a target. */
@@ -314,6 +315,8 @@ interface Entry {
    *  land on this page, as it does in a browser with no IndexedDB. */
   unkept: boolean;
   readonly endsWithSession: boolean;
+  /** A conditional refusal belongs to the live surface alone, never to one after a reload. */
+  readonly inlineRefusal?: (refusal: Error) => boolean;
 }
 
 const NO_WRITES: readonly Write[] = Object.freeze([]);
@@ -465,6 +468,7 @@ export class Writes {
       expiry: undefined,
       file: spec.file,
       held: false,
+      inlineRefusal: typeof spec.inline === "function" ? spec.inline : undefined,
       keeping: undefined,
       press,
       request: request ?? null,
@@ -474,7 +478,7 @@ export class Writes {
       write: {
         detail: spec.detail,
         id: this.#nextId(),
-        inline: spec.inline ?? false,
+        inline: spec.inline === true,
         joined: this.#nextJoin(),
         key,
         keyed: spec.keyed ?? goesUnderKey(request === undefined ? spec.method : request.method),
@@ -1143,8 +1147,9 @@ export class Writes {
       void askSignInAgain(this.#client);
       return;
     }
-    const write: Write = { ...baseOf(entry.write), refusal, status: "refused" };
-    if (entry.write.inline || entry.write.presentation === "quiet") this.#remove(entry);
+    const inline = entry.inlineRefusal?.(refusal) ?? entry.write.inline;
+    const write: Write = { ...baseOf(entry.write), inline, refusal, status: "refused" };
+    if (inline || entry.write.presentation === "quiet") this.#remove(entry);
     else this.#update(entry, write);
     kinds.get(write.kind)?.undone?.(this.#client, write);
     this.#emit({ kind: "refused", refusal, write });

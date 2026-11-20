@@ -141,6 +141,10 @@
       "types": "./test/omp-natives.ts",
       "bun": "./test/omp-natives.ts"
     },
+    "./test/shared-dispatch-text": {
+      "types": "./test/shared-dispatch-text.ts",
+      "bun": "./test/shared-dispatch-text.ts"
+    },
     "./test/skills-guard": {
       "types": "./test/skills-guard.ts",
       "bun": "./test/skills-guard.ts"

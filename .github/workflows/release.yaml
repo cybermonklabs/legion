@@ -63,6 +63,7 @@ env:
     --patch-path skills/dispatch-first/
     --patch-path skills/dispatch-writing-specs/ --patch-path skills/envoy/
     --patch-path skills/outside-message/ --patch-path skills/plain-words/
+    --patch-path skills/spec-statement-review/
     --patch-path skills/thermonuclear-code-quality/ --patch-path skills/thermonuclear-deep-review/
     --patch-path scripts/third-party-notices.ts --patch-path scripts/pi-plugin-prepack.sh
     --patch-path patches/
@@ -70,7 +71,7 @@ env:
     packages/broker-client/
     skills/agent-secrets/ skills/approval-review/ skills/asd-ste100/ skills/dispatch/
     skills/dispatch-first/ skills/dispatch-writing-specs/ skills/envoy/
-    skills/outside-message/ skills/plain-words/
+    skills/outside-message/ skills/plain-words/ skills/spec-statement-review/
     skills/thermonuclear-code-quality/ skills/thermonuclear-deep-review/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # why: .github/ci-notes/release.md#the-legion-plugins-version-arguments

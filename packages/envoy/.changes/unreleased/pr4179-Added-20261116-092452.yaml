@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  The web app shows the refusal of Dispatch when a document breaks the form of The Spec. On the
+  document header, the refusal of an approval shows under Approve and Request changes. Dispatch
+  refuses the same document until its text changes, so the list of pending changes does not show
+  that refusal again. Request changes then opens with the reason that Dispatch wrote for the
+  author. On an approval card, the refusal selects Request changes. The answer field then holds
+  that reason, an empty line and the note that the person typed. The last line of the refusal on
+  the card then tells the person to choose Answer. After a form refusal, the control that the
+  person pressed has the focus. The header and each card of one request show the same refusal.
+  A reader who moved focus elsewhere keeps it. The author gets the findings with one more press.
+  A refusal that lists its findings shows one finding on each line. A reason field holding form
+  findings grows with its text up to half the window, then scrolls. Other reason fields keep their
+  default shape. A pending approval outside NoTooltips keeps its native disabled control; inside,
+  it keeps focus with aria-disabled. The refusal stays when the page draws its card or header
+  again, as the card in Needs you on the issue page does.
+time: 2026-11-16T09:24:52.029347526Z
+custom:
+    Issue: pr4179

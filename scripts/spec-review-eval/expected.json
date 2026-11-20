@@ -1,0 +1,195 @@
+{
+  "roots": [
+    {
+      "name": "without",
+      "key": "ACME-1",
+      "title": "The inbox of the person, with no digest in its terms",
+      "terms": "terms-without.md"
+    },
+    {
+      "name": "with",
+      "key": "ACME-2",
+      "title": "The inbox of the person, with the digest in its terms",
+      "terms": "terms-with.md"
+    },
+    {
+      "name": "locker",
+      "key": "ACME-3",
+      "title": "The parcel locker, with its list of terms",
+      "terms": "terms-locker.md"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "1-principle",
+      "root": "without",
+      "spec": "1-principle.md",
+      "planted": [{ "kind": "principle", "node": "inbox-simple" }],
+      "mustNotName": [{ "node": "inbox-page-limit" }]
+    },
+    {
+      "id": "2-undefined-noun",
+      "root": "without",
+      "spec": "2-undefined-noun.md",
+      "planted": [{ "kind": "undefined-noun", "node": "daily-digest", "subject": "digest" }],
+      "mustNotName": [{ "node": "answer-closes-ask" }]
+    },
+    {
+      "id": "3-defined-noun",
+      "root": "with",
+      "spec": "2-undefined-noun.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "daily-digest", "subject": "digest" },
+        { "node": "answer-closes-ask" }
+      ]
+    },
+    {
+      "id": "4-other-meaning",
+      "root": "without",
+      "spec": "4-other-meaning.md",
+      "planted": [{ "kind": "other-meaning", "node": "person-session-ends", "subject": "session" }],
+      "mustNotName": [{ "node": "session-in-ask" }]
+    },
+    {
+      "id": "5-repeated-meaning",
+      "root": "without",
+      "spec": "5-repeated-meaning.md",
+      "planted": [{ "kind": "repeated-meaning", "node": "terms", "subject": "agent thread" }],
+      "mustNotName": [{ "node": "read-state-set" }, { "node": "terms", "subject": "read state" }]
+    },
+    {
+      "id": "6-split-checks",
+      "root": "without",
+      "spec": "6-split-checks.md",
+      "verification": "6-split-checks.verification.md",
+      "planted": [{ "kind": "agent-where-program", "node": "v-second-answer-agent" }],
+      "mustNotName": [
+        { "node": "v-second-answer-409" },
+        { "node": "v-summary-meaning" },
+        { "node": "second-answer-refused" },
+        { "node": "summary-says-what" }
+      ]
+    },
+    {
+      "id": "7-check-faults",
+      "root": "locker",
+      "spec": "7-check-faults.md",
+      "planted": [
+        { "kind": "wide-claim", "node": "v-wait-wide" },
+        { "kind": "agent-choice", "node": "agent-runs-tests" },
+        { "kind": "agent-where-program", "node": "v-lockout-agent" }
+      ],
+      "mustNotName": [
+        { "node": "door-writer" },
+        { "node": "kiosk-memory" },
+        { "node": "wait-notice" },
+        { "node": "kiosk-lockout" },
+        { "node": "code-purge" },
+        { "node": "notice-plain" },
+        { "node": "v-door-writer" },
+        { "node": "v-kiosk-memory" },
+        { "node": "v-wait-normal" },
+        { "node": "v-wait-boundary" },
+        { "node": "v-wait-failure" },
+        { "node": "v-lockout-program" },
+        { "node": "v-code-purge" },
+        { "node": "v-notice-plain" }
+      ]
+    },
+    {
+      "id": "8-check-shape-passing",
+      "root": "locker",
+      "spec": "8-check-shape-passing.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "door-writer" },
+        { "node": "kiosk-memory" },
+        { "node": "wait-notice" },
+        { "node": "kiosk-lockout" },
+        { "node": "code-purge" },
+        { "node": "notice-plain" },
+        { "node": "v-door-writer" },
+        { "node": "v-kiosk-memory" },
+        { "node": "v-wait-normal" },
+        { "node": "v-wait-boundary" },
+        { "node": "v-wait-failure" },
+        { "node": "v-lockout-program" },
+        { "node": "v-code-purge" },
+        { "node": "v-notice-plain" }
+      ]
+    },
+    {
+      "id": "9-decided-findings",
+      "root": "locker",
+      "spec": "9-decided-findings.md",
+      "edit": "9-decided-findings.edit.json",
+      "form": [
+        { "kind": "statement", "node": "night-quiet" },
+        { "kind": "definition", "node": "parcel" }
+      ],
+      "planted": [{ "kind": "undefined-noun", "node": "voucher-print", "subject": "voucher" }],
+      "mustNotName": [{ "node": "door-close-sixty" }, { "node": "terms", "subject": "quiet hours" }]
+    },
+    {
+      "id": "10-entry-lines",
+      "root": "without",
+      "spec": "10-entry-lines.md",
+      "planted": [{ "kind": "principle", "node": "inbox-simple" }],
+      "mustNotName": [
+        { "node": "inbox-overdue-first" },
+        { "node": "terms", "subject": "overdue ask" }
+      ]
+    },
+    {
+      "id": "11-command-fails",
+      "root": "without",
+      "spec": "2-undefined-noun.md",
+      "expect": "not-reviewed",
+      "planted": [],
+      "mustNotName": []
+    },
+    {
+      "id": "12-common-nouns",
+      "root": "without",
+      "spec": "12-common-nouns.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "inbox-wait-hours" },
+        { "node": "ask-wait-minutes" },
+        { "node": "summary-days" },
+        { "node": "answer-seconds" }
+      ]
+    },
+    {
+      "id": "13-markup-heading",
+      "root": "locker",
+      "spec": "13-markup-heading.md",
+      "form": [{ "kind": "heading", "node": "\"## **Terms**\"" }],
+      "planted": [
+        { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
+      ],
+      "mustNotName": []
+    },
+    {
+      "id": "14-quoted-blocks",
+      "root": "locker",
+      "spec": "14-quoted-blocks.md",
+      "planted": [],
+      "mustNotName": [
+        { "node": "door-close-60" },
+        { "node": "quoted-calm" },
+        { "node": "quoted-entry" }
+      ]
+    },
+    {
+      "id": "15-code-fence",
+      "root": "locker",
+      "spec": "15-code-fence.md",
+      "planted": [
+        { "kind": "undefined-noun", "node": "door-alarm-start", "subject": "door alarm" }
+      ],
+      "mustNotName": [{ "node": "door-close-60" }]
+    }
+  ]
+}

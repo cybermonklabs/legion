@@ -2138,6 +2138,21 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_SPEC_ROOTS": func(t *testing.T) {
+			// The issue keys of the roots of The Spec, trimmed, and empty when nothing names one.
+			if boot := resolveWith(t, map[string]string{"DISPATCH_SPEC_ROOTS": " ACME-1 "}); boot.SpecRoots != "ACME-1" {
+				t.Errorf("SpecRoots = %q", boot.SpecRoots)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.SpecRoots != "" {
+				t.Errorf("unset: SpecRoots = %q, want no root named", boot.SpecRoots)
+			}
+			// Its reader: the API parses it as the router is built, so a value that is no issue key
+			// refuses startup there, and only once main hands it on.
+			_, err := appContextFor(resolveWith(t, map[string]string{"DISPATCH_SPEC_ROOTS": "acme-1"}), routes.AppContextOptions{Lifetime: t.Context()})
+			if err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+				t.Errorf("DISPATCH_SPEC_ROOTS=acme-1: build the router = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
+			}
+		},
 		"DISPATCH_TEST_EMBEDDER_OFF": func(t *testing.T) {
 			// Azure's own environment, the one shape that builds an embedder with no AWS SDK and
 			// no model service reachable, so the switch is what decides and not the credentials.

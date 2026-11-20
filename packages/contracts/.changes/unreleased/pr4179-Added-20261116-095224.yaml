@@ -1,0 +1,5 @@
+kind: Added
+body: The Dispatch API types carry the 409 SPEC_FORM refusal, spec_form on the answer of an approval request, and the read route GET /api/v1/artifacts/{id}/spec-form.
+time: 2026-11-16T09:52:24.176145532Z
+custom:
+    Issue: pr4179

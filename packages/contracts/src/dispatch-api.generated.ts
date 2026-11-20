@@ -287,7 +287,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human, save that an ask waiting on the human keeps its turn, quietly, over a version a settlement writes that holds byte for byte the text the ask names; a version a route writes (a named version, an upload, an edit) moves it to its agent whatever text it holds. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. A request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec (DISPATCH_SPEC_ROOTS). A second definition of a term of the root's list of terms breaks it too. The refusal names each text and its rule. spec_form says what Dispatch read in a covered document. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -477,8 +477,25 @@ export interface paths {
     /** @description List a document's approval reviews. */
     get: operations["getApiV1ArtifactsByIdReviews"];
     put?: never;
-    /** @description Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. */
+    /** @description Approve or request changes on a document's latest settled version; answers the open approval ask when present, preserving its thread, and reviews every document that ask named. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused. */
     post: operations["postApiV1ArtifactsByIdReviews"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/artifacts/{id}/spec-form": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Read the form of The Spec in one version of a document, with no side effect: ?version=N, or the latest settled version. The answer names the scope, the root, the part the document plays, the count of each kind of text and each finding. It also names the list of terms of the root. The scope is covered, list, no_root, root, outside or not_spec. It lists the findings of a document out of scope too. refuses_approval says if Dispatch refuses an approval request or an approval of that version. A version that the document does not have is 404 VERSION_NOT_FOUND. */
+    get: operations["getApiV1ArtifactsByIdSpecForm"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -579,7 +596,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. */
+    /** @description Approve or request changes on one version of a document {state, reason?}: {number} is the version the caller read, and the route requires it. The review is recorded only when {number} is the version it would record, the document's latest settled version or, with an approval ask open, the version that ask names for the document; any other is 409 REVIEW_VERSION_MOVED, naming the version the review would record, with nothing written, and a {number} that is not a whole number of 1 or more is 400 INVALID_REVIEW. With an approval ask open the review answers it, preserving its thread, and reviews every document the ask named, each at the version the ask names. This is the route a client sends when the version is a guard: a build without it answers no route, rather than recording the review without the guard. An approval is 409 SPEC_FORM when a text of a covered document that it reviews breaks the form of The Spec. Its changes_reason is the text that a request for changes sends to the author. A request for changes is never refused. */
     post: operations["postApiV1ArtifactsByIdVersionsByNumberReviews"];
     delete?: never;
     options?: never;
@@ -631,7 +648,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Answer an ask with selected options and/or text. */
+    /** @description Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec. */
     post: operations["postApiV1AsksByIdAnswer"];
     delete?: never;
     options?: never;
@@ -1372,7 +1389,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens those asks again. The exception is a withdrawn approval request whose covered document breaks the form of The Spec. That request stays resolved, with resolution kind resolved and the findings as its reason. The reopen still answers 200. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -3322,6 +3339,7 @@ export interface components {
       ask: components["schemas"]["AskWithTrees"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
+      spec_form?: components["schemas"]["SpecFormSummary"];
       version: number;
     };
     ApproverGrantResp: {
@@ -6480,6 +6498,54 @@ export interface components {
       method: string;
       path: string;
     };
+    SpecFormError: {
+      changes_reason?: string;
+      code: string;
+      error: string;
+      findings: components["schemas"]["SpecFormFinding"][] | null;
+      findings_total: number;
+    };
+    SpecFormFinding: {
+      artifact_id: string;
+      detail: string;
+      document: string;
+      excerpt: string;
+      kind: string;
+      node: string;
+      rule: string;
+      version: number;
+      where: string;
+    };
+    SpecFormRead: {
+      artifact_id: string;
+      findings: components["schemas"]["SpecFormFinding"][] | null;
+      findings_total: number;
+      in_scope: boolean;
+      name: string;
+      plays: string;
+      refuses_approval: boolean;
+      root: null | string;
+      scope: string;
+      terms: components["schemas"]["SpecFormTerm"][] | null;
+      texts: {
+        [key: string]: number;
+      } | null;
+      version: number;
+    };
+    SpecFormSummary: {
+      root: string;
+      terms: number;
+      texts: {
+        [key: string]: number;
+      } | null;
+    };
+    SpecFormTerm: {
+      definition: string;
+      document: string;
+      issue: string;
+      term: string;
+      version: number;
+    };
     StandingReview: {
       /** Format: date-time */
       at: string;
@@ -7564,6 +7630,15 @@ export interface operations {
           "application/json": components["schemas"]["ApprovalRequestResponse"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecFormError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8094,6 +8169,50 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactReview"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecFormError"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ArtifactsByIdSpecForm: {
+    parameters: {
+      query?: {
+        version?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecFormRead"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8311,6 +8430,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactReview"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecFormError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8454,6 +8582,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SpecFormError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -15182,6 +15319,11 @@ export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type SpecFormError = components["schemas"]["SpecFormError"];
+export type SpecFormFinding = components["schemas"]["SpecFormFinding"];
+export type SpecFormRead = components["schemas"]["SpecFormRead"];
+export type SpecFormSummary = components["schemas"]["SpecFormSummary"];
+export type SpecFormTerm = components["schemas"]["SpecFormTerm"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];

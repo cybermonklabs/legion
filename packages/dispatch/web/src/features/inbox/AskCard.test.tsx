@@ -12,6 +12,7 @@ import { dwellOn, installIntersectionObserver } from "../../__tests__/intersecti
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
+import { specFormRefusal, specFormRefusalBody } from "../../__tests__/spec-form-fixture";
 import { ApiError, api } from "../../api/client";
 import { askThreadQuery, myRepliesOwnerQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
@@ -27,7 +28,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
-import { answerDraft } from "./answer-drafts";
+import { answerDraft, setAnswerDraft } from "./answer-drafts";
 import {
   answeredAsk,
   firstAnswer,
@@ -570,6 +571,56 @@ function approvalAsk(approval: Partial<NonNullable<Ask["approval"]>> = {}): Ask 
     state: "open",
   });
 }
+
+// The form refusal is a verdict on the press's document, not on whichever ask a host draws
+// while it waits. Its reason follows that ask's draft and survives drawing that card again.
+test("a form refusal after the card moves keeps its reason on the approval it was pressed on", async () => {
+  const user = userEvent.setup();
+  const open = approvalAsk();
+  const next: Ask = {
+    ...approvalAsk({ artifact_id: "artifact-2", name: "plan.md" }),
+    id: "ask-2",
+    question: "Approve plan.md (version 12)?",
+  };
+  const refused = Promise.withResolvers<Ask>();
+  const answerAsk = () => refused.promise;
+  const cardOf = (ask: Ask) => (
+    <AskCard answerAsk={answerAsk} ask={ask} initialThread={thread(ask, [])} />
+  );
+  const { rerender, view } = renderCard(cardOf(open));
+  const card = within(view.container);
+  try {
+    await user.click(await card.findByRole("radio", { name: "Approve" }));
+    await user.click(card.getByLabelText("Reason"));
+    await user.paste("First note");
+    await user.click(card.getByRole("button", { name: "Answer" }));
+
+    setAnswerDraft(next.id, "Second note");
+    rerender(cardOf(next));
+    await act(async () => refused.reject(specFormRefusal()));
+    await waitFor(() =>
+      expect(answerDraft(open.id)).toBe(`${specFormRefusalBody.changes_reason}\n\nFirst note`)
+    );
+    expect(answerDraft(next.id)).toBe("Second note");
+    expect(card.queryByRole("alert")).toBeNull();
+    expect(card.getByRole("radio", { name: "Request changes" })).not.toBeChecked();
+
+    rerender(cardOf(open));
+    expect(await card.findByRole("alert")).toHaveTextContent(
+      "To send these findings to the author, choose Answer."
+    );
+    expect(card.getByRole("radio", { name: "Request changes" })).toBeChecked();
+    expect(card.getByLabelText("Reason (required)")).toHaveValue(
+      `${specFormRefusalBody.changes_reason}\n\nFirst note`
+    );
+    expect(card.getByLabelText("Reason (required)")).toHaveClass(
+      "field-sizing-content",
+      "max-h-[50vh]"
+    );
+  } finally {
+    view.unmount();
+  }
+});
 
 /** `getArtifactVersion` answering `versions[n]` as version n's markdown. */
 function mockVersions(versions: Record<number, string>) {

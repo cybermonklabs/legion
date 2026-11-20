@@ -6,6 +6,7 @@ import type {
   EditPreconditionCurrent,
   EditPreconditionMismatch,
   IssueDetails,
+  SpecFormFinding,
   TargetCandidate,
   WriteAdvice,
 } from "./dispatch-api.generated";
@@ -113,6 +114,10 @@ export interface DispatchServiceErrorShape {
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** The texts a `409 SPEC_FORM` refuses, at most 500 (`SpecFormError`). */
+  readonly findings?: SpecFormFinding[] | null;
+  /** On a person's refused approval, the reason a Request changes sends to the author. */
+  readonly changes_reason?: string;
 }
 
 /** How the message of a Dispatch process's `404 NOT_FOUND` starts when the process has no route for

@@ -1,0 +1,16 @@
+kind: Added
+body: |-
+  `dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The
+  Spec in one version of a document, as an approval request would judge it, and writes nothing:
+  each statement, check, component purpose and term that breaks the form, with its rule, or what
+  Dispatch read. A document that no root of The Spec covers says why Dispatch refuses nothing for
+  it, and still lists its findings. Its first line counts the texts that break the form. With no
+  `--artifact`, the command reads the spec and the Verification document of the issue. A key
+  that names no issue prints `NOT_FOUND: not found` and exits 1, as `dispatch read` does.
+  `dispatch spec-form --root <KEY>` lists each issue under that
+  root, with the form of its spec and its Verification document. `dispatch request-approval` prints
+  a refusal for the form as `SPEC_FORM: <the refusal>` and exits 1, and the `DispatchServiceError`
+  it throws carries `findings` and `changesReason`. A request that Dispatch records ends with one
+  line on the form when a root of The Spec covers the document.
+custom:
+    Issue: pr4179

@@ -400,6 +400,16 @@ func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, 
 	return pending.markdown, true
 }
 
+// PendingVersionMarkdown is the text of the version ctx has queued in tx, before its write phase
+// stores it. A reader of another transaction, or of a version this one did not queue, reads the
+// stored row instead.
+func PendingVersionMarkdown(ctx context.Context, tx pgx.Tx, artifactID string, number int) (string, bool) {
+	if ledger := queueFor(ctx, tx); ledger != nil {
+		return ledger.PendingVersionMarkdown(artifactID, number)
+	}
+	return "", false
+}
+
 // PendingVersionNumber is the number of the version of artifactID this transaction last numbered
 // and queued and has not written yet: the document's newest, since the table holds the row only
 // once Commit has run the queue, so a reader before Commit that answers for the document as this

@@ -341,6 +341,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/shell.e2e.ts` | the server must revoke the session |
 | `e2e/signins.e2e.ts` | the broker's machine list and a Revoke decided there |
 | `e2e/smoke.e2e.ts` | the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami |
+| `e2e/spec-form.e2e.ts` | the server's refusal of an approval for the form of The Spec is the assertion, read through the real `dispatch` command and the page |
 | `e2e/spec-suggestion-decoration.e2e.ts` | reads the decoration's DOM inside the live editor |
 | `e2e/steps.e2e.ts` | the attempt is the server's count of the daemon's writes, and a start written twice keeps the server's first |
 | `e2e/stored-text-reading.e2e.ts` | each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes |

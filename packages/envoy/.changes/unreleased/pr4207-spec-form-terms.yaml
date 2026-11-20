@@ -1,0 +1,28 @@
+kind: Added
+body: |-
+  Dispatch refuses an approval request and a person's approval that hold a second definition of a
+  term of The Spec. A reopen and the repair pass leave such a request resolved, with the finding as
+  its reason. The list of terms of a root holds the term lines of the versions that a person
+  approved. These are the root's terms.md and each covered spec and Verification document under the
+  root. The list holds one definition of each term. The root's terms.md comes first. Each other
+  document comes in the order in which it joined the list. It joins at the later of its first
+  approval and the move that last brought its issue under the root. Dispatch reads that move from
+  the events of the issues, which each release writes for each move. So a move into the root, or
+  inside it, changes no definition that the list holds, whichever release made the move. The read
+  of the other document names the listed one. When the document that the list keeps a term from
+  leaves the root, the list holds the definition that joined next. Dispatch compares the names of
+  terms in the caseless form that Unicode defines for identifiers (NFKC_Casefold), with each run of
+  spaces as one space. After that form, a name holds only the letters a to z, the digits 0 to 9,
+  spaces and hyphens. A name with another character breaks the form. A person's approval and a
+  move into a root take the lock of the root's list. So two writes at one time cannot both add a
+  definition of one term. The finding names the term and the document that defines it. A
+  definition with no sentence, or with more than one, also breaks the form, and a sentence holds a
+  word with a letter. A line under a heading Terms that is no term line "- **<term>**:
+  <definition>" breaks it too. So does a heading that reads as Terms in another form, such as
+  "## TERMS" or "## Terms:". A line of the term-line form under another heading, or under none, is
+  a definition too. It adds no term, and it breaks the form when it names a term of the list. GET
+  /api/v1/artifacts/{id}/spec-form answers the list of terms of the document's root.
+  A carried approval judges the text its transaction has queued before that version is stored.
+  A broken version still settles, but takes no carried approval.
+custom:
+    Issue: pr4207

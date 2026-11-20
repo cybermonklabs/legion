@@ -1,7 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
-import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
+import {
+  api,
+  type CreateArtifactReviewInput,
+  isCapExceeded,
+  isSpecFormRefusal,
+} from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
@@ -14,6 +19,7 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
+  growingField,
   inputClasses,
   pageFailedText,
   pageHairBorder,
@@ -43,6 +49,16 @@ import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import {
+  approvalRefusalKey,
+  type FormRefusalPress,
+  focusIsFreeFor,
+  pressOn,
+  setFormRefusal,
+  takeFormRefusalFocus,
+  useFormRefusal,
+  useRefusalSurface,
+} from "./form-refusals";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
@@ -207,22 +223,31 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  initialReason = "",
   onClose,
   onSubmit,
   saving,
 }: {
-  /** What the server answered the last request with, or null while none was refused. */
+  /** What the server answered the last request for changes with, or null while none was
+   *  refused. */
   error: Error | null;
+  /** The reason the field opens with: what Dispatch wrote for the author when it refused the
+   *  person's approval for the form of The Spec, else nothing. */
+  initialReason?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
   saving: boolean;
 }): ReactNode {
-  const [reason, setReason] = useState("");
+  const [reason, setReason] = useState(initialReason);
   const reasonId = useId();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
   const trimmed = reason.trim();
+  const reasonShape =
+    initialReason === ""
+      ? "mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none"
+      : `mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none ${growingField}`;
 
   return (
     <>
@@ -253,8 +278,12 @@ function RequestChangesDialog({
                 submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
                 the body in a browser, and Tab would then leave the dialog. Outside both are
                 `disabled` while the write is out, as on `main`. */}
+            {/* A form refusal's reason grows with its text up to half the window (`growingField`),
+                so the reason that Dispatch wrote shows whole, not in two lines; ordinary reasons
+                keep their default shape. `min-h-14!` keeps the findings field two lines tall over
+                styles.css's unlayered touch floor. */}
             <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
+              className={`${reasonShape} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
               disabled={page === null && saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -373,6 +402,7 @@ export interface ApprovalChipProps {
 interface DocumentReview {
   readonly artifact: Artifact;
   readonly input: CreateArtifactReviewInput;
+  readonly refusalPress?: FormRefusalPress;
 }
 
 /**
@@ -396,12 +426,24 @@ export function ApprovalChip({
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
+  // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
+  // the actions, and the reason it wrote for the author is what Request changes opens with. It is
+  // kept for the request of this document (`form-refusals.ts`), which each card of the request
+  // reads too, so a refusal in the header shows in those cards and theirs shows here, for the
+  // version that Approve approved. It holds the press, so the focus goes back to the place where
+  // the person pressed.
+  const formRefusalKey = approvalRefusalKey(artifact.id);
+  const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
+  const refusalSurface = useRefusalSurface();
+  const chipRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
 
   const review = useKeyedWrite({
+    // Only the form refusal belongs here; other refusals keep the indicator's Retry.
+    inline: ({ input }, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
     // The press carries the document it reviews: the indicator names it, the route takes its id,
     // and the reads made again are its own, from the press rather than from the render the write
     // runs under.
@@ -411,7 +453,13 @@ export function ApprovalChip({
     method: "POST",
     write: ({ artifact: reviewed, input }, bounds) =>
       api.createArtifactReview(reviewed.id, input, bounds),
+    onError: (error, { artifact: reviewed, refusalPress }) => {
+      if (isSpecFormRefusal(error) && refusalPress !== undefined) {
+        setFormRefusal(approvalRefusalKey(reviewed.id), { error, press: refusalPress });
+      }
+    },
     onSuccess: (_result, { artifact: reviewed }) => {
+      setFormRefusal(approvalRefusalKey(reviewed.id), undefined);
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
@@ -474,6 +522,14 @@ export function ApprovalChip({
     if (sentButton.current === null && focusOnDocument()) chipButton.current?.focus();
   }, [sentReview, review.isPending, requestChangesOpen]);
 
+  // A form verdict returns focus to its press after the write ends. Outside `NoTooltips` the
+  // pending control is disabled, as on main, so it cannot take focus before then. A reader who
+  // moved elsewhere keeps that focus, and another header of the same document takes none.
+  useEffect(() => {
+    if (formRefusal === undefined || review.isPending) return;
+    if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
+    if (focusIsFreeFor(chipRef.current)) approveButton.current?.focus();
+  }, [formRefusal, formRefusalKey, refusalSurface, review.isPending]);
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -496,6 +552,7 @@ export function ApprovalChip({
   return (
     <div
       className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
+      ref={chipRef}
     >
       <button
         aria-haspopup="dialog"
@@ -524,6 +581,7 @@ export function ApprovalChip({
               // Inside `NoTooltips`, while the write is out, Approve is `aria-disabled` and a press
               // of it does nothing, so it keeps the focus: a `disabled` button drops it to the
               // body in a browser. Outside it is `disabled` while the write is out, as on `main`.
+              // On both sides a form refusal gives the focus back to Approve once the write ends.
               aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
@@ -538,7 +596,12 @@ export function ApprovalChip({
                 }
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
-                  review.mutate({ artifact, input: { state: "approved" } });
+                  setFormRefusal(formRefusalKey, undefined);
+                  review.mutate({
+                    artifact,
+                    input: { state: "approved" },
+                    refusalPress: pressOn(refusalSurface, approval.latest_version),
+                  });
                 });
               }}
               ref={approveButton}
@@ -572,6 +635,14 @@ export function ApprovalChip({
           >
             {requestChangesLabel}
           </button>
+          {formRefusal === undefined ? null : (
+            <p
+              className={`basis-full min-w-0 text-sm whitespace-pre-line [overflow-wrap:anywhere] ${dangerText}`}
+              role="alert"
+            >
+              {formRefusal.message}
+            </p>
+          )}
         </ActionsGroup>
       ) : null}
       {reviewsOpen ? (
@@ -579,7 +650,10 @@ export function ApprovalChip({
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
-          error={review.isError ? review.error : null}
+          // A form refusal is shown under the actions. Other failures, including an Approve
+          // stopped before Dispatch's verdict, remain visible when the dialog opens.
+          error={review.isError && !isSpecFormRefusal(review.error) ? review.error : null}
+          initialReason={formRefusal?.changesReason}
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel

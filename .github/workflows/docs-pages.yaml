@@ -194,6 +194,8 @@ on:
       - 'packages/envoy/internal/dispatch/routes/*'
       - 'packages/envoy/internal/dispatch/sessionanswers/*'
       - 'packages/envoy/internal/dispatch/startup/*'
+      - 'packages/envoy/internal/dispatch/specform/*'
+      - 'packages/envoy/internal/dispatch/specform/ste/*'
       - 'packages/envoy/internal/dispatch/store/*'
       - 'packages/envoy/internal/dispatch/store/migrations/**'
       - 'packages/envoy/internal/dispatch/text/*'

@@ -4,6 +4,7 @@ Each directory here is one skill that Oh My Pi sessions load.
 `scripts/pi-plugin-prepack.sh` puts each skill in exactly one plugin, `@sjawhar/pi-envoy` or `@sjawhar/pi-legion`.
 A new skill joins one list there and that plugin's version arguments in `.github/workflows/release.yaml` (`PI_ENVOY_VERSION_ARGS` or `PI_LEGION_VERSION_ARGS`).
 A Legion pane installs both plugins; any other session has only the skills of `@sjawhar/pi-envoy`.
+`spec-statement-review/` is one of the twelve skills staged for `@sjawhar/pi-envoy` and the Claude Code plugin.
 
 ## What a skill holds
 

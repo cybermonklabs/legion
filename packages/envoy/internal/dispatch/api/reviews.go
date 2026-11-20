@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -506,6 +507,14 @@ func (s *server) queueApprovalReviews(
 ) (*model.ArtifactReview, []*model.Event, error) {
 	named := new(model.ArtifactReview)
 	appended := make([]*model.Event, 0, len(documents))
+	// The form of The Spec, call site 2 (spec_form.go): an approval of a covered document whose
+	// text breaks the form is refused, at the versions this review records. A request for changes
+	// is never refused.
+	if state == "approved" {
+		if _, err := s.refuseSpecForm(ctx, tx, documents, specform.ActApproval); err != nil {
+			return nil, nil, err
+		}
+	}
 	for _, document := range documents {
 		reviewed, review := artifact, named
 		if document.ArtifactID != artifact.ID {
@@ -554,6 +563,9 @@ type approvalRequestResponse struct {
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.
 	CoverageUnread bool `json:"coverage_unread,omitempty"`
+	// SpecForm is what Dispatch read of the form of The Spec in the documents this request hands
+	// the person, when the document it names is in scope (spec_form.go); absent otherwise.
+	SpecForm *specFormSummary `json:"spec_form,omitempty"`
 }
 
 // POST /api/v1/artifacts/{id}/approval-requests  {summary?, include_verification?}  (any
@@ -693,6 +705,20 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The form of The Spec, call site 1 (spec_form.go), judged at the versions this request
+	// hands the person: the documents it names, or, with a request open, every document the open
+	// request names at the version the row records, which a hand-back hands back
+	// (handBackApprovalAsk), and any document this request adds. It comes after the settled
+	// branch above, which opens nothing.
+	judged := documents
+	if open != nil {
+		judged = renewedApprovalDocuments(open.Approval.Documents, documents)
+	}
+	form, err := s.refuseSpecForm(r.Context(), tx, judged, specform.ActRequest)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The person this request reaches, named on the answer as the question create names it
 	// (createAskFor in api/asks.go): read here in the read phase, under the owner's lock, through
 	// the rule every read of that person shares, before the insert or the hand-back below is
@@ -765,7 +791,8 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
 		Approval:       newArtifactApprovalRead(approval, trees),
 		Coverage:       coverage,
-		CoverageUnread: coverageUnread})
+		CoverageUnread: coverageUnread,
+		SpecForm:       form.summary(artifact.ID)})
 }
 
 // approvalAfterRequest is the document's approval as this request's writes leave it: the approval
