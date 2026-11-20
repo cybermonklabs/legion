@@ -348,3 +348,86 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 		})
 	}
 }
+
+// The jj wrapper reads git.executable-path from the repository the push would use, wherever the
+// caller names it. clap takes `-R` and `--repository` after `git push` as well as before it, the
+// last of them names the repository, and `-R=<path>` names <path>. The read once took the
+// repository only from in front of `git push`, and kept a `-R=<path>` as the path `=<path>`: a
+// `jj git push -R <a repository whose own configuration names another git>` then read the
+// configuration of the directory it ran in, or failed and was taken for an unset value, and the
+// push went through that other git, with no pre-push hook and so no leak check. jj answers `git`
+// when nothing sets the value, so a read that fails is an error, and the wrapper refuses it.
+func TestTheJJWrapperReadsTheRepositoryThePushWouldUse(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The git wrapper, under the name and in the directory the jj wrapper looks for on PATH.
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv")),
+	})
+	script := wrapperCopy(t, dir, "jj",
+		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+	)
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+	// plain names no git of its own and has the remote a real push has, so a push from it runs to
+	// jj's "Nothing changed." under jj 0.45 and 0.46 alike and runs no git.
+	plain := filepath.Join(dir, "plain")
+	run.Run(dir, fixturegit.JJInit(plain, false)...)
+	remote := filepath.Join(dir, "remote.git")
+	run.Run(dir, fixturegit.InitBare(remote, "")...)
+	run.Run(plain, "jj", "git", "remote", "add", "origin", remote)
+	// another names another git in its own configuration.
+	another := filepath.Join(dir, "another")
+	run.Run(dir, fixturegit.JJInit(another, false)...)
+	run.Run(another, "jj", "config", "set", "--repo", "git.executable-path", "/usr/bin/git")
+	configFile := filepath.Join(dir, "another.toml")
+	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each command runs in dir, which is no repository, as a push of another directory's
+	// repository does.
+	for _, tc := range []struct {
+		name string
+		args []string
+		// names is what a refusal must name; empty where the wrapper must run the push.
+		names string
+	}{
+		{name: "a -R after git push naming a repository that names another git", args: []string{"git", "push", "-R", another}, names: "/usr/bin/git"},
+		{name: "a --repository= after git push naming that repository", args: []string{"git", "push", "--repository=" + another}, names: "/usr/bin/git"},
+		{name: "a -R= in front of git push naming that repository", args: []string{"-R=" + another, "git", "push"}, names: "/usr/bin/git"},
+		{name: "a second -R, the last, naming that repository", args: []string{"-R", plain, "git", "push", "-R", another}, names: "/usr/bin/git"},
+		{name: "a --config-file= after git push naming another git", args: []string{"git", "push", "-R", plain, "--config-file=" + configFile}, names: "/usr/bin/git"},
+		{name: "a -R naming no repository", args: []string{"git", "push", "-R", filepath.Join(dir, "nowhere")}, names: "could not read"},
+		{name: "a second -R, the last, naming a repository that names no git", args: []string{"-R", another, "git", "push", "-R", plain}},
+		{name: "a -R after git push naming a repository that names no git", args: []string{"git", "push", "-R", plain}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := run.Try(dir, append([]string{script}, tc.args...)...)
+			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
+			if refused != (tc.names != "") {
+				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, tc.names != "", err, out)
+			}
+			if tc.names == "" {
+				if err != nil {
+					t.Fatalf("the wrapper did not run the push: %v\n%s", err, out)
+				}
+				return
+			}
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
+				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
+			}
+			if !strings.Contains(out, tc.names) {
+				t.Fatalf("the refusal does not name %q:\n%s", tc.names, out)
+			}
+		})
+	}
+}
