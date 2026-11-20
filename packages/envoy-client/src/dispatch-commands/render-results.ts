@@ -19,8 +19,10 @@ const BRIEF_READING_CHARACTERS = 200;
  *  no_pull_request_or_branch, so the check's set types this map and answers both. Each takes the
  *  repository the answer is about where the server names one (`repo`): a result whose commit is
  *  taken to be of a repository the issue links a pull request in is decided by that repository,
- *  and "the repository" would read as the issue's own. Keyed by the reason, so a reason the
- *  contract adds is a type error until it has words here; `reasonText` reads it. */
+ *  and "the repository" would read as the issue's own. Keyed by `compared_nothing`'s reasons, so a
+ *  reason the contract adds to that union is a type error until it has words here; one it adds to
+ *  the result's `commit_stands.reason` alone is not, and `reasonText` prints it by its code, as it
+ *  prints any reason this build has no words for. */
 const COMPARISON_REASONS: Readonly<
   Record<NonNullable<CheckBlock["compared_nothing"]>, (repo: string | undefined) => string>
 > = {
@@ -38,10 +40,12 @@ function isComparisonReason(reason: string): reason is keyof typeof COMPARISON_R
   return Object.hasOwn(COMPARISON_REASONS, reason);
 }
 
-/** `reason` in words, naming `repo` where the server names the repository the answer is about,
- *  or the reason as the server gave it where this build has no words for it. */
+/** `reason` in words, naming `repo` where the server names the repository the answer is about.
+ *  A reason this build has no words for is printed as the server gave it, with that repository
+ *  beside it in parentheses, so the answer still says which repository it is about. */
 function reasonText(reason: string, repo?: string): string {
-  return isComparisonReason(reason) ? COMPARISON_REASONS[reason](repo) : reason;
+  if (isComparisonReason(reason)) return COMPARISON_REASONS[reason](repo);
+  return repo === undefined ? reason : `${reason} (${repo})`;
 }
 
 /** When Dispatch learned a pull request's head, and which time that is: `read_at` is Dispatch's

@@ -8448,10 +8448,14 @@ describe("executeDispatchTool", () => {
   });
 
   // A reason is the server's to add, so a later server can give one this build has no words for.
-  // The reading then names that reason by its own code, with the repository the answer is about or
-  // without, for a result's commit and for a check that compared with nothing alike, rather than
-  // printing "undefined" or failing the whole read.
-  test("dispatch_results names a reason it has no words for by the reason's own code", async () => {
+  // The reading then names that reason by its own code, for a result's commit and for a check that
+  // compared with nothing alike, rather than printing "undefined" or failing the whole read; and
+  // where the server names the repository the answer is about, the repository in parentheses
+  // beside it, as a reason the reading words names it.
+  //
+  // The negative control is the code alone, which prints "rate_limited" for the result whose
+  // answer names acme/tools.
+  test("dispatch_results names a reason it has no words for by the reason's own code, with its repository", async () => {
     const [check] = threeResults.checks;
     const implementer = check.results[2];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -8502,7 +8506,7 @@ describe("executeDispatchTool", () => {
         .filter((line) => line.startsWith("  - pass by implementer"))
         .map((line) => line.split(". ")[1])
     ).toEqual([
-      "Where that commit stands is not known: rate_limited",
+      "Where that commit stands is not known: rate_limited (acme/tools)",
       "Where that commit stands is not known: rate_limited",
     ]);
     expect(lines).toContain(

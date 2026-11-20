@@ -383,12 +383,13 @@ func NewDeps(input DepsInput) (Deps, error) {
 }
 
 // ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
-// trimmed, and its repository is read as a mapping's path is (refs.ParseExternalRepo:
-// lower-cased and one trailing `.git` trimmed, and refused with a space in it, so `acme/x =KEY`
-// is refused), and the name it reads is held to the names GitHub allows
-// (refs.SplitGitHubRepo), as the settings route holds the name it stores, so the seed stores no
-// mapping the route refuses: `acme/.git=KEY`, which reads as `acme/`, a mapping no request
-// reaches, or `acme/..=KEY`. Such an entry is refused, naming it, and the boot with it.
+// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
+// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
+// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
+// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
+// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
+// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
+// with the form an entry takes.
 func ParseRepoProjects(raw string) (map[string]string, error) {
 	projects := make(map[string]string)
 	if strings.TrimSpace(raw) == "" {
@@ -401,13 +402,14 @@ func ParseRepoProjects(raw string) (map[string]string, error) {
 		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		canonical, ok := refs.ParseExternalRepo(repo)
-		if !ok {
+		owner, name, err := refs.ParseGitHubRepo(repo)
+		switch {
+		case errors.Is(err, refs.ErrNotGitHubRepo):
+			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
+		case err != nil:
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		if _, _, err := refs.SplitGitHubRepo(canonical); err != nil {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
-		}
+		canonical := owner + "/" + name
 		if _, exists := projects[canonical]; exists {
 			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
 		}

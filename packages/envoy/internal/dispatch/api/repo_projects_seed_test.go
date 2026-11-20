@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -211,21 +213,26 @@ func TestSeedRepoProjectsRejectsMissingProject(t *testing.T) {
 // mapping's path, after it reads the name as that route does (lower-cased, one trailing `.git`
 // trimmed): `acme/.git=KEY` reads as `acme/`, a mapping no request reaches, and `acme/..=KEY` as
 // a dot segment, and each is refused, naming the entry, so the boot stops rather than store it. A
-// managed user's login, `mona-cat_octo`, is a name GitHub allows and is taken.
+// managed user's login, `mona-cat_octo`, is a name GitHub allows and is taken. A refusal by that
+// rule carries the rule's own words (refs.ErrNotGitHubRepo), and an entry the reading cannot read
+// says the form an entry takes.
 //
-// The negative control is the seed without that rule, which takes `acme/.git=KEY` as `acme/`,
-// `acme/..=KEY` as `acme/..` and `acme/...git=KEY` as `acme/..`.
+// The negative controls are the seed without that rule, which takes `acme/.git=KEY` as `acme/`,
+// `acme/..=KEY` as `acme/..` and `acme/...git=KEY` as `acme/..`, and a seed that words both
+// refusals alike.
 func TestParseRepoProjectsRefusesANameTheSettingsRouteRefuses(t *testing.T) {
 	for _, row := range []struct {
 		raw  string
 		want map[string]string
+		// ruled is a refusal by GitHub's naming rule, of an entry the reading took.
+		ruled bool
 	}{
 		{raw: "mona-cat_octo/x=KEY", want: map[string]string{"mona-cat_octo/x": "KEY"}},
 		{raw: "Acme/Widgets.git=KEY", want: map[string]string{"acme/widgets": "KEY"}},
-		{raw: "acme/.git=KEY"},
-		{raw: "acme/..=KEY"},
-		{raw: "acme/...git=KEY"},
-		{raw: "acme/widgets=KEY,acme/.git=KEY"},
+		{raw: "acme/.git=KEY", ruled: true},
+		{raw: "acme/..=KEY", ruled: true},
+		{raw: "acme/...git=KEY", ruled: true},
+		{raw: "acme/widgets=KEY,acme/.git=KEY", ruled: true},
 		// A space before the `=` stays in the name, as it did when the seed read the entry as a
 		// reference, so the entry is refused, and one around the whole entry is trimmed.
 		{raw: "acme/x =KEY"},
@@ -241,6 +248,10 @@ func TestParseRepoProjectsRefusesANameTheSettingsRouteRefuses(t *testing.T) {
 		entries := strings.Split(row.raw, ",")
 		if refused := entries[len(entries)-1]; err == nil || !strings.Contains(err.Error(), `"`+refused+`"`) {
 			t.Errorf("ParseRepoProjects(%q) = %v, %v; want a refusal naming %q", row.raw, got, err, refused)
+			continue
+		}
+		if ruled := errors.Is(err, refs.ErrNotGitHubRepo); ruled != row.ruled || ruled == strings.Contains(err.Error(), "(expected owner/repo=KEY)") {
+			t.Errorf("ParseRepoProjects(%q) refused it with %v; want the naming rule's words %v, else the form an entry takes", row.raw, err, row.ruled)
 		}
 	}
 }

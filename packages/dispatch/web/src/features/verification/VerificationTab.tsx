@@ -52,8 +52,10 @@ const PASS_STANDS_TEXT: Record<CheckBlock["pass_stands"]["answer"], string> = {
  *  check's set types this map and answers both. Each takes the repository the answer is about
  *  where the server names one (`repo`): a result whose commit is taken to be of a repository the
  *  issue links a pull request in is decided by that repository, and "the repository" would read
- *  as the issue's own. Keyed by the reason, so a reason the contract adds is a type error until
- *  it has words here; `reasonWords` reads it. */
+ *  as the issue's own. Keyed by `compared_nothing`'s reasons, so a reason the contract adds to
+ *  that union is a type error until it has words here; one it adds to `ResultCommitStands.reason`
+ *  alone is not, and `reasonWords` shows it by its code, as it shows any reason this build has no
+ *  words for. */
 const REASON_WORDS: Record<
   NonNullable<CheckBlock["compared_nothing"]>,
   (repo: string | undefined) => string
@@ -72,10 +74,12 @@ function isKnownReason(reason: string): reason is keyof typeof REASON_WORDS {
   return Object.hasOwn(REASON_WORDS, reason);
 }
 
-/** `reason` in words, naming `repo` where the server names the repository the answer is about,
- *  or the reason as the server gave it where this build has no words for it. */
+/** `reason` in words, naming `repo` where the server names the repository the answer is about.
+ *  A reason this build has no words for shows as the server gave it, with that repository beside
+ *  it in parentheses, so the answer still says which repository it is about. */
 function reasonWords(reason: string, repo?: string): string {
-  return isKnownReason(reason) ? REASON_WORDS[reason](repo) : reason;
+  if (isKnownReason(reason)) return REASON_WORDS[reason](repo);
+  return repo === undefined ? reason : `${reason} (${repo})`;
 }
 
 /** Which time a basis learned from a pull request carries: when Dispatch last read the pull

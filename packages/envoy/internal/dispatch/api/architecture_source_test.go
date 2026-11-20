@@ -696,6 +696,12 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 	if owner, name, err := parseSourceRepo("/arch"); err == nil {
 		t.Fatalf("parseSourceRepo(/arch) = %q, %q; want an empty owner refused", owner, name)
 	}
+	// The parse trims the space around a repository before it reads it, as a deploy repository
+	// or a renamed_to typed with a space after it carries. The negative control is a parse that
+	// reads the value untrimmed, which refuses it.
+	if owner, name, err := parseSourceRepo(" Legion/Arch.git\n"); err != nil || owner != "legion" || name != "arch" {
+		t.Fatalf("parseSourceRepo(%q) = %q, %q, %v; want legion and arch", " Legion/Arch.git\n", owner, name, err)
+	}
 
 	// A managed user's login ends in `_<shortcode>`, and a source in such an account is saved
 	// under its lowercased owner like any other.

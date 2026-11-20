@@ -158,15 +158,15 @@ var ErrNotGitHubRepo = errors.New("not an owner/name GitHub allows")
 // more): `acme/.git.git` and `acme/...git.git` written are `acme/.git` and `acme/...git` stored,
 // which are empty and `..` once that `.git` is trimmed, so no repository GitHub holds is called
 // by them, and this refuses them. A route that takes a name from a person canonicalises it first
-// and puts the form it stores to this (api's parseSourceRepo and githubCouldHoldRepo), so a name
-// written with the suffix is bounded as it is stored: `acme/<100 characters>.git` written is the
-// 100 characters. The halves come back as full spells them, so a caller keeps its own case and
-// its own suffix; the refusal is ErrNotGitHubRepo, naming full.
+// and puts the form it stores to this (ParseGitHubRepo), so a name written with the suffix is
+// bounded as it is stored: `acme/<100 characters>.git` written is the 100 characters. The halves
+// come back as full spells them, so a caller keeps its own case and its own suffix; the refusal
+// is ErrNotGitHubRepo, naming full.
 //
 // It is the rule the routes and these readers read. The API routes that take a repository from a
-// person put the canonical form they store to it and refuse a name it refuses (api's
-// parseSourceRepo and githubCouldHoldRepo), and so does the boot seed of the repository mappings
-// (api's ParseRepoProjects). Delivery, wherever it turns a stored name into a
+// person put the canonical form they store to it and refuse a name it refuses, and so does the
+// boot seed of the repository mappings, each through ParseGitHubRepo (api's parseSourceRepo,
+// parseIssueRepo and ParseRepoProjects). Delivery, wherever it turns a stored name into a
 // GitHub path, cireconcile's splitRepo, the architecture importer's resolve and api's readCIRuns
 // each refuse one there, so a name stored before the routes held it to the rule, or by direct
 // SQL, reaches GitHub through none of them. Delivery's linked pull requests

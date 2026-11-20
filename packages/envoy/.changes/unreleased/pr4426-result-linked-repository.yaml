@@ -15,7 +15,13 @@ body: |-
   of the rest, and every linked pull request in whose repository it could not read the commit,
   since each of those spent one of the record's 10 reads, each as
   `owner/repo#n (repository_unreadable)`, saying to grant the App that repository or link a
-  readable pull request. A read of a linked pull request or of a linked repository that does
+  readable pull request. A link names a pull request only where its owner is a login GitHub
+  serves and its name holds only letters, digits, `.`, `-` and `_` and is not `.` or `..`; any
+  other link spends no read, and no refusal names it. A linked pull request whose repository's
+  name GitHub's naming rule then refuses, such as one of `acme/.git`, which is empty once `.git`
+  is trimmed, counts for nothing and spends one of the 10 reads, and
+  `400 RESULT_COMMIT_UNKNOWN` names that repository as one whose links Dispatch set aside, which
+  no grant of the App mends. A read of a linked pull request or of a linked repository that does
   not answer (a rate limit, a 5xx, a timeout), where no repository is shown to hold the commit,
   refuses the record with `502 GITHUB_UNREADABLE` and stores nothing: the refusal tells the
   caller to record the result again, and a rate limit names GitHub's wait, in the sentence and

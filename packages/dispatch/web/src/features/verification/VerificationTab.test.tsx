@@ -403,10 +403,14 @@ test("a linked result's other_commit and unknown answers name that repository", 
 });
 
 // A reason is the server's to add, so a newer Dispatch can give one this build has no words for.
-// The tab then shows that reason by its own code, with the repository the answer is about or
-// without, for a result's commit and for a check that compared with nothing alike, rather than
-// showing "undefined" or a blank, or failing to draw.
-test("a reason the tab has no words for shows as the reason's own code", async () => {
+// The tab then shows that reason by its own code, for a result's commit and for a check that
+// compared with nothing alike, rather than showing "undefined" or a blank, or failing to draw;
+// and where the server names the repository the answer is about, the repository in parentheses
+// beside it, as a reason the tab words names it.
+//
+// The negative control is the code alone, which shows "Not known. rate_limited" for the result
+// whose answer names acme/tools.
+test("a reason the tab has no words for shows as the reason's own code, with its repository", async () => {
   const later = "rate_limited" as NonNullable<ResultCommitStands["reason"]>;
   const { getIssueResults, view } = renderTab(verification, [
     check("c1", [
@@ -430,7 +434,7 @@ test("a reason the tab has no words for shows as the reason's own code", async (
   await screen.findByTestId("verification-checks");
   expect(
     screen.getAllByTestId("verification-result-commit-stands").map((field) => field.textContent)
-  ).toEqual(["Not known. rate_limited", "Not known. rate_limited"]);
+  ).toEqual(["Not known. rate_limited (acme/tools)", "Not known. rate_limited"]);
   expect(
     screen.getAllByTestId("verification-check-compared-with").map((row) => row.textContent)
   ).toEqual([`the head of pull request 7 ${commit}`, "rate_limited"]);

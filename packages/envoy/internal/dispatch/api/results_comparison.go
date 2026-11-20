@@ -464,9 +464,10 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 // unknown with model.ReasonReadFailed where the read of its canonical name failed, unknown with
 // model.ReasonRepositoryUnreadable where the App cannot read it, and another commit otherwise,
 // since a read-through of that repository would have taught Dispatch a pull request headed at
-// the commit (the test readThroughRepository makes for readThroughHead, from the same memo). The
-// issue's own repository has nothing to say about a commit of another repository: read through
-// it, a result there would stand unknown for good wherever the App cannot read the issue's own.
+// the commit (commitRepository.readable, the answer readThroughRepository reads for
+// readThroughHead too). The issue's own repository has nothing to say about a commit of another
+// repository: read through it, a result there would stand unknown for good wherever the App
+// cannot read the issue's own.
 //
 // An issue that resolves to no repository is never unknown, whatever the check's `when`, but
 // for a `before_merge` result whose row names a linked repository, which that repository decides
@@ -506,9 +507,9 @@ func (c *comparisonReader) commitStands(
 		// ever hold.
 		switch owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); {
 		case owner.unread:
-			return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
+			return owner.readFailed()
 		case owner.linked != "":
-			if _, readable := c.defaultBranchIn(ctx, owner.linked); !readable {
+			if !owner.readable {
 				return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonRepositoryUnreadable, Repo: owner.linked}
 			}
 			return model.ResultCommitStands{Answer: model.CommitOtherCommit, Repo: owner.linked}
@@ -600,7 +601,7 @@ func (c *comparisonReader) onNamedBranch(
 	walked, bases, named := *repo, compared.bases, ""
 	switch owner := c.commitRepositoryOf(ctx, check.IssueKey, result.CommitRepo); {
 	case owner.unread:
-		return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
+		return owner.readFailed()
 	case owner.linked != "":
 		linkedCompared := c.linkedBranchBases(ctx, check, owner.linked)
 		if len(linkedCompared.bases) == 0 {
@@ -826,9 +827,9 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 
 // readThroughRepository is the repository readThroughHead reads a result's commit through, and
 // whether that read can be made at all, by whose the commit is taken to be (commitRepositoryOf):
-// a linked repository, where the read of its canonical name answered and the App answered its
-// default branch, which is the test commitStands decides a `before_merge` result by, from the
-// same memo; and else the repository the check's issue resolves to, where the App answered that
+// a linked repository, where the read of its canonical name answered and the App can read it
+// (commitRepository.readable, the one answer commitStands decides a `before_merge` result by as
+// well); and else the repository the check's issue resolves to, where the App answered that
 // repository's default branch, which also answers false for an issue resolving to no repository
 // and for a resolve that did not answer, the memo commitStands reads next.
 func (c *comparisonReader) readThroughRepository(ctx context.Context, result model.CheckResult) (string, bool) {
@@ -836,8 +837,7 @@ func (c *comparisonReader) readThroughRepository(ctx context.Context, result mod
 	case owner.unread:
 		return "", false
 	case owner.linked != "":
-		_, readable := c.defaultBranchIn(ctx, owner.linked)
-		return owner.linked, readable
+		return owner.linked, owner.readable
 	}
 	if _, readable := c.defaultBranchOf(ctx, result.CheckIssueKey); !readable {
 		return "", false
@@ -897,8 +897,8 @@ func (c *comparisonReader) defaultBranchOf(ctx context.Context, issueKey string)
 
 // defaultBranchIn is defaultBranchOf for a repository named outright: the repository's default
 // branch and whether the App answered it, read once per repository per read of the results.
-// defaultBranchOf names the repository the check's issue resolves to, and onNamedBranch names
-// the repository a result's row takes its commit to be of (commitRepositoryOf). The memo is the
+// defaultBranchOf names the repository the check's issue resolves to, and commitRepositoryOf and
+// onNamedBranch name the repository a result's row takes its commit to be of. The memo is the
 // same for both, so a repository that is both is read once.
 func (c *comparisonReader) defaultBranchIn(ctx context.Context, repo string) (string, bool) {
 	if answer, memoized := c.defaults[repo]; memoized {

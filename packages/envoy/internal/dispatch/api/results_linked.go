@@ -355,12 +355,14 @@ func linkedRepositories(ctx context.Context, q refs.Queryer, issueKey string) ([
 // bound leaves unread is counted there and read no further.
 //
 // A repository does not count, with no error, where every linked pull request closed without
-// merging or is one GitHub answers 404 or 410 for, and where either read answers that no read of
-// that repository can work: the App is not installed on it or its token is refused it
-// (delivery.RepositoryUnreadable: githubapp.ErrNoInstallation, and
-// githubapp.ErrRepositoryUnreadable, the 403 that is no rate limit), or the name a link and a
-// stored rename make of it is none GitHub could hold (refs.ErrNotGitHubRepo, which
-// refs.SplitGitHubRepo answers before any GitHub call). That 404 or 410
+// merging or is one GitHub answers 404 or 410 for, and where a read answers that no read of that
+// repository can work: either read, where the App is not installed on it or its token is refused
+// it (delivery.RepositoryUnreadable: githubapp.ErrNoInstallation, and
+// githubapp.ErrRepositoryUnreadable, the 403 that is no rate limit), and the first read of a pull
+// request's state, where the name a link and a stored rename make of it is none GitHub could hold
+// (refs.ErrNotGitHubRepo, which refs.SplitGitHubRepo answers before any GitHub call). The commit
+// read never answers that name refusal: it splits the same name the same way, and is made only
+// after a state read took the name. That 404 or 410
 // (delivery.ErrPullRequestNotFound) is an answer and not a failed read: GitHub says there is no
 // such pull request, which is a link a person mistyped or one to a pull request since deleted, so
 // it counts for nothing, exactly as a closed one that did not merge, and the next linked pull
@@ -399,11 +401,7 @@ func (s *server) linkedRepositoryHolds(ctx context.Context, link linkedRepositor
 			}
 		case open:
 			held, err = delivery.RepositoryHoldsCommit(ctx, s.deps.GitHub, link.repo, sha)
-			switch {
-			case errors.Is(err, refs.ErrNotGitHubRepo):
-				reads.misnamedRepository(link)
-				return false, false, nil
-			case delivery.RepositoryUnreadable(err):
+			if delivery.RepositoryUnreadable(err) {
 				reads.cannotReadCommit(link, number)
 				return false, false, nil
 			}
@@ -422,10 +420,22 @@ type commitRepository struct {
 	// it names.
 	linked string
 	// unread says the read of the linked repository's canonical name failed, so Dispatch cannot
-	// say where the commit is: every answer about it is unknown with model.ReasonReadFailed, and
-	// names linked, which is then the name the row stores, or "" where that name is the issue's
-	// own repository's.
+	// say where the commit is: every answer about it is unknown with model.ReasonReadFailed
+	// (readFailed), and names linked, which is then the name the row stores, or "" where that name
+	// is the issue's own repository's.
 	unread bool
+	// readable says the App answered the default branch of linked (defaultBranchIn): the one
+	// answer to whether Dispatch can read a linked repository, which commitStands decides a
+	// `before_merge` result by and readThroughRepository decides its read-through by. It is false
+	// where linked is "" or unread is set, since no linked repository is read then.
+	readable bool
+}
+
+// readFailed is where the commit of a result stands whose repository's canonical name could not
+// be read (unread): unknown with model.ReasonReadFailed, naming linked. commitStands and
+// onNamedBranch each answer it from here.
+func (owner commitRepository) readFailed() model.ResultCommitStands {
+	return model.ResultCommitStands{Answer: model.CommitUnknown, Reason: model.ReasonReadFailed, Repo: owner.linked}
 }
 
 // commitRepositoryOf is whose the commit of a result of the check of issueKey is taken to be,
@@ -449,6 +459,10 @@ type commitRepository struct {
 // issue's own repository: a row stored while the issue resolved elsewhere names that repository,
 // and once the issue has come to resolve to it, the result is read as every other result of the
 // issue is, and no answer about it names a repository.
+//
+// For a linked repository whose canonical name it read, it also reads whether the App can read
+// that repository (readable), from defaultBranchIn's memo. Every reader of such a repository
+// reads that memo for it next anyway, so the answer costs no GitHub call they would not make.
 func (c *comparisonReader) commitRepositoryOf(ctx context.Context, issueKey string, commitRepo *string) commitRepository {
 	if commitRepo == nil {
 		return commitRepository{}
@@ -467,6 +481,9 @@ func (c *comparisonReader) commitRepositoryOf(ctx context.Context, issueKey stri
 	owner := commitRepository{linked: *answer.repo, unread: !answer.answered}
 	if own, answered := c.repositoryOf(ctx, issueKey); answered && own != nil && strings.EqualFold(owner.linked, *own) {
 		owner.linked = ""
+	}
+	if owner.linked != "" && !owner.unread {
+		_, owner.readable = c.defaultBranchIn(ctx, owner.linked)
 	}
 	return owner
 }
