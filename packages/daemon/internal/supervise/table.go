@@ -2287,6 +2287,13 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // operator's hold. The retirement's stop records what it ended as the deadline's (endNeverReady,
 // letGo) — what its agent never did is no turn, so a record comes only of background work the
 // process reported — and the relaunch that follows lets nothing more go.
+//
+// The deadline of a process of a claim that records a session and no file is charged nothing
+// where endUncharged says so: a process an earlier release started, whose registration the fence
+// refused, and a start that had Oh My Pi resume the session by its id and never registered as it.
+// Its process is retired all the same, and relaunched through launch, which charges no launch
+// failure and waits no backoff, in place of relaunchAfterFailure. An agent that registered as the
+// session records its file, so its deadline is charged as every other one is.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
@@ -2306,6 +2313,9 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
+		if m.endUncharged("the registration deadline") {
+			return m.launch(ctx, noEnd)
+		}
 		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
