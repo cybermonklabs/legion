@@ -1,6 +1,6 @@
 // The Codex plugin's MCP server presents the session's broker token on its NATS CONNECT, with a
 // proof of the key that token is bound to over the server's own nonce: the connection proof the
-// NATS auth service checks (`brokertoken.VerifyConnectionProof`). The server runs in a process of
+// NATS auth service checks (`ciphertoken.VerifyConnectionProof`). The server runs in a process of
 // its own (tests/codex-server-process.ts) and dials a stand-in hub that sends a nonce and keeps
 // the CONNECT it is sent, after trading at a stand-in broker that keeps the DPoP key each trade
 // proved. Both ways a Codex session is told to use its broker token run: `NATS_AUTH=broker` in

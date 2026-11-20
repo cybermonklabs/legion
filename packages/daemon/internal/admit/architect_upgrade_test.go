@@ -224,7 +224,9 @@ func TestTheArchitectUpgradeLeavesTheStateCarryingTwoEntriesAndNoTimes(t *testin
 	claims := storedClaims(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		state, err = projection.Project(context.Background(), tx, record.NewStore(), testProject, nil, nil, claims, nil, nil, fixedNow)
+		state, err = projection.Project(context.Background(), projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: testProject, Claims: claims, Now: fixedNow,
+		})
 		if err != nil {
 			t.Fatalf("project the state: %v", err)
 		}

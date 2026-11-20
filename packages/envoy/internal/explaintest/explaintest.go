@@ -9,7 +9,7 @@
 // tells a read served by an index from one that reads the whole index and filters it, and it
 // holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
 // statement settles on (GenericPlan), which is the plan an index is lost in.
-// dispatch/api, dispatch/refs and broker/requests each pin an index's reach with these checks,
+// dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
 // walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
 // code across packages (see internal/stacktest's identical reasoning).
