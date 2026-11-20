@@ -128,15 +128,10 @@ type releaseMark struct {
 	kind string
 }
 
-// rowBounds are the first and last rows this mark's release queued. Every row of a release was
-// written in the mark's own transaction, so its id lies inside these bounds.
-func (m releaseMark) rowBounds() (first, last int64) { return m.first, m.last }
-
-// holds is whether row is one of the rows this mark's release queued.
-func (m releaseMark) holds(row int64) bool {
-	first, last := m.rowBounds()
-	return row >= first && row <= last
-}
+// holds is whether row is one of the rows this mark's release queued. Every row of a release was
+// written in the mark's own transaction, so its id lies between the release's first row and its
+// last; a row outside that range belongs to a release this mark is not.
+func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.last }
 
 // readReleaseMark reads the mark of issue's release and places row in it: held is false for a
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
@@ -256,10 +251,9 @@ func (s *Store) IssueReleaseStop(ctx context.Context, project, issue string, row
 			return err
 		}
 		if !overtaken && row == mark.boundary {
-			first, last := mark.rowBounds()
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and kind = any($2) and (id < $3 or id > $4))`,
-				issue, idleWaitingKinds, first, last).Scan(&overtaken); err != nil {
+				issue, idleWaitingKinds, mark.first, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -390,7 +384,6 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return err
 		}
 		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
-		first, last := mark.rowBounds()
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string
@@ -429,7 +422,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !overtaken {
 			if err := tx.QueryRow(ctx, `select exists (
 				select 1 from outbox where issue = $1 and id > $2 and kind = 'supervise' and payload->>'op' = 'start')`,
-				release.Issue, last).Scan(&overtaken); err != nil {
+				release.Issue, mark.last).Scan(&overtaken); err != nil {
 				return err
 			}
 		}
@@ -444,10 +437,12 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if !may {
 			return nil
 		}
+		// The release's own save is its issue_bundle row inside the mark's range, the range holds
+		// reads; a save below it is an earlier release's and holds no pod of this one.
 		var saving bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
-			release.Issue, first, last).Scan(&saving); err != nil {
+			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
 			return err
 		}
 		if saving {
