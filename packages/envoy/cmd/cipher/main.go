@@ -1312,6 +1312,13 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		refuse(stderr, "agent-secrets", src(), err)
 		return 1
 	}
+	// A broker from before the target reads no locations and releases the whole profile, so a
+	// targeted run takes only a release that answers the target its request signed; anything else
+	// is dropped before any value is read.
+	if len(locations) > 0 && !slices.Equal(values.Locations, locations) {
+		fmt.Fprintf(stderr, "agent-secrets: %s released %s without its --target, as a broker from before --target does; nothing was run: the broker is too old for --target\n", src(), names[0])
+		return exitUsageError
+	}
 	// A name behind the airlock is released too: the broker hands over a placeholder and the
 	// proxy that stands behind it (values.Airlock.Names) instead of the value, so only a name
 	// in neither is one nothing was released for. A CLI from before the airlock finds such a

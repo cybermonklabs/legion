@@ -900,7 +900,9 @@ The broker evaluates every name
   `agent-secrets NAME --target ACCOUNT -- command`, or one `--target ACCOUNT/REPOSITORY` for each
   repository of one account, signs the target into the request and narrows a run of that one
   name; the client refuses a target of two accounts, or a run of two names with a target, with
-  exit 2 before it sends anything. A Google login
+  exit 2 before it sends anything. The release answers the grant's target as its `locations`, and
+  the client runs nothing, exiting 2, when a release does not answer the target its request
+  signed, as a broker from before `--target` releases the whole profile. A Google login
   value holds an `authorized_user` refresh-token credential. Its release returns a bare access
   token. A Google service-account value names one account,
   `{"service_account": "<id>@<project>.iam.gserviceaccount.com"}`, and its release returns a bare

@@ -18,7 +18,9 @@ import (
 // commandBroker is a fake broker for what a run sends and what a release says of itself: every
 // request for one name is granted at once, its name released as "<NAME>-v1" unless answers names
 // another value, and the broker records every call it receives, each POST /v1/requests body with
-// the request object it verified, and each release's body.
+// the request object it verified, and each release's body. A release answers the target its
+// grant's request signed as its locations, as the broker does, unless confirmsTarget says what to
+// answer in its place.
 //
 // knows is the release body's vintage the broker reads. A broker from before a field decodes the
 // release's body as the broker's readJSON (internal/cipher/api) does, refusing a field it does not
@@ -36,6 +38,11 @@ type commandBroker struct {
 	bodies   []string                       // each release's body, "" for none
 	values   map[string]string              // what a name is released as, where it is not "<NAME>-v1"
 	leftOut  map[string]map[string][]string // the values answer's github_left_out, nil for none
+	targets  map[string][]string            // grant id -> the locations its request signed
+	// confirms says whether confirmed replaces the locations a release answers: nil confirmed
+	// answers none, as a broker from before the target does.
+	confirms  bool
+	confirmed []string
 }
 
 // releaseBodyFields is which fields of the release body a fake broker reads.
@@ -49,7 +56,7 @@ const (
 
 func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 	t.Helper()
-	b := &commandBroker{knows: knows}
+	b := &commandBroker{knows: knows, targets: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/requests", func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
@@ -64,6 +71,9 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 		b.requests = append(b.requests, body)
 		if err == nil {
 			b.objects = append(b.objects, obj)
+			if len(obj.Details) == 1 {
+				b.targets[obj.Details[0].Identifier] = obj.Details[0].Locations
+			}
 		}
 		b.mu.Unlock()
 		if err != nil || len(obj.Details) != 1 {
@@ -115,6 +125,10 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 		b.mu.Lock()
 		value, named := b.values[name]
 		leftOut := b.leftOut
+		locations := b.targets[name]
+		if b.confirms {
+			locations = b.confirmed
+		}
 		b.mu.Unlock()
 		if !named {
 			value = name + "-v1"
@@ -122,6 +136,9 @@ func newCommandBroker(t *testing.T, knows releaseBodyFields) *commandBroker {
 		answer := map[string]any{"values": map[string]string{name: value}, "expires_at": nil}
 		if leftOut != nil {
 			answer["github_left_out"] = leftOut
+		}
+		if len(locations) > 0 {
+			answer["locations"] = locations
 		}
 		writeJSON(w, answer)
 	})
@@ -144,6 +161,14 @@ func (b *commandBroker) answers(values map[string]string, leftOut map[string]map
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.values, b.leftOut = values, leftOut
+}
+
+// confirmsTarget makes each release from here on answer locations in place of the target its
+// grant's request signed, none for nil, as a broker that does not confirm that target does.
+func (b *commandBroker) confirmsTarget(locations []string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.confirms, b.confirmed = true, locations
 }
 
 // take returns the release bodies the broker recorded since the last take, each without its
