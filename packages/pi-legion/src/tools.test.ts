@@ -217,19 +217,24 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
   "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work. " +
   "Sign off again when each of them has left the workflow. " +
-  "End a child with your own status write in Dispatch, which the daemon takes as it takes a person's move. " +
+  "The daemon takes your status write on a child as it takes a person's move. " +
+  "End a child with your own status write in Dispatch. " +
   "Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
   "dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
   "For a fold, name the carrier in the reason: the issue that carries the work. " +
-  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead, because done starts those issues. " +
-  "Before done on a running child, have its worker push the work that the carrier needs, because done ends its turn and its pod at once. " +
+  "Before the done of a fold, make each issue that is blocked_by the child wait on the carrier instead. " +
+  "Done starts those issues, and the Referenced by list of dispatch read names each of them as blocked_by. " +
+  "Before done on a running child, have its worker push the work that the carrier needs. " +
+  "Done ends the worker's turn and the pod at once. " +
   "Unless the work of the child's open pull request should land, close that pull request with your own App (gh pr close). " +
   "When it is in the merge queue, first take it out (GraphQL dequeuePullRequest). " +
   "Do this before done, or at once after a done that you wrote first. " +
-  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart (backlog, then rerun_child). " +
+  "Write backlog or icebox only when a person asked for that move, or as the first step of a restart. " +
+  "A restart is backlog, then rerun_child. " +
   "Say why in a dispatch comment. " +
   "Write no status on a child that is already done, because a move out of done ends an open production check. " +
-  "After each move, read the child back. When the daemon set the move back, write it again. " +
+  "After each move, read the child back (dispatch read --issue <KEY>). " +
+  "When the daemon set the move back, write it again. " +
   "A status that you wrote and that the daemon has not taken yet does not count until read_record shows it. " +
   "When a child can neither finish nor take one of these moves, ask the person. Hold the acceptance until they answer. " +
   "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +

@@ -1218,17 +1218,18 @@ func (reassertRule) stillWanted(ctx context.Context, r *outbox, row record.Outbo
 
 // setBackOwed says whether the set-back payload still has a write to make: no event after the
 // write it undoes (payload.ObservedSeq) changed the issue's status, other than the daemon's own
-// (dispatch.DaemonSession). A later status change is a move this row must not write over: the
-// owning architect's move of a child, which the workflow takes as a person's (dispatch://INFRA-3178
-// R3), a person's, or the session's own next status, which a set-back of its own answers. Only
-// Dispatch's log can say that such a change came, because the row runs within milliseconds of the
-// write it undoes, before the consumer can apply a later event. A comment, a message or a write of
-// the status the issue already shows changes no status, so the set-back still writes
-// (intake.StatusChangeOf). The write itself stays fenced on the sequence of the issue read made
-// before this check (writeStatus), so a change that lands after that read is refused ISSUE_CHANGED,
-// and the retry asks this again. For that reason the first attempt asks this only when that read
-// shows an event after the write the row undoes (reassertRule.firstAttempt). A row with no
-// sequence, which an earlier release queued, is owed its write as that release judged it.
+// (intake.StatusChange.DaemonActor). A later status change is a move this row must not write
+// over: the owning architect's move of a child, which the workflow takes as a person's
+// (dispatch://INFRA-3178 R3), a person's, or the session's own next status, which a set-back of
+// its own answers. Only Dispatch's log can say that such a change came, because the row runs
+// within milliseconds of the write it undoes, before the consumer can apply a later event. A
+// comment, a message or a write of the status the issue already shows changes no status, so the
+// set-back still writes (intake.StatusChangeOf). The write itself stays fenced on the sequence of
+// the issue read made before this check (writeStatus), so a change that lands after that read is
+// refused ISSUE_CHANGED, and the retry asks this again. For that reason the first attempt asks
+// this only when that read shows an event after the write the row undoes
+// (reassertRule.firstAttempt). A row with no sequence, which an earlier release queued, is owed
+// its write as that release judged it.
 func (r *outbox) setBackOwed(ctx context.Context, row record.OutboxRow, payload record.StatusWrite) (bool, error) {
 	if payload.ObservedSeq == 0 {
 		return true, nil
@@ -1237,13 +1238,12 @@ func (r *outbox) setBackOwed(ctx context.Context, row record.OutboxRow, payload 
 	if err != nil {
 		return false, fmt.Errorf("read the Dispatch events of %s after %d before its set-back: %w", row.Issue, payload.ObservedSeq, err)
 	}
-	daemon := dispatch.Actor{Kind: "session", ID: dispatch.DaemonSession(row.Issue)}
 	for _, raw := range events {
 		change, err := intake.StatusChangeOf(raw)
 		if err != nil {
 			return false, fmt.Errorf("read a Dispatch event of %s after %d before its set-back: %w", row.Issue, payload.ObservedSeq, err)
 		}
-		if !change.Changed || change.Actor == daemon {
+		if !change.Changed || change.DaemonActor {
 			continue
 		}
 		r.log.Info("outbox set-back finished without writing: the issue's status changed after the write it undoes",

@@ -116,16 +116,17 @@ func assertEchoChangesNothing(t *testing.T, h *harness, handlers []intake.Handle
 
 // An older plugin still offers its agents an operation that called a child route this daemon no
 // longer serves. The route stays registered only to refuse that call: 410 ROUTE_REMOVED, with a
-// reason that says which status to write on the child in Dispatch, so the older plugin's tool
-// shows its agent what to do instead. The refusal reads no body, so a call with no body or with a
-// body that does not decode gets the same answer. It changes nothing: no Dispatch write, no
-// change to the child's record, no outbox row and no fact applied.
+// reason that says which status to write on the child in Dispatch, followed by the rules of that
+// write (record.EndChildRule), so the older plugin's tool shows its agent what to do instead. The
+// refusal reads no body, so a call with no body or with a body that does not decode gets the same
+// answer. It changes nothing: no Dispatch write, no change to the child's record, no outbox row
+// and no fact applied.
 func TestTheRemovedChildRouteAnswersWithTheStatusWrite(t *testing.T) {
 	h, _, statuses := statusHarness(t)
 	architect := newLiveClaim(t, h, statusRoot, claim.RoleArchitect)
 	grant := architect.grant(t)
 	const reason = "This route is removed. Write backlog, icebox or done on the child in Dispatch (dispatch issue-update --issue <KEY> --status <status>). " +
-		"Add --reason when the status is done. The daemon takes the move from the Dispatch event of that write."
+		"Add --reason when the status is done. The daemon takes the move from the Dispatch event of that write. " + record.EndChildRule
 	count := func(table string) int {
 		t.Helper()
 		var rows int

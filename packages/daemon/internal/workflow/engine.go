@@ -591,8 +591,7 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 //     (record.Store.ArchitectIssueOfSession).
 //   - That architect owns the issue by the rule of the API's operations on a child
 //     (record.OwnsUnder). The tree root's architect owns every issue of its tree, so its move is
-//     judged with no read of the tree, as the API judges its operations (api's
-//     architectOwnsUnder). A sub-architect's move is judged over the tree's records.
+//     judged with no read of the tree. A sub-architect's move is judged over the tree's records.
 //
 // A move that stands writes its own log line, which names the architect's issue.
 func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {

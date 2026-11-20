@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"slices"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -37,12 +36,13 @@ func (c *countingRecords) TreeIssues(ctx context.Context, tx pgx.Tx, tree string
 }
 
 // rerun_child judges the tree from one read of it (treeMembers), as release_children judges a
-// whole wave: those records carry the root whose linger stops a rerun and the chain the accepted
-// ancestor is found on (record.AcceptedAncestorIn). It read the root by itself and then the tree
-// again through a helper of its own, so one request's two judgements stood on two snapshots of
-// the tree and a helper no other route had a use for. A sub-architect's request reads the tree to
-// judge its ownership (architectOwnsUnder), and it read the tree again for the two judgements, so
-// its request is held to one read too.
+// whole wave: those records carry the architect's ownership of the child (record.OwnsUnder), the
+// root whose linger stops a rerun and the chain the accepted ancestor is found on
+// (record.AcceptedAncestorIn). It read the root by itself and then the tree again through a helper
+// of its own, so one request's two judgements stood on two snapshots of the tree and a helper no
+// other route had a use for. A sub-architect's request read the tree to judge its ownership and
+// again for the two judgements. Now childOfTree reads the tree once for every judgement, so each
+// architect's request is held to one read.
 func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 	// underChild is an issue under statusChild that is out of the workflow: the architect of
 	// statusChild may run it again.
@@ -93,14 +93,20 @@ func TestRerunChildJudgesTheTreeFromOneRead(t *testing.T) {
 // backlog from its Dispatch event, which the event consumer can deliver late. So the refusal reads
 // the child from Dispatch once. Where Dispatch already shows a status that takes the child out of
 // the workflow, the architect wrote its move and the daemon has not taken it yet, so the architect
-// calls again once read_record shows the child at phase done. Where Dispatch shows the child
-// running, the architect writes backlog first. A failed read gives that second reason, and the
-// refusal stands rather than failing 502. A rerun the record takes reads nothing from Dispatch.
-// No reason names an operation the daemon no longer serves.
+// calls again once read_record shows the child at phase done. That reason also says which writes
+// the daemon sets back, and that the architect writes backlog first when dispatch read no longer
+// shows its move. Where Dispatch shows the child running, the architect writes backlog first. A
+// failed read gives that second reason, and the refusal stands rather than failing 502. A rerun
+// the record takes reads nothing from Dispatch. No reason names an operation the daemon no longer
+// serves.
 func TestRerunChildBeforeTheDaemonTookTheBacklogSaysToWait(t *testing.T) {
 	wait := func(status string) string {
 		return "Dispatch shows " + status + " for LEGION-209, but the daemon has not taken that move yet. The record still shows LEGION-209 in phase planning. " +
-			"Call rerun_child again when read_record shows LEGION-209 at phase done."
+			"Call rerun_child again when read_record shows LEGION-209 at phase done. " +
+			"If dispatch read --issue LEGION-209 no longer shows " + status + ", the daemon set the move back. " +
+			"In that case, write backlog on LEGION-209 first (dispatch issue-update --issue LEGION-209 --status backlog). " +
+			"The daemon sets back a phase worker's write and a write by an architect that does not own LEGION-209. " +
+			"It also sets back a write of the status that Dispatch already showed."
 	}
 	const restart = "LEGION-209 is in phase planning, so rerun_child cannot run it again now. The restart of a running child is backlog, then rerun_child. " +
 		"Write backlog on LEGION-209 first (dispatch issue-update --issue LEGION-209 --status backlog). Then call rerun_child again when read_record shows LEGION-209 at phase done."
@@ -132,9 +138,6 @@ func TestRerunChildBeforeTheDaemonTookTheBacklogSaysToWait(t *testing.T) {
 			reason := refused(t, recorder, http.StatusConflict, "CHILD_RUNNING")
 			if reason != tc.want {
 				t.Fatalf("the CHILD_RUNNING refusal says %q, want %q", reason, tc.want)
-			}
-			if strings.Contains(strings.ToLower(reason), "park") {
-				t.Fatalf("the CHILD_RUNNING refusal %q names park_child, which the architect no longer has", reason)
 			}
 			if want := []string{"issue:" + statusChild}; !slices.Equal(statuses.reads, want) {
 				t.Fatalf("the refusal read %v from Dispatch, want the child once, %v", statuses.reads, want)

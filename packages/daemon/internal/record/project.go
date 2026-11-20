@@ -65,9 +65,10 @@ func OutOfWorkflow(status string) bool {
 // back after each move finds a move that the daemon set back.
 //
 // It lives here because two packages send it, and api does not import workflow: workflow's
-// refusals and notices over children still in the workflow, and api's refusal of close_root on a
-// child. The architect prompts carry the same eight things whole (prompts/go/architect-common.md).
-// It holds no percent sign, because a caller can join it into a format string.
+// refusals and notices over children still in the workflow, and api's refusals of close_root on a
+// child and of the removed child route. The architect prompts carry the same eight things whole
+// (prompts/go/architect-common.md), and the legion tool's description carries these words
+// (packages/pi-legion/src/tools.ts), so a change to one is a change to both.
 const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"Write done with a reason when the child's work is done, folded into another issue or no longer needed: " +
 	"dispatch issue-update --issue <KEY> --status done --reason '<why>'. " +
@@ -217,7 +218,7 @@ func Ancestors(issue Issue, byKey map[string]Issue) []Issue {
 // architect owns an issue on such a chain.
 //
 // It is the one statement of that rule, and two readers ask it: the API's operations on a child
-// (api's architectOwnsUnder) and the engine's exception for the owning architect's status on a
+// (api's childOfTree) and the engine's exception for the owning architect's status on a
 // child (workflow's sessionStatusWrite). Written twice, the API could refuse an architect a child
 // whose status the engine takes from that architect, or the other way round.
 func OwnsUnder(members []Issue, tree, architectIssue string, target Issue) bool {

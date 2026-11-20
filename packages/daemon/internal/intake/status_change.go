@@ -21,6 +21,10 @@ type StatusChange struct {
 	Changed bool
 	// Actor is who Dispatch names as the author of the event.
 	Actor dispatch.Actor
+	// DaemonActor is true when the daemon made the event, by the rule the decoder applies to the
+	// same event (DispatchIssue.DaemonActor): the actor is the session of the event's issue that
+	// dispatch.DaemonSession names. The set-back's check passes over the daemon's own changes.
+	DaemonActor bool
 }
 
 // StatusChangeOf reads one event of an issue's Dispatch event log, as dispatch.Client.EventsAfter
@@ -34,7 +38,7 @@ func StatusChangeOf(raw json.RawMessage) (StatusChange, error) {
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return StatusChange{}, fmt.Errorf("decode Dispatch event: %w", err)
 	}
-	change := StatusChange{Seq: event.Seq, Actor: dispatch.Actor(event.Actor), Changed: event.Type == "issue.closed"}
+	change := StatusChange{Seq: event.Seq, Actor: dispatch.Actor(event.Actor), DaemonActor: event.daemonActor(), Changed: event.Type == "issue.closed"}
 	if event.Type != "issue.updated" {
 		return change, nil
 	}

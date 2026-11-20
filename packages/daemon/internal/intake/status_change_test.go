@@ -64,15 +64,18 @@ func readDispatchEvents(t *testing.T, name string) []json.RawMessage {
 // close, the daemon's set-back and the controller's close each change the status. A message, a
 // comment, a document version and an issue.updated that moved blocked_by alone do not, though
 // each one moves the sequence. Each event gives its own sequence and the actor Dispatch names.
-// The daemon's set-back names the session that dispatch.DaemonSession gives for the issue, which
-// is the actor the check passes over. A write of the status the issue already shows changes
-// nothing in Dispatch, which then writes no changed list, and the reader takes it as no change.
+// The daemon's set-back names the session that dispatch.DaemonSession gives for the issue, so it
+// alone reads as the daemon's own event (DaemonActor), which the check passes over. A write of the
+// status the issue already shows changes nothing in Dispatch, which then writes no changed list,
+// and the reader takes it as no change.
 func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 	session := func(id string) dispatch.Actor { return dispatch.Actor{Kind: "session", ID: id} }
 	type read struct {
 		typ     string
 		changed bool
 		actor   dispatch.Actor
+		// daemon says whether the event is the daemon's own.
+		daemon bool
 	}
 	for _, log := range []struct {
 		file string
@@ -81,23 +84,23 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 		want  []read
 	}{
 		{file: "acme-3021-after-11.json", first: 12, want: []read{
-			{"message.created", false, session(capturedParentArchitect)},
-			{"issue.closed", true, session(capturedParentArchitect)},
-			{"issue.updated", true, session(capturedDaemonOfTheIssue)},
-			{"comment.created", false, session(capturedParentArchitect)},
-			{"message.created", false, session(capturedController)},
-			{"issue.closed", true, session(capturedController)},
+			{"message.created", false, session(capturedParentArchitect), false},
+			{"issue.closed", true, session(capturedParentArchitect), false},
+			{"issue.updated", true, session(capturedDaemonOfTheIssue), true},
+			{"comment.created", false, session(capturedParentArchitect), false},
+			{"message.created", false, session(capturedController), false},
+			{"issue.closed", true, session(capturedController), false},
 		}},
 		{file: "acme-2766-after-21.json", first: 22, want: []read{
-			{"message.created", false, session(capturedLaterController)},
-			{"issue.closed", true, session(capturedLaterController)},
-			{"issue.updated", true, session(capturedDaemonOfTheIssue)},
-			{"artifact.version", false, session(capturedOtherArchitect)},
-			{"artifact.version", false, session(capturedOtherArchitect)},
-			{"artifact.version", false, session(capturedOtherArchitect)},
+			{"message.created", false, session(capturedLaterController), false},
+			{"issue.closed", true, session(capturedLaterController), false},
+			{"issue.updated", true, session(capturedDaemonOfTheIssue), true},
+			{"artifact.version", false, session(capturedOtherArchitect), false},
+			{"artifact.version", false, session(capturedOtherArchitect), false},
+			{"artifact.version", false, session(capturedOtherArchitect), false},
 		}},
 		{file: "acme-2766-after-40.json", first: 41, want: []read{
-			{"issue.updated", false, session(capturedOtherArchitect)},
+			{"issue.updated", false, session(capturedOtherArchitect), false},
 		}},
 	} {
 		events := readDispatchEvents(t, log.file)
@@ -117,7 +120,7 @@ func TestStatusChangeOfReadsTheEventsDispatchWrites(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read the event: %v", err)
 				}
-				if wantChange := (StatusChange{Seq: seq, Changed: want.changed, Actor: want.actor}); got != wantChange {
+				if wantChange := (StatusChange{Seq: seq, Changed: want.changed, Actor: want.actor, DaemonActor: want.daemon}); got != wantChange {
 					t.Fatalf("the event reads %+v, want %+v", got, wantChange)
 				}
 			})
