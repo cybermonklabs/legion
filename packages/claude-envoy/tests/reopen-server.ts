@@ -159,7 +159,7 @@ export interface ReopenServer {
   /** What a wait that timed out reports: the process, its relay, its connections, its stderr. */
   state(): string
   /** Each CONNECT the hub saw: its connection name, whether it presented a token, the port its
-   *  client dialed the gate from, and the process that owns that port. */
+   *  client dialed the gate from, and the process that owns that connection to the gate. */
   describeConnects(): Promise<string>
   /** Fails naming every CONNECT the hub saw and the process each came from, unless `held`: a
    *  CONNECT check that fails says whose CONNECT it read. */
@@ -175,10 +175,12 @@ export interface ReopenServer {
 export async function startReopenServer(options: ReopenServerOptions): Promise<ReopenServer> {
   const relay = deliverSubject(options.sessionId)
   const broker = new FakeNatsServer(options.nonce === undefined ? {} : { nonce: options.nonce })
-  // Each client's owner is looked up as the gate accepts it, while its socket is still up.
+  // Each client's owner is looked up as the gate accepts it, while its socket is still up: the
+  // owner of the connection from its port to the gate's, not of any socket on its port, since
+  // Linux gives one ephemeral port to connects to other destinations too.
   const owners = new Map<number, Promise<string>>()
   const gate = natsGate(Number(new URL(broker.url).port), (leg) => {
-    owners.set(leg.clientPort, socketOwner(leg.clientPort))
+    owners.set(leg.clientPort, socketOwner(leg.clientPort, gate.port))
   })
   if (options.gateOpen !== false) gate.open()
   const requests: string[] = []

@@ -1,5 +1,6 @@
-// The process that owns a local TCP socket, read from /proc as `ss -tnp` reads it, so a row that
-// asks (./reopen-server) runs where iproute2 is not installed, as in a worker pod's image.
+// The process that owns this machine's end of a TCP connection to a port of 127.0.0.1, read from
+// /proc, so a row that asks (./reopen-server) runs where iproute2 is not installed, as in a worker
+// pod's image.
 import { readdir, readFile, readlink } from "node:fs/promises"
 import { join } from "node:path"
 
@@ -23,19 +24,38 @@ const LISTED_STATES: Readonly<Record<string, true>> = {
   "0B": true,
 }
 
-/** The rows of `table`, a /proc/net/tcp or /proc/net/tcp6 text, whose local port is `port`, in a
- *  state `ss -t` lists: the sockets `ss -tn '( sport = :<port> )'` shows. */
-export function localPortRows(table: string, port: number): SocketRow[] {
+/** 127.0.0.1 as /proc/net/tcp writes it, and as /proc/net/tcp6 writes it IPv4-mapped. */
+const LOOPBACK_V4: Readonly<Record<string, true>> = {
+  "0100007F": true,
+  "0000000000000000FFFF00000100007F": true,
+}
+
+/** The port of a table's `address:port`: hexadecimal, after the last colon, in either table. */
+function portOf(address: string): number {
+  return Number.parseInt(address.slice(address.lastIndexOf(":") + 1), 16)
+}
+
+/**
+ * The rows of `table`, a /proc/net/tcp or /proc/net/tcp6 text, that are a connection from local
+ * port `localPort` to port `remotePort` of 127.0.0.1, in a state `ss -t` lists. The local port
+ * alone does not name one socket: Linux gives one ephemeral port to connects to different
+ * destinations, so other live sockets on a busy machine can share it, and a higher pid's socket
+ * among them would be named in place of the connection's. `ss -tn '( sport = :<port> )'` had
+ * that gap too.
+ */
+export function connectionRows(table: string, localPort: number, remotePort: number): SocketRow[] {
   const rows: SocketRow[] = []
   // The first line is the column header.
   for (const line of table.split("\n").slice(1)) {
     const fields = line.trim().split(/\s+/)
     const local = fields[1]
+    const remote = fields[2]
     const state = fields[3]
     const inode = fields[9]
-    if (local === undefined || state === undefined || inode === undefined) continue
-    // The address is hexadecimal and the port after its last colon, in either table.
-    if (Number.parseInt(local.slice(local.lastIndexOf(":") + 1), 16) !== port) continue
+    if (local === undefined || remote === undefined || state === undefined) continue
+    if (inode === undefined) continue
+    if (portOf(local) !== localPort || portOf(remote) !== remotePort) continue
+    if (LOOPBACK_V4[remote.slice(0, remote.lastIndexOf(":")).toUpperCase()] !== true) continue
     if (LISTED_STATES[state] !== true) continue
     rows.push({ row: line.trim(), inode })
   }
@@ -43,22 +63,27 @@ export function localPortRows(table: string, port: number): SocketRow[] {
 }
 
 /**
- * The process that owns the TCP socket bound to local `port`, as `ss -tnp` names it
- * (`bun pid=123`): of the processes with an fd linked to the socket's inode, the one `ss` lists
- * first, which is the one with the highest pid, by its `comm`. A process this user cannot read
- * is passed over, as `ss` run by this user passes it over. With no owner found, it is
- * `unknown (...)`, naming the rows it read, or `no socket`, and each table it could not read: it
- * never throws, so a lookup started for a diagnosis cannot fail the row that started it.
+ * The process that owns the connection from local port `localPort` to port `remotePort` of
+ * 127.0.0.1, named as `ss -tnp` names a socket's holder (`bun pid=123`): of the processes with
+ * an fd linked to the connection's inode, the one `ss` lists first, which is the one with the
+ * highest pid, by its `comm`. A process this user cannot read is passed over, as `ss` run by
+ * this user passes it over. With no owner found, it is `unknown (...)`, naming the rows it read,
+ * or `no connection`, and each table it could not read: it never throws, so a lookup started
+ * for a diagnosis cannot fail the row that started it.
  *
  * `proc` is the procfs root, a stand-in's for a test.
  */
-export async function socketOwner(port: number, proc = "/proc"): Promise<string> {
+export async function socketOwner(
+  localPort: number,
+  remotePort: number,
+  proc = "/proc",
+): Promise<string> {
   const rows: SocketRow[] = []
   const unread: string[] = []
   for (const table of ["tcp", "tcp6"]) {
     const path = join(proc, "net", table)
     try {
-      rows.push(...localPortRows(await readFile(path, "utf8"), port))
+      rows.push(...connectionRows(await readFile(path, "utf8"), localPort, remotePort))
     } catch (error) {
       unread.push(`cannot read ${path}: ${error instanceof Error ? error.message : String(error)}`)
     }
@@ -67,7 +92,7 @@ export async function socketOwner(port: number, proc = "/proc"): Promise<string>
   const inodes = new Set(rows.map((each) => each.inode).filter((inode) => inode !== "0"))
   const owner = inodes.size === 0 ? undefined : await highestHolder(proc, inodes)
   if (owner !== undefined) return owner
-  const seen = rows.length === 0 ? "no socket" : rows.map((each) => each.row).join("; ")
+  const seen = rows.length === 0 ? "no connection" : rows.map((each) => each.row).join("; ")
   return `unknown (${[seen, ...unread].join("; ")})`
 }
 

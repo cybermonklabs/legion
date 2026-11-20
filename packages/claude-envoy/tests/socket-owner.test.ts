@@ -1,14 +1,20 @@
-// `socketOwner` (./socket-owner) names the process that owns a local TCP socket from /proc, as
-// `ss -tnp` names it, so the reopen rows that ask it (./reopen-server) need no iproute2: a worker
-// pod's image has none. The rows on a stand-in /proc hold the parse and the choice of owner; the
-// last holds a real socket on this machine's /proc, with no `ss` on PATH.
+// `socketOwner` (./socket-owner) names the process that owns this machine's end of a loopback TCP
+// connection, read from /proc, so the reopen rows that ask it (./reopen-server) need no iproute2:
+// a worker pod's image has none. The rows on a stand-in /proc hold the parse and the choice of
+// owner; the last holds a real connection on this machine's /proc, with no `ss` on PATH.
 import { expect, test } from "bun:test"
 import { mkdir, symlink, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
-import { localPortRows, socketOwner } from "./socket-owner"
+import { connectionRows, socketOwner } from "./socket-owner"
 
 const makeDirectory = temporaryDirectories("claude-envoy-socket-owner")
+
+/** The hang guard of the rows that start a process or build a large stand-in, the package test
+ *  script's own `--timeout`, so a run of this file alone has it too: it decides no verdict. At
+ *  loads of 500 to 700 the live row passed Bun's default 5 s in 5 of 300 runs, each a correct
+ *  run that had not finished. */
+const ROW_TIMEOUT_MS = 60_000
 
 const HEADER =
   "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
@@ -18,27 +24,47 @@ function row(sl: number, local: string, remote: string, state: string, inode: st
   return `  ${sl}: ${local} ${remote} ${state} 00000000:00000000 00:00000000 00000000  1000        0 ${inode} 1 0000000000000000 20 4 30 10 -1`
 }
 
-// 54321 is D431 and 4222 is 107E in the kernel's hexadecimal.
-const ESTABLISHED = row(0, "0100007F:D431", "0100007F:107E", "01", "111")
+// The kernel's hexadecimal: the ports 54321 (D431), 4222 (107E), 8080 (1F90) and 443 (01BB); the
+// addresses 127.0.0.1 (0100007F), 10.0.0.5 (0500000A), 10.0.0.9 (0900000A) and 10.1.2.3
+// (0302010A).
+/** The connection asked for: 127.0.0.1:54321 to 127.0.0.1:4222, the gate's port. */
+const THE_CONNECTION = row(0, "0100007F:D431", "0100007F:107E", "01", "111")
+/** Its other end: the gate's accepted socket, whose local port is 4222. */
 const ITS_PEER = row(1, "0100007F:107E", "0100007F:D431", "01", "222")
 const LISTENING = row(2, "0100007F:D431", "00000000:0000", "0A", "333")
-const TIME_WAIT = row(3, "0100007F:D431", "0100007F:1F90", "06", "0")
-const SYN_SENT = row(4, "0100007F:D431", "0100007F:1F91", "02", "555")
-const TABLE = [HEADER, ESTABLISHED, ITS_PEER, LISTENING, TIME_WAIT, SYN_SENT, ""].join("\n")
+/** An earlier connection of the same four parts, closed. */
+const TIME_WAIT = row(3, "0100007F:D431", "0100007F:107E", "06", "0")
+/** Linux gives one ephemeral port to connects to different destinations: three live sockets on
+ *  local port 54321 that are not the connection, to another host's port, to another loopback
+ *  port, and to port 4222 of another host. */
+const OTHER_DESTINATION = row(4, "0500000A:D431", "0900000A:01BB", "01", "444")
+const OTHER_LOOPBACK_PORT = row(5, "0100007F:D431", "0100007F:1F90", "01", "555")
+const OTHER_HOST_SAME_PORT = row(6, "0500000A:D431", "0302010A:107E", "01", "666")
+const TABLE = [
+  HEADER,
+  THE_CONNECTION,
+  ITS_PEER,
+  LISTENING,
+  TIME_WAIT,
+  OTHER_DESTINATION,
+  OTHER_LOOPBACK_PORT,
+  OTHER_HOST_SAME_PORT,
+  "",
+].join("\n")
 
-test("a row is the socket whose local port is the one asked for, in a state ss lists by default", () => {
-  // Not ITS_PEER, whose remote port is 54321; not the listening or TIME-WAIT socket on 54321,
-  // which `ss -t` leaves out with no state filter.
-  expect(localPortRows(TABLE, 54321).map((each) => each.inode)).toEqual(["111", "555"])
-  expect(localPortRows(TABLE, 54321).map((each) => each.row)).toEqual([
-    ESTABLISHED.trim(),
-    SYN_SENT.trim(),
-  ])
-  expect(localPortRows(TABLE, 4222).map((each) => each.inode)).toEqual(["222"])
-  expect(localPortRows(TABLE, 8080)).toEqual([])
+test("a row is the connection from the local port to that port of 127.0.0.1, in a state ss lists by default", () => {
+  // Not ITS_PEER, whose ports are the other way round; not the listening or TIME-WAIT socket,
+  // which `ss -t` leaves out with no state filter; not a socket on 54321 to another destination.
+  expect(connectionRows(TABLE, 54321, 4222)).toEqual([{ row: THE_CONNECTION.trim(), inode: "111" }])
+  expect(connectionRows(TABLE, 4222, 54321).map((each) => each.inode)).toEqual(["222"])
+  expect(connectionRows(TABLE, 54321, 443)).toEqual([])
+  expect(connectionRows(TABLE, 8080, 4222)).toEqual([])
+  // A dial the gate has not accepted yet is listed, as `ss -t` lists it.
+  const dialing = [HEADER, row(0, "0100007F:D431", "0100007F:107E", "02", "777"), ""].join("\n")
+  expect(connectionRows(dialing, 54321, 4222).map((each) => each.inode)).toEqual(["777"])
 })
 
-test("a /proc/net/tcp6 row is read by the port after its last colon", () => {
+test("a /proc/net/tcp6 row is read by the port after its last colon, its addresses IPv4-mapped", () => {
   const table = [
     HEADER,
     row(
@@ -48,9 +74,17 @@ test("a /proc/net/tcp6 row is read by the port after its last colon", () => {
       "01",
       "666",
     ),
+    // ::1 is another address than 127.0.0.1: a connection to [::1]:4222 is not one to the gate.
+    row(
+      1,
+      "00000000000000000000000001000000:D431",
+      "00000000000000000000000001000000:107E",
+      "01",
+      "667",
+    ),
     "",
   ].join("\n")
-  expect(localPortRows(table, 54321).map((each) => each.inode)).toEqual(["666"])
+  expect(connectionRows(table, 54321, 4222).map((each) => each.inode)).toEqual(["666"])
 })
 
 interface StandInProcess {
@@ -72,21 +106,23 @@ async function standInProc(
   // The entries of /proc that are no process.
   await mkdir(join(proc, "self"))
   await writeFile(join(proc, "uptime"), "1.00 1.00\n")
-  for (const each of processes) {
-    await mkdir(join(proc, String(each.pid)))
-    await writeFile(join(proc, String(each.pid), "comm"), `${each.comm}\n`)
-    if (each.fds === undefined) continue
-    await mkdir(join(proc, String(each.pid), "fd"))
-    for (const [fd, target] of Object.entries(each.fds)) {
-      await symlink(target, join(proc, String(each.pid), "fd", fd))
-    }
-  }
+  await Promise.all(
+    processes.map(async (each) => {
+      await mkdir(join(proc, String(each.pid)))
+      await writeFile(join(proc, String(each.pid), "comm"), `${each.comm}\n`)
+      if (each.fds === undefined) return
+      await mkdir(join(proc, String(each.pid), "fd"))
+      for (const [fd, target] of Object.entries(each.fds)) {
+        await symlink(target, join(proc, String(each.pid), "fd", fd))
+      }
+    }),
+  )
   return proc
 }
 
 const EMPTY = `${HEADER}\n`
 
-test("the owner is the holder of the socket's inode that ss names first, the highest pid, by its comm", async () => {
+test("the owner is the holder of the connection's inode that ss names first, the highest pid, by its comm", async () => {
   // A shell that dialed and the child that inherited its fd: `ss -tnp` prints
   // `users:(("sleep",pid=1000,fd=3),("bash",pid=200,fd=3))`. A sort of the pids as text would
   // put 200 above 1000.
@@ -97,58 +133,76 @@ test("the owner is the holder of the socket's inode that ss names first, the hig
     { pid: 200, comm: "bash", fds: { "0": "/dev/null", "3": "socket:[111]" } },
     { pid: 1000, comm: "sleep", fds: { "1": "pipe:[9]", "3": "socket:[111]" } },
   ])
-  expect(await socketOwner(54321, proc)).toBe("sleep pid=1000")
-  expect(await socketOwner(4222, proc)).toBe("nats-server pid=300")
+  expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=1000")
+  expect(await socketOwner(4222, 54321, proc)).toBe("nats-server pid=300")
+})
+
+test("of the sockets on one local port, the owner is the connection's, not a higher pid's socket to another destination", async () => {
+  // On a machine whose pids have wrapped, the other sockets on the port belong to higher pids.
+  const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
+    { pid: 200, comm: "bun", fds: { "3": "socket:[111]" } },
+    { pid: 8000, comm: "omp", fds: { "7": "socket:[444]" } },
+    { pid: 8500, comm: "broker", fds: { "7": "socket:[555]" } },
+    { pid: 8800, comm: "dispatch-head", fds: { "7": "socket:[666]" } },
+  ])
+  expect(await socketOwner(54321, 4222, proc)).toBe("bun pid=200")
+  expect(await socketOwner(54321, 443, proc)).toBe("unknown (no connection)")
 })
 
 test("a holder whose pid is below every pid of the scan's first batches is found", async () => {
-  const others = Array.from({ length: 600 }, (_, index) => ({
-    pid: 1000 + index,
-    comm: "other",
-    fds: { "0": "/dev/null" },
-  }))
+  // Processes this user cannot read, which the scan reads and passes over, as many as fill more
+  // than two of its batches.
+  const others = Array.from({ length: 600 }, (_, index) => ({ pid: 1000 + index, comm: "other" }))
   const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
     ...others,
     { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
     { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
   ])
-  expect(await socketOwner(54321, proc)).toBe("sleep pid=9")
-})
+  expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=9")
+}, ROW_TIMEOUT_MS)
 
-test("a socket on /proc/net/tcp6 has its owner named too", async () => {
+test("a connection on /proc/net/tcp6 has its owner named too", async () => {
   const tcp6 = [
     HEADER,
     row(
       0,
+      "0000000000000000FFFF00000100007F:D431",
+      "0000000000000000FFFF00000100007F:107E",
+      "01",
+      "777",
+    ),
+    row(
+      1,
       "00000000000000000000000001000000:D431",
       "00000000000000000000000001000000:107E",
       "01",
-      "777",
+      "778",
     ),
     "",
   ].join("\n")
   const proc = await standInProc({ tcp: EMPTY, tcp6 }, [
     { pid: 41, comm: "bun", fds: { "9": "socket:[777]" } },
+    { pid: 900, comm: "other", fds: { "9": "socket:[778]" } },
   ])
-  expect(await socketOwner(54321, proc)).toBe("bun pid=41")
+  expect(await socketOwner(54321, 4222, proc)).toBe("bun pid=41")
 })
 
 test("what no process this user can read holds is unknown, naming the rows read", async () => {
   const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
     { pid: 300, comm: "nats-server", fds: { "3": "socket:[222]" } },
   ])
-  expect(await socketOwner(54321, proc)).toBe(`unknown (${ESTABLISHED.trim()}; ${SYN_SENT.trim()})`)
-  expect(await socketOwner(8080, proc)).toBe("unknown (no socket)")
+  expect(await socketOwner(54321, 4222, proc)).toBe(`unknown (${THE_CONNECTION.trim()})`)
+  expect(await socketOwner(8080, 4222, proc)).toBe("unknown (no connection)")
 })
 
-test("a table that cannot be read is named in the unknown, never read as no socket", async () => {
+test("a table that cannot be read is named in the unknown, never read as no connection", async () => {
   const proc = await standInProc({ tcp6: EMPTY }, [])
-  expect(await socketOwner(54321, proc)).toMatch(
-    new RegExp(`^unknown \\(no socket; cannot read ${join(proc, "net", "tcp")}: .*ENOENT`),
-  )
+  const owner = await socketOwner(54321, 4222, proc)
+  expect(owner).toStartWith(`unknown (no connection; cannot read ${join(proc, "net", "tcp")}: `)
+  expect(owner).toContain("ENOENT")
 })
 
-test("a live socket's owner is named from this machine's /proc, with no ss on PATH", async () => {
+test("a live connection's owner is named from this machine's /proc, with no ss on PATH", async () => {
   const { promise: clientPort, resolve: accepted } = Promise.withResolvers<number>()
   const listener = Bun.listen({
     hostname: "127.0.0.1",
@@ -161,7 +215,7 @@ test("a live socket's owner is named from this machine's /proc, with no ss on PA
     },
   })
   // Another process dials and holds its socket until its stdin ends: the owner to tell from this
-  // one, which holds the accepted end, whose local port is the listener's.
+  // one, which holds the accepted end, and from any other socket that shares the client's port.
   const client = Bun.spawn(
     [
       process.execPath,
@@ -175,7 +229,7 @@ test("a live socket's owner is named from this machine's /proc, with no ss on PA
     const port = await clientPort
     process.env["PATH"] = ""
     // The kernel names a process by the first 15 bytes of the file it executed.
-    expect(await socketOwner(port)).toBe(
+    expect(await socketOwner(port, listener.port)).toBe(
       `${basename(process.execPath).slice(0, 15)} pid=${client.pid}`,
     )
   } finally {
@@ -184,4 +238,4 @@ test("a live socket's owner is named from this machine's /proc, with no ss on PA
     await client.exited
     listener.stop(true)
   }
-})
+}, ROW_TIMEOUT_MS)

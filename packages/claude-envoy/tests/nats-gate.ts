@@ -12,6 +12,9 @@ export interface GateLeg {
 export interface NatsGate {
   /** The address a channel server dials, in place of the broker's. */
   readonly url: string
+  /** The port of 127.0.0.1 the gate listens on, which `url` names: the remote port of each
+   *  client's socket. */
+  readonly port: number
   /** Connections the gate has accepted, shut or open: one per dial the client made. */
   readonly attempts: number
   /** Every connection accepted, in order. */
@@ -80,6 +83,7 @@ export function natsGate(brokerPort: number, accepted?: (leg: GateLeg) => void):
   })
   return {
     url: `nats://127.0.0.1:${listener.port}`,
+    port: listener.port,
     get attempts() {
       return legs.length
     },
