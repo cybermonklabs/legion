@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -337,8 +338,9 @@ func (s *shim) connect() (acked bool, err error) {
 			break
 		}
 		// Nothing the daemon sends before its ack is meant for a child that does not exist yet
-		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts).
-		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %.80s", line)
+		// (cmdWorkerShimConnect's onLine before hello_ack, worker-shim.ts). The line is the far
+		// side's, so the URL rule reads it whole before it is cut (redact.Runes).
+		s.log.Printf("[worker-shim] ignoring a frame received before hello_ack: %s", redact.Runes(string(line), 80))
 	}
 	// Spawned here, before the next line is read: the daemon's first RPC frame may share a read
 	// with the ack, and it must find a child to go to (cmdWorkerShimConnect's ack, worker-shim.ts).
@@ -739,7 +741,8 @@ func summarize(frame shimwire.Frame) string {
 			args.Reset()
 			args.WriteString("{}")
 		}
-		return shimwire.TypeToolExecutionStart + " " + tool + " " + truncate(args.String(), 80)
+		// The rule before the cut: a userinfo cut before its "@" is one the log's rule cannot find.
+		return shimwire.TypeToolExecutionStart + " " + tool + " " + redact.Runes(args.String(), 80)
 	case shimwire.Raw:
 		switch f.Type {
 		case "error":
@@ -763,13 +766,6 @@ func summarize(frame shimwire.Frame) string {
 		}
 	}
 	return ""
-}
-
-func truncate(s string, n int) string {
-	if runes := []rune(s); len(runes) > n {
-		return string(runes[:n])
-	}
-	return s
 }
 
 // outbox is every frame bound for the daemon: written to the connection when one is attached,

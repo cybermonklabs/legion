@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -22,8 +23,10 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 
 // newWorkerShimCommand is `legion worker-shim`, the command a runtime puts in front of every phase
 // worker's OMP: it dials the daemon's worker stream, and bridges OMP to it once acked. Its lines
-// go to stdout, which is what the pane shows; its exit status is OMP's. With --pod-safety, which
-// the Sandbox runtime passes and a tmux pane never does, OMP starts on the pod's baseline
+// go to stdout, which is what the pane shows, through the URL rule (redact.Writer), and so do its
+// refusals of a configuration on stderr (printRefusal); its exit status is OMP's. With
+// --pod-safety, which the Sandbox runtime passes and a tmux pane never does, OMP starts on the
+// pod's baseline
 // (podsafety.Apply: the two variables that place a pod's sessions, each set where the pod leaves
 // it unset, and nothing else — Legion writes no settings overlay of its own, so PI_CONFIG_FILES
 // rides through as the runtime composed it and nothing of a repository's settings is held off),
@@ -81,6 +84,10 @@ func newWorkerShimCommand(stdout, stderr io.Writer) *cobra.Command {
 }
 
 func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlags, podSafety bool, args []string, stdout, stderr io.Writer) int {
+	// The shim's own lines pass the URL rule (podLogs here, cfg.Log below). Oh My Pi's stderr
+	// and agent-secrets' output go to this process's own os.Stderr, which internal/shim hands
+	// them itself, outside the rule: Oh My Pi's stderr stays the pane's file.
+	defer podLogs(stderr)()
 	// SIGHUP stops this shim as SIGTERM does: tmux's kill-pane gives every process of the pane
 	// the hangup, and it is the only signal this process gets under that runtime — the daemon
 	// ends a pane with its shutdown frame and then kills the pane, never signalling the shim
@@ -106,13 +113,13 @@ func runWorkerShim(ctx context.Context, cmd *cobra.Command, given workerShimFlag
 		cfg.Env, err = podSafeEnvironment(cfg.Env)
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
+		printRefusal(stderr, "legion worker-shim", err)
 		return 1
 	}
-	cfg.Log = stdout
+	cfg.Log = redact.Writer(stdout)
 	code, err := shim.Run(ctx, cfg)
 	if err != nil {
-		fmt.Fprintf(stderr, "legion worker-shim: %v\n", err)
+		printRefusal(stderr, "legion worker-shim", err)
 		return 1
 	}
 	return code

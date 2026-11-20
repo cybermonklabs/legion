@@ -71,6 +71,22 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		t.Setenv("LEGION_LEAK_CHECK_MANIFEST_SHA256", "")
 		return refusalFile{}.refuse(t)
 	},
+	"connect to Postgres at …: default_query_exec_mode=<mode> is refused: the store's text rule needs the type of each parameter, which pgx learns from the server only in cache_statement, cache_describe and describe_exec": func(t *testing.T) string {
+		// The store's refusal, made from the DSN alone (store.PoolConfig, which daemon.CheckStart
+		// runs as store.Open does): it names the DSN's address and never its password. The same
+		// DSN in a mode in which pgx learns each parameter's type passes the check.
+		dsn := "postgres_dsn: postgres://legion:dsn-not-a-secret@127.0.0.1:1/legion?default_query_exec_mode="
+		accepted := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "describe_exec\n"}.write(t)
+		var out, errb bytes.Buffer
+		if code := run(context.Background(), []string{"legion", "config", "check", "--config", accepted}, &out, &errb); code != 0 {
+			t.Fatalf("legion config check of a DSN in describe_exec = %d, stderr %q; want 0: only exec and simple_protocol are refused", code, errb.String())
+		}
+		says := refusalFile{drop: []string{"postgres_dsn:"}, top: dsn + "exec\n"}.refuse(t)
+		if strings.Contains(says, "dsn-not-a-secret") {
+			t.Fatalf("the refusal %q names the DSN's password", says)
+		}
+		return says
+	},
 	"unknown key <key>": func(t *testing.T) string {
 		return refusalFile{top: "worker_backend: {}\n"}.refuse(t)
 	},

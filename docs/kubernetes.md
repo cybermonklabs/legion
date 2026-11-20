@@ -3119,8 +3119,8 @@ Its other calls get the same sentence — a claim route answers `{"error": …}`
 the operator's own controller instead gets `…: run legion controller start from the release built with this daemon`, since there is no pod for the daemon to relaunch it in.
 A claim whose launch installs no plugin (a Claude Code role in a pod) is never refused on its contract: nothing relaunches it, so it is served on its old contract until the update round over its pod brings a new image.
 Every other undecodable request body is logged `api: refused an undecodable request body` naming the route and the decoder's error.
-A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold, makes the body undecodable too:
-its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon cannot store` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
+A string anywhere in a request body, a member's name or its value, that holds a NUL character (U+0000), which PostgreSQL's text and jsonb cannot hold and the daemon's store would keep as U+FFFD, makes the body undecodable too:
+its route acts on nothing in it, and it is answered 400 `invalid request body: <place> holds a NUL character (U+0000) at character <n>, which the daemon API refuses rather than store it as U+FFFD` (or a stale caller's refusal, as any undecodable body is), naming the string's place in the body (`planReason`, `tasks[0].text`) and the character's place in the string, counted from 1 in code points, and never the string itself.
 A relaunched process that registers still on the old contract is charged as a launch failure (the claim remembers `PluginRelaunchFor`), ending, like any other exhausted budget, in a `worker-died`.
 The contract shows on every claim view — `GET /legion/v1/state`, `legion state --json`, `read_record`'s `pluginContract` field
 — on `legion claims list`'s line, whose last three columns are the claim's `updateRound`, the `updateHead` its worker reported (`-` for neither) and the tool call its agent is in (`-` for none), and on the state's controller locator.
@@ -7305,7 +7305,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   — `RPC failed; …` for a request of the transfer, `unable to access '…': …` for the first request
   — naming 408, 429 or a 5xx, or a connection that could not be made or broke (connect, DNS, reset, timeout, empty reply, a transfer cut short, an HTTP/2 stream reset, a TLS session closed);
   or, with no cause line, a pack stream that ended early.
-  Each retry logs the attempt's error on stdout as one line, the token replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
+  Each retry logs the attempt's error on stdout as one line, a URL's userinfo and query removed whole and the token anywhere else replaced by `***`, removes whatever a failed clone left beside the feed, and waits 5 s, 15 s, 30 s, then a minute:
   four retries at most, so a transfer still failing after the fourth fails the fetch.
   No retry starts past the bound.
   Any other failure — a token refused, a repository not found or not granted, a certificate that does not verify, a curl error the list does not name

@@ -8,9 +8,9 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // gitPins is the configuration every git this package starts reads last: no hook and no
@@ -417,21 +417,17 @@ const gitErrorBytes = 4096
 
 // gitSaid is what a failure of Guard.git quotes of the standard error git wrote: trimmed and, past
 // gitErrorBytes, its last gitErrorBytes bytes, after the count of the bytes left out before them.
-// The end is what is kept because git writes its `fatal:` line last, after any warnings. The cut
-// moves forward to the start of a character, looking at most utf8.UTFMax bytes ahead and staying
-// put where none starts there, so a valid character is never split and an invalid run cannot take
-// the whole quote.
+// The end is what is kept because git writes its `fatal:` line last, after any warnings. git can
+// quote a remote's URL, a token in its userinfo or its query, so the end is cut by redact.Tail,
+// which reads the whole of it through the URL rule first: a cut made first could start inside that
+// userinfo or query and leave a part of it where the rule no longer finds it. The cut moves forward
+// to the start of a character, looking at most utf8.UTFMax bytes ahead and staying put where none
+// starts there, so a valid character is never split and an invalid run cannot take the whole
+// quote.
 func gitSaid(stderr string) string {
-	said := strings.TrimSpace(stderr)
-	if len(said) <= gitErrorBytes {
+	said, cut := redact.Tail(strings.TrimSpace(stderr), gitErrorBytes)
+	if cut == 0 {
 		return said
 	}
-	cut := len(said) - gitErrorBytes
-	for i := cut; i < cut+utf8.UTFMax; i++ {
-		if utf8.RuneStart(said[i]) {
-			cut = i
-			break
-		}
-	}
-	return fmt.Sprintf("(%d bytes left out) …%s", cut, said[cut:])
+	return fmt.Sprintf("(%d bytes left out) …%s", cut, said)
 }
