@@ -1840,6 +1840,101 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
   );
 });
 
+// R3 at 1440 px on a project that gates two or three steps, where the header draws one approval
+// entry for each step (R6): at most 4 lines and 130 px, with no request waiting and with one on
+// every gated document, so each entry carries Approve and Request changes (decision 213). The
+// root has the large root's shape above - the measured title, 20 labels, 24 children with 3 done
+// and the 16-character login as its assignee - so the properties line is as long as R3's cases.
+test("the header holds its 1440 px limit on a root whose project gates two or three steps", async ({
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  const projects = [
+    { key: "TWO", steps: ["criteria", "spec"] },
+    { key: "THREE", steps: ["decisions", "criteria", "spec"] },
+  ] as const;
+  await phase(
+    browser,
+    async () => {
+      const roots: { key: string; documents: string[]; steps: readonly string[] }[] = [];
+      for (const { key, steps } of projects) {
+        await createProject({ key, name: `Gates ${steps.length} steps` });
+        await setGatedSteps(key, [...steps]);
+        const root = await createIssue({
+          force: true,
+          project: key,
+          spec: "The plan.",
+          title: MEASURED_TITLE,
+        });
+        // The spec is the root's own document; each other gated step gets the document it gates.
+        const documents = [root.primary_artifact_id ?? ""];
+        for (const step of steps) {
+          if (step === "spec") continue;
+          const name = step === "criteria" ? "verification.md" : "decisions.md";
+          const made = await createIssueArtifact(root.key, { content: `# ${name}\n`, name });
+          documents.push(made.artifact.id);
+        }
+        for (let at = 0; at < 24; at += 1) {
+          const child = await createIssue({
+            force: true,
+            parent: root.key,
+            project: key,
+            title: `Part ${at + 1} of the root`,
+          });
+          if (at < 3) await patchIssue(child.key, { status: "done" });
+        }
+        roots.push({ documents, key: root.key, steps });
+      }
+      return roots;
+    },
+    async (_alice, roots) => {
+      const context = await asUser(browser, LONG_LOGIN);
+      try {
+        await withIssuePage(context, LONG_LOGIN);
+        const page = await context.newPage();
+        await page.setViewportSize(viewportAt(DESKTOP.width));
+        for (const root of roots) {
+          await patchIssue(root.key, {
+            assignee: LONG_LOGIN,
+            labels: [...TWENTY_LABELS],
+            priority: 1,
+            status: "in_progress",
+          });
+          for (const waiting of [false, true]) {
+            if (waiting) {
+              for (const document of root.documents) {
+                await requestApproval(document, { summary: "Read it." });
+              }
+            }
+            await gotoIssue(page, `/issues/${root.key}`);
+            await expectHeaderDrawn(page);
+            for (const step of root.steps) {
+              await expect(
+                approvalEntry(page, step),
+                `the header draws no entry for the ${step} step of ${root.key}`
+              ).toBeVisible();
+            }
+            if (waiting) {
+              await expect(waitingCount(page)).toHaveText(
+                `Waiting on you (${root.documents.length})`
+              );
+            }
+            await expectHeaderWithinItsLimit(
+              page,
+              DESKTOP.width,
+              waiting,
+              TYPEFACE,
+              root.steps.length
+            );
+          }
+        }
+      } finally {
+        await context.close();
+      }
+    }
+  );
+});
+
 /** Waits for the frames in which the header's labels read the line again after its width
  *  changed: the observer's notification, the frame it waits for, and the commits after it. */
 function framesDrawn(page: Page, frames: number): Promise<void> {

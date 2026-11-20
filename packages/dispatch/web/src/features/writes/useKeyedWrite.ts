@@ -94,7 +94,7 @@ interface Press<TVariables> extends KeyedPress<TVariables> {
  *  press starts or the form lets it go (`forgetUnanswered`, on an edit); and the Retry of a press
  *  the reader stopped, which the surface makes again (`retry`, `stopped`, `again`). The shell's
  *  pending writes can make a stopped press again too; once that lands the hook lets the press go
- *  and, where it is the newest press, clears its error, as `useKeyedWrite` says. */
+ *  and, where it is the press the hook made last, clears its error, as `useKeyedWrite` says. */
 export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   TData | null,
   DefaultError,
@@ -265,13 +265,13 @@ function pressCallbacks<TData, TVariables, TContext>(
  * of its own too, since Dispatch would answer the old key with that refusal.
  *
  * The shell's pending writes can make a stopped press again as well (`Writes.retry`). Once that
- * lands, the hook holds the press no longer and, where it is the newest press, clears its error
- * (`reset`), so the surface's note that Dispatch has not confirmed it goes. No press of the hook
- * awaited that landing, so none of the surface's own callbacks run for it; the store reads every
- * query again instead, as it does for each landing of a plain write no press awaited
- * (`plainWrite`, `Writes.#landed`). The newest press is the one the hook made last, not the one
- * React drew last: a press made just before that landing is not drawn yet, and it keeps its own
- * pending state and its refusal.
+ * lands, the hook holds the press no longer and, where it is the press the hook made last
+ * (`mutate`, `mutateAsync` or `again`), clears its error (`reset`), so the surface's note that
+ * Dispatch has not confirmed it goes. No press of the hook awaited that landing, so none of the
+ * surface's own callbacks run for it; the store reads every query again instead, as it does for
+ * each landing of a plain write no press awaited (`plainWrite`, `Writes.#landed`). The press the
+ * hook made last is not always the newest press React drew (`variables`): a press made just
+ * before that landing is not drawn yet, and it keeps its own pending state and its refusal.
  *
  * A Retry (`retry`, `again`) runs the newest render's `write` or `request`, and its callbacks,
  * with the press's own variables. So a press carries every value they read - an upload's base

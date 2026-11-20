@@ -91,10 +91,11 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
 });
 
 // A press the reader stopped belongs to the press that made it, not to the values it carried:
-// only the surface's own Retry reaches it. So an action the reader takes later - a form's submit,
-// a chip's Approve - is a press of its own under a key of its own, however alike the two read,
-// and Dispatch decides it rather than answering with what the stopped press did. A press between
-// the two does not come into it: the stopped press is held until its Retry makes it again.
+// only a Retry of that press reaches it, the surface's own or the shell's. So an action the reader
+// takes later - a form's submit, a chip's Approve - is a press of its own under a key of its own,
+// however alike the two read, and Dispatch decides it rather than answering with what the stopped
+// press did. A press between the two does not come into it: the stopped press is held until a
+// Retry makes it again.
 test("a later press built afresh from equal values takes a key of its own", async () => {
   jest.useFakeTimers();
   const tab = keptTab();
@@ -207,57 +208,128 @@ test("a stopped press the store's Retry lands is the hook's stopped press no lon
 // press lands before React draws that new press. TanStack tells React of a press on a timer of its
 // own (`holdNotifications`), and here the press and the landing fall in one task, so React draws
 // neither before both are done. The landing lets the stopped press go and nothing more: the new
-// press stays pending, and Dispatch's refusal of it is the hook's error, which a surface says.
-test("a stopped press the store's Retry lands before a newer press is drawn leaves that press its state", async () => {
+// press stays pending, and Dispatch's refusal of it is the hook's error, which a surface says. A
+// surface makes a press by `mutate` or by `mutateAsync` (a label's or an agent pin's save), and
+// each must count as the press the hook made last.
+for (const made of ["mutate", "mutateAsync"] as const) {
+  test(`a stopped press the store's Retry lands before a newer press is drawn leaves that press its state (${made})`, async () => {
+    jest.useFakeTimers();
+    const tab = keptTab();
+    const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
+    const { client, hook } = renderShownAnswerWrite();
+    let notifications: HeldNotifications | undefined;
+
+    try {
+      act(() => hook.result.current.mutate({ selected: ["Ship"] }));
+      await stopTheLateWrite(client);
+      const [row] = writesOf(client).rows();
+      const stoppedKey = row?.key;
+      const retried = Promise.withResolvers<{ id: string }>();
+      const newer = Promise.withResolvers<never>();
+      answerAsk
+        .mockImplementationOnce(() => retried.promise as never)
+        .mockImplementationOnce(() => newer.promise);
+      act(() => writesOf(client).retry(row?.id ?? 0));
+      await tick(0);
+      expect(answerAsk.mock.calls.at(-1)?.[2]?.key, "the shell's Retry did not go out").toBe(
+        stoppedKey
+      );
+
+      notifications = holdNotifications();
+      await act(async () => {
+        if (made === "mutate") hook.result.current.mutate({ selected: ["Hold"] });
+        else void hook.result.current.mutateAsync({ selected: ["Hold"] }).catch(() => undefined);
+        await settle();
+        retried.resolve({ id: "ask-1" });
+        await settle();
+      });
+      expect(answerAsk.mock.calls.at(-1)?.[1]?.selected, "the newer press did not go out").toEqual([
+        "Hold",
+      ]);
+      expect(
+        writesOf(client)
+          .rows()
+          .map((write) => write.key),
+        "the shell's Retry did not land"
+      ).not.toContain(stoppedKey);
+      expect(
+        notifications.held(),
+        "React was told of the newer press before the landing, so the order is not held"
+      ).toBeGreaterThan(0);
+      notifications.tell();
+
+      expect(hook.result.current.status, "the stopped press's landing reset the newer press").toBe(
+        "pending"
+      );
+      expect(hook.result.current.variables).toEqual({ selected: ["Hold"] });
+      newer.reject(verdict);
+      await tick(0);
+      expect(hook.result.current.error, "the newer press's refusal left the hook").toBe(verdict);
+    } finally {
+      notifications?.tell();
+      hook.unmount();
+      answerAsk.mockRestore();
+      tab.close();
+      realClock();
+    }
+  });
+}
+
+// A surface with two stopped presses makes the older one again by its handle (`again`), and
+// React draws that press; then the shell's Retry of the newer one lands. The press the hook made
+// last is the one `again` made, so the landing lets the newer stopped press go and leaves the
+// older press's state: it is pending, and Dispatch's refusal of it is the hook's error.
+test("a stopped press the store's Retry lands after `again` made an older one leaves that one its state", async () => {
   jest.useFakeTimers();
   const tab = keptTab();
   const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
   const { client, hook } = renderShownAnswerWrite();
-  let notifications: HeldNotifications | undefined;
+  const stopLate = async () => {
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const late = writesOf(client)
+      .rows()
+      .find((write) => write.status === "late");
+    expect(late, "no write went late to stop").toBeDefined();
+    act(() => {
+      writesOf(client).stop(late?.id ?? 0);
+    });
+    await tick(60_000);
+  };
 
   try {
     act(() => hook.result.current.mutate({ selected: ["Ship"] }));
-    await stopTheLateWrite(client);
-    const [row] = writesOf(client).rows();
-    const stoppedKey = row?.key;
+    await stopLate();
+    act(() => hook.result.current.mutate({ selected: ["Hold"] }));
+    await stopLate();
+    const older = hook.result.current.stopped((variables) => variables.selected[0] === "Ship");
+    if (older === undefined) throw new Error("the hook held no stopped press of Ship");
+    const newerRow = writesOf(client)
+      .rows()
+      .find((write) => write.key !== answerAsk.mock.calls[0]?.[2]?.key);
+    expect(newerRow, "the shell shows no stopped press of Hold").toBeDefined();
+
+    const again = Promise.withResolvers<never>();
     const retried = Promise.withResolvers<{ id: string }>();
-    const newer = Promise.withResolvers<never>();
     answerAsk
-      .mockImplementationOnce(() => retried.promise as never)
-      .mockImplementationOnce(() => newer.promise);
-    act(() => writesOf(client).retry(row?.id ?? 0));
+      .mockImplementationOnce(() => again.promise)
+      .mockImplementationOnce(() => retried.promise as never);
+    act(() => hook.result.current.again(older));
     await tick(0);
-    expect(answerAsk.mock.calls.at(-1)?.[2]?.key, "the shell's Retry did not go out").toBe(
-      stoppedKey
-    );
-
-    notifications = holdNotifications();
-    await act(async () => {
-      hook.result.current.mutate({ selected: ["Hold"] });
-      await settle();
-      retried.resolve({ id: "ask-1" });
-      await settle();
+    expect(hook.result.current.variables, "the older press was not drawn").toEqual({
+      selected: ["Ship"],
     });
-    expect(answerAsk.mock.calls.at(-1)?.[1]?.selected, "the newer press did not go out").toEqual([
-      "Hold",
-    ]);
-    expect(
-      writesOf(client)
-        .rows()
-        .map((write) => write.key),
-      "the shell's Retry did not land"
-    ).not.toContain(stoppedKey);
-    notifications.tell();
+    act(() => writesOf(client).retry(newerRow?.id ?? 0));
+    await tick(0);
+    retried.resolve({ id: "ask-1" });
+    await tick(0);
 
-    expect(hook.result.current.status, "the stopped press's landing reset the newer press").toBe(
+    expect(hook.result.current.status, "the newer press's landing reset the older press").toBe(
       "pending"
     );
-    expect(hook.result.current.variables).toEqual({ selected: ["Hold"] });
-    newer.reject(verdict);
+    again.reject(verdict);
     await tick(0);
-    expect(hook.result.current.error, "the newer press's refusal left the hook").toBe(verdict);
+    expect(hook.result.current.error, "the older press's refusal left the hook").toBe(verdict);
   } finally {
-    notifications?.tell();
     hook.unmount();
     answerAsk.mockRestore();
     tab.close();
