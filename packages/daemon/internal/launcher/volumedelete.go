@@ -506,7 +506,10 @@ const volumeDeleteFirstFD = 3
 // (trailing): what it keeps goes into errRemoverGone's text, and from there into the sweep's
 // stop reason and a line of the pod's log, so its size is this package's to choose rather than
 // the child's. The first bytes are the ones kept because they are the ones that say why: the
-// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack.
+// error runVolumeTrimDelete writes before it exits, or a panic's message before its stack. The
+// child is legion's own volume-trim-delete, whose words are about the paths it removes, and a path
+// joined from a directory walk holds no "://", so the cut is made here rather than by redact.Read,
+// which would drop a long run that holds no byte ending a URL.
 type saidBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
