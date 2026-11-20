@@ -997,6 +997,13 @@ func inactiveThresholdFor(sessions *session.SessionRegistry, reapInterval, sweep
 	return bus.InactiveThresholdFor(max(goneHorizon, sessions.TTL()), reapInterval, sweepInterval)
 }
 
+// processStart is when this process started, as near as the program can read it: Go initialises
+// package variables before main runs. /metrics serves it as envoy_listener_start_time_seconds, so a
+// reader of two scrapes of one counter can tell a counter a restart reset from one that did not
+// move (packages/envoy/scripts/legacy-subjects-gate.sh compares envoy_listener_legacy_subjects_total
+// across two readings 72 hours apart, and a listener outside a cluster has no pod to show it).
+var processStart = time.Now()
+
 func main() {
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
@@ -1124,6 +1131,9 @@ func main() {
 	sessionStoredAfterLastSeen := met.NewCounter("envoy_session_messages_stored_after_last_seen_total", "Messages the stream held for a reaped session, stored after its last registration; not a count of unread messages, since the listener keeps no read receipt")
 	sendsToUnresponsive := met.NewCounter("envoy_sends_unresponsive_total", "Sends accepted and stored for a recipient past the live window")
 	legacySubjects := met.NewCounter("envoy_listener_legacy_subjects_total", "Names a caller gave in their old form, without the project the rename put into them, by kind: an interest a registration named, a role a claim named")
+	// The process's start, set once: every counter here counts from it, so two scrapes whose
+	// samples differ belong to one process only when this sample is the same in both.
+	met.NewGauge("envoy_listener_start_time_seconds", "When this listener process started, in Unix seconds: every counter on this page counts from that moment").Set(processStart.Unix())
 	fanoutUnresponsiveSkips := met.NewCounter("envoy_fanout_unresponsive_skipped_total", "Topic deliveries to a session past the live window that were not made: a push not sent, or an ad-hoc topic send's receipt not waited for; the message is stored for the session either way")
 	// The kept role lanes' outcomes, none labelled by role: a deployment sees unboundedly many
 	// role tokens, and each would be a series of its own for the process's life.
