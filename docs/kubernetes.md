@@ -1460,7 +1460,7 @@ With the member, the proxy reads the process at the other end of each connection
 It reads it before it dials anything for the connection (`admitted`, `sessionproxy.go`).
 The generation's check admits two processes (`sessionPeer`, `internal/launcher/sessionpeer.go`):
 
-- The launcher's own process, because the resume lookup (`resumable`) and a Claude Code keeper (`claudeKeeper`) connect from it.
+- The launcher's own process, because the resume lookups (`resumable`, and `sessionByID` for a start that names its session by its id alone) and a Claude Code keeper (`claudeKeeper`) connect from it.
 
 - The generation's Oh My Pi process.
   The check finds it in the process table (`memoryguard.Scan`), never from the process that connects.
