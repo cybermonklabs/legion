@@ -3651,7 +3651,7 @@ one Dispatch cannot spool to its temporary directory is Dispatch's own failure, 
 
 Every answer the layer judged echoes the key back (`Idempotency-Key: <key>`) - not the `400 KEY_INVALID`, the refusal of a caller it could not resolve, or the `413` of a body past its route's limit, each of which it answers before it judges the key and none of which runs the handler - and `/healthz` answers `idempotency_keys: true` on every build that judges the header - a fact of the binary, so it is true whatever the database or NATS answer, on a `503` too.
 A check tells a Dispatch that runs this layer from one that ignores the header, and would run a retried write a second time, by one or the other: the deploy check reads `/healthz` (`scripts/e2e/lib/dispatch-keyed-comment.ts`).
-The agents' client reads neither: every Dispatch it reaches runs this layer on every write route, so it sends a failed write again under its key and asks nothing first (`packages/envoy-client/README.md`).
+The agents' client reads neither: every Dispatch that carries `b1c42d1d7d` runs this layer on every write route, so it sends a failed write again under its key and asks nothing first (`packages/envoy-client/README.md`).
 
 ## Access log
 

@@ -5632,7 +5632,7 @@ describe("executeDispatchTool", () => {
       "and the close may or may not have taken effect. Read the issue's status before retrying: " +
       "done means it closed; otherwise retry with a reason that points at message message-7, " +
       "since retrying this call posts its reason again";
-    // This Dispatch runs the keyed layer, so each message also says that it finishes the close.
+    // This Dispatch runs the keyed layer.
     const keyedTail =
       ". Dispatch finishes an attempt it received whatever this command does, so read the write " +
       "back before you send it again: a new command sends it under a new key.";
