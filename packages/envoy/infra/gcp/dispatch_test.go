@@ -3,6 +3,7 @@ package gcp_test
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -943,7 +944,7 @@ func TestDispatchRegistersItsCloudResources(t *testing.T) {
 		"gcp:servicenetworking/connection:Connection":       1,
 		"gcp:container/cluster:Cluster":                     1,
 		"gcp:sql/databaseInstance:DatabaseInstance":         1,
-		"random:index/randomPassword:RandomPassword":        4,
+		"random:index/randomPassword:RandomPassword":        5,
 		"gcp:sql/database:Database":                         1,
 		"gcp:sql/user:User":                                 1,
 		"gcp:secretmanager/secretIamMember:SecretIamMember": 2,
@@ -2511,7 +2512,7 @@ func TestDispatchHoldsNoBrokerTokenOrAppKeyMaterial(t *testing.T) {
 	m, err := runDispatch(t, dispatchBrokerAndAppArgs(t), true)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{
-		"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
+		"DATABASE_URL", "DISPATCH_SERVE_DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
 	}, secretDataKeys(dispatchSecretData(t, m)))
 	for _, registration := range m.Registrations() {
 		if registration.Type != "kubernetes:core/v1:Secret" {
@@ -2529,17 +2530,47 @@ func TestDispatchHoldsNoBrokerTokenOrAppKeyMaterial(t *testing.T) {
 	}
 }
 
-// Unset, neither pair leaves a trace: the Secret keeps exactly its four keys, the NATS seed's two
+// Unset, neither pair leaves a trace: the Secret keeps exactly its five keys, the NATS seed's two
 // accessors, the app's and the listener's, are the only ones, and TestDispatchPodMatchesGolden pins
 // the pod template.
 func TestDispatchSecretCarriesNoBrokerOrAppKeyUnset(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{
-		"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
+		"DATABASE_URL", "DISPATCH_SERVE_DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
 	}, secretDataKeys(dispatchSecretData(t, m)))
 	require.ElementsMatch(t, []string{"example-dispatch-nats-seed-accessor", "example-dispatch-listener-nats-seed-accessor"},
 		registrationNames(registrationsOf(m, "gcp:secretmanager/secretIamMember:SecretIamMember")), "only the NATS seed's accessors exist")
+}
+
+// The Secret carries one database URL per login: DATABASE_URL the owner dispatch's, which the
+// server migrates and grants through, and DISPATCH_SERVE_DATABASE_URL the serving login's, which
+// every pool of the server connects as and which owns nothing. Each URL carries its own generated
+// password (the mock engine computes a RandomPassword's result as <name>-result), so neither login
+// is the other under a second name; both reach the database dispatch through the proxy sidecar;
+// and the app's container reads each from the Secret's key of the same name. Each URL is compared
+// part by part, so no literal URL with a password in it is written down.
+func TestDispatchSecretCarriesTheOwnerAndTheServingLogin(t *testing.T) {
+	m, err := runDispatch(t, dispatchArgs(), true)
+	require.NoError(t, err)
+	data := dispatchSecretData(t, m)
+	env := appEnv(t, m)
+	for key, login := range map[string][2]string{
+		"DATABASE_URL":                {"dispatch", "example-dispatch-password-result"},
+		"DISPATCH_SERVE_DATABASE_URL": {"dispatch_serve", "example-dispatch-serve-password-result"},
+	} {
+		value := unwrappedProperty(data[resource.PropertyKey(key)])
+		require.True(t, value.IsString(), "%s resolved to a %s", key, value.TypeString())
+		parsed, err := url.Parse(value.StringValue())
+		require.NoError(t, err, key)
+		require.NotNil(t, parsed.User, "%s names no login", key)
+		password, _ := parsed.User.Password()
+		require.Equal(t,
+			[]string{"postgres", login[0], login[1], "127.0.0.1:5432", "/dispatch", "sslmode=disable"},
+			[]string{parsed.Scheme, parsed.User.Username(), password, parsed.Host, parsed.Path, parsed.RawQuery},
+			"%s: scheme, login, password, host, path and query", key)
+		require.Equal(t, map[string]any{"name": "example-dispatch-dispatch", "key": key}, env[key], "the app reads %s from the Secret", key)
+	}
 }
 
 // The broker relay stores no secret: Dispatch's token is projected by the kubelet, so with it set
@@ -2718,7 +2749,7 @@ func TestDispatchGrantsTheAzureKeyAccessorOnlyWithTheKeyForm(t *testing.T) {
 			"%s mounts no Azure key", other)
 	}
 	require.ElementsMatch(t, []string{
-		"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
+		"DATABASE_URL", "DISPATCH_SERVE_DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY", "DISPATCH_SIGNIN_CLIENT_SECRET",
 	}, secretDataKeys(dispatchSecretData(t, m)))
 
 	args = dispatchArgs()

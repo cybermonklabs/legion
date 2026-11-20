@@ -76,6 +76,11 @@ type dispatchCluster struct {
 	clusterIdentifier pulumi.StringPtrInput
 }
 
+// dispatchServeLogin is the database login every pool of a serving Dispatch process connects as,
+// DISPATCH_SERVE_DATABASE_URL's. It is not the owner login dispatch, which DATABASE_URL names and
+// which owns the schema, so it may do only what the owner grants it.
+const dispatchServeLogin = "dispatch_serve"
+
 // dispatchDatabase is what the database half gives the rest of the component: the Cloud SQL
 // instance the proxy connects to, the component's own or the one existingDatabaseInstance names,
 // the generated secrets, and the pods' principals with the grants they hold: the app's
@@ -92,8 +97,11 @@ type dispatchDatabase struct {
 	// that the name readers reach Dispatch at comes back only once the instance's in-place restart
 	// is over: the component's own DatabaseInstance, and none for an instance
 	// existingDatabaseInstance names, which the component neither makes nor changes.
-	waitFor  []pulumi.Resource
-	password *random.RandomPassword
+	waitFor []pulumi.Resource
+	// password is the owner login dispatch's, which DATABASE_URL carries. servePassword is the
+	// serving login dispatchServeLogin's, which DISPATCH_SERVE_DATABASE_URL carries.
+	password      *random.RandomPassword
+	servePassword *random.RandomPassword
 	// signing is the signing-key set, one generated key per generation of
 	// signingKeyGenerations and in that order: the first signs every new cookie, every one
 	// verifies.
@@ -364,6 +372,18 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	if err != nil {
 		return nil, err
 	}
+	// Dispatch serves as a second login, dispatchServeLogin, which owns nothing in the database:
+	// the owner login dispatch migrates and grants it what a serving process uses, and Postgres
+	// then refuses it every write the grants leave out. Its password is generated beside the
+	// owner's and kept the same way, whatever existingDatabaseInstance says. The component
+	// registers no User for it: Cloud SQL makes a user it creates with no database role a member
+	// of cloudsqlsuperuser, which may create roles and event triggers, and a user created with
+	// roles must name roles the database holds already. envoy-dispatch creates the login itself,
+	// through the owner at boot, with no role, from the URL it is given.
+	servePassword, err := random.NewRandomPassword(ctx, s.hostname+"-serve-password", &random.RandomPasswordArgs{Length: pulumi.Int(32), Special: pulumi.Bool(false)}, child)
+	if err != nil {
+		return nil, err
+	}
 	// The instance the proxy connects to: the one existingDatabaseInstance names, for which the
 	// component registers no DatabaseInstance, Database or User, since that instance holds the
 	// database dispatch and the login dispatch already, as a promoted replica of the component's
@@ -458,7 +478,7 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		}
 	}
 	return &dispatchDatabase{
-		connectionName: connectionName, waitFor: waitFor, password: password, signing: signing,
+		connectionName: connectionName, waitFor: waitFor, password: password, servePassword: servePassword, signing: signing,
 		agentToken: agentToken, listenerToken: listenerToken,
 		principal: principal, seedAccessor: seedAccessor, listenerSeedAccessor: listenerSeedAccessor,
 		azureKeyAccessor: azureKeyAccessor, chatTokenAccessor: chatTokenAccessor,

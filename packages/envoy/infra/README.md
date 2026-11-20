@@ -704,7 +704,7 @@ resources each of those is, the sandbox and the public origin in the paragraph u
 | VPC, subnetwork, router and Cloud NAT | Private Autopilot nodes can pull images and reach the tailnet control plane without public node addresses. | Built |
 | Private services access range and connection | Cloud SQL receives a private IP on the component's VPC. | Not built |
 | Autopilot cluster | Enables the Secret Manager add-on, Secret Sync with rotation (GKE 1.33 or later; a new Secret Manager version reaches a synced Kubernetes Secret whose SecretProviderClass reads `versions/latest` without an apply), and Workload Identity. | Built |
-| Cloud SQL instance, database, user and generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. | Not built |
+| Cloud SQL instance, database, the owner login `dispatch` and its generated password | PostgreSQL 18 by default (`databaseVersion`), private IP only, automated backups and point-in-time recovery. The serving login's password is generated too, and `envoy-dispatch` creates that login itself ([The database logins](#the-database-logins)). | Not built |
 | Kubernetes namespace (not with `existingNamespace`), ServiceAccounts `<hostname>` and `<hostname>-listener`, Secrets, ConfigMap and SecretProviderClass | The app's account, `<hostname>`, which Workload Identity lets mount the NATS seed and whose projected token the app presents to the listener, and the listener's own, `<hostname>-listener`, which Workload Identity lets mount the seed and which holds nothing else, so no listener pod carries the app's account; the generated application secrets (`<hostname>-dispatch`), the listener's generated bearer in a Secret of its own (`<hostname>-listener`, one key `ENVOY_API_TOKEN`), the front door's auth key (`<hostname>-tailnet-auth-key`, one key `TS_AUTHKEY`), the Serve configuration (ConfigMap `<hostname>-serve`, rendered from the component's own names and registered after the Tailscale Service), and the NATS seed mount (and, with `azureEmbedKeySecret`, a second SecretProviderClass, `<hostname>-azure-embed-key`, for the Azure embedder's key, and with `chatTokenSecret` a third, `<hostname>-chat-token`, for the answerer's bearer token). | Not built |
 | Tailscale Service `svc:<hostname>` | The name every reader reaches Dispatch at, which the component declares itself through the `tailscale` provider it is given: one port, `tcp:443`, no tags, and a comment naming `<hostname>.<tailnetDnsName>`, the tailnet name it serves. It requests no tags because the OAuth client that creates it may not be allowed to set any, and Tailscale refuses a Service whose requested tags that client may not set; the hosts' own `tags` are what auto-approve them as the Service's hosts, and a tailnet policy grants the Service by its name. It is a tailnet resource and no child of the cluster, so it is parented on the component alone, its `protect` follows `deletionProtection` rather than being fixed (a child's explicit `Protect` overrides what it would inherit, so a fixed one could be changed only by a resource transform on the component or a state edit), and it is registered after the Cloud SQL instance. The provider's create is an upsert, so one that already exists under that name is adopted, its comment and ports overwritten; the request carries no tags, and Tailscale's API reference does not say whether the live Service keeps its own ([Moving a stack that declares the Service itself](#moving-a-stack-that-declares-the-service-itself)). | Not built |
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
@@ -750,9 +750,44 @@ no `<hostname>-tailnet-auth-key` or `<hostname>-tailnet-tls` Secret, neither the
 RoleBinding `<hostname>-tailnet-tls`, and no `<hostname>-serve` ConfigMap. Two Deployments
 remain, the app and the listener, each with its Service, its NetworkPolicy and the budget its own
 input turns on, and the app's policy admits the `allowedNamespaces` alone. The Secret
-`<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY`
-alone, since the mode takes no sign-in input. A Dispatch at `publicOrigin` builds exactly what the
-sandbox builds, and its Secret adds `DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+`<hostname>-dispatch` holds `DATABASE_URL`, `DISPATCH_SERVE_DATABASE_URL`,
+`DISPATCH_AGENT_TOKEN` and `DISPATCH_SIGNING_KEY` alone, since the mode takes no sign-in input. A
+Dispatch at `publicOrigin` builds exactly what the sandbox builds, and its Secret adds
+`DISPATCH_SIGNIN_CLIENT_SECRET` with the sign-in inputs.
+
+### The database logins
+
+Dispatch connects to its database as two logins, and the Secret `<hostname>-dispatch` holds one
+URL for each. Both reach the database `dispatch` through the Cloud SQL Auth Proxy sidecar at
+`127.0.0.1:5432`, and the app's container reads both:
+
+- `DATABASE_URL` names the login `dispatch`, which owns the schema. At boot `envoy-dispatch`
+  migrates through it, grants the serving login what a serving process uses, and closes it. Its
+  password is the RandomPassword `<hostname>-password`.
+- `DISPATCH_SERVE_DATABASE_URL` names the login `dispatch_serve`, which owns nothing. Every pool of
+  a serving process connects as it, so Postgres refuses it every write the owner's grants leave
+  out. Its password is the RandomPassword `<hostname>-serve-password`.
+
+The grants are Dispatch's, not the component's: Dispatch's migrations own the schema, so its boot
+grants on the tables they make, and its tests read the same grants.
+
+The component makes no Cloud SQL user for `dispatch_serve`. Cloud SQL gives a user it creates with
+no database role the role `cloudsqlsuperuser`, and a user created with roles must name roles that
+already exist in the database
+([Create and manage users](https://docs.cloud.google.com/sql/docs/postgres/create-manage-users#creating)).
+A member of `cloudsqlsuperuser` may create event triggers and roles
+([About PostgreSQL users and roles](https://docs.cloud.google.com/sql/docs/postgres/users)), which
+is more than a login that must own nothing. So `envoy-dispatch` creates the login itself at boot,
+through the owner, with no role, and sets its password from `DISPATCH_SERVE_DATABASE_URL`. The login
+is then the same on the component's own instance and on an instance `existingDatabaseInstance`
+names.
+
+Neither login is a superuser: Cloud SQL lets no customer create or use a login with the SUPERUSER
+attribute, and the users it creates have CREATEROLE, CREATEDB and LOGIN alone (the same page).
+
+An `envoy-dispatch` built before the serving login ignores `DISPATCH_SERVE_DATABASE_URL`. One built
+with it refuses to boot without it. So apply this release before the first image that reads it, or
+with it.
 
 ### A cluster and a database instance the component does not make
 
@@ -852,7 +887,10 @@ objects again while the state holds them.
 `dispatch`, whose password is the component's generated one. The RandomPassword
 `<hostname>-password` keeps that password whatever `existingDatabaseInstance` says, and
 `DATABASE_URL` carries it. No output carries the password. A promoted replica of the component's
-own instance holds both, with that password.
+own instance holds both, with that password. The instance needs nothing for the serving login
+`dispatch_serve`, which `envoy-dispatch` creates through the owner at boot ([The database
+logins](#the-database-logins)); the RandomPassword `<hostname>-serve-password` is kept the same
+way, and `DISPATCH_SERVE_DATABASE_URL` carries it.
 
 The proxy sidecar runs with `--private-ip`, so the instance must have a private IP that the
 cluster's pods reach. The instance must take its private IP through the private services

@@ -63,10 +63,10 @@ func TestDispatchExistingDatabaseInstanceRegistersNoInstanceOfItsOwn(t *testing.
 // On an instance it does not make the component keeps every RandomPassword it always generated,
 // each registered as the default path registers it, a same step from that run to this one
 // (dispatchPlanBetween): under its name and parent, with its inputs, its provider, its options and
-// its dependencies. They are the database password, which DATABASE_URL carries and the login
-// dispatch of a promoted replica of the component's own instance holds, the signing key, the agent
-// token and the listener's token. A switch to existingDatabaseInstance therefore replaces none of
-// them.
+// its dependencies. They are the owner's database password, which DATABASE_URL carries and the
+// login dispatch of a promoted replica of the component's own instance holds, the serving login's
+// password, which DISPATCH_SERVE_DATABASE_URL carries, the signing key, the agent token and the
+// listener's token. A switch to existingDatabaseInstance therefore replaces none of them.
 func TestDispatchExistingDatabaseInstanceKeepsEveryGeneratedPassword(t *testing.T) {
 	defaults, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
@@ -74,11 +74,12 @@ func TestDispatchExistingDatabaseInstanceKeepsEveryGeneratedPassword(t *testing.
 	require.NoError(t, err)
 	same := map[dispatchResourceName]string{
 		{randomPasswordType, "example-dispatch-password"}:       stepSame,
+		{randomPasswordType, "example-dispatch-serve-password"}: stepSame,
 		{randomPasswordType, "example-dispatch-signing-key"}:    stepSame,
 		{randomPasswordType, "example-dispatch-agent-token"}:    stepSame,
 		{randomPasswordType, "example-dispatch-listener-token"}: stepSame,
 	}
-	require.Equal(t, len(same), countRegistrations(m, randomPasswordType), "the four passwords, and no other")
+	require.Equal(t, len(same), countRegistrations(m, randomPasswordType), "the five passwords, and no other")
 	requireDispatchPlan(t, dispatchPlanBetween(t, defaults, m), same)
 }
 

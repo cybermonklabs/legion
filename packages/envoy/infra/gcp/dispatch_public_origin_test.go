@@ -200,7 +200,7 @@ func TestDispatchRendersTheIAPDoor(t *testing.T) {
 			require.False(t, strings.HasPrefix(name, "DISPATCH_SIGNIN_"), "%s configures Google sign-in beside IAP", name)
 		}
 	}
-	require.ElementsMatch(t, []string{"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY"}, secretDataKeys(dispatchSecretData(t, m)))
+	require.ElementsMatch(t, []string{"DATABASE_URL", "DISPATCH_SERVE_DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY"}, secretDataKeys(dispatchSecretData(t, m)))
 	require.Equal(t, dispatchSandboxGolden(t), dispatchRegistrations(m))
 }
 

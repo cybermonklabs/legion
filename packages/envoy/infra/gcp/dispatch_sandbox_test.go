@@ -118,7 +118,7 @@ func TestDispatchSandboxRendersNoSignIn(t *testing.T) {
 	for name := range appEnv(t, m) {
 		require.False(t, strings.HasPrefix(name, "DISPATCH_SIGNIN_"), "%s configures browser sign-in", name)
 	}
-	require.ElementsMatch(t, []string{"DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY"},
+	require.ElementsMatch(t, []string{"DATABASE_URL", "DISPATCH_SERVE_DATABASE_URL", "DISPATCH_AGENT_TOKEN", "DISPATCH_SIGNING_KEY"},
 		secretDataKeys(dispatchSecretData(t, m)))
 }
 

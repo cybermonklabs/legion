@@ -44,6 +44,15 @@
             }
           },
           {
+            "name": "DISPATCH_SERVE_DATABASE_URL",
+            "valueFrom": {
+              "secretKeyRef": {
+                "key": "DISPATCH_SERVE_DATABASE_URL",
+                "name": "example-dispatch-dispatch"
+              }
+            }
+          },
+          {
             "name": "DISPATCH_AGENT_TOKEN",
             "valueFrom": {
               "secretKeyRef": {
