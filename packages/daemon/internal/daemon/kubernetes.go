@@ -254,13 +254,18 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 
 // probeReservation is the image probe pod's own reservation, fixed: `legion probe-image` starts
 // one Oh My Pi at a time, each briefly (pi.agents, the plugin's load, the session-storage
-// setting), runs no lane, holds its TLS clients and headless Chromium to the two compromised
-// chains and a control site, and exits. It reserves 500m so the probe ends at least 60 s inside
-// its 240 s command budget at the defaults. Five runs of `legion probe-image --skip-agent-models`
-// at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on CPU. Predicted at
-// 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
-// short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
-// because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
+// setting), runs no lane, holds its TLS clients and headless Chromium to the chains its own server
+// serves and to two public test sites, and exits. It reserves 500m so the probe ends at least 60 s
+// inside its 240 s command budget at the defaults. Five runs of `legion probe-image
+// --skip-agent-models` at 1 CPU under gVisor (2026-11-18) took 51.9–76.2 s, 19.40–35.99 s of it on
+// CPU. Predicted at 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s
+// inside the budget, short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The
+// runs are at 1 CPU because the builds namespace refuses a Job under 1 CPU, so the 500m figures are
+// predictions. Once the probe served its own TLS chains (2026-11-20), its runs in the worker image
+// of 1c7c825367 in a CPU-quota scope on a development host took 125.4–147.3 s at 500m (eight runs,
+// 47.1–56.6 s on CPU), 93 s inside the budget at the slowest, and 73.5–104.4 s at 1 CPU (thirteen
+// runs), with a peak of 358 MiB; on that host main's probe took 66.5–91.1 s at 1 CPU, slower than
+// under gVisor.
 // Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
 // kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
 // still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk

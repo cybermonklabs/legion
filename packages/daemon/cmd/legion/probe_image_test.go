@@ -160,12 +160,18 @@ func inImage(t *testing.T, contract, omp string) image {
 // says model fallback is off.
 const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
 
+// probeImage runs `legion probe-image` with stand-in TLS clients, its positive controls passing,
+// its vendored chains asked and no public site reached: the probe's own server still starts and
+// serves, so a run proves the command starts and stops it, and the public sites are reported
+// UNKNOWN with each client held to them.
 func probeImage(args ...string) (int, string, string) {
-	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
+	previousClients, previousControls, previousVendored, previousPublic := newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites
 	newImageTLSClients = passingImageTLSClients
-	newTLSPositiveControls = func(context.Context, []string) error { return nil }
+	newTLSPositiveControls = func(context.Context, []string, string, []tlsSite) error { return nil }
+	newVendoredTLSSites = askedVendoredTLSSites
+	newPublicTLSSites = unaskedPublicTLSSites
 	defer func() {
-		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
+		newImageTLSClients, newTLSPositiveControls, newVendoredTLSSites, newPublicTLSSites = previousClients, previousControls, previousVendored, previousPublic
 	}()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
@@ -241,8 +247,23 @@ func TestProbeImagePrintsTheTableAndTheOKLineWithThisBinarysContract(t *testing.
 	if !strings.HasPrefix(stdout, strings.Join(table, "\n")+"\n") || !strings.HasSuffix(stdout, okLine) {
 		t.Fatalf("stdout = %q, want the table, TLS decisions, then the OK line %q", stdout, okLine)
 	}
-	if got, want := strings.Count(stdout, "probe-image: TLS client "), len(tlsSites)*len(workerTLSClients); got != want {
-		t.Fatalf("stdout carries %d TLS decisions, want one for each client and site (%d):\n%s", got, want, stdout)
+	// Every client at the fixture chains and the control, each client that verifies a chain during
+	// the handshake at the two vendored chains, and each of the others at the two public sites.
+	afterHandshake := len(tlsChainAfterHandshakeClients())
+	want := len(servedTLSSiteNames)*len(workerTLSClients) + 2*(len(workerTLSClients)-afterHandshake) + 2*afterHandshake
+	if got := strings.Count(stdout, "probe-image: TLS client "); got != want {
+		t.Fatalf("stdout carries %d TLS decisions, want %d:\n%s", got, want, stdout)
+	}
+	for _, site := range unaskedPublicTLSSites(context.Background(), nil, "") {
+		if line := tlsSiteLine(site); !strings.Contains(stdout, line+"\n") {
+			t.Errorf("stdout = %q, want the line %q", stdout, line)
+		}
+		for _, client := range tlsChainAfterHandshakeClients() {
+			line := "probe-image: UNKNOWN: " + client + " against " + tlsSiteURL(site).Hostname() + ": not asked: " + site.unasked
+			if !strings.Contains(stdout, line+"\n") {
+				t.Errorf("stdout = %q, want the line %q", stdout, line)
+			}
+		}
 	}
 }
 
@@ -477,7 +498,9 @@ func TestProbeImageNamesTheUserOfTheSeedItsPointerNames(t *testing.T) {
 
 	code, stdout, stderr := probeImage(img.flags()...)
 
-	want := ")\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
+	// The TLS probe's last line before it is the UNKNOWN line of the last client held to a public
+	// site the stand-ins do not reach (probeImage).
+	want := ": not asked: the test asks no public site\nprobe-image: nats-nkey-user=" + public + "\nprobe-image: OK (" + omp + ") session-storage=probed extensions=discovered agent-models=resolved" + capabilityMarks + thisBinarysContract + "\n"
 	if code != 0 || !strings.HasSuffix(stdout, want) || strings.Contains(stdout+stderr, seed) {
 		t.Fatalf("probe-image with a user seed = %d %q %q, want the table, then %q, and no seed", code, stdout, stderr, want)
 	}
