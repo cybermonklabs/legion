@@ -684,6 +684,7 @@ func (s *Server) registerReply(sess *Session, wait time.Duration) Response {
 	if wait > 0 && (credential || settled != nil) {
 		select {
 		case <-sess.readyCh():
+		case <-sess.refused:
 		case <-settled:
 		case <-time.After(wait):
 		case <-sess.stop:
@@ -718,7 +719,9 @@ func (s *Server) notEnrolled(st enrollmentState) Response {
 		return Response{Code: CodeNoCredential, Error: s.Broker.noCredentialText()}
 	}
 	msg := "this session is not enrolled with the broker yet"
-	if st.LastError != "" {
+	if st.State == "refused" {
+		msg = "the broker refuses to enroll this session, and the helper asks no more: " + st.LastError
+	} else if st.LastError != "" {
 		msg += "; last attempt: " + st.LastError
 	}
 	return Response{Code: CodeNotEnrolled, Error: msg}
@@ -1009,6 +1012,22 @@ func sessionHeld(err error) bool {
 	return errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "SESSION_HELD"
 }
 
+// restrictedMemberRefusal answers the broker's refusal in err, and true, when err is the broker
+// refusing an enrollment 403 RESTRICTED_MEMBER_ENROLLS_NOTHING: the person of the machine login
+// the attempt enrolled under is one Dispatch calls a restricted member, someone an access list
+// admitted from outside the deployment's sign-in domain, and the broker enrolls no session of
+// theirs and releases them no secret (enroll.ErrRestrictedMember). That answer is about the
+// person and not the moment, so enrollLoop makes it final: one call, the refusal kept on the
+// session as its last error, its state "refused", and no retry; a session relaunched under
+// another person's authority enrolls afresh.
+func restrictedMemberRefusal(err error) (*BrokerError, bool) {
+	var be *BrokerError
+	if errors.As(err, &be) && be.Status == http.StatusForbidden && be.Code == "RESTRICTED_MEMBER_ENROLLS_NOTHING" {
+		return be, true
+	}
+	return nil, false
+}
+
 // heldRetryCap is the longest enrollLoop waits between attempts at a session name another
 // principal holds. Nothing this box does ends that hold, so the question is asked rarely; but
 // the answer turns on the principal this helper enrols under, a sign-in changes that with no
@@ -1291,6 +1310,12 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			if renamed {
 				return
 			}
+			if refusal, final := restrictedMemberRefusal(err); final {
+				sess.refuse(refusal.Error())
+				s.Log.Error("session cannot enroll: the broker refuses every enrollment under this machine login, whose person Dispatch calls a restricted member, and releases no secret to that person's agents. The helper asks no more for this session",
+					"runtime_id", sess.RuntimeID(), "session_id", sess.SessionID(), "code", refusal.Code, "error", refusal)
+				return
+			}
 			sess.setError(err.Error())
 			if principal, held := heldPrincipal(err); held {
 				if principal != heldAs {
@@ -1336,6 +1361,11 @@ func (s *Server) enrollLoop(ctx context.Context, sess *Session) {
 			}
 			var err error
 			id, lease, err = s.Broker.EnrollIdentity(ctx, cur)
+			if _, final := restrictedMemberRefusal(err); final {
+				// The broker's answer for the machine login's person, which no retry changes:
+				// the retry ends at this one attempt (errFinal).
+				return fmt.Errorf("%w: %w", err, errFinal)
+			}
 			return err
 		})
 		if renamed {

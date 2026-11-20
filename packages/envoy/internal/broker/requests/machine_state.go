@@ -52,6 +52,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
@@ -324,6 +325,11 @@ type Machine struct {
 	// nothing, and such a request is listed for everyone. cmd/broker wires the judge's read of
 	// Dispatch where BROKER_JUDGE_DISPATCH_URL is set.
 	Assignees Assignees
+	// Projects asks Dispatch what kind of member a person is (projectaccess.Client,
+	// BROKER_PROJECT_ACCESS_URL), the client enroll.Service.Projects is: Create and every release
+	// read it for the person a session acts for, on the pool before any transaction, and a
+	// restricted member's session is denied every secret (restrictedOperator). nil asks nothing.
+	Projects projectaccess.Access
 	// Minters maps each policy type (policy.Types) to its Minter. A release never returns the
 	// stored value of a type secret.
 	Minters map[string]Minter
@@ -448,6 +454,11 @@ type enrollmentRow struct {
 	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared
 	// secret's request (claimAssignee). The live-enrollment read (enrollment) fills it.
 	Claim string
+	// Restricted is whether Dispatch called the person this enrollment acts for a restricted
+	// member when the caller asked, before any transaction (restrictedOperator): Create and every
+	// release ask, and requester hands it to the policy, which denies such a session every
+	// secret. It is false wherever nobody asked.
+	Restricted bool
 }
 
 // requester is enrollment e as the policy sees it, read through q: the person it acts for (none
@@ -477,6 +488,9 @@ type enrollmentRow struct {
 // The withheld names are read by the enrollment's own id, and an adoption carries a session's
 // withheld_secrets rows to the enrollment it moves to, so these are the names withheld from the
 // session rather than from a box it has left.
+// A session whose person the caller found a restricted member (enrollmentRow.Restricted) is
+// marked so, and the policy denies it every secret (policy.ReasonRestrictedMember); a pod that
+// acts for no person is never marked.
 func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (policy.Requester, error) {
 	rows, err := q.Query(ctx, `select name from withheld_secrets where enrollment_id=$1`, e.ID)
 	if err != nil {
@@ -505,7 +519,36 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 	if m.unmappedPersonPod(e) {
 		operator = ""
 	}
-	return policy.Requester{Operator: operator, Service: service, Withheld: withheld}, nil
+	return policy.Requester{Operator: operator, Service: service, Withheld: withheld, Restricted: e.Restricted && operator != ""}, nil
+}
+
+// restrictedOperator reports whether Dispatch calls the person e acts for a restricted member
+// (projectaccess.Restricted), asked through m.Projects on no transaction, as the rule
+// internal/broker/projectaccess states for every caller is: Create asks it before it reads a
+// live grant to reuse, every release before it re-checks the grant, and every airlock proxy
+// connection before it carries anything (AirlockConnection), since the proxy holds a grant's
+// values past the release that read them. The person is the one requester reads, so a pod whose
+// account BROKER_POD_OPERATORS no longer maps, a service's pod and a machine's own session ask
+// nothing, and neither does a machine with no client of Dispatch.
+//
+// It is the second half of the rule that a restricted member's agents get no secret, the first
+// being that such a person's machine login enrolls nothing (enroll.Service.checkMember). This
+// half reaches the sessions that rule never saw: one a broker with no client of Dispatch
+// enrolled, and one whose person Dispatch called something else when it enrolled. A failure to
+// ask, of any kind, is a *projectaccess.MemberKindUncheckable, which Create, every release and
+// every airlock connection return as it is: a check that cannot decide refuses, so while Dispatch
+// cannot be asked about a person nothing is decided, released or carried for that person's
+// sessions, and each asks again.
+//
+// An approval of a request still pending from before asks nothing, and neither does the model
+// judge's read of the policy: no request a restricted member's session makes is left pending
+// once Create asks, and the grant an approval of an older one makes is refused and ended at its
+// first release, where a value would leave.
+func (m *Machine) restrictedOperator(ctx context.Context, e enrollmentRow) (bool, error) {
+	if m.Projects == nil || e.Operator == nil || m.unmappedPersonPod(e) {
+		return false, nil
+	}
+	return projectaccess.Restricted(ctx, m.Projects, *e.Operator)
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
@@ -633,6 +676,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	}
 	if !fresh {
 		return Request{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
+	}
+	// Whether the session's person is a restricted member, asked here, on no transaction and
+	// before a live grant is looked for, so every read below — the reuse's re-check, the judge's
+	// lifetime, the narrowing check and the transaction's own evaluation — denies such a session
+	// every name (restrictedOperator). An answer that could not be had refuses the ask whole.
+	if enr.Restricted, err = m.restrictedOperator(ctx, enr); err != nil {
+		return Request{}, err
 	}
 
 	set, err := m.rereadMissing(ctx, enrollmentID, names, m.Policy.Get())

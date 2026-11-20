@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -103,6 +104,12 @@ var (
 	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
 	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrRestrictedMember refuses an enrollment that would act for a person Dispatch calls a
+	// restricted member (projectaccess.MemberRestricted): a person an access list admitted from
+	// outside the deployment's sign-in domain. Such a person's machine login enrolls no session,
+	// so none of their agents is released a secret; their login still trades for a token that
+	// names their projects, which is all their agents need. Nothing is written.
+	ErrRestrictedMember = errors.New("a restricted member's machine login enrolls no session, and the broker releases no secret to that person's agents")
 )
 
 type Credential struct {
@@ -239,6 +246,13 @@ type Service struct {
 	// BROKER_K8S_OIDC_AUDIENCE; nil on a broker that trusts no Kubernetes token issuer, which enrolls
 	// no pod and serves no Kubernetes token login.
 	Pod PodVerifier
+
+	// Projects asks Dispatch what kind of member a person is (projectaccess.Client,
+	// BROKER_PROJECT_ACCESS_URL): Create asks it of the person every enrollment under a person's
+	// machine login or pod login acts for, before its transaction begins, and refuses a
+	// restricted member (ErrRestrictedMember). nil on a broker with no such client, which asks
+	// nothing and enrolls as before.
+	Projects projectaccess.Access
 
 	// Sessions binds every enrollment that names a session to the principal its name is held
 	// under (namePrincipal), in the enrollment's own transaction, and refuses it a name another
@@ -667,6 +681,12 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // a service's), even after the caller's launcher proof was verified, is
 // ErrUnauthenticated.
 //
+// An enrollment that acts for a person — under a person's machine login or pod login — is made
+// only once Dispatch has said that person is no restricted member (checkMember): a restricted
+// member's login enrolls nothing (ErrRestrictedMember), and while Dispatch cannot be asked
+// nothing is enrolled (projectaccess.MemberKindUncheckable). A person's sign-in on a machine asks
+// nothing.
+//
 // An enrollment that names a session also records the principal its grants follow
 // (carryPrincipal), and takes what every predecessor of that name under that principal, or under
 // an account paired with its own (SessionBinder.PairedWith), still holds: its grants, its pending
@@ -729,6 +749,9 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		}
 		in.Subject = &claims.Subject
 	}
+	if err := s.checkMember(ctx, cred, in); err != nil {
+		return Enrollment{}, err
+	}
 	// The other half of the pair a grant follows, read from what the caller has just proved and
 	// written beside the session's name in the insert below (carryPrincipal), the principal the
 	// name itself is held under (namePrincipal), and whose the enrollment's requests are
@@ -755,6 +778,38 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 		return result, err
 	}
 	return Enrollment{}, fmt.Errorf("create enrollment: exhausted retries after concurrent changes to runtime %s", in.RuntimeID)
+}
+
+// checkMember is Create's rule for the person an enrollment acts for, run once every other check
+// of the caller has passed and before any transaction begins, so that no call to Dispatch holds
+// a row lock or a pooled connection (the rule internal/broker/projectaccess states for every
+// caller). It asks Dispatch what kind of member in.Operator is: a restricted member, a person an
+// access list admitted from outside the deployment's sign-in domain, is ErrRestrictedMember, so
+// that person's agents get no session to be released a secret under, however their machine login
+// was approved and whichever route the launcher reached; a full member, and a person Dispatch
+// holds no row for, enroll as before. Any failure to ask — Dispatch not answering, Dispatch
+// refusing the broker's own account (projectaccess.ErrBrokerRefused), a kind this broker does not
+// know (projectaccess.ErrUnknownMemberKind) — is the *projectaccess.MemberKindUncheckable
+// projectaccess.Restricted returns: a check that cannot decide refuses, and the launcher enrols
+// again.
+//
+// It asks nothing for an enrollment that acts for no person (a service's pod, a machine's own
+// session), for a person's sign-in on a machine, whose person the broker verified against
+// BROKER_SIGNIN_DOMAIN itself when the token exchange minted the credential and so is a full
+// member's (the exchange asks no member kind of a sign-in either), and on a broker with no client
+// of Dispatch (Projects nil).
+func (s *Service) checkMember(ctx context.Context, cred Credential, in Enrollment) error {
+	if s.Projects == nil || in.Operator == nil || signInCredential(cred.Subject) {
+		return nil
+	}
+	restricted, err := projectaccess.Restricted(ctx, s.Projects, *in.Operator)
+	switch {
+	case err != nil:
+		return err
+	case restricted:
+		return fmt.Errorf("%w: %s is a restricted member", ErrRestrictedMember, *in.Operator)
+	}
+	return nil
 }
 
 // createAttempt makes one insert-then-recover attempt. retry is true when the row that conflicted

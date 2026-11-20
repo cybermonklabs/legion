@@ -152,6 +152,10 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// enroll.Renew guards against. The caller's proof is no longer good for anything.
 		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "enrollment is not live")
 		return
+	case writeMemberKindUncheckable(w, "the secret request", err):
+		// The broker could not learn whether Dispatch calls the session's person a restricted
+		// member, so it decides nothing and writes no request: 503, and the session asks again.
+		return
 	case err != nil:
 		writeInternal(w, "create request", err)
 		return
@@ -628,6 +632,10 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case writeNarrowingRefusal(w, err):
 		// The narrowing refusals Values makes for a grant released a second time, answered as
 		// the request route answers Create's own.
+		return
+	case writeMemberKindUncheckable(w, "the release", err):
+		// As the request route answers it: nothing is released while the broker cannot learn
+		// whether the session's person is a restricted member.
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)

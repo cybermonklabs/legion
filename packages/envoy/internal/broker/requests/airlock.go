@@ -507,8 +507,9 @@ func proxyPassword(names map[string]AirlockName) string {
 
 // AirlockConnection is what one proxy connection's password proves: the live grant behind it and
 // every airlock name it may carry. It runs the checks that must hold on EVERY connection - the
-// grant's liveness, its enrollment's lease, and the names its operator withheld - and no others;
-// the full release checks run once per grant per pod, in AirlockValues.
+// grant's liveness, its enrollment's lease, whether Dispatch calls the enrollment's person a
+// restricted member, and the names its operator withheld - and no others; the full release
+// checks run once per grant per pod, in AirlockValues.
 type AirlockConnection struct {
 	GrantID, EnrollmentID, RequestID string
 	// SessionID and RuntimeID are the enrollment's: the session the grant belongs to, empty for
@@ -535,18 +536,28 @@ type AirlockGrantName struct {
 // enrollment's operator withheld, and refuses with ErrAirlockNoNames when that leaves none, which
 // the proxy answers 407.
 //
-// This runs on every connection, so it is indexed reads alone and nothing else: the row by its
-// primary key with its grant and enrollment joined in, the grant's other placeholders by
-// grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
-// policy snapshot already in memory, which costs no query. The checks a release makes besides —
-// the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
-// AirlockValues's, once per grant per pod.
+// It asks, on every connection, whether Dispatch calls the person the enrollment acts for a
+// restricted member (restrictedOperator), because the proxy serves a grant's values from what it
+// read once for as long as its pod holds them (AirlockValues), and this is the one read every
+// call makes. A restricted member's grant ends for good here (errRestrictedMember), answered
+// ErrGrantNotLive, which the proxy answers 407 and which cuts the calls it carries for the grant;
+// an answer that cannot be had is the *projectaccess.MemberKindUncheckable restrictedOperator
+// returns, which the proxy answers 503, so nothing is carried for the person while it cannot be
+// told. The answer is projectaccess's, cached CacheTTL, so most connections ask Dispatch nothing.
+//
+// Besides that question it is indexed reads alone: the row by its primary key with its grant and
+// enrollment joined in, the grant's other placeholders by grant_id, and the enrollment's withheld
+// names by enrollment_id. Each name's type comes from the policy snapshot already in memory, which
+// costs no query. The checks a release makes besides — the approval chain, the policy
+// re-evaluation, the max-grant and the airlock fingerprint — are AirlockValues's, once per grant
+// per pod.
 func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
 	var conn AirlockConnection
 	var reason string
 	var live bool
+	var enr enrollmentRow
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
-		e.runtime_id, coalesce(e.session_id, ''),
+		e.runtime_id, coalesce(e.session_id, ''), e.kind, e.operator, e.subject,
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
@@ -554,7 +565,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		join requests r on r.id = g.request_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
-			&conn.RuntimeID, &conn.SessionID, &live)
+			&conn.RuntimeID, &conn.SessionID, &enr.Kind, &enr.Operator, &enr.Subject, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
@@ -563,6 +574,14 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	}
 	if !live {
 		return AirlockConnection{}, ErrGrantNotLive
+	}
+	enr.ID = conn.EnrollmentID
+	restricted, err := m.restrictedOperator(ctx, enr)
+	if err != nil {
+		return AirlockConnection{}, err
+	}
+	if restricted {
+		return AirlockConnection{}, m.endGrant(ctx, conn.GrantID, restrictedMemberGrant())
 	}
 	conn.Issue = record.IssueKeyInReason(reason)
 	held, err := placeholdersOf(ctx, m.Store.Pool, conn.GrantID)

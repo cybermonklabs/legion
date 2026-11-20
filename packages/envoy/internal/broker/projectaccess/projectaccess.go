@@ -8,7 +8,9 @@
 // asked for inside a database transaction, inside policy.Set.Evaluate, or while a row lock or an
 // advisory lock is held: a caller resolves what it needs first and hands the answers on, so a
 // Dispatch that is slow to answer holds no lock and no pooled connection of the broker's. The
-// token exchange asks before it opens its transaction (internal/broker/oauth, exchangeGrant).
+// token exchange asks before it opens its transaction (internal/broker/oauth, exchangeGrant), an
+// enrollment before its own (enroll.Service.checkMember), and a secret request and a release
+// before theirs (requests.Machine.restrictedOperator).
 //
 // Answers are cached CacheTTL per project and person and per person, aged from before each
 // question was sent, which bounds how long a person removed from a project's access list goes on
@@ -109,6 +111,54 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
+
+// UncheckableCode is the code every broker point answers 503 with when it refuses what it would
+// do for a person because it could not learn whether Dispatch calls that person a restricted
+// member (MemberKindUncheckable): an enrollment, a secret request and a release alike.
+const UncheckableCode = "MEMBER_KIND_UNCHECKABLE"
+
+// MemberKindUncheckable is the refusal of something done for Person — an enrollment, a secret
+// request, a release — because Dispatch could not be asked what kind of member Person is: a
+// check that cannot decide refuses rather than answer as if the person were a full member. Err is
+// the failure, which a caller logs. Error names the person and why in uncheckableReason's fixed
+// words and never Err, which can carry Dispatch's address, so a caller answers it as it is.
+type MemberKindUncheckable struct {
+	Person string
+	Err    error
+}
+
+func (e *MemberKindUncheckable) Error() string {
+	return "whether Dispatch calls " + e.Person + " a restricted member cannot be read: " + uncheckableReason(e.Err)
+}
+
+// Unwrap is the failure, so errors.Is reads ErrBrokerRefused and ErrUnknownMemberKind through it.
+func (e *MemberKindUncheckable) Unwrap() error { return e.Err }
+
+// uncheckableReason is why a person's member kind could not be read (err, a MemberKind failure),
+// in words a refused caller may read: Dispatch refusing the broker's own account, which the
+// deployment fixes; Dispatch answering a kind this broker does not know, which a newer broker
+// fixes; and otherwise Dispatch not answering, which clears by itself.
+func uncheckableReason(err error) string {
+	switch {
+	case errors.Is(err, ErrBrokerRefused):
+		return "Dispatch refused the broker's own account"
+	case errors.Is(err, ErrUnknownMemberKind):
+		return "Dispatch answered a member kind this broker does not know"
+	}
+	return "the broker could not ask Dispatch"
+}
+
+// Restricted reports whether Dispatch calls person a restricted member (MemberRestricted), for a
+// caller about to enroll, decide or release something for that person. Any MemberKind failure is
+// a *MemberKindUncheckable naming person, which the caller returns as it is: a check that cannot
+// decide refuses.
+func Restricted(ctx context.Context, a Access, person string) (bool, error) {
+	kind, err := a.MemberKind(ctx, person)
+	if err != nil {
+		return false, &MemberKindUncheckable{Person: person, Err: err}
+	}
+	return kind == MemberRestricted, nil
+}
 
 // Answer is Dispatch's answer for one project and one person.
 type Answer struct {

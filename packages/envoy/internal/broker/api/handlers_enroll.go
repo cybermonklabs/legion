@@ -163,6 +163,15 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 	case errors.Is(err, enroll.ErrPodNotLaunched):
 		writeError(w, http.StatusForbidden, "POD_NOT_LAUNCHED", err.Error())
 		return
+	// A machine login whose person Dispatch calls a restricted member enrolls nothing, whichever
+	// route reached this one (enroll.ErrRestrictedMember), and while the broker cannot learn
+	// whether it is one nothing that acts for a person is enrolled: 503, and the launcher enrols
+	// again (writeMemberKindUncheckable).
+	case errors.Is(err, enroll.ErrRestrictedMember):
+		writeError(w, http.StatusForbidden, "RESTRICTED_MEMBER_ENROLLS_NOTHING", err.Error())
+		return
+	case writeMemberKindUncheckable(w, "the enrollment", err):
+		return
 	case err != nil:
 		writeInternal(w, "create enrollment", err)
 		return

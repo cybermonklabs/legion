@@ -105,6 +105,15 @@ func (s *Server) SetDown(down bool) {
 	s.down = down
 }
 
+// SetMemberKind makes person's member kind kind ("full", "restricted", or "none" to hold no row)
+// from the next request on, as Dispatch changes a person's kind at a sign-in or a confirmation.
+// A client that cached the old answer goes on answering it until that answer ages out.
+func (s *Server) SetMemberKind(person, kind string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.people[person] = kind
+}
+
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.calls++
@@ -157,6 +166,8 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 
 // kind is a login's member kind, "none" for a login the stand-in does not hold or no login at all.
 func (s *Server) kind(person string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if kind, held := s.people[person]; held && person != "" {
 		return kind
 	}
