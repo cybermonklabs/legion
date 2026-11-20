@@ -102,13 +102,13 @@ for arg in "$@"; do
   prev="$arg"
 done
 case "$pkg" in
-  */agent-secrets-helper|*/agent-secrets-devrelay)
+  */cipher-helper|*/cipher-devrelay)
     cat >"$out" <<'NOTHING'
 #!/usr/bin/env bash
 exit 0
 NOTHING
     ;;
-  */agent-secrets)
+  */cipher)
     # The stack runs two forms: `keygen --out <dir>`, which makes the session key and prints its
     # thumbprint, which the enrolment sends; and `renew --pod-token-file <file>`, the session's
     # renewer, which records what it was started with and stays alive until it is stopped.
@@ -166,7 +166,7 @@ echo "dev-oidc-issuer: issuer listening url=http://127.0.0.1:$$" >&2
 exec sleep 999999
 ISSUER
     ;;
-  */broker)
+  */cipherd)
     # Logs the whole of what it was configured with, the model judge's settings included, then
     # the JSON lines the stack reads its addresses from, as the real broker writes them: the
     # API port always, the proxy port only with a rules file, exactly as the real broker binds a
@@ -185,7 +185,7 @@ printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metri
 exec sleep 999999
 BROKER
     ;;
-  */dev-airlock-stands)
+  */dev-proxy-stands)
     # The three modes the stack drives: the stands, which write the files and the JSON report
     # it reads; the front, which reports the address it bound; and the enrolment, which
     # answers an enrollment id and records what it was asked to enrol.

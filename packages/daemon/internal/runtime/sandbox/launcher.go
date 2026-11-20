@@ -90,6 +90,10 @@ type launcherSession struct {
 	keptSince time.Time
 	id        string
 	podUID    string
+	// resumesBySession is whether this launcher's hello said it can look a session up by its id
+	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
+	// before it could says nothing, and relaunch names it no session by its id alone.
+	resumesBySession bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -119,7 +123,7 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -243,6 +247,24 @@ func (d *launchers) state(token claim.Token, podUID string) (shimwire.LauncherSt
 	return session.state, true
 }
 
+// resumesBySession is whether the launcher of token connected from podUID, the one state reads,
+// said in its hello that it can look a session up by its id and resume the file it finds
+// (launcherSession.resumesBySession). It is false where no launcher of that pod is connected, as
+// for one built before it could: relaunch names a session by its id alone only to a launcher
+// known to make the lookup. Any other would ignore the id and start Oh My Pi on the bare
+// `--resume=<id>`, a launch the supervisor did not build as one (runtime.SpawnSpec.ResumeByAgent).
+func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil || session.podUID != podUID {
+		return false
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return !session.closed && session.resumesBySession
+}
+
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
 	for {
 		d.mu.Lock()
@@ -340,10 +362,12 @@ func (d *launchers) current(session *launcherSession) bool {
 
 // startRefusal is a Start the launcher answered OK: false, without starting the generation: the one
 // start error after which no child of that generation can be running (stopIssuedChild). A refusal
-// over the session it was asked to resume carries the launcher's own verdict as its kind
-// (shimwire.SessionRefusal); this is the one place that kind becomes the sentinel the supervisor
-// acts on, so a lost session and a store that could not be asked reach it as they do from the tmux
-// runtime (runtime.ErrSessionFileMissing, runtime.ErrSessionStore).
+// over the session it was asked to resume, by its file or by its id alone, carries the launcher's
+// own verdict as its kind (shimwire.SessionRefusal); this is the one place that kind becomes the
+// sentinel the supervisor acts on, so a lost session and a store that could not be asked reach it
+// as they do from the tmux runtime (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). A
+// session the launcher's table holds no row of under the id it was named by is as gone as a file
+// the table does not hold, and the launcher answers both shimwire.SessionGone.
 type startRefusal struct {
 	token      claim.Token
 	generation uint64
@@ -896,10 +920,16 @@ func (r *Runtime) launcherBound(ctx context.Context, s *sandbox, pod *corev1.Pod
 // launcherCommand is the start command a role's launcher receives for one generation: the shim's
 // argv (its flags, then `--`, then the agent's own argv), the generation's plain environment, the
 // launch credentials and files it writes into its private directory, and the session a resume
-// continues. Every launch's Files carry its composed system prompt as runtime.SystemPromptFile,
-// which the launcher writes before the child starts and whose path the agent's argv names, Oh My
-// Pi's and Claude Code's alike (systemPromptPath says where it is and who can read it;
-// runtime.SystemPromptFile why it is a file).
+// continues: its file (ResumeFile), or for a claim that records no file the session's id
+// (ResumeSession), which the launcher looks up in the session table and resumes the file it finds
+// in place of the agent argv's one `--resume=<id>` (agentArgv). A launch that has the agent's own
+// command resolve the id (ResumeByAgent), which supervise makes after relaunch refused to name the
+// id to a launcher that has not said it can look it up, names neither: whatever launcher receives
+// it looks nothing up and starts the child as it starts any child with no ResumeFile, and that
+// child's Oh My Pi resolves the `--resume=<id>` itself. Every launch's Files carry its composed
+// system prompt as runtime.SystemPromptFile, which the launcher writes before the child starts and
+// whose path the agent's argv names, Oh My Pi's and Claude Code's alike (systemPromptPath says
+// where it is and who can read it; runtime.SystemPromptFile why it is a file).
 //
 // The shim is told the pod's stop grace, the same TerminationGrace its launcher runs with, so the
 // wait it makes for an in-flight CodeGraph warm-up on its way out stays inside the grace after
@@ -968,11 +998,15 @@ func launcherCommand(l launch, r *Runtime) shimwire.LauncherStart {
 	}
 	agentArgv := startArgv(roleStateHome(l.spec.Role), l.spec.Generation, l.spec.Plugins, claudeDir, r.setup,
 		l.agentArgv(r.agent), installLockWait(r.bootTimeout, r.registrationIntervals))
-	return shimwire.LauncherStart{
+	command := shimwire.LauncherStart{
 		ID: "start-" + fmt.Sprint(l.spec.Generation), Generation: l.spec.Generation,
 		Argv: append(shim, append([]string{"--"}, agentArgv...)...), Env: values, Files: files,
 		ResumeFile: l.spec.ResumeSessionFile,
 	}
+	if !l.spec.ResumeByAgent {
+		command.ResumeSession = l.spec.ResumeSession
+	}
+	return command
 }
 
 // checkStartFrame refuses command, the start l's role would be sent, when the frame that carries

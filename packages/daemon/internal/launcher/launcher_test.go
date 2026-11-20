@@ -808,6 +808,23 @@ func TestAMultiRoleLauncherConnectsOncePerRoleWithThatRolesToken(t *testing.T) {
 	f.role("reviewer").stop(1)
 }
 
+// Every hello a launcher of this release writes says it can look a session up by its id and
+// resume the file it finds (shimwire.LauncherHello.ResumesBySession): the daemon names a session
+// by its id alone only to a launcher that said so, and to any other starts Oh My Pi with the id
+// itself. The controller pod's single role says it, and so does each role of an issue pod's one
+// container, on its own connection.
+func TestTheLauncherHelloSaysItResumesBySession(t *testing.T) {
+	if hello := newRig(t).hello; !hello.ResumesBySession {
+		t.Errorf("the single role's hello = %#v, want it to say it resumes a session by its id", hello)
+	}
+	f := newFleet(t, 2*time.Second, "tester", "reviewer")
+	for _, role := range []string{"tester", "reviewer"} {
+		if hello := f.role(role).hello; !hello.ResumesBySession {
+			t.Errorf("role %s's hello = %#v, want it to say it resumes a session by its id", role, hello)
+		}
+	}
+}
+
 // A stop reaches the role it names and nothing else: the stopped role's processes end, and every
 // other role's child keeps running in its own namespaces.
 func TestAStopOfOneRolesGenerationLeavesTheOtherRoleRunning(t *testing.T) {

@@ -20,7 +20,7 @@ name: CI job daemon-go
 #
 # Everything here is what those three steps need and nothing else:
 #   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
-#     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its agentsecrets
+#     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its cipher
 #     contract tests drive, and Stage 1's;
 #   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
 #     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
@@ -91,7 +91,7 @@ jobs:
           --health-retries 5
     env:
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
-      # agentsecrets contract tests drive (brokertest.NewRig skips without
+      # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
       # the script not to start a container of its own — that path is the devbox's.
       LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
@@ -133,7 +133,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176).
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
 
