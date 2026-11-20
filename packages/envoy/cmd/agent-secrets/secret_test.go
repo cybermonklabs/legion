@@ -995,7 +995,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 		if code != 1 {
 			t.Fatalf("%v: exit %d, stderr %q; want 1", args, code, stderr)
 		}
-		for _, want := range []string{"Secrets Manager TagResource: AWS refused it: AccessDeniedException (AWS's message is not printed)", "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
+		for _, want := range []string{"Secrets Manager TagResource: AWS refused it: AccessDeniedException (missing permission: secretsmanager:TagResource; AWS's message is not printed)", "the store refused the AWS SDK's default credential chain: " + adaSignIn, "a shared secret's owner and tier are an administrator's to change"} {
 			if !strings.Contains(stderr, want) {
 				t.Fatalf("%v: stderr %q must contain %q", args, stderr, want)
 			}
