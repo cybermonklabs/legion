@@ -414,7 +414,7 @@ func routes() []apiRoute {
 		// grant a private project hides from the person are one 404 NOT_FOUND, a grant Dispatch
 		// cannot answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant they may see that names
 		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
-		// moved to another session each time the revoke read it, three times in a row, is 409
+		// moved to another box each time the revoke read it, three times in a row, is 409
 		// GRANT_MOVING. Each of these revokes nothing. The revoking person is the login the request
 		// names, which the broker still takes on the caller's word: a revoke only takes power away.
 		{http.MethodPost, "/v1/grants/{id}/revoke-by-approver", accountAuth(relaysDecisions, (*server).revokeByApprover)},
@@ -465,7 +465,7 @@ func routes() []apiRoute {
 		// private project hides from the operator are one 404 NOT_FOUND, a grant Dispatch cannot
 		// answer for is 503 PROJECT_ACCESS_UNAVAILABLE, and a grant the operator may see that names
 		// them nowhere, of an approver other than anyone, is 403 NOT_APPROVER. A grant an adoption
-		// moved to another session each time the revoke read it, three times in a row, is 409
+		// moved to another box each time the revoke read it, three times in a row, is 409
 		// GRANT_MOVING. Each of these revokes nothing.
 		{http.MethodPost, "/v1/operator/grants/{id}/revoke", launcherAuth((*server).revokeOperatorGrant)},
 		// The store, the namespace prefix, the agent-secrets key and the account or project it is

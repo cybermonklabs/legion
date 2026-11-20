@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -136,8 +137,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 // its machine login" (GrantsSection.tsx's unrevocable) rather than offering a Revoke the broker
 // refuses. The control, in the same row: once the setting maps the account to dave again, the
 // row names him as the operator. That the revoke answers the same is
-// TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay's, and
-// TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant's control.
+// TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant's.
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
@@ -173,6 +173,58 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 	m.PodOperators[dave.account] = dave.person
 	if g, ok := row(); !ok || g.Enrollment.Operator != dave.person {
 		t.Errorf("once the setting maps the pod to dave again, his row of grant %s = %+v, %v; want it naming him as the operator", grantID, g, ok)
+	}
+}
+
+// TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant: dave's pod gets SLACK_TOKEN without asking
+// while BROKER_POD_OPERATORS maps it to dave. While the setting still maps it, the pod acts for
+// dave (operatorOf), so dave's revoke is the operator's: it ends the grant and withholds
+// SLACK_TOKEN on the pod, and on the pod alone, since a person's pod enrols with no session name
+// (lockSessionEnrollments locks it by itself). Once the setting drops the account the pod acts for
+// no person, so the same revoke by its former person is refused NOT_APPROVER, ends nothing and
+// withholds nothing. Each case has its control: operatorOf giving no pod a person fails the
+// mapped case alone, and operatorOf ignoring the setting fails the unmapped case alone.
+func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
+	for _, mapped := range []bool{true, false} {
+		name := "the setting maps the pod to dave"
+		if !mapped {
+			name = "the setting no longer maps the pod"
+		}
+		t.Run(name, func(t *testing.T) {
+			const dave = "dave@example.com"
+			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Exchange = set
+			m.PodOperators = map[string]string{p.account: p.person}
+			pod, key := p.enroll(t, m.Store, "pod-dave-"+t.Name())
+			_, grantID := grantOf(t, m, pod, key, "use the pod's secret", "SLACK_TOKEN")
+			var session *string
+			if err := m.Store.Pool.QueryRow(t.Context(), `select session_id from enrollments where id=$1`, pod).Scan(&session); err != nil {
+				t.Fatal(err)
+			}
+			if session != nil {
+				t.Fatalf("dave's pod enrolled with session name %q; want none, or the revoke locks more than the pod", *session)
+			}
+			if !mapped {
+				delete(m.PodOperators, p.account)
+			}
+			err = m.RevokeByApprover(t.Context(), grantID, dave, record.HumanActor(dave))
+			withheld := withheldCount(t, m, pod)
+			if mapped {
+				if err != nil || withheld != 1 {
+					t.Errorf("dave's revoke of his mapped pod's automatic grant = %v, withholding %d names on the pod; want nil and 1, SLACK_TOKEN", err, withheld)
+				}
+				return
+			}
+			if !errors.Is(err, ErrNotApprover) || withheld != 0 {
+				t.Errorf("dave's revoke of the grant of a pod the setting no longer maps to him = %v, withholding %d names; want ErrNotApprover and 0", err, withheld)
+			}
+			requireGrantLive(t, m, grantID)
+		})
 	}
 }
 

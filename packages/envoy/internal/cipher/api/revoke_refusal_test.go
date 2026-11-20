@@ -17,7 +17,7 @@ import (
 )
 
 // TestARevokeRefusalAnswersItsOwnCode: each refusal RevokeByApprover answers, wrapped as it wraps
-// it, gets its own status and code. A grant that moved to another session each time the revoke
+// it, gets its own status and code. A grant that moved to another box each time the revoke
 // read it (requests.ErrGrantMoving) is 409 GRANT_MOVING with the sentence that says to run the
 // revoke again, not the 500 INTERNAL every unnamed error gets; that one is the control.
 func TestARevokeRefusalAnswersItsOwnCode(t *testing.T) {

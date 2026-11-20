@@ -1921,7 +1921,7 @@ export class DispatchApiClient {
    *  A grant revoked by a viewer it does not name is 404 when it belongs to a private project the
    *  viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker cannot ask Dispatch;
    *  of the grants the viewer may see, they end one whose approver is anyone, and any other is 403
-   *  `NOT_APPROVER`. A grant the broker saw move to another session each time it read it is 409
+   *  `NOT_APPROVER`. A grant the broker saw move to another box each time it read it is 409
    *  `GRANT_MOVING`, revoking nothing; the same revoke succeeds once it stays put. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);

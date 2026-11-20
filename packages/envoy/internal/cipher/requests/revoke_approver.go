@@ -76,13 +76,14 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 // errGrantMovedSinceJudged is revokeJudged's answer for a grant its transaction reads as held by
 // another enrollment, or as naming another approver, than the person rule judged it by
 // (grantJudged): an adoption moved it between the two reads. It writes nothing.
-var errGrantMovedSinceJudged = errors.New("the grant moved to another session after the person rule judged it")
+var errGrantMovedSinceJudged = errors.New("the grant moved to another box after the person rule judged it")
 
-// ErrGrantMoving is RevokeByApprover's answer for a grant that moved to another session between
-// the person rule and the transaction each of the revokeJudgeAttempts times it ran them
-// (errGrantMovedSinceJudged). Nothing was revoked or withheld, and the same revoke ends the grant
-// once it stays on one session; the API answers it 409 GRANT_MOVING.
-var ErrGrantMoving = errors.New("the grant kept moving to another session while the revoke ran")
+// ErrGrantMoving is RevokeByApprover's answer for a grant that moved to another box between the
+// person rule and the transaction each of the revokeJudgeAttempts times it ran them
+// (errGrantMovedSinceJudged): an adoption carries it to its session's new box, and a claim's
+// hand-over to another pod. Nothing was revoked or withheld, and the same revoke ends the grant
+// once it stays on one box; the API answers it 409 GRANT_MOVING.
+var ErrGrantMoving = errors.New("the grant kept moving to another box while the revoke ran")
 
 // revokeJudgeAttempts is how many times RevokeByApprover runs the person rule and its transaction
 // for a grant that keeps moving between them. Each move is an adoption's commit, which lands once
@@ -102,11 +103,8 @@ const revokeJudgeAttempts = 3
 // decide on the old holder. Once the lock is held, nothing moves the grant off that enrollment
 // until this transaction ends. The transaction asks for READ COMMITTED by name, so a changed
 // default level cannot hand the later reads the first statement's snapshot. Under REPEATABLE READ
-// the revoke fails closed either way rather than decide on the old holder: where the adoption it
-// waited on updated a locked row (it clears dormant_since on a dormant predecessor), the lock
-// statement itself ends in a serialization error (40001); where it only locked them, the lock is
-// granted, the later read sees the grant as it was before the move, and the grant's update ends in
-// that error.
+// the later statements would share the first one's snapshot, taken before the session lock's
+// wait, and would miss what that wait committed.
 // TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant holds the named level on a
 // pool whose transactions default to REPEATABLE READ.
 //
