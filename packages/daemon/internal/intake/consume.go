@@ -127,8 +127,8 @@ type ConsumerSpec struct {
 	//
 	//   - The fetch batch of one defers a second delivery while the handler runs. This consumer
 	//     asks for one message at a time (consumerFetchBatch as jetstream.PullMaxMessages in
-	//     consumeConsumer), and nats.go v1.53.1 calls the consume callback and only then
-	//     checkPending, which sends the next pull (jetstream/pull.go:287), so no pull is
+	//     consumeConsumer), and nats.go v1.55.0 calls the consume callback and only then
+	//     checkPending (jetstream/pull.go:291-295), which sends the next pull, so no pull is
 	//     outstanding while a handler runs and nothing reaches this consumer. A reconnect, which
 	//     pulls again, is the one exception.
 	//   - The keeper prevents a second delivery while its reports reach the server before the

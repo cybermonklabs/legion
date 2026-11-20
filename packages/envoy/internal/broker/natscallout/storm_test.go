@@ -54,7 +54,7 @@ func sessionOption(key *ecdsa.PrivateKey, current func() string, signed func(non
 // reconnectingSession connects to url as s, as a bus client does: it keeps reconnecting, and it
 // never gives up over a refused credential. That second part is what the storm below is about.
 // nats.go closes a connection for good when the same server refuses it twice in a row with the
-// same authorization error (v1.53.1, nats.go:4086: `if nc.current.lastErr == err &&
+// same authorization error (v1.55.0, nats.go:4217-4222: `if nc.current.lastErr == err &&
 // !nc.Opts.IgnoreAuthErrorAbort { nc.ar = true }`), and a hub whose connections this service
 // admits refuses every one of them while the service is away, which a restart of the hub itself
 // causes. natscred sets the option on exactly the connections the auth service decides (Session,
