@@ -750,9 +750,9 @@ export default function legionExtension(pi: PiApi): void {
   // sent with triggerTurn, starts its turn with neither the recovery nor before_agent_start, so
   // its branch keeps the saved copy.
   //
-  // It is also one of the three triggers of the model fallback's return, the one for the first
-  // request of a run a prompt starts; `ModelFallback.maybeRestore` (src/model-fallback.ts) states
-  // the rule.
+  // It is also one of the triggers of the model fallback's return, the one for the first request
+  // of a run a prompt starts; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the
+  // rule.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
     if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
@@ -781,9 +781,8 @@ export default function legionExtension(pi: PiApi): void {
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
   });
-  // Every provider request of this session passes here, which makes it one of the three triggers
-  // of the model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states
-  // the rule.
+  // Every provider request of this session passes here, which makes it one of the triggers of the
+  // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process

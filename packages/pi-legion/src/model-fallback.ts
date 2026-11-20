@@ -38,9 +38,16 @@ import { classifyProviderError, classifyTurnEnd } from "@legion/pi-shared/provid
 /** The slice of the host's session context this runner reads; a `SessionContext`
  * (`@legion/pi-shared/pi-types`) is one, and a unit test builds one by hand. */
 export interface ModelFallbackContext {
-  readonly sessionManager: { readonly getBranch?: () => readonly unknown[] };
+  readonly sessionManager: {
+    readonly getBranch?: () => readonly unknown[];
+    /** The session the context is on now: read on each side of a switch of the model, so a pane
+     * that moved to another session in between is named. */
+    readonly getSessionId?: () => string;
+  };
   readonly models?: SessionContext["models"];
   readonly modelRegistry?: SessionContext["modelRegistry"];
+  /** The host's `ctx.isIdle()`: false while a turn runs. The timer's return waits for it. */
+  readonly isIdle?: () => boolean;
 }
 
 export interface ModelFallbackDeps {
@@ -86,15 +93,19 @@ export interface ModelFallback {
   readonly turnSettled: (event: AgentEndEvent, ctx: ModelFallbackContext) => Promise<void>;
   /**
    * The return to the model the session fell back from, which this runner makes in one place:
-   * one check of whether the arming is due, with three triggers.
+   * one check of whether the arming is due, with these triggers.
    *
    * - The host's `before_agent_start`, for any arming: it runs before the first request of a run
    *   a prompt starts.
    * - The host's `context`, for any arming: it runs before every request, but after the host has
    *   read that request's model, so a return made there is the model of the next request.
-   * - A timer at the due time (`armTimer`), for a refusal's arming only: it is what puts back a
-   *   run no prompt starts, an Envoy card's or a background job's result's, which neither hook
-   *   reaches before that run's first request.
+   * - A timer at the due time (`armTimer`), for a refusal's arming only, while the pane runs no
+   *   turn: it is what puts back a run no prompt starts, an Envoy card's or a background job's
+   *   result's, which neither hook reaches before that run's first request. While a turn runs,
+   *   the timer switches nothing, since a switch in the middle of a stream drops an OpenAI or
+   *   Codex response: that turn's next `context` hook makes the return, one request on the
+   *   fallback model later, or, when the turn sends no request after the timer, the turn's end
+   *   (`turnSettled`) does.
    *
    * An arming of any other cause waits for the host to stop suppressing its model, which no time
    * says, so it sets no timer: only the two hooks end it, and a run no prompt starts can begin on
@@ -219,6 +230,10 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
    * where it was sets no second timer. */
   let timerFor: number | undefined;
 
+  /** Whether a timer found the pane running a turn, so the return is left to that turn: its next
+   * `context` hook, or its end (`turnSettled`) when it sends no request after the timer. */
+  let returnAtTurnEnd = false;
+
   /**
    * The timer trigger of the return (`ModelFallback.maybeRestore` states the rule): the host's
    * timer for the due time of a refusal's arming, in pieces no longer than a timer can hold.
@@ -233,7 +248,10 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
         timerFor = undefined;
         try {
           const ctx = await deps.paneContext();
-          if (ctx !== undefined) await restoreIfDue(ctx);
+          // A switch while a turn runs can land in the middle of a stream, which drops an OpenAI or
+          // Codex response; the turn itself makes the return (`ModelFallback.maybeRestore`).
+          if (ctx?.isIdle?.() === false) returnAtTurnEnd = true;
+          else if (ctx !== undefined) await restoreIfDue(ctx);
         } catch (error) {
           contained(
             "put the session back on the model it fell back from when its wait ended",
@@ -475,7 +493,16 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       save(step({ kind: "restored" }));
       return;
     }
-    if (!(await deps.setModel(target))) {
+    const sessionBefore = ctx.sessionManager.getSessionId?.();
+    const switched = await deps.setModel(target);
+    const sessionAfter = ctx.sessionManager.getSessionId?.();
+    if (sessionAfter !== sessionBefore) {
+      deps.log.warn(
+        "legion: the pane moved to another session while the model it fell back from was set again",
+        { model: arming.restoreTo, from: sessionBefore, to: sessionAfter }
+      );
+    }
+    if (!switched) {
       deps.log.warn("legion: the model this session fell back from could not be set again", {
         model: arming.restoreTo,
       });
@@ -499,8 +526,9 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
       try {
         state = restored ?? { levels: {} };
         // A fallback applied in a turn of the session this pane has just left is no fallback of
-        // this one.
+        // this one, and a return that session's turn was left is not this one's to make.
         appliedThisTurn = undefined;
+        returnAtTurnEnd = false;
         if (state.arming !== undefined) {
           // A relaunched worker's arming: its return is due when the record says, whatever the
           // relaunch's boot cost, and the timer is set for that moment, or now when it is past.
@@ -591,6 +619,13 @@ export function createModelFallback(deps: ModelFallbackDeps): ModelFallback {
     turnSettled: async (event, ctx) => {
       try {
         await settled(event, ctx);
+        // A timer that found the turn running left the return to it, and the turn has ended:
+        // nothing streams now, so the return is made here rather than at the first request of
+        // whatever starts the next run.
+        if (returnAtTurnEnd && event.willContinue !== true) {
+          returnAtTurnEnd = false;
+          await restoreIfDue(ctx);
+        }
       } catch (error) {
         contained("read how the provider ended this turn", error);
       }

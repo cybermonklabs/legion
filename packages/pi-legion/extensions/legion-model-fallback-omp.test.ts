@@ -27,8 +27,9 @@ import { connect, headers, type NatsConnection, StringCodec } from "nats";
 // The model fallback on the real Oh My Pi (src/model-fallback.ts, on the cooldown machine and the
 // chain resolver of @legion/pi-shared): only the real binary shows which model each request went
 // to across a provider's refusal — the refusals the host walks its own chain for, the ones it
-// leaves where they are, the return when the wait ends, inside a turn already running or before
-// a run a card starts, and that the transcript keeps the arming a relaunched worker restores.
+// leaves where they are, the return when the wait ends, inside a turn already running and before
+// a run a card or a job's result starts, and that the transcript keeps the arming a relaunched
+// worker restores.
 // LEGION_TEST_OMP names the binary: the fork pin in the repository's .omp-pin, which
 // CI's pi-legion job installs; on the devbox, `mise where <pin>`/bin/omp. LEGION_TEST_NATS_URL
 // names the NATS server the pane's Envoy extension connects to: a session is given no consumer
@@ -477,19 +478,20 @@ test.skipIf(skip)(
       answer: (_model, nth) => {
         if (nth === 1) return refuses("refusal_1", { text: "Looking at it." });
         // One long turn on the weaker model: the sleep outlasts the cooldown, so the wait ends
-        // while the turn's tool runs, with no request of its own to end at.
+        // while the turn's tool runs.
         if (nth === 2) return replies([sleeps(6)], `msg_${nth}`);
         if (nth === 3) return replies([call("bash", { command: "echo next" })], `msg_${nth}`);
         return replies([{ type: "text", text: "Done." }], `msg_${nth}`);
       },
     });
 
-    // The return is made when the wait ends, by the runner's timer, while the sleep still runs:
-    // the third request, sent after the sleep, is already on the model the session fell back
-    // from — inside the same turn, which no new prompt and no host setting would have reached.
-    // A return made only in the `context` hook would come one request later: the host chooses a
-    // request's model before it runs that hook, so its switch is the model of the next request.
-    expect(pane.models()).toEqual(["strong-model", "weak-model", "strong-model", "strong-model"]);
+    // The wait ends while the turn runs, so the runner's timer switches no model: a switch there
+    // could land in the middle of a stream. The turn's own `context` hook makes the return, and the
+    // host chooses a request's model before it runs that hook, so the hook's switch is the model of
+    // the *next* request of that turn: the third request, sent after the sleep, is still the
+    // weaker model, and the fourth is the model the session fell back from — inside the same
+    // turn, which no new prompt and no host setting would have reached.
+    expect(pane.models()).toEqual(["strong-model", "weak-model", "weak-model", "strong-model"]);
     const states = await pane.cooldowns();
     expect(states[0]).toMatchObject({
       arming: { restoreTo: STRONG, cause: "refusal" },

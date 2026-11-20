@@ -100,8 +100,15 @@ const HOST_RESTORE_FLOOR_MS = 300_000;
 const sleepSeconds = Math.max(1, Math.round(driveMs / 13_000));
 
 /** How late after the cooldown's end the session may come back and still be its return: one
- * request's worth of cadence, twice over. The host picks a request's model before it runs the
- * `context` hook, so the hook's switch is the model of the request after the one it ran under. */
+ * request's worth of cadence, twice over. The pane is in its long turn when the wait ends, and the
+ * plugin's timer switches no model while a turn runs (`ModelFallback.maybeRestore`), so the return
+ * is the `context` hook's. The host picks a request's model before it runs that hook, so the hook's
+ * switch is the model of the request after the one it ran under: the return comes one to two
+ * cadences after the due time. The bound tells no timer from a hook, and is not meant to: their
+ * returns would sit one cadence apart, and a request's arrival moves with the box's load (the sleep,
+ * the stand-in's round trip, the host's own work), so a bound in time at that cadence would misjudge
+ * a slow run. `extensions/legion-model-fallback-omp.test.ts` tells them apart by the order of one
+ * turn's requests instead. */
 const RETURN_SLACK_MS = 150_000;
 
 /** How far the recorded arming's own numbers may sit from what the stand-in measured: a request
