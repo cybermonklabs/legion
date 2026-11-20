@@ -1524,7 +1524,7 @@ func interruptedTask(cause string) string {
 // string (strconv.Quote), the way a check run's name is where the daemon reads one into a prompt
 // (workflow's namedConclusions): the quotes bound it, and a newline or a quote inside it is
 // escaped rather than ending the sentence that carries it, so no refusal text can read as an
-// instruction of the daemon's own.
+// instruction of the daemon's own. The abandoned session's id is quoted the same way (%q).
 func abandonedTask(c Claim, last bool) string {
 	read := "read the issue"
 	if c.Role != claim.RoleController {
@@ -1532,7 +1532,7 @@ func abandonedTask(c Claim, last bool) string {
 			"the issue, which `dispatch handoff-read --issue %s --phase <word>` reads (%s)",
 			claim.IssueBranch(c.Issue), c.Issue, handoffWords())
 	}
-	sentence := fmt.Sprintf("The session this claim ran before this one, %s, was abandoned where it stood: %s. "+
+	sentence := fmt.Sprintf("The session this claim ran before this one, %q, was abandoned where it stood: %s. "+
 		"This session is a new one: the turns, tool calls, subagents and background jobs of that session are "+
 		"gone, and only what it pushed and committed survives. Before you repeat any of that work, %s, and "+
 		"tell the architect your Legion addressing line names what you found, unless that is you or it names none.",

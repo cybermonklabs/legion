@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -21,7 +22,9 @@ import (
 // looks one level below a sessions directory for a file of the recorded name, or, for Oh My Pi's
 // name, of any timestamp with the recorded session id. Of several in one directory, the one written
 // last is taken. Every directory and name is matched as written (newestOneFolderDown). found is ""
-// when no directory holds the session; err is a failure to look, never the session's absence.
+// when no directory holds the session; err is a failure to look, never the session's absence: a
+// recorded path that cannot be checked, a pane sessions directory that cannot be resolved, or a
+// sessions directory or a folder of it that cannot be read (newestOneFolderDown).
 func sessionFileOf(recorded string, paneSessions func() (string, error)) (found string, searched []string, err error) {
 	if _, err := os.Stat(recorded); err == nil {
 		return recorded, nil, nil
@@ -40,8 +43,8 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 	}
 	name := filepath.Base(recorded)
 	for _, sessions := range searched {
-		if found = newestSession(sessions, name); found != "" {
-			return found, searched, nil
+		if found, err = newestSession(sessions, name); err != nil || found != "" {
+			return found, searched, err
 		}
 	}
 	return "", searched, nil
@@ -49,9 +52,11 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 
 // newestSession is the regular file written last among those one folder below sessions named
 // exactly name or, for Oh My Pi's `<timestamp>_<session id>.jsonl`, of any name ending in
-// `_<session id>.jsonl`, the session id name gives under any timestamp; "" for none. Nothing is a
-// pattern: no character of sessions or name can match another session's file.
-func newestSession(sessions, name string) string {
+// `_<session id>.jsonl`, the session id name gives under any timestamp; "" for none, and err a
+// failure to read sessions or a folder of it (newestOneFolderDown). No character of sessions or
+// name is a pattern, and the match by the id is on the end of a file's name: that picks out one
+// session because Oh My Pi's session ids, UUIDs, hold no `_`.
+func newestSession(sessions, name string) (string, error) {
 	names := []wantedName{exactly(name)}
 	if stem, ok := strings.CutSuffix(name, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
@@ -64,11 +69,13 @@ func newestSession(sessions, name string) string {
 // sessionFileByID is the file a resume of a session named by its id alone continues (launch): the
 // regular file written last among Oh My Pi's `<timestamp>_<id>.jsonl`, any name ending in
 // `_<id>.jsonl`, one folder below sessions, where Oh My Pi keeps the sessions of every working
-// directory; "" for none. Nothing is a pattern: no character of sessions or id can match another
-// session's file. An empty id names no session, so it is searched for nowhere.
-func sessionFileByID(sessions, id string) string {
+// directory; "" for none, and err a failure to read sessions or a folder of it
+// (newestOneFolderDown). No character of sessions or id is a pattern, and the match is on the end
+// of a file's name: that picks out one session because Oh My Pi's session ids, UUIDs, hold no
+// `_`. An empty id names no session, so it is searched for nowhere.
+func sessionFileByID(sessions, id string) (string, error) {
 	if id == "" {
-		return ""
+		return "", nil
 	}
 	return newestOneFolderDown(sessions, endingIn("_"+id+".jsonl"))
 }
@@ -98,23 +105,31 @@ func (w wantedName) matches(file string) bool {
 // whose name one of names matches, newestSession's and sessionFileByID's one search; "" for none.
 // sessions is read as the directory it names, each of its entries as the folder it names, a
 // symlinked folder followed, and each file name is matched as written (wantedName), so no
-// character of a directory, a name or an id matches anything but itself. A sessions directory
-// that does not exist or cannot be read holds none, and an entry of it that is not a directory
-// that can be read is skipped. Of several written at the same time, the first matched is taken:
-// the files the first of names matches, then those only the next matches, and so on, each name's
-// files in the order of their folders' names and then of their own.
-func newestOneFolderDown(sessions string, names ...wantedName) string {
+// character of a directory, a name or an id is a pattern. A sessions directory that does not
+// exist holds none. An entry of it that is no folder — a file, a symlink to nothing, or one gone
+// by the time it is read — is skipped, and so is a matching file that is gone by then or is not a
+// regular file. Any other failure to read sessions or a folder of it is err: what it could not
+// read may hold the session, so it is a failure to look, never the session's absence. Of several
+// written at the same time, the first matched is taken: the files the first of names matches, then
+// those only the next matches, and so on, each name's files in the order of their folders' names
+// and then of their own.
+func newestOneFolderDown(sessions string, names ...wantedName) (string, error) {
 	folders, err := os.ReadDir(sessions)
-	if err != nil {
-		return ""
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	} else if err != nil {
+		return "", err
 	}
 	// matched holds, for each of names, the files it is the first of names to match.
 	matched := make([][]string, len(names))
 	for _, folder := range folders {
 		dir := filepath.Join(sessions, folder.Name())
 		files, err := os.ReadDir(dir)
-		if err != nil {
+		switch {
+		case errors.Is(err, syscall.ENOTDIR), errors.Is(err, os.ErrNotExist):
 			continue
+		case err != nil:
+			return "", err
 		}
 		for _, file := range files {
 			for i, name := range names {
@@ -137,7 +152,7 @@ func newestOneFolderDown(sessions string, names ...wantedName) string {
 			}
 		}
 	}
-	return newest
+	return newest, nil
 }
 
 // searchedIn is the sessions directories a search for a session found nothing in (sessionFileOf),

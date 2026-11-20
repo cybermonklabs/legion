@@ -554,11 +554,11 @@ func TestAForgottenSessionIsReportedOnceWhenTheFirstFreshSpawnFails(t *testing.T
 }
 
 // The cause of a forget is kept for the fresh agent's launches until its first ready, and no
-// longer than the next forget: an operator who forgets the fresh agent's own session before that
-// ready (`legion claims forget-session`) leaves a claim whose next launch follows that forget, not
-// the launch's. So the spawn after it is built with no cause, and the agent it starts is told
-// nothing of the first forget's cause, which says something of a session that is no longer the
-// one it replaces.
+// longer than the next forget that drops a session: an operator who forgets the fresh agent's own
+// session before that ready (`legion claims forget-session`) leaves a claim whose next launch
+// follows that forget, not the launch's. So the spawn after it is built with no cause, and the
+// agent it starts is told nothing of the first forget's cause, which says something of a session
+// that is no longer the one it replaces.
 func TestAnOperatorForgetBeforeTheFreshAgentIsReadyClearsTheForgetsCause(t *testing.T) {
 	r := newByIDRig(t, byIDClaim(StateRetired, 3), nil)
 	r.rt.ScriptResume(fake.SpawnResult{Err: noSuchSession()})
@@ -588,6 +588,42 @@ func TestAnOperatorForgetBeforeTheFreshAgentIsReadyClearsTheForgetsCause(t *test
 	if built := r.specs.last(t); built.Generation != starts[0].Spec.Generation || built.SessionLost != "" {
 		t.Errorf("the spawn after the operator's forget was built at generation %d with SessionLost %q; want the spawn's, at %d, with no cause",
 			built.Generation, built.SessionLost, starts[0].Spec.Generation)
+	}
+	r.wantLost(SessionLossGone)
+}
+
+// A forget that drops nothing keeps the cause of the forget before it (Machine.lostCause). Where
+// every fresh spawn after a forget fails until the launch budget runs out, the claim fails
+// recording no session, and a retry in a new session — the controller's fresh_session, or
+// `legion claims retry --fresh-session` — drops nothing: the session the claim abandoned is still
+// the one the cause is about. So the spawn of that retry is built with the cause, and the agent it
+// starts is told in its own prompt that it does not continue that session.
+func TestAFreshSessionRetryBeforeTheFreshAgentRegistersKeepsTheForgetsCause(t *testing.T) {
+	r := newByIDRig(t, byIDClaim(StateRetired, 3), nil)
+	r.rt.ScriptResume(fake.SpawnResult{Err: noSuchSession()})
+	r.rt.ScriptSpawn(fake.SpawnResult{Err: errBoom}, fake.SpawnResult{Err: errBoom}, fake.SpawnResult{Err: errBoom})
+	if err := r.handle(RequestRetry{Claim: testToken}); !errors.Is(err, errBoom) {
+		t.Fatalf("the retry whose fresh spawns the runtime refused = %v; want the runtime's last refusal", err)
+	}
+	r.wantState(StateFailed)
+	if c := r.claim(); c.Abandoned.Session != idSession || c.Session != "" || c.SessionFile != "" {
+		t.Fatalf("the failed claim abandoned %q and records session %q and file %q; want %s abandoned and no session",
+			c.Abandoned.Session, c.Session, c.SessionFile, idSession)
+	}
+	from := len(r.rt.Calls())
+
+	r.must(RequestRetry{Claim: testToken, FreshSession: true})
+
+	starts := r.starts(from)
+	if len(starts) != 1 || starts[0].Method != "Spawn" {
+		t.Fatalf("the retry in a new session made %s; want one Spawn", startsText(starts))
+	}
+	if built := r.specs.last(t); built.Generation != starts[0].Spec.Generation || built.SessionLost != SessionLossGone {
+		t.Errorf("the spawn of the retry in a new session was built at generation %d with SessionLost %q; want the spawn's, at %d, with the forget's cause %q",
+			built.Generation, built.SessionLost, starts[0].Spec.Generation, SessionLossGone)
+	}
+	if c := r.claim(); c.Abandoned.Session != idSession {
+		t.Errorf("the claim abandoned %q after the retry in a new session; want %s still", c.Abandoned.Session, idSession)
 	}
 	r.wantLost(SessionLossGone)
 }

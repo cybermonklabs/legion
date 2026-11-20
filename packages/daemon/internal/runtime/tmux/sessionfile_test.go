@@ -124,10 +124,7 @@ func TestSessionFileOfFindsAClaudeSessionByItsName(t *testing.T) {
 }
 
 // A session found nowhere is no file and no error, with every sessions directory searched, each
-// once. Every directory and name is matched as written: a pane sessions directory whose name holds
-// glob characters is searched as it is, a sibling directory that name would match as a pattern is
-// not searched, and a recorded name whose session id holds `*`, or a Claude Code name `*.jsonl`,
-// matches no other session's file.
+// once; the pane's sessions directory here does not exist, and holds none.
 func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testing.T) {
 	sessions := filepath.Join(t.TempDir(), "sessions")
 	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
@@ -143,6 +140,17 @@ func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testi
 	if _, searched, _ := sessionFileOf(recorded, paneAt(sessions)); !slices.Equal(searched, []string{sessions}) || searchedIn(searched) != sessions {
 		t.Errorf("the recorded sessions directory as the pane's is searched %v, want once", searched)
 	}
+}
+
+// Every directory and name is matched as written: a pane sessions directory whose name holds
+// glob characters is searched as it is, and finds the session, a sibling directory that name would
+// match as a pattern is not searched, and a recorded name whose session id holds `*`, or a Claude
+// Code name `*.jsonl`, matches no other session's file.
+func TestSessionFileOfMatchesTheSessionsDirectoryAndTheNameAsWritten(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	writeSession(t, filepath.Join(sessions, "--pod-work--", "2026-10-20T10-00-00-000Z_ses-xyz.jsonl"), time.Now())
+	pane := filepath.Join(t.TempDir(), "pane-sessions")
 
 	starred := filepath.Join(t.TempDir(), "pane*[sessions")
 	inStarred := filepath.Join(starred, "--pane-work--", filepath.Base(recorded))
@@ -164,6 +172,62 @@ func TestSessionFileOfFindingNothingNamesEverySessionsDirectorySearched(t *testi
 		if got, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane)); err != nil || got != "" {
 			t.Errorf("sessionFileOf of the recorded name %s, beside the files of session ses-xyz = %q, %v; want nothing", name, got, err)
 		}
+	}
+}
+
+// A sessions directory, or a folder of it, that cannot be read may hold the session, so the search
+// that cannot read it is a failure to look: an error and no file, never the session found nowhere,
+// which the claim's machine would answer by forgetting the session. An entry of the sessions
+// directory that is no folder — a file, or a symlink to nothing — holds no session and is skipped.
+func TestSessionFileOfThatCannotReadASessionsDirectoryIsAnError(t *testing.T) {
+	sessions := filepath.Join(t.TempDir(), "sessions")
+	recorded := filepath.Join(sessions, "--legion-workspace--", "2026-10-20T10-00-00-000Z_ses-abc.jsonl")
+	if err := os.MkdirAll(sessions, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, where := range map[string]string{
+		"the pane's sessions directory": "",
+		"a folder of it":                "--pane-work--",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pane := filepath.Join(t.TempDir(), "pane-sessions")
+			writeSession(t, filepath.Join(pane, "--pane-work--", filepath.Base(recorded)), time.Now())
+			unreadable(t, filepath.Join(pane, where))
+			if got, _, err := sessionFileOf(recorded, paneAt(pane)); err == nil || got != "" {
+				t.Fatalf("sessionFileOf with %s unreadable = %q, %v; want no file and an error", name, got, err)
+			}
+		})
+	}
+
+	t.Run("an entry that is no folder", func(t *testing.T) {
+		pane := filepath.Join(t.TempDir(), "pane-sessions")
+		carried := filepath.Join(pane, "--pane-work--", filepath.Base(recorded))
+		writeSession(t, carried, time.Now())
+		writeSession(t, filepath.Join(pane, "--a-file--"), time.Now())
+		if err := os.Symlink(filepath.Join(pane, "gone"), filepath.Join(pane, "--a-link-to-nothing--")); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
+			t.Fatalf("sessionFileOf beside a file and a symlink to nothing = %q, %v; want %s", got, err, carried)
+		}
+	})
+}
+
+// unreadable takes every permission off dir until the test's cleanup gives them back, so the
+// test's temporary directory can still be removed. A test that runs as root reads dir all the
+// same, and so would prove nothing: it fails rather than pass on that.
+func unreadable(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Fatalf("%s is readable at mode 000, so this row would prove nothing (is the test running as root?)", dir)
 	}
 }
 

@@ -120,13 +120,35 @@ func TestTheLookupByIDMatchesTheSessionsDirectoryAndTheIDAsWritten(t *testing.T)
 	sessions := filepath.Join(t.TempDir(), "home*[legion?", ".omp", "agent", "sessions")
 	file := filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl")
 	writeSession(t, file, time.Now())
-	if got := sessionFileByID(sessions, resumeSessionID); got != file {
-		t.Errorf("sessionFileByID in %s of session %s = %q; want %s", sessions, resumeSessionID, got, file)
+	if got, err := sessionFileByID(sessions, resumeSessionID); err != nil || got != file {
+		t.Errorf("sessionFileByID in %s of session %s = %q, %v; want %s", sessions, resumeSessionID, got, err, file)
 	}
 	for _, id := range []string{resumeSessionID[:9] + "*", "*"} {
-		if got := sessionFileByID(sessions, id); got != "" {
-			t.Errorf("sessionFileByID of the id %s, beside the file of session %s = %q; want nothing", id, resumeSessionID, got)
+		if got, err := sessionFileByID(sessions, id); err != nil || got != "" {
+			t.Errorf("sessionFileByID of the id %s, beside the file of session %s = %q, %v; want nothing", id, resumeSessionID, got, err)
 		}
+	}
+}
+
+// A pane sessions directory the daemon cannot read may hold the session, so a resume by the id
+// whose search cannot read it is a failure to look, not the session found nowhere: its error wraps
+// no runtime.ErrSessionFileMissing, which the claim's machine would answer by forgetting the
+// session, and it opens no pane. The machine charges it as a launch failure and tries again.
+func TestAResumeByIDThatCannotReadThePanesSessionsDirectoryIsNoMissingSession(t *testing.T) {
+	f := homed(t)
+	sessions := paneSessions(f)
+	writeSession(t, filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl"), time.Now())
+	unreadable(t, sessions)
+	spec := f.spec(t, claim.RoleTester)
+	spec.ResumeSession = resumeSessionID
+
+	_, err := f.Resume(context.Background(), nil, spec)
+
+	if err == nil || errors.Is(err, runtime.ErrSessionFileMissing) {
+		t.Errorf("Resume of session %s whose sessions directory %s cannot be read = %v; want an error that is not runtime.ErrSessionFileMissing", resumeSessionID, sessions, err)
+	}
+	if opened(f.argvs) {
+		t.Error("a resume whose sessions directory cannot be read opened a pane")
 	}
 }
 

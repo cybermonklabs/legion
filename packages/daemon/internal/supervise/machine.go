@@ -360,13 +360,11 @@ type Claim struct {
 	SuspensionHeld   bool
 	SuspensionHeldBy SuspendSource
 	// SessionLost is the cause of the forget that the launch this claim is being built a spec for
-	// follows (startFresh): the launch is a fresh agent in place of the session the claim
-	// recorded, or a relaunch of that agent before its first ready, and "" for every other
-	// launch. It is an argument of that one build and of nothing else: the machine sets it on the
-	// copy of the claim it hands the spec builder (spawnSpec), from the cause it keeps from the
-	// forget to that ready (Machine.lostCause), never on the claim it keeps or persists, so the
-	// new session is told it does not continue its predecessor's transcript and nothing afterwards
-	// reads it.
+	// follows (startFresh): the launch is one the machine keeps that cause for (Machine.lostCause,
+	// which says until when), and it is "" for every other launch. It is an argument of that one
+	// build and of nothing else: the machine sets it on the copy of the claim it hands the spec
+	// builder (spawnSpec), never on the claim it keeps or persists, so the new session is told it
+	// does not continue its predecessor's transcript and nothing afterwards reads it.
 	SessionLost SessionLoss
 	// Compacting is whether the claim is working because its session is being compacted rather
 	// than because a turn is (Machine.Compact). It is memory only, as SuspensionHeld is:
@@ -1304,19 +1302,26 @@ type Machine struct {
 	// generation: no answer of an earlier launch is in this daemon's stream. It is memory only, as
 	// answer is.
 	sessionFrom uint64
-	// lostCause is the cause of the forget the launch made last (startFresh), kept from that
-	// forget until the claim's first ready after it (ready) or until any other forget, which
-	// clears it (forgetSession), and "" at every other moment. Every launch until then is built
+	// lostCause is the cause of the forget the launch made last (startFresh), and "" where none is
+	// kept; the rule of how long it is kept is written here alone. It is kept from that forget
+	// until the claim's first ready after it (ready), or until a later forget that drops a session
+	// (forgetSession): an operator's forget-session, or a retry in a new session, of the fresh
+	// agent's own session. A forget that drops nothing keeps it. Every launch until then is built
 	// with it (spawnSpec reads it into Claim.SessionLost): the retry of a fresh spawn that failed,
-	// and a relaunch of the fresh agent before its ready, such as the stale-plugin relaunch that
-	// resumes its new file, so the agent that comes up is told in its own prompt that it does not
-	// continue the session the claim forgot. The session is not forgotten again: the claim records
-	// none by then, or the fresh agent's own. An operator's forget-session, or a retry in a new
-	// session, that drops the fresh agent's own session before its ready is another forget, whose
-	// next launch follows it rather than the launch's: the cause kept past it would tell the agent
-	// that comes up something false about the session it replaces. It is memory only: a restart
-	// loses it and the prompt's sentence with it, and the reason the claim stores with the
-	// abandoned session (Claim.Abandoned) still tells the fresh agent at its first task.
+	// a relaunch of the fresh agent before its ready, such as the stale-plugin relaunch that
+	// resumes its new file, and the spawn after a retry in a new session that dropped nothing, so
+	// the agent that comes up is told in its own prompt that it does not continue the session the
+	// claim forgot. The session is not forgotten again: the claim records none by then, or the
+	// fresh agent's own. A forget drops nothing where the fresh spawn failed until the launch
+	// budget ran out, or the fresh agent never registered: the claim records no session, and a
+	// retry in a new session then (the controller's fresh_session, `legion claims retry
+	// --fresh-session`) leaves the session the cause is about as the one the claim abandoned
+	// (Claim.Abandoned), which the agent it starts still replaces. A forget that drops the fresh
+	// agent's own session is followed by a launch that replaces that session, not the one the cause
+	// is about, and the cause kept past it would tell the agent that comes up something false about
+	// the session it replaces. It is memory only: a restart loses it and the prompt's sentence with
+	// it, and the reason the claim stores with the abandoned session (Claim.Abandoned) still tells
+	// the fresh agent at its first task.
 	lostCause SessionLoss
 	// refusedEarlierRelease is the generation at which the fence refused the registration of a
 	// process an earlier release started, for a claim that records a session and no file
@@ -3180,10 +3185,10 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 // The workflow is told once, at the forget and before the spawn: a fresh spawn that fails is a
 // launch failure the caller charges, and its retry finds no session to forget, so a report made
 // only after a spawn that succeeded would never be made at all. The cause is kept on the machine
-// until the claim's first ready, or until another forget drops the fresh agent's session
-// (Machine.lostCause), so every launch until then — that retry, and a relaunch of the fresh agent
-// before its ready — is built for a claim that knows its session was forgotten, and the agent
-// that comes up is told in its own prompt rather than left to infer it from an empty transcript.
+// for the launches that follow the forget (Machine.lostCause says until when), so each of them —
+// that retry, and a relaunch of the fresh agent before its ready — is built for a claim that
+// knows its session was forgotten, and the agent that comes up is told in its own prompt rather
+// than left to infer it from an empty transcript.
 func (m *Machine) startFresh(ctx context.Context, token string, cause SessionLoss, answer error) (runtime.Locator, resumeWay, error) {
 	line, why, detail := forgetWords(cause, m.claim.Session, answer)
 	m.log.Warn(line, "session", m.claim.Session, "sessionFile", m.claim.SessionFile, "error", answer)
@@ -3521,9 +3526,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // needs a new session; and the operator's forget-session (forgetSession, the table's), which
 // `legion claims retry --fresh-session` and the controller's fresh_session run (api's
 // freshSession). It clears the claim's mark of a start by Oh My Pi's own lookup with the session
-// (Claim.AgentResumeGeneration), and the cause of an earlier forget the machine keeps for the
-// fresh agent's launches (Machine.lostCause), so the launch after this forget is built for no
-// cause but the one startFresh sets for its own.
+// (Claim.AgentResumeGeneration), and, where it drops a session, the cause of an earlier forget
+// the machine keeps for the fresh agent's launches; Machine.lostCause says why one that drops
+// nothing keeps it. startFresh sets the cause of its own forget after this call.
 //
 // A fresh session is not told the old session's record of what the last let-go of its process
 // ended (EndedWork), and this is the one place that rule is written. When it records the
@@ -3553,9 +3558,9 @@ func (m *Machine) sessionGone(ctx context.Context) {
 // claim that was told once would never be told again until a turn of it ended with no error at
 // all.
 func (m *Machine) forgetSession(why string) {
-	// startFresh sets the cause of its own forget after this call (Machine.lostCause).
-	m.lostCause = ""
 	if m.claim.Session != "" {
+		// The kept cause goes only with a session dropped here (Machine.lostCause).
+		m.lostCause = ""
 		m.claim.Abandoned = AbandonedSession{
 			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: why, At: m.deps.Clock.Now(),
 		}
