@@ -182,6 +182,10 @@ const listener = (path: string): string =>
 const dispatch = (path: string): string =>
   `${required("OUTSIDE_DISPATCH_URL").replace(/\/+$/, "")}${path}`;
 
+/** The registration's request for the session's own consumer, which a listener requires of every
+ *  registration (`409 not_requested` otherwise): one epoch per process, as one plugin connection. */
+const delivery = { consumer: true, epoch: randomUUID() } as const;
+
 /** Registers the session with its own agent subject and `extra`, as a session's subscribe does. */
 function subscribe(extra: readonly string[]): Promise<Answer> {
   return call("POST", listener("/v1/interests/subscribe"), {
@@ -189,6 +193,7 @@ function subscribe(extra: readonly string[]): Promise<Answer> {
     dir: process.cwd(),
     title: "outside-e2e probe",
     topics: [`notifications.agent.${session()}`, ...extra],
+    delivery,
   });
 }
 
@@ -379,6 +384,7 @@ async function foreignSession(): Promise<void> {
       dir: process.cwd(),
       title: "outside-e2e foreign",
       topics: [`notifications.agent.${foreign}`],
+      delivery,
     });
   const registered = await register().catch((error: unknown) => ({
     status: 0,
@@ -680,7 +686,8 @@ async function main(): Promise<void> {
     case "approve":
       print(
         flat(
-          await call("POST", dispatch(`/api/v1/credential-requests/${randomUUID()}/approve`), {
+          // A record id is a lowercase hex sha256; this one names no record.
+          await call("POST", dispatch(`/api/v1/credential-requests/${"0".repeat(64)}/approve`), {
             code: "ABCD-EFGH",
           })
         )
