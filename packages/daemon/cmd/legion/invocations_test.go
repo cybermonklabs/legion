@@ -33,7 +33,9 @@ var recordInvocations = flag.String("record-invocations", "", "a legion binary o
 // status and stdout sha256 the release before gave it (`-` for a caller that reads the new
 // output); the argv the caller runs now; and where that argv moved — `this-pr` in the change that
 // moved the command, `pin-pr:<pin>` in the deployment repository's pin of the release that holds
-// it, or `unchanged`.
+// it, or `unchanged`. A row whose exit this repository changed on purpose carries the new exit:
+// the two `workspace-init fetch` rows carry 3, the exit for a cause outside the issue's volume
+// (workspace.InitExitOutsideVolume).
 const invocationsTable = "testdata/invocations.tsv"
 
 // absentRoot is where every absolute path a row names is moved to, a directory no machine has:
@@ -118,7 +120,8 @@ type invocation struct {
 // run differs. Each run reads and writes nothing of the machine: its paths are under absentRoot,
 // its HOME and working directory are the test's own, and nothing it calls answers. A row whose
 // caller this change moved to a new output carries `-` for the digest: its exit is compared, and
-// the caller's own test reads the output.
+// the caller's own test reads the output. A row whose exit was changed on purpose carries the new
+// exit in old_exit (invocationsTable), and the run is compared with that.
 func TestInvocationTable(t *testing.T) {
 	rows := readInvocations(t)
 	if len(rows) == 0 {

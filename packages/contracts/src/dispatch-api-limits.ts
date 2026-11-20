@@ -341,16 +341,38 @@ export const DELIVERY_DUPLICATE_WINDOW_HOURS = DELIVERY_DUPLICATE_WINDOW_MS / 3_
 
 /**
  * The cause a delivery attempt records when the listener never answered its send. The listener
- * publishes before it answers, so this is the one failure that may already have reached the
- * recipient — which is what makes re-sending in another mode a genuine second delivery, and what
- * the dashboard keys that wording on. Generated into Go as `contracts.ReceiptTimeoutCause`, so
- * the string the server writes and the string the dashboard recognises are one literal.
+ * publishes before it answers, so a send whose answer missed the window may already have reached
+ * the recipient — which is what makes re-sending in another mode a genuine second delivery, and
+ * what the dashboard keys that wording on (`POSSIBLY_DELIVERED_CAUSES`). Generated into Go as
+ * `contracts.ReceiptTimeoutCause`, so the string the server writes and the string the dashboard
+ * recognises are one literal.
  *
  * It is the CAUSE only: the advice that follows from it expires with
  * `DELIVERY_DUPLICATE_WINDOW_MS`, so it is composed at render time and never stored.
  */
 export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
+
+/**
+ * The cause a delivery attempt records when the listener answered its send 503 with the code that
+ * says the message may be stored (`maybe_stored`): the listener published it and the message bus
+ * never acknowledged the publish, so it may already have reached the recipient, as a receipt
+ * timeout may. It is a cause of its own so the attempt's record names what happened - the listener
+ * answered, and could not confirm the store - and the dashboard words it as such while giving it
+ * the receipt timeout's possible-second-delivery warning (`POSSIBLY_DELIVERED_CAUSES`). Generated
+ * into Go as `contracts.StoreUnconfirmedCause`.
+ *
+ * It is the CAUSE only, as `RECEIPT_TIMEOUT_CAUSE` is.
+ */
+export const STORE_UNCONFIRMED_CAUSE =
+  "The listener sent the message but could not confirm it was stored; the message may already have been delivered.";
+
+/** The causes whose send may already have reached the recipient, so that re-sending it in another
+ * mode delivers it a second time: the one list the dashboard keys that warning on. */
+export const POSSIBLY_DELIVERED_CAUSES: readonly string[] = [
+  RECEIPT_TIMEOUT_CAUSE,
+  STORE_UNCONFIRMED_CAUSE,
+];
 
 /** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no
  * embedder configured, the query's own embedding timed out, or the model service answered an

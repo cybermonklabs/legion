@@ -70,7 +70,15 @@ type roleForward struct {
 	heldState   string
 	mentionKeys map[string]string
 	settledKeys map[string]string
+	// resolvedAt is when the resolution that chose holder was made, for a forward to a live
+	// holder (forwardOf), which its send judges against roles.ForwardFenceAge (forward).
+	resolvedAt time.Time
 }
+
+// errStaleRoleResolution is a forward whose resolution was roles.ForwardFenceAge old or older when
+// its send started (roleForward.forward): it sends nothing and leaves the destination pending, and
+// the outbox's next read of the event resolves the role's holder again.
+var errStaleRoleResolution = errors.New("the resolution of the role's holder is too old to forward on")
 
 // The states a forward is held on that are no session state of the holder's: the resolution never
 // reached one. They are label values of the hold counter (Deps.RoleForwardsHeld) and words of the
@@ -698,7 +706,7 @@ func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution
 	if item.SourceSession != "" && item.SourceSession == holder {
 		return &roleForward{holder: holder, skip: "the role's holder is the event's actor"}
 	}
-	return &roleForward{holder: holder}
+	return &roleForward{holder: holder, resolvedAt: time.Now()}
 }
 
 // keptOrSkipped is how a role route no live holder can take reaches the role's next holder: a
@@ -756,7 +764,19 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // answer, and what counts the forward as having reached the holder, for every holder alike: a
 // holder is delivered its stored copy from its own consumer by the listener's relay and answers
 // the request with nothing (INFRA-771).
+//
+// A forward whose resolution is roles.ForwardFenceAge old or older when its send starts sends
+// nothing (errStaleRoleResolution) and the destination stays pending, so the next read of the
+// event resolves the holder again: a takeover's copy of the previous holder's role messages reads
+// that holder's subject for the record's life (cmd/listener role_takeover.go), and a forward
+// started on a fresher resolution is stored where that copy reads it.
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
+	if now := time.Now(); roles.ResolutionTooOld(f.resolvedAt, now) {
+		age := now.Sub(f.resolvedAt)
+		stale := make(chan error, 1)
+		stale <- fmt.Errorf("forward to %s: %w (resolved %s ago)", f.holder, errStaleRoleResolution, age.Round(time.Second))
+		return stale
+	}
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
 	subject := contracts.LegacyAgentSubject(f.holder)
 	return sender.Request(subject, item, bus.RequestOptions{

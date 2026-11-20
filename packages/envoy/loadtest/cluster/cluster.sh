@@ -445,6 +445,7 @@ valid() {
     repo) re='^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' ;;
     image) re='^[a-z0-9.-]+\.[a-z]+(:[0-9]+)?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$' ;;
     hex) re='^[0-9a-f]{32,128}$' ;;
+    issuer) re='^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._/-]*)?$' ;;
     cpu) re='^[1-9][0-9]?$' ;;
     memory) re='^[1-9][0-9]{0,2}Gi$' ;;
     volume) re='^[1-9][0-9]{0,3}Gi$' ;;
@@ -599,7 +600,7 @@ production_file() {
 
 # Every placeholder the manifests hold, and the kind (valid) its value must be.
 declare -A PLACEHOLDER_KIND=(
-  [NAMESPACE]=namespace [RUN_ID]=run [STORAGE_CLASS]=storage_class
+  [NAMESPACE]=namespace [RUN_ID]=run [STORAGE_CLASS]=storage_class [OIDC_ISSUER]=issuer
   [ENVOY_IMAGE]=image [LISTENER_IMAGE]=image [PG_IMAGE]=image [SOCAT_IMAGE]=image [RUNNER_IMAGE]=image
   [PG_TIER]=tier [PG_CPU]=cpu [PG_MEMORY]=memory [PG_VOLUME]=volume
   [PG_MAX_CONNECTIONS]=pg_setting [PG_SHARED_BUFFERS]=pg_setting [PG_EFFECTIVE_CACHE_SIZE]=pg_setting
@@ -631,7 +632,7 @@ render_manifest() {
 
 # manifest_values: every placeholder's value from state.json, as KEY=VALUE lines.
 manifest_values() {
-  jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)",
+  jq -r '"NAMESPACE=\(.namespace)", "RUN_ID=\(.run)", "STORAGE_CLASS=\(.storage_class)", "OIDC_ISSUER=\(.oidc_issuer)",
     "ENVOY_IMAGE=\(.images.dispatch)", "LISTENER_IMAGE=\(.images.listener)",
     "PG_IMAGE=\(.images.postgres)", "SOCAT_IMAGE=\(.images.socat)", "RUNNER_IMAGE=\(.images.runner)",
     "PG_TIER=\(.postgres.tier)", "PG_CPU=\(.postgres.cpu)", "PG_MEMORY=\(.postgres.memory)",
@@ -3541,6 +3542,13 @@ up_run() {
   mv -- "$CHECKER_TMP/envoy-dispatch" "$STORED_ORDER_BIN" || die "moving the stored-order checker into $STORED_ORDER_BIN failed"
   [ -z "$bt_commit" ] || mv -- "$CHECKER_TMP/browsertype" "$BROWSERTYPE_BIN" || die "moving browsertype into $BROWSERTYPE_BIN failed"
   checker_tmp_remove
+  # The cluster's ServiceAccount token issuer, which the copy's listener verifies Dispatch's
+  # projected token against (manifests/listener.yaml, __OIDC_ISSUER__): Dispatch makes a send for a
+  # role route on that identity alone, and the replay's role-routed issues send them.
+  local oidc_issuer
+  oidc_issuer=$(kube get --raw /.well-known/openid-configuration | jq -r '.issuer // empty') ||
+    die "up: reading the cluster's ServiceAccount token issuer (GET /.well-known/openid-configuration) failed"
+  valid issuer "$oidc_issuer" || die "up: the cluster names its token issuer '$oidc_issuer', which is not an https URL"
   local tier
   tier=$(pg_tier 16 60)
   tier=$(jq -c --arg v "$pg_volume" '. + {volume: $v}' <<<"$tier")
@@ -3548,12 +3556,13 @@ up_run() {
   # no newline), never arguments: an argument of jq is readable by every user of this pod while it
   # runs (/proc/<pid>/cmdline).
   (umask 077 && jq -n --arg ns "$NS" --arg run "$RUN" --arg sc "$sc" --arg commit "$commit" --arg major "$major" \
+    --arg issuer "$oidc_issuer" \
     --argjson stored_order "$STORED_ORDER_STATE" \
     --arg repo "$PRODUCTION_REPO" --arg created "$(utc_now)" --arg holder "$HOLDER_POD" --arg pidns "$(pid_ns)" \
     --arg dispatch "$dispatch_image" --arg listener "$listener_image" --arg listener_ref "$listener_ref" \
     --arg pg "$pg_image" --arg socat "$socat_image" --arg runner "$runner_image" --argjson nats "$nats_images" \
     --argjson tier "$tier" --rawfile pgpw <(random_hex 24) --rawfile dt <(random_hex 32) --rawfile lt <(random_hex 32) \
-    --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit,
+    --rawfile sk <(random_hex 32) '{namespace: $ns, run: $run, storage_class: $sc, dispatch_commit: $commit, oidc_issuer: $issuer,
       pg_major: $major, production_repo: $repo, created: $created, holder_pod: $holder, pid_ns: $pidns,
       images: ({dispatch: $dispatch, listener: $listener, postgres: $pg, socat: $socat, runner: $runner} + $nats),
       image_sources: {listener: $listener_ref}, postgres: $tier, stored_order: $stored_order, browsertype: null,
