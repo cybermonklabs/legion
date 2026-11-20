@@ -91,10 +91,12 @@ export function thread(
   };
 }
 
-export function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
+export function renderCard(
+  node: ReactNode,
+  queryClient: QueryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
+  })
+) {
   const drawn = (card: ReactNode) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>{card}</QueryClientProvider>

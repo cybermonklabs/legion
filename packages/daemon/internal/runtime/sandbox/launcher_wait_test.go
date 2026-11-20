@@ -9,7 +9,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -283,7 +285,7 @@ func TestAPodNotReadyToStartHasNeverStartedOnceCreatedPastTheBoundAndScheduledPa
 // margin ago, half the rig's boot timeout: it is about to start. The last row is that case, the
 // pod placed half a second before the next try, three boot timeouts after it appeared.
 func TestALaunchReplacesAPodItsNodeNeverStartedOncePastTheBootTimeout(t *testing.T) {
-	const said = "sandbox runtime: replacing a pod older than the boot timeout that its node has not made ready to start its containers"
+	const said = neverStartedWarning
 	boot := testOptions().BootTimeout
 	for _, tc := range []struct {
 		name string
@@ -469,4 +471,258 @@ func TestALaunchCountsItsProvisioningBoundFromTheFirstInitContainer(t *testing.T
 	case <-time.After(5 * time.Second):
 		t.Fatal("the launch did not start the role once its launcher connected")
 	}
+}
+
+// neverStartedWarning is what a launch logs when it replaces a pod that its node never started
+// (neverStarted).
+const neverStartedWarning = "sandbox runtime: replacing a pod older than its start bound that its node has not made ready to start its containers"
+
+// A pod with a kept volume (keptVolume) can stand Pending on its new node, scheduled and not ready
+// to start its containers, while its volume moves to that node. The upstream attach-detach
+// controller force-detaches the volume 6 minutes after the old pod is gone from the API, and the
+// attach takes up to one minute more. So a launch gives such a pod its start bound (startBound) in
+// place of the boot timeout: the kept-volume bound of 7 minutes (keptVolumeAttachWait), or the
+// boot timeout where that is longer. Every other pod, the controller's too, keeps the boot
+// timeout. neverStarted counts the bound from the pod's creation, with its scheduling margin.
+// awaitRoleLauncher counts it from the start of its wait until it first sees the pod
+// provisioning.
+//
+// On the rig's clock, at a boot timeout of 120 s, a kept pod that was created and scheduled at the
+// same moment has not yet failed to start 5 minutes after its creation. It has failed 8 minutes
+// after it. A pod with an ephemeral volume has failed at 3 minutes. At INFRA's boot timeout of
+// 600 s, the kept pod has not failed at 9 minutes and has failed at 11: its bound is then the boot
+// timeout, not a fixed 7 minutes. A relaunch keeps a pod that has not failed. It replaces a pod
+// that has failed, names the start bound, and keeps the Sandbox and its uid, so a kept volume's
+// next pod mounts the same claim.
+//
+// On the wall clock, the rig sets the boot timeout and the kept-volume bound short. A launch whose
+// launcher never connects then gives up at its pod's start bound and names it: the kept-volume
+// bound for a kept pod where that bound is longer, the boot timeout for a pod with an ephemeral
+// volume in the same rig, and the boot timeout for a kept pod where the timeout is longer. When
+// the wait first sees a kept pod provisioning just before its start bound, the wait runs on to the
+// deadline that launcherDeadline sets, and the wait's backstop does not end it first. With
+// keep_volume on, the launch try's own bound (LaunchBound) counts a start of 7 minutes.
+func TestAKeptVolumePodWaitsOutADetach(t *testing.T) {
+	const boot, infraBoot = 120 * time.Second, 600 * time.Second
+	for _, tc := range []struct {
+		name string
+		// boot is the rig's boot timeout, and aged is how long after the pod's creation and
+		// scheduling the next launch reads it.
+		boot, aged time.Duration
+		// kept is whether the pod keeps its volume: LEGION-208's pod does, and the pod of the
+		// canary LEGION-209 runs in gVisor on a volume of its own.
+		kept bool
+		// bound is the pod's start bound, and stuck is whether the pod has never started at aged.
+		bound time.Duration
+		stuck bool
+	}{
+		{name: "a kept pod 5 minutes after its creation", boot: boot, aged: 5 * time.Minute, kept: true, bound: 7 * time.Minute},
+		{name: "a kept pod 8 minutes after its creation", boot: boot, aged: 8 * time.Minute, kept: true, bound: 7 * time.Minute, stuck: true},
+		{name: "a pod with an ephemeral volume 3 minutes after its creation", boot: boot, aged: 3 * time.Minute, bound: boot, stuck: true},
+		{name: "a kept pod at a boot timeout of 600 s, 9 minutes after its creation", boot: infraBoot, aged: 9 * time.Minute, kept: true, bound: infraBoot},
+		{name: "a kept pod at a boot timeout of 600 s, 11 minutes after its creation", boot: infraBoot, aged: 11 * time.Minute, kept: true, bound: infraBoot, stuck: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := &lockedLog{}
+			g := newRig(t, nil, withOptions(func(o *Options) {
+				keptVolumes(SandboxMicroVM, childIssue)(o)
+				o.BootTimeout = tc.boot
+				o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			}))
+			g.autoStart.Store(false)
+			spec := childSpec(t)
+			if tc.kept {
+				spec = workerSpec(t)
+			}
+			name := SandboxName(spec.Claim)
+			awaitingItsRoleLauncher(t, g, spec)
+			unstarted := g.pod(name)
+			// The pod's node got it at its creation and has not made it ready to start since.
+			g.update(unstarted, notReadyToStart(unstarted.CreationTimestamp.Time))
+			g.eventually("the store to see the pod on its node", func() bool {
+				pod := g.r.storedPod(name)
+				return pod != nil && pod.Spec.NodeName == unstartedNode
+			})
+			s := g.sandbox(name)
+			if kept := ownsKeptVolume(s); kept != tc.kept {
+				t.Fatalf("the issue's Sandbox owns a kept volume: %t, want %t", kept, tc.kept)
+			}
+			g.advance(tc.aged)
+			if got := g.r.startBound(s); got != tc.bound {
+				t.Fatalf("startBound = %s, want %s", got, tc.bound)
+			}
+			if _, _, never := neverStarted(g.r.storedPod(name), g.r.now(), g.r.startBound(s)); never != tc.stuck {
+				t.Fatalf("neverStarted %s after the pod's creation = %t, want %t", tc.aged, never, tc.stuck)
+			}
+
+			g.autoStart.Store(true)
+			spec.Generation = 2
+			loc := g.spawn(spec)
+			if replaced := loc.Sandbox.PodUID != string(unstarted.UID); replaced != tc.stuck {
+				t.Fatalf("the next launch ran in pod %s, the pod that never started being %s: replaced %t, want %t",
+					loc.Sandbox.PodUID, unstarted.UID, replaced, tc.stuck)
+			}
+			if after := g.sandbox(name); after == nil || after.UID != s.UID || ownsKeptVolume(after) != tc.kept {
+				t.Fatalf("the issue's Sandbox after the launch = %+v, want %s, the same Sandbox", after, s.UID)
+			}
+			logged := logs.String()
+			if !tc.stuck {
+				if strings.Contains(logged, neverStartedWarning) {
+					t.Fatalf("the launch that kept the pod logged %q", logged)
+				}
+				return
+			}
+			for _, want := range []string{neverStartedWarning, "uid=" + string(unstarted.UID),
+				"notStartedFor=" + tc.aged.String(), "startBound=" + tc.bound.String()} {
+				if !strings.Contains(logged, want) {
+					t.Errorf("the launch that replaced the pod logged %q, want it to say %q", logged, want)
+				}
+			}
+		})
+	}
+
+	t.Run("the start bound of each Sandbox", func(t *testing.T) {
+		if keptVolumeAttachWait != 7*time.Minute {
+			t.Fatalf("keptVolumeAttachWait = %s, want 7m0s: 6 minutes to the force-detach and one minute for the attach", keptVolumeAttachWait)
+		}
+		stored := func(template func(*testing.T, *unstructured.Unstructured) *unstructured.Unstructured) func(*testing.T, *Runtime) *sandbox {
+			return func(t *testing.T, _ *Runtime) *sandbox {
+				t.Helper()
+				s, err := decodeSandbox(template(t, sandboxObject(t, SandboxName(workerToken), "uid-sandbox", modeRunning, claimLabels(claim.RoleTester))))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return s
+			}
+		}
+		kept := stored(func(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+			return withKeptTemplate(t, u, true)
+		})
+		for _, tc := range []struct {
+			name    string
+			boot    time.Duration
+			sandbox func(*testing.T, *Runtime) *sandbox
+			want    time.Duration
+		}{
+			{"a kept volume's, at the default boot timeout", boot, kept, 7 * time.Minute},
+			{"an ephemeral volume's", boot, stored(func(_ *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured { return u }), boot},
+			{"the unlabelled issue template's of the release before the pod-owned disk", boot, stored(withSupersededDisk), boot},
+			{"the controller's", boot, func(t *testing.T, r *Runtime) *sandbox {
+				s := r.sandboxManifest(launchOf(t, r, controllerSpec(t)))
+				return &s
+			}, boot},
+			{"a kept volume's, at a boot timeout of 10 minutes", 10 * time.Minute, kept, 10 * time.Minute},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				r := sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: keptMicroVM()}, func(o *Options) { o.BootTimeout = tc.boot })
+				if r.keptVolumeBound != keptVolumeAttachWait {
+					t.Fatalf("the runtime's kept-volume bound = %s, want %s", r.keptVolumeBound, keptVolumeAttachWait)
+				}
+				if got := r.startBound(tc.sandbox(t, r)); got != tc.want {
+					t.Fatalf("startBound = %s, want %s", got, tc.want)
+				}
+			})
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		// boot is the rig's boot timeout and kept its kept-volume bound.
+		boot, kept time.Duration
+		// keeps is whether the launch's pod keeps its volume, and want is the start bound it waits.
+		keeps bool
+		want  time.Duration
+	}{
+		{"a kept pod, the kept-volume bound longer than the boot timeout", time.Second, 3 * time.Second, true, 3 * time.Second},
+		{"a pod with an ephemeral volume, at the same bounds", time.Second, 3 * time.Second, false, time.Second},
+		{"a kept pod, the kept-volume bound shorter than the boot timeout", 2 * time.Second, time.Second, true, 2 * time.Second},
+	} {
+		t.Run("a launch whose launcher never connects: "+tc.name, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) {
+				keptVolumes(SandboxMicroVM, childIssue)(o)
+				o.BootTimeout = tc.boot
+			}))
+			g.r.keptVolumeBound = tc.kept
+			g.autoStart.Store(false)
+			spec := childSpec(t)
+			if tc.keeps {
+				spec = workerSpec(t)
+			}
+			name := SandboxName(spec.Claim)
+			result := make(chan error, 1)
+			go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+			appeared := g.pendingPod(name, pulling)
+
+			select {
+			case err := <-result:
+				waited := time.Since(appeared)
+				want := "wait for its role launcher: timed out after " + tc.want.String() + " waiting for role launcher " + string(spec.Claim)
+				if err == nil || !strings.Contains(err.Error(), want) {
+					t.Fatalf("Spawn = %v, want %q", err, want)
+				}
+				if waited < tc.want-recheckInterval {
+					t.Fatalf("the launch gave up %s after its pod appeared, want its start bound %s", waited, tc.want)
+				}
+			case <-time.After(90 * time.Second):
+				t.Fatal("hang guard: the launch never ended for a pod whose launcher never connects")
+			}
+			if kept := ownsKeptVolume(g.sandbox(name)); kept != tc.keeps {
+				t.Fatalf("the issue's Sandbox owns a kept volume: %t, want %t", kept, tc.keeps)
+			}
+		})
+	}
+
+	// The start bound is 8 s and ProvisionBound 3 s. The wait first sees the pod provisioning 7 s
+	// after the pod appeared, and from then on its deadline is the boot timeout after the last time
+	// it sees the pod provisioning, up to the boot timeout plus ProvisionBound after the first
+	// (launcherDeadline): 12 s. The launcher connects at 10 s, past the 8 s backstop that twice
+	// the boot timeout would set (2*boot + ProvisionBound + 2*recheckInterval). Each step has a
+	// margin of 1 s or more, so a loaded runner does not move one past the next.
+	t.Run("a kept pod first seen provisioning just before its start bound", func(t *testing.T) {
+		const boot, kept, provision = 2 * time.Second, 8 * time.Second, 3 * time.Second
+		g := newRig(t, nil, withOptions(func(o *Options) {
+			keptVolumes(SandboxMicroVM)(o)
+			o.BootTimeout = boot
+		}))
+		g.r.keptVolumeBound, g.r.provisionBound = kept, provision
+		g.autoStart.Store(false)
+		spec := workerSpec(t)
+		name := SandboxName(spec.Claim)
+		result := make(chan error, 1)
+		go func() { _, err := g.r.Spawn(g.ctx, spec); result <- err }()
+		appeared := g.pendingPod(name, pulling)
+		time.Sleep(time.Until(appeared.Add(kept - time.Second)))
+		g.update(g.pod(name), fetching)
+		time.Sleep(time.Until(appeared.Add(2*boot + provision + 2*recheckInterval + 2*time.Second)))
+		g.update(g.pod(name), func(p *corev1.Pod) { p.Status = runningStatusOf(p.Spec) })
+		g.launcher(spec.Claim)
+		// The launcher's state wakes no wait: this update does, so the wait reads it at once.
+		g.update(g.pod(name), func(*corev1.Pod) {})
+
+		select {
+		case err := <-result:
+			if err != nil {
+				t.Fatalf("Spawn = %v %s after its pod appeared, want the role started", err, time.Since(appeared).Round(time.Millisecond))
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("the launch did not start the role once its launcher connected")
+		}
+		if !ownsKeptVolume(g.sandbox(name)) {
+			t.Fatal("the issue's Sandbox owns no kept volume")
+		}
+	})
+
+	t.Run("LaunchBound counts the kept-volume bound once keep_volume is on", func(t *testing.T) {
+		const grace = 10 * time.Second
+		at := func(block *MicroVM) *Runtime {
+			return sandboxRuntime(t, SandboxConfig{Type: SandboxMicroVM, MicroVM: block}, func(o *Options) { o.TerminationGrace = grace })
+		}
+		on, off := at(keptMicroVM()), at(testMicroVM())
+		if got, want := off.LaunchBound(), launchBound(boot, boot, off.ProvisionBound(), grace); got != want || want != 5*time.Hour+49*time.Minute+41*time.Second {
+			t.Fatalf("LaunchBound with keep_volume off = %s, want %s (5h49m41s)", got, want)
+		}
+		if got, want := on.LaunchBound(), launchBound(boot, keptVolumeAttachWait, on.ProvisionBound(), grace); got != want || got != off.LaunchBound()+keptVolumeAttachWait-boot {
+			t.Fatalf("LaunchBound with keep_volume on = %s, want %s: %s more than with it off", got, want, keptVolumeAttachWait-boot)
+		}
+	})
 }

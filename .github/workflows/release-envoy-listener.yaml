@@ -22,7 +22,7 @@ on:
       - "bun.lock"
       - "patches/**"
       - "packages/envoy-client/package.json"
-      - "packages/broker-client/package.json"
+      - "packages/cipher-client/package.json"
       - "packages/pi-envoy/package.json"
       - "packages/pi-legion/package.json"
       - "packages/pi-shared/package.json"
@@ -458,8 +458,8 @@ jobs:
           subject-name: ${{ needs.targets.outputs.envoy_image }}
           subject-digest: ${{ needs.image_index.outputs.digest }}
 
-  # agent-secrets (packages/envoy/cmd/agent-secrets) and the host helper
-  # (packages/envoy/cmd/agent-secrets-helper): the same legion-envoy-v* release also ships these
+  # agent-secrets (packages/envoy/cmd/cipher) and the host helper
+  # (packages/envoy/cmd/cipher-helper): the same legion-envoy-v* release also ships these
   # for a host to install with mise's github backend, in the layout its installer expects —
   # bin/agent-secrets, bin/agent-secrets-helper. A linux archive, agent-secrets-<arch>.tar.gz for
   # each architecture the envoy key of .github/go-release-targets.json names, holds both; a darwin
@@ -555,13 +555,13 @@ jobs:
           mkdir -p ../../agent-secrets-assets
           for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
             mkdir -p "out/$arch/agent-secrets/bin"
-            for cmd in agent-secrets agent-secrets-helper; do
+            for entry in agent-secrets=cipher agent-secrets-helper=cipher-helper; do
               CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -buildvcs=false \
                 -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.tag=$TAG" \
-                -o "out/$arch/agent-secrets/bin/$cmd" "./cmd/$cmd"
+                -o "out/$arch/agent-secrets/bin/${entry%%=*}" "./cmd/${entry#*=}"
             done
             CGO_ENABLED=0 GOOS=linux GOARCH="$arch" ../../scripts/go-third-party-notices.sh \
-              "out/$arch/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/agent-secrets ./cmd/agent-secrets-helper
+              "out/$arch/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/cipher ./cmd/cipher-helper
             tar czf "../../agent-secrets-assets/agent-secrets-$arch.tar.gz" -C "out/$arch" agent-secrets
           done
           for target in $(jq -r '.["agent-secrets-client"][]' ../../.github/agent-secrets-client-targets.json); do
@@ -571,9 +571,9 @@ jobs:
             mkdir -p "$dir/agent-secrets/bin"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -buildvcs=false \
               -ldflags "-X github.com/sjawhar/envoy/internal/buildversion.tag=$TAG" \
-              -o "$dir/agent-secrets/bin/agent-secrets" ./cmd/agent-secrets
+              -o "$dir/agent-secrets/bin/agent-secrets" ./cmd/cipher
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" ../../scripts/go-third-party-notices.sh \
-              "$dir/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/agent-secrets
+              "$dir/agent-secrets/THIRD_PARTY_NOTICES" ./cmd/cipher
             tar czf "../../agent-secrets-assets/agent-secrets-$os-$arch.tar.gz" -C "$dir" agent-secrets
           done
         working-directory: packages/envoy

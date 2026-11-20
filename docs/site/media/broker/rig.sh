@@ -4,7 +4,7 @@
 # The secrets broker's demo rig: every surface the broker's screenshots and walkthrough show,
 # running on one machine on example data. It starts
 #
-#   - the broker (packages/envoy/cmd/broker) on its fake secrets file (internal/broker/secrets'
+#   - the broker (packages/envoy/cmd/cipherd) on its fake secrets file (internal/cipher/secrets'
 #     development stand-in for Secrets Manager), holding one secret, DEMO_API_KEY, owned by
 #     alice@example.com at the human tier, whose value is made up, in a database of its own beside
 #     DATABASE_URL's, created and dropped by this run, trusting the ServiceAccount tokens of
@@ -155,7 +155,10 @@ trap 'exit 130' INT TERM
 # --- Binaries: the broker and its local token issuer, and the client and host helper the agent
 # machine runs. ---------------------------------------------------------------------------------
 note "building the broker, dev-oidc-issuer, agent-secrets and agent-secrets-helper"
-(cd "$root/packages/envoy" && CGO_ENABLED=0 go build -o "$work/bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/agent-secrets ./cmd/agent-secrets-helper)
+(cd "$root/packages/envoy" && CGO_ENABLED=0 go build -o "$work/bin/" ./cmd/dev-oidc-issuer &&
+  CGO_ENABLED=0 go build -o "$work/bin/broker" ./cmd/cipherd &&
+  CGO_ENABLED=0 go build -o "$work/bin/agent-secrets" ./cmd/cipher &&
+  CGO_ENABLED=0 go build -o "$work/bin/agent-secrets-helper" ./cmd/cipher-helper)
 
 # --- The broker's database, beside DATABASE_URL's, named for this run (as dev-broker.sh names
 # its own), so a database another run or anyone else made is never the one dropped. -------------

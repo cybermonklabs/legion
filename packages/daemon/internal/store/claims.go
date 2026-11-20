@@ -45,7 +45,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.given_entry, c.served_entry, c.handshake_entry, c.handshake_generation, c.handshake_queued_at,
 	c.handshake_confirmed_at, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
-	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
+	c.plugin_contract, c.plugin_relaunch_for, c.agent_resume_generation, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
 	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
@@ -358,6 +358,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Handshake.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: the generation %d of its handshake does not fit a bigint", c.Token, c.Handshake.Generation)
 	}
+	if c.AgentResumeGeneration > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: the generation %d of its resume by Oh My Pi's own lookup does not fit a bigint", c.Token, c.AgentResumeGeneration)
+	}
 	var locator []byte
 	if c.Locator != nil {
 		encoded, err := json.Marshal(c.Locator)
@@ -413,7 +416,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
 		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
-		plugin_contract, plugin_relaunch_for, delivered_rows,
+		plugin_contract, plugin_relaunch_for, agent_resume_generation, delivered_rows,
 		last_turn_start, last_turn_end,
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
@@ -424,7 +427,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58,
+		$55, $56, $57, $58, $59,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -448,6 +451,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		suspended_by = excluded.suspended_by,
 		plugin_contract = excluded.plugin_contract,
 		plugin_relaunch_for = excluded.plugin_relaunch_for,
+		agent_resume_generation = excluded.agent_resume_generation,
 		delivered_rows = (select coalesce(array_agg(distinct delivered order by delivered), '{}'::bigint[])
 			from unnest(claims.delivered_rows || excluded.delivered_rows) as delivered),
 		last_turn_start = excluded.last_turn_start, last_turn_end = excluded.last_turn_end,
@@ -503,7 +507,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
 		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.GivenEntry, c.ServedEntry,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
-		c.PluginContract, c.PluginRelaunchFor, delivered,
+		c.PluginContract, c.PluginRelaunchFor, int64(c.AgentResumeGeneration), delivered,
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
 		c.LastDeathCause, c.LastStartFailure, instant(c.LastReady), outcomes, abandoned,
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
@@ -822,6 +826,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		cause, pendingCause         string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
+		agentResumeGeneration       int64
 		locator                     []byte
 		deliveryID, task            *string
 		markedBy                    *string
@@ -868,7 +873,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Handshake.Entry, &handshakeGeneration, &handshakeQueued, &handshakeConfirmed,
 		&servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
-		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
+		&c.PluginContract, &c.PluginRelaunchFor, &agentResumeGeneration, &c.DeliveredRows,
 		&turnStart, &turnEnd,
 		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
@@ -895,6 +900,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.AgentResumeGeneration = uint64(agentResumeGeneration)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	// The handshake's two moments are nullable (20261114020537_claim_entry_handshake): a claim queued
 	// no task carrying an entry has neither, and one whose task of its entry no turn has confirmed

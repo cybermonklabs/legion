@@ -2,7 +2,7 @@
 //
 // A laptop's credential: the machine logs in once with `dispatch login --device`, and every
 // session after that trades the access token the login holds
-// (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`, `@legion/broker-client/device-login`). These rows
+// (`AGENT_SECRETS_MACHINE_IDENTITY=device-login`, `@legion/cipher-client/device-login`). These rows
 // hold what a session and the person at the keyboard see: the command prints the code and where
 // to type it and keeps the login; a session's Dispatch credential is the login's trade, naming
 // the session; and two processes that trade at once spend one refresh token once, since the
@@ -11,8 +11,8 @@
 import { expect, test } from "bun:test";
 import { statSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { thumbprintOf } from "@legion/broker-client/test/sign-ins";
-import { DEVICE_LOGIN_COMMAND } from "@legion/broker-client/token-errors";
+import { thumbprintOf } from "@legion/cipher-client/test/sign-ins";
+import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { runDispatchCli } from "../dispatch-cli";
 import { dispatchSettings } from "../dispatch-config";
@@ -167,11 +167,11 @@ test("a laptop session's Dispatch credential is its device login's trade, naming
  *  path, since no package resolves from there. */
 const DEVICE_LOGIN_MODULE = path.resolve(
   import.meta.dir,
-  "../../../broker-client/src/device-login.ts"
+  "../../../cipher-client/src/device-login.ts"
 );
 const TOKEN_CLIENT_MODULE = path.resolve(
   import.meta.dir,
-  "../../../broker-client/src/token-client.ts"
+  "../../../cipher-client/src/token-client.ts"
 );
 
 /**

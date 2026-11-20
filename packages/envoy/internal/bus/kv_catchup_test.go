@@ -36,8 +36,8 @@ func memberJetStream(t *testing.T, cluster *testnats.Cluster, i int) (*nats.Conn
 //     member gives a read of a stream it has no assignment for, and which a start cannot tell from
 //     a bucket that is not there;
 //   - its create answers ErrStreamNameAlreadyInUse, the cluster's own answer to a create of a
-//     bucket that exists. nats.go rescues that answer by reading the stream itself and comparing
-//     it (kv.go:502-516, v1.50.0), which is exactly the read this member cannot serve, so the
+//     bucket that exists. nats.go v1.55.0 rescues that answer by reading the stream itself and comparing
+//     it (kv.go:534-543), which is exactly the read this member cannot serve, so the
 //     answer reaches the start.
 //
 // A clustered create is answered once the metadata group has committed it, not once every member

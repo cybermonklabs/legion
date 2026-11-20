@@ -3,7 +3,7 @@
 // `dispatch login --device`: logs this machine in at the secrets broker's device grant, once per
 // machine, for a machine with no platform identity of its own, such as a person's laptop. It asks
 // the broker for a code, prints where to type it and the code, waits while the person approves
-// it in Dispatch, and keeps the login in its file (`@legion/broker-client/device-login`). After
+// it in Dispatch, and keeps the login in its file (`@legion/cipher-client/device-login`). After
 // that, every session of the machine that sets `AGENT_SECRETS_MACHINE_IDENTITY=device-login`
 // trades the login for its broker token.
 //
@@ -19,14 +19,14 @@ import {
   finishDeviceLogin,
   readDeviceLogin,
   startDeviceLogin,
-} from "@legion/broker-client/device-login";
+} from "@legion/cipher-client/device-login";
 import {
   BROKER_URL_VAR,
   IDENTITY_DEVICE_LOGIN,
   IDENTITY_VAR,
-} from "@legion/broker-client/environment";
-import { PERSON_VAR } from "@legion/broker-client/signins";
-import { DEVICE_LOGIN_COMMAND } from "@legion/broker-client/token-errors";
+} from "@legion/cipher-client/environment";
+import { PERSON_VAR } from "@legion/cipher-client/signins";
+import { DEVICE_LOGIN_COMMAND } from "@legion/cipher-client/token-errors";
 import { isHttpUrl, urlForText } from "@legion/contracts/log-text";
 import { messageFor } from "../errors";
 

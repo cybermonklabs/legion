@@ -137,7 +137,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "postgres_dsn", Default: "`LEGION_POSTGRES_DSN` in the daemon's environment", RequiredBy: "when `LEGION_POSTGRES_DSN` is unset in the daemon's environment",
-			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names.",
+			Description: "The daemon's own record database, as a `postgres://…` connection string; the agents' conversations live in another database, which `runtime.kubernetes.session_store` names. A `default_query_exec_mode` of `exec` or `simple_protocol` is refused: in those modes pgx learns no parameter's type from the server, and the store needs that type to apply the text rule or the JSON rule to each value it writes.",
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.PostgresDSN = v }),
 		},
 		{
@@ -253,6 +253,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: repositoryRenamesKey, Default: "no two names are one repository", RequiredBy: "no",
 			Description: "The repositories that moved, each pair naming the repository as every record holds it and the repository GitHub holds it under now, which the daemon then treats as one repository wherever it compares a name; the equivalence is read-side only, so a pair stays here for as long as any record names the old repository.",
 			Read:        reads(readRepositoryRenames, func(f *fileConfig, v []ghrepo.Rename) { f.RepositoryRenames = v }),
+		},
+		{
+			Name: leakCheckKey, Default: "`LEGION_LEAK_CHECK_REPOSITORY` and `LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment; with neither, the deployment runs no shared leak check", RequiredBy: "no",
+			Description: "The deployment's shared public leak check: the repository it is published from by tag, which the daemon reads at the worker image's pin and pushes to every pod, and the check's manifest digest, one sha256 over every file it runs from; with no check named, role pods start without one and no write is refused for its absence.",
+			Read:        reads(readLeakCheck, func(f *fileConfig, v *fileLeakCheck) { f.LeakCheck = v }),
 		},
 		{
 			Name: hooksKey, Default: "one hook: every fifth move back of any kind puts the daemon's own words in front of the implementer, the tester and the reviewer", RequiredBy: "no",
@@ -467,6 +472,12 @@ var nestedKeys = []memberGroup{
 			Description: "The repository as it was, which every record Legion already holds names; compared without case."},
 		{Name: "to", Default: "none: a pair that names no `to` is refused", RequiredBy: "yes",
 			Description: "The repository it moved to, which GitHub's events name and which the daemon calls GitHub under; compared without case."},
+	}},
+	{Path: leakCheckKey, Members: []member{
+		{Name: "repository", Default: "`LEGION_LEAK_CHECK_REPOSITORY` in the daemon's environment", RequiredBy: "when `manifest_sha256` is set: the two are set together or not at all",
+			Description: "The repository the shared public leak check is published from, as `owner/name`: its `leak-check` directory at the tag the worker image pins (`LEGION_LEAK_CHECK_TAG`) is what the daemon reads, with a read-only token of its implement App, and pushes to every pod."},
+		{Name: "manifest_sha256", Default: "`LEGION_LEAK_CHECK_MANIFEST_SHA256` in the daemon's environment", RequiredBy: "when `repository` is set: the two are set together or not at all",
+			Description: "The check's manifest digest at that tag, 64 lowercase hex digits: the sha256 of the `sha256sum` lines of `public-leak-check.sh`, `public_leak_check.py`, `README.md` and `must-pass-lines.txt`, in that order, which `(cd leak-check && sha256sum public-leak-check.sh public_leak_check.py README.md must-pass-lines.txt) | sha256sum` prints. Every role is told it, a role pod starts no agent unless its install's manifest digest is it, and a role refuses every write for want of a check or under a check whose manifest digest is anything else, so a launcher script edited beside an unchanged program is refused. It does not decide which `legion gh` calls the check alone reads: a call that writes nothing is read so only where the check's program hashes to the digest the release's read rule was proven against, which the release compiles in."},
 	}},
 	{Path: hooksKey + "[]", Members: []member{
 		{Name: "name", Default: "none: a hook that names no `name` is refused", RequiredBy: "yes",
@@ -847,6 +858,8 @@ var nestedKeys = []memberGroup{
 			Description: "The GKE ComputeClass whose nodes run the microVM pods, which a microVM pod selects by `cloud.google.com/compute-class` in place of any class `scheduling.node_selector` names, and whose taint it tolerates."},
 		{Name: "storage_class", Default: "`runtime.kubernetes.storage_class`", RequiredBy: "no",
 			Description: "The StorageClass a microVM pod's own workspace volume is provisioned from."},
+		{Name: "keep_volume", Default: "`false`", RequiredBy: "no",
+			Description: "Whether each microVM issue pod's workspace volume is a claim that its issue's Sandbox owns, which stays through the pod's ends and the issue's idle releases and is deleted with the Sandbox; a gVisor issue pod's volume ends with its pod whatever this says."},
 		{Name: "metadata", Default: "a microVM pod's launcher serves no metadata endpoint", RequiredBy: "no",
 			Description: "Has each microVM pod's launcher serve the metadata server's paths for the pod's own account at `127.0.0.1:8169`, exchanging the pod's projected token at Google's Security Token Service, for a microVM pod that does not reach the node's metadata server."},
 	}},

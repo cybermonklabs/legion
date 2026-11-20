@@ -152,8 +152,9 @@ func TestAClaimNamingNoActorIsUnknownOnAReadAsOnAnEvent(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{Key: "LEGION-901", Project: testProject, Status: "todo",
-			Seq: 9, ClaimedBy: "session:other", ClaimSeq: 9}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: "LEGION-901", Project: testProject, Seq: 9,
+			Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil),
+			ClaimedBy: "session:other", ClaimSeq: 9}); err != nil {
 			t.Fatal(err)
 		}
 		if err := Reconcile(context.Background(), tx, records, testProject, listed); err != nil {

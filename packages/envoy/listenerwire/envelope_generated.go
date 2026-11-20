@@ -18,6 +18,7 @@ type Envelope struct {
 	ExpiresAt         *int64            `json:"expires_at,omitempty"`
 	KeptAt            *int64            `json:"kept_at,omitempty"`
 	MentionDedupeKeys map[string]string `json:"mention_dedupe_keys,omitempty"`
+	Role              string            `json:"role,omitempty"`
 	PayloadSummary    string            `json:"payload_summary"`
 	PayloadRef        string            `json:"payload_ref,omitempty"`
 	Payload           string            `json:"payload,omitempty"`
@@ -61,6 +62,9 @@ func (e Envelope) Validate() error {
 	}
 	if strings.TrimSpace(e.TraceID) == "" {
 		return fmt.Errorf("trace_id is required")
+	}
+	if e.Role != "" && strings.TrimSpace(e.Role) == "" {
+		return fmt.Errorf("role must not be empty")
 	}
 	if e.InReplyTo != "" && strings.TrimSpace(e.InReplyTo) == "" {
 		return fmt.Errorf("in_reply_to must not be empty")
