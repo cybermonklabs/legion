@@ -292,13 +292,13 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 			t.Setenv("AWS_SECRET_ACCESS_KEY", "")
 			t.Setenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", unparseable("127.0.0.1"))
 		}, "your AWS sign-in: "},
-		{"AWS_ENDPOINT_URL_STS that does not parse", func(t *testing.T) {
+		{"AWS_ENDPOINT_URL_STS that does not parse, with a credential in it", func(t *testing.T) {
 			t.Setenv("AWS_ENDPOINT_URL_STS", unparseable("127.0.0.1:1"))
-		}, "read your AWS sign-in: "},
+		}, "read your AWS sign-in: the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check AWS_ENDPOINT_URL_STS and ~/.aws/config"},
 		{"AWS_ENDPOINT_URL with a secret in its path", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL", closing.URL+"/"+secret) },
 			"read your AWS sign-in: a request the AWS SDK made failed: the request failed (the address is not printed; AWS_ENDPOINT_URL is set)"},
-		{"AWS_MAX_ATTEMPTS that is no number", func(t *testing.T) { t.Setenv("AWS_MAX_ATTEMPTS", secret) },
-			"load your AWS sign-in: the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value)"},
+		{"AWS_MAX_ATTEMPTS that is no number but a credential", func(t *testing.T) { t.Setenv("AWS_MAX_ATTEMPTS", secret) },
+			"load your AWS sign-in: the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check AWS_MAX_ATTEMPTS and ~/.aws/config"},
 		{"STS refuses with its own message: its code prints, never the message", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusing.URL) },
 			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
 	} {

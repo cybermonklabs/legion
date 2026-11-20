@@ -341,7 +341,8 @@ var awsCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._]{0,63}$`)
 //     file an AWS file setting names that cannot be read, is read again here for the reason;
 //   - a request that failed by its class (redact.Class), naming the AWS address settings that are
 //     set, never their values;
-//   - anything else in fixed words that say where to look.
+//   - anything else in fixed words that say where to look: the AWS settings the SDK's text names
+//     and the address settings that are set (awsSettingsNamed), else the AWS_* variables.
 func awsSDKWords(err error) string {
 	if words, ok := awsAPIWords(err); ok {
 		return words
@@ -365,7 +366,31 @@ func awsSDKWords(err error) string {
 			return "read the file AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE names: " + redact.File(err).Error()
 		}
 	}
-	return "the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check the AWS_* variables and ~/.aws/config"
+	check := "the AWS_* variables"
+	if named := awsSettingsNamed(err); len(named) > 0 {
+		check = strings.Join(named, ", ")
+	}
+	return "the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check " + check + " and ~/.aws/config"
+}
+
+// awsVariableName is the shape of an AWS setting's name as the SDK's text names it.
+var awsVariableName = regexp.MustCompile(`\bAWS_[A-Z0-9_]{1,64}\b`)
+
+// awsSettingsNamed is the AWS settings a sign-in failure whose own text is not printed names, so
+// the line says where to look: each AWS variable the SDK's text names and the environment sets -
+// the SDK quotes a value it cannot read beside its variable's name ("invalid value
+// AWS_MAX_ATTEMPTS=<value>") - then each address setting that is set (awsAddressSettings), since
+// the SDK quotes an address that does not parse without naming its setting ("Failed to parse uri:
+// <value>"). Names alone, never a value: a name prints only where it is a variable the environment
+// sets, so no part of a value the text quotes passes as one.
+func awsSettingsNamed(err error) []string {
+	var named []string
+	for _, name := range append(awsVariableName.FindAllString(err.Error(), -1), awsAddressSettings...) {
+		if os.Getenv(name) != "" && !slices.Contains(named, name) {
+			named = append(named, name)
+		}
+	}
+	return named
 }
 
 // awsFileReason is why the AWS SDK could not load the shared config or credentials file at path:
@@ -399,12 +424,16 @@ func awsFileName(path string) string {
 	return "a file the AWS SDK reads"
 }
 
+// awsAddressSettings are the settings that name an address the AWS SDK calls: an endpoint, or a
+// container's credentials endpoint.
+var awsAddressSettings = []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"}
+
 // awsAddressesSet names the AWS address settings that are set, for a request that failed: one of
 // them may name the wrong address. It names the settings alone, never their values, which can
 // carry a user, a password or a token in their query.
 func awsAddressesSet() string {
 	var set []string
-	for _, setting := range []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_STS", "AWS_ENDPOINT_URL_SECRETS_MANAGER", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI"} {
+	for _, setting := range awsAddressSettings {
 		if os.Getenv(setting) != "" {
 			set = append(set, setting)
 		}
