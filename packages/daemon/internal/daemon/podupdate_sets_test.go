@@ -36,13 +36,13 @@ type roundShape struct {
 	want  roundMembership
 }
 
-// One predicate gives the claims a pod update round asks and the claims it waits for, so a claim
-// is in both sets or in neither (dispatch://INFRA-4109 R2). A claim in the wait set and not in
-// the ask set holds the pod until the round's bound for an answer nobody asked for: that is how
-// a claim the daemon suspended held BET-1182's, OSSV-300's and OSSV-313's pods to their bounds.
-// A claim the daemon suspended (daemon, exit, released, unknown) is in neither set, because it
-// runs no process and no turn in the pod (R1). An operator's suspension is in both, as
-// dispatch://INFRA-2981 R5 made it.
+// One predicate gives the claims a pod update round asks and the claims it waits for
+// (waitingClaims), so a claim is in both sets or in neither (dispatch://INFRA-4109 R2). A claim
+// in the wait set and not in the ask set holds the pod until the round's bound for an answer
+// nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
+// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
+// is in neither set, because it runs no process and no turn in the pod (R1). An operator's
+// suspension is in both, as dispatch://INFRA-2981 R5 made it.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -57,11 +57,15 @@ type roundShape struct {
 // Each row is one shape of claim, with the membership the rule gives it, read at the round's
 // clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
 // or asks once its agent is ready (askRound reads it through unaskedClaims and SaidReady). The
-// wait side is every reading that holds the replacement for a claim before the bound:
-// waitingClaims, heldByOperator and readRoundEnd's holding. Each reading is taken over the claim
-// alone, and again beside a worker that answered and records a process in the round's pod, so the
-// two group shapes must agree. For a claim that answered, the wait side is read once more with the
-// answer cleared, so both sides of that row are compared.
+// wait side is the readings that hold the replacement for a claim before the bound:
+// waitingClaims, heldByOperator and readRoundEnd's holding. The replacement's hold (holding) also
+// holds a claim that a project's pause still keeps and that the round does not ask (R8,
+// unansweredClaims). That claim is in neither of the round's two sets, and this table's wait side
+// would read it as waited for. No row of this table has that shape:
+// TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule reads it. Each reading is taken
+// over the claim alone, and again beside a worker that answered and records a process in the
+// round's pod, so the two group shapes must agree. For a claim that answered, the wait side is
+// read once more with the answer cleared, so both sides of that row are compared.
 //
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.

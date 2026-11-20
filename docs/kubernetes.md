@@ -6381,7 +6381,8 @@ A daemon before `legion-v20.14.0` replaces the pod on its workers' answers, aski
 
 No role was asked to push what a claim the round passed over left on the disk.
 So where the round passed over a claim that had not answered, the replacement first reads the issue's workspace, once per round, through the role whose process the pod is replaced through (`readRoundWorkspace`, `runtime.WorkspaceWorkReader`, the shim's `workspace-work` frame).
-It reads only where every claim the round asks has answered, no claim that a project's pause still keeps is left unanswered and no turn runs, so a replacement that the bound lets through over a claim that has not answered, or over a running turn, makes no read; background work a role reports holds the replacement until the bound and does not stop the read.
+It reads only where every claim the round asks has answered and no turn runs, so a replacement that the bound lets through over a claim that has not answered, or over a running turn, makes no read; background work a role reports holds the replacement until the bound and does not stop the read.
+A claim that a project's pause still keeps and that the round does not ask, a launch that forgot the role's lost session, holds the replacement until the bound (above) and does not stop the read either: it runs no process in the pod, and the claim the round passed over still left its work there.
 The read counts as work a commit under a workspace's working copy or under a local bookmark that no branch or tag on `origin` holds, and a change in the working copy (`workspaceWorkRevset`, `internal/shim/workspace_work.go`).
 An empty commit with no description is no work, so the empty working copies that every issue pod's clone keeps count for nothing.
 A commit that a fetch left visible is no work either: the clone keeps unreachable commits (`git.abandon-unreachable-commits = false`), so after any role's `jj git fetch` hundreds of other issues' commits are visible with no bookmark.
@@ -6481,7 +6482,7 @@ Four things hold it:
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
-- before the round's bound, a claim of the issue whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), that has not answered the round, and that is suspended by the pause or runs no process and is not suspended, failed or retired (`podHolds.owes`), as while its launch waits in the wake pacing, after a daemon restart left that launch `launch_uncertain` or the release of it made it `queued`, and after the launch forgot the role's lost session and recorded no session: the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
+- before the round's bound, a claim of the issue whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), that has not answered the round, and that is suspended `released` or runs no process and is not suspended, failed or retired (`podHolds.owes`), as while its launch waits in the wake pacing, after a daemon restart left that launch `launch_uncertain` or the release of it made it `queued`, and after the launch forgot the role's lost session and recorded no session: the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
 
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
@@ -6496,7 +6497,7 @@ A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox r
 Under the pod's launch turn, a launch that would keep the live pod of its issue asks the daemon whether the round over that pod ends by this rule, so the round's bound is read when the launch runs and not when its claim was resumed.
 Where no role process runs in the pod and nothing holds it, the launch replaces the pod as the round's own replacement and starts its role in a new pod, so the role is launched once.
 Before the bound, the launch also keeps the pod where the launching claim itself holds the round's ask and has not answered it.
-Before the bound, the launch keeps the pod as well while the third thing above holds it: a claim of the issue whose role a project's pause still owes a launch on this pod, that has not answered the round, and that is suspended by the pause or runs no process and is not suspended, failed or retired (`podHolds.owes`).
+Before the bound, the launch keeps the pod as well while the third thing above holds it (`podHolds.owes`).
 The launching claim is one such claim where the pause owes its own role the launch: it runs no process yet, with a session or with none.
 The pause kept the pod for that role's work, so neither the role's own launch, when the wake pacing lets it out, nor the launch of another role of the pod replaces it.
 The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).

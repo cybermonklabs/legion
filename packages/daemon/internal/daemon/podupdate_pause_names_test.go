@@ -17,41 +17,72 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// forgottenOwedLaunch is a rig of its own, taken to the shape of the case "with its session
-// forgotten" of TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSession. A
-// project's pause stopped the implementer, suspended released, and its resume ended the hold of
-// the pod a minute before the round opened (recordPause), so the pause still owes the implementer
-// a launch (podHolds.owes). The tester runs in the pod. The round opens over the pod and asks the
-// tester. The implementer's held start runs. No session store holds its session, so the launch
-// forgets the session and spawns a fresh agent in the same try (supervise's startFresh). The
-// runtime refuses that spawn, and the retry of the spawn stops inside the runtime until the test
-// ends. The tester answers. The rig is answered with the implementer launching, with no session
-// and no process (wantForgottenLaunch), and with no machine of the tester in a decision.
-func forgottenOwedLaunch(t *testing.T) *podUpdateRig {
+// holdInRuntime is a hook for the fake runtime's calls (fake.Runtime's OnSpawn and OnResume). The
+// hook stops each call inside the runtime until the test ends or the call's own context ends.
+// reached receives once a call stops there. The test's cleanup lets the held call go. That
+// cleanup runs ahead of the supervisor's stop, which waits for the held decision, because a test
+// runs its cleanups in the reverse order: make the hold after the rig, which registers its stop.
+func holdInRuntime(t *testing.T) (hold func(context.Context) error, reached <-chan struct{}) {
 	t.Helper()
-	const stopped = pauseStoppedRole
-	rig := newPodUpdateRig(t, suspendedRole(stopped, supervise.SuspendedByReleased), readyWorker(claim.RoleTester))
-	rig.recordPause(store.PausePodHoldResumed, stopped)
-	rig.drifts(podUpdateDrift)
-	token := rig.tokens[stopped]
-	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-		token, runtime.ErrSessionFileMissing)})
-	rig.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod's launcher refused the start")})
 	let, holding := make(chan struct{}), make(chan struct{}, 1)
-	var spawns atomic.Int32
-	rig.rt.OnSpawn = func(ctx context.Context) error {
-		if spawns.Add(1) == 1 {
-			return nil
+	t.Cleanup(func() { close(let) })
+	return func(ctx context.Context) error {
+		select {
+		case holding <- struct{}{}:
+		default:
 		}
-		holding <- struct{}{}
 		select {
 		case <-let:
 		case <-ctx.Done():
 		}
 		return nil
+	}, holding
+}
+
+// scriptForgottenSession scripts the next launch of role to forget the role's session
+// (supervise's startFresh). No session store holds the session, so the resume fails
+// (runtime.ErrSessionFileMissing). The launch then forgets the session and spawns a fresh agent in
+// the same try. The runtime refuses that spawn, which is a charged launch failure, and the next
+// try spawns again. retry runs at the start of that spawn and of each spawn after it, as
+// fake.Runtime.OnSpawn does: holdInRuntime's hold keeps the launch in the runtime with no session
+// and no process. With a nil retry, those spawns take the runtime's next scripted answers.
+func (r *podUpdateRig) scriptForgottenSession(role claim.Role, retry func(context.Context) error) {
+	r.t.Helper()
+	r.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		r.tokens[role], runtime.ErrSessionFileMissing)})
+	r.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod's launcher refused the start")})
+	if retry == nil {
+		return
 	}
-	// The held spawn is let go ahead of the supervisor's stop, which waits for the held decision.
-	t.Cleanup(func() { close(let) })
+	var spawns atomic.Int32
+	r.rt.OnSpawn = func(ctx context.Context) error {
+		if spawns.Add(1) == 1 {
+			return nil
+		}
+		return retry(ctx)
+	}
+}
+
+// forgottenOwedLaunch is a rig of its own, taken to the shape of the case "with its session
+// forgotten" of TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSession. A
+// project's pause stopped the implementer, suspended released, and its resume ended the hold of
+// the pod a minute before the round opened (recordPause), so the pause still owes the implementer
+// a launch (podHolds.owes). The tester runs in the pod. others are more members of the round, as
+// the rig makes them. The round opens over the pod and asks the tester. The implementer's held
+// start runs, and its launch forgets the role's session (scriptForgottenSession): the retry of the
+// fresh spawn stops inside the runtime until the test ends (holdInRuntime). The tester answers.
+// The rig is answered with the implementer launching, with no session and no process
+// (wantForgottenLaunch), and with no machine of the tester in a decision.
+func forgottenOwedLaunch(t *testing.T, others ...podUpdateRole) *podUpdateRig {
+	t.Helper()
+	const stopped = pauseStoppedRole
+	members := append([]podUpdateRole{suspendedRole(stopped, supervise.SuspendedByReleased), readyWorker(claim.RoleTester)}, others...)
+	rig := newPodUpdateRig(t, members...)
+	rig.recordPause(store.PausePodHoldResumed, stopped)
+	rig.drifts(podUpdateDrift)
+	token := rig.tokens[stopped]
+	hold, holding := holdInRuntime(t)
+	rig.scriptForgottenSession(stopped, hold)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleTester, podUpdateRound)
@@ -142,4 +173,67 @@ func TestALiveRoundNamesTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
 			t.Errorf("the pod was replaced %d times, want none: it went before the round was over", len(calls))
 		}
 	})
+}
+
+// dispatch://INFRA-4109 review round 6 (spec R1 and R8): past the bound, a round that passed over
+// a claim reads the issue's workspace beside a launch that a project's pause still owes and that
+// has not come up. The members are those of forgottenOwedLaunch and a reviewer that the daemon
+// suspended before it answered: the implementer is launching with no session and no process, the
+// tester answered and runs in the pod, and the round passes over the reviewer, which keeps its
+// session. The read of the workspace finds an unpushed commit. Before the bound the implementer
+// holds the replacement (R8). At the bound the pod is replaced once, through the tester's process.
+// R1 reads the workspace once every claim the round asks has answered and no turn runs, and the
+// round asks neither the reviewer nor the implementer. So the read is made: the replacement's
+// line names the work that the read found, and one message on the issue names the reviewer, whose
+// work no role was asked to push. R8 keeps the pod for the implementer before the bound only, so
+// the bound's line names the implementer as unanswered, and the implementer does not stop the
+// read.
+//
+// Where the read waits for each claim that holds the replacement (unansweredClaims) and not only
+// for the claims the round asks (waitingClaims), the implementer stops the read. Then the line
+// says that no read was made, and the issue is not told what the reviewer left on the disk.
+func TestALiveRoundReadsTheWorkspaceBesideTheLaunchAPauseOwesThatForgotItsSession(t *testing.T) {
+	const reviewer = claim.RoleReviewer
+	rig := forgottenOwedLaunch(t, suspendedRole(reviewer, supervise.SuspendedByDaemon))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.awaitRound(reviewer, podUpdateRound)
+	for range 3 {
+		rig.tick()
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the bound, while the project's pause owes the %s a launch", len(calls), pauseStoppedRole)
+	}
+
+	rig.clockAt(podUpdateBound)
+	replaced := rig.awaitReplacement(1, "through the tester's process at the bound")
+	rig.wantForgottenLaunch()
+	if through, _ := replaced[0].Pod.Claim.Role(); through != claim.RoleTester {
+		t.Fatalf("the pod was replaced through the %s, want the tester, the one role whose process runs in the pod", through)
+	}
+
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	commits, _ := lines[0]["workspaceCommits"].([]any)
+	if lines[0]["workspaceRead"] != "found work" || lines[0]["workspaceReadBy"] != string(claim.RoleTester) || len(commits) != 1 || commits[0] != passedOverCommit {
+		t.Fatalf("the replacement's line names the read %+v, want one made through the tester that found the commit %s", lines[0], passedOverCommit)
+	}
+	wantField(t, lines[0], "notWaitedFor", reviewer)
+
+	messages := rig.messages()
+	if len(messages) != 1 {
+		t.Fatalf("the issue was written %d messages, want one: %q", len(messages), messages)
+	}
+	for _, want := range []string{"reviewer (suspended)", passedOverCommit} {
+		if !strings.Contains(messages[0], want) {
+			t.Errorf("the message does not name %q:\n%s", want, messages[0])
+		}
+	}
+
+	bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine)
+	if len(bounded) != 1 {
+		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
+	}
+	wantField(t, bounded[0], "unanswered", pauseStoppedRole)
 }

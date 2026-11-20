@@ -564,10 +564,8 @@ func TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession(
 	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
 	rig.recordPause(store.PausePodHoldResumed, stopped)
 	token := rig.tokens[stopped]
-	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-		token, runtime.ErrSessionFileMissing)})
-	rig.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod's launcher refused the start")},
-		fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
+	rig.scriptForgottenSession(stopped, nil)
+	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
 	conn := fake.NewConn()
 	rig.conns.Register(token, conn)
 	rig.workers[stopped] = conn

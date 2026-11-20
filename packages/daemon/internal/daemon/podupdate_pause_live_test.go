@@ -1,16 +1,10 @@
 package daemon
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -50,30 +44,12 @@ func TestALiveRoundKeepsThePodForTheLaunchAPauseOwesWhetherOrNotItKeepsItsSessio
 			rig.recordPause(store.PausePodHoldResumed, stopped)
 			rig.drifts(podUpdateDrift)
 			token := rig.tokens[stopped]
-			let, holding := make(chan struct{}), make(chan struct{}, 1)
-			hold := func(ctx context.Context) error {
-				holding <- struct{}{}
-				select {
-				case <-let:
-				case <-ctx.Done():
-				}
-				return nil
-			}
+			hold, holding := holdInRuntime(t)
 			if forgot {
-				rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
-					token, runtime.ErrSessionFileMissing)})
-				rig.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod's launcher refused the start")})
-				var spawns atomic.Int32
-				rig.rt.OnSpawn = func(ctx context.Context) error {
-					if spawns.Add(1) == 1 {
-						return nil
-					}
-					return hold(ctx)
-				}
+				rig.scriptForgottenSession(stopped, hold)
 			} else {
 				rig.rt.OnResume = hold
 			}
-			t.Cleanup(func() { close(let) })
 
 			rig.tick()
 			rig.awaitAsked(claim.RoleTester, podUpdateRound)
