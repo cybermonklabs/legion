@@ -173,7 +173,7 @@ func (s *server) recoveredMessage(ctx context.Context, who model.Actor, point me
 			return model.Message{}, err
 		}
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, []string{message.ID})
+	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, who, []string{message.ID})
 	if err != nil {
 		return model.Message{}, err
 	}
@@ -539,7 +539,7 @@ func (s *server) createStoredMessage(
 		attempt, err := s.deliverMessageResuming(sending, message, delivery, actor, &thread, 1)
 		switch {
 		case errors.Is(err, errAttemptNotPending):
-			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, []string{message.ID})
+			deliveries, err := s.loadMessageDeliveries(sending, s.deps.Store.Pool, reader, []string{message.ID})
 			if err != nil {
 				return model.Message{}, nil, err
 			}
@@ -992,7 +992,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, who model.Actor, roo
 	for index, root := range roots {
 		rootIDs[index] = root.ID
 	}
-	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, rootIDs)
+	deliveries, err := s.loadMessageDeliveries(ctx, s.deps.Store.Pool, who, rootIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1318,7 +1318,7 @@ func (s *server) loadMessageReplyChains(ctx context.Context, q queryer, who mode
 	rows.Close()
 	// A reply in the thread may itself have been delivered (a human's follow-up on a targeted
 	// thread); its attempts belong to the chain a reader sees.
-	deliveries, err := s.loadMessageDeliveries(ctx, q, replyIDs)
+	deliveries, err := s.loadMessageDeliveries(ctx, q, who, replyIDs)
 	if err != nil {
 		return nil, err
 	}
