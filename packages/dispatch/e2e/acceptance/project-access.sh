@@ -386,6 +386,12 @@ pass
 
 if [ "$priv_private" = 1 ]; then
   begin walk
+  # Each server writes the seed's windows and their vectors behind the seed's writes, in its own
+  # time, and the walk reads them beside the twin (the coverage route, each block's embedding,
+  # search's meaning leg): so both servers are read only once both have settled their meaning
+  # index (access-lib.sh's await_index_settled). No section since the seed wrote anything either
+  # server indexes.
+  await_index_settled "$index_settle_seconds" main twin
   until_true 120 "both servers to reconcile delivery once" reconciled
   logs_hold_own_writes
   # The route index this server serves, and the Probes of its own tables.
@@ -415,9 +421,10 @@ if [ "$priv_private" = 1 ]; then
   pass
 
   begin search
-  # Meaning search answers from vectors the embedding queue writes behind each write, so both
-  # servers are read only once neither owes a vector (access-lib.sh's indexed).
-  until_true 120 "both servers to owe no vector" indexed main twin
+  # Meaning search answers from the windows and vectors each server writes behind each write. The
+  # walk waited for both servers to settle them and wrote nothing they index, so this wait reads
+  # each server once, and a read of the walk's that wrote after all is waited for here.
+  await_index_settled "$index_settle_seconds" main twin
   for caller in "${unseeing_callers[@]}"; do
     for query in "q=paragraph&keywords_only=true" "q=paragraph" "q=remark&keywords_only=true" "q=remark"; do
       compare_twin "$caller" "/api/v1/search/results?$query"

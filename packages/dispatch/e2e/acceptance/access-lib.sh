@@ -6,16 +6,16 @@
 #
 # A driver talks to Dispatch servers it started, each on a database of its own (own_database) and
 # under a name of its own (the blob driver's `base` and `head`, project-access.sh's `main` and
-# `twin`), and registers each name's URL in build_url before it sends anything. It sets, before it
-# calls anything here:
+# `twin`), and registers each name's URL in build_url and its database's in NAME_database_url
+# before it sends anything. It sets, before it calls anything here:
 #   work          its own directory
 #   call_seconds  how long one request waits (two-builds.sh sets 20)
 #   run_epoch     the run's start, in seconds since the epoch
 #   agent_token   the shared agent token its servers take (two_builds_identity)
 #   database_url  the caller's DATABASE_URL, the server own_database makes databases on
-# and defines fail, which reports and exits. Everything a seed writes goes through the server's
-# own routes, as a person at the dashboard or an agent would write it; a fact no route of this
-# stack writes is named where it is written.
+# and defines fail, which reports and exits, and note, which prints a line of the run's progress.
+# Everything a seed writes goes through the server's own routes, as a person at the dashboard or
+# an agent would write it; a fact no route of this stack writes is named where it is written.
 #
 # The seed's three people, by the names verification v16 gives them: alice, a full member that no
 # access list names; bob, a restricted member that PRIV's list names; carol, a full member that
@@ -106,15 +106,120 @@ event_log_reaches() {
   [ "$status" = 200 ] && jq -e --argjson id "$3" 'any(.[]; .id >= $id)' "$work/body" >/dev/null
 }
 
-# indexed BUILD...: each BUILD's meaning index, as carol reads it, owes no vector: no searchable
-# item lacks one (GET /api/v1/search/coverage's total.lacking). A build with no embedder has
-# nothing current, so every item lacks one and it never reads indexed.
-indexed() {
-  local build
-  for build in "$@"; do
-    send "$build" carol GET /api/v1/search/coverage
-    [ "$status" = 200 ] && jq -e '.total.items > 0 and .total.lacking == 0' "$work/body" >/dev/null || return 1
+# Each server writes its meaning index behind every write, in its own time and in two steps: the
+# block index's window arm writes the windows of each document, comment, message and ask written
+# since its last tick (docs.RunBlockIndexReconciliation, which ticks every 30 s once no batch of it
+# is full, BlockIndexReconcileInterval), and the embedding queue then embeds each window, and each
+# issue, it holds no current vector of (embedqueue.Run, whose scans start at least 5 s apart,
+# retryInterval, each of at most one embedder batch). Until both are done a block reads
+# `"embedding":"none"` and then `"pending"` rather than `"embedded"`, and the coverage route and
+# meaning search answer short, so two servers read in between answer apart for no reason of
+# access: on CI one answered `"embedded"` where the other answered `"pending"`, and search
+# coverage `"current":1` where the other answered 2. A driver that compares two servers after a
+# write that indexes reads them only once both have settled (await_index_settled).
+#
+# index_settled BUILD holds once BUILD's meaning index has nothing waiting, read in this order:
+#   1. Its window arm owes no item its windows: no row of document_block_versions,
+#      comment_block_state, message_block_state or ask_block_state, the markers that arm reads
+#      (refs.DocumentsOwedWindows, refs.ItemsOwedWindows), carries windows_owed_at, in BUILD's
+#      database (BUILD_database_url). The coverage route cannot say this: a window kind's items
+#      are its windows (model.SearchCoverageKinds, embedqueue.Coverage), so an item the arm has
+#      not windowed yet is no item of the route's, and the route reads nothing lacking while a
+#      tick's windows are still to come. No route reads the markers.
+#   2. Its coverage route (GET /api/v1/search/coverage), as carol reads it, has nothing waiting:
+#      it counts an item, and in the total and in each kind (issue, document_block,
+#      comment_block, message_block, ask_part) lacking is 0, an item with no current vector, and
+#      failed is 0, an item the queue gave up on, so one it does not try again for the same text.
+#      The route counts only what its reader may see, and carol, who owns both projects and whom
+#      PRIV's list names, sees every project these seeds write, so every caller a compare reads
+#      as sees a part of what she does. A route that counts no item says nothing of what a
+#      compare reads, so it does not hold. A server that runs no embedder names no identity
+#      there (null), and no vector will ever be written: it is not waited on for vectors, and is
+#      still waited on for its windows, which the window arm writes with no embedder, and which
+#      a block's embedding reads ("none" before them, "pending" after).
+# The markers are read before the route, so a window written between the two reads is one the
+# route counts. When BUILD has not settled it returns 1 with why in $unsettled.
+unsettled=''
+readonly windows_owed_counts="select
+    (select count(*) from document_block_versions where windows_owed_at is not null),
+    (select count(*) from comment_block_state where windows_owed_at is not null),
+    (select count(*) from message_block_state where windows_owed_at is not null),
+    (select count(*) from ask_block_state where windows_owed_at is not null)"
+# What of a coverage report is still waiting, as one line, or nothing when nothing is.
+# shellcheck disable=SC2016 # a jq program: jq, not the shell, expands its \(…)
+readonly coverage_waiting='def counts: "\(.items) items, \(.current) current, \(.lacking) lacking, \(.failed) failed";
+  if .identity == null then empty
+  elif (.total.items // 0) == 0 then "its coverage route counts no item, so it says nothing of what a compare reads"
+  else [.kinds | to_entries[] | select(.value.lacking != 0 or .value.failed != 0) | "\(.key) \(.value | counts)"] as $kinds
+    | if ($kinds | length) == 0 and .total.lacking == 0 and .total.failed == 0 then empty
+      else "its coverage route counts \(.total | counts) in all" + (if $kinds == [] then "" else ": " + ($kinds | join("; ")) end)
+      end
+  end'
+index_settled() {
+  local build=$1 url_var=${1}_database_url owed documents comments messages asks
+  [ -n "${!url_var:-}" ] || fail "index_settled: $url_var names no database of the $build server"
+  if ! owed=$(psql "${!url_var}" -X -q -tA -F ' ' -v ON_ERROR_STOP=1 -c "$windows_owed_counts" 2>&1); then
+    unsettled="its database's window markers could not be read: $(head -c 300 <<<"$owed")"
+    return 1
+  fi
+  read -r documents comments messages asks <<<"$owed"
+  if [ "$documents $comments $messages $asks" != '0 0 0 0' ]; then
+    unsettled="its window arm owes ${documents:-?} documents, ${comments:-?} comments, ${messages:-?} messages and ${asks:-?} asks their windows"
+    return 1
+  fi
+  send "$build" carol GET /api/v1/search/coverage
+  if [ "$status" != 200 ]; then
+    unsettled="GET /api/v1/search/coverage answered HTTP $status: $(head -c 300 "$work/body")"
+    return 1
+  fi
+  unsettled=$(jq -r "$coverage_waiting" "$work/body" 2>/dev/null) ||
+    unsettled="GET /api/v1/search/coverage answered no coverage report: $(head -c 300 "$work/body")"
+  [ -z "$unsettled" ]
+}
+
+# How long await_index_settled waits for a server these drivers start. Those servers run the dev
+# embedder (DISPATCH_DEV_EMBEDDER=1), which embeds in the process, calls no service and spends a
+# budget of 100,000,000 tokens a minute nothing reaches (embed.DevClient's Limits), so no batch is
+# ever throttled: after a seed's last write, its windows wait at most one tick of the window arm,
+# 30 s, and their vectors at most one scan's gap, 5 s, and a batch of 96 of them, more than a
+# seed here writes, embeds in milliseconds. 120 s is over three times those 35 s, room for a CI
+# runner whose statements run slow, and the bound every other wait of these drivers on a
+# server's own background work takes.
+# shellcheck disable=SC2034 # read by the drivers that source this file
+readonly index_settle_seconds=120
+
+# await_index_settled SECONDS BUILD... waits, bounded, until every BUILD's meaning index has
+# settled (index_settled), reading each one not settled yet every half second, and notes each one
+# as it settles, with how long it took. A settled server is read no more: nothing writes while a
+# driver waits, so its index stays as it is. Past SECONDS it fails the run, naming each server
+# that has not settled and what it still waits on: the windows its window arm owes, or its
+# coverage's counts in all and of each kind still lacking or failed.
+await_index_settled() {
+  local limit=$1 started=$SECONDS polls=0 build reasons=''
+  shift
+  local -a waiting=("$@") still
+  local -A why=()
+  note "waiting up to ${limit}s for the meaning index of $* to settle"
+  while :; do
+    polls=$((polls + 1))
+    still=()
+    for build in "${waiting[@]}"; do
+      if index_settled "$build"; then
+        note "$build's meaning index settled after $((SECONDS - started))s ($polls polls)"
+      else
+        still+=("$build")
+        why[$build]=$unsettled
+      fi
+    done
+    waiting=("${still[@]}")
+    [ "${#waiting[@]}" -gt 0 ] || return 0
+    ((SECONDS - started < limit)) || break
+    sleep 0.5
   done
+  for build in "${waiting[@]}"; do
+    reasons+=$'\n'"  $build: ${why[$build]}"
+  done
+  fail "timed out after ${limit}s ($polls polls) waiting for the meaning index to settle:$reasons"
 }
 
 # remember BUILD LABEL VALUE records VALUE, an id BUILD's seed wrote new, under LABEL: the mask
