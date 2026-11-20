@@ -966,8 +966,7 @@ Read a role's log from its pod's container while its pod is there; the pod that 
 ### The extension under SQL storage
 
 The Legion plugin (`@sjawhar/pi-legion`) recognises a `task` subagent inside a Legion worker without looking for the parent's transcript on disk:
-its claim session records which session it bootstrapped on the interface the two plugins share, and a later session start in the same process with a different transcript path is a subagent (the check is `@legion/pi-shared/subagent-session`, which both plugins run;
-`packages/pi-envoy/AGENTS.md`, the subagent convention, and `packages/pi-shared/AGENTS.md`).
+its claim session records which session it bootstrapped on the interface the two plugins share, and a later session start in the same process with a different transcript path is a subagent (the check in `packages/pi-shared/src/subagent-session.ts`, which both plugins run).
 Nothing in either plugin reads the two variables, and neither needs any other change for SQL storage.
 
 ### Selecting the store
@@ -1605,6 +1604,10 @@ a migration must not depend on that order, and one that needs another's effect i
 
 The release that reads the version cast to `bigint` goes out before any release that carries a timestamped migration:
 the release before it reads `max(version)` uncast, so a deployment that skips it costs the daemon it replaces one failed state read on each connection that prepared the uncast read, which pgx then drops.
+
+A daemon of a release before migration `0058_catch_up_cursor` that runs on a database a later release has migrated applies Dispatch's events without moving any issue's catch-up cursor (`issues.caught_up_seq`).
+Before a later release starts on that database again, set every cursor to null (`update issues set caught_up_seq = null`), or its boot catch-up replays the events the earlier daemon already applied;
+a catch-up from a null cursor replays nothing and sets the cursor to the issue's latest event on Dispatch (the comment of `0058_catch_up_cursor.up.sql` says why).
 
 ### Upgrading a deployment with running trees
 

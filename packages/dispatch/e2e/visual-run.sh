@@ -10,6 +10,17 @@
 # with one more flag: a baseline a person takes and a baseline CI compares come out of the same
 # run of the same binaries in the same image, which is the whole point of the layer.
 #
+# A baseline comes from this command alone. A machine with no container, an issue pod among
+# them, takes one from the full lane's run in CI instead:
+#
+#   1. gh run download <failed full-lane run id> --repo <owner>/<repo> \
+#        --name dispatch-browser-visual-<attempt>
+#   2. A failed row's -actual.png is under the results directory this script names on a failed
+#      run, at the same path inside the download.
+#   3. Copy it over e2e/__screenshots__/<project>/<route>-<scheme>.png only if every pixel that
+#      moved was meant to and a second run gave the same bytes (else the page is not settled),
+#      and say why in the commit message.
+#
 # WHY A SECOND ORDER. One seed serves the whole run, so a page that writes state as it draws
 # changes what every row after it compares. The review seed writes each such mark before any row
 # runs (`seedReviewRoutes`, e2e/review-seed.ts), and CI's visual job runs the rows a second time
