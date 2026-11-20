@@ -112,97 +112,109 @@ describe("a failed dial's line holds no part of the server", () => {
     `grüße${tokens.unicode}secret`,
     new URL(`http://Grüße${tokens.unicode}Secret`).hostname,
   ];
-  const rows: [label: string, server: string, secrets: readonly string[]][] = [
+  // Each row names the calls the stand-in resolver must answer for its server. A server that is a
+  // name is resolved by nats.js (resolve4, resolve6) and looked up by Bun's node:net for the dial;
+  // one that is an address is looked up by neither. So a dial that goes around the stand-in, and so
+  // reaches the machine's resolver, fails its row rather than passing on a fast resolver.
+  const aName = ["getaddrinfo", "queryA", "queryAaaa"];
+  const anAddress: readonly string[] = [];
+  const rows: [
+    label: string,
+    server: string,
+    secrets: readonly string[],
+    resolved: readonly string[],
+  ][] = [
     [
       "a backslash in the user info",
       `nats://${userinfo(`${tokens.backslash}\\en`)}127.0.0.1:4222`,
       [tokens.backslash],
+      aName,
     ],
     [
       "a comma list in one entry, a token in the second",
       `nats://a.example:4222,nats://${userinfo(`${tokens.comma}/x`)}127.0.0.1:4222`,
       [tokens.comma],
+      aName,
     ],
     [
       "a comma list in one entry, a seed in the second",
       `nats://a.example:4222,nats://${seed}:4222`,
       [seed],
+      aName,
     ],
     [
       "a percent escape in the user info",
       `nats://${userinfo(`${tokens.percent}%41/x`)}127.0.0.1:4222`,
       [tokens.percent],
+      aName,
     ],
-    ["a Unicode name", unicodeHost("nats://"), unicodeSecrets],
+    ["a Unicode name", unicodeHost("nats://"), unicodeSecrets, aName],
     [
       "a token holding an unencoded /",
       `nats://${userinfo(`${tokens.slash}/def+gh==`)}127.0.0.1:4222`,
       [tokens.slash],
+      aName,
     ],
-    ["an nkey seed pasted as the server", `nats://${seed}:4222`, [seed]],
-    ["a mixed-case token pasted as the server", `nats://${mixed}:4222`, [mixed]],
+    ["an nkey seed pasted as the server", `nats://${seed}:4222`, [seed], aName],
+    ["a mixed-case token pasted as the server", `nats://${mixed}:4222`, [mixed], aName],
     [
       "a hyphenated mixed-case token pasted as the server",
       `nats://${hyphenated}:4222`,
       [hyphenated],
+      aName,
     ],
     [
       "a password's six digits on an IP host",
       `nats://${userinfo("user", `${digits.ipv4}abc`)}10.0.0.5:4222`,
       [digits.ipv4],
+      anAddress,
     ],
     [
       "a password's six digits on the loopback",
       `nats://${userinfo("user", `${digits.loopback}abc`)}127.0.0.1:4222`,
       [digits.loopback],
+      anAddress,
     ],
     [
       "a password's six digits after its second `:`",
       `nats://${userinfo("user", "abc", `${digits.second}x`)}10.0.0.5:4222`,
       [digits.second],
+      anAddress,
     ],
     [
       "a password's six digits after a `]:`, before an IPv6 host",
       `nats://${userinfo("user", `pw]:${digits.ipv6}`)}[2001:db8::1]:4222`,
       [digits.ipv6],
+      anAddress,
     ],
     // B1: a special scheme lowercases and punycodes the host before any rule on its case reads it.
-    ["a token under ws://", `ws://${tokens.special}:4222`, [tokens.special]],
-    ["a token under wss://", `wss://${tokens.special}:4222`, [tokens.special]],
-    ["a token under http://", `http://${tokens.special}:4222`, [tokens.special]],
-    ["a token under https://", `https://${tokens.special}:4222`, [tokens.special]],
-    ["a token under WS://", `WS://${tokens.special}:4222`, [tokens.special]],
-    ["a token under ws:// with no port", `ws://${tokens.special}`, [tokens.special]],
+    ["a token under ws://", `ws://${tokens.special}:4222`, [tokens.special], aName],
+    ["a token under wss://", `wss://${tokens.special}:4222`, [tokens.special], aName],
+    ["a token under http://", `http://${tokens.special}:4222`, [tokens.special], aName],
+    ["a token under https://", `https://${tokens.special}:4222`, [tokens.special], aName],
+    ["a token under WS://", `WS://${tokens.special}:4222`, [tokens.special], aName],
+    ["a token under ws:// with no port", `ws://${tokens.special}`, [tokens.special], aName],
     [
       "a hyphenated token under wss://",
       `wss://${tokens.specialHyphen}:4222`,
       [tokens.specialHyphen],
+      aName,
     ],
-    ["a Unicode name under ws://", unicodeHost("ws://"), unicodeSecrets],
+    ["a Unicode name under ws://", unicodeHost("ws://"), unicodeSecrets, aName],
     // F6 and F5: a secret in one case, and the first half of a token split at its comma.
-    ["a one-case token pasted as the server", `nats://${tokens.lower}:4222`, [tokens.lower]],
+    ["a one-case token pasted as the server", `nats://${tokens.lower}:4222`, [tokens.lower], aName],
     [
       "the first half of a token ENVOY_NATS_URL split at its comma",
       `nats://${tokens.split}`,
       [tokens.split],
+      aName,
     ],
   ];
-  // The rows whose server nats.js dials as an address, which looks no name up; every other row's
-  // server is a name, which nats.js resolves (resolve4, resolve6) and Bun's node:net then looks up.
-  // Each row checks the calls its own server makes, so a dial that goes around the stand-in
-  // resolver, and so reaches the machine's, fails the row rather than passing on a fast resolver.
-  const dialsAnAddress = new Set([
-    "a password's six digits on an IP host",
-    "a password's six digits on the loopback",
-    "a password's six digits after its second `:`",
-    "a password's six digits after a `]:`, before an IPv6 host",
-  ]);
   test.each(rows)(
     "%s",
-    async (label, server, secrets) => {
+    async (_, server, secrets, resolved) => {
       const error = await realFailure(server);
-      const resolved = dialsAnAddress.has(label) ? [] : ["getaddrinfo", "queryA", "queryAaaa"];
-      expect(resolverAsked.map((asked) => asked.split(" ")[0]).sort()).toEqual(resolved);
+      expect(resolverAsked.map((asked) => asked.split(" ")[0]).sort()).toEqual([...resolved]);
       expect(secrets.some((secret) => carried(error).includes(secret.toLowerCase()))).toBe(true);
       const reason = natsFailureReason(error);
       expect(reason).toMatch(CODE_REASON);
