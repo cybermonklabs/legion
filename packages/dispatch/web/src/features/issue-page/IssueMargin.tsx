@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import { api, apiErrorMessage } from "../../api/client";
 import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
-import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import {
   pageAvatar,
   pageFailedText,
@@ -22,17 +21,21 @@ import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
-import { addPriorityControlName, IssuePriorityLine } from "../priorities/IssuePriorityLine";
+import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import type { KeyedPress } from "../writes/useKeyedWrite";
-import { isLive, useWriteSelection } from "../writes/write-store";
 import { BlockedByControl } from "./BlockedByControl";
-import { DetailsErrorLine, readFailed, retryRead, useSaidFailure } from "./details-error";
+import {
+  DetailsErrorLine,
+  readFailed,
+  retryRead,
+  useRetryHandOff,
+  useSaidFailure,
+} from "./details-error";
 import {
   CIRCLED_DOT,
   FLAG,
@@ -71,8 +74,9 @@ import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
-import { type IssueHeaderWrites, issueUpdateLabel } from "./useIssueHeaderWrites";
+import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { useMarginSections } from "./useMarginSections";
+import { usePriorityHandOffs } from "./usePriorityHandOffs";
 import { waitingOnReader } from "./waiting";
 
 /** The id of the Parent row's line that says why Dispatch refused a parent. */
@@ -117,24 +121,6 @@ function issueTitleIn(read: ReferenceTargets | undefined, key: string): string |
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
-}
-
-/** The priority line's write as the mutation cache holds it (`IssuePriorityLine`): the press its
- *  keyed write made (`KeyedPress`), with the set of the issue's own priorities it sends and the
- *  revision of the read that set was drawn from. */
-type AdvancesSave = KeyedPress<{
-  readonly advances: readonly string[];
-  readonly advances_revision: number;
-}>;
-
-/** The set of priorities `press` sent, where it is a priority line's write (`AdvancesSave`), else
- *  `undefined`. That write carries no mutation key, so it is told from every other write by the
- *  revision only it sends. */
-function advancesSent(press: unknown): readonly string[] | undefined {
-  const save = press as Partial<AdvancesSave> | undefined;
-  return typeof save?.variables?.advances_revision === "number"
-    ? save.variables.advances
-    : undefined;
 }
 
 /**
@@ -208,7 +194,9 @@ export function IssueMarginCards({
  * it closes, and an Unpin and a Show all move it at their press. A change the reader did not
  * make - another session's write, an event, a read that answers on its own, the issue closed
  * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
- * Details takes it.
+ * Details takes it; but one that reaches what the reader's press asked for while that press is
+ * still out - the route set to the reader's draft, the claim released, the read answered - is
+ * taken for the press's answer, and hands the focus on as that answer would.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
@@ -286,38 +274,28 @@ export function IssueMarginPanel({
   }, [editingField]);
   // The failure of Details' last field save, which the route's row says when it is a route's.
   // The line goes once the save lands, or once the draft holds the issue's own route. Where the
-  // reader pressed its Retry and the line went with no route save of the issue out in the page's
-  // writes (`routeSaveOut`: the store holds a write from its press until Dispatch decides it, and
-  // lets go of it before the write's callbacks draw what it saved), the focus Retry held goes on in
-  // the row: to the row's control, and where that takes no press - not drawn while the route's
-  // editor is open, disabled on a closed issue - to the editor's box, the one box of the row; and
-  // where that takes none either, to Development's heading. Retry going alone, as a close made in
-  // another session takes it from the line while the save it sent is out, or the line going while
-  // that save is out, as another session sets the route to the draft, answers no press of the
-  // reader's, and the focus stays on the page's body.
+  // reader pressed its Retry and the line went, the focus Retry held goes on in the row: to the
+  // row's control, and where that takes no press - not drawn while the route's editor is open,
+  // disabled on a closed issue - to the editor's box, the one box of the row; and where that takes
+  // none either, to Development's heading. The line going while the route Retry sent is still out,
+  // as another session sets the issue's route to the draft, reached what the press asked for, so
+  // the row takes it for the press's answer. Retry going while its line stays answers no press: a
+  // close made in another session takes it, as a closed issue's line offers none, and the focus
+  // stays on the page's body.
   const fieldFailure = useSaidFailure(writes.updateIssue);
   const routeStopped = fieldFailure?.error instanceof SendStoppedError;
   const routeFailureShown =
     fieldFailure !== null &&
     fieldFailure.variables?.input.route !== undefined &&
     writes.drafts.route !== (issue.route ?? "");
-  const routeSaveLabel = issueUpdateLabel(issue.key, { route: "" });
-  const routeSaveOut = useWriteSelection(routeSaveLabel, (rows) =>
-    rows.some(
-      (row) => isLive(row) && row.target === `issue:${issue.key}` && row.label === routeSaveLabel
-    )
-  );
-  const routeRetried = useRef(false);
-  const routeRetryLeft = useFocusHandOff(
-    () =>
-      routeFailureShown || routeSaveOut
-        ? null
-        : firstUsable(
-            routeControl.current,
-            routeValue.current?.querySelector<HTMLElement>("input"),
-            developmentHeading.current
-          ),
-    routeRetried
+  const routeRetry = useRetryHandOff(() =>
+    routeFailureShown
+      ? null
+      : firstUsable(
+          routeControl.current,
+          routeValue.current?.querySelector<HTMLElement>("input"),
+          developmentHeading.current
+        )
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
@@ -383,103 +361,46 @@ export function IssueMarginPanel({
   const blocks = waiting.map((key) => ({ key, title: issueTitleIn(waitingTitles.data, key) }));
   // The line of a read that failed goes once the read answers. Each line notes the press of its
   // own Retry, and hands the focus Retry held on in the row only once the read of what the row
-  // draws now holds an answer of its own (`isSuccess`, with no `isPlaceholderData`): `!isFetching`
-  // would hold too for the read of a set of issues emptied or changed in another session, which
-  // is not sent or not started. A line that goes with no press of its Retry - a read answering
-  // on an event or a window focus - or before that answer - the set changed or emptied in another
-  // session while the read is out, or the other line of Blocks drawn in its place - leaves the
-  // focus on the page's body. In Blocked by the focus goes to the row's control, found by its name
-  // as the add menu finds it (`blockedByControlName`), and where the row draws none - on a closed
-  // issue, or while its editor is open - to the first issue the row waits on, each passing over a
-  // control that takes no press (`usableControl`). The row draws that issue whenever the read has
+  // draws now has failed and then answered (`isSuccess`, with an `errorUpdateCount` above 0):
+  // the read the press sent, or a read of the same issues an event sent while it was out, which
+  // reached what the press asked for, so the row takes it for the press's answer. An answer with
+  // no failure before it is of another set: one changed in another session to a set not read
+  // yet, whose read is not sent or not started, or back to one already read, whose answer is
+  // cached. A line that goes with no press of its Retry - a read answering on an event or a
+  // window focus - or before that answer - the set changed or emptied in another session while
+  // the read is out, or the other line of Blocks drawn in its place - leaves the focus on the
+  // page's body. In Blocked by the focus goes to the row's control, found by its name as the add
+  // menu finds it (`blockedByControlName`), and where the row draws none - on a closed issue, or
+  // while its editor is open - to the first issue the row waits on, each passing over a control
+  // that takes no press (`usableControl`). The row draws that issue whenever the read has
   // answered, since the titles are read only for a set that holds one. In Blocks, which has no
   // control, the focus of the Retry of what waits on the issue goes to the first issue the row
-  // draws, or else to the None it says; and that of the Retry of their titles goes to the first
-  // issue the row draws, which a failed read of what waits on the issue, drawn in the list's
-  // place, takes away, and the focus then stays on the page's body.
+  // draws, or else to the None it says, which the row draws only once that read has answered;
+  // and that of the Retry of their titles goes to the first issue the row draws, which a failed
+  // read of what waits on the issue, drawn in the list's place, takes away, and the focus then
+  // stays on the page's body.
   const blockedByValue = useRef<HTMLDivElement>(null);
-  const titlesRetried = useRef(false);
-  const titlesRetryLeft = useFocusHandOff(
-    () =>
-      blockerTitles.isSuccess && !blockerTitles.isPlaceholderData
-        ? firstUsable(
-            blockedByValue.current?.querySelector<HTMLElement>(
-              `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
-            ),
-            blockedByValue.current?.querySelector<HTMLElement>("a[href]")
-          )
-        : null,
-    titlesRetried
+  const titlesRetry = useRetryHandOff(() =>
+    blockerTitles.isSuccess && blockerTitles.errorUpdateCount > 0
+      ? firstUsable(
+          blockedByValue.current?.querySelector<HTMLElement>(
+            `[aria-label="${CSS.escape(blockedByControlName(issue.key, blockers.length))}"]`
+          ),
+          blockedByValue.current?.querySelector<HTMLElement>("a[href]")
+        )
+      : null
   );
   const blocksValue = useRef<HTMLDivElement>(null);
   const blocksNone = useRef<HTMLSpanElement>(null);
-  const blockingRetried = useRef(false);
-  const blockingRetryLeft = useFocusHandOff(
-    () =>
-      blocking.isSuccess
-        ? (blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current)
-        : null,
-    blockingRetried
+  const blockingRetry = useRetryHandOff(
+    () => blocksValue.current?.querySelector<HTMLElement>("a[href]") ?? blocksNone.current
   );
-  const waitingRetried = useRef(false);
-  const waitingRetryLeft = useFocusHandOff(
-    () =>
-      waitingTitles.isSuccess && !waitingTitles.isPlaceholderData
-        ? blocksValue.current?.querySelector<HTMLElement>("a[href]")
-        : null,
-    waitingRetried
-  );
-  // Details draws the priority's line in one of two places: beside Add while the issue advances
-  // none, and in the Advances row once it advances one. The first priority the reader adds and the
-  // last one they remove take the line out of the place that held the focus, as the issue read
-  // after that write is drawn, and the focus goes on to the line in its other place rather than to
-  // the page. That is the reader's own write only where the line that left held a control its
-  // write refused (`aria-disabled`, which the line sets while its write is out, so a write of the
-  // line was out as it was last drawn) and the issue now drawn holds the set the newest priority
-  // write sent, which is that write: the mutation cache lists mutations in the order they were
-  // made, and no other line of priorities is drawn on the page. A write Dispatch refused (409
-  // ADVANCES_REVISION) or that failed is read again as it settles, and that read draws the set
-  // another session saved; an event read that lands while the reader's write is out draws another
-  // session's set too. Either moves the line with no hand-off, and the focus stays on the page's
-  // body. Out of the place beside Add the focus goes to the Advances row's add control: the add
-  // control beside Add is where the focus is once an add lands, so the reader stays on the control
-  // of that name, whose next press adds another, with Remove of what they added just before it. An
-  // add from beside Add sends one priority, under the cap, so the row draws that control; where the
-  // read after it also draws the issue closed, which disables it, the focus goes to the link of the
-  // priority they added. Out of the Advances row it goes to the add control beside Add, the one
-  // control the line draws there, and where a close drawn in the same read disables that, to
-  // Development's heading, the button that opens and closes the section these rows are in. Each
-  // passes over a control that takes no press (`usableControl`).
-  const advancesValue = useRef<HTMLDivElement>(null);
-  const addRow = useRef<HTMLDivElement>(null);
-  const priorityAddSelector = `[aria-label="${CSS.escape(addPriorityControlName(issue.key))}"]`;
-  const movedByOwnWrite = (line: HTMLElement): boolean => {
-    if (line.querySelector('[aria-disabled="true"]') === null) return false;
-    const newest = queryClient
-      .getMutationCache()
-      .findAll({ predicate: (mutation) => advancesSent(mutation.state.variables) !== undefined })
-      .at(-1);
-    const sent = advancesSent(newest?.state.variables);
-    const own = (issue.advances ?? []).filter((entry) => !entry.inherited).map((entry) => entry.id);
-    // Compared in any order: the read need not answer the set in the order the write sent it.
-    return sent?.length === own.length && sent.every((id) => own.includes(id));
-  };
-  const priorityBesideAddLeft = useFocusHandOff((line) =>
-    movedByOwnWrite(line)
-      ? firstUsable(
-          advancesValue.current?.querySelector<HTMLElement>(priorityAddSelector),
-          advancesValue.current?.querySelector<HTMLElement>("a[href]")
-        )
+  const waitingRetry = useRetryHandOff(() =>
+    waitingTitles.isSuccess && waitingTitles.errorUpdateCount > 0
+      ? blocksValue.current?.querySelector<HTMLElement>("a[href]")
       : null
   );
-  const priorityRowLeft = useFocusHandOff((line) =>
-    movedByOwnWrite(line)
-      ? firstUsable(
-          addRow.current?.querySelector<HTMLElement>(priorityAddSelector),
-          developmentHeading.current
-        )
-      : null
-  );
+  const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own failed read of the mappings and its own refused
   // write, and hands each to the row to say (`sayFailure`), as Details says its own. A read's
   // line keeps its words while its Retry reads again, as Details' own read lines do: the read
@@ -504,10 +425,8 @@ export function IssueMarginPanel({
       ...(repoValue.current?.querySelectorAll<HTMLElement>("button") ?? []),
       developmentHeading.current
     );
-  const repoReadRetried = useRef(false);
-  const repoReadRetryLeft = useFocusHandOff(repoControlLeft, repoReadRetried);
-  const repoWriteRetried = useRef(false);
-  const repoWriteRetryLeft = useFocusHandOff(repoControlLeft, repoWriteRetried);
+  const repoReadRetry = useRetryHandOff(repoControlLeft);
+  const repoWriteRetry = useRetryHandOff(repoControlLeft);
   const repoWhat = `the repository of ${issue.key}`;
   const sayRepoFailure = (failure: RepoControlFailure): ReactNode =>
     failure.kind === "write" ? (
@@ -517,36 +436,35 @@ export function IssueMarginPanel({
           failure.message
         }
         onRetry={isClosed ? undefined : failure.retry}
-        retryRef={repoWriteRetryLeft}
-        retried={repoWriteRetried}
+        {...repoWriteRetry}
       />
     ) : readFailed(failure.read) ? (
       <DetailsErrorLine
         failure={failure.read.errorUpdateCount}
         message={failure.message}
         onRetry={retryRead(failure.read)}
-        retryRef={repoReadRetryLeft}
-        retried={repoReadRetried}
+        {...repoReadRetry}
         retrying={failure.read.isFetching}
       />
     ) : null;
   // Referenced by's Retry goes with its line: at its press where the list's first read failed,
   // since the list then says it loads, and otherwise once the read the press sent answers. Where
-  // the reader's press of Retry took it away, the focus it held goes on to the list's first link,
-  // and where the list draws none - while it loads, or with nothing to list - to Referenced by's
-  // own control, which opens and closes the list; each passes over a control that takes no press
-  // (`usableControl`). A line that goes with no press of its Retry - the list read again on an
-  // event, or after a press whose read failed - leaves the focus on the page's body.
+  // the reader's press of Retry took it away, the focus it held goes on to the list's first link;
+  // where the list draws none - while it loads, or with nothing to list - to Referenced by's own
+  // control, which opens and closes the list; and where that is not drawn - at a count of 0, while
+  // a list opened before stays open - to References' heading, the button that opens and closes
+  // the section. Each passes over a control that takes no press (`usableControl`). A line that
+  // goes with no press of its Retry - the list read again on an event, or after a press whose
+  // read failed - leaves the focus on the page's body.
   const referencesValue = useRef<HTMLDivElement>(null);
   const referencesControl = useRef<HTMLButtonElement>(null);
-  const referencesRetried = useRef(false);
-  const referencesRetryLeft = useFocusHandOff(
-    () =>
-      firstUsable(
-        referencesValue.current?.querySelector<HTMLElement>("a[href]"),
-        referencesControl.current
-      ),
-    referencesRetried
+  const referencesHeading = useRef<HTMLButtonElement>(null);
+  const referencesRetry = useRetryHandOff(() =>
+    firstUsable(
+      referencesValue.current?.querySelector<HTMLElement>("a[href]"),
+      referencesControl.current,
+      referencesHeading.current
+    )
   );
   // Approve and Request changes are here wherever no approval request waits on the reader,
   // and in the header while one does: the approvals are all this reads of the count, so it
@@ -643,15 +561,15 @@ export function IssueMarginPanel({
         {/* The priorities the issue advances, with the control that adds and removes one: an
             issue that advances none draws no such row, and its control stands beside the add
             control below, where a focus in the row moves on as the reader's own removal of the
-            last one lands (`useFocusHandOff`). */}
+            last one lands (`usePriorityHandOffs`). */}
         {advances.length === 0 ? null : (
           <Row
             glyph="↗"
             label={PROPERTY_LABELS.advances}
             testId="issue-advances"
-            valueRef={advancesValue}
+            valueRef={priority.advancesValue}
           >
-            <div className="contents" ref={priorityRowLeft}>
+            <div className="contents" ref={priority.rowLeft}>
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
           </Row>
@@ -727,8 +645,7 @@ export function IssueMarginPanel({
               failure={blockerTitles.errorUpdateCount}
               message={TITLES_READ_FAILED}
               onRetry={retryRead(blockerTitles)}
-              retryRef={titlesRetryLeft}
-              retried={titlesRetried}
+              {...titlesRetry}
               retrying={blockerTitles.isFetching}
             />
           ) : null}
@@ -746,8 +663,7 @@ export function IssueMarginPanel({
               failure={blocking.errorUpdateCount}
               message="Could not read what this issue blocks."
               onRetry={retryRead(blocking)}
-              retryRef={blockingRetryLeft}
-              retried={blockingRetried}
+              {...blockingRetry}
               retrying={blocking.isFetching}
             />
           ) : blocking.isPending ? null : blocks.length === 0 ? (
@@ -768,8 +684,7 @@ export function IssueMarginPanel({
                   failure={waitingTitles.errorUpdateCount}
                   message={TITLES_READ_FAILED}
                   onRetry={retryRead(waitingTitles)}
-                  retryRef={waitingRetryLeft}
-                  retried={waitingRetried}
+                  {...waitingRetry}
                   retrying={waitingTitles.isFetching}
                 />
               ) : null}
@@ -842,8 +757,8 @@ export function IssueMarginPanel({
               in the header's words for a title or a route save, whose Retry is this one, a press
               of its own; on a closed issue, whose line draws no Retry, it says so in Details' own
               sentence, that the route cannot be saved again. Once the route the reader's Retry sent
-              lands the line goes, and the row's control takes the focus Retry held
-              (`useFocusHandOff`). */}
+              lands, or the issue is drawn holding it while that save is out, the line goes, and
+              the row's control takes the focus Retry held (`useRetryHandOff`). */}
           {routeFailureShown ? (
             <DetailsErrorLine
               error={fieldFailure.error}
@@ -862,8 +777,7 @@ export function IssueMarginPanel({
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
               refused={writes.updateIssue.isPending}
-              retryRef={routeRetryLeft}
-              retried={routeRetried}
+              {...routeRetry}
             />
           ) : null}
         </Row>
@@ -884,8 +798,8 @@ export function IssueMarginPanel({
             its control; and, while the issue advances no priority, the control that adds one,
             which is the priority row (`IssuePriorityLine`) with nothing in it yet. The focus it
             holds as the reader's own first priority lands and moves the line goes on to the
-            Advances row (`useFocusHandOff`). */}
-        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={addRow}>
+            Advances row (`usePriorityHandOffs`). */}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 py-2" ref={priority.addRow}>
           <IssueAddMenu
             drawerBox={drawerBox}
             isClosed={isClosed}
@@ -894,7 +808,7 @@ export function IssueMarginPanel({
             panel={panel}
           />
           {advances.length === 0 ? (
-            <div className="contents" data-testid="issue-advances" ref={priorityBesideAddLeft}>
+            <div className="contents" data-testid="issue-advances" ref={priority.besideAddLeft}>
               <IssuePriorityLine disabled={isClosed} inRow issue={issue} />
             </div>
           ) : null}
@@ -912,7 +826,12 @@ export function IssueMarginPanel({
         </Row>
         <DetailsPeople issue={issue} state={state} />
       </PropertySection>
-      <PropertySection drawerBox={drawerBox} name="references" sections={sections}>
+      <PropertySection
+        drawerBox={drawerBox}
+        headingRef={referencesHeading}
+        name="references"
+        sections={sections}
+      >
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
             wherever no approval request waits on the reader. */}
         <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
@@ -956,9 +875,7 @@ export function IssueMarginPanel({
             <ReferencedBy
               className="w-full"
               reference={issueReference}
-              retried={referencesRetried}
-              retryKeepsFocus
-              retryRef={referencesRetryLeft}
+              {...referencesRetry}
               toggle={{ id: referencesPanelId }}
             />
           ) : null}

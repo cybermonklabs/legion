@@ -7,7 +7,7 @@ import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { ClaimChip } from "../issue/ClaimChip";
 import { stoppedNote, useRefusalOfSubject } from "../writes/useKeyedWrite";
-import { DetailsErrorLine, useSaidFailure } from "./details-error";
+import { DetailsErrorLine, useRetryHandOff, useSaidFailure } from "./details-error";
 import { pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -31,13 +31,14 @@ export const RELEASE_FAILED = "Could not release this claim.";
  * press of Retry took the line away: its release landed while the claim it was pressed on is
  * still drawn. The claim's box hands its focus to the None the row reads then where the release
  * the reader pressed, by Release or by Retry, took the claim away: the claim is read gone while
- * that release is out or once it has landed. The row cannot tell that release's answer from
- * another read that finds the claim gone meanwhile, so it takes either for the answer. A press
- * whose release failed answers nothing, and nor does one whose claim another session replaced
- * before the claim went: the issue claimed again holds another claim, which that press did not
- * ask to release. So a release made in another session while no release of the reader's is out,
- * or a claim taken again there, hands nothing on; nor does None, which only a claim made in
- * another session takes away.
+ * that release is out or once it has landed. A read that finds the claim gone while the reader's
+ * release is out - the release's own event, which can arrive before its answer, or a release
+ * made elsewhere meanwhile - reached what the press asked for, so the row takes it for the
+ * answer. A press whose release failed answers nothing, and nor does one whose claim another
+ * session replaced before the claim went: the issue claimed again holds another claim, which
+ * that press did not ask to release. So a release made in another session while no release of
+ * the reader's is out, or a claim taken again there, hands nothing on; nor does None, which only
+ * a claim made in another session takes away.
  *
  * A release's failure is about the claim it was pressed on, and the row says it only while that
  * claim is still the issue's: Dispatch releases whichever claim the issue holds, so once the claim
@@ -71,11 +72,10 @@ export function IssueClaimControl({
   const failure = onHeld ? said : null;
   const releaseControl = useRef<HTMLButtonElement>(null);
   const none = useRef<HTMLSpanElement>(null);
-  // The reader's press of Retry, which the line notes as it is pressed (`retried`), and of Release
-  // or Retry, noted as it sends the release and forgotten as that release fails. Each is forgotten
-  // as its element leaves the page, with the focus or not (`useFocusHandOff`'s `pressed`), so a
-  // later loss no press caused moves nothing.
-  const retried = useRef(false);
+  // The reader's press of Retry, which the line notes as it is pressed (`useRetryHandOff`), and
+  // of Release or Retry, noted as it sends the release and forgotten as that release fails. Each
+  // is forgotten as its element leaves the page, with the focus or not (`useFocusHandOff`'s
+  // `pressed`), so a later loss no press caused moves nothing.
   const released = useRef(false);
   // A claim drawn in place of the one the release was pressed on is another session's: the claim's
   // going after it is no answer of the reader's press.
@@ -83,7 +83,7 @@ export function IssueClaimControl({
     if (held !== null && held !== pressedOn) released.current = false;
   }, [held, pressedOn]);
   // The line goes too when the issue is claimed again in another session, which no Retry did.
-  const retryLeft = useFocusHandOff(() => (onHeld ? releaseControl.current : null), retried);
+  const retry = useRetryHandOff(() => (onHeld ? releaseControl.current : null));
   const claimLeft = useFocusHandOff(() => none.current, released);
   // Release and Retry send the one release, and a press while it is out sends nothing: the guard
   // drops a press made before React has drawn the release out, and `isPending` one made after
@@ -133,8 +133,7 @@ export function IssueClaimControl({
           }
           onRetry={release}
           refused={releaseClaim.isPending}
-          retryRef={retryLeft}
-          retried={retried}
+          {...retry}
         />
       )}
     </div>

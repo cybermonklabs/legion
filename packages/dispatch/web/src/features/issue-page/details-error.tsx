@@ -1,6 +1,15 @@
-import { type ReactNode, type Ref, type RefObject, useEffect, useState } from "react";
+import {
+  type ReactNode,
+  type Ref,
+  type RefCallback,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { AGENT_LIST_REFILLING, isAgentListRefilling, type WriteMethod } from "../../api/client";
+import { useFocusHandOff } from "../../hooks/useFocusHandOff";
 import { pageFailedText, pageHeaderControl, pageQuietText } from "../../theme/classes";
 import { pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -22,13 +31,14 @@ export interface DetailsErrorLineProps {
    *  with the `refused:` look of `styles.css`), and the caller drops a press made meanwhile, as
    *  for any control whose own write is out. */
   readonly refused?: boolean;
-  /** Takes the Retry, so the row can hand its focus on when it goes (`useFocusHandOff`). */
+  /** Takes the Retry, so the row can hand its focus on when it goes (`useRetryHandOff`). */
   readonly retryRef?: Ref<HTMLButtonElement>;
-  /** Notes the reader's press of Retry for the row's hand-off (`useFocusHandOff`): set as Retry is
-   *  pressed, and forgotten as a line is drawn and as the line says a failure again, since the
-   *  press then took nothing away. Where the row hands it to the hook as its `pressed`, the hook
-   *  forgets it as Retry leaves the page too. Whether Retry's going answers the press - its
-   *  request answered, and the line went for it - the row reads in its target. */
+  /** Notes the reader's press of Retry for the row's hand-off (`useRetryHandOff`): set as Retry is
+   *  pressed, and forgotten as a line is drawn, since a line just drawn holds no press yet, and as
+   *  the line says a failure again, since the press then took nothing away. The hand-off forgets
+   *  it as Retry leaves the page too (`useFocusHandOff`'s `pressed`). Whether Retry's going
+   *  answers the press - its request answered, and the line went for it - the row reads in its
+   *  target. */
   readonly retried?: RefObject<boolean>;
   /** Whether the read Retry sent again is still out: Retry reads busy (`aria-busy`, and a
    *  quieter look) and still takes a press, which the caller joins to the read that is out. */
@@ -92,6 +102,18 @@ export function DetailsErrorLine({
       )}
     </div>
   );
+}
+
+/** The hand-off of a Retry of Details, spread on its line (`DetailsErrorLine`): the press of Retry
+ *  the line notes (`retried`), and the ref that takes Retry (`retryRef`), which, as Retry leaves
+ *  the page with the focus after that press, hands the focus on to what `to` returns
+ *  (`useFocusHandOff`, with the press as its `pressed`). */
+export function useRetryHandOff(to: (left: HTMLElement) => HTMLElement | null | undefined): {
+  readonly retried: RefObject<boolean>;
+  readonly retryRef: RefCallback<HTMLElement>;
+} {
+  const retried = useRef(false);
+  return { retried, retryRef: useFocusHandOff(to, retried) };
 }
 
 /** The Retry of a read of Details that failed: it sends the read again, and a press while that

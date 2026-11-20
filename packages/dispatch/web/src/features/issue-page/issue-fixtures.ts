@@ -6,7 +6,7 @@ import type { Issue, IssueClaim, IssueDetails, UpdateIssueInput } from "../../ap
 
 // What tests of the issue's writes share: the server's answer to a PATCH of the issue
 // (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`), the issue the
-// claim's tests claim and release, with the claim they put on it, and the wait the tests of
+// claim's tests claim and release, with the claims they put on it, and the wait the tests of
 // Details' focus make before they read where a hand-off left it.
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
@@ -43,6 +43,13 @@ export function patchAnswer(issue: IssueDetails, input: UpdateIssueInput): Issue
 export const sessionClaim: IssueClaim = {
   actor: { kind: "session", id: "session-one", origin: { session_title: "Implementer" } },
   at: "2026-09-24T06:00:00Z",
+};
+
+/** A claim of `claimIssue` by another session than `sessionClaim`'s, made after it: the issue
+ *  claimed again elsewhere. */
+export const reviewerClaim: IssueClaim = {
+  actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
+  at: "2026-09-24T07:00:00Z",
 };
 
 /** The issue those tests claim and release: open, in progress and claimed by no one, with no

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import type { Ref, RefObject } from "react";
+import type { ButtonHTMLAttributes, Ref, RefObject } from "react";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -243,24 +243,21 @@ export function ReferencedBy({
   className,
   reference,
   retried,
-  retryKeepsFocus = false,
   retryRef,
   toggle,
 }: {
   className?: string;
   reference: string;
-  /** Notes the reader's press of Retry, with `retryKeepsFocus`, for the hand-off of its host
-   *  (`useFocusHandOff`'s `pressed`): set as Retry is pressed, and forgotten where the list still
-   *  reads as failed once the read the press sent, or joined, has ended, since that press then
-   *  took nothing away. */
+  /** Notes the reader's press of Retry for the hand-off of its host (`useFocusHandOff`'s
+   *  `pressed`): set as Retry is pressed, and forgotten where the list still reads as failed once
+   *  the read the press sent, or joined, has ended, since that press then took nothing away. A
+   *  host that passes it keeps Retry's focus while the read it sent is out: Retry is drawn
+   *  `aria-disabled` then, in place of `disabled`, since Chromium moves the focus of a control that
+   *  turns disabled to the page's body, and a press while the read is out joins it
+   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it;
+   *  elsewhere Retry is `disabled` then. */
   retried?: RefObject<boolean>;
-  /** Whether Retry keeps the focus while the read it sent is out: drawn `aria-disabled` then, in
-   *  place of `disabled`, since Chromium moves the focus of a control that turns disabled to the
-   *  page's body. A press while the read is out joins it (`cancelRefetch: false`) and sends
-   *  nothing new. The new issue page's Details passes it; elsewhere Retry is `disabled` then. */
-  retryKeepsFocus?: boolean;
-  /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`).
-   *  Without it Retry is drawn as on every page. */
+  /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
   /** The control that discloses this panel: its `id` (which the control names in
    *  `aria-controls`) and the fact that it already reads `Referenced by (N)`, so the panel
@@ -279,22 +276,23 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
-  // Retry's attributes in Details (`retryKeepsFocus`), spread over the ones it has on every page.
-  // Each is optional, so the spread is typed as one that may leave the earlier one in place.
+  // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
+  // every page.
   const retryInDetails:
-    | { "aria-disabled"?: true; disabled?: boolean; onClick?: () => void }
-    | undefined = retryKeepsFocus
-    ? {
-        "aria-disabled": query.isFetching || undefined,
-        disabled: false,
-        onClick: () => {
-          if (retried !== undefined) retried.current = true;
-          void query.refetch({ cancelRefetch: false }).then((answer) => {
-            if (answer.isError && retried !== undefined) retried.current = false;
-          });
-        },
-      }
-    : undefined;
+    | Pick<ButtonHTMLAttributes<HTMLButtonElement>, "aria-disabled" | "disabled" | "onClick">
+    | undefined =
+    retried === undefined
+      ? undefined
+      : {
+          "aria-disabled": query.isFetching || undefined,
+          disabled: false,
+          onClick: () => {
+            retried.current = true;
+            void query.refetch({ cancelRefetch: false }).then((answer) => {
+              if (answer.isError) retried.current = false;
+            });
+          },
+        };
 
   return (
     <section aria-label="Referenced by" className={`space-y-2 ${className ?? ""}`} id={toggle?.id}>

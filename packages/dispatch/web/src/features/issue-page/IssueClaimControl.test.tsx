@@ -20,7 +20,12 @@ import { MarginProvider } from "../margin/margin-context";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
 import { IssueClaimControl, RELEASE_FAILED } from "./IssueClaimControl";
-import { claimIssue as base, sessionClaim as claim, settleFocus } from "./issue-fixtures";
+import {
+  claimIssue as base,
+  sessionClaim as claim,
+  reviewerClaim,
+  settleFocus,
+} from "./issue-fixtures";
 import { NoTooltips } from "./NoTooltips";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { useIssueHeaderWrites } from "./useIssueHeaderWrites";
@@ -476,12 +481,6 @@ test("a release that lands with no answer hands Retry's focus to Release, and Re
     subscribers.mockRestore();
   }
 });
-
-/** A claim of the issue by another session than `claim`'s, made after it. */
-const reviewerClaim: IssueClaim = {
-  actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
-  at: "2026-09-24T07:00:00Z",
-};
 
 /**
  * The claim's row of Details on `claim`, with the registry listing both `claim`'s session and
