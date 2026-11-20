@@ -38,11 +38,11 @@ import { useRowOnScreen } from "../NodeRow";
 import { chipWords } from "../node-row-chip";
 import { authorText, pageChrome } from "../page-structure";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   NODE_TYPE_NAMES,
   PLAN_WORDS,
   PRESET_NAMES,
+  STATE_LINES,
 } from "../page-words";
 import { FailedLineLeaves, FailedReadLine } from "../slots/failed-read-line";
 import { moveToRow, treeEnterKey } from "../useTreeKeymap";
@@ -336,12 +336,13 @@ export function PlanFilterBody({
   );
 }
 
-/** What the body says of each read that failed before it first answered, in the page's words:
- *  the plan for the plan document's blocks, which hold its tasks, and the statements for the
- *  spec's blocks, as the Spec view says it. */
+/** What the body says of each read that failed before it first answered: the outline's own
+ *  words for that read, since the outline reads the same blocks and draws the same failure on
+ *  load (`outline-reads.ts`), the plan for the plan document's blocks, which hold its tasks, and
+ *  the spec for the spec's blocks, which hold the statements. */
 const UNREADABLE_LINES: Readonly<Record<PlanRead, string>> = {
-  plan: ANSWER_LINES.plan_unreadable,
-  statements: ANSWER_LINES.statements_unreadable,
+  plan: STATE_LINES.plan_unreadable,
+  statements: STATE_LINES.spec_unreadable,
 };
 
 /** Each document's block ids in the order they are written, or undefined while its read is

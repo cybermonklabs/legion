@@ -29,13 +29,13 @@ import {
   type TreeNode,
 } from "../issue-tree";
 import {
-  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
   type NodeType,
   PLAN_WORDS,
+  STATE_LINES,
 } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
@@ -750,7 +750,7 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
 });
 
 // The spec's blocks read refused before it first answered: the view says, in the page's words,
-// that it could not load the statements, with a Retry that asks the spec's blocks again.
+// that it could not load the spec, with a Retry that asks the spec's blocks again.
 test("a refused read of the spec's blocks says so, with a Retry that reads them again", async () => {
   setViewport(1440);
   const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
@@ -762,7 +762,7 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
       if (found === null) throw new Error("the view says nothing of the refused statements read");
       return found;
     });
-    expect(line.querySelector("p")?.textContent).toBe(ANSWER_LINES.statements_unreadable);
+    expect(line.querySelector("p")?.textContent).toBe(STATE_LINES.spec_unreadable);
     expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
     const asked = () => blocks.mock.calls.filter(([id]) => id === SPEC_ARTIFACT).length;
     const before = asked();
@@ -853,8 +853,8 @@ test("while a read is out the view draws nothing, and a read that failed says so
         line.closest('[role="tree"]'),
       ])
     ).toEqual([
-      ["plan", ANSWER_LINES.plan_unreadable, null],
-      ["statements", ANSWER_LINES.statements_unreadable, null],
+      ["plan", STATE_LINES.plan_unreadable, null],
+      ["statements", STATE_LINES.spec_unreadable, null],
     ]);
     const retry = lines()[0]?.querySelector("button");
     if (retry == null) throw new Error("the plan's line draws no Retry");

@@ -1,7 +1,6 @@
 import type { Locator, Page, Route } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
-  ANSWER_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -287,7 +286,7 @@ async function expectRetryAfterAFailedFirstRead(page: Page, seeded: WholeIssueSe
     await expect(
       line,
       "the Plan view whose first read of the plan's blocks failed does not say it could not load the plan"
-    ).toContainText(ANSWER_LINES.plan_unreadable);
+    ).toContainText(STATE_LINES.plan_unreadable);
     const retry = line.getByRole("button");
     await expect(retry, "the line saying the plan could not be loaded draws no Retry").toHaveCount(
       1
