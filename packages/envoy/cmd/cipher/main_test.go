@@ -1271,11 +1271,12 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 	return marker
 }
 
-// launcherWaitLine is the line a call prints as it starts to wait on the launcher whose marker is
-// marker, for wait at most (a time.Duration's text), while the key dir holds neither key.pem nor
-// enrollment (awaitEnrollment).
-func launcherWaitLine(marker, wait string) string {
-	return "agent-secrets: the launcher is still enrolling this process (" + marker + " is there); waiting up to " + wait + " for its key.pem and enrollment\n"
+// launcherWaitLine is the line a call prints as it starts to wait on the launcher still enrolling
+// its key dir, which the line names as named (keyDirName: the setting, never the path), for wait at
+// most (a time.Duration's text), while the key dir holds neither key.pem nor enrollment
+// (awaitEnrollment).
+func launcherWaitLine(named, wait string) string {
+	return "agent-secrets: the launcher is still enrolling this process (" + named + " holds enrollment.pending); waiting up to " + wait + " for its key.pem and enrollment\n"
 }
 
 // enrollmentWaitLine is the line a waiting call prints once key.pem is there and enrollment is
@@ -1283,17 +1284,18 @@ func launcherWaitLine(marker, wait string) string {
 const enrollmentWaitLine = "agent-secrets: still waiting for the launcher's enrollment\n"
 
 // playTheLauncher plays the launcher of keyDir, which is still enrolling the process of c: keyDir
-// holds its fresh marker and neither key.pem nor enrollment, and the call's bound is wait. It
-// writes each file only once the call says it waits for that file, so the call is waiting before
-// each file is there however slow the machine is: fixture's key.pem once the call says it waits
-// for key.pem and enrollment, then fixture's enrollment once the call says it still waits for
-// that, and then it removes the marker, as the launcher does. Each file is written whole
-// (writeFileAtomic), as the launcher writes it, so the call never reads one half-written. It fails
-// the test when the call ends before either line, or has ended by the time the launcher is about
-// to write the enrollment. Once the enrollment is written the call may end at any moment, which is
-// what it waited for: a call still running just before that write and exiting 0 afterwards ended
-// after the write, since it cannot sign without the enrollment.
-func playTheLauncher(t *testing.T, c *call, keyDir, fixture, wait string) {
+// holds its fresh marker and neither key.pem nor enrollment, the call names it as named
+// (keyDirName), and the call's bound is wait. It writes each file only once the call says it
+// waits for that file, so the call is waiting before each file is there however slow the machine
+// is: fixture's key.pem once the call says it waits for key.pem and enrollment, then fixture's
+// enrollment once the call says it still waits for that, and then it removes the marker, as the
+// launcher does. Each file is written whole (writeFileAtomic), as the launcher writes it, so the
+// call never reads one half-written. It fails the test when the call ends before either line, or
+// has ended by the time the launcher is about to write the enrollment. Once the enrollment is
+// written the call may end at any moment, which is what it waited for: a call still running just
+// before that write and exiting 0 afterwards ended after the write, since it cannot sign without
+// the enrollment.
+func playTheLauncher(t *testing.T, c *call, keyDir, named, fixture, wait string) {
 	t.Helper()
 	marker := filepath.Join(keyDir, pendingMarker)
 	copyFile := func(name string) {
@@ -1306,7 +1308,7 @@ func playTheLauncher(t *testing.T, c *call, keyDir, fixture, wait string) {
 			t.Fatal(err)
 		}
 	}
-	c.says(t, launcherWaitLine(marker, wait), "before it waited for the launcher")
+	c.says(t, launcherWaitLine(named, wait), "before it waited for the launcher")
 	copyFile(keyFile)
 	c.says(t, enrollmentWaitLine, "once key.pem was there and before the launcher wrote the enrollment")
 	if c.ended() {
@@ -1336,7 +1338,7 @@ func TestEnrollWaitRidesOutTheLaunchersSetup(t *testing.T) {
 	writePendingMarker(t, keyDir, 0)
 
 	c := startExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=24h")
-	playTheLauncher(t, c, keyDir, fixture, "24h0m0s")
+	playTheLauncher(t, c, keyDir, "AGENT_SECRETS_KEY_DIR", fixture, "24h0m0s")
 	if exit := c.end(t); exit != 0 {
 		t.Fatalf("exit = %d, want 0 once the launcher wrote the enrollment: stderr=%q", exit, c.stderr.String())
 	}
@@ -1358,7 +1360,7 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	marker := writePendingMarker(t, keyDir, 0)
 
 	exit, stderr := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
-	if exit != 1 || !strings.Contains(stderr, launcherWaitLine(marker, "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
+	if exit != 1 || !strings.Contains(stderr, launcherWaitLine("AGENT_SECRETS_KEY_DIR", "1s")) || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") ||
 		!strings.Contains(stderr, "(waited 1s while ") || strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 saying it waits, naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}

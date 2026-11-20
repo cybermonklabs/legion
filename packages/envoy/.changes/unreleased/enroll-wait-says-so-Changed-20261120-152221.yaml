@@ -2,7 +2,8 @@ kind: Changed
 body: |-
   `agent-secrets` now says on stderr when it waits for a box's launcher that is still enrolling it
   (a fresh `enrollment.pending` in the key directory), before it waits:
-  `agent-secrets: the launcher is still enrolling this process (<key dir>/enrollment.pending is there); waiting up to 20s for its key.pem and enrollment`.
+  `agent-secrets: the launcher is still enrolling this process (AGENT_SECRETS_KEY_DIR holds enrollment.pending); waiting up to 20s for its key.pem and enrollment`,
+  naming the key directory by its setting, never its path.
   Once `key.pem` is there and `enrollment` is not, it says
   `agent-secrets: still waiting for the launcher's enrollment`. Before, such a call was silent for
   up to `AGENT_SECRETS_ENROLL_WAIT` (20 s by default), so an MCP server held at a box's start gave

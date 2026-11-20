@@ -231,7 +231,7 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 	t.Run("a launcher still enrolling the key dir", func(t *testing.T) {
 		broker := newGrantBroker(t, false)
 		r := grantRig(t, binary, broker)
-		marker := writePendingMarker(t, r.keyDir(), 0)
+		writePendingMarker(t, r.keyDir(), 0)
 		fixture := t.TempDir()
 		writeSessionFiles(t, fixture, "launcher-enrollment")
 		// A day, so that the bound cannot end the wait within the shared test wait; the launcher
@@ -239,11 +239,13 @@ func TestGrantRevokeInsideASessionIsASessionCommand(t *testing.T) {
 		r.env["AGENT_SECRETS_ENROLL_WAIT"] = "24h"
 
 		grantID := uuid.NewString()
+		// The rig leaves AGENT_SECRETS_KEY_DIR unset, so the call names its key dir by the default.
+		const named = "$XDG_RUNTIME_DIR/agent-secrets (AGENT_SECRETS_KEY_DIR is unset)"
 		c := startCall(t, r.command("grant", "revoke", grantID))
-		playTheLauncher(t, c, r.keyDir(), fixture, "24h0m0s")
+		playTheLauncher(t, c, r.keyDir(), named, fixture, "24h0m0s")
 		code := c.end(t)
 		want := "revoked " + grantID + " at " + brokerSource(cipheraddr.New(broker.URL())).String() + "\n"
-		waited := launcherWaitLine(marker, "24h0m0s") + enrollmentWaitLine
+		waited := launcherWaitLine(named, "24h0m0s") + enrollmentWaitLine
 		if stdout, stderr := c.stdout.String(), c.stderr.String(); code != 0 || stdout != want || stderr != waited {
 			t.Fatalf("grant revoke while the launcher enrolls: exit %d, stdout %q, stderr %q; want 0, %q once it has, and the wait's two lines %q",
 				code, stdout, stderr, want, waited)
