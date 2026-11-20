@@ -53,18 +53,44 @@ func sessionFileOf(recorded string, paneSessions func() (string, error)) (found 
 // for none. A directory or name holding a glob character is searched nowhere: it would match other
 // sessions.
 func newestSession(sessions, name string) (string, error) {
-	if strings.ContainsAny(sessions+name, `*?[\`) {
+	if strings.ContainsAny(sessions+name, globCharacters) {
 		return "", nil
 	}
-	patterns := []string{filepath.Join(sessions, "*", name)}
+	names := []string{name}
 	if stem, ok := strings.CutSuffix(name, ".jsonl"); ok {
 		if _, id, ok := strings.Cut(stem, "_"); ok && id != "" {
-			patterns = append(patterns, filepath.Join(sessions, "*", "*_"+id+".jsonl"))
+			names = append(names, "*_"+id+".jsonl")
 		}
 	}
+	return newestOneFolderDown(sessions, names)
+}
+
+// sessionFileByID is the file a resume of a session named by its id alone continues (launch): the
+// regular file written last among Oh My Pi's `<timestamp>_<id>.jsonl`, of any timestamp, one folder
+// below sessions, where Oh My Pi keeps the sessions of every working directory; "" for none. A
+// directory or id holding a glob character is searched nowhere, as newestSession searches nowhere
+// for one: it would match other sessions. So is an empty id, which names no session, and an id
+// holding a path separator, whose file name would reach below one folder down or out of sessions.
+func sessionFileByID(sessions, id string) (string, error) {
+	if id == "" || strings.ContainsAny(sessions+id, globCharacters) || strings.ContainsRune(id, filepath.Separator) {
+		return "", nil
+	}
+	return newestOneFolderDown(sessions, []string{"*_" + id + ".jsonl"})
+}
+
+// globCharacters are the characters filepath.Glob reads as part of a pattern: `*`, `?`, `[` and
+// the escape `\`.
+const globCharacters = `*?[\`
+
+// newestOneFolderDown is the regular file written last among those one folder below sessions
+// whose name matches one of names, each a filepath.Glob pattern of a file name, newestSession's
+// and sessionFileByID's one search; "" for none. Of several written at the same time, the first
+// matched is taken. Its callers search nowhere for a sessions directory, name or id holding a glob
+// character before they write names, so the only wildcards are the folder's and their own.
+func newestOneFolderDown(sessions string, names []string) (string, error) {
 	var candidates []string
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(pattern)
+	for _, name := range names {
+		matches, err := filepath.Glob(filepath.Join(sessions, "*", name))
 		if err != nil {
 			return "", err
 		}
