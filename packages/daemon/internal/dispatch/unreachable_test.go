@@ -54,14 +54,15 @@ func TestUnreachableClassifiesEachErrorShape(t *testing.T) {
 	}
 }
 
-// transportFailure's four shapes, each reproduced against a real server rather than a synthetic
+// transportFailure's five shapes, each reproduced against a real server rather than a synthetic
 // error: a certificate the client does not trust, a TLS alert (tlsalert.In reads one on the
-// handshake or on a later record alike; this row's ends the handshake), and an https:// URL
-// pointed at a plain-HTTP port all stay loud refusals no wait fixes, each one TransportRefusal
-// reads; a dial the network refuses is wrapped as a TransientError, exactly what a real outage
-// produces, so Unreachable rides it out and TransportRefusal does not read it. dispatchBase's
-// scheme check (internal/config) catches a scheme that is not http or https at load time, but not
-// a correct https:// whose port serves plain HTTP, which only a real connection attempt reveals.
+// handshake or on a later record alike; this row's ends the handshake), an https:// URL pointed
+// at a plain-HTTP port, and an https:// URL pointed at a port that answers in neither TLS nor
+// HTTP/1.x all stay loud refusals no wait fixes, each one TransportRefusal reads; a dial the
+// network refuses is wrapped as a TransientError, exactly what a real outage produces, so
+// Unreachable rides it out and TransportRefusal does not read it. dispatchBase's scheme check
+// (internal/config) catches a scheme that is not http or https at load time, but not a correct
+// https:// whose port does not serve TLS, which only a real connection attempt reveals.
 func TestTransportFailureClassifiesEachRealServerShape(t *testing.T) {
 	for _, testCase := range []struct {
 		name          string
