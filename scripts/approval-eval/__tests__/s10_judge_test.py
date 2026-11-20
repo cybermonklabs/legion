@@ -7,13 +7,16 @@ code-txt whose `shadow.py` has the names the driver runs and replaces, and none 
 text, which this public repository may not hold. Its pins are taken from the fixture itself
 (`pins_for`). The admission is handed in, as `s10-judge-admit.ts`'s own tests cover it, and the
 sandbox is a fake that writes the files a real sandbox's result holds: the record, the listing,
-the session's transcript, each judge's transcript in omp's own entries, and the answers.
+the session's transcript, each judge's transcript in omp's own entries, and the answers, with a
+layout whose emptyDir is the test's own root, where the bundles and the calls are; and its
+preflight.
 
 Under `s10-judge.test.ts`, two variables join this suite to the TypeScript side:
 `S10_INPUTS_FIXTURE` names an inputs stage that test wrote and read back through
 `s10-inputs-io.ts`'s parsers, with the admission `s10-judge-admit.ts` gave over it, which a test
-here judges; and `S10_JUDGED_KEEP` names a directory a judged stage is copied to, which that test
-reads back through `s10-judged-io.ts`.
+here judges; and `S10_JUDGED_KEEP` names a directory where every stage a run here judges whole is
+copied (`keep_for_typescript`), with the constants both sides hold equal, which that test reads
+back through `s10-judged-io.ts`: so every kind of outcome this stage writes is parsed there.
 """
 
 import sys
@@ -31,7 +34,10 @@ import re  # noqa: E402
 import shutil  # noqa: E402
 import signal  # noqa: E402
 import socket  # noqa: E402
+import subprocess  # noqa: E402
 import tempfile  # noqa: E402
+import threading  # noqa: E402
+import types  # noqa: E402
 import unittest  # noqa: E402
 from collections import Counter  # noqa: E402
 from unittest import mock  # noqa: E402
@@ -223,12 +229,15 @@ def tool_entries(calls, upstream=None):
 class FakeSandbox:
     """The sandbox, as a fake: `judge_tools`, `answers`, `model_changes`, `served`, `resolved`,
     `top_calls`, `record`, `manifests`, `drop`, `failure`, `listing`, `files` and `key` change
-    what it gives back or holds. Each run records where the driver's `WORK/bundles` led while it
-    ran; `during` is called in the middle of a run."""
+    what it gives back or holds; `preflight_record` and `preflight_failure` change its preflight.
+    Its layout puts the emptyDir at the test's own root, where the driver's bundles and calls are.
+    Each run records where the driver's `WORK/bundles` led while it ran; `during` is called in the
+    middle of a run."""
 
     def __init__(self, test, **changes):
         self.test = test
         self.runs = []
+        self.preflights = []
         self.judge_tools = None
         self.answers = None
         self.model_changes = None
@@ -239,6 +248,10 @@ class FakeSandbox:
                           "after": {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST}}
         self.listing = []
         self.record = {}
+        self.preflight_record = {}
+        self.preflight_listing = []
+        self.preflight_image_id = IMAGE
+        self.preflight_failure = None
         self.drop = set()
         self.failure = None
         self.image_id = IMAGE
@@ -248,6 +261,38 @@ class FakeSandbox:
         self.key = None
         for name, value in changes.items():
             setattr(self, name, value)
+
+    def layout(self):
+        return {"key": "/run/model-gateway-key", "models": SANDBOX.MODELS_FILE, "overlay": SANDBOX.OVERLAY_FILE,
+                "work": self.test.root}
+
+    def checked_record(self, files, preflight):
+        """The record and listing of a sandbox whose every check passed over the files sent."""
+        layout = self.layout()
+        listing = sorted([f"f 644 10 {HARNESS}/{name}" for name in SANDBOX.SKILL_FILES]
+                         + [f"f 644 {len(data)} {path}" for path, data in files.items()]
+                         + (self.preflight_listing if preflight else self.listing))
+        record = {"refused": None, "preflight": preflight, "layout": layout, "payload": {
+                      path: sha(data) for path, data in files.items()},
+                  "environment": ["HOME", "PATH", "S10_SANDBOX"],
+                  "mounts": ["/", "/proc", layout["key"], layout["models"], layout["overlay"], layout["work"]],
+                  "listing": {"lines": len(listing), "sha256": sha("\n".join(listing) + "\n")},
+                  "runtime": dict(SANDBOX.RUNTIME, piConfigFiles=SANDBOX.OVERLAY_FILE),
+                  "metadata": [{"url": url, "connected": True, "status": 403} for url in SANDBOX.METADATA_REQUESTS],
+                  "keyFound": []}
+        return record, listing
+
+    def preflight(self):
+        self.preflights.append({"link": os.readlink(os.path.join(self.test.work, "bundles"))
+                                if os.path.islink(os.path.join(self.test.work, "bundles")) else None})
+        if self.preflight_failure is not None:
+            return JOB.SandboxRun(job="fake-preflight", failure=self.preflight_failure)
+        record, listing = self.checked_record({}, True)
+        record.update(self.preflight_record)
+        return JOB.SandboxRun(job=f"fake-preflight-{len(self.preflights)}",
+                              files={"listing.txt": ("\n".join(listing) + "\n").encode(),
+                                     "record.json": json.dumps(record).encode()},
+                              facts={"pod": "fake-preflight-pod", "imageId": self.preflight_image_id})
 
     def run(self, ask, files, extra_env=None):
         calls = json.loads(files[SANDBOX.CALLS_FILE])
@@ -287,15 +332,10 @@ class FakeSandbox:
             chosen = (self.answers or (lambda index: answer()))(index)
             results.append({"id": agent, "result": chosen})
         result["results.json"] = json.dumps(results).encode()
-        listing = [f"f 644 10 {HARNESS}/{name}" for name in
-                   ("SKILL.md", "references/never-decide.md", "references/reviewer-principles.md")] + self.listing
+        record, listing = self.checked_record(files, False)
         result["listing.txt"] = ("\n".join(listing) + "\n").encode()
         result.update(self.files)
-        record = {"refused": None, "environment": ["HOME", "PATH", "S10_SANDBOX"], "mounts": ["/", "/work"],
-                  "listing": {"lines": len(listing), "sha256": sha("\n".join(listing) + "\n")},
-                  "runtime": dict(SANDBOX.RUNTIME, piConfigFiles=SANDBOX.OVERLAY_FILE),
-                  "metadata": [{"url": url, "status": 403} for url in SANDBOX.METADATA_REQUESTS],
-                  "manifests": self.manifests, "keyFound": [], "omp": {"returncode": 0}, **self.record}
+        record.update({"manifests": self.manifests, "omp": {"returncode": 0}, **self.record})
         result["record.json"] = json.dumps(record).encode()
         return JOB.SandboxRun(job=f"fake-job-{len(self.runs)}", files=result,
                               facts={"pod": "fake-pod", "imageId": self.image_id})
@@ -319,6 +359,10 @@ class Base(unittest.TestCase):
         put(self.skill, SKILL)
         put(self.never, NEVER)
         self.pins = pins_for(CODE, self.work)
+        # The calls go beside the bundles, under the root the fake sandbox's layout names its emptyDir.
+        calls = mock.patch.object(SANDBOX, "CALLS_FILE", os.path.join(self.root, "s10", "calls.json"))
+        calls.start()
+        self.addCleanup(calls.stop)
 
     def tearDown(self):
         if self.saved is None:
@@ -343,7 +387,28 @@ class Base(unittest.TestCase):
             status = J.main(self.argv(code, more=more), pins=pins or self.pins, admit=lambda argv, environ: admission,
                             runner_of=runner_of)
         self.stderr = stderr.getvalue()
+        if status == 0:
+            self.keep_for_typescript()
         return status
+
+    def keep_for_typescript(self):
+        """Where `s10-judge.test.ts` asks (`S10_JUDGED_KEEP`), a copy of each stage a run of this
+        suite judged whole, one directory a run under `stages/`, named by the test, and the shared
+        constants the TypeScript parsers hold equal (`constants.json`)."""
+        keep = os.environ.get("S10_JUDGED_KEEP")
+        if not keep or not os.path.exists(os.path.join(self.out, STORE.STAGE_FILE)):
+            return
+        stages = os.path.join(keep, "stages")
+        os.makedirs(stages, exist_ok=True)
+        name = f"{self.id().rsplit('.', 1)[-1]}-{len(os.listdir(stages))}"
+        shutil.copytree(self.out, os.path.join(stages, name))
+        put(os.path.join(keep, "constants.json"), json.dumps({
+            "deviationKinds": list(J.DEVIATION_KINDS),
+            "ruleVersions": [f"v{version}" for version in CHECKS.RULE_VERSIONS],
+            "countingRule": f"v{CHECKS.COUNTING_RULE}",
+            "stageVersion": STORE.STAGE_VERSION,
+            "startedFile": STORE.STARTED_FILE,
+        }))
 
     def outcome(self, tail):
         with open(os.path.join(self.out, "requests", ask_id(tail), STORE.OUTCOME_FILE)) as handle:
@@ -377,8 +442,9 @@ class Base(unittest.TestCase):
 def shadow_of(test):
     """The stand-in `shadow.py`, loaded as the driver loads the frozen one."""
     path = os.path.join(test.root, "shadow.py")
-    put(path, J.frozen_files(CODE, test.pins)["shadow.py"])
-    return J.load_shadow(path, test.pins)
+    data = J.frozen_files(CODE, test.pins)["shadow.py"]
+    put(path, data)
+    return J.load_shadow(path, test.pins, data)
 
 
 # ---------- the frozen code ----------
@@ -399,13 +465,24 @@ class FrozenCodeTest(Base):
         with self.assertRaisesRegex(STORE.CannotRun, "tick.sh"):
             J.frozen_files(CODE, J.Pins(**{**self.pins.__dict__, "files": {**self.pins.files, "tick.sh": "00000000"}}))
         path = os.path.join(self.root, "shadow.py")
-        put(path, J.frozen_files(CODE, self.pins)["shadow.py"])
+        data = J.frozen_files(CODE, self.pins)["shadow.py"]
+        put(path, data)
         for field, name in (("prompt_sha256", "JUDGE_PROMPT"), ("bundle_code_sha256", "build_bundle"),
                             ("asked", "ASKED"), ("work", "WORK")):
             with self.subTest(field=field), self.assertRaisesRegex(STORE.CannotRun, name):
-                J.load_shadow(path, J.Pins(**{**self.pins.__dict__, field: "other"}))
+                J.load_shadow(path, J.Pins(**{**self.pins.__dict__, field: "other"}), data)
 
-    def test_every_way_out_of_the_process_raises_and_no_dispatch_variable_stays(self):
+    def test_shadow_py_runs_only_as_pinned_and_as_kept(self):
+        path = os.path.join(self.root, "shadow.py")
+        data = J.frozen_files(CODE, self.pins)["shadow.py"]
+        put(path, data + b"\n# changed after it was kept\n")
+        with self.assertRaisesRegex(STORE.CannotRun, "not the shadow.py"):
+            J.load_shadow(path, self.pins, data)
+        put(path, data)
+        with self.assertRaisesRegex(STORE.CannotRun, "point 2 gives"):
+            J.load_shadow(path, self.pins, data + b"\n")
+
+    def test_every_way_out_of_the_process_raises_while_s10_runs_and_is_restored_after(self):
         shadow = shadow_of(self)
         self.assertEqual(shadow.DISPATCH, (J.UNREACHABLE["DISPATCH_URL"], J.UNREACHABLE["DISPATCH_TOKEN_FILE"]))
         self.assertFalse([name for name in os.environ if name in J.UNREACHABLE])
@@ -413,13 +490,24 @@ class FrozenCodeTest(Base):
             shadow.configuration()
         with self.assertRaises(J.InputsGap):
             shadow.reserved_neighbour(ask_id("c1"), "ACME-9", EARLIER, [])
+        originals = (socket.socket, socket.create_connection, subprocess.Popen, os.system)
+        aliased = importlib.import_module("subprocess")
+        with J.sealed():
+            for reach in (lambda: os.system("true"), lambda: socket.socket(),
+                          lambda: socket.create_connection(("192.0.2.1", 80)),
+                          lambda: aliased.run(["true"]), lambda: subprocess.check_output(["true"]),
+                          lambda: os.posix_spawn("/bin/true", ["true"], {}), lambda: socket.getaddrinfo("x", 80)):
+                with self.assertRaises(J.InputsGap):
+                    reach()
+            self.assertEqual(shadow.os.path.join("a", "b"), "a/b")
+        self.assertEqual((socket.socket, socket.create_connection, subprocess.Popen, os.system), originals)
+        self.assertEqual(subprocess.run(["true"]).returncode, 0)
+        # A name S10 takes from `socket` while it loads is the sealed one for good.
+        frozen = types.ModuleType("frozen_alias")
+        with J.sealed():
+            exec("from socket import socket as taken", frozen.__dict__)  # noqa: S102 - a test of the seal
         with self.assertRaises(J.InputsGap):
-            shadow.os.system("true")
-        with self.assertRaises(J.InputsGap):
-            socket.socket()
-        with self.assertRaises(J.InputsGap):
-            socket.create_connection(("192.0.2.1", 80))
-        self.assertEqual(shadow.os.path.join("a", "b"), "a/b")
+            frozen.taken()
         # Its own read stops at the token file that is not there, before any request is made.
         with self.assertRaises(OSError):
             shadow.api("/api/v1/issues/ACME-1")
@@ -439,9 +527,10 @@ class FrozenCodeTest(Base):
         code = os.path.join(self.root, "code.txt")
         put(code, got(CODE).replace(b'"reason": TEXT}', b'"reason": dict(TEXT, minLength=1)}'))
         path = os.path.join(self.root, "shadow.py")
-        put(path, J.frozen_files(code, pins_for(code, self.work))["shadow.py"])
+        data = J.frozen_files(code, pins_for(code, self.work))["shadow.py"]
+        put(path, data)
         with self.assertRaisesRegex(STORE.CannotRun, "minLength"):
-            J.load_shadow(path, pins_for(code, self.work))
+            J.load_shadow(path, pins_for(code, self.work), data)
 
     def test_puts_the_pinned_skill_where_s10_reads_it_and_refuses_another(self):
         shadow = shadow_of(self)
@@ -544,13 +633,9 @@ class JudgingTest(Base):
                          [{"asked": self.pins.asked, "served": None, "fallback": False}] * 5)
         self.assertEqual([line["askId"] for line in self.outcomes()], [ask_id("a1")])
         self.assertEqual(self.runners, [(IMAGE, JOB.SERVICE_ACCOUNT)])
-        self.keep_for_typescript()
-
-    def keep_for_typescript(self):
-        """Copies this judged stage where `s10-judge.test.ts` reads it back, when it asks."""
-        keep = os.environ.get("S10_JUDGED_KEEP")
-        if keep:
-            shutil.copytree(self.out, keep, dirs_exist_ok=True)
+        # One preflight, while the bundles' link was there, before the request started.
+        self.assertEqual(len(sandbox.preflights), 1)
+        self.assertIn(f"{STORE.PREFLIGHT_DIRECTORY}/0/record.json", self.record()["files"])
 
     def test_the_stage_record_chains_to_the_inputs_and_names_every_file(self):
         admission = self.one_request()
@@ -647,10 +732,9 @@ class JudgingTest(Base):
                 ("glob", {"path": directory + "/judge-{1,{2,3}}.md"}, None),
                 ("glob", {"path": directory + "/judge-[1-5].md"}, None),
                 ("glob", {"path": HARNESS + "/**"}, {"scopePath": HARNESS, "files": [HARNESS + "/references/"]}),
-                ("glob", {"path": "skill://approval-review"}, None),
-                ("glob", {"path": "skill://approval-review/references/*"},
-                 {"scopePath": "skill://approval-review/references/*",
-                  "files": ["skill://approval-review/references/never-decide.md"]}),
+                ("glob", {"path": "skill://approval-review"},
+                 {"scopePath": "skill://approval-review", "files": ["skill://approval-review/references/never-decide.md"]}),
+                ("glob", {"path": "skill://approval-review/references/never-decide.md"}, None),
                 ("glob", {"path": f"{directory}/*;skill://approval-review/**"},
                  {"scopePath": f"{relative}/*, skill://approval-review/**", "cwd": self.work}),
                 ("read", {"path": "skill://approval-review"}, {"resolvedPath": HARNESS + "/SKILL.md"}),
@@ -689,12 +773,18 @@ class JudgingTest(Base):
             "a grep with no path": own(lambda bundle, directory: [("grep", {"pattern": "x"}, None)]),
             "a glob with no path": own(lambda bundle, directory: [("glob", {}, None)]),
             "a glob of the bundles' parent": globbed(lambda bundle, directory: os.path.dirname(directory) + "/*/judge-1.md"),
+            "a glob scoped at references/": globbed(lambda bundle, directory: "skill://approval-review/references/*"),
+            "a glob scoped at references/ by its path": globbed(lambda bundle, directory: HARNESS + "/references/**"),
+            "a glob of another judge's file": globbed(lambda bundle, directory: os.path.join(
+                directory, "judge-2.md" if bundle.endswith("judge-1.md") else "judge-1.md")),
             "a glob whose pattern climbs": globbed(lambda bundle, directory: directory + "/../*"),
             "a glob whose pattern holds a dot part": globbed(lambda bundle, directory: directory + "/*/./x"),
             "a glob of the working directory": globbed(lambda bundle, directory: "."),
             "a glob of another skill": globbed(lambda bundle, directory: "skill://dispatch/**"),
             "a glob its result says left": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": "/etc", "files": ["/etc/passwd"]})]),
+            "a glob that returns a path outside the trees": own(lambda bundle, directory: [
+                ("glob", {"path": directory}, {"scopePath": directory, "files": ["../outside.md"], "cwd": directory})]),
             "a glob over two scopes, one left": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": f"{directory}, /etc"})]),
             "a glob with an argument that may be a target": own(lambda bundle, directory: [
@@ -743,9 +833,9 @@ class JudgingTest(Base):
 
     def test_a_link_the_listing_records_is_followed_before_the_scope_is_read(self):
         def through_link(index, bundle):
-            return [("glob", {"path": os.path.join(os.path.dirname(bundle), "out", "*")}, None)]
+            return [("read", {"path": HARNESS + "/references/never-decide.md"}, None)]
 
-        listing = [f"l 777 4 {os.path.join(self.work, 'bundles', ask_id('a1'))}/out -> /etc"]
+        listing = [f"l 777 4 {HARNESS}/references -> /etc"]
         self.assertEqual(self.judged_kind(judge_tools=through_link, listing=listing), "tool-call")
 
     def test_manifests_that_are_not_the_required_trees_or_that_change_are_a_deviation(self):
@@ -866,8 +956,19 @@ class JudgingTest(Base):
     def test_a_pod_that_ran_another_image_or_a_metadata_server_that_answered_is_a_deviation(self):
         self.assertEqual(self.judged_kind(image_id="registry.example.test/sandbox@sha256:" + "b" * 64), "sandbox")
         shutil.rmtree(self.out)
-        answered = [{"url": url, "status": 200} for url in SANDBOX.METADATA_REQUESTS]
+        answered = [{"url": url, "connected": True, "status": 200} for url in SANDBOX.METADATA_REQUESTS]
         self.assertEqual(self.judged_kind(record={"metadata": answered}), "sandbox")
+
+    def test_the_driver_makes_the_sandboxs_mount_and_listing_checks_again(self):
+        stray = [f"f 644 1 {self.root}/stray"]
+        self.assertEqual(self.judged_kind(listing=stray), "sandbox")
+        self.assertIn("outside the bundles", self.outcome("a1")["deviation"]["reason"])
+        shutil.rmtree(self.out)
+        self.assertEqual(self.judged_kind(record={"mounts": ["/", "/proc", "/elsewhere"]}), "sandbox")
+        shutil.rmtree(self.out)
+        self.assertEqual(self.judged_kind(record={"layout": None}), "sandbox")
+        shutil.rmtree(self.out)
+        self.assertEqual(self.judged_kind(record={"preflight": True}), "sandbox")
 
     def test_a_deviation_names_a_kind_of_this_stage(self):
         with self.assertRaises(ValueError):
@@ -886,21 +987,73 @@ class StageTest(Base):
         self.assertEqual(again.runs, [])
         self.assertEqual(got(os.path.join(self.out, STORE.STAGE_FILE)), before)
 
-    def test_a_sandbox_that_refuses_stops_the_run_resumably_after_that_requests_outcome(self):
+    def test_a_sandbox_that_refuses_after_the_preflight_stops_the_run_with_no_outcome_for_its_request(self):
         admission = self.two_requests()
         sandbox = FakeSandbox(self, record={"refused": "the variable GITHUB_TOKEN names a credential"})
         self.assertEqual(self.judge(admission, sandbox), 2)
         self.assertEqual(len(sandbox.runs), 1)
-        self.assertEqual(self.outcome("a1")["deviation"]["kind"], "sandbox")
+        self.assertFalse(self.has_outcome("a1"))
         self.assertFalse(self.has_outcome("a2"))
         record = self.record()
         self.assertEqual(record["state"], "started")
         self.assertIn("GITHUB_TOKEN", record["stops"][0]["reason"])
+        self.assertIn(f"requests/{ask_id('a1')}/sandbox/record.json", record["files"])
         self.assertFalse(os.path.exists(os.path.join(self.out, STORE.OUTCOMES_FILE)))
+        # Its bundles were made and kept and its Job ran: point 6 never judges it again.
         resumed = FakeSandbox(self)
         self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
         self.assertEqual([run["ask"] for run in resumed.runs], [ask_id("a2")])
-        self.assertEqual([line["deviation"] for line in self.outcomes()], ["sandbox", None])
+        self.assertEqual([line["deviation"] for line in self.outcomes()], ["started", None])
+
+    def test_a_preflight_that_fails_stops_the_run_before_any_request_starts(self):
+        cases = {
+            "a refusal": {"preflight_record": {"refused": "the variable GITHUB_TOKEN names a credential"}},
+            "a metadata server that answered": {"preflight_record": {"metadata": [
+                {"url": url, "connected": True, "status": 200} for url in SANDBOX.METADATA_REQUESTS]}},
+            "another image": {"preflight_image_id": "registry.example.test/sandbox@sha256:" + "b" * 64},
+            "no readable result": {"preflight_failure": "the Job did not finish by its deadline"},
+            "a file outside": {"preflight_listing": [f"f 644 1 {self.root}/stray"]},
+            "a record of a request's Job": {"preflight_record": {"preflight": False}},
+        }
+        for name, changes in cases.items():
+            with self.subTest(name=name):
+                admission = self.two_requests()
+                sandbox = FakeSandbox(self, **changes)
+                self.assertEqual(self.judge(admission, sandbox), 2)
+                self.assertEqual((len(sandbox.preflights), sandbox.runs), (1, []))
+                record = self.record()
+                self.assertEqual(record["state"], "started")
+                self.assertIn("preflight", record["stops"][0]["reason"])
+                self.assertFalse([name for name in record["files"] if name.startswith("requests/")])
+                self.assertIn(f"{STORE.PREFLIGHT_DIRECTORY}/0/job.json", record["files"])
+                resumed = FakeSandbox(self)
+                self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+                self.assertEqual([line["verdict"] for line in self.outcomes()], ["approve", "approve"])
+                self.assertIn(f"{STORE.PREFLIGHT_DIRECTORY}/1/record.json", self.record()["files"])
+                shutil.rmtree(self.out)
+
+    def test_the_preflight_runs_once_a_run_and_only_before_a_request_starts(self):
+        sandbox = FakeSandbox(self)
+        self.assertEqual(self.judge(self.two_requests(), sandbox), 0, self.stderr)
+        self.assertEqual(len(sandbox.preflights), 1)
+        shutil.rmtree(self.out)
+        only_deviations = write_inputs(self.inputs, self.out, [deviation_line("b1", "no title")])
+        sandbox = FakeSandbox(self)
+        self.assertEqual(self.judge(only_deviations, sandbox), 0, self.stderr)
+        self.assertEqual(sandbox.preflights, [])
+
+    def test_a_kubernetes_api_failure_stops_the_run_with_no_outcome_and_is_resumed(self):
+        admission = self.two_requests()
+        sandbox = FakeSandbox(self, raise_on=JOB.KubeUnavailable("kubectl get failed 5 times, last exited 1"))
+        self.assertEqual(self.judge(admission, sandbox), 2)
+        self.assertFalse(self.has_outcome("a1"))
+        record = self.record()
+        self.assertEqual(record["state"], "started")
+        self.assertIn("kubectl get failed", record["stops"][0]["reason"])
+        resumed = FakeSandbox(self)
+        self.assertEqual(self.judge(admission, resumed), 0, self.stderr)
+        self.assertEqual([run["ask"] for run in resumed.runs], [ask_id("a2")])
+        self.assertEqual(self.outcome("a1")["deviation"]["kind"], "started")
 
     def test_a_kill_leaves_the_stage_started_and_its_request_started(self):
         admission = self.two_requests()
@@ -1106,28 +1259,63 @@ class SandboxTest(unittest.TestCase):
     def test_the_metadata_servers_must_each_fail_or_refuse_a_request_with_their_header(self):
         urls = SANDBOX.METADATA_REQUESTS
         self.assertEqual(len({url.split("/computeMetadata")[0] for url in urls}), 2)
-        self.assertIsNone(SANDBOX.metadata_refusal([{"url": url, "status": None if index % 2 else 404}
-                                                    for index, url in enumerate(urls)]))
+        self.assertIsNone(SANDBOX.metadata_refusal([
+            {"url": url, "connected": not index % 2, "status": None if index % 2 else 404}
+            for index, url in enumerate(urls)]))
         for status in (200, 302, 500):
-            answers = [{"url": url, "status": 403} for url in urls]
+            answers = [{"url": url, "connected": True, "status": 403} for url in urls]
             answers[-1]["status"] = status
             with self.subTest(status=status):
                 self.assertIn(str(status), SANDBOX.metadata_refusal(answers))
+        silent = [{"url": url, "connected": True, "status": 403} for url in urls]
+        silent[1] = {"url": urls[1], "connected": True, "status": None, "error": "TimeoutError"}
+        self.assertIn("no proof", SANDBOX.metadata_refusal(silent))
         self.assertIn("not each asked", SANDBOX.metadata_refusal([{"url": urls[0], "status": 403}]))
         self.assertIn("not each asked", SANDBOX.metadata_refusal(None))
-        sent = []
 
-        def opener(handlers):
-            class Opener:
-                def open(self, request, timeout):
-                    sent.append((request.full_url, request.get_header("Metadata-flavor")))
-                    raise OSError("no route")
-            return Opener()
+    def test_the_metadata_probe_tells_no_connection_from_no_answer(self):
+        seen = []
+        listeners = []
 
-        with mock.patch.object(SANDBOX.urllib.request, "build_opener", side_effect=opener):
-            asked = SANDBOX.ask_metadata()
-        self.assertEqual(sent, [(url, "Google") for url in urls])
-        self.assertEqual([one["status"] for one in asked], [None] * len(urls))
+        def server(answers):
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listeners.append(listener)
+
+            def loop():
+                held = []
+                while True:
+                    try:
+                        connection, _ = listener.accept()
+                    except OSError:
+                        return
+                    held.append(connection)
+                    seen.append(connection.recv(65536))
+                    if answers:
+                        connection.sendall(b"HTTP/1.0 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                        connection.close()
+
+            threading.Thread(target=loop, daemon=True).start()
+            return f"http://127.0.0.1:{listener.getsockname()[1]}"
+
+        closed = socket.socket()
+        closed.bind(("127.0.0.1", 0))
+        refused = f"http://127.0.0.1:{closed.getsockname()[1]}"
+        closed.close()
+        try:
+            urls = (f"{server(True)}/computeMetadata/v1/token", f"{refused}/computeMetadata/v1/token",
+                    f"{server(False)}/computeMetadata/v1/token")
+            with mock.patch.object(SANDBOX, "METADATA_REQUESTS", urls):
+                asked = SANDBOX.ask_metadata(timeout=1)
+                self.assertEqual([(one["connected"], one["status"]) for one in asked],
+                                 [(True, 404), (False, None), (True, None)])
+                self.assertIn("no proof", SANDBOX.metadata_refusal(asked))
+                self.assertIsNone(SANDBOX.metadata_refusal(asked[:2] + [asked[1]]))
+        finally:
+            for listener in listeners:
+                listener.close()
+        self.assertTrue(seen and all(b"Metadata-Flavor: Google" in one for one in seen))
 
     def test_the_gateway_key_is_redacted_from_every_file(self):
         files = {"a": b"x " + KEY + b" y " + KEY, "b": b"nothing"}
@@ -1309,6 +1497,93 @@ class JobSpecTest(unittest.TestCase):
         self.assertIn("this driver's own pod runs", JOB.image_refusal(pod, IMAGE))
         pod["status"]["containerStatuses"][0]["imageID"] = "registry.example.test/session@sha256:" + "d" * 64
         self.assertIn("the sandbox runs only the image its driver runs", JOB.image_refusal(pod, image))
+
+    def test_the_sandbox_never_runs_as_the_drivers_own_account(self):
+        self.assertIn("this driver's own pod runs as", JOB.account_refusal(own_pod(), "session"))
+        self.assertIsNone(JOB.account_refusal(own_pod(), JOB.SERVICE_ACCOUNT))
+        pod = own_pod()
+        del pod["spec"]["serviceAccountName"]
+        self.assertIn("own pod runs as", JOB.account_refusal(pod, "default"))
+
+
+class KubeRunnerTest(unittest.TestCase):
+    """The runner over a stand-in `kubectl`: each call answered from a script, by its verb."""
+
+    def runner(self, script):
+        runner = object.__new__(JOB.KubeRunner)
+        runner.image, runner.account, runner.environ = IMAGE, JOB.SERVICE_ACCOUNT, {}
+        runner.poll, runner.pauses, runner.program, runner.key = 0, (0, 0), "program", None
+        runner.namespace, runner._pod = "sessions", own_pod()
+        runner.calls = []
+
+        def invoke(arguments, stdin):
+            verb = arguments[0] if arguments[0] != "get" else f"get {arguments[1]}"
+            runner.calls.append(verb)
+            answers = script.get(verb) or [(0, "")]
+            code, out = answers.pop(0) if len(answers) > 1 else answers[0]
+            return subprocess.CompletedProcess(arguments, code, out if code == 0 else "", "" if code == 0 else out)
+
+        runner.invoke = invoke
+        return runner
+
+    def pods(self):
+        return json.dumps({"items": [{"metadata": {"name": "pod-1"}, "status": {
+            "phase": "Succeeded", "containerStatuses": [{"imageID": IMAGE, "state": {"terminated": {"exitCode": 0}}}]}}]})
+
+    def log(self, files):
+        text = SANDBOX.pack(files)
+        return f"{SANDBOX.RESULT_LINE} 0 {text}\n{SANDBOX.RESULT_END} 1 {SANDBOX.sha256_of(text)}\n"
+
+    def test_a_transient_api_failure_is_tried_again_and_passes(self):
+        runner = self.runner({"create": [(1, "Unable to connect to the server"), (1, "AlreadyExists"), (0, "")],
+                              "get job": [(1, "i/o timeout"), (0, json.dumps({"status": {"succeeded": 1}}))],
+                              "get pods": [(0, self.pods())], "logs": [(0, self.log({"record.json": b"{}"}))]})
+        run = runner.run("a1", {"/work/s10/calls.json": b"[]"})
+        self.assertIsNone(run.failure)
+        self.assertEqual(run.files, {"record.json": b"{}"})
+        self.assertEqual(runner.calls, ["create", "create", "get job", "get job", "get pods", "logs", "delete"])
+
+    def test_an_api_failure_past_its_tries_stops_and_the_job_is_deleted(self):
+        for verb in ("create", "get job", "get pods", "logs"):
+            with self.subTest(verb=verb):
+                script = {"get job": [(0, json.dumps({"status": {"succeeded": 1}}))], "get pods": [(0, self.pods())],
+                          "logs": [(0, self.log({}))], verb: [(1, "connection refused")]}
+                runner = self.runner(script)
+                with self.assertRaisesRegex(JOB.KubeUnavailable, f"kubectl {verb.split()[0]} failed 3 times"):
+                    runner.run("a1", {})
+                self.assertEqual(runner.calls[-1], "delete")
+        self.assertEqual(self.runner({"create": [(1, "forbidden")]}).kubectl("create", check=False), "")
+
+    def test_a_job_that_ran_and_gave_no_readable_result_is_the_requests_own(self):
+        cases = {"no whole result": [(0, "a log with no result\n")],
+                 "a changed result": [(0, self.log({"record.json": b"{}"}).replace(" 0 ", " 0 x", 1))]}
+        for name, logs in cases.items():
+            with self.subTest(name=name):
+                runner = self.runner({"get job": [(0, json.dumps({"status": {"failed": 1}}))],
+                                      "get pods": [(0, self.pods())], "logs": logs})
+                run = runner.run("a1", {})
+                self.assertIsNotNone(run.failure)
+        runner = self.runner({"get job": [(0, json.dumps({"status": {"succeeded": 1}}))],
+                              "get pods": [(0, json.dumps({"items": []}))]})
+        self.assertEqual(runner.run("a1", {}).failure, "the Job ran 0 pods")
+
+    def test_the_preflight_sends_no_file_and_has_a_short_deadline(self):
+        created = []
+        runner = self.runner({"get job": [(0, json.dumps({"status": {"succeeded": 1}}))],
+                              "get pods": [(0, self.pods())], "logs": [(0, self.log({}))]})
+        original = runner.invoke
+
+        def invoke(arguments, stdin):
+            if arguments[0] == "create":
+                created.append(json.loads(stdin))
+            return original(arguments, stdin)
+
+        runner.invoke = invoke
+        self.assertIsNone(runner.preflight().failure)
+        [spec] = created
+        self.assertEqual(spec["spec"]["activeDeadlineSeconds"], JOB.PREFLIGHT_DEADLINE)
+        env = {one["name"]: one["value"] for one in spec["spec"]["template"]["spec"]["containers"][0]["env"]}
+        self.assertEqual(SANDBOX.payload_of(env), {})
 
 
 if __name__ == "__main__":

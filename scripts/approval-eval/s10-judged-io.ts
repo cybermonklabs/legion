@@ -16,13 +16,16 @@ import type { InventoryLine } from "./s10-inputs-io";
  * each refuses; and `outcomes.jsonl` (`OutcomeLine`, `outcomeLinesOf`), which only a run that gave
  * every request its outcome writes, lists them in the inventory's order. `judgedStageOf` reads a
  * directory whole, each file held to the sha256 its record names. A stage that stopped stays
- * `started`, and `reportedOutcomesOf` gives each request of the inventory its outcome, `unjudged`
- * where no run reached it: the one place that kind is made.
+ * `started`, and `reportedOutcomesOf` gives each request of the inventory its outcome: `started`
+ * where a run kept its `started.json` and stopped before its outcome, `unjudged` where no run
+ * reached it, the one place that kind is made.
  */
 
 export const JUDGED_FILE = "s10-judged.json";
 export const OUTCOMES_FILE = "outcomes.jsonl";
 export const OUTCOME_FILE = "outcome.json";
+/** The file that marks a request started (`s10_store.py`'s `STARTED_FILE`). */
+export const STARTED_FILE = "started.json";
 
 /** The version of the stage's shapes, which every reader checks. */
 export const JUDGED_VERSION = 3;
@@ -86,6 +89,81 @@ export interface JudgedRuleOutcome extends RuleOutcome {
   toolCallDeviations: ToolCallDeviation[];
 }
 
+/**
+ * A document S10 judged, at its version, as its `finish_judgement` records it: point 7 holds his
+ * answered (document, version) pairs to these.
+ */
+export interface JudgedDocument {
+  artifact_id: string;
+  name: string | null;
+  version: number;
+  sha256: string;
+}
+
+/** The model one judge was asked, the one omp reports serving it, and whether a fallback served. */
+export interface JudgeModel {
+  asked: string;
+  served: string | null;
+  fallback: boolean;
+}
+
+/**
+ * S10's own judgement record (`finish_judgement`, with this stage's `judge_models`): the fields the
+ * analysis reads, typed; every other field as S10 wrote it. A hold has no vote counts by kind and
+ * no judge models, which read as null.
+ */
+export interface Judgement {
+  verdict: string;
+  documents: JudgedDocument[];
+  judged_at: string;
+  judges: number;
+  votes: Record<string, number> | null;
+  never_decide_votes: Record<string, number> | null;
+  confidence: number;
+  reason: string | null;
+  judge_models: JudgeModel[] | null;
+  [field: string]: unknown;
+}
+
+/**
+ * One judge as the stage records it: its call's label and transcript, and, where a transcript was
+ * read, its bundle, its agent, its models and its tool calls (null and none where it was not).
+ */
+export interface JudgeRecord {
+  label: string;
+  transcript: string | null;
+  bundle: string | null;
+  agent: string | null;
+  asked: string | null;
+  served: string | null;
+  fallback: boolean | null;
+  toolCalls: Array<{ id: string; names: string[] }>;
+}
+
+/** One metadata server's answer to the sandbox's probe: no body, ever. */
+export interface MetadataAnswer {
+  url: string;
+  connected: boolean | null;
+  status: number | null;
+}
+
+/**
+ * What the sandbox recorded of its checks and its pod, as one request's outcome keeps it: the
+ * fields the analysis reads, typed (null where the sandbox recorded none); every other as written.
+ */
+export interface SandboxFacts {
+  job: string;
+  pod: string | null;
+  imageId: string | null;
+  refused: string | null;
+  listing: { lines: number; sha256: string } | null;
+  metadata: MetadataAnswer[] | null;
+  runtime: Record<string, string | null> | null;
+  manifests: Record<string, unknown> | null;
+  keyFound: string[] | null;
+  [field: string]: unknown;
+}
+
 /** `requests/<ask id>/outcome.json`: one request's one outcome. */
 export interface JudgedOutcome {
   askId: string;
@@ -97,10 +175,10 @@ export interface JudgedOutcome {
   verdict: string | null;
   deviation: Deviation | null;
   /** S10's own `finish_judgement` record, with `judge_models`; null where none was made. */
-  judgement: Record<string, unknown> | null;
-  judges: Array<Record<string, unknown>>;
+  judgement: Judgement | null;
+  judges: JudgeRecord[];
   /** What the sandbox recorded of its checks and its pod; null where no sandbox ran. */
-  sandbox: Record<string, unknown> | null;
+  sandbox: SandboxFacts | null;
   judgedAt: string | null;
   /** The outcome under each version of the rule; `COUNTING_RULE`'s is the outcome above. */
   byRule: Record<RuleVersion, JudgedRuleOutcome>;
@@ -119,6 +197,33 @@ export interface OutcomeLine {
   outcomeSha256: string;
 }
 
+/** The frozen code and skill the stage judged with, as point 2 pins them. */
+export interface FrozenCode {
+  codeSha256: string;
+  /** Each of the code-txt's files, by name, with its sha256. */
+  files: Record<string, string>;
+  promptSha256: string;
+  bundleCodeSha256: string;
+  skillSha256: Record<string, string>;
+  asked: string;
+  model: string;
+}
+
+/** A count of outcomes: by kind of outcome, by verdict and by deviation kind. */
+export interface OutcomeCounts {
+  requests: number;
+  holds: number;
+  verdicts: number;
+  byVerdict: Record<string, number>;
+  deviations: number;
+  deviationsByKind: Record<string, number>;
+}
+
+/** The written stage's counts, by version 5's rule and under each version (`byRule`). */
+export interface JudgedCounts extends OutcomeCounts {
+  byRule: Record<RuleVersion, OutcomeCounts>;
+}
+
 /** `s10-judged.json`: the stage's record. */
 export interface JudgedRecord {
   stage: "s10-judged";
@@ -129,14 +234,14 @@ export interface JudgedRecord {
   runDigest: string;
   claimDirectory: string;
   inputs: { directory: string; stageSha256: string; files: Record<string, string> };
-  frozen: Record<string, unknown>;
+  frozen: FrozenCode;
   image: string;
   serviceAccount: string;
   startedAt: string;
   finishedAt: string | null;
   /** Each stop of a run, which left the stage to be resumed. */
   stops: Array<{ at: string; reason: string }>;
-  counts: Record<string, unknown> | null;
+  counts: JudgedCounts | null;
   /** The sha256 of every file written under the stage's directory, by its path there. */
   files: Record<string, string>;
 }
@@ -323,6 +428,201 @@ function byRuleOf<T extends RuleOutcome>(
   return byRule;
 }
 
+function numberAt(value: unknown, where: string, field: string): number {
+  const found = numberOf(value);
+  if (found === null) throw new CorpusError(`${where} holds a ${field} that is no number`);
+  return found;
+}
+
+function booleanOrNull(value: unknown, where: string, field: string): boolean | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "boolean")
+    throw new CorpusError(`${where} holds a ${field} that is no boolean`);
+  return value;
+}
+
+/** An optional text: absent or null reads as null. */
+function optionalText(value: unknown, where: string, field: string): string | null {
+  return value === undefined ? null : textOrNull(value, where, field);
+}
+
+function countsByNameAt(value: unknown, where: string, field: string): Record<string, number> {
+  const record = recordOf(value);
+  if (record === null) throw new CorpusError(`${where} holds ${field} that are no object`);
+  return Object.fromEntries(
+    Object.entries(record).map(([name, count]) => [name, countAt(count, where, `${field} ${name}`)])
+  );
+}
+
+function textsAt(value: unknown, where: string, field: string): string[] {
+  if (!Array.isArray(value)) throw new CorpusError(`${where} holds ${field} that are no list`);
+  return value.map((one) => textAt(one, where, field));
+}
+
+/** S10's judgement read back: the fields the analysis reads held to their types. */
+function judgementOf(value: unknown, where: string): Judgement | null {
+  const record = objectOrNull(value, where, "judgement");
+  if (record === null) return null;
+  if (!Array.isArray(record.documents)) {
+    throw new CorpusError(`${where} holds a judgement with no list of documents`);
+  }
+  const models = record.judge_models;
+  if (models !== undefined && !Array.isArray(models)) {
+    throw new CorpusError(`${where} holds judge models that are no list`);
+  }
+  return {
+    ...record,
+    verdict: textAt(record.verdict, where, "judgement verdict"),
+    documents: record.documents.map((one) => {
+      const document = objectOrNull(one, where, "judged document") ?? {};
+      return {
+        artifact_id: textAt(document.artifact_id, where, "judged document id"),
+        name: textOrNull(document.name ?? null, where, "judged document name"),
+        version: countAt(document.version, where, "judged document version"),
+        sha256: sha256At(document.sha256, where, "judged document sha256"),
+      };
+    }),
+    judged_at: textAt(record.judged_at, where, "judgement time"),
+    judges: countAt(record.judges, where, "judgement's judges"),
+    votes: record.votes === null ? null : countsByNameAt(record.votes, where, "votes"),
+    never_decide_votes:
+      record.never_decide_votes === undefined || record.never_decide_votes === null
+        ? null
+        : countsByNameAt(record.never_decide_votes, where, "never-decide votes"),
+    confidence: numberAt(record.confidence, where, "confidence"),
+    reason: optionalText(record.reason, where, "judgement reason"),
+    judge_models:
+      models === undefined
+        ? null
+        : models.map((one) => {
+            const model = objectOrNull(one, where, "judge model") ?? {};
+            const fallback = booleanOrNull(model.fallback, where, "judge model fallback");
+            if (fallback === null)
+              throw new CorpusError(`${where} holds a judge model with no fallback`);
+            return {
+              asked: textAt(model.asked, where, "judge model asked"),
+              served: optionalText(model.served, where, "judge model served"),
+              fallback,
+            };
+          }),
+  };
+}
+
+/** One judge's record read back. */
+function judgeRecordOf(value: unknown, where: string): JudgeRecord {
+  const record = objectOrNull(value, where, "judge") ?? {};
+  const calls = record.toolCalls === undefined ? [] : record.toolCalls;
+  if (!Array.isArray(calls)) throw new CorpusError(`${where} holds tool calls that are no list`);
+  return {
+    label: textAt(record.label, where, "judge label"),
+    transcript: optionalText(record.transcript, where, "judge transcript"),
+    bundle: optionalText(record.bundle, where, "judge bundle"),
+    agent: optionalText(record.agent, where, "judge agent"),
+    asked: optionalText(record.asked, where, "judge asked"),
+    served: optionalText(record.served, where, "judge served"),
+    fallback: booleanOrNull(record.fallback, where, "judge fallback"),
+    toolCalls: calls.map((one) => {
+      const call = objectOrNull(one, where, "tool call") ?? {};
+      return {
+        id: textAt(call.id, where, "tool call id"),
+        names: textsAt(call.names, where, "tool names"),
+      };
+    }),
+  };
+}
+
+/** What the sandbox recorded, read back: the fields the analysis reads held to their types. */
+function sandboxFactsOf(value: unknown, where: string): SandboxFacts | null {
+  const record = objectOrNull(value, where, "sandbox");
+  if (record === null) return null;
+  const listing = objectOrNull(record.listing ?? null, where, "listing");
+  const metadata = record.metadata ?? null;
+  if (metadata !== null && !Array.isArray(metadata)) {
+    throw new CorpusError(`${where} holds metadata answers that are no list`);
+  }
+  const runtime = objectOrNull(record.runtime ?? null, where, "runtime");
+  const keyFound = record.keyFound ?? null;
+  return {
+    ...record,
+    job: textAt(record.job, where, "sandbox job"),
+    pod: optionalText(record.pod, where, "sandbox pod"),
+    imageId: optionalText(record.imageId, where, "sandbox image"),
+    refused: optionalText(record.refused, where, "sandbox refusal"),
+    listing:
+      listing === null
+        ? null
+        : {
+            lines: countAt(listing.lines, where, "listing lines"),
+            sha256: sha256At(listing.sha256, where, "listing sha256"),
+          },
+    metadata:
+      metadata === null
+        ? null
+        : metadata.map((one) => {
+            const answer = objectOrNull(one, where, "metadata answer") ?? {};
+            return {
+              url: textAt(answer.url, where, "metadata url"),
+              connected: booleanOrNull(answer.connected, where, "metadata connection"),
+              status:
+                answer.status === null ? null : countAt(answer.status, where, "metadata status"),
+            };
+          }),
+    runtime:
+      runtime === null
+        ? null
+        : Object.fromEntries(
+            Object.entries(runtime).map(([name, one]) => [
+              name,
+              textOrNull(one ?? null, where, `runtime ${name}`),
+            ])
+          ),
+    manifests: objectOrNull(record.manifests ?? null, where, "manifests"),
+    keyFound: keyFound === null ? null : textsAt(keyFound, where, "files that held the key"),
+  };
+}
+
+/** The frozen code the record names, read back. */
+function frozenOf(value: unknown, where: string): FrozenCode {
+  const record = objectOrNull(value, where, "frozen");
+  if (record === null) throw new CorpusError(`${where} names no frozen code`);
+  return {
+    codeSha256: sha256At(record.codeSha256, where, "codeSha256"),
+    files: filesAt(record.files, where, "frozen files"),
+    promptSha256: sha256At(record.promptSha256, where, "promptSha256"),
+    bundleCodeSha256: sha256At(record.bundleCodeSha256, where, "bundleCodeSha256"),
+    skillSha256: filesAt(record.skillSha256, where, "skillSha256"),
+    asked: textAt(record.asked, where, "asked"),
+    model: textAt(record.model, where, "model"),
+  };
+}
+
+function outcomeCountsOf(value: unknown, where: string): OutcomeCounts {
+  const record = objectOrNull(value, where, "counts");
+  if (record === null) throw new CorpusError(`${where} holds no counts`);
+  return {
+    requests: countAt(record.requests, where, "requests"),
+    holds: countAt(record.holds, where, "holds"),
+    verdicts: countAt(record.verdicts, where, "verdicts"),
+    byVerdict: countsByNameAt(record.byVerdict, where, "byVerdict"),
+    deviations: countAt(record.deviations, where, "deviations"),
+    deviationsByKind: countsByNameAt(record.deviationsByKind, where, "deviationsByKind"),
+  };
+}
+
+/** The written stage's counts read back, under each version of the rule too. */
+function countsOf(value: unknown, where: string): JudgedCounts | null {
+  if (value === null) return null;
+  const record = objectOrNull(value, where, "counts") ?? {};
+  const byRule = objectOrNull(record.byRule ?? null, where, "counts byRule");
+  if (byRule === null) throw new CorpusError(`${where} holds counts under no rule version`);
+  return {
+    ...outcomeCountsOf(record, where),
+    byRule: eachRule((version) =>
+      outcomeCountsOf(byRule[version] ?? null, `${where} byRule.${version}`)
+    ),
+  };
+}
+
 /** `requests/<ask id>/outcome.json` read back, refused in any other shape. */
 export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
   const record = parsed(text, path);
@@ -370,9 +670,9 @@ export function judgedOutcomeOf(text: string, path: string): JudgedOutcome {
     outcome,
     verdict,
     deviation,
-    judgement: objectOrNull(record.judgement, path, "judgement"),
-    judges: record.judges.map((one) => objectOrNull(one, path, "judge") ?? {}),
-    sandbox: objectOrNull(record.sandbox, path, "sandbox"),
+    judgement: judgementOf(record.judgement, path),
+    judges: record.judges.map((one) => judgeRecordOf(one, path)),
+    sandbox: sandboxFactsOf(record.sandbox, path),
     judgedAt: textOrNull(record.judgedAt, path, "judgedAt"),
     byRule,
   };
@@ -414,8 +714,6 @@ export function judgedRecordOf(text: string, path: string): JudgedRecord {
   }
   const inputs = objectOrNull(record.inputs, path, "inputs");
   if (inputs === null) throw new CorpusError(`${path} names no inputs`);
-  const frozen = objectOrNull(record.frozen, path, "frozen");
-  if (frozen === null) throw new CorpusError(`${path} names no frozen code`);
   return {
     stage: "s10-judged",
     version: JUDGED_VERSION,
@@ -429,7 +727,7 @@ export function judgedRecordOf(text: string, path: string): JudgedRecord {
       stageSha256: sha256At(inputs.stageSha256, path, "inputs stageSha256"),
       files: filesAt(inputs.files, path, "inputs files"),
     },
-    frozen,
+    frozen: frozenOf(record.frozen, path),
     image: textAt(record.image, path, "image"),
     serviceAccount: textAt(record.serviceAccount, path, "serviceAccount"),
     startedAt: textAt(record.startedAt, path, "startedAt"),
@@ -441,7 +739,7 @@ export function judgedRecordOf(text: string, path: string): JudgedRecord {
         reason: textAt(stop.reason, path, "stop reason"),
       };
     }),
-    counts: objectOrNull(record.counts, path, "counts"),
+    counts: countsOf(record.counts, path),
     files: filesAt(record.files, path, "files"),
   };
 }
@@ -514,46 +812,48 @@ export async function judgedStageOf(directory: string): Promise<JudgedStage> {
 }
 
 /**
- * Each request of the inventory with its one outcome, in the inventory's order: the stage's own,
- * or an `unjudged` deviation where no run of the stage reached the request. An outcome of an ask
- * the inventory does not hold is refused.
+ * Each request of the inventory with its one outcome, in the inventory's order: the stage's own;
+ * else a `started` deviation where a run kept its `started.json` and stopped before its outcome
+ * (point 6: it is never judged again); else an `unjudged` deviation, where no run of the stage
+ * reached the request. An outcome of an ask the inventory does not hold is refused.
  */
 export function reportedOutcomesOf(
   inventory: readonly InventoryLine[],
-  outcomes: ReadonlyMap<string, JudgedOutcome>
+  stage: JudgedStage
 ): JudgedOutcome[] {
   const asks = new Set(inventory.map((line) => line.askId));
-  for (const askId of outcomes.keys()) {
+  for (const askId of stage.outcomes.keys()) {
     if (!asks.has(askId))
       throw new CorpusError(
         `the judged stage holds an outcome of ${askId}, which the inventory does not`
       );
   }
-  const unjudged = (): JudgedRuleOutcome => ({
-    outcome: "deviation",
-    verdict: null,
-    deviation: UNJUDGED,
-    toolCallDeviations: [],
-  });
-  return inventory.map(
-    (line) =>
-      outcomes.get(line.askId) ?? {
-        askId: line.askId,
-        issueKey: line.issueKey,
-        group: line.group,
-        cases: line.cases,
+  return inventory.map((line) => {
+    const found = stage.outcomes.get(line.askId);
+    if (found !== undefined) return found;
+    const started = Object.hasOwn(stage.record.files, `requests/${line.askId}/${STARTED_FILE}`);
+    const kind = started ? "started" : UNJUDGED;
+    const reason = started
+      ? "a run started the request and stopped before its outcome; it is never judged again"
+      : "no run of the judging stage reached the request";
+    return {
+      askId: line.askId,
+      issueKey: line.issueKey,
+      group: line.group,
+      cases: line.cases,
+      outcome: "deviation",
+      verdict: null,
+      deviation: { kind, reason, problems: [reason] },
+      judgement: null,
+      judges: [],
+      sandbox: null,
+      judgedAt: null,
+      byRule: eachRule(() => ({
         outcome: "deviation",
         verdict: null,
-        deviation: {
-          kind: UNJUDGED,
-          reason: "no run of the judging stage reached the request",
-          problems: ["no run of the judging stage reached the request"],
-        },
-        judgement: null,
-        judges: [],
-        sandbox: null,
-        judgedAt: null,
-        byRule: eachRule(unjudged),
-      }
-  );
+        deviation: kind,
+        toolCallDeviations: [],
+      })),
+    };
+  });
 }

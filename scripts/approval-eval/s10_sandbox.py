@@ -25,10 +25,14 @@ sandbox) with the bundles and the calls sent beside it. In order, before any jud
 3. It measures point 2's runtime by content (`measure_runtime`) and refuses on any difference.
 4. It asks each node metadata server for the pod's credential, with the header they require
    (`METADATA_REQUESTS`), and refuses unless every request fails to connect or is refused in the
-   400s (`metadata_refusal`): a judge must reach no cloud credential. It records each status, and
-   never a body.
+   400s (`metadata_refusal`): a judge must reach no cloud credential. A server that accepts the
+   connection and gives no answer in time is no proof of that, and is refused too. It records
+   each status, and never a body.
 
-Each of those refusals stops the run, since every later request would meet the same sandbox.
+Each of those refusals stops the run, since every later request would meet the same sandbox. A
+payload of no file is the driver's preflight, made once a run before any request starts: every
+check above, and no judge (`main`).
+
 Then, as point 5 has it from version 4 on, it records the recursive relative-path and type manifests
 of the bundle directory and the skill directory (`manifests_now`): the first must hold exactly the
 five bundles, the second exactly the skill's three files of point 2 (`manifest_problem`). Where
@@ -51,6 +55,7 @@ is compared.
 
 import base64
 import hashlib
+import http.client
 import io
 import json
 import lzma
@@ -60,8 +65,7 @@ import stat
 import subprocess
 import sys
 import tarfile
-import urllib.error
-import urllib.request
+import urllib.parse
 
 # The runtime of point 2, by content: what the shadow run's own session measured in its pod.
 OMP = "/opt/omp/bin/omp"
@@ -94,8 +98,8 @@ SESSIONS = "/work/s10/sessions"
 # judge may `glob` or `read` must have, before its first judge and after its last.
 SKILL_DIR = "/opt/legion/pi-envoy/dist/skills/approval-review"
 SKILL_FILES = ("SKILL.md", "references/never-decide.md", "references/reviewer-principles.md")
-SKILL_MANIFEST = [["SKILL.md", "f"], ["references", "d"], ["references/never-decide.md", "f"],
-                  ["references/reviewer-principles.md", "f"]]
+SKILL_MANIFEST = sorted([[name, "f"] for name in SKILL_FILES]
+                        + [[name, "d"] for name in sorted({os.path.dirname(one) for one in SKILL_FILES} - {""})])
 BUNDLE_MANIFEST = [[f"judge-{index}.md", "f"] for index in range(1, 6)]
 
 # The mounts the kernel and the kubelet make in every container, which hold no file of a run.
@@ -433,30 +437,44 @@ def runtime_refusal(measured):
     return None
 
 
-def ask_metadata():
+def ask_metadata(timeout=10):
     """What each metadata server answers a request for the pod's credential that carries the
-    header it requires: the status of each answer, None where no connection was made, and never
-    a byte of a body. The sandbox refuses unless each is None or in the 400s (`metadata_refusal`)."""
+    header it requires, never a byte of a body: for each, whether a connection was made
+    (`connected`), and the status of its answer, None where it gave none in `timeout` seconds. The
+    sandbox refuses unless each request failed to connect or was answered in the 400s
+    (`metadata_refusal`)."""
     answers = []
     for url in METADATA_REQUESTS:
-        request = urllib.request.Request(url, headers=METADATA_HEADER)
+        parts = urllib.parse.urlsplit(url)
+        connection = http.client.HTTPConnection(parts.hostname, parts.port or 80, timeout=timeout)
         try:
-            with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=10) as response:
-                answers.append({"url": url, "status": response.status})
-        except urllib.error.HTTPError as error:
-            answers.append({"url": url, "status": error.code})
-        except OSError as error:
-            answers.append({"url": url, "status": None, "error": type(error).__name__})
+            try:
+                connection.connect()
+            except OSError as error:
+                answers.append({"url": url, "connected": False, "status": None, "error": type(error).__name__})
+                continue
+            try:
+                connection.request("GET", f"{parts.path}?{parts.query}" if parts.query else parts.path,
+                                   headers=METADATA_HEADER)
+                answers.append({"url": url, "connected": True, "status": connection.getresponse().status})
+            except (OSError, http.client.HTTPException) as error:
+                answers.append({"url": url, "connected": True, "status": None, "error": type(error).__name__})
+        finally:
+            connection.close()
     return answers
 
 
 def metadata_refusal(answers):
     """Why the metadata servers' answers let a judge reach a credential, or None: every request
-    failed to connect or was refused in the 400s."""
+    failed to connect or was refused in the 400s. A server that took the connection and gave no
+    answer is no proof that a judge could not, and is refused."""
     if len(answers or []) != len(METADATA_REQUESTS):
         return "the metadata servers were not each asked"
     for answer in answers:
         status = answer.get("status")
+        if status is None and answer.get("connected") is not False:
+            return (f"{answer.get('url')} took the connection and gave no answer ({answer.get('error')}), "
+                    "which is no proof that a judge could not reach a credential")
         if status is not None and not 400 <= status < 500:
             return f"{answer.get('url')} answered {status} to a request with its header, so a judge could reach a credential"
     return None
@@ -558,10 +576,12 @@ def print_result(files):
 
 
 def checked(environ, layout, record):
-    """Places the payload and makes every check before any judge, into `record`; returns the
+    """Places the payload and makes every check before any judge, into `record`, the layout the
+    checks held the mounts and files to among it, so the driver makes them again; returns the
     listing and the reason the sandbox refuses to start a judge, or None."""
     files = payload_of(environ)
     place(files, layout)
+    record["layout"] = layout
     record["payload"] = {path: sha256_of(data) for path, data in sorted(files.items())}
     bundle_dirs = {os.path.dirname(path) for path in files if path.endswith(".md")}
     record["bundleDirectory"] = bundle_dirs.pop() if len(bundle_dirs) == 1 else None
@@ -592,8 +612,10 @@ def main():
         listing, record["refused"] = checked(environ, layout_of(), record)
     except Exception as error:  # noqa: BLE001 - any failure before a judge is a refusal, reported
         record["refused"] = f"the sandbox failed before any judge: {type(error).__name__}: {error}"
+    # A payload of no file is the driver's preflight: the checks above, and no judge.
+    record["preflight"] = record.get("payload") == {}
     omp_output = None
-    if record["refused"] is None:
+    if record["refused"] is None and not record["preflight"]:
         record["manifests"] = {"before": manifests_now(record.get("bundleDirectory"))}
         if manifest_problem(record["manifests"], finished=False) is None:
             returncode, stdout, stderr = run_omp(environ)

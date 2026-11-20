@@ -8,7 +8,12 @@ gateway key's one Secret item, and `models.yml` and the overlay from their Confi
 account token is mounted, no variable comes from a Secret, and no service link is set. The program
 (`s10_sandbox.py`), the bundles and the calls travel in environment variables, so the program is no
 file of the sandbox; the result comes back on the pod's log (`result_of`), and `KubeRunner` deletes
-the Job once it has read it.
+the Job once it has read it. Before a run's first request, `KubeRunner.preflight` runs the same
+Job with no bundle: every check of the sandbox, and no judge.
+
+A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
+fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
+A Job that ran and gave no readable result is that request's own (`SandboxRun.failure`).
 """
 
 import sys
@@ -33,8 +38,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # The label every sandbox pod carries, which the sandbox's NetworkPolicy selects.
 LABEL = {"app.kubernetes.io/name": "s10-judge-sandbox"}
 # The ServiceAccount a sandbox runs as unless `--service-account` names another: one of its own,
-# bound to no cloud identity and no role.
+# bound to no cloud identity and no role. The driver's own pod's account is refused.
 SERVICE_ACCOUNT = "s10-judge-sandbox"
+# The pauses, in seconds, before each new try of a failed Kubernetes API call: a transient failure
+# passes, and one that lasts past them stops the run.
+RETRY_PAUSES = (5, 15, 45, 90)
+# How long the preflight's Job may run, in seconds: its checks, and no judge.
+PREFLIGHT_DEADLINE = 900
 
 BOOT = ("import base64, lzma, os; exec(compile(lzma.decompress(base64.b64decode(os.environ['S10_SANDBOX'])), "
         "'s10_sandbox.py', 'exec'))")
@@ -47,9 +57,15 @@ PAYLOAD_LIMIT = 900_000
 PAYLOAD_WIDTH = 100_000
 
 
+class KubeUnavailable(Exception):
+    """A Kubernetes API call failed past its retries: no fault of the request's. The run stops and
+    writes nothing more, and the same command resumes the stage."""
+
+
 @dataclass
 class SandboxRun:
-    """What one Job gave back: its name, the files of its result, and the facts of its pod."""
+    """What one Job gave back: its name, the files of its result, and the facts of its pod;
+    `failure` where the Job ran and gave no readable result."""
 
     job: str
     files: dict = field(default_factory=dict)
@@ -73,7 +89,7 @@ def program_variable():
     return base64.b64encode(lzma.compress(source)).decode("ascii")
 
 
-def job_spec(name, pod, image, account, variables, environ):
+def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP_TIMEOUT + 900):
     """The sandbox Job of one request, from this pod's own spec (see the module's docstring)."""
     spec = pod["spec"]
     container = next((one for one in spec["containers"]
@@ -142,7 +158,7 @@ def job_spec(name, pod, image, account, variables, environ):
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": name, "namespace": pod["metadata"]["namespace"], "labels": dict(LABEL)},
-        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": SANDBOX.OMP_TIMEOUT + 900,
+        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline,
                  "ttlSecondsAfterFinished": 86400,
                  "template": {"metadata": {"labels": dict(LABEL)}, "spec": pod_spec}},
     }
@@ -194,64 +210,119 @@ def image_refusal(pod, image):
     return f"this pod mounts no gateway key at {SANDBOX.KEY_MOUNT}, so no image of its own can be the sandbox's"
 
 
-class KubeRunner:
-    """Runs one request's sandbox as a Job in this pod's namespace, reads its log, deletes it. It
-    refuses an image its own pod does not run, and holds the gateway key's bytes, which the driver
-    keeps out of every file it keeps."""
+def account_refusal(pod, account):
+    """Why the sandbox may not run as `account`, or None: the driver's own pod's account holds what
+    the driver may do in the cluster, and no judge may hold it."""
+    own = (pod.get("spec") or {}).get("serviceAccountName") or "default"
+    if account == own:
+        return (f"--service-account is {account}, the account this driver's own pod runs as: the sandbox runs "
+                "under an account of its own")
+    return None
 
-    def __init__(self, image, account, environ, poll=15):
+
+class KubeRunner:
+    """Runs one request's sandbox as a Job in this pod's namespace, reads its log, deletes it; and,
+    once a run, the same Job with no bundle (`preflight`). It refuses an image its own pod does not
+    run and its own pod's account, and holds the gateway key's bytes, which the driver keeps out of
+    every file it keeps. Each Kubernetes API call is tried again after each of `pauses`; one that
+    still fails raises `KubeUnavailable`."""
+
+    def __init__(self, image, account, environ, poll=15, pauses=RETRY_PAUSES):
         self.image = image
         self.account = account
         self.environ = environ
         self.poll = poll
+        self.pauses = pauses
         self.program = program_variable()
         self._pod = None
-        refusal = image_refusal(self.own_pod(), image)
+        refusal = image_refusal(self.own_pod(), image) or account_refusal(self.own_pod(), account)
         if refusal is not None:
             raise CannotRun(refusal)
         self.key = SANDBOX.gateway_key()
 
+    def invoke(self, arguments, stdin):
+        """One `kubectl` call in this pod's namespace, as it completed."""
+        return subprocess.run(["kubectl", "-n", self.namespace, *arguments], input=stdin, capture_output=True,
+                              text=True)
+
     def kubectl(self, *arguments, stdin=None, check=True):
-        completed = subprocess.run(["kubectl", "-n", self.namespace, *arguments], input=stdin,
-                                   capture_output=True, text=True)
-        if check and completed.returncode != 0:
-            raise RuntimeError(f"kubectl {arguments[0]} exited {completed.returncode}: {completed.stderr.strip()[:500]}")
-        return completed.stdout
+        """A Kubernetes API call's output, tried again after each pause while it fails. A `create`
+        that a try before it may have made answers `AlreadyExists`, which is its own Job. Past the
+        pauses it raises `KubeUnavailable`, or returns what it got where `check` is false."""
+        failures = []
+        for attempt, pause in enumerate((0, *self.pauses)):
+            if pause:
+                time.sleep(pause)
+            completed = self.invoke(arguments, stdin)
+            if completed.returncode == 0:
+                return completed.stdout
+            if attempt and arguments[0] == "create" and "AlreadyExists" in completed.stderr:
+                return completed.stdout
+            failures.append(f"exited {completed.returncode}: {completed.stderr.strip()[:300]}")
+        if not check:
+            return ""
+        raise KubeUnavailable(f"kubectl {arguments[0]} failed {len(failures)} times, last {failures[-1]}")
+
+    def kubectl_json(self, *arguments):
+        """A Kubernetes API answer, as JSON; one that is no JSON is a failure of the API."""
+        try:
+            return json.loads(self.kubectl(*arguments))
+        except ValueError as error:
+            raise KubeUnavailable(f"kubectl {arguments[0]} gave no JSON: {error}") from error
 
     def own_pod(self):
         if self._pod is None:
             with open("/var/run/secrets/kubernetes.io/serviceaccount/namespace") as handle:
                 self.namespace = handle.read().strip()
-            self._pod = json.loads(self.kubectl("get", "pod", socket.gethostname(), "-o", "json"))
+            self._pod = self.kubectl_json("get", "pod", socket.gethostname(), "-o", "json")
         return self._pod
 
     def run(self, ask_id, files, extra_env=None):
+        """One request's sandbox, with its bundles and calls."""
+        return self.run_job("s10-judge-" + sha256_of(f"{ask_id} {time.time()} {os.getpid()}")[:16], files, extra_env)
+
+    def preflight(self):
+        """The sandbox with no bundle and no call, which makes every check and starts no judge."""
+        return self.run_job("s10-judge-preflight-" + sha256_of(f"{time.time()} {os.getpid()}")[:16], {},
+                            deadline=PREFLIGHT_DEADLINE)
+
+    def run_job(self, name, files, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
+        """One Job: created, waited for, its one pod's log read, deleted. `KubeUnavailable` where
+        the API fails; `failure` where the Job ran and gave no readable result."""
         pod = self.own_pod()
-        name = "s10-judge-" + sha256_of(f"{ask_id} {time.time()} {os.getpid()}")[:16]
         variables = {SANDBOX.PROGRAM_VARIABLE: self.program, **payload_variables(files), **(extra_env or {})}
         run = SandboxRun(job=name)
         try:
-            spec = job_spec(name, pod, self.image, self.account, variables, self.environ)
+            try:
+                spec = job_spec(name, pod, self.image, self.account, variables, self.environ, deadline)
+            except ValueError as error:
+                run.failure = str(error)
+                return run
             run.facts["spec"] = redacted(spec)
             self.kubectl("create", "-f", "-", stdin=json.dumps(spec))
             deadline = time.time() + spec["spec"]["activeDeadlineSeconds"] + 600
             while True:
-                status = json.loads(self.kubectl("get", "job", name, "-o", "json")).get("status") or {}
+                status = self.kubectl_json("get", "job", name, "-o", "json").get("status") or {}
                 if status.get("succeeded") or status.get("failed"):
                     break
                 if time.time() > deadline:
-                    raise RuntimeError("the Job did not finish by its deadline")
+                    run.failure = "the Job did not finish by its deadline"
+                    return run
                 time.sleep(self.poll)
-            pods = json.loads(self.kubectl("get", "pods", "-l", f"job-name={name}", "-o", "json"))["items"]
+            pods = self.kubectl_json("get", "pods", "-l", f"job-name={name}", "-o", "json").get("items") or []
             if len(pods) != 1:
-                raise RuntimeError(f"the Job ran {len(pods)} pods")
+                run.failure = f"the Job ran {len(pods)} pods"
+                return run
             statuses = pods[0].get("status", {}).get("containerStatuses") or [{}]
             terminated = (statuses[0].get("state") or {}).get("terminated") or {}
             run.facts.update({"pod": pods[0]["metadata"]["name"], "imageId": statuses[0].get("imageID"),
                               "phase": pods[0].get("status", {}).get("phase"), "exitCode": terminated.get("exitCode")})
-            run.files = result_of(self.kubectl("logs", pods[0]["metadata"]["name"], "-c", "sandbox"))
-        except (RuntimeError, ValueError, OSError, KeyError) as error:
-            run.failure = str(error)
+            log = self.kubectl("logs", pods[0]["metadata"]["name"], "-c", "sandbox")
+            try:
+                run.files = result_of(log)
+            except (ValueError, OSError, KeyError) as error:
+                run.failure = str(error)
+            return run
         finally:
-            self.kubectl("delete", "job", name, "--cascade=background", "--wait=false", "--ignore-not-found", check=False)
-        return run
+            self.kubectl("delete", "job", name, "--cascade=background", "--wait=false", "--ignore-not-found",
+                         check=False)

@@ -1,21 +1,33 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import { INPUTS_VERSION, type InventoryLine } from "../s10-inputs-io";
 import { admissionOf, JUDGE_COMMAND, main } from "../s10-judge-admit";
-import { judgedOutcomeOf, judgedStageOf, reportedOutcomesOf, UNJUDGED } from "../s10-judged-io";
+import {
+  COUNTING_RULE,
+  DEVIATION_KINDS,
+  JUDGED_VERSION,
+  type JudgedStage,
+  judgedOutcomeOf,
+  judgedStageOf,
+  RULE_VERSIONS,
+  reportedOutcomesOf,
+  STARTED_FILE,
+  UNJUDGED,
+} from "../s10-judged-io";
 
 /**
  * The claim's judging stage. Its driver, `s10_judge.py`, and the modules beside it are tested by
  * `s10_judge_test.py` under `python3 -m unittest`, which the first test here runs, so this
  * directory's one `bun test` runs them: over an inputs stage written here and read back through
- * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and a judged stage that
- * suite writes is read back here through `s10-judged-io.ts`. The rest test the admission the
- * driver asks before it reads anything (`s10-judge-admit.ts`), with a registration made for this
- * test's own digest over a bundle root of its own, as `s10-inputs.test.ts` makes one.
+ * `s10-inputs-io.ts`'s parsers by the admission, which that suite judges; and every stage that
+ * suite judges whole, that one among them, is read back here through `s10-judged-io.ts`, with the
+ * constants both sides hold equal. The rest test the admission the driver asks before it reads
+ * anything (`s10-judge-admit.ts`), with a registration made for this test's own digest over a
+ * bundle root of its own, as `s10-inputs.test.ts` makes one.
  */
 
 const DIRECTORY = join(import.meta.dir, "..");
@@ -224,9 +236,49 @@ describe("s10_judge.py and the modules beside it", () => {
     expect(report).toMatch(/^Ran [1-9]\d* tests/m);
     expect(report).not.toMatch(/skipped/);
 
-    const stage = await judgedStageOf(keep);
-    expect(stage.record.state).toBe("written");
-    expect(stage.lines?.map((line) => line.outcome)).toEqual(["verdict"]);
+    // The constants both sides hold equal.
+    expect(JSON.parse(await readFile(join(keep, "constants.json"), "utf8"))).toEqual({
+      deviationKinds: [...DEVIATION_KINDS],
+      ruleVersions: [...RULE_VERSIONS],
+      countingRule: COUNTING_RULE,
+      stageVersion: JUDGED_VERSION,
+      startedFile: STARTED_FILE,
+    });
+    // Every stage the suite judged whole reads back, and between them every kind of outcome it writes.
+    const stages = new Map<string, JudgedStage>();
+    for (const name of (await readdir(join(keep, "stages"))).sort()) {
+      stages.set(name, await judgedStageOf(join(keep, "stages", name)));
+    }
+    const outcomes = new Set<string>();
+    const deviations = new Set<string>();
+    for (const stage of stages.values()) {
+      expect(stage.record.state).toBe("written");
+      expect(stage.record.counts?.requests).toBe(stage.outcomes.size);
+      for (const outcome of stage.outcomes.values()) {
+        outcomes.add(outcome.outcome);
+        if (outcome.deviation !== null) deviations.add(outcome.deviation.kind);
+        if (outcome.outcome === "hold") expect(outcome.judgement?.judges).toBe(0);
+        if (outcome.outcome === "verdict") {
+          expect(outcome.judgement?.documents.length).toBeGreaterThan(0);
+          expect(outcome.judgement?.judge_models?.length).toBe(5);
+          expect(outcome.judges.filter((one) => one.transcript !== null).length).toBe(5);
+          expect(outcome.sandbox?.listing?.lines).toBeGreaterThan(0);
+        }
+      }
+    }
+    expect([...outcomes].sort()).toEqual(["deviation", "hold", "verdict"]);
+    expect([...deviations].sort()).toEqual([...DEVIATION_KINDS].sort());
+    const kept = (test: string): JudgedStage => {
+      const found = [...stages].filter(([name]) => name.startsWith(`${test}-`));
+      expect(found.length).toBeGreaterThan(0);
+      return found[0]?.[1] as JudgedStage;
+    };
+    // The stage the suite judged from the inputs written here holds their two requests.
+    const own = kept("test_inputs_the_typescript_parsers_read_are_judged");
+    expect([...own.outcomes.keys()].sort()).toEqual([ASK, DEVIATION].sort());
+    expect(own.lines?.map((line) => line.outcome)).toEqual(["verdict", "deviation"]);
+
+    const stage = kept("test_a_request_is_judged_once_by_the_five_calls_s10_records");
     const [judged] = [...stage.outcomes.values()];
     expect(judged?.verdict).toBe("approve");
     // Under version 3's rule its five `yield` answers are deviations; versions 4 and 5 allow them.
@@ -240,6 +292,7 @@ describe("s10_judge.py and the modules beside it", () => {
       verdict: null,
       deviation: "tool-call",
     });
+    expect(stage.record.counts?.byRule.v3.deviationsByKind).toEqual({ "tool-call": 1 });
     const text = JSON.stringify(judged);
     type Rules = Record<
       string,
@@ -276,6 +329,20 @@ describe("s10_judge.py and the modules beside it", () => {
     ]) {
       expect(() => judgedOutcomeOf(refused, "outcome.json")).toThrow();
     }
+    const typed = JSON.parse(text) as Record<string, unknown>;
+    for (const refused of [
+      { ...typed, judgement: { ...(typed.judgement as object), documents: "spec.md" } },
+      { ...typed, judges: [{ label: 1 }] },
+      {
+        ...typed,
+        sandbox: { ...(typed.sandbox as object), metadata: [{ url: "x", status: "200" }] },
+      },
+    ]) {
+      expect(() => judgedOutcomeOf(JSON.stringify(refused), "outcome.json")).toThrow();
+    }
+
+    // Each request of an inventory reported once: its outcome; `started` where a run kept its
+    // `started.json` and stopped; `unjudged` where no run reached it.
     const line = (askId: string): InventoryLine => ({
       askId,
       issueKey: "ACME-1",
@@ -288,19 +355,29 @@ describe("s10_judge.py and the modules beside it", () => {
       counts: null,
       dropScanThrough: null,
     });
+    const STARTED = "00000000-0000-4000-8000-0000000000c1";
+    const stopped: JudgedStage = {
+      ...stage,
+      record: {
+        ...stage.record,
+        files: { ...stage.record.files, [`requests/${STARTED}/${STARTED_FILE}`]: "0".repeat(64) },
+      },
+    };
     const reported = reportedOutcomesOf(
-      [line(judged?.askId as string), line(DEVIATION)],
-      stage.outcomes
+      [line(judged?.askId as string), line(STARTED), line(DEVIATION)],
+      stopped
     );
     expect(reported.map((one) => one.deviation?.kind ?? one.verdict)).toEqual([
       "approve",
+      "started",
       UNJUDGED,
     ]);
-    expect(Object.values(reported[1]?.byRule ?? {}).map((one) => one.deviation)).toEqual([
+    expect(Object.values(reported[2]?.byRule ?? {}).map((one) => one.deviation)).toEqual([
       UNJUDGED,
       UNJUDGED,
       UNJUDGED,
     ]);
+    expect(() => reportedOutcomesOf([line(DEVIATION)], stage)).toThrow();
   }, 180_000);
 });
 

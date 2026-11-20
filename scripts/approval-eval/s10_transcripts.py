@@ -9,16 +9,17 @@ before any answer is compared ("The claim's bundle and its arguments", version 5
   - version 3: a `read`, `grep` or `glob` of its own bundle file or of a `skill://approval-review`
     file, and nothing else, its `yield` answer included;
   - version 4: a `read` or `grep` of its own bundle file or of a skill file; a `glob` whose scope
-    stays inside its bundle directory or the skill directory; and its `yield` answer, exempt from
-    the path check;
+    is exactly one of four, its own bundle file, the bundle directory, a skill file or the skill
+    directory; and its `yield` answer, exempt from the path check;
   - version 5: version 4's, and a `read` of the bundle directory, of the skill directory or of its
     `references/`, which answers the names, sizes and ages of a directory's entries and no text.
   Each target is checked as given, as the tool's default fills it, and normalized as it resolves
-  on the sandbox's file system (`target_of`, `resolved`), with every path the tool's result says it
-  reached (`detail_paths`). A target is read in the grammar this check models of omp 18.16.0's
-  path and glob syntax (`expansions`, `SELECTOR`); one that holds any other syntax, or brace
-  alternatives or a character class that could spell a parent step, a `/` or an absolute part,
-  is refused, not placed.
+  on the sandbox's file system (`target_of`, `resolved`), and so is every scope the tool's result
+  says it read; every path the result returns must lie inside the manifested trees
+  (`detail_paths`, `in_trees`). A target is read in the grammar this check models of omp
+  18.16.0's path and glob syntax (`expansions`, `SELECTOR`); one that holds any other syntax, or
+  brace alternatives or a character class that could spell a parent step, a `/` or an absolute
+  part, is refused, not placed.
 - Each judge was asked point 2's model, none is marked a fallback, and each model omp reports
   serving it is that model (`model_problems`).
 - Each answer is valid by the frozen `JUDGE_SCHEMA` (`answer_problem`), which may use only the
@@ -293,47 +294,64 @@ def target_of(raw, tool, scope):
 
 
 def in_scope(tool, target, scope, version=COUNTING_RULE):
-    """Whether one target stays where version `version` of point 5's rule lets `tool` reach: under
-    every version, exactly its own bundle file or one of the skill's files, with no pattern; from
-    version 4, for a `glob`, any literal part inside the bundle directory or the skill directory with
-    no `.` or `..` part in any expansion of its pattern; from version 5, for a `read`, the bundle
-    directory, the skill directory or its `references/` itself."""
+    """Whether one target a call names, an argument as given or as the tool's default fills it, or
+    the scope its result says it read, is one version `version` of point 5's rule lets `tool` name:
+    under every version, exactly its own bundle file or one of the skill's files, with no pattern;
+    from version 4, a `glob` whose scope is exactly one of four, its own bundle file, the bundle
+    directory, a skill file or the skill directory, with no `.` or `..` part in any expansion of
+    its pattern; from version 5, a `read` of the bundle directory, the skill directory or its
+    `references/` itself."""
     if target is None or target[0] is None:
         return False
     literal, pattern = target
-    if not pattern and (literal == scope.bundle or literal in scope.skill_files):
+    files = {scope.bundle, *scope.skill_files}
+    if not pattern and literal in files:
         return True
     if version >= 4 and tool == "glob":
-        return (not {".", ".."} & set(pattern)
-                and (under(literal, scope.bundle_dir) or under(literal, scope.skill_dir)))
+        return not {".", ".."} & set(pattern) and literal in files | {scope.bundle_dir, scope.skill_dir}
     directories = (scope.bundle_dir, scope.skill_dir, os.path.join(scope.skill_dir, "references"))
     return version >= 5 and tool == "read" and not pattern and literal in directories
 
 
+def in_trees(target, scope):
+    """Whether a path a call's result returns lies inside the trees the sandbox manifests, the
+    bundle directory's and the skill directory's, with no pattern: a glob of the bundle directory
+    returns the other judges' file names, and that is all a result may name."""
+    if target is None or target[0] is None or target[1]:
+        return False
+    return under(target[0], scope.bundle_dir) or under(target[0], scope.skill_dir)
+
+
 def detail_paths(details, work):
-    """The paths a tool's result says it reached: the path it resolved, the scope and the search
-    path it read, and each file it found or matched, each from the result's own working directory.
-    A glob over several targets writes its scope as their paths joined by `, `, which are split."""
+    """What a tool's result says it reached, each from the result's own working directory: the
+    scope it read (the path it resolved, its search path, its scope, the source a read names),
+    held as a target is; and the paths it returns (each file it found or matched), held to the
+    trees. A glob over several targets writes its scope as their paths joined by `, `, which are
+    split."""
     if not isinstance(details, dict):
-        return []
+        return [], []
     cwd = details["cwd"] if isinstance(details.get("cwd"), str) else work
-    found = [details.get(key) for key in ("resolvedPath", "searchPath")]
+    scopes = [details.get(key) for key in ("resolvedPath", "searchPath")]
     if isinstance(details.get("scopePath"), str):
-        found += details["scopePath"].split(", ")
-    found += list(details.get("files") or [])
-    found += [one.get("path") for one in details.get("fileMatches") or [] if isinstance(one, dict)]
+        scopes += details["scopePath"].split(", ")
     source = (details.get("meta") or {}).get("source") if isinstance(details.get("meta"), dict) else None
     if isinstance(source, dict) and source.get("type") == "path":
-        found.append(source.get("value"))
-    return [one if one.startswith("/") or "://" in one else os.path.join(cwd, one)
-            for one in found if isinstance(one, str) and one]
+        scopes.append(source.get("value"))
+    found = list(details.get("files") or [])
+    found += [one.get("path") for one in details.get("fileMatches") or [] if isinstance(one, dict)]
+
+    def placed(paths):
+        return [one if one.startswith("/") or "://" in one else os.path.join(cwd, one)
+                for one in paths if isinstance(one, str) and one]
+
+    return placed(scopes), placed(found)
 
 
 def call_problem(tool, call, scope, version=COUNTING_RULE):
     """Why one `read`, `grep` or `glob` call reaches outside version `version`'s scope, or None:
-    every target it names as given, the tool's default where it names none, and every path its
-    result reports."""
-    targets = []
+    every target it names as given, the tool's default where it names none, and every scope its
+    result says it read (`in_scope`); and every path its result returns (`in_trees`)."""
+    targets, returned = [], []
     for arguments in call["arguments"] or [{}]:
         if not isinstance(arguments, dict):
             return "arguments that are no object"
@@ -350,10 +368,15 @@ def call_problem(tool, call, scope, version=COUNTING_RULE):
         else:
             targets.extend(value.split(";"))
     for details in call["details"]:
-        targets.extend(detail_paths(details, scope.work))
+        scopes, found = detail_paths(details, scope.work)
+        targets.extend(scopes)
+        returned.extend(found)
     for raw in targets:
         if not in_scope(tool, target_of(raw, tool, scope), scope, version):
             return repr(raw)
+    for raw in returned:
+        if not in_trees(target_of(raw, tool, scope), scope):
+            return f"{raw!r}, a path its result returns outside the manifested trees"
     return None
 
 

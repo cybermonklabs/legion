@@ -29,6 +29,8 @@ OUTCOME_FILE = "outcome.json"
 BUILDING_DIRECTORY = "building"
 # The file that marks a request started: committed before S10's code runs on it.
 STARTED_FILE = "started.json"
+# Where each run's preflight keeps its sandbox's result, `preflights/<n>/`, before any request starts.
+PREFLIGHT_DIRECTORY = "preflights"
 
 
 class CannotRun(Exception):

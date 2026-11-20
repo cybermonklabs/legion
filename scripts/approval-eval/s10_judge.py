@@ -23,24 +23,26 @@ inputs stage's record names and `--inputs` itself, so the claim run's judging ha
 driver reads only those files, and each only with the sha256 the admission read. `--image` must
 be the image this driver's own pod runs, by its digest (`image_refusal`): the session image the
 claim's run digest names, so the sandbox's own files are that image's. The sandbox runs as
-`--service-account`, one of its own unless the option names another.
+`--service-account`, one of its own unless the option names another, and never the account this
+driver's own pod runs as.
 
 The frozen code. `--code` is the code-txt file of point 2 as `dispatch doc-read` prints it: its
 two header lines, then the text whose sha256 point 2 fixes, split into its five files by their
 `=== FILE: <name> ===` lines, each checked against the sha256 point 2 gives it. Every `DISPATCH_`
-variable leaves this process's environment once the admission has run. Its `shadow.py` is loaded
-as written, from the copy this stage keeps, with `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` set to
-values that reach nothing while it loads and removed after; then the reads of point 3 are
+variable leaves this process's environment once the admission has run. Its `shadow.py` is kept
+under `--out` and run from the bytes the code-txt held, checked again against point 2's sha256
+and against the kept copy just before it runs, with `DISPATCH_URL` and `DISPATCH_TOKEN_FILE` set
+to values that reach nothing while it loads and removed after; then the reads of point 3 are
 replaced, and nothing else: its `api`, through which its `issue`, `search`, `doc_version` and the
 ask reads of its `neighbours` go, by a reader over the request's inputs (`RequestReader`), and its
-`reserved_neighbour` by the reserve's decision the inputs stage recorded (point 4 (d)). The
-modules it imported that reach out raise on any use: its `subprocess` and `urllib`, its `os`'s
-commands (`system`, `popen`, the `exec`, `spawn` and `fork` families), and, for the whole process,
-`socket.socket` and `socket.create_connection` (the driver's own commands, `kubectl` and `bun`, run
-as processes of their own). `JUDGE_PROMPT` and `build_bundle` are checked against point 2's
-`prompt_sha256` and `bundle_code_sha256`, `JUDGE_SCHEMA` against the keywords the answer check
-reads, and the skill files against point 2's `skill_sha256`; they are put where its `skill_bytes`
-reads them, as the code-txt's own header says.
+`reserved_neighbour` by the reserve's decision the inputs stage recorded (point 4 (d)). Its
+`subprocess` and `urllib` raise on any use, and while any of S10's code runs (`sealed`) every way
+out of the process raises for every module, under any name it was imported by: the socket
+constructors and lookups, `subprocess.Popen` and `os`'s process calls, restored once its code
+returns (the driver's own commands, `kubectl` and `bun`, run outside). `JUDGE_PROMPT` and
+`build_bundle` are checked against point 2's `prompt_sha256` and `bundle_code_sha256`,
+`JUDGE_SCHEMA` against the keywords the answer check reads, and the skill files against point 2's
+`skill_sha256`; they are put where its `skill_bytes` reads them, as the code-txt's own header says.
 
 Each request, once, in the inventory's order (point 6):
 
@@ -55,35 +57,43 @@ Each request, once, in the inventory's order (point 6):
   its prompt names, lands under `--out`. A read the inputs cannot give, or an error S10's own code
   raises on them, is a deviation (`inputs`); an error of this driver stops the run. A fact that
   holds ends there: `finish_judgement` gives `never_decide:waiting-legion-root` with no judge.
+  Before the run's first `started.json`, the sandbox's preflight runs once (`preflight`): the
+  sandbox's Job with no bundle, every check of it made and made again here, its result kept
+  under `preflights/`; any failure stops the run before a request has started.
 - Else the five bundles and the five calls are kept under `--out`, and only then is the request
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
   file of the result is kept, the gateway key's bytes replaced. Then, in code and before any
-  answer is compared (point 5, version 5, `s10_transcripts.py`): the sandbox's own checks, and a
-  result whose files can be read (`sandbox`); the bundle and skill directories had the required
-  trees before the first judge and the same after the last (`manifest`); no kept file held the
-  gateway key's bytes (`key`); the session's own transcript holds the one `eval` call and nothing
-  else (`session`); there are five judges' transcripts (`transcript`); no judge made a tool call
-  but its `yield` answer, a `read` or `grep` of its own bundle file or of a
-  `skill://approval-review` file, a `read` of the bundle directory, the skill directory or its
-  `references/`, or a `glob` inside its bundle directory or the skill directory, every target as
-  given, defaulted and resolved (`tool-call`); each judge was asked point 2's model, none is marked
-  a fallback, and each model omp reports serving it is that model (`model`). Then five valid
-  answers (`answers`); the verdict is S10's `aggregate` over them, through its
-  `finish_judgement`, and it must be the verdict point 2's rule gives (`verdict`). Each outcome
-  also records its outcome under the tool rule of versions 3, 4 and 5, with the calls each makes a
-  deviation (`byRule`), so the analysis reports what changes under each with no further judging;
-  version 5's is the one that counts.
+  answer is compared (point 5, version 5, `s10_transcripts.py`): the sandbox's checks, made again
+  here from its record, and a result whose files can be read (`sandbox`); the bundle and skill
+  directories had the required trees before the first judge and the same after the last
+  (`manifest`); no kept file held the gateway key's bytes (`key`); the session's own transcript
+  holds the one `eval` call and nothing else (`session`); there are five judges' transcripts
+  (`transcript`); no judge made a tool call but its `yield` answer, a `read` or `grep` of its own
+  bundle file or of a `skill://approval-review` file, a `read` of the bundle directory, the skill
+  directory or its `references/`, or a `glob` whose scope is its own bundle file, the bundle
+  directory, a skill file or the skill directory, every target as given, defaulted and resolved,
+  and every path a result returns inside the manifested trees (`tool-call`); each judge was asked
+  point 2's model, none is marked a fallback, and each model omp reports serving it is that model
+  (`model`). Then five valid answers (`answers`); the verdict is S10's `aggregate` over them,
+  through its `finish_judgement`, and it must be the verdict point 2's rule gives (`verdict`).
+  Each outcome also records its outcome under the tool rule of versions 3, 4 and 5, with the
+  calls each makes a deviation (`byRule`), so the analysis reports what changes under each with
+  no further judging; version 5's is the one that counts.
 
 Stops. A request is started once its `started.json` is kept, before S10's code runs on it, and a
-request started and not finished is a deviation (`started`) that no later run judges again: the
-next run records it so before it judges anything else. A stop, a SIGTERM, an interrupt or an
-error of this driver, writes nothing more: the stage stays `started`, and a run of the same
-command resumes it. So does a sandbox that refuses to start a judge, after that request's own
-outcome, since every later request would meet the same sandbox until its cause is cleared. Only
-a run that gives every request of the inventory its outcome writes `outcomes.jsonl` and marks the
-stage written; a request that no run reached is unjudged, which the analysis reports
-(`s10-judged-io.ts`), and this stage never writes.
+request started and not finished is a deviation (`started`) that no later run judges again (point
+6): the next run records it so before it judges anything else. A stop writes nothing more for the
+request in flight, records itself, and leaves the stage `started` for the same command to resume:
+a SIGTERM or an interrupt; a sandbox that refuses to start a judge, since every later request
+would meet the same sandbox until its cause is cleared; a failed preflight; and a Kubernetes API
+call that still fails once it has been tried again (`s10_job.py`), which is no fault of the
+request's. A Job that ran and gave no readable result is that request's own `sandbox` deviation.
+An error of this driver also writes nothing more and leaves the stage `started`, but records no
+stop: it ends the command with its traceback. Only a run that gives every request of the
+inventory its outcome writes `outcomes.jsonl` and marks the stage written; a request that no run
+reached is reported by the analysis (`s10-judged-io.ts`), as `started` where its `started.json`
+is kept and as `unjudged` where it is not, and this stage writes neither for it.
 """
 
 import sys
@@ -92,9 +102,11 @@ import sys
 # digest, which covers every file of that directory.
 sys.dont_write_bytecode = True
 
+import _posixsubprocess  # noqa: E402
+import _socket  # noqa: E402
 import argparse  # noqa: E402
+import contextlib  # noqa: E402
 import copy  # noqa: E402
-import importlib.util  # noqa: E402
 import inspect  # noqa: E402
 import json  # noqa: E402
 import lzma  # noqa: E402
@@ -105,6 +117,7 @@ import signal  # noqa: E402
 import socket  # noqa: E402
 import subprocess  # noqa: E402
 import traceback  # noqa: E402
+import types  # noqa: E402
 from collections import Counter  # noqa: E402
 from dataclasses import dataclass  # noqa: E402
 
@@ -120,6 +133,7 @@ from s10_store import (  # noqa: E402
     CODE_DIRECTORY,
     OUTCOME_FILE,
     OUTCOMES_FILE,
+    PREFLIGHT_DIRECTORY,
     STARTED_FILE,
     CannotRun,
     Stage,
@@ -280,37 +294,60 @@ class _Refused:
         raise InputsGap(f"S10 reached {self._name}.{attribute}, which no input of the claim gives")
 
 
-class _OsWithoutCommands:
-    """S10's `os`, every part of it but the ones that run a command or start a process."""
-
-    COMMANDS = re.compile(r"^(system|popen|fork|forkpty|exec\w*|spawn\w*|posix_spawn\w*|kill|killpg)$")
-
-    def __getattr__(self, attribute):
-        if self.COMMANDS.match(attribute):
-            raise InputsGap(f"S10 reached os.{attribute}, which runs what no input of the claim gives")
-        return getattr(os, attribute)
+def _refused(name):
+    def refused(*arguments, **options):
+        raise InputsGap(f"S10 reached {name}, which no input of the claim gives")
+    return refused
 
 
-def _no_connection(*arguments, **options):
-    raise InputsGap("S10 opened a connection, which no input of the claim gives")
+# The `os` calls that run a command or start a process.
+OS_COMMANDS = re.compile(r"^(system|popen|fork|forkpty|exec\w*|spawn\w*|posix_spawn\w*|kill|killpg)$")
 
 
-def load_shadow(path, pins):
-    """`shadow.py` loaded as written, with what reaches out of the process refused (the module's
-    docstring names each), and its pins checked."""
+@contextlib.contextmanager
+def sealed():
+    """While S10's code runs, every way out of the process raises, for every module and under any
+    name it was imported by: a connection (`socket`'s constructors and lookups, and `_socket`'s), a
+    command (`subprocess.Popen`, under every function of `subprocess`, and `_posixsubprocess`), and
+    `os`'s process calls. All is restored once its code returns, so the driver's own `kubectl` and
+    `bun` run as before."""
+    targets = [(socket, ("socket", "create_connection", "socketpair", "fromfd", "getaddrinfo")),
+               (_socket, ("socket",)), (subprocess, ("Popen",)), (_posixsubprocess, ("fork_exec",)),
+               (os, tuple(name for name in dir(os) if OS_COMMANDS.match(name)))]
+    saved = []
+    try:
+        for module, names in targets:
+            for name in names:
+                if hasattr(module, name):
+                    saved.append((module, name, getattr(module, name)))
+                    setattr(module, name, _refused(f"{module.__name__}.{name}"))
+        yield
+    finally:
+        for module, name, value in reversed(saved):
+            setattr(module, name, value)
+
+
+def load_shadow(path, pins, data):
+    """`shadow.py` loaded as written: `data`, the bytes the code-txt held, held once more to the
+    sha256 point 2 gives it and to the kept copy at `path` its tracebacks and `inspect` read, then
+    run from those bytes inside `sealed`, with what reaches out refused (the module's docstring
+    names each), and its pins checked."""
+    if not sha256_of(data).startswith(pins.files["shadow.py"]):
+        raise CannotRun(f"shadow.py has sha256 {sha256_of(data)}, and point 2 gives {pins.files['shadow.py']}…")
+    with open(path, "rb") as handle:
+        if handle.read() != data:
+            raise CannotRun(f"{path} is not the shadow.py of the code-txt it was kept from")
+    shadow = types.ModuleType("s10_frozen_shadow")
+    shadow.__file__ = path
     os.environ.update(UNREACHABLE)
     try:
-        spec = importlib.util.spec_from_file_location("s10_frozen_shadow", path)
-        shadow = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(shadow)
+        with sealed():
+            exec(compile(data, path, "exec"), shadow.__dict__)  # noqa: S102 - the pinned frozen code
     finally:
         for name in UNREACHABLE:
             os.environ.pop(name, None)
     shadow.subprocess = _Refused("subprocess")
     shadow.urllib = _Refused("urllib")
-    shadow.os = _OsWithoutCommands()
-    socket.socket = _no_connection
-    socket.create_connection = _no_connection
     measured = {
         "JUDGE_PROMPT": (sha256_of(shadow.JUDGE_PROMPT), pins.prompt_sha256),
         "build_bundle": (sha256_of(inspect.getsource(shadow.build_bundle)), pins.bundle_code_sha256),
@@ -348,7 +385,8 @@ def place_skill(shadow, files):
         os.makedirs(os.path.dirname(target), exist_ok=True)
         with open(target, "wb") as handle:
             handle.write(data)
-    shadow.skill_bytes()
+    with sealed():
+        shadow.skill_bytes()
 
 
 def raised_by_frozen_code(error, shadow):
@@ -495,7 +533,7 @@ class Recorder:
 @dataclass
 class Context:
     """What judging each request reads: the frozen module, its pins, the inputs, the stage, the
-    sandbox, and the image the sandbox must run."""
+    sandbox, the image the sandbox must run, and whether this run's preflight passed."""
 
     shadow: object
     pins: Pins
@@ -503,6 +541,7 @@ class Context:
     stage: Stage
     runner: object
     image: str
+    preflighted: bool = False
 
 
 def outcome_of(line, outcome, verdict=None, deviation=None, judgement=None, judges=None, sandbox=None,
@@ -573,61 +612,90 @@ def sandbox_record(run):
     return record if isinstance(record, dict) else None
 
 
-def sandbox_problems(context, run, record):
-    """The sandbox held to what it must have been: its own refusal first, then each of its checks
-    read again here, and the image its pod ran."""
+def sandbox_problems(context, run, record, payload, preflight=False):
+    """The sandbox held to what it must have been: its own refusal first; then each of its checks
+    made again here from what it recorded (the variables' names; the mounts, and the listing
+    against the files `payload` names, both held to the layout it recorded; the runtime; the
+    metadata answers); the preflight's mark, true only for the preflight's own Job; and the image
+    its pod ran."""
     if record is None:
         return [f"the sandbox Job {run.job} gave no readable result: {run.failure or 'its result holds no record'}"]
     if record.get("refused") is not None:
         return [f"the sandbox refused to start a judge: {record['refused']}"]
     problems = []
+    if SANDBOX.credential_variables(record.get("environment") or []):
+        problems.append("the sandbox's environment names a credential")
+    layout = record.get("layout")
+    if not isinstance(layout, dict) or sorted(layout) != ["key", "models", "overlay", "work"] or not all(
+            isinstance(path, str) for path in layout.values()):
+        problems.append("the sandbox recorded no layout its checks held the mounts and files to")
+    else:
+        try:
+            listing = run.files.get("listing.txt", b"").decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            listing = None
+        refusal = (SANDBOX.mount_refusal(record.get("mounts") or [], layout)
+                   or ("the sandbox's listing cannot be read" if listing is None else None)
+                   or SANDBOX.listing_refusal(listing, set(payload), layout))
+        if refusal is not None:
+            problems.append(refusal)
     refusal = SANDBOX.runtime_refusal(record.get("runtime") or {})
     if refusal is not None:
         problems.append(refusal)
-    if SANDBOX.credential_variables(record.get("environment") or []):
-        problems.append("the sandbox's environment names a credential")
-    digest = context.image.split("@", 1)[1]
-    if not str(run.facts.get("imageId") or "").endswith("@" + digest):
-        problems.append(f"the sandbox ran the image {run.facts.get('imageId')}, not {context.image}")
     refusal = SANDBOX.metadata_refusal(record.get("metadata"))
     if refusal is not None:
         problems.append(refusal)
+    if record.get("preflight") is not preflight:
+        problems.append(f"the sandbox's record marks it a preflight {record.get('preflight')!r}, not {preflight!r}")
+    digest = context.image.split("@", 1)[1]
+    if not str(run.facts.get("imageId") or "").endswith("@" + digest):
+        problems.append(f"the sandbox ran the image {run.facts.get('imageId')}, not {context.image}")
     return problems
 
 
-def judged_request(context, line, calls, bundles, run, row, job, key_held):
-    """The outcome of one request sent to the sandbox: every check of point 5 on the transcripts
-    first, then the answers, then the verdict. `key_held` names the result's files this driver
-    found the gateway key's bytes in."""
+def judged_request(context, line, calls, bundles, run, row, job, key_held, sent):
+    """The outcome of one request sent to the sandbox, whose record refused nothing: the sandbox
+    held to its checks first (`sandbox`, which ends there), then every check of point 5 on the
+    transcripts, then the answers, then the verdict. `key_held` names the result's files this
+    driver found the gateway key's bytes in; `sent`, the files it sent. Runs inside `sealed`."""
     pins, shadow, files = context.pins, context.shadow, run.files
-    problems = {kind: [] for kind in DEVIATION_KINDS}
     record = sandbox_record(run)
-    problems["sandbox"] = sandbox_problems(context, run, record)
+    judged_at = shadow.now()
+    facts = {key: value for key, value in run.facts.items() if key != "spec"}
+    sandbox = {"job": run.job, **facts,
+               **{key: (record or {}).get(key) for key in ("refused", "listing", "metadata", "runtime", "manifests",
+                                                           "keyFound")}}
+    problems = {kind: [] for kind in DEVIATION_KINDS}
+
+    def ended():
+        listed = [problem for kind in DEVIATION_KINDS for problem in problems[kind]]
+        return deviation(line, "sandbox", problems["sandbox"][0], listed, sandbox=sandbox, judged_at=judged_at)
+
+    problems["sandbox"] = sandbox_problems(context, run, record, sent)
+    if problems["sandbox"]:
+        return ended()
+    manifest = SANDBOX.manifest_problem(record.get("manifests"))
+    if manifest is not None:
+        problems["manifest"].append(manifest)
+    held = sorted(set(record.get("keyFound") or []) | set(key_held))
+    if held:
+        problems["key"].append(f"the gateway key's bytes were in {held}; each is kept with them replaced")
     judges = []
     answers = [None] * JUDGES
     tool_calls = {version: [] for version in CHECKS.RULE_VERSIONS}
-    if not problems["sandbox"]:
-        manifest = SANDBOX.manifest_problem(record.get("manifests"))
-        if manifest is not None:
-            problems["manifest"].append(manifest)
-        held = sorted(set(record.get("keyFound") or []) | set(key_held))
-        if held:
-            problems["key"].append(f"the gateway key's bytes were in {held}; each is kept with them replaced")
-    if not problems["sandbox"] and "omp" in record:
+    if "omp" in record:
         try:
             found, directory = CHECKS.session_problems(files, record)
-            for kind, listed in found.items():
-                problems[kind].extend(listed)
             transcripts, strays = ({}, []) if directory is None else CHECKS.judge_transcripts(files, directory, calls)
-            problems["session"].extend(strays)
             listing = files.get("listing.txt", b"").decode("utf-8").splitlines()
             by_agent = CHECKS.answers_by_agent(files)
         except (ValueError, UnicodeDecodeError) as error:
             problems["sandbox"].append(f"the sandbox's result holds a file that cannot be read: {error}")
-            transcripts = {}
+            return ended()
+        for kind, listed in found.items():
+            problems[kind].extend(listed)
+        problems["session"].extend(strays)
         for index, call in enumerate(calls):
-            if problems["sandbox"]:
-                break
             if index not in transcripts:
                 problems["transcript"].append(f"{call['label']} has no transcript")
                 judges.append({"label": call["label"], "transcript": None})
@@ -638,7 +706,6 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
             scope = CHECKS.scope_of(bundle, shadow.WORK, listing)
             for version in CHECKS.RULE_VERSIONS:
                 tool_calls[version].extend(CHECKS.tool_call_problems(call["label"], made, scope, version))
-            problems["tool-call"] = [one["problem"] for one in tool_calls[CHECKS.COUNTING_RULE]]
             wrong, served = CHECKS.model_problems(call["label"], entries, pins.asked, pins.model)
             problems["model"].extend(wrong)
             agent = os.path.basename(name)[:-len(".jsonl")]
@@ -649,13 +716,13 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
                                            if entry.get("type") == "model_change"),
                            "toolCalls": [{"id": call_id, "names": sorted(one["names"])}
                                          for call_id, one in sorted(made.items())]})
+        problems["tool-call"] = [one["problem"] for one in tool_calls[CHECKS.COUNTING_RULE]]
     checked = [CHECKS.answer_problem(answer, shadow.JUDGE_SCHEMA) for answer in answers]
-    if not problems["sandbox"] and "omp" in record:
+    if "omp" in record:
         for index, problem in enumerate(checked):
             if problem is not None:
                 problems["answers"].append(f"{calls[index]['label']}: {problem}")
     valid = [answer if problem is None else None for answer, problem in zip(answers, checked)]
-    judged_at = shadow.now()
     judgement = shadow.finish_judgement(job, valid, row, judged_at)
     if judgement is not None:
         judgement["judge_models"] = [{key: one[key] for key in ("asked", "served", "fallback")}
@@ -667,10 +734,6 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
         if judgement.get("verdict") != recomputed or votes != JUDGES or named != JUDGES:
             problems["verdict"].append(f"S10 recorded {judgement.get('verdict')} over {votes} votes and {named} "
                                        f"never-decide answers, and point 2's rule gives {recomputed} over five")
-    facts = {key: value for key, value in run.facts.items() if key != "spec"}
-    sandbox = {"job": run.job, **facts,
-               **{key: (record or {}).get(key) for key in ("refused", "listing", "metadata", "runtime", "manifests",
-                                                           "keyFound")}}
     by_rule = by_rule_of(problems, tool_calls, judgement and judgement.get("verdict"))
     more = {"judgement": judgement, "judges": judges, "sandbox": sandbox, "judged_at": judged_at, "by_rule": by_rule}
     listed = [problem for kind in DEVIATION_KINDS for problem in problems[kind]]
@@ -680,31 +743,57 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held):
     return outcome_of(line, "verdict", verdict=judgement["verdict"], **more)
 
 
-def kept_result(ask_id, run, key):
-    """The files of a sandbox's result as this stage keeps them, the listing compressed and the
-    gateway key's bytes replaced wherever they are; and the names of the files that held them."""
+def kept_result(directory, run, key):
+    """The files of a sandbox's result as this stage keeps them under `directory`, the listing
+    compressed, the Job's facts beside them (`job.json`), and the gateway key's bytes replaced
+    wherever they are; and the names of the files that held them."""
     files, held = SANDBOX.redact_key(run.files, key)
     run.files = files
     kept = {}
     for name, data in files.items():
         if name == "listing.txt":
-            kept[request_path(ask_id, "sandbox/listing.txt.xz")] = lzma.compress(data)
+            kept[f"{directory}/listing.txt.xz"] = lzma.compress(data)
         else:
-            kept[request_path(ask_id, f"sandbox/{name}")] = data
-    kept[request_path(ask_id, "sandbox/job.json")] = json_bytes({"job": run.job, "failure": run.failure, **run.facts})
+            kept[f"{directory}/{name}"] = data
+    kept[f"{directory}/job.json"] = json_bytes({"job": run.job, "failure": run.failure, **run.facts})
     return kept, held
 
 
+def preflight(context):
+    """Once a run, before its first request starts: the sandbox with no bundle and no judge
+    (`KubeRunner.preflight`), its result kept under `preflights/<n>/`, and every check of
+    `sandbox_problems` made on it. A refusal, a failed check, a gateway key in its files or a Job
+    that gave no readable result stops the run before any request has started, so no request
+    meets a sandbox that would refuse it."""
+    if context.preflighted:
+        return
+    stage = context.stage
+    run = context.runner.preflight()
+    done = {name.split("/")[1] for name in stage.record["files"] if name.startswith(PREFLIGHT_DIRECTORY + "/")}
+    kept, held = kept_result(f"{PREFLIGHT_DIRECTORY}/{len(done)}", run, context.runner.key)
+    stage.commit(kept)
+    problems = sandbox_problems(context, run, sandbox_record(run), {}, preflight=True)
+    if held:
+        problems.append(f"the gateway key's bytes were in the preflight's {held}")
+    if problems:
+        raise Stopped(f"the sandbox's preflight, Job {run.job}, stops the run before any request: {problems[0]}")
+    context.preflighted = True
+
+
 def judge(context, line):
-    """One request's outcome, from its inputs to its verdict or its deviation."""
+    """One request's outcome, from its inputs to its verdict or its deviation. S10's code runs
+    inside `sealed`; the sandbox runs between. A sandbox that refuses to start a judge stops the
+    run with no outcome for the request, as any stop does."""
     shadow, stage = context.shadow, context.stage
     ask_id = line["askId"]
     if line["state"] != "ready":
         return deviation(line, "inputs", line["reason"])
     request = context.inputs.request(ask_id)
-    fact = shadow.legion_fact(request["ask"], request["issue"])
+    with sealed():
+        fact = shadow.legion_fact(request["ask"], request["issue"])
     if fact != request["fact"] or bool(fact.get("holds")) != request["factHold"]:
         return deviation(line, "fact", f"S10's legion_fact reads {fact}, and the inputs record {request['fact']}")
+    preflight(context)
     reader = RequestReader(request, context.inputs)
     shadow.api = reader.api
     shadow.reserved_neighbour = reader.reserved_neighbour
@@ -714,8 +803,9 @@ def judge(context, line):
     stage.commit({request_path(ask_id, STARTED_FILE): json_bytes({"askId": ask_id, "startedAt": utc_now()})})
     try:
         try:
-            job = shadow.start_judgement(recorder, request["ask"], row, [])
-            bundles = None if job["hold"] or reader.gaps else built_bundles(shadow, ask_id, recorder.calls)
+            with sealed():
+                job = shadow.start_judgement(recorder, request["ask"], row, [])
+                bundles = None if job["hold"] or reader.gaps else built_bundles(shadow, ask_id, recorder.calls)
         except InputsGap as error:
             if str(error) not in reader.gaps:
                 reader.gaps.append(str(error))
@@ -726,7 +816,8 @@ def judge(context, line):
         if reader.gaps:
             return deviation(line, "inputs", reader.gaps[0], reader.gaps)
         if job["hold"] is True:
-            judgement = shadow.finish_judgement(job, [], row, shadow.now())
+            with sealed():
+                judgement = shadow.finish_judgement(job, [], row, shadow.now())
             return outcome_of(line, "hold", verdict=judgement["verdict"], judgement=judgement,
                               judged_at=judgement["judged_at"])
         kept = {request_path(ask_id, os.path.basename(path)): data for path, data in bundles.items()}
@@ -738,16 +829,15 @@ def judge(context, line):
         shutil.rmtree(scratch, ignore_errors=True)
     sent = {**bundles, SANDBOX.CALLS_FILE: json.dumps(recorder.calls).encode("utf-8")}
     run = context.runner.run(ask_id, sent)
-    kept, held = kept_result(ask_id, run, context.runner.key)
+    kept, held = kept_result(request_path(ask_id, "sandbox"), run, context.runner.key)
     stage.commit(kept)
-    outcome = judged_request(context, line, recorder.calls, bundles, run, row, job, held)
     refused = (sandbox_record(run) or {}).get("refused")
     if refused is not None:
-        # The sandbox, not the request, refused: every later request would meet the same sandbox
-        # until its cause is cleared, and the same command then resumes the stage.
-        stage.commit({request_path(ask_id, OUTCOME_FILE): json_bytes(outcome)})
-        raise Stopped(f"the sandbox refused to start a judge: {refused}")
-    return outcome
+        # The sandbox, not the request, refused, though the preflight passed: every later request
+        # would meet the same sandbox until its cause is cleared, and the same command resumes.
+        raise Stopped(f"the sandbox refused to start a judge for {ask_id}: {refused}")
+    with sealed():
+        return judged_request(context, line, recorder.calls, bundles, run, row, job, held, sent)
 
 
 # ---------- the run ----------
@@ -837,7 +927,8 @@ def judge_all(context, stage, code, skill):
                if not stage.has(f"{CODE_DIRECTORY}/{name}")}
     if missing:
         stage.commit(missing)
-    context.shadow = load_shadow(os.path.join(stage.directory, CODE_DIRECTORY, "shadow.py"), context.pins)
+    context.shadow = load_shadow(os.path.join(stage.directory, CODE_DIRECTORY, "shadow.py"), context.pins,
+                                 code["shadow.py"])
     place_skill(context.shadow, skill)
     link_bundles(context.shadow.WORK, stage.directory)
     for line in context.inputs.inventory:
@@ -884,7 +975,7 @@ def run(flags, argv, environ, pins, admit, runner_of):
     stopped = None
     try:
         judge_all(context, stage, code, skill)
-    except (Stopped, KeyboardInterrupt) as error:
+    except (Stopped, JOB.KubeUnavailable, KeyboardInterrupt) as error:
         stopped = str(error) or type(error).__name__
     finally:
         unlink_bundles(pins.work, stage.directory)
@@ -913,7 +1004,7 @@ def main(argv, *, pins=FROZEN, admit=admit_with_bun, runner_of=JOB.KubeRunner, e
     except CannotRun as error:
         print(f"S10JudgeError: {error}", file=sys.stderr)
         return 2
-    except (Stopped, KeyboardInterrupt) as error:
+    except (Stopped, JOB.KubeUnavailable, KeyboardInterrupt) as error:
         print(f"S10JudgeError: the run stopped before it opened its stage: {error or type(error).__name__}",
               file=sys.stderr)
         return 2
