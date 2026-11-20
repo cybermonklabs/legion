@@ -54,7 +54,8 @@ export interface Item {
   readonly deps: readonly Dep[];
   /** The component whose code holds the item. */
   readonly unit: Comp;
-  /** Whether the walk reached it inside a slot's receiver, whose props its callers decide. */
+  /** Whether the walk reached it inside a component it does not climb out of, whose props its
+   *  callers decide: a slot's receiver, or the component registering a function it followed. */
   readonly inside: boolean;
   /** The element the walk ends at, where it reached a route. */
   readonly route?: boolean;
@@ -66,7 +67,7 @@ export interface Item {
 export interface Walked {
   /** What the walk passed, in the order it passed it. */
   readonly items: readonly Item[];
-  /** The components a slot was followed into, which the place sits in. */
+  /** The components a slot or a registered function was followed into, which the place sits in. */
   readonly receivers: ReadonlySet<string>;
   /** What between the place and the routes the walk met and cannot read, each with where it is. */
   readonly unread: readonly string[];
@@ -83,7 +84,8 @@ interface Walk {
 }
 
 /** How many steps a walk follows from where it started: each slot followed into the component it
- *  is handed to, and each helper, local or parameter followed to where it is drawn, is one step.
+ *  is handed to, each registered function followed into from the call drawing what it answers,
+ *  and each helper, local or parameter followed to where it is drawn, is one step.
  *  A place more steps away is unread, so the census fails closed there. */
 const MAX_DEPTH = 6;
 
@@ -273,7 +275,7 @@ function walkFrom(
         if (helper.uses.length === 0) {
           unreadAt(walk, current, `${helper.what} nowhere the census can see`);
         }
-        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1);
+        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1, [], top);
         return;
       }
       // Handed to a call the census does not follow as a helper: unread, unless the call draws
@@ -392,7 +394,7 @@ function handedTo(
  *  function and no further, since the walk that met the call goes on from the call. A caller the
  *  census cannot read - the hook read but not called, called in no component the census reads,
  *  handed no function it reads, or one drawing the parameter nowhere it can see - is unread
- *  where it calls the hook. */
+ *  where it reads or calls the hook. */
 function followRegistered(walk: Walk, hook: string, index: number, depth: number): void {
   const { program } = walk;
   const name = hook.slice(hook.lastIndexOf("#") + 1);
@@ -454,7 +456,7 @@ function paramUses(fn: ts.FunctionLikeDeclaration, index: number, comp: Comp): t
     if (ts.isIdentifier(node) && node !== param.name) {
       const found = lookup(node, comp);
       if (found.kind === "param" && found.fn === fn && found.index === index) {
-        if (placed(node, []) !== undefined) uses.push(node);
+        if (drawsWhole(node)) uses.push(node);
       }
     }
     ts.forEachChild(node, visit);
@@ -473,7 +475,6 @@ function helperAt(
   child: ts.Node,
   comp: Comp
 ): { readonly name: string; readonly uses: readonly ts.Node[]; readonly what: string } | undefined {
-  const drawsWhole = (use: ts.Node) => placed(use, []) !== undefined;
   if (isModuleHelper(current) && current !== comp.fn) {
     // A helper of its module, outside every component: follow each place a component it is
     // drawn in reads it, `comp` here, directly or through another helper of a module.
@@ -559,6 +560,9 @@ function earlyReturns(
     current = current.parent;
   }
 }
+
+/** Whether `use` places the slot or element it names whole (`placed`). */
+const drawsWhole = (use: ts.Node): boolean => placed(use, []) !== undefined;
 
 /** Whether a use of a slot prop places the slot itself: drawn as a child, passed on whole to
  *  another element, portalled, or returned. Answers the parts of `subpath` still to reach, or
