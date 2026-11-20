@@ -187,10 +187,22 @@ describe("a failed dial's line holds no part of the server", () => {
       [tokens.split],
     ],
   ];
+  // The rows whose server nats.js dials as an address, which looks no name up; every other row's
+  // server is a name, which nats.js resolves (resolve4, resolve6) and Bun's node:net then looks up.
+  // Each row checks the calls its own server makes, so a dial that goes around the stand-in
+  // resolver, and so reaches the machine's, fails the row rather than passing on a fast resolver.
+  const dialsAnAddress = new Set([
+    "a password's six digits on an IP host",
+    "a password's six digits on the loopback",
+    "a password's six digits after its second `:`",
+    "a password's six digits after a `]:`, before an IPv6 host",
+  ]);
   test.each(rows)(
     "%s",
-    async (_, server, secrets) => {
+    async (label, server, secrets) => {
       const error = await realFailure(server);
+      const resolved = dialsAnAddress.has(label) ? [] : ["getaddrinfo", "queryA", "queryAaaa"];
+      expect(resolverAsked.map((asked) => asked.split(" ")[0]).sort()).toEqual(resolved);
       expect(secrets.some((secret) => carried(error).includes(secret.toLowerCase()))).toBe(true);
       const reason = natsFailureReason(error);
       expect(reason).toMatch(CODE_REASON);
