@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { bearerCredential } from "../bearer";
 import { DISPATCH_WRITE_RETRY, DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
 
-// Every Dispatch the client reaches runs its keyed layer on every POST and PATCH route
+// Every Dispatch that carries `b1c42d1d7d` runs its keyed layer on every POST and PATCH route
 // (`keyedWrites`, packages/envoy/internal/dispatch/api/request_keys.go): it stores a keyed write once and
 // answers a repeat under the same key with the first write's answer. So a keyed write whose answer
 // was lost after Dispatch stored it is sent again under its key, and lands once, whatever `/healthz`

@@ -1093,11 +1093,11 @@ describe("the dispatch CLI", () => {
   });
 
   // Every `dispatch` command is a process of its own and carries nothing of Dispatch's keyed layer
-  // from an earlier call. Every Dispatch runs that layer, so a later call's write whose attempt
-  // fails is asked again under its key with no /healthz read, which the load that stalled the write
-  // can keep from answering in time. The state.json here is one an earlier release wrote, whose
-  // `keyedLayer` remembered a sighting of the layer too old for that release to trust: it is not
-  // read, and the call's save writes no such member back.
+  // from an earlier call. Every Dispatch that carries `b1c42d1d7d` runs that layer, so a later
+  // call's write whose attempt fails is asked again under its key with no /healthz read, which the
+  // load that stalled the write can keep from answering in time. The state.json here is one an
+  // earlier release wrote, whose `keyedLayer` remembered a sighting of the layer too old for that
+  // release to trust: it is not read, and the call's save writes no such member back.
   test("a failed write is asked again under its key with no /healthz read, whatever an earlier call of the session saw", async () => {
     const origin = `http://127.0.0.1:${server.port}`;
     const file = join(stateDir, "sessions", "ses-1", "state.json");

@@ -296,9 +296,9 @@ describe("DispatchClient's writes", () => {
   });
 
   // Dispatch's keyed layer stores a write once per key and answers a repeat under it with the
-  // first answer, on every write route of every Dispatch, so a failure is asked again whatever it
-  // says of that layer: Dispatch's own refusal from outside it, which carries no key back, a
-  // gateway's page and a transport failure alike.
+  // first answer, on every write route of every Dispatch that carries `b1c42d1d7d`, so a failure is
+  // asked again whatever it says of that layer: Dispatch's own refusal from outside it, which
+  // carries no key back, a gateway's page and a transport failure alike.
   test("ask again under the key whatever the failure says of the keyed layer", async () => {
     for (const answer of [
       refusal(500, "INTERNAL", "internal server error"),

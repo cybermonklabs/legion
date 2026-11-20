@@ -664,8 +664,9 @@ silence (an upload's included), failed in transport after it went out (a reset a
 read it), its answer's body broke off or was ended by the deadline or the caller's stop, or it was
 ended by either while it was in flight; a refused connection or a name that did not resolve
 reached nothing. Every answer's body is read inside its attempt, so a 2xx settles only once its
-body is read whole. From "may have landed", only such a 2xx, `409 KEY_COMMITTED` (a landing) or
-a final refusal settles the write. A final refusal is one of these:
+body is read whole. From "may have landed", only a 2xx Dispatch wrote, read whole (not an empty,
+untyped or non-JSON one; a bodiless 204 or 205 is one), `409 KEY_COMMITTED` (a landing) or a final
+refusal settles the write. A final refusal is one of these:
 
 - an answer marked `Idempotency-Replayed: ?1`: Dispatch's stored answer, or a recovery replay;
 - `422 KEY_REUSED` that echoes exactly this request's key. Every attempt of one call sends the
@@ -719,7 +720,8 @@ the error says Dispatch finishes an attempt it received, and to read the write b
 it again, since a new command sends it under a new key. A conversion that writes nothing (the
 markdown round trip) never leaves "nothing sent", so it keeps its own answers.
 
-Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATCH` route. A retry
+Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every `POST` and `PATCH` route
+(the deploy order below says when the client may rely on that). A retry
 therefore always sends the same key and encoded body again, without probing `/healthz` or keeping
 process or session memory of a server capability. A transport failure, a silence cut, a gateway or
 Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the write's pacing and

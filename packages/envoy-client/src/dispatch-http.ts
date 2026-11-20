@@ -182,15 +182,16 @@ export class DispatchGatewayError extends DispatchServiceError {
 }
 
 /**
- * A write that ended, once an attempt may have landed (write-outcome.ts), without Dispatch's 2xx
- * read whole, its `409 KEY_COMMITTED` or a final refusal, so it may or may not have taken effect.
+ * A write that ended, once an attempt may have landed (write-outcome.ts), without a 2xx Dispatch
+ * wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one), its
+ * `409 KEY_COMMITTED` or a final refusal, so it may or may not have taken effect.
  * A final refusal is an answer marked `Idempotency-Replayed: ?1` (including a recovery replay),
  * `422 KEY_REUSED` echoing exactly this request's key, or a fresh answer echoing exactly that key
  * with a 4xx Dispatch stores (not 401, 408 or 429) and no keyed-layer code (`answerEvent`).
- * Everything else — a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a broken body, a page, a 3xx, a
- * refusal before the key claim, an answer echoing another key, a credential failure, a silence
- * cut, the deadline or the caller's stop — ends here. This is deliberately no
- * `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
+ * Everything else — a 5xx, a 408 or 429, `409 KEY_IN_FLIGHT`, a broken body, a 2xx that is no
+ * answer of Dispatch's, a page, a 3xx, a refusal before the key claim, an answer echoing another
+ * key, a credential failure, a silence cut, the deadline or the caller's stop — ends here. This
+ * is deliberately no `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
  * `last` (also the `cause`) is what ended it. `key` is the `Idempotency-Key` every attempt of the
  * write carried, each attempt that may have landed as one identity: a resend under it, as that
  * identity, is answered from what Dispatch stored, never written twice. The message always says
@@ -2185,9 +2186,9 @@ export class DispatchClient {
    * - `settle`: the answer is the call's (its payload, the refusal Dispatch decided, or a write
    *   Dispatch made whose answer is gone), handed back read whole, for `#payloadOf`;
    * - `retry`: asked again on `writeRetry`'s pacing (or the last answer's `Retry-After`, whether or
-   *   not its body came whole), while attempts and time are left. Every Dispatch the client reaches
-   *   runs the keyed layer on every write route, so the retry needs no probe or key echo. With none
-   *   left, the next event is `exhausted`;
+   *   not its body came whole), while attempts and time are left. Every Dispatch that carries
+   *   `b1c42d1d7d` runs the keyed layer on every write route, so the retry needs no probe or key
+   *   echo. With none left, the next event is `exhausted`;
    * - `retry-at-once`: the credential is told its token is not live (once per call), presents
    *   afresh, and the write goes again;
    * - `retry-route`: the write goes again after each of `NO_ROUTE_RETRY_DELAYS_MS`, jittered, as

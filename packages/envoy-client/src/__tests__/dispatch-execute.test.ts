@@ -410,8 +410,9 @@ describe("executeDispatchTool", () => {
         "does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect(write).not.toContain("a retry may succeed");
-    // Every Dispatch runs the keyed layer, so the write is asked again under its key until its five
-    // attempts are spent, with no /healthz read, and the read goes once.
+    // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so the
+    // write is asked again under its key until its five attempts are spent, with no /healthz read,
+    // and the read goes once.
     expect(requests).toEqual(Array.from({ length: 5 }, () => "POST /api/v1/issues/DSP-1/messages"));
     requests.length = 0;
 

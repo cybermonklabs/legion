@@ -388,12 +388,14 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-Every Dispatch judges the key on every `POST` and `PATCH` route, so the command asks nothing before
+Every Dispatch that carries `b1c42d1d7d` judges the key on every `POST` and `PATCH` route, so the
+command asks nothing before
 it asks again. Dispatch makes the write once per key and answers a repeat with the first answer, so
 the command never makes a write twice. When the write landed but Dispatch has no answer to give for
 it (`409 KEY_COMMITTED`, or a first answer too large to keep), the command exits 0 and says it was
 made: read it back to see it. When an attempt may have landed, the command settles only on a 2xx
-read whole or a final refusal: `Idempotency-Replayed: ?1` (also a recovery replay),
+Dispatch wrote, read whole (not an empty, untyped or non-JSON one; a bodiless 204 or 205 is one),
+or on a final refusal: `Idempotency-Replayed: ?1` (also a recovery replay),
 `422 KEY_REUSED` that echoes exactly its request key (every attempt of one command sends the same
 bytes, so a key held for another request was never claimed by this one), or a fresh answer that
 echoes exactly its request key, has a stored 4xx other than 401, 408 or 429, and is none of

@@ -2,12 +2,13 @@ kind: Changed
 body: |-
     `DispatchClient` sends a keyed write (a `POST` or `PATCH`) that ended with no definitive answer
     again under its key whatever the failure says of Dispatch's keyed layer, and asks nothing first:
-    every Dispatch runs that layer on every write route, so a repeat is answered from the key and the
-    write lands once. Before, it resent only after an answer that echoed the key in the last five
-    minutes or a `GET /healthz` that said `idempotency_keys: true` within 5 s, and a probe that was
-    refused, timed out or answered no JSON reported a write Dispatch had stored as one that may or
-    may not have taken effect. Once an attempt may have landed, `DispatchServiceError` is thrown
-    only for a final refusal: `Idempotency-Replayed: ?1` (including a recovery replay),
+    every Dispatch that carries `b1c42d1d7d` runs that layer on every write route, so a repeat is
+    answered from the key and the write lands once. Before, it resent only after an answer that
+    echoed the key in the last five minutes or a `GET /healthz` that said `idempotency_keys: true`
+    within 5 s, and a probe that was refused, timed out or answered no JSON reported a write
+    Dispatch had stored as one that may or may not have taken effect. Once an attempt may have
+    landed, `DispatchServiceError` is thrown only for a final refusal: `Idempotency-Replayed: ?1`
+    (including a recovery replay),
     `422 KEY_REUSED` echoing exactly this request's key (every attempt of a call carries the same
     bytes, so a key held under another digest was claimed by no attempt of it), or a fresh answer
     that echoes exactly this request's key, has a 4xx `storedStatus` keeps (not 401, 408 or 429),
