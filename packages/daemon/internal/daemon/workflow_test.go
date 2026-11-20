@@ -180,9 +180,12 @@ func TestStartWaitsDecidesEachWait(t *testing.T) {
 			{call: proof, answer: retryAfter("1800"), wait: 30 * time.Minute, until: 30 * time.Minute, waited: 30 * time.Minute},
 			{at: 50 * time.Minute, call: proof, answer: retryAfter("3600"), wait: time.Hour, until: 70 * time.Minute, waited: 50 * time.Minute},
 		}},
-		{name: "an App call at or past the end", steps: []step{
-			{call: proof, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
-			{at: 70 * time.Minute, call: logins, answer: retryAfter("30"), wait: 30 * time.Second, waited: 30 * time.Second, ended: true},
+		{name: "an App call at the end", steps: []step{
+			{call: logins, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
+			{at: 70 * time.Minute, call: proof, answer: retryAfter("30"), wait: 30 * time.Second, waited: 30 * time.Second, ended: true},
+		}},
+		{name: "an App call past the end", steps: []step{
+			{call: logins, answer: retryAfter("30"), wait: 30 * time.Second, until: 30 * time.Second, waited: 30 * time.Second},
 			{at: 75 * time.Minute, call: proof, answer: noHeader, wait: time.Minute, waited: 30 * time.Second, ended: true},
 		}},
 	} {

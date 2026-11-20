@@ -1822,8 +1822,8 @@ func (c *controllerCredentialTokens) ReadToken(_ context.Context, _ appauth.AppR
 }
 
 // InstalledOwners is the owner accounts the review App is installed on (installOn), which the
-// controller's bundle reads from GitHub at every build (appauth.OwnerInstallations) and holds a
-// directory for each of.
+// controller's bundle reads at every build (appauth.OwnerInstallations) and holds a directory for
+// each of.
 func (c *controllerCredentialTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

@@ -233,10 +233,9 @@ var renamedDirs = slices.Sorted(slices.Values([]string{recordedSmoke.Owner(), se
 // owner predicate read as the project owning that owner.
 var otherOfRecordedOwner = ghrepo.MustParse(recordedSmoke.Owner() + "/other")
 
-// installedOnServed is the owner accounts a role's App is installed on, as a bundle reads them
-// from GitHub at every build (appauth.OwnerInstallations): every owner of the repositories
-// served, which is the ordinary deployment and what a test that is not about an installation's
-// own reach wants.
+// installedOnServed is the owner accounts a role's App is installed on, as a bundle reads them at
+// every build (appauth.OwnerInstallations): every owner of the repositories served, which is the
+// ordinary deployment and what a test that is not about an installation's own reach wants.
 type installedOnServed struct{ repos func() []ghrepo.Repository }
 
 func (i installedOnServed) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {

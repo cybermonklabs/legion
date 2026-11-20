@@ -512,11 +512,12 @@ func TestTokenModeACallerDeadlineNeitherKillsNorRepeatsTheCommand(t *testing.T) 
 }
 
 // A caller of InstalledOwners in token mode whose deadline ends while the App's token_command is
-// still releasing every installation is told the command is pending, as runTokenCommand tells its
-// own caller: ErrCommandPending in a TransientError, which wraps the deadline too. The boot's key
-// proof reads that as pending and spends no attempt on it (internal/daemon's appAttempt), so a
-// grant that waits on a person's approval holds the boot without ending it. A caller that joins
-// the read still in flight gets the release once the command prints it, and the command runs once.
+// still releasing every installation is told the command is pending, as runTokenCommand tells
+// every caller past its deadline: ErrCommandPending in a TransientError, which wraps the deadline
+// too. The boot's key proof reads that as pending and spends no attempt on it (internal/daemon's
+// appAttempt), so a grant that waits on a person's approval holds the boot without ending it. A
+// caller that joins the run still going gets the release once the command prints it, and the
+// command runs once.
 func TestTokenModeAnInstalledOwnersCallerPastItsDeadlineIsToldTheCommandIsPending(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	dir := t.TempDir()
@@ -540,7 +541,7 @@ func TestTokenModeAnInstalledOwnersCallerPastItsDeadlineIsToldTheCommandIsPendin
 		owners, err := tokens.InstalledOwners(context.Background(), Implement)
 		joined <- answer{owners, err}
 	}()
-	// The second caller joins the read still in flight before the command may print.
+	// The second caller joins the run still going before the command may print.
 	time.Sleep(50 * time.Millisecond)
 	if err := os.WriteFile(gate, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -585,10 +586,11 @@ func TestTokenModeACallerAfterTheRunFinishedGetsItsResult(t *testing.T) {
 
 // An InstalledOwners caller whose deadline ended while the token_command ran (the boot's key
 // proof, which then waits and asks again), and who comes back only after the command finished,
-// gets that run's release: the command does not run again. The shared installation read that the
-// first caller started is the one left waiting on the run when it finishes, and it takes the run's
-// result. That read's answer must still reach the caller that comes back, as a finished run's
-// result does (finishedRunKeep), or a grant a person approved is asked for once more.
+// gets that run's release: the command does not run again. The run finished with no caller
+// waiting for it, and runTokenCommand keeps it for the caller that comes back (finishedRunKeep);
+// an installation read that took the run's result while no caller waited, and kept nothing of it,
+// would leave that caller to run the command again, and a grant a person approved would be asked
+// for once more.
 func TestTokenModeAnInstalledOwnersCallerBackAfterTheRunFinishedGetsItsRelease(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	runs := filepath.Join(t.TempDir(), "runs")
@@ -601,12 +603,20 @@ func TestTokenModeAnInstalledOwnersCallerBackAfterTheRunFinishedGetsItsRelease(t
 	if _, err := tokens.InstalledOwners(short, Implement); !errors.Is(err, ErrCommandPending) {
 		t.Fatalf("InstalledOwners past its deadline = %v, want ErrCommandPending", err)
 	}
-	// The command finishes while no caller waits: the shared read the first call started ends.
-	testwait.Eventually(t, "the shared installation read to end once the command finished", func() bool {
-		tokens.mu.Lock()
-		defer tokens.mu.Unlock()
-		_, reading := tokens.pendingInstallations[Implement]
-		return !reading
+	// The command finishes while no caller waits: the run the first call started ends.
+	tokens.mu.Lock()
+	run := tokens.commands[leaseScope(false, Implement, "")]
+	tokens.mu.Unlock()
+	if run == nil {
+		t.Fatal("no token_command run goes on after the caller past its deadline left")
+	}
+	testwait.Eventually(t, "the token_command's run to end", func() bool {
+		select {
+		case <-run.done:
+			return true
+		default:
+			return false
+		}
 	})
 	later, cancelLater := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelLater()

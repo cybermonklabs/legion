@@ -536,13 +536,14 @@ func commandTokensWith(t *testing.T, answer func(w http.ResponseWriter, r *http.
 // A token_command still running when an attempt of the boot's key proof ends holds the boot
 // without ending it, however many attempt bounds it outlasts: a grant may wait on a person's
 // approval. Each such attempt is pending and spends no attempt of appMintRetry
-// (appauth.ErrCommandPending, appAttempt), the next attempt joins the read still in flight
-// (appauth.Manager.InstalledOwners), and once the command prints its release the key proof passes
-// and the boot serves. Here each App's token_command answers the logins read at once, and holds
-// the key proof's release of every installation for twice the bounds of all appMintRetry's
-// attempts. Control: with InstalledOwners answering its caller's bare ctx.Err() in token mode too,
-// as it did before INFRA-4401's review 5996655281, each attempt the bound ends is transient, and
-// the boot refuses once the three are spent, naming the key proof's context deadline exceeded.
+// (appauth.ErrCommandPending, appAttempt), the next attempt joins the command's run still going
+// (appauth.Manager.InstalledOwners, whose token-mode read is runTokenCommand's), and once the
+// command prints its release the key proof passes and the boot serves. Here each App's
+// token_command answers the logins read at once, and holds the key proof's release of every
+// installation for twice the bounds of all appMintRetry's attempts. Control: with InstalledOwners
+// answering its caller's bare ctx.Err() in token mode too, as it did before INFRA-4401's review
+// 5996655281, each attempt the bound ends is transient, and the boot refuses once the three are
+// spent, naming the key proof's context deadline exceeded.
 func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *testing.T) {
 	quickAppMints(t)
 	hold := 2 * time.Duration(appMintRetry.Attempts) * appMintAttempt
@@ -573,8 +574,8 @@ func TestABootWaitsForATokenCommandThatOutlastsEveryAttemptOfTheKeyProof(t *test
 		t.Fatalf("the key proof was pending %d times, want more than appMintRetry's %d attempts", len(proof), appMintRetry.Attempts)
 	}
 	for _, line := range proof {
-		if detail, _ := line["detail"].(string); !strings.Contains(detail, "token_command's release of every installation is still running after") {
-			t.Errorf("a pending line's detail = %q, want the token_command's release of every installation still running", detail)
+		if detail, _ := line["detail"].(string); !strings.Contains(detail, `.token_command for "" is still running after context deadline exceeded (a grant may wait on a person's approval)`) {
+			t.Errorf("a pending line's detail = %q, want runTokenCommand's answer that the token_command's release of every installation is still running", detail)
 		}
 	}
 	if transient := byProbe(loggedMessages(t, logs.String(), "boot probe failed transiently"), "GitHub App key proof"); len(transient) != 0 {

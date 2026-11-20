@@ -350,13 +350,17 @@ func appTransient(err error) bool {
 // App's, and it runs again within appMintRetry rather than refusing the start (#1347). Any other
 // error is a refusal.
 //
-// The next attempt of an App's installation read joins the shared read still in flight
-// (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit (1 min) when
-// GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an attempt after that
-// asks GitHub afresh. In token mode that read is the App's token_command, and an attempt whose
-// bound ends while the command runs is pending (InstalledOwners answers ErrCommandPending); a read
-// that ends between two attempts keeps its answer for the next one (appauth's finishedRunKeep), so
-// the command does not run again.
+// Under an App's JWT the next attempt of its installation read joins the shared read still in
+// flight (appauth.Manager.InstalledOwners), which appauth drops at its installationReadLimit
+// (1 min) when GitHub never answers it, inside appMintRetry's worst case of 2 min 20 s, so an
+// attempt after that asks GitHub afresh. In token mode the installation read and the logins read
+// are both the App's token_command's release of every installation, whose run appauth's
+// runTokenCommand shares: an attempt whose bound ends while the command runs is pending
+// (ErrCommandPending), the next attempt joins the run still going, and a run that finishes
+// between two attempts is kept for the next one (appauth's finishedRunKeep), so the command does
+// not run again for it. The logins read takes and forgets every run it is answered with, so the
+// key proof that follows it never takes a release the logins read was answered with (appauth's
+// anyInstallation).
 func appAttempt(waits *startWaits, call string, attempt func(context.Context) error) func(context.Context) bootprobe.Outcome {
 	return func(ctx context.Context) bootprobe.Outcome {
 		bounded, cancel := context.WithTimeout(ctx, appMintAttempt)

@@ -67,24 +67,24 @@ type repositories struct {
 	// that repository is still admitted — until the process starts again and builds the entries
 	// from the preparations that follow it — and GitHub then refuses its roles' requests on that
 	// repository, though a public repository may still be read. A stale entry decides admission
-	// alone and never what a token reaches. Every build of a role's gh bundle reads from GitHub
-	// again the owners its App is installed on and fails closed on a read that fails
+	// alone and never what a token reaches. Every build of a role's gh bundle reads again the
+	// owners its App is installed on and fails closed on a read that fails
 	// (internal/appauth/credential.go, "The owners the App is installed on are read at every
-	// bundle, GitHub asked each time … failing closed is this rule's whole point"); the bundle's
-	// directories are built from that answer and from the rename rule (servesRepository). So the
-	// cost is that admission, and what the roles meet next depends on what was uninstalled. The
-	// entry's read is per repository (appauth's GET /repos/{owner}/{repo}/installation) and a
-	// role's mint is per owner (Manager.Token), so an App taken off ONE repository of a
-	// selected-repositories installation still mints for that owner, the bundle builds, and GitHub
-	// refuses the roles' requests on that repository. An App taken off the WHOLE account leaves
-	// that owner's cached lease in use until its expiry is no more than appauth's refreshWindow
-	// away (Manager.lease), and the default directory cannot be left out, so the bundles built in
-	// that time succeed and hold a token GitHub would no longer mint; the first build that mints
-	// that owner for real fails, naming that owner and GitHub's answer for it (mintBundle returns
-	// the named failure of the default owner rather than leaving it out). runtime.ErrNoGitHubOwner
-	// is neither case: it is the App installed nowhere at all, which an issue that has a repository
-	// never reaches, since bundleDirs always holds a directory for that repository's own owner. No
-	// token reaches a repository because of any of it.
+	// bundle (source's InstalledOwners, through installedLayout) … failing closed is this rule's
+	// whole point"); the bundle's directories are built from that answer and from the rename rule
+	// (servesRepository). So the cost is that admission, and what the roles meet next depends on
+	// what was uninstalled. The entry's read is per repository (appauth's GET
+	// /repos/{owner}/{repo}/installation) and a role's mint is per owner (Manager.Token), so an
+	// App taken off ONE repository of a selected-repositories installation still mints for that
+	// owner, the bundle builds, and GitHub refuses the roles' requests on that repository. An App
+	// taken off the WHOLE account leaves that owner's cached lease in use until its expiry is no
+	// more than appauth's refreshWindow away (Manager.lease), and the default directory cannot be
+	// left out, so the bundles built in that time succeed and hold a token GitHub would no longer
+	// mint; the first build that mints that owner for real fails, naming that owner and GitHub's
+	// answer for it (mintBundle returns the named failure of the default owner rather than leaving
+	// it out). runtime.ErrNoGitHubOwner is neither case: it is the App installed nowhere at all,
+	// which an issue that has a repository never reaches, since bundleDirs always holds a directory
+	// for that repository's own owner. No token reaches a repository because of any of it.
 	entries map[string]*repositoryEntry
 	// live is each repository a live issue record of the project names, by its lowercased
 	// <owner>/<name>, as the record keeps GitHub's spelling of it (record.Issue.GitHubRepo): what

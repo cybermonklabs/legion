@@ -70,9 +70,9 @@ func (t ownerTokens) ReadToken(_ context.Context, role AppRole, owner string) (L
 }
 
 // installedOn is the owner accounts an App is installed on, which a bundle reads at every build
-// (OwnerInstallations): the daemon's own reader asks GitHub each time, so this one counts its
-// reads and may be given an owner between two builds. fail is what every read answers instead,
-// which is the bundle's own failure.
+// (OwnerInstallations): the daemon's own reader makes a read for each call (InstalledOwners), so
+// this one counts its reads and may be given an owner between two builds. fail is what every
+// read answers instead, which is the bundle's own failure.
 type installedOn struct {
 	mu     sync.Mutex
 	owners []string
@@ -247,10 +247,10 @@ func TestGitHubCredentialBundlesEveryOwnerTheAppIsInstalledOn(t *testing.T) {
 	}
 }
 
-// A bundle reads its App's installations from GitHub at every build and keeps no set of its own,
-// so an account that installs the App is in the next bundle and one that removes it is out of
-// it, with no clock moved, no timer and no restart. The drift check reads the record the last
-// build wrote (Installed), never GitHub, and is handed what that build saw.
+// A bundle reads its App's installations at every build (OwnerInstallations) and keeps no set of
+// its own, so an account the read names is in that build's bundle and one the read no longer
+// names is out of it, with no clock moved, no timer and no restart. The drift check reads the
+// record the last build wrote (Installed), never GitHub, and is handed what that build saw.
 //
 // The case: the App is installed on two accounts and the rename rule serves one repository of one
 // of them. The bundle holds a directory for each account, one lease each and no repository

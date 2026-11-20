@@ -61,14 +61,17 @@ var ErrDefaultOwnerNotInstalled = errors.New("is no owner the controller's App i
 // description (ControllerCredential, Tokens.ReadToken): the two callers differ in the lease they
 // ask for and not at all in the directories they hold.
 //
-// The owners the App is installed on are read at every bundle, GitHub asked each time (source's
-// InstalledOwners, through installedLayout): the daemon keeps no owner set of its own and runs
-// no timer, so an account that installs the App is reachable at the next bundle and one that
+// The owners the App is installed on are read at every bundle (source's InstalledOwners, through
+// installedLayout): under the App's JWT GitHub is asked each time, and in token mode the read is
+// the App's token_command's release of every installation, which may be that of a run that
+// finished, with no caller waiting for it, up to finishedRunKeep before the bundle. The daemon
+// keeps no owner set of its own, so an account that installs the App is reachable at the first
+// bundle whose read began after the change, under the App's JWT the next one, and one that
 // removes it stops minting there. A read that fails fails the bundle, naming the App: a bundle
-// built from a set the daemon could not read would narrow or widen a role's reach silently,
-// and failing closed is this rule's whole point (dispatch://INFRA-3136). What it read is
-// recorded in installed for the drift check to compare a pod against (Installed, GitHubDirs),
-// which may call no GitHub of its own.
+// built from a set the daemon could not read would narrow or widen a role's reach silently, and
+// failing closed is this rule's whole point (dispatch://INFRA-3136). What it read is recorded in
+// installed for the drift check to compare a pod against (Installed, GitHubDirs), which may call
+// no GitHub of its own.
 //
 // Default is the directory the issue's own repository routes to, which GH_CONFIG_DIR names: the
 // one `legion gh` and `legion git-credential` answer that repository from (ghconfig.RouteDir,
@@ -213,7 +216,8 @@ func ControllerCredential(source Source, served func(ghrepo.Repository) bool, re
 }
 
 // installedLayout is how both credentials open: it reads the owners appRole's App is installed
-// on, GitHub asked each time, records them in installed for the drift check (Installed), and
+// on (InstalledOwners: GitHub asked under the App's JWT, the token_command's release of every
+// installation in token mode), records them in installed for the drift check (Installed), and
 // describes the bundle those owners make for repo (bundleDirs). A read that fails fails the
 // bundle, naming the App and role, the role the bundle is for.
 func installedLayout(ctx context.Context, installations OwnerInstallations, appRole AppRole, role claim.Role,
@@ -309,11 +313,11 @@ func (l *LeftOut) left(dir string, roles []AppRole) bool {
 //
 // It is what it says and no more: the installations as the last bundle build of that App read
 // them, which may be a minute old and may have been read for another role of the same App.
-// That is what an honest comparison a pod is replaced on may use, while every bundle reads
-// GitHub itself: a pod is a thing of the last launch, so comparing it against the last read is
-// the question the drift check asks, and the bundle a replacement pod is handed is read fresh
-// whenever it is built. The boot's read is no such comparison: no mint has run at boot, so
-// nothing says which of its owners a bundle leaves out (LeftOut, which only a bundle's mint
+// That is what an honest comparison a pod is replaced on may use, while every bundle makes its
+// own read (InstalledOwners): a pod is a thing of the last launch, so comparing it against the
+// last read is the question the drift check asks, and the bundle a replacement pod is handed is
+// built on the read made for it. The boot's read is no such comparison: no mint has run at boot,
+// so nothing says which of its owners a bundle leaves out (LeftOut, which only a bundle's mint
 // fills), and a set built from it would name an owner whose mint GitHub refuses and read every
 // pod as lacking that owner's directory. So the drift check reads the bundles' reads alone: a
 // role whose App no bundle has built for yet is recorded nothing there, and GitHubDirs then
@@ -377,9 +381,9 @@ func (i *Installed) RecordProof(role AppRole, owners []string) {
 // while no bundle of it has been built, when the boot proved its key (RecordProof), and whether
 // either has read it at all: what internal/daemon tells a launch its own App reaches
 // (daemon.RepositoriesClause), which may be a minute old and may have been read for another role
-// of the same App, as this record's own doc says. It is no set to mint from — a bundle reads
-// GitHub itself, at every build (GitHubCredential) — and the answer is the record's own slice
-// copied, so a caller that sorts or appends to it moves nothing here.
+// of the same App, as this record's own doc says. It is no set to mint from — a bundle makes its
+// own read at every build (GitHubCredential, InstalledOwners) — and the answer is the record's
+// own slice copied, so a caller that sorts or appends to it moves nothing here.
 func (i *Installed) Owners(role AppRole) ([]string, bool) {
 	if i == nil {
 		return nil, false

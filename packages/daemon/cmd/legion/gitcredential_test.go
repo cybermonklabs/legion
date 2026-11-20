@@ -276,7 +276,7 @@ func (namedTokens) ReadToken(_ context.Context, role appauth.AppRole, owner stri
 }
 
 // namedTokens also answers which owners the App is installed on (appauth.OwnerInstallations),
-// which a bundle reads from GitHub at every build: cybermonklabs alone, the account this
+// which a bundle reads at every build: cybermonklabs alone, the account this
 // deployment's App is installed on, so sjawhar's directory is the configured rename's and
 // holds the token of the installation its repository moved to.
 func (namedTokens) InstalledOwners(context.Context, appauth.AppRole) ([]string, error) {
