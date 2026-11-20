@@ -9,7 +9,6 @@ package capabilities
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -115,16 +114,24 @@ type renderer struct {
 // render renders every row of Table, in its order, dispatching each to r's function for its site;
 // a withheld row renders itself: State{Name, StatusWithheld, the citation and the summary}. CheckImage
 // and Deployment.Report are its two callers, each with the renderer that gives a row's state as
-// that surface knows it. A ctx that ends ends the walk — the rows rendered so far, and an error
-// wrapping ctx's — since an image row's rendering runs commands under it; Report's renderers run
-// none and pass a context that never ends.
-func render(ctx context.Context, r renderer) ([]State, error) {
+// that surface knows it. An image row's rendering runs commands under ctx, which ctx's end stops,
+// so ctx is read after each one: an image row whose rendering returned after ctx ended, and every
+// image row after it, which is not run, renders StatusUnanswered, "not checked: <ctx's error>",
+// in place of what a cut-short command would make it say. Every other row renders as it does
+// under a live ctx, since its rendering runs nothing. Report's renderers run no command and pass a
+// context that never ends.
+func render(ctx context.Context, r renderer) []State {
 	states := make([]State, 0, len(Table))
 	for _, row := range Table {
 		var state State
 		switch row.Site {
 		case SiteImage:
-			state = r.image(row)
+			if ctx.Err() == nil {
+				state = r.image(row)
+			}
+			if err := ctx.Err(); err != nil {
+				state = State{Name: row.Name, Status: StatusUnanswered, Detail: "not checked: " + err.Error()}
+			}
 		case SiteLive:
 			state = r.live(row)
 		case SiteDeployment:
@@ -132,12 +139,9 @@ func render(ctx context.Context, r renderer) ([]State, error) {
 		case SiteWithheld:
 			state = State{Name: row.Name, Status: StatusWithheld, Detail: withheldDetail(row)}
 		}
-		if err := ctx.Err(); err != nil {
-			return states, fmt.Errorf("capability check: %w", err)
-		}
 		states = append(states, state)
 	}
-	return states, nil
+	return states
 }
 
 // Decidable is the SiteDeployment names in Table order: what a legion.yaml decided line may name,

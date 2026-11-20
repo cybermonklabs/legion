@@ -71,19 +71,18 @@ var imageChecks = map[Name]imageCheck{
 // the daemon reports from the deployment's configuration, withheld rows with their citations. It
 // runs after the launch probes (daemon.ProbeImage) passed: the eval-js and skills rows are
 // present by those probes, which ran Oh My Pi — its own JavaScript runtime — and resolved the
-// prompt-named skills. err is nil when every image row's check passed; otherwise it names every
-// missing one, so one rebuild of the image fixes them all rather than the first alone. A ctx that
-// ends ends the check with an error wrapping ctx's.
+// prompt-named skills. err is nil when every image row checked passed; otherwise it names every
+// missing one, so one rebuild of the image fixes them all rather than the first alone. An image row
+// whose check returned after ctx ended, and every image row after it, is unanswered (render) and
+// left out of err: a row found missing while ctx was alive is still named.
 func CheckImage(ctx context.Context, img Image) ([]State, error) {
-	var absent []string
-	states, err := render(ctx, renderer{
+	states := render(ctx, renderer{
 		image: func(row Capability) State {
 			if row.Name == Browser && img.SkipBrowser {
 				return State{Name: row.Name, Status: StatusUnchecked, Detail: "not checked (--skip-browser): the image is for a deployment that turns Oh My Pi's browser off"}
 			}
 			detail, ok := imageChecks[row.Name](ctx, img)
 			if !ok {
-				absent = append(absent, fmt.Sprintf("capability %s is missing: %s", row.Name, detail))
 				return State{Name: row.Name, Status: StatusMissing, Detail: detail}
 			}
 			return State{Name: row.Name, Status: StatusPresent, Detail: detail}
@@ -95,8 +94,11 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 			return State{Name: row.Name, Status: StatusReported, Detail: "the daemon reports it from the deployment's configuration: " + row.Summary}
 		},
 	})
-	if err != nil {
-		return states, err
+	var absent []string
+	for _, state := range states {
+		if state.Status == StatusMissing {
+			absent = append(absent, fmt.Sprintf("capability %s is missing: %s", state.Name, state.Detail))
+		}
 	}
 	if len(absent) > 0 {
 		return states, errors.New(strings.Join(absent, "; "))

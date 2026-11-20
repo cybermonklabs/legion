@@ -357,3 +357,28 @@ func RoleOverlaysRefused(output string) (role, why string, ok bool) {
 	}
 	return match[1], match[2], true
 }
+
+// NoVerdictExit is the status `legion probe-image` exits with when a check has no verdict and
+// nothing failed: a TLS run of a client that the probe's own limits stopped short of an answer, or
+// a check the probe's deadline cut. It is EX_TEMPFAIL of sysexits.h, a failure a later try can
+// clear, and the probe writes a line that starts with NoVerdictPrefix to stderr before it, naming
+// each such run and check. The daemon's probe Sandbox reads both (internal/runtime/sandbox's
+// judge); a daemon of an earlier release reads the exit as a refusal, as it reads exit 1.
+const NoVerdictExit = 75
+
+// NoVerdictPrefix begins the line `legion probe-image` prints before it exits NoVerdictExit; the
+// rest of the line names each TLS run and check with no verdict, joined by "; ".
+const NoVerdictPrefix = "legion probe-image: worker probe has no verdict: "
+
+// noVerdict is a no-verdict line.
+var noVerdict = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(NoVerdictPrefix) + `(.*)$`)
+
+// NoVerdict is the text after NoVerdictPrefix of the first line in output that starts with it, and
+// false when output holds none.
+func NoVerdict(output string) (string, bool) {
+	match := noVerdict.FindStringSubmatch(output)
+	if match == nil {
+		return "", false
+	}
+	return match[1], true
+}

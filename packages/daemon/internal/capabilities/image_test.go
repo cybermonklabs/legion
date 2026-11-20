@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -509,16 +510,75 @@ func TestEveryImageRowHasACheck(t *testing.T) {
 	}
 }
 
-// A context that ends ends the check with its error rather than a table of missing rows.
-func TestCheckImageStopsWithItsContext(t *testing.T) {
+// A context that has ended before the check leaves every image row unanswered, and runs no row's
+// command: the probe judges no row on a run it did not finish, and the next attempt checks them.
+// Such rows are no missing capability, so the error is nil; every other row renders as it always
+// does.
+func TestCheckImageMarksEveryImageRowUnansweredUnderAnEndedContext(t *testing.T) {
 	s := newStubs(t)
+	ran := filepath.Join(t.TempDir(), "ran")
+	record := "#!/bin/sh\n: >'" + ran + "'\n"
+	for _, name := range []string{"chromium", "go"} {
+		s.install(name, record)
+	}
+	img := s.image()
+	img.Launch = "sh -c ': >\"$0\"' " + ran
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := CheckImage(ctx, s.image())
+	states, err := CheckImage(ctx, img)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("CheckImage under an ended context = %v, want it to wrap context.Canceled", err)
+	if err != nil {
+		t.Errorf("CheckImage under an ended context = %v, want no error: no row was found missing", err)
+	}
+	if len(states) != len(Table) {
+		t.Fatalf("CheckImage rendered %d rows, want every row of the table (%d)", len(states), len(Table))
+	}
+	for i, row := range Table {
+		want := map[Site]string{SiteImage: StatusUnanswered, SiteLive: StatusReported, SiteDeployment: StatusReported, SiteWithheld: StatusWithheld}[row.Site]
+		if states[i].Name != row.Name || states[i].Status != want {
+			t.Errorf("row %d = %+v, want %s %s", i, states[i], row.Name, want)
+		}
+		if row.Site == SiteImage && states[i].Detail != "not checked: context canceled" {
+			t.Errorf("%s detail = %q, want %q", row.Name, states[i].Detail, "not checked: context canceled")
+		}
+	}
+	if _, statErr := os.Stat(ran); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("a check ran a command under the ended context (%s: %v)", ran, statErr)
+	}
+}
+
+// A row whose check returned while the context was alive keeps what it found, a missing one in the
+// error as ever, and a row whose check returned after the context's deadline, and every image row
+// after it, which is not run, is unanswered and left out of the error: eval-python, missing at
+// once, stands, and the browser, whose Chromium sleeps past the deadline, and the rows after it are
+// unanswered.
+func TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered(t *testing.T) {
+	s := newStubs(t)
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(sleep, filepath.Join(s.bin, "sleep")); err != nil {
+		t.Fatal(err)
+	}
+	s.install("chromium", "#!/bin/sh\nexec sleep 30\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	states, err := CheckImage(ctx, s.image("LEGION_TEST_NO_PYTHON=1"))
+
+	if want := "capability eval-python is missing: omp setup python --check reports available=false"; err == nil || err.Error() != want {
+		t.Errorf("CheckImage = %v, want the error %q alone", err, want)
+	}
+	got := byName(states)
+	if got[EvalJS].Status != StatusPresent || got[EvalPython].Status != StatusMissing {
+		t.Errorf("eval-js = %+v, eval-python = %+v; want present and missing, each checked before the deadline", got[EvalJS], got[EvalPython])
+	}
+	for _, name := range []Name{Browser, LSP, CodeGraph, Skills, Toolchain, ClaudeCode} {
+		if got[name].Status != StatusUnanswered || got[name].Detail != "not checked: context deadline exceeded" {
+			t.Errorf("%s = %+v, want unanswered (not checked: context deadline exceeded)", name, got[name])
+		}
 	}
 }
 
@@ -561,8 +621,9 @@ func TestRunReportsACommandItsBudgetCutOffAsTimedOut(t *testing.T) {
 
 // A command its caller's context ended was not cut off by its budget: the run is no timeout but
 // the signal the stop sent (procgroup.Err), since the command has no exit of its own, and the
-// check reports the caller's stop (TestCheckImageStopsWithItsContext) rather than a hanging
-// command. The cancel lands once the command runs, never on one not yet started.
+// check's row is unanswered rather than a hanging command's
+// (TestCheckImageKeepsARowMissingBeforeTheDeadlineAndMarksTheRestUnanswered). The cancel lands
+// once the command runs, never on one not yet started.
 func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "started")
 	img := Image{Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: t.TempDir()}
