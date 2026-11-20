@@ -102,9 +102,12 @@ beforeAll(async () => {
   tarball = join(packageCopy, packed[0] as string)
 }, 60_000)
 
+// The rm of every copy and tarball takes seconds on a loaded host (619 to 3,251 ms at a load of
+// 1,298), past Bun's 5 s default for a hook when this file runs alone. Its verdict is the rm's own
+// success; 60 s is the package script's --timeout, here a hang guard that decides no verdict.
 afterAll(async () => {
   await rm(scratch, { recursive: true, force: true })
-})
+}, 60_000)
 
 /** The tarball's members, one name a line. */
 async function members(tar: string): Promise<string[]> {
@@ -274,6 +277,38 @@ test("a prepack refused by one entry leaves every link as it found it", async ()
   expect(packed.exitCode).not.toBe(0)
   expect(packed.stderr).toContain(`skills/${last} points at ../../../skills/nowhere`)
   expect(await links(copy)).toEqual({ ...tracked(), [last]: "../../../skills/nowhere" })
+})
+
+test("a prepack refused by a files pattern it cannot set the modes of leaves every link as it found it", async () => {
+  const copy = await copyPackage("files-pattern")
+  const manifest = JSON.parse(await Bun.file(join(copy, "package.json")).text()) as {
+    files: string[]
+  }
+  manifest.files.push("dist/*.js")
+  await Bun.write(join(copy, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+  const packed = await run([process.execPath, "pm", "pack"], copy)
+  expect(packed.exitCode).not.toBe(0)
+  expect(packed.stderr).toContain('files entry "dist/*.js" is a pattern')
+  expect(await links(copy)).toEqual(tracked())
+})
+
+test("a prepack whose chmod fails after the swap puts every link back", async () => {
+  const copy = await copyPackage("chmod-fails")
+  // A chmod first on PATH that fails: the prepack's last step, after every link is swapped.
+  const shims = join(scratch, "chmod-fails-shims")
+  await mkdir(shims)
+  await Bun.write(join(shims, "chmod"), "#!/bin/sh\necho planted chmod failure >&2\nexit 1\n")
+  await ran(["/bin/chmod", "0755", join(shims, "chmod")], scratch)
+  const child = Bun.spawn([process.execPath, "pm", "pack"], {
+    cwd: copy,
+    env: { ...process.env, PATH: `${shims}:${process.env.PATH ?? ""}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()])
+  expect(exitCode).not.toBe(0)
+  expect(stderr).toContain("planted chmod failure")
+  expect(await links(copy)).toEqual(tracked())
 })
 
 test("a pack that fails after its prepack is repaired by --restore, which the refusal names", async () => {
