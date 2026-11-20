@@ -3401,6 +3401,8 @@ GATES = [
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it"),
         ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh's _loopback_dsn runs it"),
         ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143 runs it (start_held), which two-builds.sh's "
+                                         "start_server holds each Dispatch server's port through"),
     ) + ceiling_reads(PROJECT_ACCESS) + setup_go(PROJECT_ACCESS, f"{ENVOY}/go.mod")
       + bun_job(PROJECT_ACCESS) + CI_SELF),
 
