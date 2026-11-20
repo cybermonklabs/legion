@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +23,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
-
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -64,7 +65,8 @@ func TestASecretFormWithNoBrokerIdentitySendsItsRereadUnsigned(t *testing.T) {
 		stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 		if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") || strings.Contains(stdout, "broker: serving") ||
 			strings.Count(afterUsing(t, stderr, "secret create"), "\n") != 1 ||
-			!strings.Contains(stderr, "took the reread of NEW_KEY, but how it serves NEW_KEY was not checked ("+errNoHeldIdentity.Error()+"), so this exit 0 says only that the write stands") ||
+			!strings.Contains(stderr, "took the reread of NEW_KEY, but how it serves NEW_KEY was not checked ("+errNoHeldIdentity.Error()+": key-dir:") ||
+			!strings.Contains(stderr, "; machine:") ||
 			!strings.Contains(stderr, "agent-secrets sign --method POST") {
 			t.Fatalf("create with no broker identity: exit %d, stdout %q, stderr %q; want 0 and one line saying the broker's view was not checked, why, and the signed reread that checks it", code, stdout, stderr)
 		}
@@ -280,7 +282,7 @@ func TestARereadThatRanAndFailedIsNotSentAgainUnsigned(t *testing.T) {
 // and the reason is never empty: before, the line printed "(<nil>)". A stored secret's write and a
 // type secret's both exit 0, the type secret's on its tag.
 func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
-	const because = "the broker answered the signed reread as it answers a call with no proof (202), so something between this command and the broker dropped its Proof header"
+	const because = "the broker received no Proof header on the signed reread"
 	for _, form := range []string{"a stored secret's create", "a type secret's create"} {
 		t.Run(form, func(t *testing.T) {
 			local := secrets.NewLocal()
@@ -315,6 +317,34 @@ func TestASignedRereadAnsweredAsUnsignedSaysWhy(t *testing.T) {
 	}
 }
 
+func TestAskRereadMarksASigned202AsMissingItsProofHeader(t *testing.T) {
+	local := secrets.NewLocal()
+	startSecretBroker(t, servedBy(local))
+	upstream, err := url.Parse(os.Getenv("AGENT_SECRETS_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Del("Proof")
+		proxy.ServeHTTP(w, r)
+	}))
+	t.Cleanup(front.Close)
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := &secretSession{
+		broker: newClient(brokeraddr.New(front.URL)),
+		signer: &fileSigner{key: key, enrollmentID: "signed-reread"},
+	}
+	session.signerOnce.Do(func() {})
+	reread, unsigned, err := session.askReread(context.Background(), "NEW_KEY")
+	if err != nil || reread.Told || !errors.Is(unsigned, errSignedRereadMissingProof) {
+		t.Fatalf("a signed reread answered 202 = %+v, %v, %v; want its missing Proof header error", reread, unsigned, err)
+	}
+}
+
 // TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress: a machine cache that holds a whole
 // session while another command holds its exclusive lock, as registerMachine does across its token
 // trade and enrollment, is no identity the reread holds now. The form does not wait for that lock:
@@ -341,7 +371,7 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	unlock, err := lockMachineCache(dir, true)
+	unlock, err := lockMachineCache(dir, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,14 +390,53 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 	const bound = 10 * time.Second
 	select {
 	case got := <-done:
-		if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") {
-			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0 and the reread sent unsigned", got.code, got.stdout, got.stderr)
+		if got.code != 0 || !strings.Contains(got.stdout, "broker: rereading NEW_KEY from ") ||
+			!strings.Contains(got.stderr, "another command is registering this machine's session") {
+			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
 		}
 	case <-time.After(bound):
 		t.Fatalf("create did not finish within %s while another command held the machine cache's lock; want it not to wait for that lock", bound)
 	}
 	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
 		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's", unsigned)
+	}
+}
+
+// TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure: a secret form never trades a
+// machine identity, even after the broker refuses the cached session. It falls back to the
+// unsigned reread and tells the operator to renew the machine's session with agent-secrets self.
+func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testing.T) {
+	local := secrets.NewLocal()
+	broker := startSecretBroker(t, servedBy(local))
+	broker.lapseSignedRereads()
+	withNoBrokerIdentity(t)
+	dir := machineCacheDir()
+	if err := ensureMachineCacheDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	key, err := proof.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := writeKeyDir(t, key, "machine-enrollment")
+	for _, name := range []string{keyFile, enrollmentFile} {
+		data, err := os.ReadFile(filepath.Join(session, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	useAWS(t, local, testAccount, adaSignIn)
+	useStdin(t, "v1")
+	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
+	if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") ||
+		!strings.Contains(stderr, "machine's session") || !strings.Contains(stderr, "agent-secrets self") {
+		t.Fatalf("create with a lapsed machine-cache session: exit %d, stdout %q, stderr %q; want 0 and the machine session's agent-secrets self cure", code, stdout, stderr)
+	}
+	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
+		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's after the lapsed machine session", unsigned)
 	}
 }
 

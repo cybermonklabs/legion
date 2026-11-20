@@ -188,7 +188,7 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder.NoteCaller(answer.CallerSession, who.enrollment)
-	lk, err := s.refreshAndTell(r.Context(), name)
+	lk, err := s.refreshAndTell(r.Context(), name, nil)
 	switch {
 	case err != nil && r.Context().Err() != nil:
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the reread finished; send it again")
@@ -209,9 +209,12 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 // and when only its value read was cut (policy.ErrValueUnchecked), since the tags it read are in
 // force here then too. It is the one place both of the route's rereads, a session's and the one
 // run after a 202, decide whether the peers are told.
-func (s *server) refreshAndTell(ctx context.Context, name string) (policy.Lookup, error) {
+func (s *server) refreshAndTell(ctx context.Context, name string, beforeNotify func()) (policy.Lookup, error) {
 	lk, err := s.deps.Policy.RefreshOne(ctx, name)
 	if err == nil || errors.Is(err, policy.ErrValueUnchecked) {
+		if beforeNotify != nil {
+			beforeNotify()
+		}
 		s.notifyPeers(ctx, name)
 	}
 	return lk, err
@@ -226,27 +229,30 @@ func (s *server) refreshAndTell(ctx context.Context, name string) (policy.Lookup
 // What it bounds is no more than the buckets admit: refuseReread spent a token before this was
 // started, so the rereads in flight are at most what those buckets let through in one timeout.
 //
-// No caller waits on it, so its failure is the broker's, a store or a writer lock that did not
-// answer in time among them, and it logs the "broker: reread secret failed" line the reread a
-// session waits on logs. A reread whose value read alone that bound cut has merged the tags it
-// read, as a session's cut there has, so the peers are told of it all the same (refreshAndTell).
-// It runs outside net/http's handler goroutine, so nothing would recover a panic in it and the
-// panic would stop the broker: it recovers its own, and logs it as that same one failure line,
-// with the panic and its stack as the error. Nor does srv.Shutdown wait for it, so it is counted
-// in Deps.Detached, which the stop sequence waits on before it ends the work that outlives the
-// drain: a pod that stops right after the 202 still finishes the reread and tells its peers.
+// No caller waits on it, so a store or writer lock failure is the broker's and logs
+// "broker: reread secret failed". A reread whose value read alone the bound cuts has merged its
+// tags, so it tells the peers all the same (refreshAndTell); one cut before that merge tells none.
+// It runs outside net/http's handler goroutine, so it recovers a panic and names the step that
+// panicked, the reread or its peer notice. Nor does srv.Shutdown wait for it, so Deps.Detached
+// counts work that starts before Wait begins. A reread answered after Wait begins is not counted or
+// run, and logs that fact, so no WaitGroup Add races its Wait.
 func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadAfterAnswerTimeout)
-	s.deps.Detached.start()
+	if !s.deps.Detached.start() {
+		cancel()
+		slog.Warn("broker: reread after its answer was not counted because shutdown is waiting", "name", name)
+		return
+	}
 	go func() {
 		defer s.deps.Detached.done()
 		defer cancel()
+		step := "reread"
 		defer func() {
 			if p := recover(); p != nil {
-				slog.Error("broker: reread secret failed", "name", name, "error", fmt.Errorf("panic: %v", p), "stack", string(debug.Stack()))
+				slog.Error("broker: "+step+" panicked", "name", name, "error", fmt.Errorf("panic: %v", p), "stack", string(debug.Stack()))
 			}
 		}()
-		if _, err := s.refreshAndTell(ctx, name); err != nil {
+		if _, err := s.refreshAndTell(ctx, name, func() { step = "peer notice" }); err != nil {
 			slog.Error("broker: reread secret failed", "name", name, "error", err)
 		}
 	}()
@@ -254,9 +260,8 @@ func (s *server) rereadAfterAnswer(ctx context.Context, name string) {
 
 // rereadAfterAnswerTimeout bounds the reread no caller waits on (rereadAfterAnswer): the 45 seconds
 // cmd/broker gives every request (its requestDeadline), which bounded this reread too while its
-// caller waited on it. The notice to the other pods after it has notifyRereadTimeout of its own,
-// so the whole of it runs 50 seconds at most: a reread that used its whole bound has still merged
-// what it read, and its peers must still hear of it.
+// caller waited on it. A peer notice has notifyRereadTimeout of its own after the metadata merge;
+// a timeout before that merge sends no notice.
 const rereadAfterAnswerTimeout = 45 * time.Second
 
 // notifyPeers tells the other pods to reread name (Deps.NotifyReread) once this pod's own reread

@@ -48,6 +48,8 @@ const (
 	googleAudienceFile = "google-exchange-audience"
 )
 
+var errLockWouldBlock = errors.New("the machine cache lock is held")
+
 // machineCacheDir is ${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine, beside the
 // sign-ins (brokerclient.SignIns): state a reboot keeps, unlike the key directory, which is
 // runtime state, and so state a cron job of a user with no runtime directory has too. HOME is
@@ -79,7 +81,7 @@ func readMachineCache() (*fileSigner, error) {
 	if !machineCacheHolds(dir) {
 		return nil, nil
 	}
-	unlock, err := lockMachineCache(dir, false)
+	unlock, err := lockMachineCache(dir, false, true)
 	if err != nil {
 		return nil, err
 	}
@@ -108,22 +110,21 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 }
 
 // readMachineCacheNow is readMachineCache for heldSigner, which must not wait: it takes the
-// cache's shared lock only where no writer holds it (tryLockShared). A registration that holds the
-// exclusive lock across its token trade and enrollment (registerMachine) makes the cache hold
-// nothing now, a sourceAbsent, rather than a wait for that registration. The signer it answers
-// registers nothing again, so a session whose lease lapsed is never traded for here: the call that
-// signs with it is refused, and its caller goes on without a proof.
+// cache's shared lock only where no writer holds it. A registration that holds the exclusive lock
+// across its token trade and enrollment (registerMachine) makes the cache hold nothing now, a
+// sourceAbsent, rather than a wait for that registration. Its signer never trades a machine
+// identity again: a lapsed session names the machine's session and agent-secrets self as its cure.
 func readMachineCacheNow() (*fileSigner, error) {
 	dir := machineCacheDir()
 	if !machineCacheHolds(dir) {
 		return nil, absent("the machine cache holds no session (%s)", dir)
 	}
-	unlock, held, err := tryLockShared(filepath.Join(dir, machineCacheLock))
+	unlock, err := lockMachineCache(dir, false, false)
 	switch {
+	case errors.Is(err, errLockWouldBlock):
+		return nil, absent("another command is registering this machine's session in %s", dir)
 	case err != nil:
 		return nil, err
-	case !held:
-		return nil, absent("another command is registering this machine's session in %s", dir)
 	}
 	defer unlock()
 	signer, err := readMachineCacheHeld(dir)
@@ -133,7 +134,9 @@ func readMachineCacheNow() (*fileSigner, error) {
 	case signer == nil:
 		return nil, absent("the machine cache holds no session (%s)", dir)
 	}
-	signer.register = nil
+	signer.register = func(context.Context, string) (*ecdsa.PrivateKey, string, error) {
+		return nil, "", fmt.Errorf("this machine's session in %s is not live; this secret form does not trade a machine identity here: run agent-secrets self", dir)
+	}
 	return signer, nil
 }
 
@@ -160,7 +163,7 @@ func registerMachine(ctx context.Context, stale string) (*fileSigner, error) {
 	if err := ensureMachineCacheDir(dir); err != nil {
 		return nil, err
 	}
-	unlock, err := lockMachineCache(dir, true)
+	unlock, err := lockMachineCache(dir, true, true)
 	if err != nil {
 		return nil, err
 	}
@@ -230,9 +233,9 @@ func ensureMachineCacheDir(dir string) error {
 }
 
 // lockMachineCache takes the flock of the machine cache dir's lock file (lockFile), exclusive to
-// register a session and shared to read one.
-func lockMachineCache(dir string, exclusive bool) (func(), error) {
-	return lockFile(filepath.Join(dir, machineCacheLock), exclusive)
+// register a session and shared to read one. wait is false only for a held lookup.
+func lockMachineCache(dir string, exclusive, wait bool) (func(), error) {
+	return lockFile(filepath.Join(dir, machineCacheLock), exclusive, wait)
 }
 
 // registerMachineSession trades identity, this machine's own, for a launcher credential,
@@ -331,7 +334,7 @@ func sameGoogleAudience(base brokeraddr.Address, audience, kept, path string) er
 // place, so a reader that holds no lock sees the whole value or none. It takes no hard link, so a
 // file system without them keeps a value as well.
 func keepFirst(path, value string) (string, error) {
-	unlock, err := lockFile(path+".lock", true)
+	unlock, err := lockFile(path+".lock", true, true)
 	if err != nil {
 		return "", err
 	}
@@ -368,7 +371,7 @@ func migrateKeyDirMachineSession(keyDir string) error {
 	if err := ensureMachineCacheDir(cache); err != nil {
 		return err
 	}
-	unlock, err := lockMachineCache(cache, true)
+	unlock, err := lockMachineCache(cache, true, true)
 	if err != nil {
 		return err
 	}

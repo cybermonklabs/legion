@@ -117,7 +117,7 @@ func describeSource(dir string) (name, detail string, err error) {
 // chain stops, so the reread never signs as another identity than the one the caller set up.
 // It moves no machine session an older client left in the key directory, since that move takes
 // the machine cache's exclusive lock (migrateKeyDirMachineSession): such a key directory is
-// signed with as it stands. With no source holding anything it answers errNoHeldIdentity.
+// signed with as it stands. With no source holding anything it names each source and why.
 //
 // A person's sign-in is the one held signer that may register again: its lease lapses after
 // BROKER_LEASE_SECONDS and nothing renews it, so its signer keeps signInSigner's register, and the
@@ -125,6 +125,7 @@ func describeSource(dir string) (name, detail string, err error) {
 // enrollment is not live. That costs one trade of the person's own sign-in, with this machine's
 // identity as its actor, and one enrollment; it waits on nothing and registers no machine session.
 func heldSigner() (proofSigner, error) {
+	reasons := make([]string, 0, len(signerChain(keyDir())))
 	for _, source := range signerChain(keyDir()) {
 		signer, err := source.held()
 		switch {
@@ -132,17 +133,19 @@ func heldSigner() (proofSigner, error) {
 			return signer, nil
 		case !errors.Is(err, errSourceAbsent):
 			return nil, fmt.Errorf("%s: %w", source.name, err)
+		default:
+			reasons = append(reasons, source.name+": "+err.Error())
 		}
 	}
-	return nil, errNoHeldIdentity
+	return nil, noBrokerIdentity(reasons)
 }
 
-// errNoHeldIdentity is heldSigner's answer for a process that holds no broker identity now.
-var errNoHeldIdentity = errors.New("this process holds no broker identity")
+// errNoHeldIdentity is heldSigner's sentinel when no source holds a broker identity now.
+var errNoHeldIdentity = errors.New("no broker identity for this process")
 
 // noBrokerIdentity is the chain's refusal when no source had an identity: each source, and why.
 func noBrokerIdentity(reasons []string) error {
-	return fmt.Errorf("no broker identity for this process: %s", strings.Join(reasons, "; "))
+	return fmt.Errorf("%w: %s", errNoHeldIdentity, strings.Join(reasons, "; "))
 }
 
 // keyDirSource is a launcher's key and enrollment in dir. Its session is the launcher's to make
@@ -190,18 +193,20 @@ func signInSource() signerSource {
 	noSignIn := func() error {
 		return absent("nobody has signed in on this machine with `%s` (%s)", brokerclient.SignInCommand, brokerclient.SignIns(homeGetenv).Dir)
 	}
+	build := func(context.Context) (string, Signer, error) {
+		signer, err := signInSigner()
+		if err != nil {
+			return "", nil, err
+		}
+		if signer == nil {
+			return "", nil, noSignIn()
+		}
+		return signer.enrollmentID, signer, nil
+	}
+
 	return signerSource{
-		name: "sign-in",
-		build: func(context.Context) (string, Signer, error) {
-			signer, err := signInSigner()
-			if err != nil {
-				return "", nil, err
-			}
-			if signer == nil {
-				return "", nil, noSignIn()
-			}
-			return signer.enrollmentID, signer, nil
-		},
+		name:  "sign-in",
+		build: build,
 		describe: func(context.Context) (string, error) {
 			store := brokerclient.SignIns(homeGetenv)
 			records, err := store.List()
@@ -221,14 +226,8 @@ func signInSource() signerSource {
 			return record.Person, nil
 		},
 		held: func() (proofSigner, error) {
-			signer, err := signInSigner()
-			switch {
-			case err != nil:
-				return nil, err
-			case signer == nil:
-				return nil, noSignIn()
-			}
-			return signer, nil
+			_, signer, err := build(context.Background())
+			return signer, err
 		},
 	}
 }
@@ -261,22 +260,21 @@ func helperSource() signerSource {
 			return "", helperFailure(answer.sock, helperRefusal(answer.resp), true)
 		}
 	}
+	build := func(context.Context) (string, Signer, error) {
+		sock, err := find()
+		if err != nil {
+			return "", nil, err
+		}
+		return "", &helperSigner{sock: sock}, nil
+	}
+
 	return signerSource{
-		name: "helper",
-		build: func(context.Context) (string, Signer, error) {
-			sock, err := find()
-			if err != nil {
-				return "", nil, err
-			}
-			return "", &helperSigner{sock: sock}, nil
-		},
+		name:     "helper",
+		build:    build,
 		describe: func(context.Context) (string, error) { return find() },
 		held: func() (proofSigner, error) {
-			sock, err := find()
-			if err != nil {
-				return nil, err
-			}
-			return &helperSigner{sock: sock}, nil
+			_, signer, err := build(context.Background())
+			return signer, err
 		},
 	}
 }
@@ -314,7 +312,13 @@ func machineChainSource() signerSource {
 			}
 			return identity.Describe(), nil
 		},
-		held: func() (proofSigner, error) { return readMachineCacheNow() },
+		held: func() (proofSigner, error) {
+			signer, err := readMachineCacheNow()
+			if err != nil {
+				return nil, err
+			}
+			return signer, nil
+		},
 	}
 }
 

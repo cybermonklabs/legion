@@ -8,8 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -19,24 +17,6 @@ import (
 // thePeersTold is the reread's notice to the other pods, as TestStopWaitsForARereadRunAfterItsAnswer
 // records it beside the stop's own steps.
 const thePeersTold = "the other pods were told to reread"
-
-// heldDescribe is a store whose every DescribeSecret says on entered that a reread reached it and
-// then waits for release before it answers as the store below it does.
-type heldDescribe struct {
-	secrets.SecretsManagerAPI
-	entered chan<- struct{}
-	release <-chan struct{}
-}
-
-func (h heldDescribe) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	h.entered <- struct{}{}
-	select {
-	case <-h.release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return h.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
-}
 
 // TestStopWaitsForARereadRunAfterItsAnswer: a reread the API answered 202 for runs after its
 // answer, which srv.Shutdown does not wait for. With the store holding that reread, the stop
@@ -48,10 +28,10 @@ func (h heldDescribe) DescribeSecret(ctx context.Context, in *secretsmanager.Des
 // The named revert: drop the WaitDetached call from stop.
 func TestStopWaitsForARereadRunAfterItsAnswer(t *testing.T) {
 	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
-	entered := make(chan struct{}, 1)
+	entered := make(chan string, 1)
 	release := make(chan struct{})
 	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, heldDescribe{SecretsManagerAPI: local, entered: entered, release: release})
+	loader.Store = policytest.StoreThrough(local, policytest.HeldDescriber{SecretsManagerAPI: local, Entered: entered, Release: release})
 	current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)

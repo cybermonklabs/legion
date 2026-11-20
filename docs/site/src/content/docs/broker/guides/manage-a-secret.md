@@ -752,8 +752,11 @@ and prints its answer on a line of its own, naming the store the secret is in. T
 call with a broker identity this process already holds — a key directory holding its key and
 enrollment, your `agent-secrets login`, a helper that answers, or the machine's cached session —
 because the broker says what it now serves only to a call a session signs. It waits on nothing
-and trades no machine identity to find one. Your sign-in's session lapses after 15 minutes with
-nothing to renew it; when the broker says so, the CLI registers it again once, under the same box
+and trades no machine identity to find one. The held sign-in is
+`AGENT_SECRETS_PERSON`'s, or the only local sign-in when that variable is unset, whatever cloud
+credential wrote the secret. A sign-in record with no enrollment registers while the CLI looks up
+its signer. A sign-in session that lapses after `BROKER_LEASE_SECONDS` (15 minutes by default)
+registers again only when the broker refuses that existing session as not live, under the same box
 key, and signs the reread with the new session:
 
 | Line | What it means |

@@ -78,6 +78,14 @@ func TestBuildSignerSelectsMode(t *testing.T) {
 	}
 }
 
+func TestMachineHeldSourceReturnsNoSignerWhenTheCacheHasNoSession(t *testing.T) {
+	isolateChain(t)
+	signer, err := machineChainSource().held()
+	if err == nil || signer != nil {
+		t.Fatalf("the empty machine cache held source = %T, %v; want no signer and its absence", signer, err)
+	}
+}
+
 // isolateChain gives an in-process walk of the chain a home, a state directory and a runtime
 // directory of the test's own, no broker URL and no machine identity setting, so neither a
 // sign-in, a machine cache, a broker nor a machine identity of the machine running the test
@@ -274,6 +282,14 @@ func TestHelperSignerAsksTheHelper(t *testing.T) {
 	if _, err := (&helperSigner{sock: sock2}).Sign(http.MethodGet, "https://s/v1/enrollments/self"); err == nil ||
 		!strings.Contains(err.Error(), helper.CodeNotASession) {
 		t.Fatalf("the helper's code reaches the caller: %v", err)
+	}
+}
+
+func TestHelperSignerRefusesAnEmptyProof(t *testing.T) {
+	sock, _ := fakeHelper(t, helper.Response{OK: true})
+	if _, err := (&helperSigner{sock: sock}).Sign(http.MethodGet, "https://s/v1/enrollments/self"); err == nil ||
+		!strings.Contains(err.Error(), "no Proof header") {
+		t.Fatalf("a helper that answered OK with no proof = %v; want an error naming the missing Proof header", err)
 	}
 }
 

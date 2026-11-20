@@ -384,7 +384,7 @@ test("signed in as another person, the record's page offers only the switch, whi
     await listForAlice([request]);
     alice = await asUser(browser, "alice");
     const page = await alice.newPage();
-    // The issuer signs bob in at the next sign-in, whatever the record's login_hint names.
+    // The issuer signs Bob in at the first sign-in; only the later account switch names Alice.
     await queueSignIn(bobBrokerLogin);
     await page.goto("/");
     await inboxRow(page, request.approve_url).click();

@@ -740,6 +740,8 @@ func (s *secretSession) rereadSigner() (proofSigner, error) {
 	return s.signer, s.noSigner
 }
 
+var errSignedRereadMissingProof = errors.New("the broker received no Proof header on the signed reread")
+
 // askReread asks the broker to reread name on ctx, signed by the identity this process holds
 // (rereadSigner), which the broker answers with what it now serves; a person's sign-in whose
 // lease lapsed registers again once on the way (doProofBuilt). Where the process holds none, or
@@ -757,7 +759,7 @@ func (s *secretSession) askReread(ctx context.Context, name string) (r Reread, u
 		r, err = s.broker.RereadSecret(ctx, signer, name)
 		switch {
 		case err == nil && !r.Told:
-			return r, errors.New("the broker answered the signed reread as it answers a call with no proof (202), so something between this command and the broker dropped its Proof header"), nil
+			return r, errSignedRereadMissingProof, nil
 		case !proofFailed(err):
 			return r, nil, err
 		}

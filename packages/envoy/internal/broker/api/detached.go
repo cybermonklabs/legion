@@ -11,13 +11,25 @@ import (
 // the notice it owes the other pods, with nothing logged. The stop sequence waits for it instead
 // (Wait), after Shutdown has returned and before the work that outlives the drain ends. A nil
 // Detached counts nothing, for a mux nothing stops.
-type Detached struct{ running sync.WaitGroup }
+type Detached struct {
+	mu      sync.Mutex
+	closing bool
+	running sync.WaitGroup
+}
 
-// start counts one piece of detached work; its goroutine calls done when it ends.
-func (d *Detached) start() {
-	if d != nil {
-		d.running.Add(1)
+// start counts one piece of detached work. It returns false after Wait begins, when a new
+// goroutine cannot be counted safely because Wait may already be blocked.
+func (d *Detached) start() bool {
+	if d == nil {
+		return true
 	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closing {
+		return false
+	}
+	d.running.Add(1)
+	return true
 }
 
 // done ends one piece of detached work start counted.
@@ -33,6 +45,9 @@ func (d *Detached) Wait(ctx context.Context) error {
 	if d == nil {
 		return nil
 	}
+	d.mu.Lock()
+	d.closing = true
+	d.mu.Unlock()
 	finished := make(chan struct{})
 	go func() {
 		d.running.Wait()

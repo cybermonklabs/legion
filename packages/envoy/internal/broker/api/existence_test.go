@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 
@@ -225,24 +224,6 @@ func TestASessionsRereadStillGetsTheAnswerItGotBefore(t *testing.T) {
 	}
 }
 
-// heldDescriber holds every DescribeSecret a reread makes until release is closed, after it has
-// said which secret it was asked about on entered, and then answers it as store does.
-type heldDescriber struct {
-	secrets.SecretsManagerAPI
-	entered chan<- string
-	release <-chan struct{}
-}
-
-func (d heldDescriber) DescribeSecret(ctx context.Context, in *secretsmanager.DescribeSecretInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error) {
-	d.entered <- aws.ToString(in.SecretId)
-	select {
-	case <-d.release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return d.SecretsManagerAPI.DescribeSecret(ctx, in, opts...)
-}
-
 // heldFor bounds how long a row waits for something the broker should do at once while the store
 // is held: an answer that waits on the store never comes, so it is what the row fails after.
 const heldFor = 5 * time.Second
@@ -265,7 +246,7 @@ func TestARereadAnswersACallerWithNoSessionAtOnceAndRereadsAfter(t *testing.T) {
 		}
 	})
 	loader := policytest.Loader(local)
-	loader.Store = policytest.StoreThrough(local, heldDescriber{SecretsManagerAPI: local, entered: entered, release: release})
+	loader.Store = policytest.StoreThrough(local, policytest.HeldDescriber{SecretsManagerAPI: local, Entered: entered, Release: release})
 	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 	if err != nil {
 		t.Fatal(err)
@@ -377,9 +358,8 @@ func (panickingDescriber) DescribeSecret(context.Context, *secretsmanager.Descri
 
 // TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing: the reread run after a 202 runs on a
 // goroutine of its own, outside net/http's handler goroutine and the recover net/http gives it,
-// so a panic there would stop the whole broker. It recovers the panic and logs it as one ERROR
-// line, "broker: reread secret failed" naming the secret and the panic, and the broker goes on
-// answering.
+// so a panic there would stop the whole broker. It recovers the panic, identifies the reread
+// step and the panic in one ERROR line, and the broker goes on answering.
 func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 	local := secrets.NewLocal()
 	loader := policytest.Loader(local)
@@ -398,12 +378,36 @@ func TestAPanicInARereadNoCallerWaitsOnLeavesTheBrokerServing(t *testing.T) {
 	}
 	if !testwait.Holds(heldFor, 10*time.Millisecond, func() bool {
 		text := logged.String()
-		return strings.Contains(text, "ERROR broker: reread secret failed") && strings.Contains(text, "NEW_KEY") && strings.Contains(text, "a store client's own defect")
+		return strings.Contains(text, "ERROR broker: reread panicked") && strings.Contains(text, "NEW_KEY") && strings.Contains(text, "a store client's own defect")
 	}) {
-		t.Fatalf("logged %q within %s of the answer; want the ERROR line naming NEW_KEY and the panic", logged.String(), heldFor)
+		t.Fatalf("logged %q within %s of the answer; want the ERROR line naming the reread, NEW_KEY and the panic", logged.String(), heldFor)
 	}
-	if lines := strings.Count(logged.String(), "broker: reread secret failed"); lines != 1 {
-		t.Fatalf("the panic logged %d failure lines; want one", lines)
+	if lines := strings.Count(logged.String(), "broker: reread panicked"); lines != 1 {
+		t.Fatalf("the panic logged %d reread panic lines; want one", lines)
+	}
+}
+
+func TestAPanicInARereadsPeerNoticeNamesTheStep(t *testing.T) {
+	local := secrets.NewLocal(policytest.Secret("NEW_KEY", testApprover, policy.TierAgent, "v1"))
+	mux := http.NewServeMux()
+	api.Register(mux, api.Deps{
+		Policy:        policytest.Current(t, local),
+		SecretsStore:  secrets.StoreAWS,
+		SecretsPrefix: policytest.Prefix,
+		SecretsKMSKey: policytest.KeyARN,
+		NotifyReread:  func(context.Context, string) { panic("a peer-notice defect") },
+	})
+	logged := policytest.CaptureLog(t)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/secrets/NEW_KEY/reread", nil))
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("a reread with no proof = %d %s; want 202", recorder.Code, recorder.Body.String())
+	}
+	if !testwait.Holds(heldFor, 10*time.Millisecond, func() bool {
+		text := logged.String()
+		return strings.Contains(text, "ERROR broker: peer notice panicked") && strings.Contains(text, "NEW_KEY") && strings.Contains(text, "a peer-notice defect")
+	}) {
+		t.Fatalf("logged %q within %s of the answer; want the ERROR line naming the peer notice, NEW_KEY and the panic", logged.String(), heldFor)
 	}
 }
 

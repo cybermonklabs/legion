@@ -10,12 +10,8 @@ package main
 
 import "errors"
 
-func lockFile(string, bool) (func(), error) {
+func lockFile(string, bool, bool) (func(), error) {
 	return nil, errNoFlock
-}
-
-func tryLockShared(string) (func(), bool, error) {
-	return nil, false, errNoFlock
 }
 
 var errNoFlock = errors.New("the machine cache needs a flock to keep its state whole, and this platform has none")

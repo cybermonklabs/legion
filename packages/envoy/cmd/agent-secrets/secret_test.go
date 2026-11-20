@@ -159,16 +159,17 @@ const adaSignIn = "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_ab
 // refused. A reread with no proof is answered 202 as the broker answers one, saying nothing of
 // what it serves, and recorded apart (unsigned).
 type secretBroker struct {
-	mu         sync.Mutex
-	rereads    []string
-	answers    []Reread
-	signers    []string
-	unsigned   []string
-	answer     func(name string) Reread
-	fail       int
-	failSigned int
-	signedCode string
-	settings   Settings
+	mu          sync.Mutex
+	rereads     []string
+	answers     []Reread
+	signers     []string
+	unsigned    []string
+	answer      func(name string) Reread
+	fail        int
+	failSigned  int
+	signedCode  string
+	signedError string
+	settings    Settings
 }
 
 // failRereads makes the broker refuse every reread from now on with status.
@@ -184,7 +185,13 @@ func (b *secretBroker) failRereads(status int) {
 func (b *secretBroker) failSignedRereads(status int, code string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.failSigned, b.signedCode = status, code
+	b.failSigned, b.signedCode, b.signedError = status, code, "the broker did not take this proof"
+}
+
+func (b *secretBroker) lapseSignedRereads() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.failSigned, b.signedCode, b.signedError = http.StatusUnauthorized, "PROOF_INVALID", "proof invalid: not live"
 }
 
 // startSecretBroker serves a secretBroker on AGENT_SECRETS_URL for the rest of t, answering
@@ -220,7 +227,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
-			fail, failSigned, signedCode := b.fail, b.failSigned, b.signedCode
+			fail, failSigned, signedCode, signedError := b.fail, b.failSigned, b.signedCode, b.signedError
 			b.mu.Unlock()
 			if fail != 0 {
 				w.WriteHeader(fail)
@@ -238,7 +245,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 			}
 			if failSigned != 0 {
 				w.WriteHeader(failSigned)
-				writeJSON(w, map[string]string{"code": signedCode, "error": "the broker did not take this proof"})
+				writeJSON(w, map[string]string{"code": signedCode, "error": signedError})
 				return
 			}
 			reread := b.answer(name)
