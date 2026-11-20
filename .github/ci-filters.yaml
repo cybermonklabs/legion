@@ -606,6 +606,7 @@ release_push_test: &release_push_test
   - '.github/scripts/release-bump.sh'
   - '.github/workflows/release.yaml'
   - 'packages/pi-legion/.changie.yaml'
+  - 'packages/daemon/internal/leakguard/private-names.toml'
 release_bump_test: &release_bump_test
   - *ci_router
   - *ci_filters_data
@@ -936,6 +937,7 @@ check_ci_filters_test: &check_ci_filters_test
   - '.github/scripts/ci_workflow_rules.py'
   - '.github/scripts/workflow_paths.py'
   - '.github/scripts/go_build_tags.py'
+  - '.github/scripts/go-test-reads.sh'
   - '.github/scripts/ci_job_reads.py'
   - '.github/workflows/ci-job-typecheck.yaml'
 check_ts_filters_test: &check_ts_filters_test

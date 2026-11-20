@@ -1,15 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
@@ -309,6 +313,20 @@ func TestTheBuiltBinary(t *testing.T) {
 			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: a-restart-keeps-the-claim: no-job: a program check names the job that runs its test\n",
 		})
 	})
+	// A job of only spaces names no job (R6), so a check that names one is refused, and checks lists
+	// nothing for it.
+	t.Run("checks lists no check for a job of only spaces", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "spec.md"), []byte(":::requirement{#a-claim-survives-a-restart kind=\"behavior\"}\nLegion keeps the claim of an issue after the daemon starts again.\n:::\n\n"+
+			":::check{#a-restart-keeps-the-claim serves=\"a-claim-survives-a-restart\" subject=\"code\" procedure=\"program\" runner=\"go\" selector=\"example.com/acme/daemon TestARestartKeepsTheClaim\" job=\"   \"}\n"+
+			"Claim: The daemon reads the claim of an issue after it starts again.\nProcedure: The program starts the daemon again and reads the claims.\nFailing example: A daemon that keeps its claims in memory only.\n:::\n"))
+		expect(t, runBinary(t, binary, "", "checks", "--dir", dir, "--job", "   "), result{
+			code:   2,
+			stderr: "spec-check: " + filepath.Join(dir, "spec.md") + ":5: a-restart-keeps-the-claim: no-job: a program check names the job that runs its test\n",
+		})
+		expect(t, runBinary(t, binary, "", "checks", "--dir", valid, "--job", "   "), result{stdout: "[]\n"})
+	})
 	t.Run("checks writes no workflow command a selector holds", func(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
@@ -356,6 +374,8 @@ func TestTheBuiltBinary(t *testing.T) {
 			{[]string{"print", "--id", "order"}, "print: --approved is required"},
 			{[]string{"guard"}, "guard: --root is required"},
 			{[]string{"guard", "--root", valid, "extra"}, `guard: takes no argument but its flags, got "extra"`},
+			{[]string{"state"}, "state: --scenario is required"},
+			{[]string{"state", "--scenario", valid, "extra"}, `state: takes no argument but its flags, got "extra"`},
 		} {
 			expect(t, runBinary(t, binary, "", row.args...), result{code: 2, stderr: "spec-check: " + row.line + "\n" + usage + "\n"})
 		}
@@ -395,17 +415,79 @@ func runBinary(t *testing.T, binary, dir string, args ...string) result {
 // runBinaryIn is runBinary with the variables extra, each "NAME=value", added to the environment.
 func runBinaryIn(t *testing.T, binary, dir string, extra []string, args ...string) result {
 	t.Helper()
-	cmd := exec.Command(binary, args...)
+	got, err := runBounded(binaryLimit, binary, dir, childEnv(extra...), args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// binaryLimit bounds each run of the built binary. The slowest runs of these tests, of citations
+// with its go list and go-test-reads.sh, take seconds; the limit leaves them room on a loaded
+// runner and still ends a run that blocks long before go test's own deadline.
+const binaryLimit = 2 * time.Minute
+
+// runBounded runs binary with args in dir and env, in a process group of its own, and answers its
+// exit status and output. At the limit it kills the group, so each process that the binary started
+// ends with it, and answers an error that names the limit with the output so far.
+func runBounded(limit time.Duration, binary, dir string, env []string, args ...string) (result, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
-	cmd.Env = childEnv(extra...)
+	cmd.Env = env
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	// A process that left the group could hold the pipes open: Wait stops waiting for them then.
+	cmd.WaitDelay = 5 * time.Second
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	got := result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+	if ctx.Err() != nil {
+		return got, fmt.Errorf("%s %q ran past its limit of %s, so it was killed with each process it started; stdout %q, stderr %q",
+			binary, args, limit, got.stdout, got.stderr)
+	}
 	var exit *exec.ExitError
 	if err != nil && !errors.As(err, &exit) {
-		t.Fatal(err)
+		return got, err
 	}
-	return result{code: cmd.ProcessState.ExitCode(), stdout: stdout.String(), stderr: stderr.String()}
+	return got, nil
+}
+
+// A run of the binary that blocks, as on a read of a named pipe, fails its test at the limit and
+// leaves no process, rather than holding the test to go test's deadline. The row runs a shell that
+// starts a sleep of ten minutes, prints its process id and waits for it, under a limit of two
+// seconds: the run must end within seconds of the limit with an error that names it, and the
+// sleep must be gone. The control is a run that ends by itself, which gives its output and no
+// error.
+func TestARunOfTheBinaryEndsAtItsLimit(t *testing.T) {
+	t.Parallel()
+	const limit = 2 * time.Second
+	start := time.Now()
+	got, err := runBounded(limit, "/bin/sh", "", os.Environ(), "-c", "sleep 600 & echo $!; wait")
+	if elapsed := time.Since(start); err == nil || !strings.Contains(err.Error(), "its limit of 2s") || elapsed > limit+10*time.Second {
+		t.Fatalf("after %s: %v; want an error that names its limit of 2s within 10s of it", elapsed, err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(got.stdout))
+	if err != nil {
+		t.Fatalf("the shell printed %q; want the process id of its sleep", got.stdout)
+	}
+	// The killed sleep goes once its new parent reaps it.
+	deadline := time.Now().Add(5 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			// Ended here, by the id that the shell printed and that is still running, so a failure of
+			// the bound leaves no sleep behind either.
+			syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("the sleep %d that the run started is still running after the limit", pid)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	control, err := runBounded(limit, "/bin/sh", "", os.Environ(), "-c", "echo done; exit 3")
+	if err != nil || control != (result{code: 3, stdout: "done\n"}) {
+		t.Errorf("a run that ends by itself: %+v, %v; want exit 3, stdout %q and no error", control, err, "done\n")
+	}
 }
 
 // childEnv is this process's environment without GITHUB_ACTIONS, then extra. These tests run in a

@@ -21,7 +21,9 @@ header says what is proved).
             _test.go file counts when go list lists it in a tested package under the job's tags;
             any other file when it is compiled into a test run's closure. These are found by
             reading the tests, not by the check: a new read through `..` or a new go command a
-            test starts is added here by the change that makes it.
+            test starts is added here by the change that makes it. A read through a symbolic link
+            whose target is outside the package needs a row too, naming the target: the closure
+            holds the link's path, not its target's.
   EXCLUDED  filters the check leaves to another: worker_image gates worker-image.yaml's image
             build, whose every input .github/scripts/check-image-trigger-paths.sh proves its
             filter covers. (envoy_smoke's image inputs are that check's too, but its job's go
@@ -820,13 +822,17 @@ RULES = {
     f"{ENVOY}/cmd/listener/pod_grace_period_test.go": reads(
         (f"{INFRA}/gcp/testdata/clustered-hub-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:23"),
         (f"{INFRA}/gcp/testdata/dispatch-listener-pod.golden", "cmd/listener/pod_grace_period_test.go:28")),
+    f"{ENVOY}/cmd/spec-check/basetie_test.go": reads(*[
+        (f".github/scripts/{name}", "cmd/spec-check/basetie_test.go:411 copies it from ../../../../.github/scripts into the "
+                                    "fixture repository whose base tie TestTheBaseTieReadsGitsListOfTheBase derives with it")
+        for name in ("go-test-reads.sh", "ci_filter_coverage.py", "workflow_paths.py", "go_build_tags.py")]),
     f"{ENVOY}/cmd/spec-check/cifiles_test.go": reads(
         (f"{ENVOY}/.changes/unreleased/pr4183-Added-20261116-091606.yaml",
-         "cmd/spec-check/cifiles_test.go:641 reads that one fragment under ../..")),
+         "cmd/spec-check/cifiles_test.go:643 reads that one fragment under ../..")),
     f"{ENVOY}/cmd/spec-check/main_test.go": reads(
         (f"{ENVOY}/internal/dispatch/specgraph/testdata/**",
-         "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
-         "lists at :69 and its built binary reads")),
+         "cmd/spec-check/main_test.go:514 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
+         "lists at :73 and its built binary reads")),
     f"{ENVOY}/internal/broker/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
                                                             "internal/broker/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/broker/store/storetest/storetest_test.go": [
@@ -895,6 +901,10 @@ RULES = {
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
+    f"{ENVOY}/internal/dispatch/specgraph/gocode_test.go": [
+        run(f"{ENVOY}/internal/dispatch/specgraph/testdata/citations/repo", ["./..."],
+            "internal/dispatch/specgraph/gocode_test.go: GoCode.Find runs go list -json in testdata/citations/repo with GOWORK=off",
+            mode="build", env={"GOWORK": "off"})],
     f"{ENVOY}/internal/dispatch/specgraph/imports_test.go": [
         run(f"{ENVOY}/internal/dispatch/specgraph", ["."], "internal/dispatch/specgraph/imports_test.go:15 go list -deps .", mode="build")],
     # The server.started envelope packages/daemon's intake decodes, which this package's
@@ -2313,6 +2323,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/release-bump.sh", "release-push.sh:914 runs it for `version`, and the version cases read its refusals"),
         (".github/workflows/release.yaml", "release-push.test.sh's worker_image_release case reads that job's step out of it and runs it"),
         ("packages/pi-legion/.changie.yaml", "release-push.test.sh's fold-notes case for the shipped configuration copies it into its fixture"),
+        ("packages/daemon/internal/leakguard/private-names.toml",
+         "release-push.test.sh:172-175 copy the rule file into each fixture tree, and release-push.sh:379 reads it there"),
     ]),
     harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
         (f"{SCRIPTS}/release-bump.sh", "the script under test"),
@@ -2521,6 +2533,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
+        (f"{SCRIPTS}/go-test-reads.sh", "the tie producer the fixtures link in beside the engine, which check-ci-filters.test.sh's "
+                                         "go-test-reads.sh case (\"gives a test's closure with its RULES reads\") runs"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),

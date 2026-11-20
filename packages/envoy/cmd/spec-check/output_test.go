@@ -4,7 +4,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -104,26 +103,23 @@ func TestEachSubcommandReportsAStandardOutputThatTakesNoText(t *testing.T) {
 }
 
 // The built command reports a standard output on a full device, /dev/full, as the deep review
-// found print did not: exit 2 and the line on standard error.
+// found print did not: exit 2 and the line on standard error. A shell opens /dev/full as the
+// standard output and puts the binary in its own place (exec), so the run of the binary has the
+// limit of runBounded, as each other run of it in these tests has.
 func TestTheBuiltBinaryReportsAFullStandardOutput(t *testing.T) {
 	t.Parallel()
-	full, err := os.OpenFile("/dev/full", os.O_WRONLY, 0)
-	if errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat("/dev/full"); errors.Is(err, os.ErrNotExist) {
 		t.Skip("this system has no /dev/full; TestEachSubcommandReportsAStandardOutputThatTakesNoText holds the rule")
+	} else if err != nil {
+		t.Fatal(err)
 	}
+	binary := cmdtest.Build(t, "spec-check")
+	got, err := runBounded(binaryLimit, "/bin/sh", "", childEnv(), "-c", `exec "$@" >/dev/full`, "sh",
+		binary, "print", "--approved", fixture(t, "compare", "approved-text", "approved.json"), "--id", "order")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer full.Close()
-	binary := cmdtest.Build(t, "spec-check")
-	cmd := exec.Command(binary, "print", "--approved", fixture(t, "compare", "approved-text", "approved.json"), "--id", "order")
-	cmd.Env = childEnv()
-	var stderr strings.Builder
-	cmd.Stdout, cmd.Stderr = full, &stderr
-	err = cmd.Run()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 2 ||
-		stderr.String() != "spec-check: print: cannot write standard output: write /dev/stdout: no space left on device\n" {
-		t.Errorf("print to /dev/full: %v, stderr %q; want exit 2 and the line that names the write", err, stderr.String())
+	if want := "spec-check: print: cannot write standard output: write /dev/stdout: no space left on device\n"; got.code != 2 || got.stderr != want {
+		t.Errorf("print to /dev/full: exit %d, stderr %q; want exit 2 and the line that names the write, %q", got.code, got.stderr, want)
 	}
 }

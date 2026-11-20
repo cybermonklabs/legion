@@ -316,6 +316,24 @@ FIELDS = ("Dir,ImportPath,ForTest,Standard,GoFiles,CgoFiles,TestGoFiles,XTestGoF
           "TestEmbedPatterns,XTestEmbedPatterns,Error")
 
 
+@dataclass(frozen=True, kw_only=True)
+class Listing:
+    """One `go list` of Session.listing, by what decides its answer: the run's directory,
+    packages, tags, mode, -race, environment and overlay, and whether it lists the packages with
+    their dependencies (`-deps`, and `-test` for a test or vet run) or alone. Session.listings holds
+    each answer under its Listing, so a reader of them reads each part by its name, and a Listing
+    is made by naming each part."""
+
+    workdir: str
+    pkgs: tuple
+    tags: str
+    mode: str
+    race: bool
+    env: tuple
+    overlay: tuple
+    deps: bool
+
+
 @dataclass
 class Session:
     """The go commands' environment and results. GOPROXY=off over an empty module cache: no
@@ -326,6 +344,7 @@ class Session:
 
     problems: list[Annotation] = field(default_factory=list)
     cache: dict = field(default_factory=dict)
+    listings: dict[Listing, list] = field(default_factory=dict)
     toolchains: dict = field(default_factory=dict)
     tmp: str = ""
 
@@ -370,13 +389,14 @@ class Session:
     def overlay_args(self, run_: Run) -> list:
         if not run_.overlay:
             return []
-        path = Path(self.tmp) / f"overlay-{len(self.cache)}.json"
+        path = Path(self.tmp) / f"overlay-{len(self.listings)}.json"
         path.write_text(json.dumps({"Replace": {str(REPO / a): str(REPO / b) for a, b in run_.overlay}}))
         return ["-overlay", str(path)]
 
     def listing(self, run_: Run, deps: bool) -> list:
-        key = ("list", run_.workdir, run_.pkgs, run_.tags, run_.mode, run_.race, run_.env, run_.overlay, deps)
-        if key not in self.cache:
+        key = Listing(workdir=run_.workdir, pkgs=run_.pkgs, tags=run_.tags, mode=run_.mode, race=run_.race,
+                      env=run_.env, overlay=run_.overlay, deps=deps)
+        if key not in self.listings:
             args = ["list", "-e", f"-json={FIELDS}"]
             if deps:
                 args.append("-deps")
@@ -387,8 +407,8 @@ class Session:
             if run_.race:
                 args.append("-race")
             args += self.overlay_args(run_)
-            self.cache[key] = decode_stream(self.go(run_, args + list(run_.pkgs)))
-        return self.cache[key]
+            self.listings[key] = decode_stream(self.go(run_, args + list(run_.pkgs)))
+        return self.listings[key]
 
     def module_files(self, run_: Run) -> list:
         """go.work, go.work.sum and each bound module's go.mod and go.sum, or the one module's."""
@@ -666,6 +686,58 @@ def apply_rules(session: Session, rules: dict, source: str, seen: set) -> list:
     for action in rules.get(source, ()):
         reads += closure(session, rules, action, seen) if isinstance(action, Run) else [action]
     return reads
+
+
+def test_reads(workdir: str, pkgs: list, env: dict) -> tuple:
+    """What `go test <pkgs>` run in workdir reads, by the closure each gate is held to, with
+    ci_job_reads.RULES applied and the patterns below that no file that exists decides:
+    (sorted globs, problem messages). go-test-reads.sh prints it, and
+    packages/envoy/cmd/spec-check reads it as the tie of a check of The Spec."""
+    import ci_job_reads as data
+    session = Session()
+    why = f"go test {' '.join(pkgs)} in {workdir}"
+    tested = run(workdir, pkgs, why, env=env)
+    reads = closure(session, data.RULES, tested, set())
+    # closure() passes over a package go list gives no directory, as it gives none to a third-party
+    # one under GOPROXY=off. A package the command names with none, as a path that is gone, leaves
+    # the closure unknown.
+    for pkg in session.listing(tested, deps=False):
+        if not pkg.get("Dir") and not pkg.get("Standard"):
+            cause = " ".join((pkg.get("Error") or {}).get("Err", "").split())[:300]
+            session.problems.append(error(None, f"go list finds no directory of {pkg.get('ImportPath')} for {why}, so "
+                                                f"its closure is unknown: {cause}"))
+    # closure() reads the files of a package as of the commit it lists: those of a directory that
+    # holds test files one by one, testdata only while the directory exists, and a wildcard
+    # //go:embed pattern as the paths it matches there. A tie is read at the commit whose changes
+    # it judges, so a file deleted from any of them would be no read of it, and the test would not
+    # run again on that change (R8). So the tie holds each as a pattern of the commit's text, which
+    # no file that exists decides: each first-party package directory whole, `<dir>/*`, of every
+    # `-deps` listing the closure made, the go commands its RULES rows start included;
+    # `<dir>/testdata/**` of each package a test run names; and the directory under the literal
+    # part of each wildcard embed pattern, whole, of the packages whose patterns closure() reads.
+    # Each listing is read by the parts of its Listing that decide this: its mode and whether it
+    # lists dependencies.
+    for listing, listed in session.listings.items():
+        for pkg in listed:
+            d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
+            if d is None:
+                continue
+            if listing.deps:
+                if (REPO / d).is_dir():
+                    reads.append(Read(f"{d}/*", f"{why} (the package directory, whole)"))
+                embeds = pkg.get("EmbedPatterns") or []
+            elif listing.mode in ("test", "vet"):
+                if listing.mode == "test":
+                    reads.append(Read(f"{d}/testdata/**", f"{why} (the testdata of a package it tests, whole)"))
+                embeds = (pkg.get("TestEmbedPatterns") or []) + (pkg.get("XTestEmbedPatterns") or [])
+            else:
+                embeds = []
+            for pattern in embeds:
+                parts = pattern.removeprefix("all:").split("/")
+                wild = next((i for i, part in enumerate(parts) if any(c in part for c in "*?[\\")), None)
+                if wild is not None:
+                    reads.append(Read("/".join([d, *parts[:wild], "**"]), f"{why} (the directory of embed {pattern}, whole)"))
+    return sorted({r.glob for r in reads if r.glob}), [p.message for p in session.problems]
 
 
 GO_FILE_NAMES = ("go.mod", "go.sum", "go.work", "go.work.sum")

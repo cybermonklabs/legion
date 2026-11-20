@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
@@ -24,9 +25,13 @@ const (
 // ciRefusal is what compare writes, and all it writes, when GITHUB_ACTIONS is true.
 const ciRefusal = "spec-check: compare does not run in a CI job (GITHUB_ACTIONS=true): R2 gives the comparison of the files with the approved spec at each push to Dispatch\n"
 
+// timeForm is a time as the forms of the JSON files name its type: Z or an offset, and an
+// upper-case T.
+const timeForm = `<RFC 3339 time with an upper-case T, and Z or an offset such as +01:00>`
+
 // approvedForm is the form of approved.json, as compare and print name it before the place of a
 // value of another type.
-const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"<RFC 3339 time with an upper-case T and Z>","block":"<block>"}, …]}, …]}`
+const approvedForm = `{"nodes":[{"id":"<id>","removed":<true or false>,"partly_checked":<true or false>,"versions":[{"version":<whole number from 1>,"at":"` + timeForm + `","block":"<block>"}, …]}, …]}`
 
 // testCompare runs compare over each fixture of specgraph's comparison tests (testdata/compare),
 // each the approved spec and the files of one change: a node in a text that the approved spec
@@ -106,7 +111,7 @@ func testCompare(t *testing.T, binary string) {
 		removed := 0
 		approved := approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 			if n.ID == "shipping" || n.ID == "orders-to-billing" || n.ID == "order" {
-				n.Removed = true
+				n.Removed = new(true)
 				removed++
 			}
 		})
@@ -126,7 +131,7 @@ func testCompare(t *testing.T, binary string) {
 		dir := copyOf(t, fixture(t, "compare", "removed-kept", "spec"))
 		approved := fixture(t, "compare", "removed-kept", "approved.json")
 		removed := approvedOf(t, "removed-kept").Nodes["an-order-is-paid-once"]
-		if !removed.Removed {
+		if !*removed.Removed {
 			t.Fatal("the fixture did not remove an-order-is-paid-once")
 		}
 		writeFile(t, filepath.Join(dir, "again.md"), []byte(removed.Versions[len(removed.Versions)-1].Block))
@@ -193,7 +198,7 @@ func testCompare(t *testing.T, binary string) {
 		only := func(keep func(id, block string) bool) string {
 			return approvedCopy(t, "approved-text", func(n *specgraph.ApprovedNode) {
 				if !keep(n.ID, n.Versions[len(n.Versions)-1].Block) {
-					n.Removed = true
+					n.Removed = new(true)
 				}
 			})
 		}
@@ -507,6 +512,42 @@ func approvedCopy(t *testing.T, name string, edit func(n *specgraph.ApprovedNode
 	path := filepath.Join(t.TempDir(), "approved.json")
 	writeFile(t, path, changed.Bytes())
 	return path
+}
+
+// editApproved decodes the approved.json at path as the approved nodes of specgraph, lets edit
+// change, add or take out nodes, and writes back the nodes that edit returns. A test of a file that
+// is not valid edits its bytes instead (replaceIn).
+func editApproved(t *testing.T, path string, edit func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode) {
+	t.Helper()
+	var file specgraph.ApprovedFile
+	readJSONFile(t, path, &file)
+	file.Nodes = edit(file.Nodes)
+	writeJSONFile(t, path, file)
+}
+
+// compare and print read approved.json through the one strict JSON reader, as state does: a member
+// written in other letters or given two times, and a byte that is not UTF-8, are exit 2 with one
+// line that names the file.
+func TestTheApprovedSpecIsReadStrictly(t *testing.T) {
+	t.Parallel()
+	binary := cmdtest.Build(t, "spec-check")
+	const first = `"removed": false,`
+	for _, row := range []struct{ name, old, new, fault string }{
+		{"a field name in capitals", first, `"REMOVED": false,`, `member "/nodes/0/REMOVED" is not in the format`},
+		{"one field two times, in two cases", first, `"removed": false, "Removed": true,`, `member "/nodes/0/Removed" is not in the format`},
+		{"one field two times", first, `"removed": false, "removed": true,`, `member "/nodes/0/removed" is in one object two times`},
+		{"a byte that is not UTF-8", `"id": "acme-keeps-each-order"`, "\"id\": \"acme-keeps-each-\xfforder\"", "it is not UTF-8"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			fixtureDir := copyOf(t, fixture(t, "compare", "approved-text"))
+			approved := filepath.Join(fixtureDir, "approved.json")
+			replaceIn(t, approved, row.old, row.new)
+			want := result{code: 2, stderr: "spec-check: " + approved + ": specgraph: approved spec: " + row.fault + "\n"}
+			expect(t, runBinary(t, binary, "", "compare", "--dir", filepath.Join(fixtureDir, "spec"), "--approved", approved), want)
+			expect(t, runBinary(t, binary, "", "print", "--approved", approved, "--id", "acme-keeps-each-order"), want)
+		})
+	}
 }
 
 // withoutBlock is text with the block of the node id taken out, from its opening line to its

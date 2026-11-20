@@ -23,5 +23,6 @@
 //
 // The package is logic over bytes and values: it reaches no store, no route and no database
 // (TestSpecgraphReachesNoStore), so the spec-check command, Dispatch's importer and the pilot can
-// all call the same rules.
+// all call the same rules. Three readers of a checkout run its tools: GitHistory runs git, GoCode
+// runs go list, and ScriptTestReads runs the repository's .github/scripts/go-test-reads.sh.
 package specgraph

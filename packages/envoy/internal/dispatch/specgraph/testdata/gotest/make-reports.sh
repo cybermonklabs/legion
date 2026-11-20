@@ -12,6 +12,9 @@
 #   - piped-<name>.jsonl, for each package the list piped names: the text of `go test -v -trimpath
 #     -count=1 -timeout 1s` of the package through `go tool test2json -t -p <package>`. That form
 #     holds no marker, so the reader's stated limit applies to it.
+#   - verbose-<name>.jsonl, for each package the list verbose names: `go test -json -v -trimpath
+#     -count=1` of the package. go runs the binary with -test.v=true then, not test2json, so this is
+#     a form in which a test can write its own end line, and the reader's stated limit applies to it.
 #   - go1.26-subprint.jsonl: `go test -json -trimpath -count=1` of the package subprint with Go
 #     1.26.11, in a scratch module of its own whose go.mod says go 1.26. Its converter marks no line
 #     as a frame, which is the report the reader refuses.
@@ -22,6 +25,7 @@ set -euo pipefail
 version=go1.27.3
 t2j=(exitkill killfirst killprinted killprintedfail killsame killsibling killsiblingpass killstack ownlines subprint)
 piped=(killprinted)
+verbose=(splitlines forgedpass)
 here=$(cd "$(dirname "$0")" && pwd)
 module=$(mktemp -d)
 binaries=$(mktemp -d)
@@ -71,6 +75,12 @@ for name in "${piped[@]}"; do
   (go test -v -trimpath -count=1 -timeout 1s "./$name/" 2>&1 | go tool test2json -t -p "example.com/acme/gotest/$name") >"$here/piped-$name.jsonl" || status=$?
   refuse "$here/piped-$name.jsonl"
   echo "go test -v -trimpath -count=1 -timeout 1s ./$name/ | go tool test2json -t -p example.com/acme/gotest/$name: exit $status, $(wc -l <"$here/piped-$name.jsonl") events"
+done
+for name in "${verbose[@]}"; do
+  status=0
+  go test -json -v -trimpath -count=1 "./$name/" >"$here/verbose-$name.jsonl" || status=$?
+  refuse "$here/verbose-$name.jsonl"
+  echo "go test -json -v -trimpath -count=1 ./$name/: exit $status, $(wc -l <"$here/verbose-$name.jsonl") events"
 done
 cp -R "$here/cases/subprint" "$old/"
 printf 'module example.com/acme/gotest\n\ngo 1.26\n' >"$old/go.mod"
