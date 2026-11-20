@@ -1,4 +1,4 @@
-import { api, type WriteBounds } from "../../api/client";
+import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type {
   AnchorInput,
   AskOption,
@@ -9,7 +9,7 @@ import type {
   EditCommentInput,
 } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "../writes/keyed-write";
+import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { carriedBlocks, type FollowedBlocks } from "./block-spans";
 import type {
   AcceptedMention,
@@ -64,6 +64,12 @@ export interface SentRequest {
   readonly draft: SentDraft;
   readonly edit:
     | {
+        /** The comment's body the edit was written over, as the editor last saw it at the press:
+         *  a refused edit is put back in its editor only while the comment still holds this body,
+         *  or reads as the edit would save it (`useKeptDrafts`'s `changedUnder`). Undefined in a
+         *  send kept by a build that kept none, which is offered beside the comment as one
+         *  written over another body is. */
+        readonly base?: string;
         /** The block ids the save carries, worked out at the press from the blocks the editor
          *  followed through the edit (`carriedIdsOf`), and kept with the send across a reload, so
          *  every attempt under the send's key sends the same body. Undefined when the blocks
@@ -196,16 +202,103 @@ function sameMessage(refused: SentRequest, next: Omit<SentRequest, "sendKey">): 
   );
 }
 
+/** Whether `a` and `b` are one owner: one issue, one document, or one session. */
+function sameOwner(a: ComposerOwner, b: ComposerOwner): boolean {
+  switch (a.kind) {
+    case "issue":
+      return b.kind === "issue" && b.issueKey === a.issueKey;
+    case "artifact":
+      return b.kind === "artifact" && b.artifactId === a.artifactId;
+    case "session":
+      return b.kind === "session" && b.sessionId === a.sessionId;
+  }
+}
+
+/** Where a send goes: its owner, the mark it is anchored to, the reply it answers, and, for an
+ *  edit, the comment it saves - a send's, or a composer's as its props name it. */
+export type Address = Pick<SentRequest, "anchor" | "owner" | "replyTo"> & {
+  readonly edit: { readonly id: string } | undefined;
+};
+
+/** The part of a send's address a move of the reader's own changes: its owner and the reply it
+ *  answers (Cancel reply, an Agents row's issue pick; `HeldSends.carry`). */
+export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo">;
+
+/** Whether `next` goes where `sent` went. A refused send's draft lives at that address: a press
+ *  from a composer its host has moved to another is not its Retry (`HeldSends.send`), and only a
+ *  move the reader makes with the composer's own controls takes the send there with it
+ *  (`HeldSends.carry`). */
+export function sameAddress(sent: Address, next: Address): boolean {
+  return (
+    sameOwner(sent.owner, next.owner) &&
+    sent.anchor?.artifact === next.anchor?.artifact &&
+    sent.anchor?.mark_id === next.anchor?.mark_id &&
+    sent.replyTo?.id === next.replyTo?.id &&
+    sent.edit?.id === next.edit?.id
+  );
+}
+
+/** The owner Dispatch stores the files of a message for `owner` under: its issue, its document's
+ *  project, or, for a direct message, the agent's conversation. */
+export function artifactOwnerOf(owner: ComposerOwner): ArtifactOwner {
+  switch (owner.kind) {
+    case "issue":
+      return { issue: owner.issueKey };
+    case "artifact":
+      return { project: owner.project };
+    case "session":
+      return { session: owner.sessionId };
+  }
+}
+
+/** What a message is for, named by the owner its files go to (`artifactOwnerOf`), in the
+ *  composer's words: as a direct message, or `preposition` its issue or another document - `for
+ *  CORE-1` where a draft was written or a file pasted, `to CORE-1` where a send went. The
+ *  composer's words of a pasted file and of a draft's address are these alike. */
+export function ownerWords(owner: ArtifactOwner, preposition: "for" | "to"): string {
+  if ("issue" in owner) return `${preposition} ${owner.issue}`;
+  if ("session" in owner) return "as a direct message";
+  return `${preposition} another document`;
+}
+
+/** Where `address` sends a message, in the composer's words: as a reply, or where its owner is
+ *  (`ownerWords`). */
+export function addressWords(
+  { owner, replyTo }: CarriedAddress,
+  preposition: "for" | "to"
+): string {
+  return replyTo === null ? ownerWords(artifactOwnerOf(owner), preposition) : "as a reply";
+}
+
+/**
+ * What a send the reader stopped says once they have moved its draft to another address with the
+ * composer's own controls (`HeldSends.carry`): the stopped write may have reached Dispatch at
+ * `stopped`, its own address, and its key is used only there, so the draft sent from here is a new
+ * message under a key of its own, which can make two. It says so in the words of every surface's
+ * stopped write (`stoppedWriteNote`). A margin compose says the same beside a stopped send it
+ * offers for its words (`stoppedOfferOf` in `useKeptDrafts`).
+ */
+export function movedSendNote(stopped: CarriedAddress): string {
+  return stoppedWriteNote(`this message, sent ${addressWords(stopped, "to")}`, "delivered there", {
+    anew: "Sending it from here is a new message, which can be delivered a second time if the first one was.",
+  });
+}
+
+/** A send the reader stopped whose draft they have since moved to another address, which says so
+ *  (`movedSendNote`). It ends as a stopped write does, with Retry and Discard. */
+export class SendMovedError extends SendStoppedError {
+  constructor(stopped: CarriedAddress) {
+    super(movedSendNote(stopped));
+    this.name = "SendMovedError";
+  }
+}
+
 /** Whether `next` is the refused send unedited: the same draft - its text, accepted mentions and a
  *  suggestion's replacement, and an ask's fields - to the same place, in the same kind. */
 export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey">): boolean {
   return (
     refused.kind === next.kind &&
-    JSON.stringify(refused.owner) === JSON.stringify(next.owner) &&
-    refused.anchor?.artifact === next.anchor?.artifact &&
-    refused.anchor?.mark_id === next.anchor?.mark_id &&
-    refused.replyTo?.id === next.replyTo?.id &&
-    refused.edit?.id === next.edit?.id &&
+    sameAddress(refused, next) &&
     refused.draft.body === next.draft.body &&
     refused.draft.replacement === next.draft.replacement &&
     JSON.stringify(refused.draft.mentions) === JSON.stringify(next.draft.mentions) &&
@@ -223,7 +316,11 @@ export function unedited(refused: SentRequest, next: Omit<SentRequest, "sendKey"
  * under a new key: for a message to one session, unedited, the refused request as it was sent - its
  * mode, picked or plain - so a message the live view sent in a mode it picked never goes out again
  * in the Agents row's mode; for anything else, and an edited draft, the request as the composer
- * shows it now, a comment in the modes its mentioned sessions advertise now.
+ * shows it now, a comment in the modes its mentioned sessions advertise now. Either way it is a
+ * Retry only from a composer at the address the refused send's draft lives at (`sameAddress`):
+ * the one it was sent to, or the one the reader has carried it to since with the composer's own
+ * controls (`HeldSends.carry`), where a stopped send's request names a key nothing has gone out
+ * under. The store refuses one from a composer its host has moved (`HeldSends.send`).
  */
 export function requestFor(
   refused: SentRequest | undefined,

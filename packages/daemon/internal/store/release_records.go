@@ -48,10 +48,19 @@ type PodResume struct {
 	Kind string
 	// At is when the wake reached the daemon or the Envoy listener.
 	At time.Time
+	// ClockAt is when the resume's stuck clock started (pod_resumes.clock_at): the wake's own
+	// moment, moved later to the moment the wake pacing let its launch out and to the moment a
+	// project's resume ended the pause that held it (decision 14 of dispatch://INFRA-3759). The
+	// stuck warning and the stranded report measure from it.
+	ClockAt time.Time
+	// Pause is the project pause that held the wake (pod_resumes.pause_id), 0 for a wake no pause
+	// held. A held wake pairs with no release (Release is 0), and the release measurements leave
+	// its wait out (decision 15).
+	Pause int64
 	// PodReadyAt and FirstTurnAt are zero until each is observed.
 	PodReadyAt  time.Time
 	FirstTurnAt time.Time
-	// Stuck is whether the resume had no first turn ten minutes after its wake.
+	// Stuck is whether the resume had no first turn ten minutes after its stuck clock started.
 	Stuck bool
 }
 
@@ -148,19 +157,20 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 	return nil
 }
 
-// StuckPodResumes are the resumes whose wake is at or before the bound with no first turn and no
-// stuck mark yet: the ones the daemon warns about and counts, read once per pass so each warns
-// once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked row.
+// StuckPodResumes are the resumes whose stuck clock started at or before the bound, with no first
+// turn and no stuck mark yet: the ones the daemon warns about and counts, read once per pass so
+// each warns once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked
+// row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
 	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, true)
 }
 
 // UnfinishedPodResumesTx are the resumes of project the stranded report judges R6 on, read
-// through tx's snapshot: those of each pod's newest release that suspended a role, whose wake is
-// at or before the bound and whose woken role has not taken its first turn, the ones a stuck
-// pass has already marked included — a resume marked stuck is exactly a pod a wake never brought
-// back, so dropping it would take the claim out of the report the moment the warning was
-// written.
+// through tx's snapshot: those of each pod's newest release that suspended a role, whose stuck
+// clock started at or before the bound and whose woken role has not taken its first turn, the
+// ones a stuck pass has already marked included — a resume marked stuck is exactly a pod a wake
+// never brought back, so dropping it would take the claim out of the report the moment the
+// warning was written.
 //
 // A resume of an older release that suspended a role is left out, whatever became of it: the
 // claim it was for has been released again since, which is a pod the daemon has just let go
@@ -177,6 +187,10 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 // release would drop exactly those rows from the report's released-claim arm. So the filter is
 // of what a release did and never of which rule wrote it.
 //
+// A resume a pause held pairs with no release (Release 0, decision 15 of dispatch://INFRA-3759),
+// so the newest release names none of it. It is kept until a release that suspended a role is
+// recorded after it, by the same filter: such a release has let its pod go again.
+//
 // The stranded report and the state route both read it beside the claims they judge it against,
 // in the transaction they have already begun, so the wakes and the released claims they belong
 // to come from one moment. There is no form of this read on the pool: every caller of it is
@@ -191,14 +205,23 @@ func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project s
 // closed (closed_at) is left out of each: it is a wake of a pod that is gone, which no warning
 // and no stranded report has anything to say about, and before closing had a column of its own
 // such a row was indeed gone from here, because closing wrote first_turn_at.
+//
+// Each reads the resume's stuck clock (clock_at), never the wake's own moment (at), and passes
+// over every resume of a project paused now (decision 14 of dispatch://INFRA-3759): the pause
+// holds the launch the resume waits for, and its resume starts the clock again. The pause is the
+// daemon's project's, matched to the resume's project token as readOpenPauseByToken matches it,
+// which says why.
 func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
-	query := `select id, release_id, project, issue, role, kind, at, stuck
-		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and at <= $2`
+	query := `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0), stuck
+		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and clock_at <= $2
+		and not exists (select 1 from project_pauses p where lower(p.project) = r.project and p.ended_at is null)`
 	if unmarked {
 		query += ` and not stuck`
 	} else {
-		query += ` and release_id = (select max(id) from pod_releases
-			where project = r.project and issue = r.issue and roles <> '')`
+		query += ` and (release_id = (select max(id) from pod_releases
+			where project = r.project and issue = r.issue and roles <> '')
+			or (pause_id is not null and not exists (select 1 from pod_releases
+				where project = r.project and issue = r.issue and roles <> '' and id > r.seen_release)))`
 	}
 	rows, err := q.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
@@ -208,7 +231,7 @@ func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project str
 	var out []PodResume
 	for rows.Next() {
 		var r PodResume
-		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.Stuck); err != nil {
+		if err := rows.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause, &r.Stuck); err != nil {
 			return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 		}
 		out = append(out, r)
@@ -326,7 +349,10 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 		return out, fmt.Errorf("read the release records of %s: %w", project, err)
 	}
 
-	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, kind, at, pod_ready_at, first_turn_at, stuck
+	// Each resume carries the pause that held it (decision 15 of dispatch://INFRA-3759), so a
+	// reader of the window tells a held wake's wait from a released pod's.
+	resumes, err := s.pool.Query(ctx, `select id, release_id, project, issue, role, kind, at, clock_at, coalesce(pause_id, 0),
+		pod_ready_at, first_turn_at, stuck
 		from pod_resumes where project = $1 and at >= $2 order by id`, project, since)
 	if err != nil {
 		return out, fmt.Errorf("read the resume records of %s: %w", project, err)
@@ -334,7 +360,8 @@ func (s *Store) PodReleaseRecords(ctx context.Context, project string, since tim
 	for resumes.Next() {
 		var r PodResume
 		var ready, first *time.Time
-		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &ready, &first, &r.Stuck); err != nil {
+		if err := resumes.Scan(&r.ID, &r.Release, &r.Project, &r.Issue, &r.Role, &r.Kind, &r.At, &r.ClockAt, &r.Pause,
+			&ready, &first, &r.Stuck); err != nil {
 			resumes.Close()
 			return out, fmt.Errorf("read the resume records of %s: %w", project, err)
 		}

@@ -88,7 +88,7 @@ func parseService(text string) (ServiceEntry, error) {
 	form := func() error {
 		return fmt.Errorf("%s must be <kind>/<machine id or ->/<* or ->=<account> entries, the kind one of dispatch, listener, daemon or measure and the account system:serviceaccount:<namespace>:<name> or google:<service account email>, got %q", ServicesVariable, text)
 	}
-	head, account, ok := strings.Cut(text, "=")
+	head, account, ok := config.CutNATSServiceEntry(text)
 	if !ok {
 		return ServiceEntry{}, form()
 	}

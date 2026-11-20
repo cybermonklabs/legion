@@ -454,8 +454,8 @@ DOCKER_PLUGIN_VERSION = re.compile(r'^const\s+DockerPluginVersion\s*=\s*"([^"]*)
 # canonical address and counted only where both answered 302 — a release asset answering 504 in
 # an outage and one answering 504 because GitHub does not serve that shape look alike, and that
 # control is what tells them apart. Whether it serves the after-`download` shape is not stated
-# anywhere, here or in AGENTS.md, because it decides nothing: that shape is read whatever the
-# server answers, and a reading of the world cannot settle a question about the text.
+# here, because it decides nothing: that shape is read whatever the server answers, and a
+# reading of the world cannot settle a question about the text.
 # Closing the four would mean normalising a path — percent-encoding and dot segments included —
 # which is not a class a text comparison can close. Nor is any other host that can serve the
 # bytes, the `release-assets.githubusercontent.com` address these redirects land on among them.

@@ -48,6 +48,7 @@ const inherited = {
   GH_CONFIG_DIR: "/outer/gh",
   LEGION_GH_PATH: "/outer/gh-binary",
   PATH: `${outerBin}:/usr/bin`,
+  OMP_SESSION_EXCLUSIVE: "1",
 };
 
 // The pane environment comes from the daemon's own functions, compiled and run by `go run`, which
@@ -70,6 +71,7 @@ test.skipIf(skip)(
     expect(workerEnv).not.toHaveProperty("LEGION_GRANT_FILE");
     expect(workerEnv).not.toHaveProperty("LEGION_GIT_PATH");
     expect(workerEnv).not.toHaveProperty("LEGION_JJ_PATH");
+    expect(workerEnv).not.toHaveProperty("OMP_SESSION_EXCLUSIVE");
     const ghRoot = `${rig}/state/secrets/legion-skillsrig-lweval-1-tester-gh`;
     const ghConfigDir = `${ghRoot}/skills-rig`;
     expect(workerEnv).toMatchObject({

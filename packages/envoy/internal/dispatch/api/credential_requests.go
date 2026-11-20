@@ -286,9 +286,10 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 // --- GET /api/v1/machine-logins, POST .../{id}/revoke ---
 
 // listMachineLogins answers the machine logins the caller may revoke that can still reach a
-// secret: every service's login, whoever approved it, and the caller's own machines', an expired
-// one whose sessions still run among them. Dispatch names the caller, so no one lists another
-// person's machines.
+// secret: every service's login, whoever approved it, the caller's own machines', and the logins
+// of the caller's own pods (pods whose Kubernetes account the broker's BROKER_POD_OPERATORS maps
+// to the caller, each row's person naming them), an expired one whose sessions still run among
+// them. Dispatch names the caller, so no one lists another person's machines or pods.
 func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -304,8 +305,10 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
 // enrolled (a service's login: every pod it started): the broker allows it for a service's login
-// from anyone signed in, and for a person's machine login only when the caller is the person who
-// approved it. The browser's body carries nothing Dispatch reads.
+// from anyone signed in, for a person's machine login only when the caller is the person who
+// approved it, and for a person's pod login only when the caller is the person the broker's
+// BROKER_POD_OPERATORS maps the pod's account to. The browser's body carries nothing Dispatch
+// reads.
 func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {

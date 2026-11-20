@@ -82,10 +82,9 @@ type Session struct {
 	// not reach the broker rather than reading it as a refusal — a blip between a record and
 	// the broker must not cost the session the grants that record exists to keep — so those
 	// retries last as long as the outage does, and a register that waited on them would burn
-	// its whole wait on every launch for all that time, the per-launch stall the `Secrets
-	// broker` section of packages/envoy/AGENTS.md promises against at "`register --wait N`
-	// answers at once while the helper holds no launcher credential". A later register waits
-	// for nothing it did not see start.
+	// its whole wait on every launch for all that time. A register on a helper with no launcher
+	// credential waits only while an inherited enrollment's first confirming renew runs, and at
+	// most DefaultFirstConfirmBound. A later register waits for nothing it did not see start.
 	//
 	// Every write is under s.mu: newSession installs a CLOSED channel, since a session that
 	// has inherited nothing has no confirmation to wait for; inheritLocked installs a fresh

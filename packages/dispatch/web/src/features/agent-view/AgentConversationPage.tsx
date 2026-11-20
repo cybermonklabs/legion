@@ -29,7 +29,7 @@ import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
@@ -298,12 +298,12 @@ export function AgentConversationPage({
   // The human's direct messages and the session's replies to them, as Dispatch stores them. A
   // person's Send or Aside to a session that takes one becomes the session's own user turn, which
   // the stream carries tagged with this message's id, and the thread shows it once; one the
-  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, the phase-worker section,
-  // says when). A BTW, an issue message, and any message to a session that takes no user turn
-  // from Envoy arrive as notices the stream has no frame for, and the session answers them with a
-  // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
-  // hold that command. Without these the thread would show replies to messages the human cannot
-  // see, and no replies at all.
+  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, "A person's message from
+  // Dispatch", says when). A BTW, an issue message, and any message to a session that takes no
+  // user turn from Envoy arrive as notices the stream has no frame for, and the session answers
+  // them with a `dispatch message` command, which the stream shows only as a `bash` tool call whose
+  // arguments hold that command. Without these the thread would show replies to messages the human
+  // cannot see, and no replies at all.
   const stored = useQuery(agentMessagesQuery(sessionId));
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.
@@ -445,8 +445,13 @@ export function AgentConversationPage({
       ) : null}
       {switchRefusal === null ? null : (
         <p className={`mt-2 text-sm ${dangerText}`} data-testid="agent-send-error">
+          {/* A switch the reader stopped, or whose key ran out, may have reached the session.
+              The header offers no Retry of it: picking again is a switch of its own, under a
+              key of its own, so the error's words - a composer's Retry - are not said here. */}
           {switchRefusal instanceof SendStoppedError
-            ? switchRefusal.message
+            ? stoppedWriteNote("the switch", "sent", {
+                anew: "Picking a model or thinking level again sends a new switch.",
+              })
             : `Could not send: ${apiErrorMessage(switchRefusal, "could not reach the session")}`}
         </p>
       )}

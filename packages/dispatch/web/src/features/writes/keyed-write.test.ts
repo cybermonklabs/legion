@@ -6,8 +6,10 @@ import {
   keyExpired,
   keySpent,
   retriesUnderItsKey,
+  retryNote,
   SendExpiredError,
   SendStoppedError,
+  stoppedWriteNote,
   writeUnderKey,
 } from "./keyed-write";
 
@@ -136,4 +138,72 @@ test("a spent key stops a write that sends it and lets one that does not through
 test("a Retry keeps the write's key after a stop and takes a new one once the key is spent", () => {
   expect(retriesUnderItsKey(new SendStoppedError())).toBe(true);
   expect(retriesUnderItsKey(new SendExpiredError())).toBe(false);
+});
+
+// Every surface's case builds its expected sentence with `stoppedWriteNote` and pins what the
+// surface hands it: the write it names, what it does once it lands, and its control. This case
+// pins what each kind of sentence says, written out as the reader reads it, so a sentence that
+// promises a Retry the write does not have fails here, whatever the surfaces' cases compute.
+test("each kind of stopped write's sentence, and each Retry's promise, reads as written here", () => {
+  const stopped = new SendStoppedError();
+  expect({
+    "a control that is a press of its own": stoppedWriteNote("the new issue", "made", {
+      anew: "Pressing Make a new issue again sends it as a new create.",
+    }),
+    "a Retry of a POST": stoppedWriteNote("your reply", "posted", { method: "POST", stopped }),
+    "a Retry of a PUT": stoppedWriteNote("the snooze", "saved", { method: "PUT", stopped }),
+    "a Retry of a DELETE": stoppedWriteNote("the un-snooze", "saved", {
+      method: "DELETE",
+      stopped,
+    }),
+    "a named control": stoppedWriteNote("the upload", "stored", {
+      again: "Upload",
+      method: "POST",
+      stopped,
+    }),
+    "a Retry under a key that ran out": stoppedWriteNote("the priority of CORE-1", "saved", {
+      method: "PATCH",
+      stopped: new SendExpiredError(),
+    }),
+  }).toEqual({
+    "a control that is a press of its own":
+      "Dispatch has not confirmed the new issue: it may have been made. Pressing Make a new " +
+      "issue again sends it as a new create.",
+    "a Retry of a POST":
+      "Dispatch has not confirmed your reply: it may have been posted. Retry asks again under " +
+      "the same key, so it is posted at most once if you retry within 24 hours of the first " +
+      "try. After that Dispatch no longer knows the key: a Retry is a new write and may be " +
+      "posted twice.",
+    "a Retry of a PUT":
+      "Dispatch has not confirmed the snooze: it may have been saved. A Retry sends the same " +
+      "change again, which is the same however often it is made.",
+    "a Retry of a DELETE":
+      "Dispatch has not confirmed the un-snooze: it may have been saved. A Retry sends the same " +
+      "change again, which is the same however often it is made.",
+    "a named control":
+      "Dispatch has not confirmed the upload: it may have been stored. Pressing Upload again " +
+      "retries it. Retry asks again under the same key, so it is stored at most once if you " +
+      "retry within 24 hours of the first try. After that Dispatch no longer knows the key: a " +
+      "Retry is a new write and may be stored twice.",
+    "a Retry under a key that ran out":
+      "Dispatch has not confirmed the priority of CORE-1: it may have been saved. Its key is 24 " +
+      "hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be " +
+      "saved a second time if the first one was.",
+  });
+  // The shell's indicator ends a stopped write's line with the Retry's promise alone.
+  expect({
+    "a write under its key": retryNote(true, stopped, "posted"),
+    "a write that sends no key": retryNote(false, stopped, "saved"),
+    "a write whose key ran out": retryNote(true, new SendExpiredError(), "saved"),
+  }).toEqual({
+    "a write under its key":
+      "Retry asks again under the same key, so it is posted at most once if you retry within " +
+      "24 hours of the first try. After that Dispatch no longer knows the key: a Retry is a new " +
+      "write and may be posted twice.",
+    "a write that sends no key":
+      "A Retry sends the same change again, which is the same however often it is made.",
+    "a write whose key ran out":
+      "Its key is 24 hours old or more, so Dispatch no longer holds it: a Retry is a new write, " +
+      "which can be saved a second time if the first one was.",
+  });
 });

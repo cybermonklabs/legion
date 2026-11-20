@@ -19,7 +19,12 @@ import {
 import { defined } from "./dispatch-commands/context";
 import type { ActiveDispatchConfig } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
-import { checkDispatchCall, dispatchServerUrls, executeDispatchTool } from "./dispatch-execute";
+import {
+  checkDispatchCall,
+  dispatchServerUrls,
+  dryRunAsksDispatch,
+  executeDispatchTool,
+} from "./dispatch-execute";
 import { DispatchWriteLandedError } from "./dispatch-http";
 import { sessionDirectory, sessionStateRoot } from "./dispatch-session-directory";
 import {
@@ -344,11 +349,12 @@ export async function runDispatchCli(
   const file =
     (env.DISPATCH_HOST === undefined ? null : handedConfigFile(env)) ??
     sessionConfigFile(host, env);
-  if (parsed.dryRun) {
+  if (parsed.dryRun && !dryRunAsksDispatch(parsed.tool, parsed.args)) {
     // The call's own argument check, so the call refuses no arguments its dry run passed; what
     // the call needs besides (Dispatch's configuration, this session's state, Dispatch's answers)
     // a dry run does not read. It runs with Dispatch off too, reading a dashboard-URL ref only
-    // against a server it knows, and its standard output is the JSON alone.
+    // against a server it knows, and its standard output is the JSON alone. A call whose dry run
+    // Dispatch answers goes on below, as the call itself does.
     const settings =
       file.path === null
         ? null
@@ -387,6 +393,36 @@ export async function runDispatchCli(
     );
   }
   const config: ActiveDispatchConfig = resolution;
+
+  // A `dispatch result` record's dry run (`dryRunAsksDispatch`) prints the JSON, then the
+  // pull-request body line the record would print, which Dispatch writes and records nothing
+  // for. It needs what the record needs and is refused as the record is, so it runs here, after
+  // the same configuration, and through the record's own command. Like every dry run that
+  // passed, it leaves no entry in this session's ledger.
+  if (parsed.dryRun) {
+    try {
+      const result = await executeDispatchTool({
+        tool: parsed.tool,
+        args: parsed.args,
+        cwd: io.cwd,
+        host,
+        sessionId,
+        sessionTitle: env.DISPATCH_SESSION_TITLE ?? readSessionTitle(dir),
+        config,
+        env,
+        ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+        dryRun: true,
+      });
+      print(`${JSON.stringify(parsed.args, null, 2)}\n\n${result.text}`);
+      return OK;
+    } catch (error) {
+      return refuse(
+        messageFor(error),
+        error instanceof ToolInputError ? USAGE : REFUSED,
+        parsed.tool
+      );
+    }
+  }
 
   // AskGate: a session a live Oh My Pi process records with its gate bound (its AskGate record in
   // this directory) posts a gated write only with one marker the gate minted for this exact argv,
