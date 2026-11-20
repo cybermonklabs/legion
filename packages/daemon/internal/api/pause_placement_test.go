@@ -18,10 +18,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// These tests drive each writer of a body placedByPod names — the release-records route, a
-// refused pause and a turn refused while the project is paused — through the server's handler as
-// three callers: a pod whose plugin is the contract before pauseContract, a pod at it, and a
-// caller in no pod that states this daemon's contract.
+// These tests drive three writers of a body placedByPod names through the server's handler: the
+// release-records route, a pause refused PAUSE_UNAVAILABLE for the daemon's configuration, and a
+// compaction refused PROJECT_PAUSED (refusedWhilePaused). Each is asked as three callers: a pod
+// whose plugin is the contract before pauseContract, a pod at it, and a caller in no pod that
+// states this daemon's contract. The other writers of a PauseFailure — PROJECT_ALREADY_PAUSED,
+// the resume's PROJECT_NOT_PAUSED, refuseWithoutPause on the pause and the resume, and
+// refusedWhilePaused on its other requests — are placed because they write through writeAnswer,
+// which reads placedByPod; no route test here drives them.
 
 const (
 	// pauseAtPodUID is a second pod of the project, whose plugin records pauseContract, and
