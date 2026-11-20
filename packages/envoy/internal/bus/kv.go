@@ -130,8 +130,8 @@ const (
 // ctx, which EnsureKeyValue bounds by the start's hang guard (startHangGuard); and any other
 // caller is one send, bounded by RequestTimeout as a lone read is. One send is right there because
 // such a caller waits on a budget of its own: roles.Buckets.bucket, for one, opens a bucket again
-// under its own lock, on a request whose budget is two seconds, and a read that kept it waiting
-// longer would stop every role and session read of the process rather than save a start.
+// for a read whose caller waits two seconds for it, and an open that kept sending would leave that
+// read and every one after it unanswered rather than save a start.
 func wrapKeyValue(ctx context.Context, conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (KeyValue, error) {
 	js, err := jetstream.New(conn)
 	if err != nil {

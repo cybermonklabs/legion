@@ -2,10 +2,18 @@ package store
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"math/big"
+	"net"
 	"net/url"
 	"os"
 	"slices"
@@ -14,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -141,6 +151,283 @@ func TestConnectErrorKeepsTheFieldsThatMerelyMatchThePassword(t *testing.T) {
 	if !strings.Contains(err.Error(), "user=legion database=legion") {
 		t.Errorf("error hides the user and database the daemon was connecting as: %v", err)
 	}
+}
+
+// Each connection error of dispatch://INFRA-2597/spec R3, as Open itself returns it, is read as R3
+// reads it (c-boot-db-retry case 4): no answer — a refused connection, a reset, a connection
+// closed before an answer, an attempt's own deadline, a host name that does not resolve — and the
+// codes that tell a client to try again later can clear at the next attempt; every other answer,
+// a DSN pgx cannot parse, a TLS failure (a certificate the client cannot verify, an alert of the
+// handshake, the server's or the client's own) and a stop of the caller cannot.
+//
+// It needs no database: each row is a listener of its own, or an address nothing listens on. Each
+// row also holds the type its error carries, measured against PostgreSQL 18.6 through pgx on
+// Open's own path, so a row that passes passes on the error pgx really builds, not on whatever
+// its listener happened to make it return. The server's codes come from a listener that answers
+// the startup message with one ErrorResponse (refusingBackend): 57P01, 57P02 and class 08 cannot
+// be made on a scratch server in a test, and the rest answer the same way from a real one.
+func TestOpenRetryableReadsEachConnectionErrorOfR3(t *testing.T) {
+	refused := "postgres://legion@127.0.0.1:1/legion?sslmode=disable"
+	at := func(listen func(*testing.T) string) func(*testing.T) string {
+		return func(t *testing.T) string {
+			return "postgres://legion@" + listen(t) + "/legion?sslmode=disable"
+		}
+	}
+	answering := func(code, message string) func(*testing.T) string {
+		return at(func(t *testing.T) string { return refusingBackend(t, code, message) })
+	}
+	// clientCertificateDemanded is a server that demands a certificate of the client, which pgx has
+	// none of: under TLS 1.3 the server sends its alert once it reads the client's answer.
+	clientCertificateDemanded := func(t *testing.T) string {
+		return tlsBackend(t, func(config *tls.Config) { config.ClientAuth = tls.RequireAnyClientCert })
+	}
+	for _, row := range []struct {
+		name string
+		dsn  func(*testing.T) string
+		// attempt is Open's deadline; zero is ten seconds, an attempt's limit at the daemon's start.
+		attempt time.Duration
+		// cancelled hands Open a context its caller has already cancelled.
+		cancelled bool
+		// carries is the identity the row's error must carry, for the row to be the row it names.
+		carries func(error) bool
+		want    bool
+	}{
+		{name: "a refused connection", dsn: func(*testing.T) string { return refused }, carries: carriesType[*net.OpError], want: true},
+		{name: "a connection reset as it is accepted", dsn: at(resettingListener), carries: carriesType[*net.OpError], want: true},
+		{name: "a connection closed after its startup message", dsn: at(closingListener), carries: carriesError(io.ErrUnexpectedEOF), want: true},
+		{name: "a listener that never answers, past the attempt's deadline", dsn: at(silentListener), attempt: 200 * time.Millisecond,
+			carries: carriesError(context.DeadlineExceeded), want: true},
+		{name: "a host name that does not resolve", dsn: func(*testing.T) string {
+			return "postgres://legion@no-such-host.invalid:5432/legion?sslmode=disable"
+		}, carries: carriesType[*net.DNSError], want: true},
+		{name: "08006 connection failure", dsn: answering("08006", "could not receive data from client: Connection reset by peer"), carries: carriesCode("08006"), want: true},
+		{name: "53300 slots full", dsn: answering("53300", "remaining connection slots are reserved for roles with the SUPERUSER attribute"), carries: carriesCode("53300"), want: true},
+		{name: "57P01 admin shutdown", dsn: answering("57P01", "terminating connection due to administrator command"), carries: carriesCode("57P01"), want: true},
+		{name: "57P02 crash shutdown", dsn: answering("57P02", "terminating connection because of crash of another server process"), carries: carriesCode("57P02"), want: true},
+		{name: "57P03 shutting down", dsn: answering("57P03", "the database system is shutting down"), carries: carriesCode("57P03"), want: true},
+		{name: "28P01 a refused password", dsn: answering("28P01", `password authentication failed for user "legion"`), carries: carriesCode("28P01"), want: false},
+		{name: "28000 no pg_hba entry", dsn: answering("28000", `no pg_hba.conf entry for host "127.0.0.1", user "legion", database "legion", no encryption`), carries: carriesCode("28000"), want: false},
+		{name: "3D000 a database that does not exist", dsn: answering("3D000", `database "legion" does not exist`), carries: carriesCode("3D000"), want: false},
+		{name: "a DSN pgx cannot parse", dsn: func(*testing.T) string { return "postgres://x@127.0.0.1/x?sslmode=bogus" },
+			carries: carriesType[*pgconn.ParseConfigError], want: false},
+		{name: "a certificate verify-full cannot verify, beside a refused dial", dsn: func(t *testing.T) string {
+			// Two hosts, as localhost is two addresses, 127.0.0.1 and ::1: pgx tries each, and its
+			// error carries the refused certificate at the first beside the refused dial at the
+			// second, so the row holds that a TLS failure is read before the network's.
+			return "postgres://legion@" + tlsBackend(t, nil) + ",127.0.0.1:1/legion?sslmode=verify-full"
+		}, carries: func(err error) bool {
+			return carriesType[*tls.CertificateVerificationError](err) && carriesType[*net.OpError](err)
+		}, want: false},
+		// Over TCP, Go's TLS client returns an alert the server sent as a *net.OpError whose Op is
+		// "remote error", and one it sent itself as a *net.OpError whose Op is "local error"
+		// (crypto/tls/conn.go): each row holds the Op pgx v5.13.0 returned on Open's path.
+		{name: "a server that demands a client certificate, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a server that speaks only TLS 1.1, which alerts the client", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + tlsBackend(t, func(config *tls.Config) {
+				config.MinVersion, config.MaxVersion = tls.VersionTLS10, tls.VersionTLS11
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("remote error"), want: false},
+		{name: "a handshake message of a type TLS does not define, which the client alerts", dsn: func(t *testing.T) string {
+			return "postgres://legion@" + sslBackend(t, func(conn net.Conn) {
+				// One handshake record (22, TLS 1.2, 4 bytes) holding a handshake message of type
+				// 255, which no version of TLS defines, and of length 0.
+				if _, err := conn.Write([]byte{22, 3, 3, 0, 4, 255, 0, 0, 0}); err == nil {
+					_, _ = io.Copy(io.Discard, conn)
+				}
+			}) + "/legion?sslmode=require"
+		}, carries: carriesOp("local error"), want: false},
+		{name: "a server that demands a client certificate, after a refused dial", dsn: func(t *testing.T) string {
+			// The refused dial comes first in the error, so the row holds that the alert is read
+			// wherever it stands, and not only at the chain's first *net.OpError.
+			return "postgres://legion@127.0.0.1:1," + clientCertificateDemanded(t) + "/legion?sslmode=require"
+		}, carries: func(err error) bool {
+			return carriesOp("dial")(err) && carriesOp("remote error")(err)
+		}, want: false},
+		{name: "a caller that stopped", dsn: func(*testing.T) string { return refused }, cancelled: true,
+			carries: carriesError(context.Canceled), want: false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			attempt := row.attempt
+			if attempt == 0 {
+				attempt = 10 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), attempt)
+			defer cancel()
+			if row.cancelled {
+				cancel()
+			}
+			st, err := Open(ctx, row.dsn(t))
+			if err == nil {
+				st.Close()
+				t.Fatal("Open succeeded; the row needs the error it names")
+			}
+			if !row.carries(err) {
+				t.Fatalf("Open failed with %q, which does not carry the error this row names", err)
+			}
+			if got := OpenRetryable(err); got != row.want {
+				t.Errorf("OpenRetryable(%q) = %t, want %t", err, got, row.want)
+			}
+		})
+	}
+}
+
+// carriesType is whether err carries an error of type T anywhere in its chain.
+func carriesType[T error](err error) bool {
+	var target T
+	return errors.As(err, &target)
+}
+
+// carriesError is whether an error carries target anywhere in its chain.
+func carriesError(target error) func(error) bool {
+	return func(err error) bool { return errors.Is(err, target) }
+}
+
+// carriesCode is whether an error carries a server's answer of code.
+func carriesCode(code string) func(error) bool {
+	return func(err error) bool {
+		var pgErr *pgconn.PgError
+		return errors.As(err, &pgErr) && pgErr.Code == code
+	}
+}
+
+// carriesOp is whether an error carries, anywhere in its chain, a *net.OpError whose Op is op.
+func carriesOp(op string) func(error) bool {
+	var carries func(error) bool
+	carries = func(err error) bool {
+		if opErr, ok := err.(*net.OpError); ok && opErr.Op == op {
+			return true
+		}
+		switch err := err.(type) {
+		case interface{ Unwrap() error }:
+			return carries(err.Unwrap())
+		case interface{ Unwrap() []error }:
+			return slices.ContainsFunc(err.Unwrap(), carries)
+		}
+		return false
+	}
+	return carries
+}
+
+// fakePostgres listens on 127.0.0.1 for the test, hands each connection it accepts to serve, and
+// returns its address. The listener closes when the test ends.
+func fakePostgres(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go serve(conn)
+		}
+	}()
+	return listener.Addr().String()
+}
+
+// resettingListener ends each connection with a TCP reset (SO_LINGER 0) as soon as it is accepted.
+func resettingListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		_ = conn.(*net.TCPConn).SetLinger(0)
+		_ = conn.Close()
+	})
+}
+
+// closingListener reads each connection's startup message and closes the connection before it
+// answers.
+func closingListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		_, _ = pgproto3.NewBackend(conn, conn).ReceiveStartupMessage()
+	})
+}
+
+// silentListener accepts each connection and never answers it; the connection ends when its
+// client closes it.
+func silentListener(t *testing.T) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		_, _ = io.Copy(io.Discard, conn)
+	})
+}
+
+// refusingBackend answers each connection's startup message with one FATAL ErrorResponse of code
+// and message, as a server that refuses the connection answers it.
+func refusingBackend(t *testing.T, code, message string) string {
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		backend := pgproto3.NewBackend(conn, conn)
+		if _, err := backend.ReceiveStartupMessage(); err != nil {
+			return
+		}
+		backend.Send(&pgproto3.ErrorResponse{Severity: "FATAL", Code: code, Message: message})
+		_ = backend.Flush()
+	})
+}
+
+// sslBackend answers each connection's SSLRequest with S, as a server that speaks TLS does, and
+// then hands the connection to serve.
+func sslBackend(t *testing.T, serve func(net.Conn)) string {
+	t.Helper()
+	return fakePostgres(t, func(conn net.Conn) {
+		defer conn.Close()
+		startup, err := pgproto3.NewBackend(conn, conn).ReceiveStartupMessage()
+		if err != nil {
+			return
+		}
+		if _, ok := startup.(*pgproto3.SSLRequest); !ok {
+			return
+		}
+		if _, err := conn.Write([]byte("S")); err != nil {
+			return
+		}
+		serve(conn)
+	})
+}
+
+// tlsBackend answers each connection's SSLRequest with S and then serves a TLS handshake with a
+// self-signed certificate no client can verify, under the settings tune makes (nil makes none).
+// Whatever the handshake ends in, the server reads the connection to its end, so its close sends
+// no reset that could overtake the alert it sent.
+func tlsBackend(t *testing.T, tune func(*tls.Config)) string {
+	t.Helper()
+	config := &tls.Config{Certificates: []tls.Certificate{selfSignedCertificate(t)}}
+	if tune != nil {
+		tune(config)
+	}
+	return sslBackend(t, func(conn net.Conn) {
+		_ = tls.Server(conn, config).Handshake()
+		_, _ = io.Copy(io.Discard, conn)
+	})
+}
+
+// selfSignedCertificate is a certificate for localhost that signs itself, which no root a client
+// trusts has signed.
+func selfSignedCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate the certificate's key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("sign the certificate: %v", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
 }
 
 func TestSchemaVersionIsZeroBeforeAnyMigration(t *testing.T) {

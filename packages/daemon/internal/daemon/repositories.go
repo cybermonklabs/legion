@@ -1255,18 +1255,21 @@ func (w *workflowRuntime) logUnmappedCommitIssueTrailerRepos(accepted []mappedRe
 // retry, and logs the mapping the daemon serves. A read GitHub refuses for its rate limit never
 // refuses the boot, however long the limit stands: a repository the daemon holds a default branch
 // for is served on it at once and read again after the limit's reset (holdLimited), and one it
-// holds none for is waited out and read once more, and left out for now if GitHub still does not
-// answer (waitOutLimits). A 404, and every other answer that is no limit, refuses the boot, and a
-// 5xx is retried on appMintRetry (bootReadTransient).
+// holds none for is waited out, within the start's waits, and read once more, and left out for now
+// if GitHub still does not answer (waitOutLimits). GitHub's rate limit on the implement App token
+// a read mints is waited out on the start's waits as the start's own mint is (boundedAttempt). A
+// 404, and every other answer that is no limit, refuses the boot, and a 5xx is retried on
+// appMintRetry (bootReadTransient).
 func (w *workflowRuntime) nameMapping(ctx context.Context) error {
+	const call = "repository read"
 	var named []mappedRepository
 	var limited []limitedRead
 	mapped := w.repositories.Mapped()
-	err := bootprobe.Run(ctx, "repository read", appMintRetry, w.log, readinessAttempt(func(ctx context.Context) error {
+	err := bootprobe.Run(ctx, call, appMintRetry, w.log, boundedAttempt(func(ctx context.Context) error {
 		var err error
 		named, limited, err = nameAccepted(ctx, mapped, w.defaultBranches)
 		return err
-	}, appMintAttempt, bootReadTransient))
+	}, appMintAttempt, bootReadTransient, w.startWaits, call))
 	if err != nil {
 		return err
 	}

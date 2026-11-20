@@ -6,8 +6,11 @@ package store
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net"
@@ -22,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 // migrateLock is the advisory lock two daemons migrating the same database take
@@ -140,6 +144,70 @@ func PoolConfig(dsn string) (*pgxpool.Config, error) {
 func ConnectError(dsn string, err error) error {
 	address, password := target(dsn)
 	return &connectError{address: address, password: password, err: err}
+}
+
+// OpenRetryable reports whether err, an error Open returned, is one the next attempt to open the
+// store can clear: the database gave no answer, or it answered with a code that tells the client
+// to try again later (dispatch://INFRA-2597/spec R3). It reads the error's types from a closed
+// list, in this order, and never its text:
+//
+//   - A *pgconn.PgError anywhere in the chain — inside the *pgconn.ConnectError pgx wraps a refused
+//     connection in, and inside connectError — is the server's answer. A code of class 08
+//     (connection exception) can clear, and so can 53300 (too many connections), 57P01 (admin
+//     shutdown), 57P02 (crash shutdown) and 57P03 (cannot connect now). Every other code is an
+//     answer the next attempt gets again: a refused password (28P01), a connection pg_hba.conf
+//     does not admit (28000), a database that does not exist (3D000).
+//   - A *pgconn.ParseConfigError is a DSN pgx cannot read, which no attempt changes.
+//   - A TLS failure is not tried again: a certificate the client cannot verify, a peer that does
+//     not answer in TLS (tls.RecordHeaderError), and a TLS alert, on the handshake or on a later
+//     record, one the server sent or one the client sent itself (tlsalert.In, which reads the
+//     *net.OpError crypto/tls returns an alert as by its Op). Through pgx v5.13.0 on Open's path,
+//     a server that demands a client certificate and one that speaks only TLS 1.1 each gave a
+//     "remote error", and a handshake message of a type TLS does not define gave a "local error".
+//     It is read before the network types because an alert arrives as a *net.OpError, and
+//     because one error carries the failure at each address pgx tried: with sslmode=verify-full
+//     at localhost, the certificate refused at 127.0.0.1 came beside a *net.OpError for the dial
+//     to ::1.
+//   - A *net.OpError that is no alert (a refused connection, a reset), a *net.DNSError (a host
+//     name that does not resolve), io.EOF and io.ErrUnexpectedEOF (a connection closed before an
+//     answer), and a timeout — context.DeadlineExceeded, or an error pgconn.Timeout reads as one —
+//     are no answer, and can clear. context.DeadlineExceeded is the attempt's own deadline:
+//     through Ping, pgxpool's Acquire returns the plain context error when the deadline passes
+//     before the connection answers, which pgconn.Timeout does not read.
+//
+// Every other error cannot clear, a stop of the caller (context.Canceled) among them. The rule
+// supervise's writeOwed reads a claim write by is not this one: it owes every *pgconn.ConnectError
+// whatever the server answered, which here would try a refused password ten times.
+func OpenRetryable(err error) bool {
+	var answer *pgconn.PgError
+	if errors.As(err, &answer) {
+		switch answer.Code {
+		case "53300", "57P01", "57P02", "57P03":
+			return true
+		}
+		return strings.HasPrefix(answer.Code, "08")
+	}
+	var unparsed *pgconn.ParseConfigError
+	if errors.As(err, &unparsed) {
+		return false
+	}
+	var (
+		unverified *tls.CertificateVerificationError
+		authority  x509.UnknownAuthorityError
+		hostname   x509.HostnameError
+		invalid    x509.CertificateInvalidError
+		header     tls.RecordHeaderError
+	)
+	if errors.As(err, &unverified) || errors.As(err, &authority) || errors.As(err, &hostname) ||
+		errors.As(err, &invalid) || errors.As(err, &header) || tlsalert.In(err) {
+		return false
+	}
+	var (
+		network *net.OpError
+		lookup  *net.DNSError
+	)
+	return errors.As(err, &network) || errors.As(err, &lookup) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, context.DeadlineExceeded) || pgconn.Timeout(err)
 }
 
 // Close releases the pool's connections.

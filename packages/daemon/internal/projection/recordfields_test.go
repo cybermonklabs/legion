@@ -262,7 +262,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UncertainStreak: 1,
 		SuspendedBy:     supervise.SuspendedByOperator, SuspensionHeld: true,
 		SuspensionHeldBy: supervise.SuspendedByDaemon, Compacting: true, ProcessGone: true, DeathCharged: true,
-		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1,
+		PluginContract: api.DaemonAPIVersion, PluginRelaunchFor: api.DaemonAPIVersion - 1, AgentResumeGeneration: 3,
 		UpdateRound: "pod:" + podUID, UpdateReasons: "the pod template changed: the image moved",
 		UpdateOpenedAt: &openedAt, UpdateTaskedAt: &openedAt, UpdateSignalledAt: &answeredAt,
 		UpdateHead:       "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
@@ -280,7 +280,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Abandoned: supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
 		EndedWork: supervise.EndedWork{At: projectedAt.Add(-40 * time.Minute), Cause: "the process died: gone: OOMKilled",
 			Generation: 2, Turn: true, TaskTurn: true, Background: true, Kinds: []string{"subagent"}, Reported: true},
-		SessionLost: true,
+		SessionLost: supervise.SessionLossGone,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",

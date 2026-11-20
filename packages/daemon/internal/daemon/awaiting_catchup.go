@@ -189,12 +189,14 @@ func caughtUpKey(issue record.Issue) string {
 // fit one boot attempt, and a root it finished — caught up, or skipped — is remembered across the
 // boot's retries (caughtUp), so a retry resumes after it. A root whose own deadline passes, or one
 // Dispatch does not answer for at all (dispatch.TransientError), makes the attempt transient: the
-// boot's readiness retry waits it out and starts at that root again, still held. A root Dispatch
-// answers with an error, or one the catch-up cannot read for another reason, is logged and skipped,
-// after catchUpAttempts reads for an error Dispatch may stop giving (a 5xx, 408, 429) and at once
-// for a credential refusal (401, 403) or anything else: its hold is released and admission decides
-// it on the record as it stands, and its live events still reach it. A root the boot held that the
-// catch-up no longer reads (the reconcile moved it out) is released too.
+// boot's readiness retry waits it out and starts at that root again, still held. A TLS failure of
+// Dispatch's transport (dispatch.TransportRefusal) stops the start, even beside a read of the root
+// Dispatch did not answer, as it does at every other boot probe of Dispatch, with the root still
+// held. A root Dispatch answers with an error, or one the catch-up cannot read for another reason,
+// is logged and skipped, after catchUpAttempts reads for an error Dispatch may stop giving (a 5xx,
+// 408, 429) and at once for a credential refusal (401, 403) or anything else: its hold is released
+// and admission decides it on the record as it stands, and its live events still reach it. A root
+// the boot held that the catch-up no longer reads (the reconcile moved it out) is released too.
 func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	if w.dispatch == nil {
 		return nil
@@ -277,8 +279,11 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 }
 
 // catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving,
-// and returns only what makes the boot's attempt fail: the boot's own end, or Dispatch not
-// answering at all. Every other error is logged, and the root is released as it stands.
+// and returns only what makes the boot's attempt fail: the boot's own end, Dispatch not answering
+// at all, which the boot waits out, or a TLS failure of Dispatch's transport
+// (dispatch.TransportRefusal), which stops the start, even beside a read of the root Dispatch did
+// not answer, as it does at every other boot probe of Dispatch. Every other error is logged, and
+// the root is released as it stands.
 func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRoot) error {
 	bound := w.catchUpRootTimeout
 	if bound == 0 {
@@ -298,6 +303,8 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 			return ctx.Err()
 		case err == nil:
 			return nil
+		case dispatch.TransportRefusal(err):
+			return err
 		case answered && retriable(refusal) && attempt < catchUpAttempts:
 			w.log.Warn("boot catch-up reads a root again after Dispatch refused it", "issue", root.issue.Key, "attempt", attempt, "error", err)
 			select {
