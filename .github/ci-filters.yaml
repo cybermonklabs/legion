@@ -788,6 +788,14 @@ check_fireevent_reasons_test: &check_fireevent_reasons_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/check-fireevent-reasons.test.sh'
   - '.github/scripts/check-fireevent-reasons.sh'
+check_biome_tree_test: &check_biome_tree_test
+  - *ci_router
+  - *ci_filters_data
+  - '.github/workflows/ci-job-test.yaml'
+  - '.github/scripts/test-lib.sh'
+  - '.github/scripts/check-biome-tree.test.sh'
+  - '.github/scripts/check-biome-tree.sh'
+  - *bun_install
 check_daemon_api_contract_test: &check_daemon_api_contract_test
   - *ci_router
   - *ci_filters_data
@@ -1007,6 +1015,7 @@ test:
   - *check_private_names_keys_test
   - *check_plugin_names_test
   - *check_fireevent_reasons_test
+  - *check_biome_tree_test
   - *check_daemon_api_contract_test
   - *check_release_credentials_test
   - *repo_paths_test
