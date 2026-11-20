@@ -258,9 +258,10 @@ type owedLaunchState struct {
 // round for a claim (podHolds.owes), and each reader takes it from that rule. The readers are what
 // holds the pod of a round with no process in it, read over every claim of the issue
 // (roundPodEnds), the same reading at a launch into the pod with the claim as the launching claim
-// (launchRoundPodEnds, roundPodEndsAtLaunch), and the round's two sets (roundAsks, waitingClaims,
-// through roundClock.passesOver). Review rounds 3, 4 and 5 each found a claim state that the keep
-// left out, so this table names every state.
+// (launchRoundPodEnds, roundPodEndsAtLaunch), the round's two sets (roundAsks, waitingClaims,
+// through roundClock.passesOver), and what holds a replacement through a process before the
+// round's bound (readRoundEnd's unanswered, unansweredClaims; spec v19 R8). Review rounds 3, 4
+// and 5 each found a claim state that the keep left out, so this table names every state.
 //
 // Each row is one state of supervise.States(), and a suspended claim has one row for each source
 // of supervise.SuspendSources(). The pause's hold of the pod ended at the resume, before the round
@@ -270,7 +271,10 @@ type owedLaunchState struct {
 // the round's pod, with and without a session, and with and without an answer of the round. The
 // row gives the answers for a claim that has not answered. A session changes no keep: a launch
 // that forgot its role's lost session records no session. A claim with no session is in neither
-// set. An answered claim keeps nothing and is in no wait.
+// set, but where the pause keeps the pod for it, it still holds a replacement through a process
+// before the bound: the round's end holds the replacement for the claim exactly where the round
+// waits for it or the pause keeps the pod for it. An answered claim keeps nothing and is in no
+// wait.
 //
 // The keep is read from the reason that each reading answers (a project's pause owes the
 // implementer a launch), because an operator's suspension holds the pod for a reason of its own.
@@ -364,6 +368,10 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 						}
 						if got := slices.ContainsFunc(waitingClaims(group, round, clock), isClaim); got != wantWaits {
 							t.Errorf("the round waits for the claim: %t, want %t", got, wantWaits)
+						}
+						unanswered, _, _ := readRoundEnd(group, round, clock).holding()
+						if got, want := slices.ContainsFunc(unanswered, isClaim), wantWaits || keep; got != want {
+							t.Errorf("the round's end holds the replacement through a process for the claim: %t, want %t", got, want)
 						}
 					})
 				}
