@@ -283,6 +283,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// A repository a private project the writer does not see owns is not theirs to name
+	// (refuseRepoHeld): read once the issue is read as the writer reads it, under its owner lock,
+	// and before the first row is written.
+	if err := refuseRepoHeld(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.
 	// The held set and the revision are the issue as this write read it under its owner lock,

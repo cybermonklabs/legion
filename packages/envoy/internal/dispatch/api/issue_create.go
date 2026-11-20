@@ -380,6 +380,13 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, pgx.ErrNoRows)
 		return
 	}
+	// A repository a private project the creator does not see owns is not theirs to name
+	// (refuseRepoHeld): read once the project and the parent are read as the creator reads them,
+	// before the project's owner lock and before anything is written.
+	if err := refuseRepoHeld(r.Context(), tx, who, repo); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	var number int
 	var artifactID string
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(input.Project), `

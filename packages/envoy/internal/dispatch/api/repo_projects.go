@@ -74,7 +74,9 @@ type putRepoProjectInput struct {
 // owner/name and needs no mapping, so no issue holds a mapping in place. Every mapping the write
 // changes emits settings.repo_project.updated on its project, and a moved mapping emits one on
 // the project it left too, deleted:true there. lockRepoProjectWrite orders the write against
-// every other one.
+// every other one. A write that leaves the mapping its project's default is 403
+// REPOSITORY_PRIVATE when a private project the caller does not see owns the repository
+// (refuseRepoHeld), as an issue's own repository is.
 //
 // Renamed_to is the full `owner/name` this repository is called today, canonicalised as the
 // route's own path is (externalRef). **Absent, and JSON null, leave the stored pair exactly as
@@ -97,6 +99,10 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
+	if !ok {
+		return
+	}
+	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
 	}
@@ -135,6 +141,15 @@ func (s *server) putRepoProject(w http.ResponseWriter, r *http.Request) {
 	isDefault := previous != nil && !moved && previous.Default
 	if input.Default != nil {
 		isDefault = *input.Default
+	}
+	// A project's default is the repository each of its issues that names none resolves to, so a
+	// mapping this write leaves as a default is held to the rule an issue's own repository is
+	// (refuseRepoHeld), under the mapping's locks and before anything is written.
+	if isDefault {
+		if err := refuseRepoHeld(r.Context(), tx, who, &repo); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	// An absent or null renamed_to keeps the pair the mapping already holds, and a row this
 	// write creates holds none; `""` clears one, which adds no edge to the rename graph and so

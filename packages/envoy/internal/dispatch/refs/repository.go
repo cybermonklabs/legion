@@ -68,7 +68,7 @@ func ProjectRepositoriesSQL(projects string) string {
 func RepositoryClause(repoExpr, viewerParam string) string {
 	open := access.ViewerFlag(viewerParam, "open")
 	return `(` + access.ViewerFlag(viewerParam, "all") + ` or (` + open + ` and not ` + access.ViewerFlag(viewerParam, "private") + `) or case
-		when ` + open + ` and not ` + repositoryHeld(repoExpr, viewerParam) + ` then true
+		when ` + open + ` and not ` + RepositoryHeldClause(repoExpr, viewerParam) + ` then true
 		else ` + repositorySeen(repoExpr, viewerParam) + `
 	end)`
 }
@@ -82,9 +82,14 @@ func repositorySeen(repoExpr, viewerParam string) string {
 		offset 0)`
 }
 
-// repositoryHeld is whether a private project the viewer does not see owns the repository repoExpr
-// names: an issue of it resolves to the name. It ends in `offset 0`, as repositorySeen does.
-func repositoryHeld(repoExpr, viewerParam string) string {
+// RepositoryHeldClause is whether a private project the viewer bound at viewerParam does not see
+// owns the repository repoExpr names: an issue of it resolves to the name (ProjectRepositoriesSQL
+// over access.HiddenPrivateProjectClause). It is true or false, never null. RepositoryClause hides
+// such a repository from an open viewer that sees no issue resolving to it, and an issue write
+// and a project's default write refuse to give it to the writer (api's refuseRepoHeld), so what
+// the GitHub proxy hides and what a write refuses are one answer. It sits under RepositoryClause's
+// CASE, so it ends in `offset 0`, as repositorySeen does. repoExpr is spliced as RepositoryClause's.
+func RepositoryHeldClause(repoExpr, viewerParam string) string {
 	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
 		where owned.repo = lower((` + repoExpr + `)::text)
 		offset 0)`
