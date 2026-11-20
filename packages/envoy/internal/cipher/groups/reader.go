@@ -1,9 +1,9 @@
 // Package groups reads the members of the Google groups the broker's policy names, so a member of
 // a group that owns a secret decides its requests, and a group entry in a secret's requesters
 // admits its members' sessions. It reads each group once an hour with the Directory API's
-// members.list, nested members included, as the pod's own Google service account (token.go), and
-// keeps the last good members; a group whose last good read is more than two hours old, or that
-// was never read, admits nobody.
+// members.list, nested members included, with the token of a reader account the deployment names
+// (token.go), and keeps the last good members; a group whose last good read is more than two
+// hours old, or that was never read, admits nobody.
 package groups
 
 import (
@@ -158,7 +158,18 @@ func (r *Reader) GroupsOf(login string) []string {
 	return names
 }
 
-// fresh answers whether g's last good read is StaleAfter old or newer; r.mu is held.
+// Fresh answers whether group's last good read is StaleAfter old or newer, the rule HasMember
+// admits members by: false for a group never read and for one no load names. A decider a fresh
+// group does not admit is one the group does not list, and one a stale group does not admit is
+// one nobody can tell.
+func (r *Reader) Fresh(group string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.wanted[group]
+	return ok && r.fresh(g)
+}
+
+// fresh is Fresh for g; r.mu is held.
 func (r *Reader) fresh(g *group) bool {
 	return !g.readAt.IsZero() && !r.now().After(g.readAt.Add(StaleAfter))
 }

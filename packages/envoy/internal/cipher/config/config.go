@@ -438,12 +438,21 @@ type Config struct {
 	// members at (internal/cipher/groups), an absolute http(s) URL, read without the slashes it
 	// ends in. Unset, it is Google's own, https://admin.googleapis.com; a test sets it to its
 	// stand-in. The broker calls it only when a served secret names a group, as its owner or in
-	// its requesters, and only its members.list. The read's token is the pod's own Google
-	// service account's, which the broker mints for that same account with the one scope
-	// admin.directory.group.member.readonly: the account needs Token Creator on itself to mint
-	// it, and Workspace's Groups Reader role for the read. A pod that runs as a Workload Identity
-	// principal and no service account reads no group.
+	// its requesters, and only its members.list, with the token of the reader account
+	// BROKER_DIRECTORY_ACCOUNT names.
 	DirectoryURL string
+	// BROKER_DIRECTORY_ACCOUNT: the reader account, the one Google service account whose token the
+	// broker reads group members with (internal/cipher/groups): a user-managed account, by its
+	// email, that holds Workspace's Groups Reader role and no other, and on which the broker's own
+	// credential holds roles/iam.serviceAccountTokenCreator. The broker mints its access token at
+	// IAM Service Account Credentials' generateAccessToken with the one scope
+	// admin.directory.group.member.readonly, spending its own credential, and sends that token to
+	// the Directory API alone: the Admin SDK refuses a pod's own metadata-server token. Unset, the
+	// broker reads no group, and every group a secret names admits nobody. Load refuses an address
+	// that is no user-managed service account's, a Google-managed service agent, and an account
+	// BROKER_SERVICE_ACCOUNT_SECRETS binds to a secret, since a grant of that secret would release
+	// the token the group read uses.
+	DirectoryAccount string
 	// BROKER_SERVICES: the registered services, whitespace-separated name=<service account>
 	// entries, such as legion-daemon=system:serviceaccount:legion:legion-worker. A name (lowercase
 	// letters, digits and hyphens, at most 64, not shared) is what a secret's owner tag may name; the
@@ -2238,6 +2247,22 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.DirectoryURL = strings.TrimRight(strings.TrimSpace(getenv("BROKER_DIRECTORY_URL")), "/"); cfg.DirectoryURL != "" {
 		if err := httpURLSetting("BROKER_DIRECTORY_URL", cfg.DirectoryURL); err != nil {
 			return Config{}, err
+		}
+	}
+	// The reader account is held to the rule BROKER_SERVICE_ACCOUNT_SECRETS' accounts are held to
+	// (parseServiceAccountSecrets), for the same reasons, and kept apart from them: a grant of a
+	// secret bound to it would release the token every group's members are read with.
+	if cfg.DirectoryAccount = strings.TrimSpace(getenv("BROKER_DIRECTORY_ACCOUNT")); cfg.DirectoryAccount != "" {
+		if !secrets.ValidServiceAccountEmail(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT must name one user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in lowercase, got %q", cfg.DirectoryAccount)
+		}
+		if googleServiceAgentPattern.MatchString(cfg.DirectoryAccount) {
+			return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names a Google-managed service agent, got %q: Google's own services run as it and the broker must not be able to mint its token; name a user-managed reader account of your own", cfg.DirectoryAccount)
+		}
+		for _, name := range slices.Sorted(maps.Keys(cfg.ServiceAccountSecrets)) {
+			if cfg.ServiceAccountSecrets[name] == cfg.DirectoryAccount {
+				return Config{}, fmt.Errorf("BROKER_DIRECTORY_ACCOUNT names %s, which BROKER_SERVICE_ACCOUNT_SECRETS binds to the secret %s: the directory account is bound to a secret, and a grant of that secret would release the token the group read uses; name a reader account no secret binds", cfg.DirectoryAccount, name)
+			}
 		}
 	}
 	cfg.SignInDeviceAudience = strings.TrimSpace(getenv("BROKER_SIGNIN_DEVICE_AUDIENCE"))

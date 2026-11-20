@@ -102,6 +102,7 @@ var settingRoles = map[string]settingRole{
 	),
 	"BROKER_SERVICE_ACCOUNT_SECRETS": givesNone("a Google account for each secret"),
 	"BROKER_DIRECTORY_URL":           givesNone("the Directory API's URL"),
+	"BROKER_DIRECTORY_ACCOUNT":       givesNone("a Google account the group read mints for"),
 	"BROKER_SIGNIN_DEVICE_AUDIENCE":  givesNone("an audience"),
 	"BROKER_VM_SERVICES":             givesARole("a BROKER_VM_SERVICES entry names its login service"),
 	"BROKER_VM_PROJECTS":             givesNone("a Google account's project"),

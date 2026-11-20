@@ -2938,6 +2938,72 @@ func TestTheDirectoryURLIsGooglesUnlessSet(t *testing.T) {
 	}
 }
 
+// groupReaderAccount is the reader account a deployment names in BROKER_DIRECTORY_ACCOUNT.
+const groupReaderAccount = "group-reader@example-project.iam.gserviceaccount.com"
+
+// TestTheDirectoryAccountIsAServiceAccount pins BROKER_DIRECTORY_ACCOUNT: unset, the broker loads
+// and names no reader account, so it reads no group; set, it is read as given, without spaces;
+// and an address that is no user-managed Google service account, the only kind generateAccessToken
+// mints for, refuses the start naming the setting: a person, a capitalised address, a list and a
+// Google-managed service agent, which Google's own services run as.
+func TestTheDirectoryAccountIsAServiceAccount(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != "" {
+		t.Fatalf("with BROKER_DIRECTORY_ACCOUNT unset the broker reads %q; want no reader account", cfg.DirectoryAccount)
+	}
+
+	e := validEnv()
+	e["BROKER_DIRECTORY_ACCOUNT"] = " " + groupReaderAccount + "\n"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
+	}
+
+	for _, c := range []struct{ name, account, want string }{
+		{"a person", "reader@example.com", "user-managed Google service account"},
+		{"an upper-case address", "Group-Reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a list", groupReaderAccount + " other-reader@example-project.iam.gserviceaccount.com", "user-managed Google service account"},
+		{"a service agent", "service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := validEnv()
+			e["BROKER_DIRECTORY_ACCOUNT"] = c.account
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load(BROKER_DIRECTORY_ACCOUNT=%q) = %v; want a refusal naming the setting and %q", c.account, err, c.want)
+			}
+		})
+	}
+}
+
+// TestADirectoryAccountThatASecretBindsIsRefused: a reader account that BROKER_SERVICE_ACCOUNT_SECRETS
+// binds to a secret refuses the start, naming the secret, since a grant of that secret would
+// release the token the group read uses; a reader account that no secret binds loads beside
+// those bindings.
+func TestADirectoryAccountThatASecretBindsIsRefused(t *testing.T) {
+	e := validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com GROUP_READER=" + groupReaderAccount
+	e["BROKER_DIRECTORY_ACCOUNT"] = groupReaderAccount
+	_, err := Load(env(e))
+	if err == nil || !strings.Contains(err.Error(), "the directory account is bound to a secret") || !strings.Contains(err.Error(), "GROUP_READER") || !strings.Contains(err.Error(), "BROKER_DIRECTORY_ACCOUNT") {
+		t.Fatalf("Load with BROKER_DIRECTORY_ACCOUNT bound to GROUP_READER = %v; want a refusal saying the directory account is bound to a secret, naming it", err)
+	}
+
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with a reader account no secret binds = %v; want it loaded", err)
+	}
+	if cfg.DirectoryAccount != groupReaderAccount {
+		t.Fatalf("BROKER_DIRECTORY_ACCOUNT is read as %q; want %q", cfg.DirectoryAccount, groupReaderAccount)
+	}
+}
+
 // userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that
 // carries a credential in the form a secret scanner reads as one.
 func userinfoURL(scheme, user, password, rest string) string {

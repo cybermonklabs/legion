@@ -14,58 +14,48 @@ import (
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
 )
 
-// Google's own addresses for the two calls the directory token makes: the GKE metadata server,
-// which names the account the pod runs as, and IAM Service Account Credentials, which mints that
-// account's access token.
-const (
-	googleMetadataURL       = "http://metadata.google.internal"
-	googleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
-)
-
-// emailPath is the metadata server's path for the email of the account the pod runs as.
-const emailPath = "/computeMetadata/v1/instance/service-accounts/default/email"
+// googleIAMCredentialsURL is IAM Service Account Credentials, which mints the reader account's
+// access token.
+const googleIAMCredentialsURL = "https://iamcredentials.googleapis.com"
 
 // tokenLifetime is the minted token's life, Google's maximum for a default-configured project:
 // the hourly read mints again when the token it holds is about to end.
 const tokenLifetime = "3600s"
 
-// tokenCallTimeout bounds each of the token's two calls: oauth2.TokenSource's Token takes no
-// context, so a client with no timeout of its own would let one hung call hold every read.
+// tokenCallTimeout bounds the mint: oauth2.TokenSource's Token takes no context, so a client with
+// no timeout of its own would let one hung call hold every read.
 const tokenCallTimeout = 30 * time.Second
 
-// answerLimit is the most of an answer a call reads: an email, a token or a refusal is a few
-// hundred bytes, and a page of two hundred members a few tens of kilobytes.
+// answerLimit is the most of an answer a call reads: a token or a refusal is a few hundred bytes,
+// and a page of two hundred members a few tens of kilobytes.
 const answerLimit = 1 << 20
 
-// ErrNoServiceAccount is the directory token's refusal when the metadata server names no Google
-// service account: the pod runs as a Workload Identity principal, whose metadata token the Admin
-// SDK refuses and which can mint no token of its own, so it reads no group.
-var ErrNoServiceAccount = errors.New("no service account")
+// ErrNoDirectoryAccount is the directory token's refusal when the deployment names no reader
+// account (BROKER_DIRECTORY_ACCOUNT): the broker then reads no group, and every group admits
+// nobody.
+var ErrNoDirectoryAccount = errors.New("no directory account")
 
-// TokenOptions are the directory token's endpoints, its transport and the credential it mints
-// with. MetadataURL and IAMCredentialsURL are Google's when empty; a test names its stand-ins.
-// HTTP is a client with a 30-second timeout when nil. Default, which is required, is the pod's
-// own credential, the application default credentials at the cloud-platform scope, which in a
-// GKE pod are the metadata server's token for the account it runs as: the Admin SDK refuses that
-// token, and IAM takes it to mint the one the Directory reads.
+// TokenOptions are the directory token's reader account, its endpoint, its transport and the
+// credential it mints with. Account is the reader account (BROKER_DIRECTORY_ACCOUNT), a
+// user-managed Google service account that holds Workspace's Groups Reader role; config.Load holds
+// it to that form. IAMCredentialsURL is Google's when empty; a test names its stand-in. HTTP is a
+// client with a 30-second timeout when nil. Default, which is required, is the broker pod's own
+// credential, the application default credentials at the cloud-platform scope, which must hold
+// Token Creator on Account: the Admin SDK refuses that credential's own token, and IAM takes it to
+// mint the one the Directory reads.
 type TokenOptions struct {
-	MetadataURL       string
+	Account           string
 	IAMCredentialsURL string
 	HTTP              *http.Client
 	Default           oauth2.TokenSource
 }
 
-// NewTokenSource answers the token the group read sends the Directory: the pod's own service
-// account's access token, minted for that same account through generateAccessToken with the one
-// scope Scope. Each new token reads the account's email from the metadata server, so no setting
-// names the account and none can point the read at an account the broker impersonates for a
-// grant; an email that names no service account is ErrNoServiceAccount, and nothing is minted.
-// The account mints its own token only with Token Creator on itself. A token is handed out again
-// until it is about to end (oauth2.ReuseTokenSource). No error quotes a token.
+// NewTokenSource answers the token the group read sends the Directory: the reader account's access
+// token, minted through generateAccessToken with the one scope Scope, called with the pod's own
+// credential. With no Account it answers ErrNoDirectoryAccount and mints nothing. A token is
+// handed out again until it is about to end (oauth2.ReuseTokenSource). No error quotes a token.
 func NewTokenSource(o TokenOptions) oauth2.TokenSource {
 	if o.HTTP == nil {
 		o.HTTP = &http.Client{Timeout: tokenCallTimeout}
@@ -77,9 +67,8 @@ func NewTokenSource(o TokenOptions) oauth2.TokenSource {
 type directoryToken struct{ o TokenOptions }
 
 func (d directoryToken) Token() (*oauth2.Token, error) {
-	account, err := d.account()
-	if err != nil {
-		return nil, err
+	if d.o.Account == "" {
+		return nil, ErrNoDirectoryAccount
 	}
 	// A token source's error can quote the credential it read, so only its class is reported.
 	own, err := d.o.Default.Token()
@@ -89,7 +78,7 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	// Only the email is escaped, and the verb is appended after, as the service-account minter
 	// builds its URL: an escaped colon reads to Google as a resource of its own.
 	endpoint := cmp.Or(d.o.IAMCredentialsURL, googleIAMCredentialsURL) +
-		"/v1/projects/-/serviceAccounts/" + url.PathEscape(account) + ":generateAccessToken"
+		"/v1/projects/-/serviceAccounts/" + url.PathEscape(d.o.Account) + ":generateAccessToken"
 	body, _ := json.Marshal(struct {
 		Scope    []string `json:"scope"`
 		Lifetime string   `json:"lifetime"`
@@ -100,7 +89,7 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 	}
 	own.SetAuthHeader(request)
 	request.Header.Set("Content-Type", "application/json")
-	payload, err := call(d.o.HTTP, request, "the token mint for "+account)
+	payload, err := call(d.o.HTTP, request, "the token mint for "+d.o.Account)
 	if err != nil {
 		return nil, err
 	}
@@ -109,33 +98,14 @@ func (d directoryToken) Token() (*oauth2.Token, error) {
 		ExpireTime  string `json:"expireTime"`
 	}
 	if json.Unmarshal(payload, &minted) != nil || minted.AccessToken == "" {
-		return nil, fmt.Errorf("the token mint for %s answered no access token", account)
+		return nil, fmt.Errorf("the token mint for %s answered no access token", d.o.Account)
 	}
 	// A token with no end would be handed out forever, past the hour Google gives it.
 	expiry, err := time.Parse(time.RFC3339, minted.ExpireTime)
 	if err != nil {
-		return nil, fmt.Errorf("the token mint for %s answered no expireTime", account)
+		return nil, fmt.Errorf("the token mint for %s answered no expireTime", d.o.Account)
 	}
 	return &oauth2.Token{AccessToken: minted.AccessToken, TokenType: "Bearer", Expiry: expiry}, nil
-}
-
-// account is the email of the account the pod runs as, as the metadata server names it, refused
-// with ErrNoServiceAccount unless it is one Google service account (secrets.ValidServiceAccountEmail).
-func (d directoryToken) account() (string, error) {
-	request, err := http.NewRequest(http.MethodGet, cmp.Or(d.o.MetadataURL, googleMetadataURL)+emailPath, nil)
-	if err != nil {
-		return "", fmt.Errorf("the metadata server: %w", err)
-	}
-	request.Header.Set("Metadata-Flavor", "Google")
-	payload, err := call(d.o.HTTP, request, "the metadata server")
-	if err != nil {
-		return "", err
-	}
-	email := strings.TrimSpace(string(payload))
-	if !secrets.ValidServiceAccountEmail(email) {
-		return "", fmt.Errorf("%w: the metadata server names %q", ErrNoServiceAccount, email)
-	}
-	return email, nil
 }
 
 // googleRefusal is a Google endpoint's answer other than 200: who answered, the status, and

@@ -165,24 +165,32 @@ func (d *directory) set(change func(*directory)) {
 	change(d)
 }
 
-// rig is a reader over the three stand-ins, a clock the test moves and a log it reads back.
+// rig is a reader over the two stand-ins, a clock the test moves and a log it reads back.
 type rig struct {
-	google    *google
+	iam       *iam
 	directory *directory
 	clock     *clock
 	log       *logtest.Recorder
 	reader    *groups.Reader
 }
 
+// newRig is a reader whose token is the reader account's.
 func newRig(t *testing.T, members map[string][]listed) *rig {
 	t.Helper()
-	g := newGoogle(t, brokerAccount)
+	return newRigFor(t, readerAccount, members)
+}
+
+// newRigFor is a reader whose token is account's; an empty account is a deployment that names
+// no reader account.
+func newRigFor(t *testing.T, account string, members map[string][]listed) *rig {
+	t.Helper()
+	g := newIAM(t)
 	d := newDirectory(t, members)
 	c := newClock()
 	log := &logtest.Recorder{}
-	reader := &groups.Reader{BaseURL: d.server.URL, HTTP: d.server.Client(), Source: g.source(), Now: c.Now, Log: slog.New(log)}
+	reader := &groups.Reader{BaseURL: d.server.URL, HTTP: d.server.Client(), Source: g.source(account), Now: c.Now, Log: slog.New(log)}
 	t.Cleanup(func() { groups.Settle(reader) })
-	return &rig{google: g, directory: d, clock: c, log: log, reader: reader}
+	return &rig{iam: g, directory: d, clock: c, log: log, reader: reader}
 }
 
 // want names groups to the reader, as a policy load does, and waits for every read that started.
@@ -439,6 +447,40 @@ func TestAGroupNotReadForTwoHoursAdmitsNobody(t *testing.T) {
 	}
 }
 
+// TestFreshAnswersTheTwoHourRule: Fresh is true for a group whose last good read is 1h59m old and
+// false at 2h01m, as HasMember's cut-off is; and false for a group whose every read failed and
+// for one no load names, so a decider refused by a group the broker could not read is a lapsed
+// grant, never a broken chain.
+func TestFreshAnswersTheTwoHourRule(t *testing.T) {
+	r := newRig(t, map[string][]listed{approvers: {user(member)}})
+	r.directory.set(func(d *directory) {
+		d.refuse = func(group, _ string) *refusal {
+			if group == reviewers {
+				return &refusal{http.StatusServiceUnavailable, `{"error":{"code":503,"status":"UNAVAILABLE"}}`}
+			}
+			return nil
+		}
+	})
+	r.want(approvers, reviewers)
+	if r.directory.calls(reviewers) != 1 {
+		t.Fatalf("%s was read %d times, want its one failed read", reviewers, r.directory.calls(reviewers))
+	}
+
+	r.clock.Advance(time.Hour + 59*time.Minute)
+	if !r.reader.Fresh(approvers) {
+		t.Fatalf("Fresh(%s) = false 1h59m after a good read, want true", approvers)
+	}
+	r.clock.Advance(2 * time.Minute)
+	if r.reader.Fresh(approvers) {
+		t.Fatalf("Fresh(%s) = true 2h01m after a good read, want false", approvers)
+	}
+	for _, group := range []string{reviewers, "unnamed@example.com"} {
+		if r.reader.Fresh(group) {
+			t.Errorf("Fresh(%s) = true for a group never read, want false", group)
+		}
+	}
+}
+
 // TestANeverReadGroupAdmitsNobody: a group whose every read failed admits nobody, and so does a
 // group no load named, whatever the Directory would answer for it.
 func TestANeverReadGroupAdmitsNobody(t *testing.T) {
@@ -485,10 +527,10 @@ func TestEachReadIsLogged(t *testing.T) {
 	}
 }
 
-// TestTheDirectoryGetsTheAccountsOwnTokenAlone: every Directory request, over pages, groups and
-// reads, carries the token minted for the pod's own account, and never the metadata server's
-// own token, which the Admin SDK refuses.
-func TestTheDirectoryGetsTheAccountsOwnTokenAlone(t *testing.T) {
+// TestTheDirectoryGetsTheReaderTokenAlone: every Directory request, over pages, groups and reads,
+// carries the token minted for the reader account, and never the pod's own token, which the
+// Admin SDK refuses.
+func TestTheDirectoryGetsTheReaderTokenAlone(t *testing.T) {
 	r := newRig(t, map[string][]listed{
 		approvers: {user(member), user("second@example.com")},
 		reviewers: {user(member), user("second@example.com")},
@@ -512,21 +554,14 @@ func TestTheDirectoryGetsTheAccountsOwnTokenAlone(t *testing.T) {
 	}
 }
 
-// TestAPrincipalEmailReadsNoGroup: a pod that runs as a Workload Identity principal, whose
-// metadata email names no service account, mints nothing and calls no Directory; every group is
-// unread, and each one's log line says why.
-func TestAPrincipalEmailReadsNoGroup(t *testing.T) {
-	r := newRig(t, map[string][]listed{approvers: {user(member)}, reviewers: {user(member)}})
-	r.google.mu.Lock()
-	r.google.email = principal
-	r.google.mu.Unlock()
+// TestNoDirectoryAccountReadsNoGroup: a deployment that names no reader account mints nothing and
+// calls no Directory; every group is unread, and each one's log line says why.
+func TestNoDirectoryAccountReadsNoGroup(t *testing.T) {
+	r := newRigFor(t, "", map[string][]listed{approvers: {user(member)}, reviewers: {user(member)}})
 	r.want(approvers, reviewers)
 
-	if _, paths := r.google.metadataRead(); len(paths) == 0 {
-		t.Fatal("the metadata server was never asked: UNKNOWN, the read never looked for its account")
-	}
-	if got := len(r.google.minted()); got != 0 {
-		t.Fatalf("IAM was asked %d mints for a principal, want none", got)
+	if got := len(r.iam.minted()); got != 0 {
+		t.Fatalf("IAM was asked %d mints with no reader account, want none", got)
 	}
 	if got := len(r.directory.received()); got != 0 {
 		t.Fatalf("the Directory received %d requests, want none", got)
@@ -536,15 +571,15 @@ func TestAPrincipalEmailReadsNoGroup(t *testing.T) {
 			t.Errorf("%s admits %s, want nobody", group, member)
 		}
 		lines := r.readsOf(group)
-		if len(lines) != 1 || lines[0].level != slog.LevelWarn || !strings.HasPrefix(lines[0].result, "no service account") {
-			t.Errorf("the log holds %+v for %s, want one WARN line whose result is no service account", lines, group)
+		if len(lines) != 1 || lines[0].level != slog.LevelWarn || lines[0].result != "no directory account" {
+			t.Errorf("the log holds %+v for %s, want one WARN line whose result is no directory account", lines, group)
 		}
 	}
 }
 
-// TestARefusedMintIsLoggedWithItsReason: a mint IAM refuses, which is what an account with no
-// Token Creator on itself gets, and a Directory that refuses the token each leave every group
-// unread, and each group's log line names Google's reason, so one line says what to fix.
+// TestARefusedMintIsLoggedWithItsReason: a mint IAM refuses, which is what a broker with no Token
+// Creator on the reader account gets, and a Directory that refuses the token each leave every
+// group unread, and each group's log line names Google's reason, so one line says what to fix.
 func TestARefusedMintIsLoggedWithItsReason(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -552,11 +587,7 @@ func TestARefusedMintIsLoggedWithItsReason(t *testing.T) {
 		names        []string
 		directoryHit bool
 	}{
-		{"the mint", func(r *rig) {
-			r.google.mu.Lock()
-			r.google.refused = &mintDenied
-			r.google.mu.Unlock()
-		}, []string{"403", "IAM_PERMISSION_DENIED"}, false},
+		{"the mint", func(r *rig) { r.iam.refuse(&mintDenied) }, []string{"403", "IAM_PERMISSION_DENIED"}, false},
 		{"the Directory", func(r *rig) {
 			r.directory.set(func(d *directory) {
 				d.refuse = func(string, string) *refusal { return &directoryUnauthenticated }

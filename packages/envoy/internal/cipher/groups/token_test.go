@@ -18,19 +18,14 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/groups"
 )
 
-// The pod's identities: the service account the pod runs as, the name the metadata server
-// answers for a pod that runs as a Workload Identity principal and no service account, the
-// metadata server's own token for either, and the token IAM mints for the account. Each is an
-// example-project name, since the repository is public.
+// The identities: the reader account a deployment names, the pod's own token that calls IAM, and
+// the token IAM mints for the reader account. Each is an example-project name, since the
+// repository is public.
 const (
-	brokerAccount = "broker@example-project.iam.gserviceaccount.com"
-	principal     = "example-project.svc.id.goog"
+	readerAccount = "group-reader@example-project.iam.gserviceaccount.com"
 	defaultToken  = "pod-default-token-5d2e"
 	mintedToken   = "minted-directory-token-8a41"
 )
-
-// emailPath is the metadata server's path for the email of the account the pod runs as.
-const emailPath = "/computeMetadata/v1/instance/service-accounts/default/email"
 
 // mintPath is generateAccessToken's path, the account between its fixed parts.
 var mintPath = regexp.MustCompile(`^/v1/projects/-/serviceAccounts/([^/]+):generateAccessToken$`)
@@ -41,9 +36,9 @@ type refusal struct {
 	body   string
 }
 
-// The refusals the reader's log line must name the reason of. The mint's is IAM's answer to an
-// account that holds no Token Creator on itself; the Directory's is the Admin SDK's answer to a
-// token it does not take, as it answers a GKE pod's own metadata-server token.
+// The refusals the reader's log line must name the reason of. The mint's is IAM's answer to a
+// caller that holds no Token Creator on the reader account; the Directory's is the Admin SDK's
+// answer to a token it does not take, as it answers a GKE pod's own metadata-server token.
 var (
 	mintDenied               = refusal{http.StatusForbidden, `{"error":{"code":403,"message":"Permission 'iam.serviceAccounts.getAccessToken' denied on resource (or it may not exist).","status":"PERMISSION_DENIED","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"IAM_PERMISSION_DENIED","domain":"iam.googleapis.com","metadata":{"permission":"iam.serviceAccounts.getAccessToken"}}]}}`}
 	directoryUnauthenticated = refusal{http.StatusUnauthorized, `{"error":{"code":401,"message":"Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential.","errors":[{"message":"Invalid Credentials","domain":"global","reason":"authError","location":"Authorization","locationType":"header"}],"status":"UNAUTHENTICATED"}}`}
@@ -56,46 +51,24 @@ type mintCall struct {
 	lifetime                             string
 }
 
-// google is a stand-in of the two Google endpoints the directory token reads: the metadata
-// server, which answers email for the account the pod runs as, and IAM's generateAccessToken,
-// which mints mintedToken for any account, ending expiresIn after the real clock's now (the
-// token source's reuse reads the real clock, not a test's), or answers refused when it is set.
-type google struct {
-	metadata, iam *httptest.Server
+// iam is a stand-in of IAM's generateAccessToken: it mints mintedToken for any account, ending
+// expiresIn after the real clock's now (the token source's reuse reads the real clock, not a
+// test's), or answers refused when it is set, and records each request.
+type iam struct {
+	server *httptest.Server
 
 	mu        sync.Mutex
-	email     string
 	refused   *refusal
 	expiresIn time.Duration
 	// noExpiry makes the mint answer a token with no expireTime.
 	noExpiry bool
-	// metadataStatus, when set, is what the metadata server answers instead of the email.
-	metadataStatus int
-	// flavors is the Metadata-Flavor header of each request to the metadata server, and paths
-	// each one's path.
-	flavors, metadataPaths []string
-	mints                  []mintCall
+	mints    []mintCall
 }
 
-func newGoogle(t *testing.T, email string) *google {
+func newIAM(t *testing.T) *iam {
 	t.Helper()
-	g := &google{email: email, expiresIn: time.Hour}
-	g.metadata = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		g.flavors = append(g.flavors, r.Header.Get("Metadata-Flavor"))
-		g.metadataPaths = append(g.metadataPaths, r.URL.Path)
-		switch {
-		case g.metadataStatus != 0:
-			w.WriteHeader(g.metadataStatus)
-		case r.Method != http.MethodGet || r.URL.Path != emailPath || r.Header.Get("Metadata-Flavor") != "Google":
-			http.NotFound(w, r)
-		default:
-			_, _ = io.WriteString(w, g.email)
-		}
-	}))
-	t.Cleanup(g.metadata.Close)
-	g.iam = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g := &iam{expiresIn: time.Hour}
+	g.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Scope    []string `json:"scope"`
 			Lifetime string   `json:"lifetime"`
@@ -119,41 +92,51 @@ func newGoogle(t *testing.T, email string) *google {
 		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
-	t.Cleanup(g.iam.Close)
+	t.Cleanup(g.server.Close)
 	return g
 }
 
-// source is the directory token over the stand-ins, with the metadata server's own token as the
-// default credential that calls IAM.
-func (g *google) source() oauth2.TokenSource {
-	return groups.NewTokenSource(groups.TokenOptions{
-		MetadataURL:       g.metadata.URL,
-		IAMCredentialsURL: g.iam.URL,
-		HTTP:              g.iam.Client(),
-		Default:           oauth2.StaticTokenSource(&oauth2.Token{AccessToken: defaultToken, TokenType: "Bearer"}),
-	})
+// podToken is the pod's own credential, the bearer every mint carries.
+func podToken() oauth2.TokenSource {
+	return oauth2.StaticTokenSource(&oauth2.Token{AccessToken: defaultToken, TokenType: "Bearer"})
 }
 
-func (g *google) minted() []mintCall {
+// source is the directory token for account over the stand-in, minted with the pod's own token.
+func (g *iam) source(account string) oauth2.TokenSource {
+	return g.sourceWith(account, podToken())
+}
+
+func (g *iam) sourceWith(account string, own oauth2.TokenSource) oauth2.TokenSource {
+	return groups.NewTokenSource(groups.TokenOptions{Account: account, IAMCredentialsURL: g.server.URL, HTTP: g.server.Client(), Default: own})
+}
+
+func (g *iam) refuse(answer *refusal) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refused = answer
+}
+
+func (g *iam) minted() []mintCall {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.mints)
 }
 
-func (g *google) metadataRead() (flavors, paths []string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return slices.Clone(g.flavors), slices.Clone(g.metadataPaths)
+// noToken is a pod credential that gives no token, as application default credentials do on a
+// machine with none.
+type noToken struct{}
+
+func (noToken) Token() (*oauth2.Token, error) {
+	return nil, errors.New("google: could not find default credentials, read from " + defaultToken)
 }
 
-// TestTheTokenIsTheAccountsOwnWithTheMemberReadScope pins the directory token: the account it
-// mints for is the one the metadata server names, read with the metadata server's own header,
-// and nothing else; the mint asks for the one member-read scope for an hour, with the metadata
-// server's own token as its bearer; and the token answered is the minted one, ending when IAM
-// says it ends.
-func TestTheTokenIsTheAccountsOwnWithTheMemberReadScope(t *testing.T) {
-	g := newGoogle(t, brokerAccount)
-	token, err := g.source().Token()
+// TestTheTokenIsTheReaderAccountsWithTheMemberReadScope pins the directory token: the mint is for
+// the reader account the deployment names, it asks for the one member-read scope for an hour,
+// with the pod's own token as its bearer, and the token answered is the minted one, ending when
+// IAM says it ends.
+func TestTheTokenIsTheReaderAccountsWithTheMemberReadScope(t *testing.T) {
+	g := newIAM(t)
+	token, err := g.source(readerAccount).Token()
 	if err != nil {
 		t.Fatalf("Token: %v", err)
 	}
@@ -163,23 +146,19 @@ func TestTheTokenIsTheAccountsOwnWithTheMemberReadScope(t *testing.T) {
 	if until := time.Until(token.Expiry); until < 59*time.Minute || until > time.Hour {
 		t.Fatalf("the token ends in %v, want the hour IAM's expireTime names", until)
 	}
-	flavors, paths := g.metadataRead()
-	if !slices.Equal(paths, []string{emailPath}) || !slices.Equal(flavors, []string{"Google"}) {
-		t.Fatalf("the metadata server was asked %v with Metadata-Flavor %v; want %s once, with Google", paths, flavors, emailPath)
-	}
 	mints := g.minted()
 	if len(mints) != 1 {
 		t.Fatalf("IAM was asked %d mints, want 1", len(mints))
 	}
 	mint := mints[0]
-	if mint.method != http.MethodPost || mint.account != brokerAccount {
-		t.Fatalf("IAM was asked %s for account %q, want POST generateAccessToken for %s, the account the metadata server names", mint.method, mint.account, brokerAccount)
+	if mint.method != http.MethodPost || mint.account != readerAccount {
+		t.Fatalf("IAM was asked %s for account %q, want POST generateAccessToken for %s, the reader account", mint.method, mint.account, readerAccount)
 	}
 	if !slices.Equal(mint.scope, []string{groups.Scope}) || mint.lifetime != "3600s" {
 		t.Fatalf("the mint asked for scope %v and lifetime %q, want exactly [%s] and 3600s", mint.scope, mint.lifetime, groups.Scope)
 	}
 	if mint.bearer != "Bearer "+defaultToken || mint.contentType != "application/json" {
-		t.Fatalf("the mint carried Authorization %q and Content-Type %q, want the metadata server's own token and application/json", mint.bearer, mint.contentType)
+		t.Fatalf("the mint carried Authorization %q and Content-Type %q, want the pod's own token and application/json", mint.bearer, mint.contentType)
 	}
 }
 
@@ -196,9 +175,9 @@ func TestTheMintedTokenIsReusedUntilItEnds(t *testing.T) {
 		{"about to end", 5 * time.Second, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := newGoogle(t, brokerAccount)
+			g := newIAM(t)
 			g.expiresIn = tc.expiresIn
-			source := g.source()
+			source := g.source(readerAccount)
 			for range 2 {
 				if _, err := source.Token(); err != nil {
 					t.Fatalf("Token: %v", err)
@@ -211,28 +190,29 @@ func TestTheMintedTokenIsReusedUntilItEnds(t *testing.T) {
 	}
 }
 
-// TestEachTokenRefusalNamesItsCause: an email that names no service account (a pod that runs as
-// a Workload Identity principal, or a person) is ErrNoServiceAccount and mints nothing; a
-// metadata server that answers no email, a mint IAM refuses and a mint answered with no end each
-// refuse the token, the IAM refusal naming Google's reason, and none of them hands out a token.
+// TestEachTokenRefusalNamesItsCause: no reader account is ErrNoDirectoryAccount and mints
+// nothing; a pod credential that gives no token mints nothing; a mint IAM refuses names Google's
+// reason; and a mint answered with no end is refused, so no token outlives its hour. None of them
+// hands out a token, and no refusal quotes one.
 func TestEachTokenRefusalNamesItsCause(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		setUp func(*google)
-		is    error
-		names []string
-		mints int
+		name    string
+		account string
+		own     oauth2.TokenSource
+		setUp   func(*iam)
+		is      error
+		names   []string
+		mints   int
 	}{
-		{"a Workload Identity principal", func(g *google) { g.email = principal }, groups.ErrNoServiceAccount, []string{"no service account", principal}, 0},
-		{"a person", func(g *google) { g.email = "member@example.com" }, groups.ErrNoServiceAccount, []string{"no service account"}, 0},
-		{"no email", func(g *google) { g.metadataStatus = http.StatusNotFound }, nil, []string{"metadata server", "404"}, 0},
-		{"a refused mint", func(g *google) { g.refused = &mintDenied }, nil, []string{"403", "IAM_PERMISSION_DENIED"}, 1},
-		{"a token with no end", func(g *google) { g.noExpiry = true }, nil, []string{"expireTime"}, 1},
+		{"no reader account", "", podToken(), func(*iam) {}, groups.ErrNoDirectoryAccount, []string{"no directory account"}, 0},
+		{"no pod credential", readerAccount, noToken{}, func(*iam) {}, nil, []string{"own Google credentials gave no token"}, 0},
+		{"a refused mint", readerAccount, podToken(), func(g *iam) { g.refuse(&mintDenied) }, nil, []string{readerAccount, "403", "IAM_PERMISSION_DENIED"}, 1},
+		{"a token with no end", readerAccount, podToken(), func(g *iam) { g.noExpiry = true }, nil, []string{"expireTime"}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			g := newGoogle(t, brokerAccount)
+			g := newIAM(t)
 			tc.setUp(g)
-			token, err := g.source().Token()
+			token, err := g.sourceWith(tc.account, tc.own).Token()
 			if err == nil {
 				t.Fatalf("Token = %v, want a refusal", token)
 			}
