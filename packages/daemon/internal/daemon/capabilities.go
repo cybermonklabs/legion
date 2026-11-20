@@ -1,9 +1,10 @@
 // Package daemon: this file holds the deployment's capabilities — what the configuration alone
-// states (Deployment) and what a boot or a live session adds to it (supervision.deployment) — and
-// the live sessions' capability reports: how they are kept (capabilityReportStore), taken from a
-// session's ready (supervision.capabilityReported), copied for the state route
-// (supervision.capabilityReports), read from the store at boot (reportsOfClaims), and logged when
-// the open set changes (supervision.reportCapabilities).
+// states (Deployment) and what a boot, a live session or a repository cache adds to it
+// (supervision.deployment, supervision.caches) — and the live sessions' capability reports: how
+// they are kept (capabilityReportStore), taken from a session's ready
+// (supervision.capabilityReported), copied for the state route (supervision.capabilityReports),
+// read from the store at boot (reportsOfClaims), and logged when the open set changes
+// (supervision.reportCapabilities).
 package daemon
 
 import (
@@ -51,13 +52,14 @@ func Deployment(cfg config.Config) capabilities.Deployment {
 // deployment is Deployment with what this boot learned: the broker login's state, whether the
 // image passed its probe, the model-fallback mark the probe or the gate read, how many of the
 // probe's attempts waited on the pool's capacity before one scheduled, with the scheduler's
-// reason, and the live sessions' reports of the live rows (LEGION-663). A session is live when its
-// claim is ready, working or idle with a process, and its report is that process's: a report from a
-// claim since relaunched, suspended or retired names a session that no longer runs and contributes
-// nothing, until the new process reports. The claims are read as their machines last published
-// them (supervise.Machine.View), never waiting on a decision in flight, so the tick and the state
-// route read the deployment while a relaunch waits on its pods; the sessions are in claim token
-// order. It reads memory alone: no store, no context.
+// reason, the repository caches as their last health reads found them (caches), and the live
+// sessions' reports of the live rows (LEGION-663). A session is live when its claim is ready,
+// working or idle with a process, and its report is that process's: a report from a claim since
+// relaunched, suspended or retired names a session that no longer runs and contributes nothing,
+// until the new process reports. The claims are read as their machines last published them
+// (supervise.Machine.View), never waiting on a decision in flight, so the tick and the state route
+// read the deployment while a relaunch waits on its pods; the sessions are in claim token order.
+// It reads memory alone: no store, no context.
 func (s *supervision) deployment() capabilities.Deployment {
 	d := Deployment(s.cfg)
 	if s.plan.secretsLogin != nil {
@@ -65,6 +67,7 @@ func (s *supervision) deployment() capabilities.Deployment {
 	}
 	d.Probed, d.ModelFallback = s.probed, s.imageReport.ModelFallback
 	d.ProbeCapacityWaits, d.ProbeCapacityReason = s.imageReport.CapacityWaits, s.imageReport.CapacityReason
+	d.Caches = s.caches()
 	if s.supervisor == nil {
 		return d
 	}
@@ -84,6 +87,40 @@ func (s *supervision) deployment() capabilities.Deployment {
 		return strings.Compare(string(a.Report.Claim), string(b.Report.Claim))
 	})
 	return d
+}
+
+// caches is the runtime's repository caches (cacheStatuses) as the capability report reads them,
+// in the runtime's order: each cache's repository, its volume claim's name, and what its last
+// health read answered of its room — the volume's size and available bytes, or why the cache could
+// not read them, the clone's bytes, and each step's last failure for lack of space. Reported is
+// whether that answer carried any of the room fields, which a cache on an older worker image
+// sends none of; a cache with no answer, not Ready or with a read that failed (HealthError), is
+// unread. None when the runtime keeps no caches. The one place a sandbox.CacheStatus becomes a
+// capabilities.Cache, so the state route and the tick's report read the caches alike; it reads
+// the runtime's memory alone, the last health read the gh refresher's tick made.
+func (s *supervision) caches() []capabilities.Cache {
+	if s.cacheStatuses == nil {
+		return nil
+	}
+	statuses := s.cacheStatuses()
+	caches := make([]capabilities.Cache, 0, len(statuses))
+	for _, status := range statuses {
+		cache := capabilities.Cache{Repo: status.Repo.String(), Claim: status.Claim}
+		if health := status.Health; health != nil {
+			cache.Read, cache.Bytes, cache.VolumeError = true, health.Bytes, health.VolumeError
+			cache.FetchOutOfSpaceAt, cache.RepackOutOfSpaceAt = health.FetchOutOfSpaceAt, health.RepackOutOfSpaceAt
+			if health.VolumeBytes != nil {
+				cache.VolumeBytes = *health.VolumeBytes
+			}
+			if health.AvailableBytes != nil {
+				cache.AvailableBytes = *health.AvailableBytes
+			}
+			cache.Reported = health.VolumeBytes != nil || health.VolumeError != "" ||
+				!health.FetchOutOfSpaceAt.IsZero() || !health.RepackOutOfSpaceAt.IsZero()
+		}
+		caches = append(caches, cache)
+	}
+	return caches
 }
 
 // capabilityReportStore is the store's keeping of each claim's latest capability report
@@ -150,9 +187,11 @@ func reportsOfClaims(reports []capabilities.Report, claims []supervise.Claim) ma
 // logs the report whenever that set differs from the one last logged: once at boot, and again from
 // a controller tick that finds it changed (admit.Admission.ReportCapabilities asks only when the
 // tick queues a wake: a controller is registered and no tick notice is pending) — the broker's
-// login reaching issued, and a live session's report of a row its check failed
-// (capabilityReported), are the changes a running daemon sees — so a gap is logged at boot and
-// at the first tick after a change, never on every tick, and never between ticks.
+// login reaching issued, a live session's report of a row its check failed (capabilityReported),
+// and a repository cache's last health read starting or ceasing to carry a failure for lack of
+// space (caches) are the changes a running daemon sees — so a gap is logged at boot and at the
+// first tick after a change, never on every tick, and never between ticks. The names are the
+// tick notice's openCapabilities, which carry a cache that ran out of room to the controller.
 func (s *supervision) reportCapabilities() []string {
 	d := s.deployment()
 	open := d.Open()

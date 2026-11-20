@@ -1358,6 +1358,11 @@ type supervision struct {
 	// passed (kubernetes), so the image rows of the capability report read present.
 	imageReport bootprobe.ImageReport
 	probed      bool
+	// cacheStatuses is the runtime's repository caches, each with its last health read, which the
+	// capability report reads their room from (caches): repositoryCachesOf(runtime), nil under any
+	// runtime but the Sandbox runtime, which alone keeps caches. A field, so that a test gives the
+	// report caches of its own without a cluster.
+	cacheStatuses func() []sandbox.CacheStatus
 	// reportMu guards reportedGaps and reports: the tick's reads, the API's readies and boot's run
 	// on different goroutines. reportedGaps are the open capabilities the last report logged
 	// (reportCapabilities). reports is each claim's latest capability report (LEGION-663), as its
@@ -1649,7 +1654,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st, refreshGate: refreshGate,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
-		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops,
+		stopping: stopping, beginStop: beginStop, sessionStops: &sessionStops, cacheStatuses: repositoryCachesOf(rt),
 	}
 	// The machines' report of a stalled turn they ended goes to supervision, which is built
 	// after their deps: the one callback whose receiver is supervision itself, set here before

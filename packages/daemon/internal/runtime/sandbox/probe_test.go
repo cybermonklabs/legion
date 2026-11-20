@@ -476,7 +476,7 @@ func TestProbeImageReportsTheModelFallbackMark(t *testing.T) {
 		t.Run(mark, func(t *testing.T) {
 			g := newProbeRig(t, nil)
 			g.succeeds("probe-image: capability eval-js: present (Oh My Pi is its JavaScript runtime, and the launch probes ran it)\n" +
-				"probe-image: capability model-fallback: reported (the daemon reports it from the deployment's configuration)\n" +
+				"probe-image: capability model-fallback: reported (the daemon reports it from the image probe's read at boot, or the plugin gate's under tmux)\n" +
 				bootprobe.OKLine("/opt/omp/bin/omp", 3, bootprobe.AgentModelsResolved, bootprobe.CapabilitiesAll, mark) + "\n")
 
 			report, err := g.r.ProbeImage(g.ctx, probeOptions(t))

@@ -66,8 +66,11 @@ func (c RepositoryCache) check() error {
 // refused), with the kubelet's Reason while it is failing and its Service's while it is refused;
 // whether its pod has passed its readiness probe behind its own Service, and its address then,
 // that Service's (cacheURL); once the repository has left the mapping, until when the sweep keeps
-// it; and, from RepositoryCaches alone, the pod's last health read: what its /healthz answered
-// (Health), or why it could not be read (HealthError), both empty when it was not Ready to be read.
+// it; and, from RepositoryCaches alone, its volume claim's name (Claim, cacheClaimName) and the
+// pod's last health read: what its /healthz answered (Health), or why it could not be read
+// (HealthError), both empty when it was not Ready to be read. The daemon's capability report reads
+// Repo, Claim, Health's room on the volume (VolumeBytes, AvailableBytes, VolumeError, the two
+// failure times) and Bytes, and HealthError (daemon's supervision.caches).
 type CacheStatus struct {
 	Repo          ghrepo.Repository
 	Sandbox       string
@@ -76,6 +79,7 @@ type CacheStatus struct {
 	Ready         bool
 	Address       string
 	RetainedUntil time.Time
+	Claim         string
 	Health        *repocache.Health
 	HealthError   string
 }
@@ -631,8 +635,10 @@ func (r *Runtime) RepositoryCache(repo ghrepo.Repository) (CacheStatus, bool) {
 }
 
 // RepositoryCaches is every cache the stores hold whose repository parses, sorted by repository,
-// each as RepositoryCache answers it with the last health read (readCacheHealth) of the pod it
-// owns now, none when that read was of another: what `legion state` shows of the caches.
+// each as RepositoryCache answers it with its volume claim's name, as the controller names the
+// claim it makes from the Sandbox's template (cacheClaimName), and the last health read
+// (readCacheHealth) of the pod it owns now, none when that read was of another: what `legion
+// state` shows of the caches, and what the daemon's capability report reads of their room.
 func (r *Runtime) RepositoryCaches() []CacheStatus {
 	var caches []CacheStatus
 	for _, u := range r.storedCaches() {
@@ -644,6 +650,7 @@ func (r *Runtime) RepositoryCaches() []CacheStatus {
 		if !found {
 			continue
 		}
+		status.Claim = cacheClaimName(status.Sandbox)
 		r.mu.Lock()
 		read, held := r.cacheHealth[status.Sandbox]
 		r.mu.Unlock()
