@@ -6,4 +6,4 @@ body: |-
   its own, so each late caller made one more set of GitHub calls, a head lookup at least.
 time: 2026-11-20T04:50:07Z
 custom:
-    Issue: importer-late-refuser
+    Issue: pr4583

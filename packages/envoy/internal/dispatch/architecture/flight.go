@@ -1,6 +1,7 @@
 // flight.go holds the shared sync the callers of one architecture source join: the counter Close
-// waits on, what a flight hands every caller that joined it, the newest flight of each source to
-// have ended, and the flight itself — the contexts it runs on and its errSuperseded retry chain.
+// waits on, what a flight hands every caller that joined it, the newest ended flight of each
+// source while a call of it runs, and the flight itself — the contexts it runs on and its
+// errSuperseded retry chain.
 // The Importer type, Sync and Close stay in importer.go: they are the type's own surface.
 
 package architecture
@@ -98,15 +99,32 @@ func (f *syncFlight) servedAt() time.Time {
 	return f.headAt
 }
 
-// endedFlights holds the newest flight of each source to have ended, with its
-// error, by the key Sync shares flights on. One flight of a key runs at a time
-// (singleflight), and each records itself here before singleflight drops its
-// key and sends its answer, so the newest flight of a source is always either
-// the one in flight or the one recorded here: a caller that looks for one
-// finds it, however late it looks. Its zero value is ready.
+// endedFlights holds, for each source a call of Sync is running for, the
+// newest flight of that source to have ended, with its error, by the key Sync
+// shares flights on. One flight of a key runs at a time (singleflight), and
+// each records itself here before singleflight drops its key and sends its
+// answer, so while a call runs, the newest flight of its source is either the
+// one in flight or the one recorded here: a caller that looks for one finds
+// it, however late it looks.
+//
+// A key's entry lives only while a call of that key runs: the first call to
+// enter makes it, and the last to leave drops it, with what it recorded. So
+// the record never holds more entries than there are calls running, whatever
+// error a flight ended with and whatever key a caller names, a key that names
+// no source among them. No caller loses by the drop: a flight is fresh only
+// for a call made before its head lookup, and a call that is still running
+// holds its key's entry open. A flight that ends once every call of its key
+// has left is recorded nowhere. Its zero value is ready.
 type endedFlights struct {
-	mu     sync.Mutex
-	newest map[string]endedFlight
+	mu    sync.Mutex
+	byKey map[string]*keyFlights
+}
+
+// keyFlights is one key's entry: how many calls of it are running, and its
+// newest ended flight, nil until one ends while a call runs.
+type keyFlights struct {
+	calls int
+	ended *endedFlight
 }
 
 // endedFlight is one flight that has ended and the error it ended with.
@@ -115,23 +133,52 @@ type endedFlight struct {
 	err    error
 }
 
+// enter counts one more running call of key, making its entry if it has none.
+func (e *endedFlights) enter(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.byKey == nil {
+		e.byKey = map[string]*keyFlights{}
+	}
+	entry := e.byKey[key]
+	if entry == nil {
+		entry = &keyFlights{}
+		e.byKey[key] = entry
+	}
+	entry.calls++
+}
+
+// leave counts one call of key fewer, and drops key's entry once none runs.
+func (e *endedFlights) leave(key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	entry := e.byKey[key]
+	entry.calls--
+	if entry.calls == 0 {
+		delete(e.byKey, key)
+	}
+}
+
 // fresh is key's newest ended flight, and whether there is one whose head
 // lookup came no earlier than calledAt.
 func (e *endedFlights) fresh(key string, calledAt time.Time) (endedFlight, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	ended, ok := e.newest[key]
-	return ended, ok && !ended.flight.servedAt().Before(calledAt)
+	entry := e.byKey[key]
+	if entry == nil || entry.ended == nil {
+		return endedFlight{}, false
+	}
+	return *entry.ended, !entry.ended.flight.servedAt().Before(calledAt)
 }
 
-// record stores flight, which ended with err, as key's newest ended flight.
+// record stores flight, which ended with err, as key's newest ended flight
+// while a call of key runs, and drops it when none does.
 func (e *endedFlights) record(key string, flight *syncFlight, err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.newest == nil {
-		e.newest = map[string]endedFlight{}
+	if entry := e.byKey[key]; entry != nil {
+		entry.ended = &endedFlight{flight: flight, err: err}
 	}
-	e.newest[key] = endedFlight{flight: flight, err: err}
 }
 
 // sharedFlight is what a flight of key, started by a caller of Sync that asked

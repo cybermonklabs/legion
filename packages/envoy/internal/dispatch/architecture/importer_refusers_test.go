@@ -6,11 +6,34 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// beforeTheDeadline is how long this file's waits may take: what is left of the test binary's
+// deadline, less a second (testwait.Bounded of a day). So how long a loaded host takes to end a
+// flight decides no verdict here, and a wait whose event never comes still fails, naming it.
+func beforeTheDeadline(t *testing.T) time.Duration {
+	return testwait.Bounded(t, 24*time.Hour, time.Second)
+}
+
+// receiveBeforeTheDeadline is the next value of ch, or of its close, within beforeTheDeadline.
+func receiveBeforeTheDeadline[T any](t *testing.T, what string, ch <-chan T) T {
+	t.Helper()
+	var got T
+	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, what, func() bool {
+		select {
+		case got = <-ch:
+			return true
+		default:
+			return false
+		}
+	})
+	return got
+}
 
 // Two callers that both refused one flight share the next one, however late each looks again.
 // Both join a flight held in its blob reads after its head lookup, so each refuses it once it
@@ -54,8 +77,9 @@ func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testin
 	}
 
 	branch.holdBlobs(commitOne)
+	held, _ := branch.hold.channels(t)
 	first := syncInBackground(process)
-	branch.waitHeld(t)
+	receiveBeforeTheDeadline(t, "the first flight's blob read to reach the hold", held)
 	refusers := make(chan syncAnswer, 2)
 	for range 2 {
 		go func() {
@@ -65,18 +89,19 @@ func TestCallersThatRefusedOneFlightShareTheNextOneHoweverLateTheyLook(t *testin
 	}
 	// The first flight is held until the release below, so a caller that holds a flight before
 	// then holds that one.
-	testwait.Eventually(t, "the two later callers to join the held flight", func() bool { return taken.Load() >= 3 })
+	testwait.WithinPolling(t, beforeTheDeadline(t), testwait.Poll, "the two later callers to join the held flight",
+		func() bool { return taken.Load() >= 3 })
 	branch.releaseHeld()
 
-	if answer := waitForSync(t, first, "the first caller"); answer.err != nil {
+	if answer := receiveBeforeTheDeadline(t, "the first caller's answer", first); answer.err != nil {
 		t.Fatalf("the first caller: %v", answer.err)
 	}
 	// The held refuser cannot answer before releaseLate, so the first answer is the other's.
-	if answer := waitForSync(t, refusers, "the refuser the hold let through"); answer.err != nil {
+	if answer := receiveBeforeTheDeadline(t, "the answer of the refuser the hold let through", refusers); answer.err != nil {
 		t.Fatalf("the refuser the hold let through: %v", answer.err)
 	}
 	releaseLate()
-	answer := waitForSync(t, refusers, "the refuser held until the other was answered")
+	answer := receiveBeforeTheDeadline(t, "the answer of the refuser held until the other was answered", refusers)
 	if answer.err != nil || answer.source.LastCommit == nil || *answer.source.LastCommit != commitOne {
 		t.Fatalf("the late refuser answered %+v (err %v); want the row at %s with no error", answer.source, answer.err, commitOne)
 	}
