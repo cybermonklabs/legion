@@ -1,6 +1,11 @@
 // Package tlsalert is the daemon's one reading of a TLS alert, the far side's or the client's own,
 // at any point of the connection: an answer that ends the connection and that no wait fixes, as
 // against a network that is not there yet, which the next attempt can find.
+//
+// The envoy module keeps the same file at packages/envoy/internal/tlsalert/tlsalert.go, a copy
+// rather than one package imported twice for the reason packages/daemon/internal/testtmp gives,
+// so change one and change the other, except this package comment and the paragraph of In's
+// comment that names its callers, which each module writes for itself.
 package tlsalert
 
 import (
