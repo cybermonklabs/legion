@@ -280,9 +280,15 @@ export default function legionExtension(pi: PiApi): void {
   // The model fallback (src/model-fallback.ts) on the cooldown machine
   // (@legion/pi-shared/fallback-cooldown): the two waits come from this worker's own environment
   // with the specification's defaults, as the stall limits do, and the state is kept in the
-  // transcript so a relaunched worker comes back with its due time and its doubling levels. A
-  // refusal's return is made when its wait ends, on the pane's own host timer, as the phase
-  // reminder's is, into the session the pane is on when it fires.
+  // transcript so a relaunched worker comes back with its due time and its doubling levels.
+  // When the return is made is `ModelFallback.maybeRestore`'s to say; its timer runs on the pane's
+  // own host timer, as the phase reminder's does.
+  //
+  // The session whose fallback state the runner holds: the one `restoreModelFallback` last read.
+  // A session change moves `paneContext` first and that read comes after the controller's
+  // re-claim, so in between the pane is on a session whose state the runner does not hold, and a
+  // timer that fires then has no session to make its return into.
+  let fallbackSession: string | undefined;
   const modelFallback = createModelFallback({
     setModel: async (model) => (await pi.setModel?.(model)) === true,
     saveState: (state) => pi.appendEntry(LEGION_FALLBACK_ENTRY, recordedFallbackCooldown(state)),
@@ -290,11 +296,17 @@ export default function legionExtension(pi: PiApi): void {
     limits: fallbackCooldownLimits(process.env, logger),
     nextModel: nextFallbackModel,
     log: logger,
-    armTimer: (callback, delayMs) => paneContext?.setTimeout(callback, delayMs),
-    paneContext: async () =>
-      paneContext !== undefined && (await modelFallbackSession(paneContext))
-        ? paneContext
-        : undefined,
+    armTimer: (callback, delayMs) => {
+      if (paneContext === undefined) return false;
+      paneContext.setTimeout(callback, delayMs);
+      return true;
+    },
+    paneContext: async () => {
+      const context = paneContext;
+      if (context === undefined) return undefined;
+      if (context.sessionManager.getSessionId() !== fallbackSession) return undefined;
+      return (await modelFallbackSession(context)) ? context : undefined;
+    },
   });
 
   // The fallback state of whatever session the pane is on: the record this plugin saved
@@ -306,6 +318,7 @@ export default function legionExtension(pi: PiApi): void {
   // happens to sit on a host fallback is no Legion role's to arm or to write into.
   const restoreModelFallback = (context: CommandContext | SessionContext): void => {
     if (!legionClaimSession(context)) return;
+    fallbackSession = context.sessionManager.getSessionId();
     modelFallback.restore(
       restoreFallbackCooldown(context.sessionManager.getBranch?.() ?? []),
       context
@@ -737,11 +750,9 @@ export default function legionExtension(pi: PiApi): void {
   // sent with triggerTurn, starts its turn with neither the recovery nor before_agent_start, so
   // its branch keeps the saved copy.
   //
-  // It is also where a model fallback whose wait is over goes back on before the run's first
-  // request (src/model-fallback.ts): the host reads a request's model before it runs the
-  // `context` hook below, so that hook's switch is the model of the request after its own. The
-  // runner's timer makes the return when the wait ends, which covers every run that starts later,
-  // whatever starts it; this hook covers a prompt that comes before that timer has run.
+  // It is also one of the three triggers of the model fallback's return, the one for the first
+  // request of a run a prompt starts; `ModelFallback.maybeRestore` (src/model-fallback.ts) states
+  // the rule.
   let resentNoticeId: string | undefined;
   pi.on("before_agent_start", async (_event, context) => {
     if (await modelFallbackSession(context)) await modelFallback.maybeRestore(context);
@@ -770,11 +781,9 @@ export default function legionExtension(pi: PiApi): void {
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
   });
-  // Every provider request of this session passes here, so this is where the session goes back
-  // on the model it fell back from when the runner's timer has not: an arming that waits on the
-  // host's suppression rather than a time, and a timer the host has not run yet. The host reads
-  // each request's model before this hook runs, so a switch here is the model of the next request
-  // (src/model-fallback.ts).
+  // Every provider request of this session passes here, which makes it one of the three triggers
+  // of the model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states
+  // the rule.
   //
   // The rest of the handler is the recreated-workspace notice: the recovery kept the saved copy
   // in the process's live context, so once it is sent again every later request of this process
