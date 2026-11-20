@@ -474,7 +474,7 @@ that outrank it. A create that IAM lets make the secret but not add its value sa
 ```console
 $ agent-secrets secret retag DEMO_DEPLOY_TOKEN --tier human
 agent-secrets secret retag: using the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com
-agent-secrets secret retag: rpc error: code = PermissionDenied desc = …; the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
+agent-secrets secret retag: Secret Manager UpdateSecret answered PermissionDenied (its message is not printed); the store refused the active gcloud account (gcloud configuration box): robot@example-project.iam.gserviceaccount.com; choose another with a gcloud configuration in CLOUDSDK_ACTIVE_CONFIG_NAME, an account in CLOUDSDK_CORE_ACCOUNT, or a credentials file in GOOGLE_APPLICATION_CREDENTIALS (gcloud configurations here: ada, box); looked in GCP Secret Manager project 100000000001
 ```
 
 `--owner me` is the one place a sign-in must name a person. Under one that names none, the command
