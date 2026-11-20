@@ -330,13 +330,15 @@ func (s *server) createStoredMessage(
 		return model.Message{}, nil, err
 	}
 	defer tx.Rollback(ctx)
-	// The issue's owner lock is taken first, the order recordPendingMessageDelivery states, and the
-	// issue read in the statement after it, without the closed refusal: a closed issue still takes
-	// a message. An issue of a project the writer does not see is a key no issue holds
-	// (issueStatus).
+	// The issue's owner lock is the first lock this write takes, the order
+	// recordPendingMessageDelivery states, and the issue is read in the statement after it, without
+	// the closed refusal: a closed issue still takes a message. The path names the issue by its key
+	// alone, so the issue is read as the writer reads it before the lock is asked for
+	// (lockedOwnerReadOnceFound): an issue of a project the writer does not see is a key no issue
+	// holds (issueStatus), refused without waiting behind that project's writers.
 	var status string
 	if issueKey != nil {
-		status, _, err = issueStatus(ctx, reader, *issueKey, lockedOwnerRead(tx))
+		status, _, err = issueStatus(ctx, reader, *issueKey, lockedOwnerReadOnceFound(tx))
 		if err != nil {
 			return model.Message{}, nil, err
 		}

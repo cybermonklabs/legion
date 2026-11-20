@@ -634,9 +634,16 @@ func (s *server) beginCommentWrite(ctx context.Context, who model.Actor, owner o
 // issue-level, a reply, a reply on an ask, one anchored to a document's quote - but not a
 // suggestion: that is a proposed document edit, and accepting it, its only outcome, is refused
 // on a closed issue, which is what write says (refuseClosed). The owner is read as who reads it
-// (ownerStatus).
+// (ownerStatus). An issue the path names by its key alone is read before its lock is asked for
+// (lockedOwnerReadOnceFound), so a hidden one is refused without waiting behind its project's
+// writers, as a key no issue holds is; a document owner was read as who reads it before this
+// (documentOwnerForHandler).
 func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, who model.Actor, owner owner, route commentRoute, write closedWrite) (*string, error) {
-	status, open, err := ownerStatus(ctx, who, owner, lockedOwnerRead(tx))
+	read := lockedOwnerRead(tx)
+	if owner.IssueKey != nil {
+		read = lockedOwnerReadOnceFound(tx)
+	}
+	status, open, err := ownerStatus(ctx, who, owner, read)
 	if err != nil {
 		return nil, err
 	}

@@ -304,12 +304,23 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The body's project as the caller reads it, first and with nothing locked: a project it does
+	// not see is a project no row holds, and takes none of the locks below, so it never waits
+	// behind that project's writers, as a key no project holds never waits. Both are refused where
+	// a key no project holds always was: by the parent's read when the create names a parent,
+	// which no project the caller does not see can hold, and else at the project's read below.
+	var visible bool
+	if err := tx.QueryRow(r.Context(), `select exists (select 1 from projects where key = $1 and `+
+		access.ProjectClause("key", "$2")+`)`, input.Project, refs.VisibilityArg(who)).Scan(&visible); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A create with blockers can close a wait cycle, and a create with a parent adds a link the
 	// depth cap counts (refuseParentTooDeep): both take the dependency locks before the project's
 	// owner lock, the number and the rank (lockIssueDependencyWrite). A new issue with neither
 	// takes none. Only the blockers can name another project, since a parent is of the issue's own
 	// project.
-	if len(blockers) > 0 || parentKey != "" {
+	if visible && (len(blockers) > 0 || parentKey != "") {
 		if err := lockIssueDependencyWrite(r.Context(), tx, input.Project, who, blockers); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -355,7 +366,12 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// a spec gets an empty primary document.
 	//
 	// The body's project is read as the caller reads it: a project it does not see is a project no
-	// row holds, so either is pgx.ErrNoRows here, 404 NOT_FOUND, before any document work.
+	// row holds, so either is pgx.ErrNoRows here, 404 NOT_FOUND, before any document work. One the
+	// read before the locks did not find takes no lock; one it found is read again under the lock.
+	if !visible {
+		s.writeHandlerError(w, pgx.ErrNoRows)
+		return
+	}
 	var number int
 	var artifactID string
 	if err := store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(input.Project), `

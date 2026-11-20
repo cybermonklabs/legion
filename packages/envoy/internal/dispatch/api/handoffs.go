@@ -109,7 +109,10 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 
 // recordHandoff writes the handoff as the next version of the issue's phase and appends its
 // handoff.recorded, in one transaction that first locks the open issue, as who reads it: an issue
-// of a project who does not see is a key no issue holds.
+// of a project who does not see is a key no issue holds. The path names the issue by its key
+// alone, so the issue is read before its lock is asked for (lockedOwnerReadOnceFound), and a
+// hidden one is refused without waiting behind its project's writers, as a key no issue holds is;
+// the read under the lock and the closed refusal are the ones requireOpenOwner makes.
 func (s *server) recordHandoff(ctx context.Context, who model.Actor, issueKey, phase, body string, actor model.Actor) (model.HandoffSummary, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
@@ -120,7 +123,11 @@ func (s *server) recordHandoff(ctx context.Context, who model.Actor, issueKey, p
 		return model.HandoffSummary{}, err
 	}
 	defer tx.Rollback(ctx)
-	if err := s.requireOpenOwner(ctx, tx, who, issueOwner(issueKey)); err != nil {
+	_, open, err := issueStatus(ctx, who, issueKey, lockedOwnerReadOnceFound(tx))
+	if err != nil {
+		return model.HandoffSummary{}, err
+	}
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
 		return model.HandoffSummary{}, err
 	}
 	handoff, err := scanHandoff(tx.QueryRow(ctx, `
