@@ -23,9 +23,10 @@ import (
 )
 
 // The daemon's half of a project's pause (dispatch://INFRA-3759). The pause's records and its two
-// transactions are the store's (internal/store/pause.go), its flag and its acts the pause
-// service's (internal/pause), and what a machine does while the project is paused the
-// supervisor's (internal/supervise/pause.go). What is the daemon's is what joins them:
+// transactions are the store's (internal/store/pause.go, and the stop records' operations in
+// internal/store/pause_stops.go), its flag and its acts the pause service's (internal/pause), and
+// what a machine does while the project is paused the supervisor's (internal/supervise/pause.go).
+// What is the daemon's is what joins them:
 //
 //   - the stop transaction a machine's pause suspension ends in (projectPause.stopped,
 //     supervise.Deps.PauseStopped, decision 6), and the let-out moment of a paced launch

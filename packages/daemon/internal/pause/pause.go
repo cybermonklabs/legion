@@ -1,8 +1,9 @@
 // Package pause is a project's pause (dispatch://INFRA-3759): the daemon's flag that says whether
 // its project is paused, and the service that pauses and resumes it. The pause's records and its
-// two transactions are the store's (internal/store/pause.go). This package refuses a pause the
-// daemon cannot hold, builds the rows those transactions queue, keeps the flag in step with the
-// store, logs each act, and hands what runs after each commit to the daemon (Effects).
+// two transactions are the store's (internal/store/pause.go, and the stop records' operations in
+// internal/store/pause_stops.go). This package refuses a pause the daemon cannot hold, builds the
+// rows those transactions queue, keeps the flag in step with the store, logs each act, and hands
+// what runs after each commit to the daemon (Effects).
 package pause
 
 import (
