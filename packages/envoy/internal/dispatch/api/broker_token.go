@@ -77,9 +77,6 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
-// brokerPersonScopes is what a broker-issued token that acts for its person holds: the person
-// scope alone, never approve (brokerTokenActor). Every such credential shares this one slice, as
-// personCredential shares model.Scopes, so a request allocates none; nothing writes it.
 var brokerPersonScopes = []string{model.ScopePerson}
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
