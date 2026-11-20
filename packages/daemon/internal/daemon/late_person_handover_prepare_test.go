@@ -85,6 +85,7 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 			mirror := blockers.NewMirror(records, "LEGION")
 
+			var preparedApproval intake.DispatchArtifact
 			for i, fact := range tc.order {
 				var prepared intake.Fact
 				var err error
@@ -92,7 +93,8 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 				case intake.DispatchIssue:
 					prepared, err = w.prepareRepository(ctx, fact)
 				case intake.DispatchArtifact:
-					prepared, err = w.prepareArtifact(ctx, fact)
+					preparedApproval, err = w.prepareArtifact(ctx, fact)
+					prepared = preparedApproval
 				}
 				if err != nil {
 					t.Fatalf("prepare fact %d (%T): %v", i, fact, err)
@@ -108,10 +110,8 @@ func TestAnApprovalAppliedAfterThePersonParkedTheRootAgainQueuesNoHandover(t *te
 				t.Fatalf("read the status writes of %s: %v", key, err)
 			}
 			if handovers != tc.want {
-				var changed int64
-				_ = pool.QueryRow(ctx, `select status_changed_seq from dispatch_issues where key = $1`, key).Scan(&changed)
-				t.Fatalf("the approval at sequence 9 queued %d person's handovers of %s, want %d (the copy's status_changed_seq is %d)",
-					handovers, key, tc.want, changed)
+				t.Fatalf("the approval at sequence 9 queued %d person's handovers of %s, want %d (the prepared approval's StatusChangedSeq is %d)",
+					handovers, key, tc.want, preparedApproval.StatusChangedSeq)
 			}
 		})
 	}
