@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Each role's `token_command` in `docs/deployment.md` names a profile of that App's broker secret:
+  the role's profile, or its read profile (the same name with `_READ`) when
+  `LEGION_GITHUB_READ_ONLY` is set, narrowed with `--target "$LEGION_GITHUB_OWNER"` when that is
+  set. The runbook gives the four profiles those commands name, each `"value": "installations"`
+  with the daemon's own write or read set, so a lease holds the same permissions in token mode as
+  with a key; the live proofs' token command takes the same form. The architect and worker
+  prompts describe a GitHub credential as a profile.
