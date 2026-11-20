@@ -9,11 +9,13 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rows every test here serves: PRIV is private, owned by carol and listing bob; PUB is
@@ -438,6 +440,86 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 	}
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
 		t.Fatalf("the cached answer after both arrived = %+v, %v; want the later question's, not visible", answer, err)
+	}
+}
+
+// TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall: reads of one person's member kind
+// that are in flight together make one call to Dispatch, and each gets its answer. No clock
+// decides it: the stand-in holds the first call until every other read has joined it (SetJoined)
+// or, where reads do not share, until a second call reaches it, and answers only then; the bound
+// is for a box too stalled to get there at all, and can only fail the test.
+func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
+	const readers = 8
+	var mu sync.Mutex
+	calls := 0
+	called := func() int { mu.Lock(); defer mu.Unlock(); return calls }
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	free := func() { releaseOnce.Do(func() { close(release) }) }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"person":"bob@example.com","member_kind":"restricted"}`)
+	}))
+	t.Cleanup(server.Close)
+	t.Cleanup(free)
+	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
+	var joined atomic.Int32
+	projectaccess.SetJoined(client, func() { joined.Add(1) })
+	type read struct {
+		kind string
+		err  error
+	}
+	reads := make(chan read, readers)
+	for range readers {
+		go func() {
+			kind, err := client.MemberKind(context.Background(), "bob@example.com")
+			reads <- read{kind, err}
+		}()
+	}
+	if !testwait.Holds(time.Minute, 5*time.Millisecond, func() bool { return joined.Load() == readers-1 || called() > 1 }) {
+		t.Fatalf("in a minute %d of %d reads joined the one in flight and Dispatch had %d calls", joined.Load(), readers-1, called())
+	}
+	free()
+	for range readers {
+		if got := <-reads; got.err != nil || got.kind != projectaccess.MemberRestricted {
+			t.Fatalf("a read in flight with others = %q, %v; want restricted", got.kind, got.err)
+		}
+	}
+	if n := called(); n != 1 {
+		t.Fatalf("%d reads of one person's member kind in flight together made %d calls to Dispatch, want one", readers, n)
+	}
+}
+
+// TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger: while Dispatch does not answer, a
+// person's member-kind read that failed is the answer to the next reads of that person for
+// FailureTTL from when it came back, and they ask Dispatch nothing; once FailureTTL has passed a
+// read asks again and gets Dispatch's answer. It is the one person's: another person's read asks
+// Dispatch at once. The client reads a fake clock, so no wait decides it.
+func TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger(t *testing.T) {
+	server := standIn(t)
+	client := clientOf(server)
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	projectaccess.SetClock(client, clock.read)
+	server.SetDown(true)
+	if _, err := client.MemberKind(t.Context(), "bob@example.com"); err == nil {
+		t.Fatal("MemberKind(bob) while Dispatch is down answered, want a failure")
+	}
+	asked := server.Calls()
+	server.SetDown(false)
+	clock.advance(projectaccess.FailureTTL - time.Millisecond)
+	if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err == nil || server.Calls() != asked {
+		t.Fatalf("MemberKind(bob) %s after the failure = %q, %v with %d more calls to Dispatch; want the failure again and no call", projectaccess.FailureTTL-time.Millisecond, kind, err, server.Calls()-asked)
+	}
+	if kind, err := client.MemberKind(t.Context(), "carol@example.com"); err != nil || kind != projectaccess.MemberFull || server.Calls() != asked+1 {
+		t.Fatalf("MemberKind(carol) beside bob's failure = %q, %v with %d more calls; want full from one call of its own", kind, err, server.Calls()-asked)
+	}
+	clock.advance(time.Millisecond)
+	if kind, err := client.MemberKind(t.Context(), "bob@example.com"); err != nil || kind != projectaccess.MemberRestricted || server.Calls() != asked+2 {
+		t.Fatalf("MemberKind(bob) %s after the failure = %q, %v with %d more calls; want restricted from a call of its own: a failure is kept no longer", projectaccess.FailureTTL, kind, err, server.Calls()-asked)
 	}
 }
 

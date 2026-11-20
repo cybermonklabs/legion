@@ -16,8 +16,10 @@
 // question was sent, which bounds how long a person removed from a project's access list goes on
 // passing a check here; Visible asks again for an answer that aged past it while a list was
 // checked, and a slower answer never replaces one to a question asked later. A failure to reach
-// Dispatch is never cached and is never an answer: each caller decides what an outage means for
-// its own check.
+// Dispatch is never an answer: each caller decides what an outage means for its own check. A
+// project's failure is not kept; a person's member-kind read that failed is the answer to that
+// person's next reads for failureTTL (2 s), and the person's reads in flight together share one
+// call (MemberKind), so an outage costs each person one call at a time, not one per caller.
 package projectaccess
 
 import (
@@ -55,6 +57,12 @@ const CacheTTL = 30 * time.Second
 
 // requestTimeout bounds one call to Dispatch, the dial included.
 const requestTimeout = 10 * time.Second
+
+// failureTTL is how long a member-kind read that failed is the answer to the next reads of the
+// same person, counted from when the failure came back: while Dispatch does not answer, those
+// reads fail at once rather than each waiting up to requestTimeout for a call of its own. It is
+// short beside CacheTTL because a failure is no answer: the read is asked again once it passes.
+const failureTTL = 2 * time.Second
 
 // maxAnswerBytes caps the answer read from Dispatch. An answer is a handful of short fields and a
 // list of repositories, so anything larger is not Dispatch's and is refused rather than held.
@@ -210,6 +218,14 @@ type Client struct {
 	mu      sync.Mutex
 	answers map[accessKey]cachedAnswer
 	kinds   map[string]cachedKind
+	// failures holds each person's member-kind read that failed, for failureTTL from when it
+	// came back, and flights each person's read in flight, which a read of the same person
+	// joins rather than making a call of its own.
+	failures map[string]failedKind
+	flights  map[string]*kindFlight
+	// joined, when set, runs each time a member-kind read joins one already in flight for the
+	// same person: a test's signal that the read waits on that call rather than making its own.
+	joined func()
 }
 
 type accessKey struct{ project, person string }
@@ -225,6 +241,19 @@ type cachedKind struct {
 	at   time.Time
 }
 
+type failedKind struct {
+	err error
+	at  time.Time
+}
+
+// kindFlight is one call for a person's member kind, which every read of that person made while
+// it is in flight waits on: kind and err are its outcome, set before done closes.
+type kindFlight struct {
+	done chan struct{}
+	kind string
+	err  error
+}
+
 // New is a client of Dispatch at baseURL (BROKER_PROJECT_ACCESS_URL), presenting account
 // (BROKER_PROJECT_ACCESS_TOKEN_FILE's reader) on every call. A nil httpClient is
 // http.DefaultClient; each call is bounded by its own 10 s whatever the client.
@@ -233,12 +262,14 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 		httpClient = http.DefaultClient
 	}
 	return &Client{
-		base:    strings.TrimRight(baseURL, "/"),
-		account: account,
-		http:    httpClient,
-		now:     time.Now,
-		answers: map[accessKey]cachedAnswer{},
-		kinds:   map[string]cachedKind{},
+		base:     strings.TrimRight(baseURL, "/"),
+		account:  account,
+		http:     httpClient,
+		now:      time.Now,
+		answers:  map[accessKey]cachedAnswer{},
+		kinds:    map[string]cachedKind{},
+		failures: map[string]failedKind{},
+		flights:  map[string]*kindFlight{},
 	}
 }
 
@@ -275,19 +306,76 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 
 // MemberKind is the person's member kind, from the cache while it is younger than CacheTTL: one of
 // MemberFull, MemberRestricted and MemberNone. Any other answer, an empty one included, is
-// ErrUnknownMemberKind naming it, never kept and never a failure to ask.
+// ErrUnknownMemberKind naming it, never kept as an answer and never a failure to ask.
+//
+// Reads of one person in flight together share one call to Dispatch, which runs on none of their
+// contexts, so a reader that gives up ends only its own wait; and a read that failed is the
+// answer to that person's reads for failureTTL from when it came back. So while Dispatch does not
+// answer, a person's reads wait on one call at a time, each for no longer than that call's
+// requestTimeout, rather than each making a call of its own.
 func (c *Client) MemberKind(ctx context.Context, person string) (string, error) {
 	person = record.CanonicalLogin(person)
 	if person == "" {
 		return "", errors.New("projectaccess: a member kind is asked of a person, and none was named")
 	}
 	c.mu.Lock()
-	cached, ok := c.kinds[person]
-	c.mu.Unlock()
-	if ok && c.now().Sub(cached.at) < CacheTTL {
+	if cached, ok := c.kinds[person]; ok && c.now().Sub(cached.at) < CacheTTL {
+		c.mu.Unlock()
 		return cached.kind, nil
 	}
+	if failed, ok := c.failures[person]; ok && c.now().Sub(failed.at) < failureTTL {
+		c.mu.Unlock()
+		return "", failed.err
+	}
+	flight, joined := c.flights[person]
+	if !joined {
+		flight = &kindFlight{done: make(chan struct{})}
+		c.flights[person] = flight
+		go c.askKind(context.WithoutCancel(ctx), person, flight)
+	}
+	hook := c.joined
+	c.mu.Unlock()
+	if joined && hook != nil {
+		hook()
+	}
+	select {
+	case <-flight.done:
+		return flight.kind, flight.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+// askKind makes flight's one call for person's member kind and settles it: an answer is kept
+// CacheTTL, aged from before its question, unless one to a question asked later is already held;
+// a failure is kept failureTTL from when it came back. The flight leaves c.flights under the same
+// lock, so a read that finds no flight finds what this one settled.
+func (c *Client) askKind(ctx context.Context, person string, flight *kindFlight) {
 	asked := c.now()
+	kind, err := c.readKind(ctx, person)
+	c.mu.Lock()
+	delete(c.flights, person)
+	if len(c.kinds) >= maxCached || len(c.failures) >= maxCached {
+		c.sweepLocked()
+	}
+	if err != nil {
+		if len(c.failures) < maxCached {
+			c.failures[person] = failedKind{err: err, at: c.now()}
+		}
+	} else {
+		delete(c.failures, person)
+		if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
+			c.kinds[person] = cachedKind{kind: kind, at: asked}
+		}
+	}
+	c.mu.Unlock()
+	flight.kind, flight.err = kind, err
+	close(flight.done)
+}
+
+// readKind asks Dispatch's person route for person's member kind, a call bounded by
+// requestTimeout.
+func (c *Client) readKind(ctx context.Context, person string) (string, error) {
 	var answer struct {
 		MemberKind string `json:"member_kind"`
 	}
@@ -303,14 +391,6 @@ func (c *Client) MemberKind(ctx context.Context, person string) (string, error) 
 	default:
 		return "", fmt.Errorf("%w: %q for %s", ErrUnknownMemberKind, answer.MemberKind, person)
 	}
-	c.mu.Lock()
-	if len(c.kinds) >= maxCached {
-		c.sweepLocked()
-	}
-	if held, ok := c.kinds[person]; (!ok || held.at.Before(asked)) && len(c.kinds) < maxCached {
-		c.kinds[person] = cachedKind{kind: answer.MemberKind, at: asked}
-	}
-	c.mu.Unlock()
 	return answer.MemberKind, nil
 }
 
@@ -357,7 +437,8 @@ func (c *Client) keepAnswer(key accessKey, answer cachedAnswer) {
 	}
 }
 
-// sweepLocked drops every answer older than CacheTTL. c.mu is held.
+// sweepLocked drops every answer older than CacheTTL and every failure older than failureTTL.
+// c.mu is held.
 func (c *Client) sweepLocked() {
 	now := c.now()
 	for key, cached := range c.answers {
@@ -368,6 +449,11 @@ func (c *Client) sweepLocked() {
 	for person, cached := range c.kinds {
 		if now.Sub(cached.at) >= CacheTTL {
 			delete(c.kinds, person)
+		}
+	}
+	for person, failed := range c.failures {
+		if now.Sub(failed.at) >= failureTTL {
+			delete(c.failures, person)
 		}
 	}
 }

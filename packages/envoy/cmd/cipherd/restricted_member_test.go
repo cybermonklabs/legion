@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -173,8 +175,15 @@ func TestARestrictedMembersMachineLoginEnrollsNothing(t *testing.T) {
 		}
 
 		// The control: once Dispatch answers, the same release and the same enrollment go
-		// through, so each refusal above was the outage's and nothing else's.
+		// through, so each refusal above was the outage's and nothing else's. The broker keeps a
+		// person's failed read 2 s before it asks Dispatch again, so the release is asked until
+		// it is no longer refused 503; the minute bounds a broker that never asks again, and can
+		// only fail the test.
 		dispatch.SetDown(false)
+		testwait.WithinPolling(t, time.Minute, 250*time.Millisecond, "the release of "+unaskedMember+"'s grant to stop being refused 503 once Dispatch answers", func() bool {
+			status, _ := after.Session(t, sessionKey, enrollment, http.MethodPost, "/v1/grants/"+grant+"/values", nil)
+			return status != http.StatusServiceUnavailable
+		})
 		if got := after.GrantValues(t, sessionKey, enrollment, grant)[sharedSecret]; got != sharedSecretValue {
 			t.Fatalf("%s's session was released %s = %q once Dispatch answered, want %q", unaskedMember, sharedSecret, got, sharedSecretValue)
 		}

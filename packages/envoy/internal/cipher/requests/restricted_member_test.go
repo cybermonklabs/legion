@@ -133,7 +133,10 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 		}
 
 		// The control: once Dispatch answers, the same grant is released and the same ask granted.
+		// A client keeps a person's failed read 2 s and then asks again (projectaccess's own test
+		// proves that on a fake clock); a fresh client stands in for that wait.
 		dispatch.SetDown(false)
+		m.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		if release, err := m.Values(ctx, *heldUnasked.GrantID, unaskedSession, nil, ReleaseCall{}); err != nil || release.Values["SHARED_TOKEN"] != "shared-token-v1" {
 			t.Fatalf("Values(SHARED_TOKEN) once Dispatch answers = %v, %v; want it released", release.Values, err)
 		}
