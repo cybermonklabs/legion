@@ -12,7 +12,8 @@ import (
 
 // TestARestrictedMembersLauncherEnrollsNothing is Create's member-kind rule against a
 // stand-in of Dispatch's person route. A machine login whose person Dispatch calls a restricted
-// member enrolls nothing, ErrRestrictedMember, and writes no row; a full member's login, and a
+// member enrolls nothing, ErrRestrictedMember, and writes no row, and so does a person's pod login
+// (PersonPodLogin) whose person is one; a full member's login and pod login, and a
 // login of a person Dispatch holds no row for, enroll as before (the control). While Dispatch
 // cannot be asked, an operator's login enrolls nothing (*projectaccess.MemberKindUncheckable), and
 // the same login enrolls once Dispatch answers again; a broker whose own account Dispatch refuses
@@ -73,6 +74,31 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 		}
 	})
 
+	for _, schema := range personPodSchemas() {
+		t.Run("on "+schema.name+" a restricted member's pod login enrolls nothing, and a full member's enrolls", func(t *testing.T) {
+			for _, row := range []struct {
+				kind string
+				want error
+			}{{projectaccess.MemberFull, nil}, {projectaccess.MemberRestricted, ErrRestrictedMember}} {
+				r := newPersonPodRig(t, schema)
+				stand := projectaccesstest.NewServer(t, nil, map[string]string{adaPerson: row.kind})
+				r.svc.Projects = projectaccess.New(stand.URL, stand.Account, nil)
+				cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
+				if !PersonPodLogin(cred) {
+					t.Fatalf("%s's pod login = %+v, want a person's pod login", adaPerson, cred)
+				}
+				_, err := r.enroll(t, cred, adaPodAccount, "pod-uid-ada")
+				n := enrolled(t, r.svc, cred)
+				switch {
+				case row.want == nil && (err != nil || n != 1):
+					t.Fatalf("Create(ada's pod) under the pod login of %s, a %s member, = %v with %d enrollments, want one enrollment", adaPerson, row.kind, err, n)
+				case row.want != nil && (!errors.Is(err, row.want) || n != 0):
+					t.Fatalf("Create(ada's pod) under the pod login of %s, a %s member, = %v with %d enrollments, want ErrRestrictedMember and none", adaPerson, row.kind, err, n)
+				}
+			}
+		})
+	}
+
 	t.Run("while Dispatch cannot be asked an operator's login enrolls nothing", func(t *testing.T) {
 		dispatch.SetDown(true)
 		t.Cleanup(func() { dispatch.SetDown(false) })
@@ -94,8 +120,11 @@ func TestARestrictedMembersLauncherEnrollsNothing(t *testing.T) {
 		}
 
 		// The control: the same login enrolls once Dispatch answers, so the refusal was the
-		// outage's and nothing else's.
+		// outage's and nothing else's. A client keeps a person's failed read 2 s and then asks
+		// again (projectaccess's own test proves that on a fake clock); a fresh client stands in
+		// for that wait, as a broker reads Dispatch once the failure has aged out.
 		dispatch.SetDown(false)
+		svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
 		if err := enrol(t, svc, cred, "uma-devbox-1"); err != nil || enrolled(t, svc, cred) != 1 {
 			t.Fatalf("Create under %s's machine login once Dispatch answers = %v with %d enrollments, want one enrollment", unasked, err, enrolled(t, svc, cred))
 		}
