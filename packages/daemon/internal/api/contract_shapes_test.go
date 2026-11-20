@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -670,22 +669,10 @@ func answerFixtures(t *testing.T) map[AnswerID]answerFixture {
 		AnswerProjectResume: {roots: typesOf(ProjectResumeResponse{}), bodies: []any{ProjectResumeResponse{
 			Pause: ended, Released: 3,
 		}}},
-		// The replay golden's own value (TestIntakeReplayAnswerGolden): one record of each
-		// outcome, the failed one with its error, and what remains of the selection.
-		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{IntakeReplayResponse{
-			Replayed: []ReplayedGiveUpView{
-				{ID: 41, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044801, Outcome: intake.ReplayApplied},
-				{ID: 42, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044802, Outcome: intake.ReplayAlreadyApplied},
-				{ID: 43, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044850, Outcome: intake.ReplayNoFact},
-				{ID: 44, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044896, Outcome: intake.ReplayFailed,
-					Error: "decode Envoy envelope: unexpected end of JSON input"},
-			},
-			Remaining: 1,
-		}}},
-		// The discard golden's own value (TestIntakeDiscardAnswerGolden).
-		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{IntakeDiscardResponse{
-			Discarded: []int64{41, 42},
-		}}},
+		// The replay golden's own value (goldenIntakeReplay, TestIntakeReplayAnswerGolden).
+		AnswerIntakeReplay: {roots: typesOf(IntakeReplayResponse{}), bodies: []any{goldenIntakeReplay}},
+		// The discard golden's own value (goldenIntakeDiscard, TestIntakeDiscardAnswerGolden).
+		AnswerIntakeDiscard: {roots: typesOf(IntakeDiscardResponse{}), bodies: []any{goldenIntakeDiscard}},
 	}
 }
 

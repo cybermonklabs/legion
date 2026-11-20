@@ -2875,7 +2875,8 @@ package api
 //
 //   - The state's one new key is one band, the row of `intakeGiveUpsContract` in shaping.go's
 //     `stateNarrowings` (`withoutIntakeGiveUps`): a caller that states a contract below 195, or
-//     that states none from a pod whose claims record one, is served the state without the key,
+//     that states none from a pod whose claims record one below 193 (`podContracts` counts no
+//     claim at `shapedAnswersContract` or above), is served the state without the key,
 //     with every band below it, which is why `packages/contracts/src/legion-api.ts` declares it
 //     optional, as it declares `wakesWaiting`. The key is left off by a flag rather than emptied
 //     (`State.intakeGiveUpsHidden`), as `wakesWaiting` and `claimsToRefresh` are, since a strict

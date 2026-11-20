@@ -747,22 +747,29 @@ func TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps(t *testing.T) {
 	}
 }
 
-// The replay's answer is what the controller's tool and `legion intake replay` read: one record of
+// goldenIntakeReplay is the replay's answer the goldens and the shape records serve: one record of
 // each outcome, the failed one with its error, and what remains of the selection.
+var goldenIntakeReplay = IntakeReplayResponse{
+	Replayed: []ReplayedGiveUpView{
+		{ID: 41, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044801, Outcome: intake.ReplayApplied},
+		{ID: 42, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044802, Outcome: intake.ReplayAlreadyApplied},
+		{ID: 43, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044850, Outcome: intake.ReplayNoFact},
+		{ID: 44, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044896, Outcome: intake.ReplayFailed,
+			Error: "decode Envoy envelope: unexpected end of JSON input"},
+	},
+	Remaining: 1,
+}
+
+// goldenIntakeDiscard is the discard's answer the goldens and the shape records serve: the ids it
+// closed, in stream order.
+var goldenIntakeDiscard = IntakeDiscardResponse{Discarded: []int64{41, 42}}
+
+// The replay's answer is what the controller's tool and `legion intake replay` read.
 func TestIntakeReplayAnswerGolden(t *testing.T) {
-	golden(t, "intake-replay.json", IntakeReplayResponse{
-		Replayed: []ReplayedGiveUpView{
-			{ID: 41, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044801, Outcome: intake.ReplayApplied},
-			{ID: 42, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044802, Outcome: intake.ReplayAlreadyApplied},
-			{ID: 43, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044850, Outcome: intake.ReplayNoFact},
-			{ID: 44, Consumer: "legion-go-LEGION-dispatch", StreamSeq: 6044896, Outcome: intake.ReplayFailed,
-				Error: "decode Envoy envelope: unexpected end of JSON input"},
-		},
-		Remaining: 1,
-	})
+	golden(t, "intake-replay.json", goldenIntakeReplay)
 }
 
 // The discard's answer is the ids it closed, in stream order.
 func TestIntakeDiscardAnswerGolden(t *testing.T) {
-	golden(t, "intake-discard.json", IntakeDiscardResponse{Discarded: []int64{41, 42}})
+	golden(t, "intake-discard.json", goldenIntakeDiscard)
 }

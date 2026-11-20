@@ -224,8 +224,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// below it is not.
 		pause bool
 		// giveUps is whether the caller is served `intakeGiveUps`, the intake's open give-ups
-		// (intakeGiveUpsContract), the contract that added the key, so a pod at it is served the
-		// key and every pod below it is not.
+		// (intakeGiveUpsContract, the contract that added the key): a pod whose claims record a
+		// contract below shapedAnswersContract is not served the key and a pod at or above it is
+		// (podContracts counts no such claim), and a caller that states a contract below
+		// intakeGiveUpsContract is not (TestAnOlderPluginContractGetsTheStateWithoutIntakeGiveUps).
 		giveUps bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},

@@ -377,7 +377,7 @@ interface EnumeratedFieldRow {
 
 /** The answer schema this module parses each answer of the daemon's table with, by the id the
  * table writes it under (`internal/api/answers.go`). An answer whose id no entry here names
- * fails the case below, so an enumerated field of a fifth answer is read rather than skipped. */
+ * fails the case below, so an enumerated field of that answer is read rather than skipped. */
 const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   state: LegionStateResponse,
   "issue-record": LegionIssueRecordResponse,
