@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A SIGINT, SIGTERM, SIGHUP or SIGQUIT that reaches a `dispatch` command, `envoy-send` or any other
+  process while it runs an envoy.json `!` command no longer ends that process at once and leaves
+  the command running. The command runs in a session of its own, so the signal does not reach it,
+  and the process waited for it synchronously. Now the signal waits until the command has exited,
+  or been killed at its 10 s limit, and every process it started has been killed with its group.
+  The process then ends by the signal, unless another listener of its own, such as its host's,
+  answers that signal, whether the host armed it before or after its first `!` command. A signal
+  the process was started with ignored, as `nohup` ignores SIGHUP, stays ignored.
+time: 2026-11-20T10:31:32Z
+custom:
+    Issue: pr4588

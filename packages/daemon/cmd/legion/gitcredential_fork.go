@@ -76,12 +76,12 @@ func forkUpstreamDir(ctx context.Context, ownersDir string, repo ghrepo.Reposito
 }
 
 // readForkUpstream is forkUpstreamDir's read and its answer, the directory and the route to it,
-// the error saying why there is none. A SIGHUP cancels the read (hangupCancels), so a pane that
-// closes while git waits on the helper stops curl's process group, as `legion gh` and `legion
-// leak-check` stop theirs, rather than killing the helper and leaving curl running until its
-// --max-time.
+// the error saying why there is none. A SIGHUP or a SIGQUIT cancels the read
+// (hangupOrQuitCancels), so a pane that closes while git waits on the helper stops curl's process
+// group, as `legion gh` and `legion leak-check` stop theirs, rather than killing the helper and
+// leaving curl running until its --max-time.
 func readForkUpstream(ctx context.Context, ownersDir string, repo ghrepo.Repository) (dir, route string, err error) {
-	ctx, stopHangup := hangupCancels(ctx)
+	ctx, stopHangup := hangupOrQuitCancels(ctx)
 	defer stopHangup()
 	ctx, cancel := context.WithTimeout(ctx, forkReadBound)
 	defer cancel()

@@ -2,6 +2,7 @@ package mcpbridge
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,7 +49,24 @@ type ManagedServer struct {
 	onNotify  func(uri string)
 	stopCh    chan struct{}
 	closeOnce sync.Once
+	// mu guards cmd, stdin, exited and stopping between Start and Stop, so a Stop that comes while
+	// Start runs finds the process Start started, and a Start after a Stop starts none.
+	mu       sync.Mutex
+	stopping bool
+	// waitOnce, exited and waitErr are the one wait for cmd (wait).
+	waitOnce sync.Once
+	exited   chan struct{}
+	waitErr  error
 }
+
+// StopGrace is how long Stop waits for a server to exit once its standard input is closed, the
+// stdio transport's own signal to end, before it kills the server: the longest a Stop takes, and
+// so the longest a bridge's stop takes, which stops its servers at the same time (Bridge.Stop),
+// the one still starting included.
+const StopGrace = 5 * time.Second
+
+// errStopped is Start's answer for a server Stop has already stopped.
+var errStopped = errors.New("the server was stopped before it started")
 
 func NewManagedServer(cfg ServerConfig, onNotify func(uri string)) *ManagedServer {
 	s := &ManagedServer{cfg: cfg, onNotify: onNotify, stopCh: make(chan struct{})}
@@ -59,6 +77,8 @@ func NewManagedServer(cfg ServerConfig, onNotify func(uri string)) *ManagedServe
 func (s *ManagedServer) Name() string       { return s.cfg.Name }
 func (s *ManagedServer) State() ServerState { return ServerState(s.state.Load()) }
 
+// Start starts the server's process and makes the MCP handshake with it. A Stop while the
+// handshake waits ends the wait at once (session.call reads stopCh) and kills the process.
 func (s *ManagedServer) Start() error {
 	cmd := exec.Command(s.cfg.Command[0], s.cfg.Command[1:]...)
 	cmd.Stderr = os.Stderr
@@ -74,11 +94,21 @@ func (s *ManagedServer) Start() error {
 	if err != nil {
 		return fmt.Errorf("stdout pipe: %w", err)
 	}
+	s.mu.Lock()
+	if s.stopping {
+		s.mu.Unlock()
+		_ = stdin.Close()
+		_ = stdout.Close()
+		return fmt.Errorf("start %s: %w", s.cfg.Name, errStopped)
+	}
 	if err := cmd.Start(); err != nil {
+		s.mu.Unlock()
 		return fmt.Errorf("start %s: %w", s.cfg.Name, err)
 	}
 	s.cmd = cmd
 	s.stdin = stdin
+	s.exited = make(chan struct{})
+	s.mu.Unlock()
 	s.scanner = bufio.NewScanner(stdout)
 	s.scanner.Buffer(make([]byte, 1<<20), 1<<20)
 	s.session = newSession(s.cfg.Name, func(data []byte) error {
@@ -102,28 +132,45 @@ func (s *ManagedServer) Start() error {
 	return nil
 }
 
+// Stop ends the server: it closes its standard input, waits up to StopGrace for it to exit, and
+// kills it then. A Stop before Start leaves Start nothing to start.
 func (s *ManagedServer) Stop() {
 	s.closeOnce.Do(func() { close(s.stopCh) })
 	s.state.Store(int32(StateDead))
-	if s.stdin != nil {
-		s.stdin.Close()
+	s.mu.Lock()
+	s.stopping = true
+	cmd, stdin, exited := s.cmd, s.stdin, s.exited
+	s.mu.Unlock()
+	if stdin != nil {
+		stdin.Close()
 	}
-	if s.cmd != nil && s.cmd.Process != nil {
-		done := make(chan struct{})
-		go func() { s.cmd.Wait(); close(done) }()
+	if cmd != nil && cmd.Process != nil {
+		go s.wait()
 		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			s.cmd.Process.Kill()
+		case <-exited:
+		case <-time.After(StopGrace):
+			cmd.Process.Kill()
 		}
 	}
+}
+
+// wait waits for the server's process once, whoever asks first, and every caller returns once it
+// has been waited for, with the wait's error: exec.Cmd.Wait may be called only once, and Stop, a
+// failed Start's kill and the bridge's monitor (WaitForExit) can each ask for it at the same time.
+func (s *ManagedServer) wait() error {
+	s.waitOnce.Do(func() {
+		s.waitErr = s.cmd.Wait()
+		close(s.exited)
+	})
+	<-s.exited
+	return s.waitErr
 }
 
 func (s *ManagedServer) WaitForExit() error {
 	if s.cmd == nil {
 		return fmt.Errorf("not started")
 	}
-	return s.cmd.Wait()
+	return s.wait()
 }
 
 func (s *ManagedServer) ReadResource(uri string) ([]resourceContent, error) {
@@ -136,7 +183,7 @@ func (s *ManagedServer) kill() {
 	}
 	if s.cmd != nil && s.cmd.Process != nil {
 		s.cmd.Process.Kill()
-		s.cmd.Wait()
+		s.wait()
 	}
 	s.state.Store(int32(StateDead))
 }

@@ -5,6 +5,7 @@
 // viewport, and checks a page is ready and clean before it is captured. `shots.ts` and
 // `walkthrough.ts` both run on it, as does any section's own media.
 import { existsSync, readFileSync } from "node:fs";
+import { constants } from "node:os";
 import { join, relative, resolve } from "node:path";
 
 import {
@@ -21,6 +22,7 @@ import type {
 } from "../../../packages/dispatch/e2e/harness-start";
 import { sessionIds } from "../../../packages/dispatch/e2e/session-ids";
 import type { SeededWorkspace } from "../../../packages/dispatch/e2e/workspace";
+import { ignoredAtStart } from "../../../packages/envoy-client/src/signal-ignores";
 
 export const REPO = resolve(import.meta.dir, "../../..");
 const WEB_DIST = join(REPO, "packages/dispatch/web/dist/index.html");
@@ -100,18 +102,37 @@ export async function withHarness<T>(body: (harness: Harness) => Promise<T>): Pr
   const { startHarness } = await import("../../../packages/dispatch/e2e/harness-start");
   const interrupted = new AbortController();
   const starting = startHarness({ logDir: join(WORK, "harness"), signal: interrupted.signal });
-  // A stop while the harness starts ends what has started; after, it ends the whole harness.
-  const onSignal = () => {
+  // The harness's processes are started detached, each in a session of its own
+  // (`packages/dispatch/e2e/local-instance-support.ts`), so no signal sent to this process reaches
+  // them: a Ctrl-C, a SIGTERM, a closing terminal's SIGHUP and its quit key's SIGQUIT each stop
+  // them here. A stop while the harness starts ends what has started; after, it ends the whole
+  // harness, and the run then exits with 128 plus the signal. The harness is stopped once, by the
+  // first of this and the run's own end (`stopOnce`), and the listeners stay until that stop has
+  // ended, so a repeat while it runs finds one and does nothing more, rather than meeting the
+  // signal's default action half-way through the stop. A signal this run was started with
+  // ignored, as `nohup` ignores SIGHUP, gets no listener (`ignoredAtStart`): one would end the run
+  // on the signal it was started to outlive, since taking it off brings back the default action.
+  const stopSignals = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+  let stopping: Promise<void> | undefined;
+  const stopOnce = (harness: E2eHarness) => {
+    stopping ??= harness.stop();
+    return stopping;
+  };
+  let signalled = false;
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (signalled) return;
+    signalled = true;
     interrupted.abort();
     void starting
       .then(
-        (started) => started.stop(),
+        (harness) => stopOnce(harness),
         () => undefined
       )
-      .then(() => process.exit(130));
+      .then(() => process.exit(128 + constants.signals[signal]));
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  for (const signal of stopSignals) {
+    if (!ignoredAtStart(signal)) process.on(signal, onSignal);
+  }
   let started: E2eHarness | undefined;
   try {
     started = await starting;
@@ -137,9 +158,8 @@ export async function withHarness<T>(body: (harness: Harness) => Promise<T>): Pr
     }
     throw error;
   } finally {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
-    await started?.stop();
+    if (started !== undefined) await stopOnce(started);
+    for (const signal of stopSignals) process.off(signal, onSignal);
   }
 }
 

@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  `legion start`, `legion controller start` and `legion probe-boot` stop the work they run in
+  process groups of their own, and `probe-boot` deletes its probe Sandbox, on a SIGHUP (a closing
+  terminal) or a SIGQUIT, as they do on a SIGINT or a SIGTERM, and end with 128 plus the signal.
+  Before, either signal killed the command where it stood and left that work running.
+  `legion controller start` sends a SIGINT, a SIGHUP, a SIGQUIT or a SIGTERM sent to its own pid on
+  to its Oh My Pi, kills an Oh My Pi still running 5 s later, and then ends with 128 plus the signal.
+  Before, it waited for Oh My Pi for as long as the session lasted, and Oh My Pi was never told.
+  `legion gh` sends a SIGINT and a SIGQUIT sent to its own pid on to the real gh, as it sends a
+  SIGTERM or a SIGHUP; before, a SIGINT to its pid left it waiting for gh's own end. `legion gh`
+  and `legion leak-check` stop the work they run before gh on a SIGQUIT and end with 131, as the git
+  credential helper's fork read does. While they run, a SIGQUIT no longer prints a goroutine dump
+  from any of these commands but the git credential helper outside its fork read.
+time: 2026-11-20T06:34:07Z
+custom:
+    Issue: pr4588

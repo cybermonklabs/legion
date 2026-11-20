@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -272,21 +273,155 @@ func TestGcloudLoginListAtItsDeadlineKillsGcloudsChild(t *testing.T) {
 	child.requireGone(t)
 }
 
+// gcloudSignalAt is the variable that names where TestGcloudSignInSignalHelper sends itself its
+// interrupt (gcloudRaise); unset, the test that runs the helper sends it.
+const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
+
+// gcloudRaise is a place in runRecorded where TestGcloudSignInSignalHelper sends itself SIGINT,
+// once the stub gcloud's child runs, or, before the start, at once.
+type gcloudRaise string
+
+const (
+	// raiseBeforeStart is the gcloudStarting step: runningGcloud is held by the start, and gcloud
+	// is not yet started, so there is no child to wait for and the helper sends the signal at once.
+	// A watch armed before the start holds it, and its kill (killRunningGcloud) waits on
+	// runningGcloud, so the start goes on: at the gcloudStarted step that follows, the helper waits
+	// for the stub's child to run, so that the kill after the record finds it running, and writes
+	// "started" to the file "started" beside its pid file. A watch armed only once gcloud runs, at
+	// any statement after the fork, is not armed at gcloudStarting: the signal's default action
+	// ends agent-secrets there, before gcloud starts, and "started" is never written. Such a watch
+	// leaves a window from the fork to its arming in which a signal leaves gcloud's group running,
+	// which no row signalling after the fork can hold.
+	raiseBeforeStart gcloudRaise = "before start"
+	// raiseAtStart is the gcloudStarted step: gcloud has started and its pid is not yet recorded.
+	// The helper first reads whether runningGcloud is free there, which a signal's kill
+	// (killRunningGcloud) would then take at once and find no gcloud in, and writes "held" or
+	// "free" to the file "start-lock" beside its pid file. The step returns once the signal is
+	// sent, so the start goes on.
+	raiseAtStart gcloudRaise = "start"
+	// raiseAtRelease is the first gcloudReleased step after gcloudStarted: the start has given
+	// runningGcloud up, and runRecorded has done nothing since. The helper writes whether gcloud's
+	// pid is recorded there, "recorded" or "unrecorded", to the file "release-record" beside its pid
+	// file, sends the signal, and holds runRecorded at that step for good. So a lock given up before
+	// the pid is recorded, to be taken again to record it, is not taken again before the signal's
+	// kill (killRunningGcloud), which takes the free lock and finds no gcloud to kill.
+	raiseAtRelease gcloudRaise = "release"
+	// raiseAtLastKill is the kill of what is left of gcloud's group once gcloud has been waited for
+	// (killGroupLeft): the first signal sent to a group (signalGroup), which is never sent, so only
+	// the end the interrupt makes can kill the group.
+	raiseAtLastKill gcloudRaise = "last kill"
+)
+
+// gcloudSignalLast is the variable that gives TestGcloudSignInSignalHelper's stub gcloud its last
+// line (gcloudStubIn): "wait" where it is unset, or "exit 0".
+const gcloudSignalLast = "AGENT_SECRETS_GCLOUD_SIGNAL_LAST"
+
 // TestGcloudSignInSignalHelper is the process TestGcloudSignInEndedByASignalKillsGcloudsChild
 // signals: `secret list` against a fake broker serving the GCP store, with no other source of a
 // Google credential, so its sign-in runs `gcloud auth list` through the stub gcloud of
-// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, which never
-// answers. The deadline on each store call stays 60s, so the signal comes while the call runs. It
-// prints RETURNED <exit code> should the form return.
+// gcloudStubIn, written beside the pid file AGENT_SECRETS_GCLOUD_SIGNAL_HELPER names, ending with
+// the line gcloudSignalLast gives. The deadline on each store call stays 60s, so the signal comes
+// while the call runs. Where gcloudSignalAt names a place (gcloudRaise), the helper sends itself
+// SIGINT there, once the stub's child runs, or at once at the place before the start, having
+// written the place's name to the file "raised" beside its pid file. It prints RETURNED <exit
+// code> should the form return.
 func TestGcloudSignInSignalHelper(t *testing.T) {
 	pidFile := os.Getenv("AGENT_SECRETS_GCLOUD_SIGNAL_HELPER")
 	if pidFile == "" {
 		t.Skip("subprocess helper")
 	}
+	child := gcloudChild{pidFile: pidFile}
+	childRuns := func() {
+		if !testwait.Holds(30*time.Second, testwait.Poll, func() bool {
+			pid := child.pid()
+			running, err := child.runs(pid)
+			return pid != 0 && err == nil && running
+		}) {
+			fmt.Println("RAISE: the stub gcloud's child was never seen running")
+		}
+	}
+	send := func(at gcloudRaise) {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "raised"), []byte(at), 0o600); err != nil {
+			fmt.Println("RAISE", err)
+		}
+		if err := syscall.Kill(os.Getpid(), syscall.SIGINT); err != nil {
+			fmt.Println("RAISE", err)
+		}
+	}
+	raise := func(at gcloudRaise) {
+		childRuns()
+		send(at)
+	}
+	switch at := gcloudRaise(os.Getenv(gcloudSignalAt)); at {
+	case raiseBeforeStart:
+		var raised atomic.Bool
+		atGcloudStep = func(step gcloudStep) {
+			switch {
+			case step == gcloudStarting && raised.CompareAndSwap(false, true):
+				send(at)
+			case step == gcloudStarted:
+				childRuns()
+				if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "started"), []byte("started"), 0o600); err != nil {
+					fmt.Println("RAISE", err)
+				}
+			}
+		}
+	case raiseAtStart:
+		atGcloudStep = func(step gcloudStep) {
+			if step != gcloudStarted {
+				return
+			}
+			lock := "held"
+			if runningGcloud.TryLock() {
+				runningGcloud.Unlock()
+				lock = "free"
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "start-lock"), []byte(lock), 0o600); err != nil {
+				fmt.Println("RAISE", err)
+			}
+			raise(at)
+		}
+	case raiseAtRelease:
+		started := false
+		atGcloudStep = func(step gcloudStep) {
+			switch {
+			case step == gcloudStarted:
+				started = true
+			case step == gcloudReleased && started:
+				runningGcloud.Mutex.Lock()
+				record := "unrecorded"
+				if len(runningGcloud.pids) > 0 {
+					record = "recorded"
+				}
+				runningGcloud.Mutex.Unlock()
+				if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "release-record"), []byte(record), 0o600); err != nil {
+					fmt.Println("RAISE", err)
+				}
+				raise(at)
+				select {}
+			}
+		}
+	case raiseAtLastKill:
+		// The kill that is held is the first of the call; the end the interrupt makes sends its
+		// own (killRunningGcloud), from the watch's goroutine, through the second.
+		send := signalGroup
+		var held atomic.Bool
+		signalGroup = func(pgid int, sig syscall.Signal) error {
+			if !held.CompareAndSwap(false, true) {
+				return send(pgid, sig)
+			}
+			raise(at)
+			select {}
+		}
+	}
+	last := os.Getenv(gcloudSignalLast)
+	if last == "" {
+		last = "wait"
+	}
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useNoADC(t)
-	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), "wait")
+	gcloud, _ := gcloudStubIn(t, filepath.Dir(pidFile), last)
 	t.Setenv("PATH", filepath.Dir(gcloud.path)+":/usr/bin:/bin")
 	t.Setenv("CLOUDSDK_CORE_ACCOUNT", "")
 	startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
@@ -297,61 +432,126 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // TestGcloudSignInEndedByASignalKillsGcloudsChild: a sign-in whose gcloud never answers, ended by
 // an interrupt sent to agent-secrets alone (gcloud, in a group of its own, gets no signal sent to
 // agent-secrets' group, a terminal's Ctrl-C included), ends as the interrupt ends it - by SIGINT,
-// a shell's status 130 - and the child that held gcloud's output is gone with it.
+// a shell's status 130 - and the child that held gcloud's output is gone with it. That holds
+// wherever the interrupt comes in runRecorded: while the call waits on gcloud; the moment before
+// gcloud starts, with runningGcloud held by the start (raiseBeforeStart); the moment gcloud has
+// started, while the start still holds runningGcloud and before gcloud's pid is recorded
+// (raiseAtStart); the moment the start gives runningGcloud up (raiseAtRelease); and once a gcloud
+// that exited leaving its child has been waited for, at the kill of what is left of its group,
+// before that kill is sent (raiseAtLastKill).
+//
+// The last four rows have the helper send itself the interrupt at that place, rather than this
+// test from outside, so it comes there and at no other moment: a watch not yet armed at that step,
+// or stopped before that kill, meets it unarmed, the interrupt's default action ends agent-secrets
+// with gcloud's group running, and the row fails every time. At the start the row also requires
+// what that signal's kill finds there (killRunningGcloud): runningGcloud still held by the start,
+// so the kill waits for gcloud's pid to be recorded and then kills its group. A lock taken only
+// once the start has returned would be free there, and the kill would find no gcloud recorded.
+// At the release the row requires gcloud's pid recorded there, and the helper holds runRecorded at
+// that step, so the signal's kill takes the free lock with nothing more done: a lock given up
+// before the record, to be taken again for it, leaves the kill no gcloud to find. Without that
+// hold a row would see such a retake only by chance: the goroutine that gives a sync.Mutex up
+// almost always takes it again before one parked on it runs. Before the start the row requires
+// that gcloud was started all the same: the watch, armed before the fork, held the interrupt, so
+// the start went on and the kill then found gcloud recorded. A watch armed at any statement after
+// the fork meets that interrupt unarmed, and agent-secrets ends there, before gcloud starts; no
+// row that signals after the fork can see such a watch, since it is armed by then.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
-	dir := t.TempDir()
-	child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
-	t.Cleanup(func() { child.cleanUp(t) })
-	helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
-	helper.Env = append(os.Environ(), "AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile)
-	var out bytes.Buffer
-	helper.Stdout, helper.Stderr = &out, &out
-	if err := helper.Start(); err != nil {
-		t.Fatal(err)
+	for _, row := range []struct {
+		name, last string
+		at         gcloudRaise
+	}{
+		{name: "while the call waits on gcloud", last: "wait"},
+		{name: "the moment before gcloud starts", last: "wait", at: raiseBeforeStart},
+		{name: "the moment gcloud starts", last: "wait", at: raiseAtStart},
+		{name: "the moment the start gives runningGcloud up", last: "wait", at: raiseAtRelease},
+		{name: "at the last kill of a gcloud that left its child", last: "exit 0", at: raiseAtLastKill},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			dir := t.TempDir()
+			child := gcloudChild{pidFile: filepath.Join(dir, "child.pid")}
+			t.Cleanup(func() { child.cleanUp(t) })
+			helper := exec.Command(os.Args[0], "-test.run=^TestGcloudSignInSignalHelper$", "-test.count=1")
+			helper.Env = append(os.Environ(),
+				"AGENT_SECRETS_GCLOUD_SIGNAL_HELPER="+child.pidFile,
+				gcloudSignalLast+"="+row.last,
+				gcloudSignalAt+"="+string(row.at))
+			var out bytes.Buffer
+			helper.Stdout, helper.Stderr = &out, &out
+			if err := helper.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := make(chan struct{})
+			go func() {
+				_ = helper.Wait()
+				close(waited)
+			}()
+			ended := func(within time.Duration) bool {
+				select {
+				case <-waited:
+					return true
+				case <-time.After(within):
+					return false
+				}
+			}
+			t.Cleanup(func() {
+				_ = helper.Process.Kill()
+				ended(10 * time.Second)
+			})
+			// The helper that sends itself the interrupt first waits for the stub's child, up to
+			// 30s; the bound on the end after it is the 10s this test gives an interrupt it sends.
+			bound := 40 * time.Second
+			if row.at == "" {
+				bound = 10 * time.Second
+				seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+					pid := child.pid()
+					if pid == 0 {
+						return false
+					}
+					running, err := child.runs(pid)
+					return err == nil && running
+				})
+				if !seen {
+					_ = helper.Process.Kill()
+					ended(10 * time.Second)
+					t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", out.String())
+				}
+				if err := helper.Process.Signal(syscall.SIGINT); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !ended(bound) {
+				_ = helper.Process.Kill()
+				ended(10 * time.Second)
+				t.Fatalf("agent-secrets was still running %s after its interrupt was due; it said %q", bound, out.String())
+			}
+			if row.at != "" {
+				if raised, err := os.ReadFile(filepath.Join(dir, "raised")); err != nil || gcloudRaise(raised) != row.at {
+					t.Fatalf("the helper did not send its interrupt at %q (%q, %v); it said %q", row.at, raised, err, out.String())
+				}
+			}
+			if row.at == raiseBeforeStart {
+				if started, err := os.ReadFile(filepath.Join(dir, "started")); err != nil || string(started) != "started" {
+					t.Fatalf("agent-secrets ended at an interrupt sent the moment before gcloud's start without starting gcloud (%q, %v): no watch held that interrupt, and a watch armed only once gcloud runs leaves a window from gcloud's start to its arming in which a signal leaves gcloud's group running: %q", started, err, out.String())
+				}
+			}
+			if row.at == raiseAtStart {
+				if lock, err := os.ReadFile(filepath.Join(dir, "start-lock")); err != nil || string(lock) != "held" {
+					t.Fatalf("runningGcloud was %q the moment gcloud had started (%v); want it held by the start, so a signal then waits for gcloud's pid to be recorded rather than finding no gcloud to kill: %q", lock, err, out.String())
+				}
+			}
+			if row.at == raiseAtRelease {
+				if record, err := os.ReadFile(filepath.Join(dir, "release-record")); err != nil || string(record) != "recorded" {
+					t.Errorf("gcloud's pid was %q the moment the start gave runningGcloud up (%v); want it recorded before the lock is first given up, so a signal then finds gcloud to kill: %q", record, err, out.String())
+				}
+			}
+			status := helper.ProcessState.Sys().(syscall.WaitStatus)
+			if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
+				t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
+			}
+			child.requireGone(t)
+		})
 	}
-	waited := make(chan struct{})
-	go func() {
-		_ = helper.Wait()
-		close(waited)
-	}()
-	ended := func(within time.Duration) bool {
-		select {
-		case <-waited:
-			return true
-		case <-time.After(within):
-			return false
-		}
-	}
-	t.Cleanup(func() {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-	})
-	seen := testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		pid := child.pid()
-		if pid == 0 {
-			return false
-		}
-		running, err := child.runs(pid)
-		return err == nil && running
-	})
-	if !seen {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("the stub gcloud's child was never seen running; the helper said %q", out.String())
-	}
-	if err := helper.Process.Signal(syscall.SIGINT); err != nil {
-		t.Fatal(err)
-	}
-	if !ended(10 * time.Second) {
-		_ = helper.Process.Kill()
-		ended(10 * time.Second)
-		t.Fatalf("agent-secrets was still running 10s after its interrupt; it said %q", out.String())
-	}
-	status := helper.ProcessState.Sys().(syscall.WaitStatus)
-	if !(status.Signaled() && status.Signal() == syscall.SIGINT) && status.ExitStatus() != 130 {
-		t.Fatalf("agent-secrets ended %v, saying %q; want it ended by its interrupt (SIGINT, a shell's 130)", helper.ProcessState, out.String())
-	}
-	child.requireGone(t)
 }
 
 // TestGcloudThatExitsLeavingAChildTakesTheChildWithIt: a gcloud that exits by itself and leaves

@@ -40,6 +40,13 @@ Each bullet says what the helper does not do, so a site that must keep its own b
   The package documentation is the whole list and the rule each check holds.
   It does not check what a command does with its arguments, its other exit codes or the shape of its tree, which each conversion's own tests hold, and it builds no binary: the caller hands it one.
 
+- A test that holds a command's work running with a stand-in process, and then reads whether a signal stopped it, takes `packages/envoy/heldprocess`, one body for both modules, as `clitest` is.
+  `Script` is the end of the stand-in's shell script: it records its pid by a rename and becomes `sleep <seconds>` under it, which neither reads its input nor ends when that input closes.
+  `Recorded` and `Running` read that pid back and tell it from a pid the kernel has given out again by its command line in `/proc`, and `KillOnCleanup` kills a stand-in the test leaves running.
+  `CommandLine` is the same read of `/proc/<pid>/cmdline` for a stand-in of another shape, and `Ignores` reads whether a process still ignores a signal it was started ignoring, from the `SigIgn` mask of `/proc/<pid>/status`.
+  Each test gives its stand-in a sleep of its own.
+  A Bun test takes the same reads from `@legion/test-fixtures/held-process`: `sleepRuns`, `ignoresSignal`, and `until`, the wait for a state another process reaches.
+
 
 ## Bun tests
 

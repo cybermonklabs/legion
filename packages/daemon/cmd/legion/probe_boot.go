@@ -31,7 +31,7 @@ func newProbeBootCommand(stdout, stderr io.Writer) *cobra.Command {
 		Args:  configOnly,
 	}
 	configPath := cmd.Flags().String("config", defaultConfigPath, "path to legion.yaml")
-	cmd.RunE = runs(func(ctx context.Context, _ []string) int { return runProbeBoot(ctx, *configPath, stdout, stderr) })
+	stoppingOnHangupOrQuit(cmd, func(ctx context.Context, _ []string) int { return runProbeBoot(ctx, *configPath, stdout, stderr) })
 	return cmd
 }
 

@@ -136,7 +136,7 @@ It carries:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write;
   `<the write>: GitHub answers 404 for <repo>, …`, a wrong name or a credential that cannot see it;
   or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
-  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM or SIGHUP reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
+  `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for either of the other two — the shared check's own statuses — and 128 plus the signal when a SIGINT, SIGTERM, SIGHUP or SIGQUIT reaches it before it reports the guard's answer, whatever that answer was, and git stops the push on any of them but the first.
   `scripts/e2e/leak-guard-image-job.sh` drives all of this on a published digest, as one Job of this section's own shape ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role));
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
@@ -7541,7 +7541,7 @@ a refusal is boot's own, on stderr, and exits 1.
   A booting daemon names its probe Sandbox for the project and the image;
   probe-boot names its own for its run as well (`legion-probe-<project>-<digest>-<run>`).
   So it may run while that project's daemon boots, or beside another probe-boot, and none takes another's Sandbox for a leftover.
-  It deletes its Sandbox when it ends, a SIGTERM or SIGINT included; after a SIGKILL, or one cut off mid-create, the Sandbox ends at its `shutdownTime`.
+  It deletes its Sandbox when it ends, a SIGTERM, SIGINT, SIGHUP (its terminal closing) or SIGQUIT included; after a SIGKILL, or one cut off mid-create, the Sandbox ends at its `shutdownTime`.
 
 - **Capacity.**
   It waits on room in the Legion pool without limit, as the daemon's probe does (a waiting attempt counts against no retry), so the caller bounds it:

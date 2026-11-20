@@ -196,6 +196,38 @@ func runs(do action) func(*cobra.Command, []string) error {
 	}
 }
 
+// stopsOnHangupOrQuit is the annotation stoppingOnHangupOrQuit marks its command with, so a test
+// can name every command that runs under that watch.
+const stopsOnHangupOrQuit = "legion/stops-on-hangup-or-quit"
+
+// stoppingOnHangupOrQuit makes cmd's RunE do, run under a context that a SIGHUP or a SIGQUIT
+// cancels as well as main's SIGINT and SIGTERM do (hangupOrQuitCancels). It is for a command an
+// operator runs from a terminal whose work, under that context, outlives a kill of the command
+// alone: processes in groups of their own (procgroup.Configure), such as `legion start`'s boot
+// gate and `legion controller start`'s probe, or `legion probe-boot`'s probe Sandbox, which it
+// deletes when its context ends. A closing terminal's SIGHUP and its quit key's
+// SIGQUIT reach only the terminal's foreground group, which that work is not in, so without the
+// watch either signal killed the command where it stood and left the work running. The watch is
+// armed before do starts anything and stopped only once do has returned, so no such signal meets
+// its default action while the work runs; the cancel stops the work as a SIGTERM's does, and a
+// command a SIGHUP or a SIGQUIT cancelled ends with 128+<signal>, the status a shell reads a death
+// by it as, whatever do answered.
+func stoppingOnHangupOrQuit(cmd *cobra.Command, do action) {
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[stopsOnHangupOrQuit] = "true"
+	cmd.RunE = runs(func(ctx context.Context, args []string) int {
+		watched, stop := hangupOrQuitCancels(ctx)
+		code := do(watched, args)
+		stop()
+		if sig, ok := hangupOrQuit(context.Cause(watched)); ok {
+			return 128 + int(sig)
+		}
+		return code
+	})
+}
+
 // group is cmd as a command that holds children: a word naming none of them is a usage error with
 // cobra's suggestions (wordFirst), and the group with no word prints its usage on stderr and
 // exits 2. cobra would answer both with the group's help and exit 0, and its suggestions read

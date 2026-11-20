@@ -17,6 +17,10 @@
       "types": "./src/fixture-secret.ts",
       "bun": "./src/fixture-secret.ts"
     },
+    "./held-process": {
+      "types": "./src/held-process.ts",
+      "bun": "./src/held-process.ts"
+    },
     "./host-tools": {
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"

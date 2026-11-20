@@ -93,10 +93,11 @@ type ghHelpEntry struct {
 var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": true, "NO_COLOR": true, "TERM": true, "COLORTERM": true}
 
 // newGhHelpKeep is the keep of the gh at the path gh for a call run under env, whose reads of gh
-// run under ctx: runGh's signal context (beforeGh), so a SIGINT, SIGTERM or SIGHUP stops a read in
-// progress and its process group (readGhHelp). A read a signal or its bound stopped is an error,
-// even where gh printed part of its help or exited 0 on the stop (exec answers a command whose
-// Cancel ran with the context's error), so it is never kept, and no later call is answered with it.
+// run under ctx: runGh's signal context (beforeGh), so a SIGINT, SIGTERM, SIGHUP or SIGQUIT stops
+// a read in progress and its process group (readGhHelp). A read a signal or its bound stopped is
+// an error, even where gh printed part of its help or exited 0 on the stop (exec answers a command
+// whose Cancel ran with the context's error), so it is never kept, and no later call is answered
+// with it.
 //
 // The gh binary is the file gh's links end at, and only a file named gh is taken for one. A
 // compiled multiplexer, such as mise's shim, is a link to the multiplexer itself, which picks the

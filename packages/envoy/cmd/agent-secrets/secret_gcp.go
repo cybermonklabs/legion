@@ -425,11 +425,22 @@ func runGcloud(ctx context.Context, gcloud gcloudCommand, args ...string) ([]byt
 	return stdout.Bytes(), nil
 }
 
-// runningGcloud holds the pid of each gcloud runRecorded has started and not yet waited for.
-var runningGcloud = struct {
+// gcloudRecord holds the pid of each gcloud runRecorded has started and not yet waited for, under
+// its lock. Each time its lock is given up, it reaches the gcloudReleased step (Unlock).
+type gcloudRecord struct {
 	sync.Mutex
 	pids map[int]bool
-}{pids: map[int]bool{}}
+}
+
+// Unlock gives the record's lock up, then reaches the gcloudReleased step, so a test can act at
+// each place runRecorded gives the lock up, wherever that is.
+func (r *gcloudRecord) Unlock() {
+	r.Mutex.Unlock()
+	reachedGcloudStep(gcloudReleased)
+}
+
+// runningGcloud is the record of the gcloud runRecorded runs.
+var runningGcloud = gcloudRecord{pids: map[int]bool{}}
 
 // formWatchesSignals counts the form watches of createSignals running now (watchCreateSignals),
 // each of which ends the form by a signal through exitBySignal itself.
@@ -437,28 +448,76 @@ var formWatchesSignals atomic.Int32
 
 // runRecorded runs cmd as cmd.Run does, its pid recorded in runningGcloud from its start until it
 // has been waited for, so that an end by a signal (exitBySignal) kills it with its group. Where no
-// form watches createSignals, it watches them itself for as long as cmd runs
-// (watchSignalsWhileGcloudRuns). Once cmd has been waited for, on every outcome, it kills what is
-// left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a child holding
-// its output, which gcloudWaitDelay stops the wait for and does not kill. The group is gcloud's
-// own, so nothing else is in it, and while a process is left in it its id names no other group.
+// form watches createSignals, it watches them itself (watchSignalsWhileGcloudRuns), from before
+// cmd starts until what is left of cmd's group has been killed: gcloud, in a group of its own,
+// gets no signal sent to this command's group, so a signal that came between gcloud's start and
+// a watch armed after it, or between a watch's stop and that last kill, would end this command
+// by the signal's default action and leave gcloud's group running. A signal that comes while cmd
+// starts waits for the start (killRunningGcloud takes runningGcloud, which the start holds), so
+// the gcloud it started is recorded, and killed. Once cmd has been waited for, on every outcome,
+// it kills what is left of cmd's group (killGroupLeft): a gcloud that exits by itself can leave a
+// child holding its output, which gcloudWaitDelay stops the wait for and does not kill. The group
+// is gcloud's own, so nothing else is in it, and while a process is left in it its id names no
+// other group.
+//
+// TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary: the moment
+// before gcloud starts, with runningGcloud held (startGcloud), which only a watch armed before the
+// start holds, so a watch armed anywhere after the fork fails it; the moment gcloud has started;
+// the moment the start gives runningGcloud up; and at that last kill.
 func runRecorded(cmd *exec.Cmd) error {
+	stop := watchSignalsWhileGcloudRuns()
+	defer stop()
 	runningGcloud.Lock()
-	if err := cmd.Start(); err != nil {
+	if err := startGcloud(cmd); err != nil {
 		runningGcloud.Unlock()
 		return err
 	}
 	pid := cmd.Process.Pid
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
-	stop := watchSignalsWhileGcloudRuns()
 	err := cmd.Wait()
-	stop()
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
 	runningGcloud.Unlock()
 	return err
+}
+
+// startGcloud reaches the gcloudStarting step, starts cmd, and reaches the gcloudStarted step the
+// moment the start has returned, so the two steps come just before and just after the fork,
+// wherever runRecorded takes runningGcloud and arms its watch around the call.
+func startGcloud(cmd *exec.Cmd) error {
+	reachedGcloudStep(gcloudStarting)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	reachedGcloudStep(gcloudStarted)
+	return nil
+}
+
+// gcloudStep names a step of runRecorded at which a test can act (atGcloudStep).
+type gcloudStep string
+
+// gcloudStarting: runningGcloud is held, and gcloud is not yet started (startGcloud).
+const gcloudStarting gcloudStep = "starting"
+
+// gcloudStarted: gcloud runs, and its pid is not yet recorded (startGcloud).
+const gcloudStarted gcloudStep = "started"
+
+// gcloudReleased: runningGcloud's lock has just been given up, and the goroutine that gave it up
+// has done nothing since (gcloudRecord.Unlock).
+const gcloudReleased gcloudStep = "released"
+
+// atGcloudStep, where a test sets it, runs at each step runRecorded reaches (gcloudStep), so the
+// test can see what a signal at exactly that step would find, and send one there
+// (TestGcloudSignInEndedByASignalKillsGcloudsChild). It is nil outside such a test.
+var atGcloudStep func(gcloudStep)
+
+// reachedGcloudStep runs atGcloudStep for step, where a test has set it.
+func reachedGcloudStep(step gcloudStep) {
+	if atGcloudStep != nil {
+		atGcloudStep(step)
+	}
 }
 
 // killRunningGcloud kills each gcloud runRecorded is running, with its group (killGcloudGroup),

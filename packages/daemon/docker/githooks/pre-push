@@ -8,5 +8,5 @@
 # (packages/daemon/internal/leakguard) over them: this holds no rule and no logic of its own. The
 # command's statuses are the shared public leak check's — 0 clean, 3 refused, 2 the check could
 # not be made to run or GitHub answers 404 for the destination — and 128 plus the signal for a
-# SIGINT, SIGTERM or SIGHUP that stopped it, and git stops the push on any of them but the first.
+# SIGINT, SIGTERM, SIGHUP or SIGQUIT that stopped it; git stops the push on all but the first.
 exec '/opt/legion/bin/legion' leak-check pre-push "$@"

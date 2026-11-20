@@ -1,6 +1,7 @@
 package mcpbridge
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -106,5 +107,22 @@ func TestManagedServer_StopSetsStateDead(t *testing.T) {
 
 	if s.State() != StateDead {
 		t.Fatalf("expected dead state after stop, got %d", s.State())
+	}
+}
+
+// TestManagedServer_AStartAfterAStopRunsNoProcess: a Stop that comes before Start leaves Start
+// nothing to start. The bridge registers a server before it starts it (Bridge.startServer), so a
+// bridge's stop that comes between the two stops a server that has no process yet, and Start must
+// then answer errStopped and run none. Without that refusal Start would run the server after the
+// stop: its handshake's failure would kill it again, but only in a process that is still there to
+// run that failure, and envoy-mcp returns as soon as its stop of the bridge does.
+func TestManagedServer_AStartAfterAStopRunsNoProcess(t *testing.T) {
+	s := NewManagedServer(ServerConfig{Name: "stopped", Command: []string{"sleep", "275"}}, nil)
+	s.Stop()
+	if err := s.Start(); !errors.Is(err, errStopped) {
+		t.Errorf("Start after Stop = %v; want errStopped", err)
+	}
+	if s.cmd != nil {
+		t.Errorf("Start after Stop ran the server's command (pid %d); want no process", s.cmd.Process.Pid)
 	}
 }

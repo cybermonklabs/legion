@@ -2757,7 +2757,8 @@ GATES = [
         (".github/changelog-packages", f"{at('test', FOLD_CHECK_STEP)}: the step reads it as the package list"),
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
-    ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11; "
+    ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:17-22, envoy-bridge.ts:11, "
+                         "app-logins.ts:50 (../../../packages/envoy-client/src/signal-ignores); "
                          "scripts/dispatch/ask-census.ts:10-18 (tsc -p scripts/dispatch); scripts/priorities-seed.ts:30-39 "
                          "and priorities-seed.test.ts:2")
       + setup_go("test", f"{DAEMON}/go.mod")
@@ -2808,7 +2809,8 @@ GATES = [
         # broker-client with them: every generator entry resolves to src/dispatch-command.ts,
         # whose program holds no broker-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
         # the shared envoy_client_dep read would declare a read this job does not make.
-        (ENVOY_CLIENT_SRC, "docs/site/generators/dispatch-tools.ts:8-12 imports ../../../packages/envoy-client/src/dispatch-command.ts"),
+        (ENVOY_CLIENT_SRC, "docs/site/generators/dispatch-tools.ts:8-12 imports ../../../packages/envoy-client/src/dispatch-command.ts, "
+                           "and docs/site/media/harness.ts:25 imports ../../../packages/envoy-client/src/signal-ignores.ts"),
         ("skills/**", "docs/site/generators/legion-skills.ts:15-19 reads skills/*/SKILL.md"),
         ("deploy/kubernetes/**", "docs/site/generators/legion-config.ts's exampleFiles lists every tracked deploy/kubernetes *.example/*.yml/*.yaml and its renderExamples reads each whole"),
         ("scripts/third-party-notices.ts", "docs/site/astro.config.mjs:10-15; packages/dispatch/web/vite.config.ts:6-12"),
@@ -3005,9 +3007,10 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "
-                         "above import, and packages/dispatch/e2e/read-token-live.ts:37 imports "
-                         "@legion/envoy-client/broker-credential, so this job's program holds envoy-client's sources "
-                         "(check-ts-filters.sh measures it)")
+                         "above import, packages/dispatch/e2e/read-token-live.ts:37 imports "
+                         "@legion/envoy-client/broker-credential, and e2e/local-instance.ts, harness-up.ts and "
+                         "harness-pool.ts import ../../envoy-client/src/signal-ignores, so this job's program holds "
+                         "envoy-client's sources (check-ts-filters.sh measures it)")
       + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`

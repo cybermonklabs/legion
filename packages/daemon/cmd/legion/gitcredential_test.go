@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/heldprocess"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -990,7 +991,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 		"sleep "+sleepSeconds+" </dev/null >/dev/null 2>&1 &\necho $! > "+shellWord(pidFile)+"\nexec sleep 290\n")
 	useForkRead(t, github.program, 2*time.Second)
 	forkReadPane(t, root, acme)
-	killRecordedHelper(t, pidFile, sleepSeconds)
+	heldprocess.KillOnCleanup(t, pidFile, sleepSeconds)
 	start := time.Now()
 	code, stdout, stderr := runGitCredentialHere(t, forkRequest("outside-author/sample-project"), "get")
 	if took := time.Since(start); took > 5*time.Second {
@@ -1005,7 +1006,7 @@ func TestGitCredentialStopsAForkReadThatNeverAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the fake GitHub recorded the sleep's PID %q: %v", data, err)
 	}
-	for deadline := time.Now().Add(3 * time.Second); helperRunning(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(3 * time.Second); heldprocess.Running(pid, sleepSeconds); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the fake GitHub's sleep, PID %d, still runs 3 s after the helper answered; want the read's end to stop curl's whole process group", pid)
 		}

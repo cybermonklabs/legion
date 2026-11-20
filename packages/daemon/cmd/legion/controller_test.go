@@ -356,7 +356,10 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
 	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
 	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
-	// the test asked for.
+	// the test asked for. Under LEGION_TEST_HOLD it instead writes its pid to `held` and waits until
+	// the file that variable names exists, ignoring each signal LEGION_TEST_HOLD_IGNORES names and,
+	// on each other one of SIGHUP, SIGINT, SIGQUIT and SIGTERM, writing its name to `held-caught`
+	// and exiting with 128+<signal>, as Oh My Pi ends on it.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -380,7 +383,13 @@ fi
 [ -f "$GH_CONFIG_DIR/hosts.yml" ] && cp "$GH_CONFIG_DIR/hosts.yml" %[1]s/hosts-at-start
 %[3]s
 if [ -n "$LEGION_TEST_HOLD" ]; then
-  : >%[1]s/held
+  for sig in HUP:129 INT:130 QUIT:131 TERM:143; do
+    case " $LEGION_TEST_HOLD_IGNORES " in
+    *" ${sig%%:*} "*) trap '' "${sig%%:*}" ;;
+    *) trap "echo ${sig%%:*} >%[1]s/held-caught; exit ${sig#*:}" "${sig%%:*}" ;;
+    esac
+  done
+  echo $$ >%[1]s/held.new && mv %[1]s/held.new %[1]s/held
   i=0
   while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
   [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt
@@ -523,8 +532,15 @@ func (c *operatorMachine) write(name, contents string, mode os.FileMode) {
 // stream, whatever happened.
 func (c *operatorMachine) run(extra ...string) (int, string, string) {
 	c.t.Helper()
+	return c.runUnder(context.Background(), extra...)
+}
+
+// runUnder is run under ctx, the context main would give the command (mainContext) where a test
+// signals the command's pid.
+func (c *operatorMachine) runUnder(ctx context.Context, extra ...string) (int, string, string) {
+	c.t.Helper()
 	var out, errb bytes.Buffer
-	code := run(context.Background(), append([]string{"legion", "controller", "start", "--config", c.config}, extra...), &out, &errb)
+	code := run(ctx, append([]string{"legion", "controller", "start", "--config", c.config}, extra...), &out, &errb)
 	for name, stream := range map[string]string{"stdout": out.String(), "stderr": errb.String()} {
 		if strings.Contains(stream, controllerOperatorToken) {
 			c.t.Fatalf("legion controller start printed the operator token on %s: %q", name, stream)

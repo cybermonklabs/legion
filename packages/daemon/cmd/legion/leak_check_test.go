@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/heldprocess"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
@@ -245,10 +246,11 @@ func TestLeakCheckPrePushUnderTheRealGhsVariableReadsTheVisibility(t *testing.T)
 // group with git, and the guard runs the shared check in a process group of its own, which none
 // of the terminal's signals reach; `legion leak-check text` runs its check the same way. A SIGINT
 // to the command's group cancels its context (main's signal.NotifyContext), and a SIGHUP, a pane
-// that closes during the push, is caught while the command runs (hangupCancels) and cancels it the
-// same way; either stops the check's group, and the command ends with 128+<signal>, which refuses
-// the write, and prints nothing (leakCheckReport). The command is started here as the leader of a
-// group of its own, and the stand-in check holds the write (signalWhileHeld).
+// that closes during the push, or a SIGQUIT, a terminal's quit key, is caught while the command
+// runs (hangupOrQuitCancels) and cancels it the same way; either stops the check's group, and the
+// command ends with 128+<signal>, which refuses the write, and prints nothing (leakCheckReport).
+// The command is started here as the leader of a group of its own, and the stand-in check holds
+// the write (signalWhileHeld).
 //
 // Before, a SIGHUP killed the command where it stood and left the check running, reparented and
 // waited for by nobody, and a SIGINT stopped the check and was answered with the guard's setup
@@ -274,11 +276,11 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 	}{
 		{
 			name: "leak-check pre-push", stdin: line, args: []string{"leak-check", "pre-push", "origin", dir + ".git"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "293", syscall.SIGHUP: "294", syscall.SIGQUIT: "290"},
 		},
 		{
 			name: "leak-check text", stdin: "a title\na body of nothing in particular\n", args: []string{"leak-check", "text", "the pull request body"},
-			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292"},
+			seconds: map[syscall.Signal]string{syscall.SIGINT: "291", syscall.SIGHUP: "292", syscall.SIGQUIT: "288"},
 		},
 	} {
 		for _, tc := range []struct {
@@ -287,12 +289,13 @@ func TestASignalToLeakChecksGroupStopsTheSharedCheck(t *testing.T) {
 		}{
 			{"SIGINT", syscall.SIGINT},
 			{"SIGHUP", syscall.SIGHUP},
+			{"SIGQUIT", syscall.SIGQUIT},
 		} {
 			t.Run(shape.name+" "+tc.name, func(t *testing.T) {
 				seconds := shape.seconds[tc.signal]
 				pidFile := filepath.Join(t.TempDir(), "stand-in")
 				command := legionCommand(t, dir, map[string]string{
-					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), holdsStandIn(pidFile, seconds)),
+					"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, t.TempDir(), heldprocess.Script(pidFile, seconds)),
 				}, shape.args...)
 				command.Stdin = strings.NewReader(shape.stdin)
 				signalWhileHeld(t, command, "legion "+shape.name, pidFile, seconds, "the shared check", tc.signal)
