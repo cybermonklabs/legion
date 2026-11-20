@@ -347,6 +347,9 @@ func TestASecretWriteDoesNotWaitOnAMachineRegistrationInProgress(t *testing.T) {
 			!strings.Contains(got.stderr, "another command is registering this machine's session") {
 			t.Fatalf("create with the machine cache locked: exit %d, stdout %q, stderr %q; want 0, the reread sent unsigned, and the registration in progress", got.code, got.stdout, got.stderr)
 		}
+		if strings.Contains(got.stderr, dir) {
+			t.Fatalf("create with the machine cache locked printed the cache's path %s: %q; want it named in words", dir, got.stderr)
+		}
 	case <-time.After(bound):
 		t.Fatalf("create did not finish within %s while another command held the machine cache's lock; want it not to wait for that lock", bound)
 	}
@@ -363,13 +366,16 @@ func TestASecretWriteWithALapsedMachineCacheSessionNamesTheMachineCure(t *testin
 	broker := startSecretBroker(t, servedBy(local))
 	broker.lapseSignedRereads()
 	withNoBrokerIdentity(t)
-	seedMachineCache(t)
+	dir := seedMachineCache(t)
 	useAWS(t, local, testAccount, adaSignIn)
 	useStdin(t, "v1")
 	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 || !strings.Contains(stdout, "broker: rereading NEW_KEY from ") ||
 		!strings.Contains(stderr, "machine's session") || !strings.Contains(stderr, "agent-secrets self") {
 		t.Fatalf("create with a lapsed machine-cache session: exit %d, stdout %q, stderr %q; want 0 and the machine session's agent-secrets self cure", code, stdout, stderr)
+	}
+	if strings.Contains(stderr, dir) {
+		t.Fatalf("create with a lapsed machine-cache session printed the cache's path %s: %q; want it named in words", dir, stderr)
 	}
 	if unsigned := broker.rereadUnsigned(); !slices.Equal(unsigned, []string{"NEW_KEY"}) {
 		t.Fatalf("the rereads that went with no proof were %v; want NEW_KEY's after the lapsed machine session", unsigned)

@@ -117,12 +117,12 @@ func readMachineCacheHeld(dir string) (*fileSigner, error) {
 func readMachineCacheNow() (*fileSigner, error) {
 	dir := machineCacheDir()
 	if !machineCacheHolds(dir) {
-		return nil, absent("the machine cache holds no session (%s)", dir)
+		return nil, absent("%s holds no session", machineCacheWords)
 	}
 	unlock, err := lockMachineCache(dir, false, false)
 	switch {
 	case errors.Is(err, errLockWouldBlock):
-		return nil, absent("another command is registering this machine's session in %s", dir)
+		return nil, absent("another command is registering this machine's session in %s", machineCacheWords)
 	case err != nil:
 		return nil, err
 	}
@@ -132,13 +132,18 @@ func readMachineCacheNow() (*fileSigner, error) {
 	case err != nil:
 		return nil, err
 	case signer == nil:
-		return nil, absent("the machine cache holds no session (%s)", dir)
+		return nil, absent("%s holds no session", machineCacheWords)
 	}
 	signer.register = func(context.Context, string) (*ecdsa.PrivateKey, string, error) {
-		return nil, "", fmt.Errorf("this machine's session in %s is not live; this secret form does not trade a machine identity here: run agent-secrets self", dir)
+		return nil, "", fmt.Errorf("this machine's session in %s is not live; this secret form does not trade a machine identity here: run agent-secrets self", machineCacheWords)
 	}
 	return signer, nil
 }
+
+// machineCacheWords is how the held lookup's lines name the machine cache: by where it lives, in
+// words, never by its path, since every secret write prints them and a path set by a person can
+// hold what they pasted.
+const machineCacheWords = "the machine cache (${XDG_STATE_HOME:-$HOME/.local/state}/agent-secrets/machine)"
 
 // registerMachine is this machine's session made under the machine cache's exclusive lock, held
 // from its read of the cache to its write. A session the cache holds whose enrollment is not
