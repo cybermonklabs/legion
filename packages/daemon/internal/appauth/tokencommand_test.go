@@ -22,13 +22,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// fakeBroker is a token_command that answers as `agent-secrets <NAME> [--github-owner O
-// [--github-read-only]] -- sh -c 'printf %s "$NAME"'` does: the release of every installation it
-// holds, or of the owner LEGION_GITHUB_OWNER names alone (a non-zero exit, as the broker's
-// refusal, for an owner it holds none on), each token naming the owner and whether it is
-// read-only. An owner its narrowing cannot be served for is refused as the broker refuses one
-// GitHub answered 422 (refusesNarrowing). Every run appends its owner and read-only flag to
-// calls.
+// fakeBroker is a token_command that answers as docs/deployment.md's profile form does,
+//
+//	P=<NAME>${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets "$P" ${LEGION_GITHUB_OWNER:+--target "$LEGION_GITHUB_OWNER"} -- printenv "$P"
+//
+// the release of every installation the profile holds, or of the owner LEGION_GITHUB_OWNER names
+// alone (a non-zero exit, as the broker's refusal, for an owner it holds none on), each token
+// naming the owner and whether it is the read profile's. An owner whose profile the broker cannot
+// serve is refused as the broker refuses one GitHub answered 422 (refusesNarrowing). Every run
+// appends its owner and read-only flag to calls.
 type fakeBroker struct {
 	dir     string
 	command string
@@ -57,7 +59,7 @@ if [ -n "$FAKE_BROKER_NONE" ]; then
   echo "agent-secrets: github app has no installation on $LEGION_GITHUB_OWNER" >&2; exit 1
 fi
 if [ -n "$FAKE_BROKER_NARROW" ] && [ "$FAKE_BROKER_NARROW" = "$LEGION_GITHUB_OWNER" ]; then
-  echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the narrowed token for $LEGION_GITHUB_OWNER: the installation does not hold the permissions asked for; the caller fixes the narrowing" >&2; exit 1
+  echo "agent-secrets: the narrowing cannot be served: github app 12345: GitHub answered HTTP 422 to the profile's token for $LEGION_GITHUB_OWNER: likely a permission it asks for that the installation does not hold" >&2; exit 1
 fi
 owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr A-Z a-z)
 case "$owner" in
@@ -91,8 +93,8 @@ func (b fakeBroker) uninstall(t *testing.T) {
 	t.Setenv("FAKE_BROKER_NONE", "1")
 }
 
-// refusesNarrowing makes the fake broker refuse owner's narrowing, as it refuses one GitHub
-// answered 422; an owner it is not told of is served every narrowing it is asked for.
+// refusesNarrowing makes the fake broker refuse owner's profile, as it refuses one whose token
+// GitHub answered 422; an owner it is not told of is served every profile it is asked for.
 func (b fakeBroker) refusesNarrowing(t *testing.T, owner string) {
 	t.Helper()
 	t.Setenv("FAKE_BROKER_NARROW", owner)
@@ -212,6 +214,67 @@ func TestTokenModeMintsTheOwnersEntryAndRefreshes(t *testing.T) {
 	// Every release's token is checked to be the configured App's; the bot user is read once.
 	if viewers != 3 || apps != 3 || users != 1 {
 		t.Fatalf("GitHub was asked %v, want the App checked for each of the three releases and the bot user read once", github.asked)
+	}
+}
+
+// A daemon on the implement App's token_command of docs/deployment.md reads the release of the
+// profile it names as the role's tokens, one for each account: the release of every account the
+// profile holds when it asks for no owner (InstalledOwners, AppLogin), the owner's entry of the
+// write profile for a Token and of the read profile for a ReadToken, each narrowed with --target.
+// An account outside the profile, which the broker refuses as a target, is an App not installed
+// there, once a release of every account has said which accounts the App's profile holds.
+func TestTokenModeReadsAProfileReleaseForEachAccount(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	calls := stubAgentSecrets(t, []string{"acme", "example-user"}, now.Add(time.Hour))
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", TokenCommand: deploymentDocTokenCommands(t)[Implement]},
+	}, Options{BaseURL: github.serve(t).URL, Now: func() time.Time { return now }, Stderr: &bytes.Buffer{}})
+	defer tokens.Close()
+
+	if owners, err := tokens.InstalledOwners(context.Background(), Implement); err != nil || !slices.Equal(owners, []string{"acme", "example-user"}) {
+		t.Fatalf("InstalledOwners = %q, %v; want every account of the profile's release", owners, err)
+	}
+	if login, err := tokens.AppLogin(context.Background(), Implement); err != nil || login != "legion-implementer[bot]" {
+		t.Fatalf("AppLogin = %q, %v; want legion-implementer[bot] from the release of every account", login, err)
+	}
+	for _, want := range []struct {
+		read         bool
+		owner, token string
+	}{
+		{false, "Acme", "ghs_acme_legion_implement_app"},
+		{false, "example-user", "ghs_example-user_legion_implement_app"},
+		{true, "acme", "ghs_acme_legion_implement_app_read"},
+		{true, "example-user", "ghs_example-user_legion_implement_app_read"},
+	} {
+		mint := tokens.Token
+		if want.read {
+			mint = tokens.ReadToken
+		}
+		lease, err := mint(context.Background(), Implement, want.owner)
+		if err != nil || lease.Token != want.token || !lease.ExpiresAt.Equal(now.Add(time.Hour)) {
+			t.Errorf("the lease of %s (read %v) = %+v, %v; want the profile's token %s", want.owner, want.read, lease, err, want.token)
+		}
+	}
+	if _, err := tokens.Token(context.Background(), Implement, "stranger"); !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("Token for an account outside the profile = %v, want ErrNotInstalled", err)
+	}
+	data, err := os.ReadFile(calls)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = " --reason=legion-daemon-github-app-token "
+	want := []string{
+		"LEGION_IMPLEMENT_APP" + reason + "-- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "-- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "--target Acme -- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP" + reason + "--target example-user -- printenv LEGION_IMPLEMENT_APP",
+		"LEGION_IMPLEMENT_APP_READ" + reason + "--target acme -- printenv LEGION_IMPLEMENT_APP_READ",
+		"LEGION_IMPLEMENT_APP_READ" + reason + "--target example-user -- printenv LEGION_IMPLEMENT_APP_READ",
+		"LEGION_IMPLEMENT_APP" + reason + "--target stranger -- printenv LEGION_IMPLEMENT_APP",
+	}
+	if got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); !slices.Equal(got, want) {
+		t.Errorf("agent-secrets ran\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -888,9 +951,9 @@ func TestTokenModeCloseEndsARunningCommand(t *testing.T) {
 }
 
 // The command is told the owner whose installation token the daemon wants and whether it wants
-// a read-only one, and nothing else: an operator's command maps those onto --github-owner and
-// --github-read-only. It is told no repository, since the token reaches every repository the
-// installation holds (INFRA-2543).
+// a read-only one, and nothing else: an operator's command maps those onto --target and the read
+// profile's name. It is told no repository, since the token reaches every repository the
+// installation holds.
 func TestTokenModeTellsTheCommandTheOwnerAndTheReadOnlyFlag(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))

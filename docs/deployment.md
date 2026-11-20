@@ -35,7 +35,9 @@ A daemon started from a plain shell is no session: each `token_command` then fai
 The `sjawhar` account owns both Apps.
 The secrets broker holds them as `github-app` secrets, which release installation tokens and never the App's private key:
 `LEGION_IMPLEMENT_APP` (agent tier) and `LEGION_REVIEW_APP` (human tier: each new grant waits for a person's approval in Dispatch, and a later release under the same live grant reuses it).
-Its `token_command` names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
+A caller asks the broker for a profile of such a secret, never for the secret itself: the broker's profiles file (`BROKER_PROFILES_FILE`, [the airlock](site/src/content/docs/broker/concepts.md#the-airlock)) names each profile, its source secret, its accounts, its permissions and who may ask for it, and the broker refuses a `github-app` secret that no profile names.
+Each role's `token_command` names two profiles of its App's secret: the profile of the secret's own name for the write token, and the profile of that name with `_READ` after it for the read token.
+The review App's command names `--ttl 12h`, because a human-tier request that names no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one:
 without the flag every renewal would wait for a person, and with it the approver reads the twelve hours on the card and decides them.
 A daemon that holds no App key uses both Apps through `token_command`, as the live proofs do for the implement App (`scripts/e2e/lib/github-apps.sh`, `app_token_command`):
 
@@ -43,11 +45,75 @@ A daemon that holds no App key uses both Apps through `token_command`, as the li
 github_apps:
   implement:
     app_id: "5341240"
-    token_command: "agent-secrets LEGION_IMPLEMENT_APP --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_IMPLEMENT_APP\"'"
+    token_command: "P=LEGION_IMPLEMENT_APP${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets \"$P\" --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--target \"$LEGION_GITHUB_OWNER\"} -- printenv \"$P\""
   review:
     app_id: "5341243"
-    token_command: "agent-secrets LEGION_REVIEW_APP --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner \"$LEGION_GITHUB_OWNER\"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s \"$LEGION_REVIEW_APP\"'"
+    token_command: "P=LEGION_REVIEW_APP${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets \"$P\" --ttl 12h --reason=legion-daemon-github-app-token ${LEGION_GITHUB_OWNER:+--target \"$LEGION_GITHUB_OWNER\"} -- printenv \"$P\""
 ```
+
+The broker's profiles file declares the four profiles those commands name.
+Each is `"value": "installations"`, the release the daemon reads, and has no `proxy` block, since the daemon hands its tokens to the panes' `gh` bundles.
+The write profiles hold the role's write set and the read profiles the read set, the sets the daemon asks GitHub for when it mints with a key of its own (`writePermissions` and `readPermissions` in `packages/daemon/internal/appauth`), so a lease holds the same permissions either way.
+`requesters` names the operators whose machine logins run the daemon, and no pod's service: a pod that held one of these releases would hold the App's whole write token.
+The accounts are the accounts of each secret's `github-owners` tag the daemon works on:
+
+```json
+{"profiles": [
+  {
+    "name": "LEGION_IMPLEMENT_APP",
+    "requesters": ["operator@example.com"],
+    "github": {
+      "accounts": ["example-org", "example-user"],
+      "permissions": {
+        "actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write",
+        "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"
+      },
+      "value": "installations"
+    }
+  },
+  {
+    "name": "LEGION_IMPLEMENT_APP_READ",
+    "source": "LEGION_IMPLEMENT_APP",
+    "requesters": ["operator@example.com"],
+    "github": {
+      "accounts": ["example-org", "example-user"],
+      "permissions": {
+        "actions": "read", "attestations": "read", "checks": "read", "contents": "read",
+        "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"
+      },
+      "value": "installations"
+    }
+  },
+  {
+    "name": "LEGION_REVIEW_APP",
+    "requesters": ["operator@example.com"],
+    "github": {
+      "accounts": ["example-org", "example-user"],
+      "permissions": {
+        "actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+        "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"
+      },
+      "value": "installations"
+    }
+  },
+  {
+    "name": "LEGION_REVIEW_APP_READ",
+    "source": "LEGION_REVIEW_APP",
+    "requesters": ["operator@example.com"],
+    "github": {
+      "accounts": ["example-org", "example-user"],
+      "permissions": {
+        "actions": "read", "attestations": "read", "checks": "read", "contents": "read",
+        "issues": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"
+      },
+      "value": "installations"
+    }
+  }
+]}
+```
+
+A profile is never looser than its source: its `requesters` are among the secret's own `requesters` tag, where the secret has one, and a profile of the human-tier `LEGION_REVIEW_APP` is human tier too.
+`packages/daemon/internal/appauth/deployment_doc_test.go` runs both commands against a stand-in `agent-secrets` and holds these profiles' permissions to the daemon's sets.
 
 The live proofs take the review App's tokens that way no longer.
 They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIEW_APP_KEY_COMMAND`, into a key file of the run's own, and give the App a `private_key_command` that reads it, while the implement App keeps the `token_command` above (`scripts/e2e/lib/github-apps.sh`, `write_github_apps`).
@@ -59,25 +125,24 @@ Its environment is the daemon's, less the NATS seeds and every variable whose na
 `LEGION_GITHUB_OWNER`, the account whose installation token the daemon wants (empty for every
 installation the command may release, which the boot's read of the App's login asks for), and
 `LEGION_GITHUB_READ_ONLY`, `1` for a read-only token and empty otherwise.
-The command maps each onto the flag `agent-secrets` narrows the release by.
-The token reaches every repository the account's installation holds: the account chooses those
-when it installs the App, and the daemon asks for no narrowing by repository.
-Its stdout must be the broker's release,
+The command maps the first onto `--target`, which narrows the profile to that one account, and the second onto the name of the read profile.
+The profiles above name no repositories, so a token reaches every repository the account's
+installation holds: the account chooses those when it installs the App, and the daemon asks for no
+narrowing by repository.
+Its stdout must be the broker's release of a profile whose `value` is `installations`,
 `{"installations":{"<account login>":{"installation_id":<id>,"token":"ghs_…","expires_at":"<RFC 3339>"}}}`,
 and the daemon takes the owner's entry, matched without regard to case.
-An owner the command releases nothing for is an App not installed there.
+An owner the command releases nothing for is an App not installed there: the broker refuses an account the App has no installation on, and the daemon reads a refusal for an account outside the profile the same way once a release of every account has not named it.
 With no key, the daemon reads each App's bot login from GraphQL's `viewer` under one of its
 tokens, refuses a token whose `GET /apps/<slug>` names an id other than `app_id`, and reads whether
 the App is installed on a repository from that owner's installation's repository list.
-A read-only token holds what the command's read-only release gives: the broker's holds
-`contents: read`, `metadata: read`, `pull_requests: read`, `actions: read`, `checks: read` and
-`statuses: read`, less each of the last three the App's installation has not been granted.
-A configured key asks for a set that differs from the broker's: `contents`, `metadata`,
-`pull_requests`, `issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read`
-(`readPermissions` in `packages/daemon/internal/appauth`), so a controller reads an issue or an
-attestation through a key-minted read-only token and not through the broker's.
-A configured key reads what the installation is granted before each mint and asks for its set
-cut down to it.
+A read-only token holds what the read profile names, cut to what the App's installation holds:
+the broker asks GitHub for each permission the installation holds at the level it holds it, leaves
+out one it holds none of, and `agent-secrets` names each one left out on its stderr.
+The read profiles above name the daemon's own read set, `contents`, `metadata`, `pull_requests`,
+`issues`, `actions`, `checks`, `statuses` and `attestations`, each at `read` (`readPermissions` in
+`packages/daemon/internal/appauth`), which a configured key asks for too, cut the same way to what
+the installation is granted before each mint, so a controller reads the same through either.
 The daemon passes the command's stderr through as it runs, with every GitHub token in it redacted,
 so `agent-secrets`' line naming the pending request appears in the daemon's log while the review
 App waits for its grant.
@@ -89,7 +154,7 @@ the release names every installation.
 
 Both Apps are public GitHub Apps, so any GitHub account can install them.
 What such an install gives depends on where the daemon gets its tokens.
-A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the secret's `github-owners` tag lists, so an install by any other account gives nothing.
+A daemon that gets its tokens from the secrets broker through `token_command`, as this runbook configures it, is bounded by the broker: the broker releases a token only for the accounts the profile names, each an account of the secret's `github-owners` tag, so an install by any other account gives nothing.
 A daemon that mints with its own App key counts every installation and keeps no list of owners.
 There, an account that installs the implement App gets a directory with that App's write token in the gh bundle of every implementer and merger, and an install of the review App gives every other role that App's token the same way and the controller its read-only one.
 The daemon reads the installations at every bundle it builds, so a running pane holds the new directory within a minute, and loses it within a minute of an uninstall.

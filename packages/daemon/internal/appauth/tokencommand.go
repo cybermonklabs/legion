@@ -3,8 +3,8 @@ package appauth
 // Token mode: an App configured with github_apps.<role>.token_command, for a deployment whose App
 // keys only a secrets broker holds. The Manager holds no key and signs no JWT for such an App: it
 // runs the command, with `sh -c`, whenever it needs a lease (Token's refreshWindow governs when, as
-// in key mode), and reads from its stdout the release the secrets broker's `agent-secrets <NAME>
-// -- <cmd>` puts in <cmd>'s environment:
+// in key mode), and reads from its stdout the release the secrets broker's `agent-secrets
+// <PROFILE> -- <cmd>` puts in <cmd>'s environment for a profile whose value is installations:
 //
 //	{"installations":{"<account login>":{"installation_id":<int>,"token":"ghs_…","expires_at":"<RFC3339>"}}}
 //
@@ -12,20 +12,20 @@ package appauth
 // the daemon wants: TokenCommandOwner, the account whose installation token it needs ("" for every
 // installation the command may release), and TokenCommandReadOnly, "1" for a read-only token
 // (ReadToken) and "" otherwise; no other variable of their namespace reaches the command, whatever
-// the daemon inherited (tokenCommandNamespace). An operator's command maps each onto the flag
-// `agent-secrets` narrows the release by:
+// the daemon inherited (tokenCommandNamespace). An operator's command maps the first onto the
+// --target that narrows the profile to that one account, and the second onto the role's read
+// profile, the write profile's name with _READ after it (docs/deployment.md):
 //
-//	agent-secrets <NAME> ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$<NAME>"'
+//	P=<PROFILE>${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets "$P" ${LEGION_GITHUB_OWNER:+--target "$LEGION_GITHUB_OWNER"} -- printenv "$P"
 //
 // The release reaches every repository the account's installation holds, here as in key mode: the
-// account that installs the App chooses them, and the daemon asks for no narrowing of them
-// (INFRA-2543). A read-only token holds what the command's read-only release gives: the broker's
-// holds the broker's own set, contents, metadata, pull requests, Actions, checks and statuses
-// read, less each of the last three the installation is not granted. That set differs from key
-// mode's ReadToken set (readPermissions), so a read lease in token mode holds no issues or
-// attestations. What a release leaves out is the command's own business: the daemon
-// reads what an installation is granted only where it mints with a key of its own
-// (exchangeGranted), and asks a command for no permission at all.
+// account that installs the App chooses them, and the daemon asks for no narrowing of them. A
+// token holds what its profile names, cut by the broker to what the installation holds, and the
+// deployment's profiles file decides that: the profiles docs/deployment.md gives name this
+// package's own sets, writePermissions and readPermissions, so a lease holds the same in either
+// mode. What a release holds is the command's own business: the daemon reads what an
+// installation is granted only where it mints with a key of its own (exchangeGranted), and asks
+// a command for no permission at all.
 //
 // No token reaches a log or an error: the command's stdout is never quoted, and its stderr, which
 // `agent-secrets` uses for the names and the request it waits on, goes to the daemon's stderr and
@@ -379,22 +379,24 @@ func parseRelease(output []byte, field string, now time.Time) (map[string]releas
 // `agent-secrets` prints on stderr and runTokenCommand's error carries.
 const brokerNoInstallation = "has no installation on"
 
-// brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
-// (packages/envoy/internal/cipher/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
-// way: a permission of the read-only release the installation is not granted, which is the key
-// mode's ErrNarrowingRefused by another road. The command is told no repository, so none is among
-// what the broker refuses. The broker's text never quotes GitHub's own and never a token.
+// brokerNarrowingRefused is the secrets broker's refusal of a profile it cannot serve for the
+// owner (packages/envoy/internal/cipher/secrets/minterr.go, ErrMintNarrowingRefused), carried the
+// same way: the profile's permissions, cut to what the installation holds, leave none but
+// metadata (ErrMintEmptyCut), or GitHub answered its token request 422. Either is the key mode's
+// ErrNarrowingRefused by another road.
+// The command is told no repository, so none is among what the broker refuses. The broker's text
+// never quotes GitHub's own and never a token.
 const brokerNarrowingRefused = "the narrowing cannot be served"
 
-// mintFromCommand is mint in token mode: the command's release for the request's owner, narrowed
-// to read-only where it is the read token, and the token checked to be the configured App's on
+// mintFromCommand is mint in token mode: the command's release for the request's owner, of the
+// read profile where it is the read token, and the token checked to be the configured App's on
 // every release (tokenIdentity, since a later release could carry another App's token). A
 // release without owner's installation is ErrNotInstalled, and so is a run that failed with the
 // broker's refusal for an account with no installation, or failed for an owner the last release
-// of every installation did not name: no second, wider release is asked for to decide it, so a
-// read-only request never mints a write token.
+// of every installation did not name, such as an account outside the profile: no second, wider
+// release is asked for to decide it, so a read-only request never mints a write token.
 //
-// A run the broker refused for the narrowing itself (brokerNarrowingRefused) is
+// A run the broker refused for the profile's scope itself (brokerNarrowingRefused) is
 // ErrNarrowingRefused, the refusal a key-mode exchange answers a 422 with, and a caller that can
 // act on that reads it the same way in either mode (ErrNarrowingRefused).
 func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (Lease, error) {
@@ -436,13 +438,12 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 // gives, the first by account login: AppLogin needs a token of any installation, and no
 // owner's.
 //
-// It is the one release the daemon asks for that names no owner, and it cannot be narrowed:
-// `agent-secrets` refuses --github-read-only without --github-owner, since a narrowing names one
-// account's token (its githubNarrowing), and this run knows no account — the release is what
-// lists the installations themselves, and the login it is read for is read before any owner of
-// the project is known. What it is used for is read-only: the GraphQL viewer read that names the
-// App's bot login and the GET /apps/<slug> that checks the App's id (tokenIdentity), and the
-// token is never cached as a lease nor handed to a role.
+// It is the one release the daemon asks for that names no owner, and it is the write profile's:
+// the run is told no owner and no read-only flag. The release is what lists the installations
+// themselves, and the login it is read for is read before any owner of the project is known. What
+// it is used for is read-only: the GraphQL viewer read that names the App's bot login and the GET
+// /apps/<slug> that checks the App's id (tokenIdentity), and the token is never cached as a lease
+// nor handed to a role.
 //
 // It asks for the scope InstalledOwners reads in token mode (mintRequest{role: role}), so the two
 // share what runTokenCommand shares and keeps of a run: a login read joins a run in flight that
