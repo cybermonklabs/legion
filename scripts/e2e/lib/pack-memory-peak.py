@@ -3,7 +3,7 @@
 
 usage:
   pack-memory-peak.py --label L --time-bin T --out-dir D --results F [--timeout S] [--inherit]
-                      [--env NAME=VALUE]... [--unset NAME]... -- COMMAND [ARG]...
+                      [--daemon PID] [--env NAME=VALUE]... [--unset NAME]... -- COMMAND [ARG]...
 
 The sampler of scripts/e2e/pack-memory-probe.sh, which the pack-memory Job runs inside the worker
 image: scripts/e2e/pack-memory-job.sh writes this file into the Job's command beside the probe,
@@ -36,6 +36,20 @@ largest_pack_file_bytes, largest_pack_file_mappings, 0 when no sample held a pac
 that maps a pack whole maps it once for each object store that opens it, so that count is the
 command's number of stores.
 
+Beside the tree it reads the pod's cgroup memory charge, cgroup v1's
+/sys/fs/cgroup/memory/memory.usage_in_bytes or, where that does not read, cgroup v2's
+/sys/fs/cgroup/memory.current (cgroup_file): once just before COMMAND starts (cgroup_baseline_kib)
+and at every sample, right after the tree's. It reports the largest charge a sample read
+(cgroup_peak_kib), that peak less the baseline (cgroup_peak_less_baseline_kib), which is the
+pod's charge of the command, and the charge at the sample of the tree's largest total less the
+baseline (cgroup_at_largest_sample_kib); each is null when no sample was taken and "unreadable"
+when neither file reads. Under gVisor a file that two processes map is charged to the cgroup
+once, where the tree's total counts it in each, which is why the charge differs from the total.
+The charge is the whole pod's, so it also holds what a process outside the tree did meanwhile:
+--daemon PID samples the tree under PID at every sample too, a server COMMAND talks to that was
+started outside its tree, and reports that tree's largest total (daemon_tree_peak_kib) beside
+its pid (daemon_pid).
+
 Without --inherit, COMMAND's stdout goes to D/L.out and its stderr to D/L.err, and the RESULT line
 (`RESULT ` then one JSON object) is printed on stdout. With --inherit, COMMAND keeps this
 process's stdin, stdout and stderr, so whatever runs this reads COMMAND's own output and nothing
@@ -59,6 +73,9 @@ MAPPING = re.compile(r"^[0-9a-f]+-[0-9a-f]+ ")
 PACK = "/objects/pack/"
 INTERVAL = 0.1
 TAIL = 400
+# The pod's cgroup memory charge: cgroup v1's file, then cgroup v2's.
+CGROUP_FILES = ("/sys/fs/cgroup/memory/memory.usage_in_bytes", "/sys/fs/cgroup/memory.current")
+CGROUP_FIGURES = ("cgroup_baseline_kib", "cgroup_peak_kib", "cgroup_peak_less_baseline_kib", "cgroup_at_largest_sample_kib")
 
 
 def refuse(message):
@@ -68,7 +85,7 @@ def refuse(message):
 
 
 def parse(argv):
-    opts = {"timeout": None, "inherit": False, "env": {}, "unset": []}
+    opts = {"timeout": None, "inherit": False, "daemon": None, "env": {}, "unset": []}
     valued = {"--label": "label", "--time-bin": "time_bin", "--out-dir": "out_dir", "--results": "results"}
     while argv:
         arg = argv.pop(0)
@@ -87,6 +104,10 @@ def parse(argv):
                 opts["timeout"] = float(value)
             except ValueError:
                 refuse(f"--timeout {value} is no number of seconds")
+        elif arg == "--daemon":
+            if not value.isdigit():
+                refuse(f"--daemon {value} is no process id")
+            opts["daemon"] = int(value)
         elif arg == "--env":
             name, sep, setting = value.partition("=")
             if not sep or not name:
@@ -175,6 +196,28 @@ def size(path):
         return None
 
 
+def cgroup_file():
+    """The first of CGROUP_FILES that reads as a number of bytes, None when neither does."""
+    for path in CGROUP_FILES:
+        if charge(path) is not None:
+            return path
+    return None
+
+
+def charge(path):
+    """The pod's cgroup memory charge path holds, in KiB; None when it does not read."""
+    try:
+        with open(path) as f:
+            return int(f.read().strip()) // 1024
+    except (OSError, ValueError):
+        return None
+
+
+def less(kib, baseline):
+    """kib less the baseline, None when either is missing."""
+    return None if kib is None or baseline is None else kib - baseline
+
+
 def kill_tree(root):
     for pid in reversed(tree(root)):
         try:
@@ -225,6 +268,8 @@ def main():
     streams = {}
     if not opts["inherit"]:
         streams = {"stdout": open(out_file, "wb"), "stderr": open(err_file, "wb")}
+    charged = cgroup_file()
+    baseline = None if charged is None else charge(charged)
     started = time.monotonic()
     proc = subprocess.Popen([opts["time_bin"], "-v", "-o", time_file] + command, env=env, **streams)
     for stream in streams.values():
@@ -232,13 +277,20 @@ def main():
 
     largest = None
     samples = 0
+    charge_peak = None
+    daemon_peak = 0
     timed_out = False
     peaks = {"pack": 0, "anon": 0, "other": 0}
     file_mappings = {}
     file_sizes = {}
     while proc.poll() is None:
         now, per_file = sample(proc.pid)
+        now["charge"] = None if charged is None else charge(charged)
         samples += 1
+        if now["charge"] is not None and (charge_peak is None or now["charge"] > charge_peak):
+            charge_peak = now["charge"]
+        if opts["daemon"] is not None:
+            daemon_peak = max(daemon_peak, sample(opts["daemon"])[0]["total"])
         if largest is None or now["total"] > largest["total"]:
             largest = now
             largest["at"] = time.monotonic() - started
@@ -254,7 +306,7 @@ def main():
         time.sleep(INTERVAL)
     wall = time.monotonic() - started
     if largest is None:
-        largest = {**empty(), "at": None}
+        largest = {**empty(), "at": None, "charge": None}
     packs = [path for path in file_mappings if path.removesuffix(" (deleted)").endswith(".pack")]
     largest_pack = max(packs, key=lambda path: file_sizes[path] or 0, default=None)
 
@@ -295,7 +347,17 @@ def main():
         "largest_pack_file": largest_pack,
         "largest_pack_file_bytes": None if largest_pack is None else file_sizes[largest_pack],
         "largest_pack_file_mappings": 0 if largest_pack is None else file_mappings[largest_pack],
+        "cgroup_file": charged,
+        "cgroup_baseline_kib": baseline,
+        "cgroup_peak_kib": charge_peak,
+        "cgroup_peak_less_baseline_kib": less(charge_peak, baseline),
+        "cgroup_at_largest_sample_kib": less(largest["charge"], baseline),
     }
+    if charged is None:
+        result.update(dict.fromkeys(CGROUP_FIGURES, "unreadable"))
+    if opts["daemon"] is not None:
+        result["daemon_pid"] = opts["daemon"]
+        result["daemon_tree_peak_kib"] = daemon_peak
     if not opts["inherit"]:
         result["stdout_bytes"], result["stdout_tail"] = tail(out_file)
         result["stderr_bytes"], result["stderr_tail"] = tail(err_file)

@@ -81,15 +81,22 @@
 # Every measured command runs under pack-memory-peak.py beside this file, which prints one
 # `RESULT {json}` line for it: label, argv, exit, wall seconds, GNU time's maximum resident set,
 # the largest sampled total of its process tree and, from that same sample, the pack mappings' Rss,
-# the anonymous memory and the mapping and file counts; and, over every sample, the largest pack
-# Rss, anonymous memory and other-file Rss, and the most mappings one sample held of each pack
-# file. Every verdict prints one `CHECK <name>: got [x] want [y]` line, followed by ` MISMATCH`
-# when it failed and ` VOID` when a control did not reach its bound; the last line is
-# `JOB-RESULT pass`, when no verdict failed, or `JOB-RESULT fail`. A row of the image's jj or of
-# the role's settings holds when it exits 0 and both GNU time's figure and the sampled total are
-# under 2 GiB (2,097,152 KiB). A control row must reach its bound, by either figure, or its line
-# is VOID: 2 GiB for a git row, and for a jj row the size of the pack, read from that copy's
-# clone.
+# the anonymous memory and the mapping and file counts; over every sample, the largest pack Rss,
+# anonymous memory and other-file Rss, and the most mappings one sample held of each pack file;
+# and the pod's charge: the cgroup's memory charge read just before the command starts and at
+# every sample, its peak less that baseline, and the charge over the baseline at the sample of the
+# tree's largest total. Under gVisor a file two processes map is charged once, where the tree's
+# total counts it in each, so the charge differs from the total. A push or a fetch talks to the
+# git daemon, which runs in the pod outside the measured tree, so those rows also sample the
+# daemon's tree and report its largest total. Each verdict of a git or jj row prints the pod's
+# charge after the row's figures, with the daemon's total beside it for a row the daemon served;
+# no verdict reads either. Every verdict prints one `CHECK <name>: got [x] want [y]` line,
+# followed by ` MISMATCH` when it failed and ` VOID` when a control did not reach its bound; the
+# last line is `JOB-RESULT pass`, when no verdict failed, or `JOB-RESULT fail`. A row of the
+# image's jj or of the role's settings holds when it exits 0 and both GNU time's figure and the
+# sampled total are under 2 GiB (2,097,152 KiB). A control row must reach its bound, by either
+# figure, or its line is VOID: 2 GiB for a git row, and for a jj row the size of the pack, read
+# from that copy's clone.
 #
 # R10's rows are judged by their pack figure: the larger of the row's largest sampled pack Rss and
 # GNU time's figure less its largest sampled anonymous memory and other-file Rss, so a sample that
@@ -100,8 +107,8 @@
 # for each store. A control row is a control: its pack figure must reach the pack's size, or its
 # line is VOID. Each R10 RESULT line carries `r10` in place of a label: the command, the copy, the
 # budget, whether its stdout equals the control row's, its largest sampled pack, other-file and
-# anonymous memory, GNU time's figure, its wall time, its pack figure, the store count and the
-# bound.
+# anonymous memory, GNU time's figure, its wall time, the pod's charge, its pack figure, the store
+# count and the bound.
 #
 # It is no proof of its own and nothing runs it from a checkout: the harness beside it writes this
 # text and pack-memory-peak.py into the Job's command, and the Job writes both onto its volume and
@@ -336,10 +343,31 @@ field() { # field <label> <jq path>: the value in the label's last result, "null
 has_result() { [ -n "$(field "$1" .label)" ]; }
 
 figures() { # figures <label>: one line of a row's figures, for a verdict's got
-  printf 'exit %s, GNU time %s KiB, sampled %s KiB (pack %s KiB, anonymous %s KiB, %s pack mappings, %s resident, of %s files), wall %s s' \
+  printf 'exit %s, GNU time %s KiB, sampled %s KiB (pack %s KiB, anonymous %s KiB, %s pack mappings, %s resident, of %s files), wall %s s; %s' \
     "$(field "$1" .exit)" "$(group "$(field "$1" .maxrss_kib)")" "$(group "$(field "$1" .sampled_total_kib)")" \
     "$(group "$(field "$1" .sampled_pack_kib)")" "$(group "$(field "$1" .sampled_anon_kib)")" \
-    "$(field "$1" .pack_mappings)" "$(field "$1" .pack_mappings_resident)" "$(field "$1" .pack_files)" "$(field "$1" .wall_s)"
+    "$(field "$1" .pack_mappings)" "$(field "$1" .pack_mappings_resident)" "$(field "$1" .pack_files)" "$(field "$1" .wall_s)" \
+    "$(charge "$1")"
+}
+
+# charge <label>: the pod's charge of a row, for a verdict's got after its figures: the cgroup's
+# peak less its baseline from just before the command started, then the peak, the baseline and
+# the charge over the baseline at the sample of the tree's largest total; and, for a row the git
+# daemon served, the daemon's largest tree total, which the charge holds and the row's tree does
+# not. No verdict reads either.
+charge() {
+  local less daemon text
+  less=$(field "$1" .cgroup_peak_less_baseline_kib)
+  if [[ $less =~ ^-?[0-9]+$ ]]; then
+    text="pod charge $(group "$less") KiB (cgroup peak $(group "$(field "$1" .cgroup_peak_kib)") KiB less baseline $(group "$(field "$1" .cgroup_baseline_kib)") KiB; $(group "$(field "$1" .cgroup_at_largest_sample_kib)") KiB over the baseline at the tree's largest sample)"
+  elif [ "$less" = null ]; then
+    text="pod charge unread: no sample was taken"
+  else
+    text="pod charge ${less:-unread}"
+  fi
+  daemon=$(field "$1" .daemon_tree_peak_kib)
+  [ "$daemon" = null ] || [ -z "$daemon" ] || text+=", git daemon's tree $(group "$daemon") KiB"
+  printf '%s' "$text"
 }
 
 whole() { [[ $1 =~ ^[0-9]+$ ]]; }
@@ -491,10 +519,11 @@ pack_figure() {
 }
 
 r10_figures() { # r10_figures <label> <pack figure>: one line of an R10 row's figures, for a verdict's got
-  printf 'exit %s, pack figure %s KiB, the larger of sampled pack %s KiB and GNU time %s KiB less anonymous %s KiB and other file %s KiB; %s mappings of its largest pack file; wall %s s' \
+  printf 'exit %s, pack figure %s KiB, the larger of sampled pack %s KiB and GNU time %s KiB less anonymous %s KiB and other file %s KiB; %s mappings of its largest pack file; wall %s s; %s' \
     "$(field "$1" .exit)" "$(group "${2:-unread}")" "$(group "$(field "$1" .max_pack_kib)")" \
     "$(group "$(field "$1" .maxrss_kib)")" "$(group "$(field "$1" .max_anon_kib)")" \
-    "$(group "$(field "$1" .max_other_file_kib)")" "$(field "$1" .largest_pack_file_mappings)" "$(field "$1" .wall_s)"
+    "$(group "$(field "$1" .max_other_file_kib)")" "$(field "$1" .largest_pack_file_mappings)" "$(field "$1" .wall_s)" \
+    "$(charge "$1")"
 }
 
 # same_output <label> <control label>: 0 when both rows ran and their stdout is the same bytes, 1
@@ -512,6 +541,7 @@ r10_result() {
     --arg budget "${copy_budget[$2]:-unset}" --arg figure "$5" --arg stores "$6" --arg bound "$7" \
     'select(.label == $label) | {r10: $command, copy: $copy, jj: .argv[0], budget: $budget, label,
       exit, outputs_equal: $equal, max_pack_kib, max_other_file_kib, max_anon_kib, maxrss_kib, wall_s,
+      cgroup_peak_less_baseline_kib,
       pack_figure_kib: ($figure | tonumber? // null), stores: ($stores | tonumber? // null),
       bound_kib: ($bound | tonumber? // null)}' "$results" 2> /dev/null | tail -n 1)
   [ -n "$line" ] || line="{\"r10\": \"$1\", \"copy\": \"$2\", \"label\": \"$3\", \"ran\": false}"
@@ -604,6 +634,9 @@ PY
 
 cache_pid=""
 daemon_pid=""
+# The sampler's option that samples the git daemon's tree beside a row the daemon serves, set once
+# the daemon answers.
+daemon_tree=()
 stop_background() {
   local pid
   for pid in "$cache_pid" "$daemon_pid"; do
@@ -620,8 +653,8 @@ finish() {
   echo
   echo "======== the rows"
   if [ -s "$results" ]; then
-    printf 'label\texit\twall_s\tgnu_time_kib\tsampled_kib\tpack_kib\tanonymous_kib\tpack_mappings\tpack_files\tmax_pack_kib\tmax_other_file_kib\tmax_anonymous_kib\tlargest_pack_file_mappings\n'
-    jq -r '[.label, .exit, .wall_s, .maxrss_kib, .sampled_total_kib, .sampled_pack_kib, .sampled_anon_kib, .pack_mappings, .pack_files, .max_pack_kib, .max_other_file_kib, .max_anon_kib, .largest_pack_file_mappings] | @tsv' "$results"
+    printf 'label\texit\twall_s\tgnu_time_kib\tsampled_kib\tpack_kib\tanonymous_kib\tpack_mappings\tpack_files\tmax_pack_kib\tmax_other_file_kib\tmax_anonymous_kib\tlargest_pack_file_mappings\tcgroup_peak_less_baseline_kib\tdaemon_tree_peak_kib\n'
+    jq -r '[.label, .exit, .wall_s, .maxrss_kib, .sampled_total_kib, .sampled_pack_kib, .sampled_anon_kib, .pack_mappings, .pack_files, .max_pack_kib, .max_other_file_kib, .max_anon_kib, .largest_pack_file_mappings, .cgroup_peak_less_baseline_kib, .daemon_tree_peak_kib] | @tsv' "$results"
   else
     echo "no row was measured"
   fi
@@ -898,6 +931,7 @@ if going; then
     for _ in $(seq 1 60); do
       if setup_git ls-remote "git://127.0.0.1:$daemon_port/feed.git" HEAD > /dev/null 2>&1; then
         daemon_ok=1
+        daemon_tree=(--daemon "$daemon_pid")
         break
       fi
       sleep 1
@@ -1049,9 +1083,9 @@ if going; then
       printf 'pack-memory probe: the push with %s\n' "$arm" >> "$ws/$walk_file"
       git add -- "$walk_file" && git commit --quiet -m "pack-memory probe: the push with $arm"
       if [ "$arm" = settings ]; then
-        measure git-push-settings -- git push origin "HEAD:refs/heads/pack-memory/push-settings"
+        measure git-push-settings "${daemon_tree[@]}" -- git push origin "HEAD:refs/heads/pack-memory/push-settings"
       else
-        measure git-push-defaults "${forced[@]}" -- git "${defaults[@]}" push origin "HEAD:refs/heads/pack-memory/push-defaults"
+        measure git-push-defaults "${daemon_tree[@]}" "${forced[@]}" -- git "${defaults[@]}" push origin "HEAD:refs/heads/pack-memory/push-defaults"
       fi
     done
     under_bound "c-git-rows push settings" git-push-settings
@@ -1063,9 +1097,9 @@ if going; then
     for arm in settings defaults; do
       packs_before=$(find "$clone/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort)
       if [ "$arm" = settings ]; then
-        measure git-fetch-settings -- git fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
+        measure git-fetch-settings "${daemon_tree[@]}" -- git fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
       else
-        measure git-fetch-defaults "${forced[@]}" -- git "${defaults[@]}" fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
+        measure git-fetch-defaults "${daemon_tree[@]}" "${forced[@]}" -- git "${defaults[@]}" fetch --no-tags "git://127.0.0.1:$daemon_port/git.git" '+refs/heads/*:refs/remotes/probe/git/*'
       fi
       new_packs=$(comm -13 <(echo "$packs_before") <(find "$clone/.git/objects/pack" -maxdepth 1 -name '*.pack' | sort))
       bytes=0
@@ -1300,7 +1334,7 @@ jj_rows() { # jj_rows <copy> <workspace> <jj> <clone>
   measure "$copy-jj-diff-name-only" --env JJ_RANDOMNESS_SEED=102 -- "$jj" -R "$dir" diff --name-only
   # The commit a role makes with git and pushes with git, which the STANDING read must answer.
   git add -- "$walk_file" "$second_file" && git commit --quiet -m "pack-memory probe: the $copy copy's commit"
-  measure "$copy-git-push" -- git push origin "HEAD:refs/heads/pack-memory/$copy"
+  measure "$copy-git-push" "${daemon_tree[@]}" -- git push origin "HEAD:refs/heads/pack-memory/$copy"
   pushed[$copy]=$(git rev-parse HEAD)
   echo "pushed: ${pushed[$copy]}"
   # handoff-record.ts's STANDING read.
