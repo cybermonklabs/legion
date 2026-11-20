@@ -5658,10 +5658,10 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
 /**
  * The elements of Details below, each of which a change made elsewhere takes off the page, or
  * disables, while it holds the focus, and which one case can drive through the query cache: a
- * pin, a blocker, a reference, a file or a priority taken away, a route or a claim moved, the
- * lists that fold falling to ten, a value set for an entry of Add's open menu, the priority's line
- * moved by another session's write, and the issue closed while the focus is on a control of
- * Development. None of these is a press of the reader's.
+ * pin, a blocker, a reference, a file or a priority taken away, a route moved, a claim made,
+ * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
+ * open menu, the priority's line moved by another session's write, and the issue closed while the
+ * focus is on a control of Development. None of these is a press of the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -5812,6 +5812,48 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
         const [holder] = await within(await drawnRow(PROPERTY_LABELS.claim)).findAllByRole("link");
         if (holder === undefined) throw new Error("the claim's row draws no link to its holder");
         return holder;
+      },
+    },
+  ],
+  [
+    "Release, the claim released in another session",
+    {
+      after: { issue: { ...issue, claim: null } },
+      before: { issue: { ...issue, claim: sessionClaim } },
+      focused: async () =>
+        within(await drawnRow(PROPERTY_LABELS.claim)).findByRole("button", {
+          name: "Release the claim on CORE-1",
+        }),
+    },
+  ],
+  [
+    "the failed release's Retry, the claim taken again in another session",
+    {
+      after: {
+        issue: {
+          ...issue,
+          claim: {
+            actor: { id: "session-two", kind: "session", origin: { session_title: "Reviewer" } },
+            at: "2026-09-24T07:00:00Z",
+          },
+        },
+      },
+      before: { issue: { ...issue, claim: sessionClaim } },
+      focused: async (user) => {
+        // The reader's release fails, so the row draws its line with Retry. The change sends no
+        // release, so the spy goes once the line is drawn.
+        const release = spyOn(api, "releaseIssueClaim").mockRejectedValueOnce(
+          new Error("network error")
+        );
+        try {
+          const row = await drawnRow(PROPERTY_LABELS.claim);
+          await user.click(
+            await within(row).findByRole("button", { name: "Release the claim on CORE-1" })
+          );
+          return await within(row).findByRole("button", { name: CONTROL_LABELS.retry });
+        } finally {
+          release.mockRestore();
+        }
       },
     },
   ],

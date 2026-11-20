@@ -617,6 +617,14 @@ test("a release that fails on a claim drawn after the row was says so beside it"
   }
 });
 
+/** Waits past two frames and a task, by which any hand-off of the row would have moved the
+ *  focus. */
+async function settleFocus(): Promise<void> {
+  const settled = Promise.withResolvers<void>();
+  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(settled.resolve, 0)));
+  await act(() => settled.promise);
+}
+
 // The reader released the claim by keyboard, so the row handed the focus to its None. Another
 // session then claimed the issue, and the row drew the new claim in None's place. That claim is no
 // press of the reader's, so the focus stays on the page's body, as for every change the reader did
@@ -637,15 +645,149 @@ test("a claim made elsewhere while the focus is on the row's None leaves the foc
 
     view.drawClaim(reviewerClaim);
     const releaseNew = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
-    // Past two frames and a task, by which any hand-off of the row would have moved the focus.
-    const settled = Promise.withResolvers<void>();
-    requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(settled.resolve, 0)));
-    await act(() => settled.promise);
+    await settleFocus();
     expect(
       document.activeElement,
       "another session claimed the issue while the focus was on the row's None, and the focus did not stay on the page's body"
     ).toBe(document.body);
     expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
+// Another session released the claim while the focus was on Release, and the row handed that
+// focus to its None, as it does once the reader's own release lands. That release is no press of
+// the reader's, so the focus stays on the page's body, and nothing in the row takes it.
+test("a release made elsewhere while the focus is on Release leaves the focus on the page's body", async () => {
+  const { restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+
+    view.drawClaim(null);
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "another session released the claim while the focus was on Release, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(none, "the row's None took the focus").not.toHaveFocus();
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
+// A release of the reader's that failed took nothing away, so the press that sent it answers no
+// later loss: once another session releases the claim, the focus Release held stays on the page's
+// body.
+test("a release of the reader's that failed hands nothing on once the claim is released elsewhere", async () => {
+  const { restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await view.user.keyboard("{Enter}");
+    await screen.findByRole("alert");
+    await waitFor(() => expect(control).toHaveTextContent(CONTROL_LABELS.release_claim));
+    expect(document.activeElement, "Release lost the focus as its release failed").toBe(control);
+
+    view.drawClaim(null);
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "another session released the claim after the reader's release failed, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(none, "the row's None took the focus").not.toHaveFocus();
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
+// The reader pressed the failed release's Retry, and while the release it sent again was out the
+// issue was claimed again in another session, which takes the line, and Retry with it, away. That
+// claim is no press of the reader's, so the focus stays on the page's body rather than go to the
+// new claim's Release. Nor does the Retry's release move the focus once it lands: Dispatch
+// releases whichever claim the issue holds, so it takes away the new claim, not the one Retry was
+// pressed on.
+test("the failed release's Retry, the claim taken again elsewhere while its release is out, hands nothing on then or once it lands", async () => {
+  const { release, restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
+    await screen.findByRole("alert");
+    const retry = screen.getByRole("button", { name: CONTROL_LABELS.retry });
+    const out = Promise.withResolvers<Issue>();
+    release.mockImplementationOnce(() => out.promise);
+    act(() => retry.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
+
+    view.drawClaim(reviewerClaim);
+    await waitFor(() =>
+      expect(retry.isConnected, "Retry is still drawn beside the new claim").toBe(false)
+    );
+    const releaseNew = screen.getByRole("button", { name: "Release the claim on CORE-1" });
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "another session claimed the issue again while the focus was on Retry, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(releaseNew, "the new claim's Release took the focus").not.toHaveFocus();
+
+    act(() => releaseNew.focus());
+    await act(async () => out.resolve({ ...base, claim: null }));
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the Retry's release took the new claim away, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(none, "the row's None took the focus").not.toHaveFocus();
+  } finally {
+    stopBlurring();
+    restore();
+  }
+});
+
+// The reader pressed Release, and before the release was answered another session released the
+// claim and claimed the issue again, which the row read at once. Dispatch releases whichever claim
+// the issue holds, so the reader's release, once it lands, takes the new claim away, and Release
+// with it while Release holds the focus. That claim is not the one the reader pressed Release on,
+// so nothing hands the focus on then: it stays on the page's body.
+test("a release whose claim was taken again elsewhere before it landed moves no focus once it lands", async () => {
+  const { release, restore, view } = twoSessionClaimRow();
+  const stopBlurring = emulateChromiumFocusFixup();
+  try {
+    const out = Promise.withResolvers<Issue>();
+    release.mockReset();
+    release.mockImplementationOnce(() => out.promise);
+    const control = await screen.findByRole("button", { name: "Release the claim on CORE-1" });
+    act(() => control.focus());
+    await view.user.keyboard("{Enter}");
+    await waitFor(() => expect(control).toHaveTextContent(ANSWER_LINES.saving_release));
+
+    view.drawClaim(reviewerClaim);
+    await waitFor(() => expect(screen.getByTestId("issue-claim")).toHaveTextContent("Reviewer"));
+    expect(document.activeElement, "Release lost the focus as the new claim was drawn").toBe(
+      control
+    );
+
+    await act(async () => out.resolve({ ...base, claim: null }));
+    const none = await screen.findByText(CONTROL_LABELS.none);
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "the reader's release took away the claim made after they pressed it, and the focus did not stay on the page's body"
+    ).toBe(document.body);
+    expect(none, "the row's None took the focus").not.toHaveFocus();
   } finally {
     stopBlurring();
     restore();
