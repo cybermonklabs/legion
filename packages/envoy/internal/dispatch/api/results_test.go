@@ -200,37 +200,94 @@ func writeBranchAnswer(t *testing.T, database *store.Store, repo, branch, sha st
 	}
 }
 
+// letterWordSeed is the text letterWord repeats: plain letters alone, which #4517's line keeps
+// (plainWord) and which Unicode's default word rules (UAX #29) keep in one word (WB5).
+const letterWordSeed = "resultsbranchnewest"
+
+// letterWord is one word of length characters, letterWordSeed repeated and cut to length.
+func letterWord(length int) string {
+	return strings.Repeat(letterWordSeed, length/len(letterWordSeed)+1)[:length]
+}
+
 // The pull-request body line carries the reading the role recorded, because that is the record
 // a reader of the pull request cannot see anywhere else: the check's own words are on the
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
-// word boundary and marked, a short one prints whole, and a result with no reading says so.
+// word boundary and marked, a short one prints whole, and a result with no reading says so. A
+// word that ends at the budget's last character is kept, and a reading of exactly the budget
+// prints whole. A first word longer than the budget is never cut in two, at any length: the line
+// keeps it whole, with all that leads into it, such as a parenthesis, a quote, a slash, a full
+// stop or a hyphen, however long that lead-in is, marked as cut only where more of the reading
+// follows it; a reading with no word of letters or numbers is cut inside the budget. Text in a
+// script written without spaces between its words is cut inside the budget at a UAX #29
+// boundary. A public address GitHub links with no scheme (`www.`) is one word, kept whole or left
+// out, and where it ends what the line keeps, a blank stands before the `…`, so the link does not
+// take the `…` into its address. Each row's words are plain, so #4517's filter keeps them and the
+// row tests the cut.
 func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "RESL", "Line", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 
 	long := "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case."
-	for _, row := range []struct {
-		name     string
-		observed string
-		want     string
-	}{
-		{
-			name:     "a reading over the budget is cut at a word boundary",
-			observed: long,
-			want:     "The rig drove the command against a local Dispatch and the refusal named the…",
-		},
-		{
-			name:     "a reading under the budget prints whole",
-			observed: "Every one of the twenty runs printed its listing.",
-			want:     "Every one of the twenty runs printed its listing.",
-		},
-		{
-			name:     "a result with no reading says so",
-			observed: "",
-			want:     "The role recorded no reading.",
-		},
-	} {
+	// fifteen is fifteen words of four characters, 74 characters before the word after them.
+	fifteen := strings.TrimSuffix(strings.Repeat("word ", 15), " ")
+	name := letterWord(110)
+	// 208 characters, 16 to a sentence with no punctuation, and 100 Hiragana characters, 20 to a
+	// sentence.
+	chinese := strings.Repeat("运行了二十次每次都打印了列表", 13)
+	hiragana := strings.Repeat("にじゅっかいのしけんはすべてとおりました", 5)
+	// address is a public address GitHub links with no scheme; filler is the words before it that
+	// end it at the budget's last character. www is such an address longer than the budget.
+	address := "www.example.com/runs/7777"
+	filler := strings.Repeat("word ", (checkResultReadingRunes-len(address))/len("word "))
+	www := "www.example.com/" + strings.Repeat("segment/", 12)
+	type lineRow struct{ name, observed, want string }
+	rows := []lineRow{
+		{name: "a reading over the budget is cut at a word boundary", observed: long, want: "The rig drove the command against a local Dispatch and the refusal named the…"},
+		{name: "a reading under the budget prints whole", observed: "Every one of the twenty runs printed its listing.", want: "Every one of the twenty runs printed its listing."},
+		{name: "a result with no reading says so", observed: "", want: "The role recorded no reading."},
+		{name: "a word that ends at the 79th character is kept", observed: fifteen + " four more words follow.", want: fifteen + " four…"},
+		{name: "a word that ends at the 80th character is kept", observed: fifteen + " fives more words follow.", want: fifteen + " fives…"},
+		{name: "a word that ends at the 81st character is left out", observed: fifteen + " sixsix more words follow.", want: fifteen + "…"},
+		{name: "a reading of exactly 80 characters prints whole", observed: fifteen + " fives", want: fifteen + " fives"},
+		{name: "a first word of 110 characters after a parenthesis is kept whole with it", observed: "(" + name + ") passed 20 of 20 runs.", want: "(" + name + "…"},
+		{name: "a first word of 110 characters after a quote is kept whole with it", observed: `"` + name + `" passed 20 of 20 runs.`, want: `"` + name + "…"},
+		{name: "a word of 110 characters after a first word and a parenthesis is left out with it", observed: "Run (" + name + ") now.", want: "Run…"},
+		{name: "a word of 110 characters after a number that ends inside the budget is left out", observed: "1 " + name + " passed 20 of 20 runs.", want: "1…"},
+		{name: "a reading of Chinese is cut inside the budget at a word boundary", observed: chinese, want: prefixRunes(chinese, checkResultReadingRunes) + "…"},
+		{name: "a reading of Hiragana is cut inside the budget at a word boundary", observed: hiragana, want: prefixRunes(hiragana, checkResultReadingRunes) + "…"},
+		{name: "an address with no scheme that ends the kept words has a blank before the ellipsis", observed: filler + address + " for the review.", want: filler + address + " …"},
+		{name: "a first word that is an address with no scheme is kept whole with a blank before the ellipsis", observed: www + " shows the step.", want: www + " …"},
+		{name: "an address with no scheme after a parenthesis across the budget is left out with it", observed: "Log (" + www + ") shows the step.", want: "Log…"},
+		{name: "a www inside a word links nothing, so the ellipsis follows the cut with no blank", observed: "See a" + www, want: "See awww.example.com/" + strings.Repeat("segment/", 7) + "…"},
+	}
+	// Punctuation that opens no word leads into the first word as a parenthesis does.
+	for _, lead := range []string{"/", "./", "...", "-", "--", ".", ":", ")"} {
+		rows = append(rows, lineRow{
+			name:     fmt.Sprintf("a first word of 110 characters after %q is kept whole with it", lead),
+			observed: lead + name + " passed 20 of 20 runs.", want: lead + name + "…",
+		})
+	}
+	// A lead-in that itself runs past the budget leads into the first word of letters or numbers
+	// as a short one does, so the line never ends with the lead-in alone; with no such word after
+	// it, it is cut inside the budget.
+	slashes := strings.Repeat("/", checkResultReadingRunes+1)
+	rule := strings.Repeat("-", 100)
+	spaced := strings.Repeat("- ", checkResultReadingRunes/2+5)
+	rows = append(rows,
+		lineRow{name: "a first word after 81 slashes is kept whole with them", observed: slashes + "abc tail words", want: slashes + "abc…"},
+		lineRow{name: "a rule of 100 hyphens leads into the first word after it", observed: rule + " Then the run passed.", want: rule + " Then…"},
+		lineRow{name: "spaced hyphens past the budget lead into the first word after them", observed: spaced + "Then the run passed.", want: spaced + "Then…"},
+		lineRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
+		lineRow{name: "spaced hyphens past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("- ", 60), want: strings.Repeat("- ", checkResultReadingRunes/2-1) + "-…"},
+	)
+	for _, length := range []int{81, 110, 161, 1000} {
+		word := letterWord(length)
+		rows = append(rows,
+			lineRow{name: fmt.Sprintf("a first word of %d characters is kept whole and marked when more words follow it", length), observed: word + " passed 20 of 20 runs.", want: word + "…"},
+			lineRow{name: fmt.Sprintf("a first word of %d characters that is the whole reading prints whole", length), observed: word, want: word})
+	}
+	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			body := map[string]any{"surface": "cli"}
 			if row.observed != "" {
@@ -250,6 +307,11 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 			}
 		})
 	}
+}
+
+// prefixRunes is the first n runes of s.
+func prefixRunes(s string, n int) string {
+	return string([]rune(s)[:n])
 }
 
 // A result is recorded against a check of the issue's own Verification document and against a
@@ -3757,6 +3819,60 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
 	assertCI(t, check, ciCheckRun, model.CIStateFail, "failure", ciVerdictLineOf("c1", ciCheckRun, "fail", headCommit))
 	assertDerived(t, check, 34, ciCheckRun, "failure", "fail", headCommit)
+}
+
+// The pull-request body line of a check CI proves cuts the check's words as a recorded line cuts
+// a reading (TestThePullRequestLineCarriesTheReading), after the same filter: words of exactly
+// the budget print whole, and a first word longer than the budget is kept whole, with all that
+// leads into it, however long that lead-in is, marked as cut where more words follow it and
+// printed whole where it is all the check says. The spaced lead-in is of slashes, since a check's
+// words are markdown and a line that opens with a hyphen and a blank is a list item.
+func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
+	exactly := strings.Repeat("word ", 15) + "fives"
+	name := letterWord(110)
+	type ciRow struct{ name, words, want string }
+	rows := []ciRow{
+		{name: "a sentence over the budget is cut at a word boundary", words: "The rig drove the command against a local Dispatch and the refusal named the flag it wanted, which is the whole of the case.", want: "The rig drove the command against a local Dispatch and the refusal named the…"},
+		{name: "words of exactly 80 characters print whole", words: exactly, want: exactly},
+		{name: "a first word over the budget is kept whole and marked when more words follow it", words: name + " builds at the head.", want: name + "…"},
+		{name: "a first word over the budget that is all the check says prints whole", words: name, want: name},
+		{name: "a first word over the budget after a parenthesis is kept whole with it", words: "(" + name + ") builds at the head.", want: "(" + name + "…"},
+		{name: "a word over the budget after a number that ends inside the budget is left out", words: "1 " + name + " builds at the head.", want: "1…"},
+	}
+	// Punctuation that opens no word leads into the first word as a parenthesis does.
+	for _, lead := range []string{"/", "./", "...", "-", "--", ".", ":", ")"} {
+		rows = append(rows, ciRow{
+			name:  fmt.Sprintf("a first word over the budget after %q is kept whole with it", lead),
+			words: lead + name + " builds at the head.", want: lead + name + "…",
+		})
+	}
+	slashes := strings.Repeat("/", checkResultReadingRunes+1)
+	rule := strings.Repeat("-", 100)
+	spaced := strings.Repeat("/ ", checkResultReadingRunes/2+5)
+	rows = append(rows,
+		ciRow{name: "a first word after 81 slashes is kept whole with them", words: slashes + "abc builds at the head.", want: slashes + "abc…"},
+		ciRow{name: "a rule of 100 hyphens leads into the first word after it", words: rule + " Then the run passed.", want: rule + " Then…"},
+		ciRow{name: "spaced slashes past the budget lead into the first word after them", words: spaced + "Then the run passed.", want: spaced + "Then…"},
+		ciRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", words: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
+	)
+	var document strings.Builder
+	for index, row := range rows {
+		fmt.Fprintf(&document, ":::check{#c%d %s}\n%s\n:::\n\n", index+1, ciCheckKept, row.words)
+	}
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", document.String())
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(41, ciCheckRun, "success"))
+
+	read := readResults(t, handler, issue.Key)
+	for index, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			blockID := fmt.Sprintf("c%d", index+1)
+			line := fmt.Sprintf("- Check %s (before_merge): pass at %s, from CI run %s. %s", blockID, headCommit, ciCheckRun, row.want)
+			assertCI(t, checkOf(t, read, blockID), ciCheckRun, model.CIStatePass, "success", line)
+		})
+	}
 }
 
 // A ci_check name written with spaces around it is either refused at the write or answered by

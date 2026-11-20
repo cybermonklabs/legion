@@ -1201,20 +1201,28 @@ func (w lineWords) keep(text string) string {
 	return w.keepThrough(text, math.MaxInt)
 }
 
-// keepThrough is keep stopped once what it has kept is longer than budget runes. cut reads no more
-// of a text than that (text.HeadWords reads its first budget runes and whether there are more), so
-// a word past that point can change no line, and judging it would cost work that grows with the
-// text and changes nothing.
-func (w lineWords) keepThrough(text string, budget int) string {
+// keepThrough is keep stopped once it has kept one more word after what it kept grew longer
+// than budget runes and held a word with a letter or a number (text.HoldsLetter). cut reads no
+// more of a text than that: text.HeadWords keeps a first word longer than the budget whole, with
+// all that leads into it however far that runs, and then asks only whether any character follows
+// it, and every other cut ends inside the budget, so a second word past that point can change no
+// line, and judging it would cost work that grows with the text and changes nothing. Stopping
+// without that one word would print a long first word with no `…` although more of the reading
+// follows it, and stopping before a word with a letter or a number would print a long lead-in of
+// marks without the first word it leads into. So a text that holds no such word is judged to its
+// end.
+func (w lineWords) keepThrough(value string, budget int) string {
 	var kept strings.Builder
-	runes := 0
-	for word := range strings.FieldsSeq(text) {
-		if runes > budget {
+	runes, lettered, followed := 0, false, false
+	for word := range strings.FieldsSeq(value) {
+		if followed {
 			break
 		}
 		if w.drops(word) {
 			continue
 		}
+		followed = runes > budget && lettered
+		lettered = lettered || text.HoldsLetter(word)
 		if kept.Len() > 0 {
 			kept.WriteByte(' ')
 			runes++
@@ -1260,10 +1268,11 @@ func blockContent(node *pmdoc.Node) string {
 // every reader of the pull request can read on the issue and which a pass and a fail would
 // carry alike: the line's whole purpose is to say what was seen. What words keeps of a reading
 // is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
-// cut line from a short one; the cut falls at a word boundary where the budget's first runes hold
-// one (cut). A result with no reading says so, since a line that simply stopped after the role
-// would read as a reading nobody recorded, and a reading of which nothing is left after the cut
-// says that, whether words kept nothing of it or the cut's second judging dropped what it kept.
+// cut line from a short one; the cut falls at a word boundary, and a first word longer than the
+// budget is kept whole (cut). A result with no reading says so, since a line that simply stopped
+// after the role would read as a reading nobody recorded, and a reading of which nothing is left
+// after the cut says that, whether words kept nothing of it or the cut's privacy check dropped
+// what it kept.
 func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
@@ -1279,20 +1288,47 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 
 // cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
 // an ellipsis where it was cut, so a reader can tell a cut line from a short one
-// (text.HeadWords). HeadWords cuts inside a word when the budget's first runes hold no blank, and
-// what it keeps of that word can hold a key the whole word did not (`ACME-12xyz` cut to
-// `ACME-12`), so a cut text is kept by w once more. cut is empty when nothing is left: when kept
-// is, or when w keeps nothing of the cut text, so a caller decides that nothing is left from what
-// cut answers and never prints a bare ellipsis.
+// (text.HeadWords): a first word longer than the budget is kept whole, with all that leads into
+// it however far that runs, and every other cut ends inside the budget. The budget's raw first
+// runes (text.HeadRunes) are a privacy check on a word cut writes in part, and are never written:
+// a cut can end a word where the raw prefix runs on into an issue key or a private host that
+// neither the whole word nor the written part holds, so of a word w drops as the raw prefix holds
+// it, cut writes nothing. Without that check, `////…ACME-12xyz` would leave `ACME-` in the public
+// line, although the raw prefix holds the key ACME-12. A word cut writes whole is judged whole, as
+// every other word the line writes is, so a first word whose raw prefix alone ends in a private
+// host is written. Where the last word written holds a URL GitHub links (text.EndsInURL), a blank
+// stands before the ellipsis, so the link does not take the ellipsis into its address. cut is
+// empty when nothing is left, when kept is or when w keeps nothing of the cut, so a caller decides
+// that nothing is left and never prints a bare ellipsis.
 func (w lineWords) cut(kept string) string {
 	head, cut := text.HeadWords(kept, checkResultReadingRunes)
 	if !cut {
 		return head
 	}
-	if head = w.keep(head); head == "" {
+	// kept is words joined by single blanks, so a word of head and the word of raw at the same
+	// place are prefixes of one word of kept. Only head's last word can be a part of its word of
+	// kept: it is where kept goes on after head with no blank.
+	raw := strings.Fields(text.HeadRunes(kept, checkResultReadingRunes))
+	words := strings.Fields(head)
+	inPart := !strings.HasPrefix(kept[len(head):], " ")
+	var line strings.Builder
+	for index, word := range words {
+		if w.drops(word) || inPart && index == len(words)-1 && index < len(raw) && w.drops(raw[index]) {
+			continue
+		}
+		if line.Len() > 0 {
+			line.WriteByte(' ')
+		}
+		line.WriteString(word)
+	}
+	if line.Len() == 0 {
 		return ""
 	}
-	return head + "…"
+	if text.EndsInURL(line.String()) {
+		line.WriteByte(' ')
+	}
+	line.WriteString("…")
+	return line.String()
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.
