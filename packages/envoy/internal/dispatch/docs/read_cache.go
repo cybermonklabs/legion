@@ -317,13 +317,19 @@ type coldFold struct {
 // the rendering takes, or neither for a document with no stored state. The stamp is read for who
 // (readDocumentStamp): a document who may not read is pgx.ErrNoRows, before any state is read.
 //
+// A fold binds no reader: it loads the history in a transaction of its own, after the stamp, and
+// every read missing that stamp shares it. So a read that waited on a fold is answered only once
+// its own stamp read, made again after the fold, still finds the document: one made hidden from who
+// between the stamp and the fold's load is pgx.ErrNoRows too, as at the first read.
+//
 // The fold is the document's: it runs on a context no request's end cancels, bounded by the
 // cache's timeout, so a read whose request ends gets its own context's error at once and leaves
 // the fold to the others. Only the read's own context decides that it ended. A fold that fails
 // fails the room, as a failed room load does, and reaches each read as ErrServiceUnavailable,
 // unless the history does not decode, which is ErrDocumentUnloadable, the state a rebuild repairs.
 func (s *Service) coldRead(ctx context.Context, who model.Actor, artifactID string) (*documentRead, *pmdoc.Node, error) {
-	stamp, err := s.persistence.DocumentStamp(ctx, artifactID, refs.VisibilityArg(who))
+	viewer := refs.VisibilityArg(who)
+	stamp, err := s.persistence.DocumentStamp(ctx, artifactID, viewer)
 	if err != nil {
 		// A document who may not read is no fault of the room's: it answers as a document no
 		// row holds, and the room is left as it was.
@@ -361,8 +367,28 @@ func (s *Service) coldRead(ctx context.Context, who model.Actor, artifactID stri
 			return nil, nil, fmt.Errorf("%w: %w", ErrServiceUnavailable, result.Err)
 		}
 		fold := result.Val.(coldFold)
+		if err := s.stillReads(ctx, artifactID, viewer); err != nil {
+			return nil, nil, err
+		}
 		return fold.read, fold.tree, fold.treeErr
 	}
+}
+
+// stillReads is nil while the reader whose viewer viewer is may read artifactID: its stamp read
+// made again (readDocumentStamp), once a cold read's fold is done. A document it may no longer
+// read is pgx.ErrNoRows, and any other failure ErrServiceUnavailable: the fold itself is sound,
+// so the room is left as it was.
+func (s *Service) stillReads(ctx context.Context, artifactID string, viewer any) error {
+	if _, err := s.persistence.DocumentStamp(ctx, artifactID, viewer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return pgx.ErrNoRows
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("%w: %w", ErrServiceUnavailable, err)
+	}
+	return nil
 }
 
 // foldDocument loads artifactID's stored history decoded once (LoadDocument), reads its tree and
