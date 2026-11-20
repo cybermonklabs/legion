@@ -262,9 +262,9 @@ and each command runs there.
   the preload (`web/src/__tests__/setup.ts`) runs it after each row (`resetRowReferenceReadings`,
   for the readings and key-list ids `row-references.ts` keeps, runs before each row too). State a
   module keeps across rows on purpose stays, such as the loaded Markdown engine
-  (`markdown-engine.ts`). Without that reset, the two rows of `row-references.test.ts` that count
-  readings passed their first run and failed the 19 reruns after it, each counting fewer reads than
-  it made.
+  (`markdown-engine.ts`). Without that reset, `row-references.test.ts` fails on a rerun: a row that
+  counts readings finds texts read, or ids of lists of keys given, by rows that ran before it, and
+  counts fewer reads than it expects.
 
 - `bun run test:web:cold` is `test:web` with `web/src/__tests__/hold-lazy-loads.ts` added last to
   its preloads. That file registers its plugin in its `beforeAll`, where the test file's rows

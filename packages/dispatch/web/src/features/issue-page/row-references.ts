@@ -81,7 +81,10 @@ let lastKeySetId = 0;
  *  read has moved on from is asked no more, and a new one takes a new id. */
 const KEY_SETS_KEPT = 64;
 
-/** Forgets every reading and every id of a list of keys: the unit-test preload, around each test. */
+/** Forgets every reading and every id of a list of keys: the unit-test preload, around each test.
+ *  No caller passes one array in two tests: the page makes its list of keys anew for each draw,
+ *  and each test makes its own. `listIds` starts afresh for a caller that would: its array would
+ *  keep the id of a set the reset forgot, while a new array of the same keys took another. */
 export function resetRowReferenceReadings(): void {
   readings.clear();
   listIds = new WeakMap();

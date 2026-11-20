@@ -195,6 +195,25 @@ test("a text is read once however often a row draws it, and again for another te
   }
 });
 
+// The page asks what each node's words cite each time it gathers the tree's references
+// (`treeReferences`, `useIssueTree.ts`), and a text's citations are read once. They are read
+// against no list of keys, the id `0`. Every other id names one set of keys and is never given
+// again: a set whose id was forgotten takes a new one, and finds no reading kept under the old. So
+// a reset that forgot the ids but kept the readings fails this row: on a rerun it found its text
+// read by the run before, and counted no read.
+test("a text's citations are read once however often they are asked", () => {
+  const reads = spyOn(textReferences, "readTextReferences");
+  try {
+    const text = "Cited once: see dispatch://CORE-601/spec#b-r1 and CORE-602.";
+    const cited = citedReferences(text);
+    expect(citedReferences(text), "a second ask cited other references").toEqual(cited);
+    expect(reads, "the text cited twice was not read once").toHaveBeenCalledTimes(1);
+    expect(cited).toEqual(["dispatch://CORE-601/spec#b-r1", "dispatch://CORE-602"]);
+  } finally {
+    reads.mockRestore();
+  }
+});
+
 // A text keeps a reading for four lists of keys. A list it is asked again is its newest, so the
 // slot a fifth list evicts is the one asked longest ago, and not the one read first. Each list is
 // one array throughout, so its id is the same whatever other sets of keys are forgotten.
@@ -224,7 +243,7 @@ test("a text's fifth list of keys evicts the slot asked longest ago, and keeps o
 // The ids of the lists of keys are kept too: 64 sets of keys keep an id, and the 65th forgets them
 // all. The row makes that boundary itself. It gives 63 sets of its own an id, so list A takes the
 // 64th, list B the 65th, which forgets A's set, and a new array of A's keys a new id and a new
-// reading: 3 reads. That holds only where the row starts with no set kept. A reset that forgot the
+// reading: 3 reads. That holds where the row starts with no set kept. A reset that forgot the
 // readings but kept the ids left the sets of the run before, which move the boundary: on a rerun
 // A's set outlived B, the new array found A's reading, and the row counted 2.
 test("the 65th set of keys forgets the first 64, counted from a table the row starts empty", () => {
