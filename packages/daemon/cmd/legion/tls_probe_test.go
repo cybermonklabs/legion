@@ -37,9 +37,9 @@ func testTLSSites(stateDir string) []tlsSite {
 	return []tlsSite{
 		{name: "emSign", url: "https://" + tlsEmSignHost + "/", root: filepath.Join(stateDir, "fixture-emsign-root.pem"), via: testTLSVia},
 		{name: "AAA", url: "https://" + tlsAAAHost + "/", root: filepath.Join(stateDir, "fixture-aaa-root.pem"), via: testTLSVia},
-		{name: "control", url: "https://" + tlsControlHost + "/", root: trust, control: true, via: testTLSVia, trust: trust},
-		{name: "vendored emSign", url: publicEmSignTLSSite.url, root: publicEmSignTLSSite.root, vendored: true, via: testTLSVia},
-		{name: "vendored AAA", url: publicAAATLSSite.url, root: publicAAATLSSite.root, vendored: true, via: testTLSVia},
+		{name: "control", url: "https://" + tlsControlHost + "/", root: trust, kind: tlsControlSite, via: testTLSVia, trust: trust},
+		{name: "vendored emSign", url: publicEmSignTLSSite.url, root: publicEmSignTLSSite.root, kind: tlsVendoredSite, via: testTLSVia},
+		{name: "vendored AAA", url: publicAAATLSSite.url, root: publicAAATLSSite.root, kind: tlsVendoredSite, via: testTLSVia},
 		publicEmSignTLSSite, publicAAATLSSite,
 	}
 }
@@ -81,7 +81,7 @@ func unaskedPublicTLSSites(context.Context, []string, string) []tlsSite {
 func askedVendoredTLSSites(_ context.Context, _ []string, _ string, sites []tlsSite) []tlsSite {
 	var vendored []tlsSite
 	for _, site := range sites {
-		if site.vendored {
+		if site.kind == tlsVendoredSite {
 			vendored = append(vendored, site)
 		}
 	}
@@ -558,36 +558,78 @@ func TestImageFloorTLSClientsClassifyTheirMeasuredOutput(t *testing.T) {
 
 // A client that accepted the chain and then got an error status names it, and that reads as an
 // acceptance, never as unavailable: at a public site unavailable reads as UNKNOWN and fails nothing,
-// so an acceptance a 403 or a 5xx followed would pass. Each output is the client's at a server of
-// 127.0.0.1 answering 503 with a certificate the client trusted, measured on 2026-11-20 in the
-// image of 1c7c825367 (a 403 read the same with its own status). The refusals beside them, which
-// name no status, still read as refusals.
+// so an acceptance an error status followed would pass. Every HTTP client the probe holds to a
+// public site has a row here (redis-cli and socat speak no HTTP). Each output is the client's, run
+// as the probe runs it, at a server of 127.0.0.1 answering the status with an empty body and a leaf
+// whose root the client was given, measured on 2026-11-20 in the image of 1c7c825367 with a 401,
+// 403, 429 and 503 (a status not written here read as its row's does, with its own number or
+// phrase). The refusals beside them, which name no status, still read as refusals.
 func TestImageTLSClientsReadAnHTTPErrorAfterTheHandshakeAsAnAcceptance(t *testing.T) {
 	fetchSource := `file:///home/legion/[eval1]:1 const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status); ^ `
 	bunSource := `1 | const response = await fetch(process.env.LEGION_TLS_URL); if (!response.ok) throw new Error("HTTP " + response.status); ^ `
-	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), "node", "codegraph-node", "bun", "omp", "wget", "git")
-	for _, testCase := range []struct {
-		client, name, stderr, exit string
-		want                       tlsStatus
+	pyTrace := `Traceback (most recent call last): File "/usr/lib/python3.13/urllib/request.py", line 613, in http_error_default raise HTTPError(req.full_url, code, msg, hdrs, fp) `
+	clients := imageTLSClientsOf[tlsCommandClient](t, nil, t.TempDir(), workerTLSClientNames()...)
+	rows := []struct {
+		client, name, stdout, stderr, exit string
+		want                               tlsStatus
 	}{
 		{client: "node", name: "503", exit: "1", stderr: fetchSource + `Error: HTTP 503 at file:///home/legion/[eval1]:1:83`, want: tlsConnectionAccepted},
 		{client: "codegraph-node", name: "503", exit: "1", stderr: fetchSource + `Error: HTTP 503 at file:///home/legion/[eval1]:1:83`, want: tlsConnectionAccepted},
 		{client: "bun", name: "503", exit: "1", stderr: bunSource + `error: HTTP 503 at /home/legion/[eval]:1:87 Bun v1.4.4 (Linux x64)`, want: tlsConnectionAccepted},
 		{client: "omp", name: "503", exit: "1", stderr: bunSource + `error: HTTP 503 at /home/legion/[eval]:1:87 Bun v1.4.5 (Linux x64)`, want: tlsConnectionAccepted},
-		{client: "wget", name: "503", exit: "8", stderr: `https://127.0.0.1:8443/: 2026-11-20 14:46:52 ERROR 503: Service Unavailable.`, want: tlsConnectionAccepted},
-		{client: "git", name: "503", exit: "128", stderr: `fatal: unable to access 'https://127.0.0.1:8443/': The requested URL returned error: 503`, want: tlsConnectionAccepted},
+		{client: "uv", name: "429", exit: "2", stderr: `Using Python 3.13.5 environment at: /usr error: Request failed after 3 retries in 6.2s cause: Failed to fetch: https://127.0.0.1/legion-tls-probe-not-a-package/ cause: HTTP status client error (429 Too Many Requests) for url (https://127.0.0.1/legion-tls-probe-not-a-package/)`, want: tlsConnectionAccepted},
+		{client: "uv", name: "503", exit: "2", stderr: `Using Python 3.13.5 environment at: /usr error: Request failed after 3 retries in 7.5s cause: Failed to fetch: https://127.0.0.1/legion-tls-probe-not-a-package/ cause: HTTP status server error (503 Service Unavailable) for url (https://127.0.0.1/legion-tls-probe-not-a-package/)`, want: tlsConnectionAccepted},
+		{client: "uv", name: "403", exit: "1", stderr: `Using Python 3.13.5 environment at: /usr error: No solution found when resolving dependencies cause: Because legion-tls-probe-not-a-package was not found in the package registry and you require legion-tls-probe-not-a-package, we can conclude that your requirements are unsatisfiable. hint: An index (https://127.0.0.1/) returned a 403 Forbidden error.`, want: tlsConnectionAccepted},
+		{client: "aws", name: "503", exit: "254", stderr: `aws: [ERROR]: An error occurred (503) when calling the GetCallerIdentity operation (reached max retries: 2): Service Unavailable`, want: tlsConnectionAccepted},
+		{client: "aws", name: "401", exit: "255", stderr: `aws: [ERROR]: Unable to parse response (no element found: line 1, column 0), invalid XML received. Further retries may succeed: b''`, want: tlsConnectionAccepted},
+		{client: "curl", name: "503", exit: "22", stderr: `curl: (22) The requested URL returned error: 503`, want: tlsConnectionAccepted},
+		{client: "python3", name: "503", exit: "1", stderr: pyTrace + `urllib.error.HTTPError: HTTP Error 503: Service Unavailable`, want: tlsConnectionAccepted},
+		{client: "gh", name: "503", exit: "1", stderr: `gh: HTTP 503`, want: tlsConnectionAccepted},
+		{client: "wget", name: "503", exit: "8", stderr: `https://127.0.0.1/: 2026-11-20 16:37:49 ERROR 503: Service Unavailable.`, want: tlsConnectionAccepted},
+		{client: "wget", name: "401", exit: "6", stderr: `Username/Password Authentication Failed.`, want: tlsConnectionAccepted},
+		{client: "git", name: "503", exit: "128", stderr: `fatal: unable to access 'https://127.0.0.1/': The requested URL returned error: 503`, want: tlsConnectionAccepted},
+		{client: "git", name: "401", exit: "128", stderr: `fatal: could not read Username for 'https://127.0.0.1': terminal prompts disabled`, want: tlsConnectionAccepted},
+		{client: "go", name: "503", exit: "1", stderr: `go: 127.0.0.1/legion-tls-probe@latest: unrecognized import path "127.0.0.1/legion-tls-probe": reading https://127.0.0.1/legion-tls-probe?go-get=1: 503 Service Unavailable`, want: tlsConnectionAccepted},
+		{client: "kubectl", name: "401", exit: "1", stderr: `error: You must be logged in to the server (the server has asked for the client to provide credentials)`, want: tlsConnectionAccepted},
+		{client: "kubectl", name: "403", exit: "1", stderr: `Error from server (Forbidden):`, want: tlsConnectionAccepted},
+		{client: "kubectl", name: "503", exit: "1", stderr: `Error from server (ServiceUnavailable): the server is currently unable to handle the request`, want: tlsConnectionAccepted},
+		{client: "gcloud", name: "503", exit: "1", stderr: `ERROR: (gcloud.compute.regions.list) Some requests did not succeed: -`, want: tlsConnectionAccepted},
+		{client: "bq", name: "401", exit: "1", stdout: `Authorization error. If you used service account credentials, the server likely returned an Unauthorized response. Verify that you are using the correct account with the correct permissions to access the service endpoint. google.auth.exceptions.RefreshError: The credentials do not contain the necessary fields need to refresh the access token.`, want: tlsConnectionAccepted},
+		{client: "bq", name: "503", exit: "1", stdout: `BigQuery error in ls operation: Got 503 response from discovery url: https://127.0.0.1/$discovery/rest?version=v2`, want: tlsConnectionAccepted},
+		{client: "az", name: "401", exit: "1", stderr: `ERROR: Unauthorized Interactive authentication is needed. Please run: az logout az login`, want: tlsConnectionAccepted},
+		{client: "az", name: "429", exit: "1", stderr: `ERROR: Too Many Requests`, want: tlsConnectionAccepted},
+		{client: "az", name: "503", exit: "1", stderr: `ERROR: Service Unavailable`, want: tlsConnectionAccepted},
+		{client: "mise", name: "503", exit: "1", stderr: `DEBUG GET Downloading https://127.0.0.1/ to ~/data/downloads/http-legion-tls-probe/1/ DEBUG GET https://127.0.0.1/ DEBUG GET https://127.0.0.1/ 503 Service Unavailable Error: 0: Failed to install http:legion-tls-probe@1`, want: tlsConnectionAccepted},
+		{client: "chromium", name: "401", exit: "0", stderr: `[735:735:1120/163705.4:ERROR:components/headless/command_handler/headless_command_handler.cc:403] Page load failed:net::ERR_INVALID_AUTH_CREDENTIALS`, want: tlsConnectionAccepted},
+		{client: "chromium", name: "503", exit: "0", stderr: `[3202:3202:1120/163752.9:ERROR:components/headless/command_handler/headless_command_handler.cc:403] Page load failed:net::ERR_HTTP_RESPONSE_CODE_FAILURE`, want: tlsConnectionAccepted},
 		{client: "node", name: "refusal, its source line printed", exit: "1", stderr: fetchSource + tlsRefusalRows[0].public, want: tlsCertificateRefused},
 		{client: "bun", name: "refusal, its source line printed", exit: "1", stderr: bunSource + tlsRefusalRows[1].public, want: tlsCertificateRefused},
 		{client: "wget", name: "refusal", exit: "5", stderr: wgetEmSignRefusal, want: tlsCertificateRefused},
 		{client: "git", name: "refusal", exit: "128", stderr: gitEmSignRefusal, want: tlsCertificateRefused},
-	} {
-		t.Run(testCase.client+" "+testCase.name, func(t *testing.T) {
-			client := clients[testCase.client]
-			client.command = func(tlsSite) (string, []string, []string) {
-				return "sh", []string{"-c", `printf %s "$1" >&2; exit "$2"`, "sh", testCase.stderr, testCase.exit}, nil
+		{client: "kubectl", name: "refusal", exit: "1", stderr: kubectlEmSignRefusal, want: tlsCertificateRefused},
+		{client: "chromium", name: "refusal", exit: "0", stderr: `Page load failed:net::ERR_CERT_AUTHORITY_INVALID`, want: tlsCertificateRefused},
+	}
+	answered := map[string]bool{}
+	for _, row := range rows {
+		answered[row.client] = answered[row.client] || row.want == tlsConnectionAccepted
+	}
+	for _, name := range workerTLSClientNames() {
+		if name != "redis-cli" && name != "socat" && !answered[name] {
+			t.Errorf("%s has no measured error-status row: every HTTP client the probe holds to a public site needs one", name)
+		}
+	}
+	for _, row := range rows {
+		t.Run(row.client+" "+row.name, func(t *testing.T) {
+			command := clients[row.client]
+			command.command = func(tlsSite) (string, []string, []string) {
+				return "sh", []string{"-c", `printf %s "$1"; printf %s "$2" >&2; exit "$3"`, "sh", row.stdout, row.stderr, row.exit}, nil
 			}
-			if outcome := client.probe(context.Background(), publicEmSignTLSSite); outcome.status != testCase.want {
-				t.Fatalf("%s at the public emSign site = %+v, want status %q", testCase.client, outcome, testCase.want)
+			var client tlsClient = command
+			if row.client == "chromium" {
+				client = tlsChromiumClient{tlsCommandClient: command}
+			}
+			if outcome := client.probe(context.Background(), publicEmSignTLSSite); outcome.status != row.want {
+				t.Fatalf("%s at the public emSign site = %+v, want status %q", row.client, outcome, row.want)
 			}
 		})
 	}
@@ -755,7 +797,10 @@ func TestImageTLSClientsAtTheVendoredChains(t *testing.T) {
 // client's output there was its ordinary refusal (redis-cli, socat at the RSA root), the rule is
 // blind to it, and only the vendored chains or the public sites can show it trusting the root. git
 // with no root of the name refused the fixture with "certificate signer not trusted"
-// (gitEmSignRefusal), so its "no details" refusal is the root's failed signature.
+// (gitEmSignRefusal), so its "no details" refusal is the root's failed signature; wget, given the
+// bundle with --ca-certificate as only an image's /etc/wgetrc can give it, printed "is not
+// trusted." alone, where with no root of the name it adds "doesn't have a known issuer."
+// (wgetEmSignRefusal).
 func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 	held := map[string]string{
 		"node":    `node:internal/modules/run_main:107 triggerUncaughtException( ^ [TypeError: fetch failed] { [cause]: Error: certificate signature failure at TLSSocket.onConnectSecure (node:internal/tls/wrap:1788:34) { code: 'CERT_SIGNATURE_FAILURE' } } Node.js v24.22.1`,
@@ -769,10 +814,12 @@ func TestTLSProbeFailsAClientWhoseStoreHoldsTheDistrustedRoot(t *testing.T) {
 		"socat":   `2026/11/20 11:26:39 socat[1153] W SSL_connect(): error:030000EA:digital envelope routines::provider signature failure 2026/11/20 11:26:39 socat[1153] W SSL_connect(): error:0A000086:SSL routines::certificate verify failed`,
 		"kubectl": `Unable to connect to the server: tls: failed to verify certificate: x509: certificate signed by unknown authority (possibly because of "crypto/rsa: verification error" while trying to verify candidate authority certificate "AAA Certificate Services")`,
 		"git":     `fatal: unable to access 'https://dv-g3b-emudhra.we-have-a-problem.com/': server verification failed: certificate error, no details available. (CAfile: /planted/real.pem CRLfile: none)`,
+		"wget":    `ERROR: The certificate of 'dv-g3b-emudhra.we-have-a-problem.com' is not trusted.`,
 	}
 	blind := map[string]string{
 		"redis-cli": `Could not connect to Redis at 127.0.0.1:35193: SSL_connect failed: certificate verify failed`,
 		"git":       gitEmSignRefusal,
+		"wget":      wgetEmSignRefusal,
 	}
 	sites := testTLSSites(t.TempDir())
 	emSign := sites[0]
@@ -946,7 +993,7 @@ func TestImageRedisCLITLSClientTargetsTheSitesHost(t *testing.T) {
 	for _, site := range testTLSSites(stateDir) {
 		host := tlsSiteHosts[site.name]
 		address, port := host, "443"
-		if !site.public {
+		if site.kind != tlsPublicSite {
 			address, port = testTLSViaHost, testTLSViaPort
 		}
 		want := []string{"--tls", "--sni", host, "-h", address, "-p", port, "PING"}
@@ -979,7 +1026,7 @@ func TestImageTLSClientsReachTheProbesSitesThroughItsServer(t *testing.T) {
 		for _, site := range testTLSSites(t.TempDir()) {
 			_, _, env := client.commandLine(site)
 			want := map[string]string{}
-			if !site.public {
+			if site.kind != tlsPublicSite {
 				for _, name := range []string{"HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"} {
 					want[name] = "http://" + testTLSVia
 				}
@@ -1171,7 +1218,7 @@ func TestImageTLSClientsKeepEveryTrustSettingOfThePods(t *testing.T) {
 		for _, site := range testTLSSites(t.TempDir()) {
 			_, _, environment := client.commandLine(site)
 			for name, want := range pod {
-				if site.control && slices.Contains(controlTrustSettings[client.name()], name) {
+				if site.kind == tlsControlSite && slices.Contains(controlTrustSettings[client.name()], name) {
 					want = site.trust
 					if name == "UV_SYSTEM_CERTS" {
 						want = "true"
@@ -1224,7 +1271,7 @@ func TestImageTLSProbeFailsAPodTrustSettingThatAcceptsTheEmSignChain(t *testing.
 					client.command = func(site tlsSite) (string, []string, []string) {
 						_, _, set := command(site)
 						kind := "compromised"
-						if site.control {
+						if site.kind == tlsControlSite {
 							kind = "control"
 						}
 						return "sh", []string{"-c", script, "sh", kind}, set
@@ -1434,7 +1481,7 @@ func TestImageOptionalTLSClientsTargetTheSiteFromTheStateDirectory(t *testing.T)
 
 		host := tlsSiteHosts[site.name]
 		address := "OPENSSL:" + host + ":443"
-		if !site.public {
+		if site.kind != tlsPublicSite {
 			address = "OPENSSL:" + testTLSVia + ",commonname=" + host + ",snihost=" + host
 		}
 		if site.trust != "" {
@@ -1467,7 +1514,7 @@ func TestImageChromiumResolvesOnlyTheProbedSite(t *testing.T) {
 	chromium := imageTLSClientsOf[tlsChromiumClient](t, nil, stateDir, "chromium")["chromium"]
 	for _, site := range testTLSSites(stateDir) {
 		want := []string{"--headless", "--no-sandbox", "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + tlsSiteHosts[site.name]}
-		if !site.public {
+		if site.kind != tlsPublicSite {
 			want = []string{"--headless", "--no-sandbox", "--proxy-server=http://" + testTLSVia, "--host-resolver-rules=MAP * ^NOTFOUND, EXCLUDE " + testTLSViaHost}
 		}
 		if site.trust != "" {
@@ -1531,7 +1578,7 @@ func TestTLSPositiveControlsRequireTheExpectedChain(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			var isolationRoots []string
 			err := verifyTLSPositiveControls(sites, func(site tlsSite) tlsOutcome {
-				if site.control {
+				if site.kind == tlsControlSite {
 					if site.trust != "" {
 						t.Errorf("the isolation control at %s is given the trust file %s; want none, so only the compromised root is trusted", site.url, site.trust)
 					}
@@ -1601,8 +1648,10 @@ func TestTLSProbeCurlReadsNoCurlrc(t *testing.T) {
 }
 
 // A public site's positive control decides whether the clients ask it: one that accepts its chain
-// with the CA-published root alone is asked, and one that refuses it, or cannot reach it, is not,
-// and says why.
+// with the CA-published root alone is asked, and so is one that verified that chain and answered an
+// error status, which curl --fail names "The requested URL returned error: 503": an outage or a rate
+// limit at the site leaves the chain the clients must refuse in place. One that refuses the chain,
+// or cannot be reached, is not asked, and says why.
 func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T) {
 	bin := t.TempDir()
 	script := "#!/bin/sh\ncase \"$*\" in *" + tlsAAAHost + "*) echo 'curl: (6) Could not resolve host: " + tlsAAAHost + "' >&2; exit 6 ;; esac\nexit 0\n"
@@ -1622,6 +1671,16 @@ func TestPublicTLSSitesAreAskedOnlyWhereTheirPositiveControlAccepts(t *testing.T
 	}
 	if got, want := tlsSiteLine(sites[0]), "probe-image: TLS public emSign: chain verified"; got != want {
 		t.Errorf("tlsSiteLine(public emSign) = %q, want %q", got, want)
+	}
+
+	answering := "#!/bin/sh\necho 'curl: (22) The requested URL returned error: 503' >&2\nexit 22\n"
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(answering), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range probePublicTLSSites(context.Background(), []string{"PATH=" + os.Getenv("PATH")}, t.TempDir()) {
+		if site.unasked != "" {
+			t.Errorf("%s whose positive control verified the chain and got a 503: unasked %q, want asked", site.name, site.unasked)
+		}
 	}
 }
 

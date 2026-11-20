@@ -3,10 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -95,16 +91,16 @@ func newTLSServer(stateDir string) (*tlsServer, error) {
 	fixtures := map[string]*tlsServedSite{}
 	for _, fixture := range []struct {
 		name, file, host string
-		control          bool
+		kind             tlsSiteKind
 		page             http.HandlerFunc
 	}{
-		{"emSign", "emsign", tlsEmSignHost, false, tlsCompromisedPage},
-		{"AAA", "aaa", tlsAAAHost, false, tlsCompromisedPage},
-		{"control", "control", tlsControlHost, true, tlsControlPage},
+		{"emSign", "emsign", tlsEmSignHost, tlsFixtureSite, tlsCompromisedPage},
+		{"AAA", "aaa", tlsAAAHost, tlsFixtureSite, tlsCompromisedPage},
+		{"control", "control", tlsControlHost, tlsControlSite, tlsControlPage},
 	} {
 		var built tlsFixture
 		var err error
-		if fixture.control {
+		if fixture.kind == tlsControlSite {
 			built, err = newTLSControlFixture()
 		} else {
 			var vendored []*x509.Certificate
@@ -120,8 +116,8 @@ func newTLSServer(stateDir string) (*tlsServer, error) {
 			return nil, fmt.Errorf("write the TLS probe's %s fixture root: %w", fixture.name, err)
 		}
 		served := &tlsServedSite{cert: built.cert, page: fixture.page}
-		served.site = tlsSite{name: fixture.name, url: "https://" + fixture.host + "/", root: rootPath, control: fixture.control, seen: &served.seen}
-		if fixture.control {
+		served.site = tlsSite{name: fixture.name, url: "https://" + fixture.host + "/", root: rootPath, kind: fixture.kind, seen: &served.seen}
+		if fixture.kind == tlsControlSite {
 			served.site.trust = rootPath
 		}
 		fixtures[fixture.host] = served
@@ -177,15 +173,7 @@ func vendoredTLSSite(public tlsSite) (*tlsServedSite, error) {
 	if err != nil {
 		return nil, err
 	}
-	var key crypto.Signer
-	switch leafKey := chain[0].PublicKey.(type) {
-	case *ecdsa.PublicKey:
-		key, err = ecdsa.GenerateKey(leafKey.Curve, rand.Reader)
-	case *rsa.PublicKey:
-		key, err = rsa.GenerateKey(rand.Reader, leafKey.N.BitLen())
-	default:
-		err = fmt.Errorf("a leaf key of type %T", leafKey)
-	}
+	key, err := tlsKeyFor(0, chain[0].PublicKey)
 	if err != nil {
 		return nil, fmt.Errorf("a stand-in key for the vendored chain of %s: %w", host, err)
 	}
@@ -193,7 +181,7 @@ func vendoredTLSSite(public tlsSite) (*tlsServedSite, error) {
 	for _, cert := range chain {
 		served.cert.Certificate = append(served.cert.Certificate, cert.Raw)
 	}
-	served.site = tlsSite{name: "vendored " + strings.TrimPrefix(public.name, "public "), url: public.url, root: public.root, vendored: true, seen: &served.seen}
+	served.site = tlsSite{name: "vendored " + strings.TrimPrefix(public.name, "public "), url: public.url, root: public.root, kind: tlsVendoredSite, seen: &served.seen}
 	return served, nil
 }
 

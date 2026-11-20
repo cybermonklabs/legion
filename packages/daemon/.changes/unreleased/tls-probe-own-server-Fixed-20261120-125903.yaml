@@ -5,10 +5,13 @@ body: |-
     their own, the two public test sites' own chains, and a control chain. A worker image build no
     longer fails when a public test host cannot be resolved or reached. `node`, CodeGraph's `node`,
     `wget` and `git`, which read a chain only after the handshake, are still held to the public test
-    sites, which fail the probe only where a client accepts their chain, an error status after the
-    handshake included; where a public site gives no verdict, the probe prints
-    `probe-image: UNKNOWN: <client> against <host>: <why>`. A trust store that holds a distrusted
-    root now fails the probe with no network for every client that reads a trust setting.
+    sites, which fail the probe only where a client accepts their chain; a client that got past the
+    chain and then an error status from the site, such as a 503, accepted it. Where a public site
+    gives no verdict, the probe prints `probe-image: UNKNOWN: <client> against <host>: <why>`. A
+    trust store that holds a distrusted root fails the probe with no network for every client that
+    reads a trust setting, and for `wget` through an image's `/etc/wgetrc`, until the served copies of
+    the public sites' chains expire on 2027-05-03; from then `redis-cli`, and `socat` for the AAA
+    root, are caught only where the public test sites answer.
 time: 2026-11-20T12:59:03Z
 custom:
     Issue: tls-probe-own-server

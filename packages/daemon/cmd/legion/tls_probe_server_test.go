@@ -75,8 +75,10 @@ func TestTLSServerServesEachChainUnderItsHostThroughAProxyConnect(t *testing.T) 
 		if host, port, err := net.SplitHostPort(site.via); err != nil || host != "127.0.0.1" || port == "0" {
 			t.Fatalf("%s is served at %q, want 127.0.0.1 at the port the kernel chose", site.name, site.via)
 		}
-		if site.control != (site.name == "control") || (site.trust != "") != site.control || (site.control && site.trust != site.root) {
-			t.Errorf("%s = %+v, want the control alone with its own root as its trust file", site.name, site)
+		wantKind := map[string]tlsSiteKind{"emSign": tlsFixtureSite, "AAA": tlsFixtureSite, "control": tlsControlSite}[site.name]
+		control := site.kind == tlsControlSite
+		if site.kind != wantKind || (site.trust != "") != control || (control && site.trust != site.root) {
+			t.Errorf("%s = %+v, want kind %d, and the control alone with its own root as its trust file", site.name, site, wantKind)
 		}
 	}
 	proxy, _ := url.Parse("http://" + sites[0].via)
@@ -93,7 +95,7 @@ func TestTLSServerServesEachChainUnderItsHostThroughAProxyConnect(t *testing.T) 
 		body, _ := io.ReadAll(response.Body)
 		response.Body.Close()
 		want := "Your client successfully connected to the site. That's bad!\n"
-		if site.control {
+		if site.kind == tlsControlSite {
 			want = "<!doctype html><html><head><title>Legion TLS probe control</title></head><body><p>Legion TLS probe control.</p></body></html>\n"
 		}
 		if response.StatusCode != http.StatusOK || string(body) != want {
@@ -103,7 +105,7 @@ func TestTLSServerServesEachChainUnderItsHostThroughAProxyConnect(t *testing.T) 
 			t.Errorf("%s handshakes counted %d after a GET, want more than %d", site.name, got, before)
 		}
 		path, method, status := "/legion-tls-probe?go-get=1", http.MethodGet, http.StatusNotFound
-		if !site.control {
+		if site.kind != tlsControlSite {
 			path, method, status = "/", http.MethodPost, http.StatusMethodNotAllowed
 		}
 		request, _ := http.NewRequest(method, strings.TrimSuffix(site.url, "/")+path, nil)
@@ -157,7 +159,7 @@ func TestTLSServerServesTheVendoredChainsItCannotSignFor(t *testing.T) {
 	fixtures, vendored := sites[0], sites[3:]
 	for index, site := range vendored {
 		public := publicTLSSites[index]
-		if site.name != "vendored "+strings.TrimPrefix(public.name, "public ") || !site.vendored || site.url != public.url || site.root != public.root || site.via == fixtures.via {
+		if site.name != "vendored "+strings.TrimPrefix(public.name, "public ") || site.kind != tlsVendoredSite || site.url != public.url || site.root != public.root || site.via == fixtures.via {
 			t.Fatalf("vendored site %d = %+v, want the public site %s's URL and root at a listener of its own", index, site, public.name)
 		}
 		file := map[string]string{"vendored emSign": "emsign", "vendored AAA": "aaa"}[site.name]
