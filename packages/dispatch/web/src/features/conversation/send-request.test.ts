@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
-import { ApiError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
-import { requestFor, type SentRequest } from "./send-request";
+import { requestFor, type SentRequest, sendAttempt } from "./send-request";
 
 /** A message to the Planner's session, as Send froze it, under key `send-1`. */
 const refused: SentRequest = {
@@ -79,4 +79,32 @@ test("a comment's Retry after Dispatch's refusal is the request the composer sho
   expect(retried.plainDelivery).toBe("aside");
   expect(retried.sendKey).not.toBe("send-1");
   expect(requestFor(undefined, undefined, next).sendKey).not.toBe("send-1");
+});
+
+// A reply under an ask is a comment that names the ask by `ask_id`, the field Dispatch reads for
+// it, and carries no `reply_to`, which Dispatch reads as a comment's id alone. A reply to a
+// comment still names that comment by `reply_to`.
+test("a reply under an ask names the ask by ask_id and no reply_to, and a reply to a comment names reply_to", async () => {
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  try {
+    const reply = (parentKind: "ask" | "comment"): SentRequest => ({
+      ...refused,
+      owner: { issueKey: "CORE-1", kind: "issue" },
+      pickedDelivery: undefined,
+      replyTo: {
+        actor: { id: "alice", kind: "user" },
+        excerpt: "",
+        id: `${parentKind}-1`,
+        parentKind,
+      },
+    });
+    await sendAttempt(reply("ask"))({ key: "send-ask" });
+    await sendAttempt(reply("comment"))({ key: "send-comment" });
+    expect(createComment.mock.calls.map(([issueKey, input]) => [issueKey, input])).toStrictEqual([
+      ["CORE-1", { ask_id: "ask-1", body: "Status please" }],
+      ["CORE-1", { body: "Status please", reply_to: "comment-1" }],
+    ]);
+  } finally {
+    createComment.mockRestore();
+  }
 });

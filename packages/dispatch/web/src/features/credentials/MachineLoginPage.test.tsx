@@ -182,7 +182,7 @@ const dropped = () => new NetworkError("/api/v1/credential-requests", new TypeEr
 
 /** The page over `queryClient`, on the held clock, with the code looked up when `answerLookup`
  *  is given: it answers the lookup the press of Look up sent, inside `act` once that press is
- *  out, as packages/dispatch/AGENTS.md's act rule says. */
+ *  out, as docs/testing.md ("The act rule of a Dispatch unit test") says. */
 async function stoppedPage(
   queryClient: QueryClient,
   answerLookup?: (record: RecordResponse) => void
