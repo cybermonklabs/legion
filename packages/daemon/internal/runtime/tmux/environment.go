@@ -81,6 +81,12 @@ func resolveLeakCheck(environ []string) (string, error) {
 // name (composed) is carried by every pane as surely as a runtime-owned one — panePairs sets it
 // whatever the operator wrote — so a provider key of that name is refused here as well, at boot,
 // rather than at each pane's shim.
+// It also refuses, with runtime.PaneVariableRefusal's reason, every name that function refuses
+// with no value (a variable that places the session a resume reads, one a launcher tells a Claude
+// Code pane or a resumed Oh My Pi pane after the operator's variables, a launch secret's pointer),
+// since the shim exports a provider key into the agent's environment, where it acts as the pane
+// variable of that name; the shim of a pane told such a name itself would also refuse to start
+// over the key.
 func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -99,11 +105,14 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 	var names []string
 	for _, entry := range entries {
 		name := entry.Name()
+		why := runtime.PaneVariableRefusal(name, "")
 		switch {
 		case !entry.Type().IsRegular() || !runtime.IsEnvName(name):
 			return nil, fmt.Errorf("tmux runtime: provider-env entry %q is not named for an environment variable", name)
 		case carried[name] || owned(name):
 			return nil, fmt.Errorf("tmux runtime: provider key %s is a variable every pane already carries", name)
+		case why != "":
+			return nil, fmt.Errorf("tmux runtime: provider key %s: %s", name, why)
 		case owned(name + "_FILE"):
 			return nil, fmt.Errorf("tmux runtime: provider key %s would not reach OMP: every pane carries %s_FILE", name, name)
 		}
@@ -117,12 +126,12 @@ func readProviderKeyNames(dir string, dispatchConfigured bool) ([]string, error)
 // or controller pane itself, PATH, which the runtime composes, the git identity each launch sets for
 // its role (runtime.GitIdentity.Env), a credential-shaped name, since a secret reaches a pane as a
 // file and never as a value on tmux's command line, every variable runtime.PaneVariableRefusal
-// refuses (one that places the session a resume reads, one a Claude Code pane is told after the
-// operator's, a launch secret's pointer, a value that is a URL carrying a password), and a provider
-// key or its pointer, which the shim would then refuse to start over or skip
-// (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed names
-// (composed), which the operator may set because the runtime writes this launch's share into the
-// value the operator wrote rather than over it. The loader refuses what it can see without the
+// refuses (one that places the session a resume reads, one a Claude Code pane or a resumed Oh My Pi
+// pane is told after the operator's, a launch secret's pointer, a value that is a URL carrying a
+// password), and a provider key or its pointer, which the shim would then refuse to start over or
+// skip (internal/shim/config.go). It reads runtimeOwned and controllerOwned and not the composed
+// names (composed), which the operator may set because the runtime writes this launch's share into
+// the value the operator wrote rather than over it. The loader refuses what it can see without the
 // runtime (config.readPaneEnv); this refuses that again and the rest, at boot, before any pane
 // opens. A refusal names the variable and why, never its value.
 func checkPaneEnv(env map[string]string, providerKeys []string) error {

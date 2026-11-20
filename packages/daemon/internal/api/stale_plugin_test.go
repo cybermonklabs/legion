@@ -457,7 +457,7 @@ func TestOperatorControllersStaleGrantIsRefused(t *testing.T) {
 // An operator-bearer grant (the Controller: true grant `legion issue status` redeems on
 // POST /legion/v1/issues/status with --operator-token-file) is returned by redeem without
 // consulting the controller record at all (LEGION-164): a mint for it checks nothing about the
-// record either (mintControllerGrant, the grant route's operator form), so its own staleness is
+// record either (MintOperatorController, the grant route's operator form), so its own staleness is
 // never the record's to answer for — only the controller session's own grant mint is
 // (controllerSessionGrant). The record's stale contract that refuses the session's own mint
 // (TestOperatorControllersStaleGrantIsRefused) leaves the operator-bearer grant's redeem

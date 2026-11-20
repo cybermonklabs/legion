@@ -20,16 +20,19 @@ import (
 )
 
 // OMPHome puts in home, a fresh HOME a test runs omp under, the native module omp would otherwise
-// write there on its first run: one .node file of about 116 MiB at the pin, the variant the CPU
+// write there on its first run: one .node file of about 123 MiB at the pin, the variant the CPU
 // runs, which omp extracts from its own binary into .omp/natives/<version> under any HOME that
-// lacks it. Oh My Pi has no setting for that directory short of XDG_DATA_HOME, which moves its
-// whole profile. The file is instead a hardlink to one copy per omp binary under the user's cache
+// lacks it. Oh My Pi reads that directory from elsewhere only under a variable a test would have
+// to set (getNativesDir, @oh-my-pi/pi-natives native/loader-state.js, in this order):
+// PI_NATIVES_DIR or OMP_DOWNLOAD_ROOT, which no pod or pane sets, then an existing
+// $XDG_DATA_HOME/omp, which moves its whole profile, then OMP_CONFIG_ROOT, which moves its whole
+// config root. The file is instead a hardlink to one copy per omp binary under the user's cache
 // directory, so a case writes none of them and its HOME holds nothing of the operator's own
 // ~/.omp. The copy's files are read-only: every test HOME shares their inodes, so a write through
 // one link would reach all.
 //
-// It assumes the test's environment names no XDG_DATA_HOME, as no test that runs omp does: omp
-// keeps its natives under $XDG_DATA_HOME/omp when that directory exists.
+// It assumes the test's environment sets none of those variables: a test that sets one reads
+// omp's natives where that variable names, and links them there itself.
 //
 // The plugins' real-binary tests keep the same copy (packages/pi-shared/test/omp-natives.ts): the
 // same directory, name, layout, lock and fill, so either language fills it for the other. A change
