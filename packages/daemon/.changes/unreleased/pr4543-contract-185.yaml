@@ -1,8 +1,8 @@
 kind: Changed
 body: |-
-  The daemon API contract is 185. No route, state key or environment changes: the contract's
+  The daemon API contract is 187. No route, state key or environment changes: the contract's
   history no longer names one deployment's spend collector, and any edit of that history moves the
-  number. A daemon at 185 and a plugin at 178 refuse each other at the boot gate and in
+  number. A daemon at 187 and a plugin at 178 refuse each other at the boot gate and in
   `legion probe-image`, so release the daemon and both plugins together.
 time: 2026-11-20T04:19:29Z
 custom:

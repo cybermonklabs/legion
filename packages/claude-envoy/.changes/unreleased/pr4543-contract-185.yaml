@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 185, the number the daemon of the same release declares.
+  The plugin speaks daemon API contract 187, the number the daemon of the same release declares.
   No tool or wire shape changes.
 time: 2026-11-20T04:19:29Z
 custom:
