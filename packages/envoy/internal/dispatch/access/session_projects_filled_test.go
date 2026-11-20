@@ -24,11 +24,12 @@ func TestAnOpenViewerReadsNoOtherSessionWhileTheFillIsUnfinished(t *testing.T) {
 	database := seedAccess(t)
 	// ses_pub acted in PUB and its pair is recorded; ses_unrecorded acted in PRIV before the fill
 	// reached its event, so no row places it anywhere yet, and the listener lists it with a
-	// credential that names no project.
+	// credential that names no project ("projects":[]: a record with no projects key names no list,
+	// and passes no open viewer while a project is private, filled or not).
 	if _, err := database.Pool.Exec(ctx, `
 		insert into session_projects (session_id, project_key) values ('ses_pub', 'PUB');
 		insert into route_roster (answered, sessions, sent_at, expires_at)
-		values (true, '[{"session_id":"ses_unrecorded"}]', now(), now() + interval '1 hour');
+		values (true, '[{"session_id":"ses_unrecorded","projects":[]}]', now(), now() + interval '1 hour');
 	`); err != nil {
 		t.Fatalf("seed ses_pub's pair and ses_unrecorded's listener record: %v", err)
 	}

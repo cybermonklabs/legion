@@ -8,6 +8,12 @@
 -- its primary key and reads the object once per statement; it never names route_roster or expands
 -- every listener row in the statement that reads a graph.
 --
+-- The object holds a session only when its listener record lists its projects: a list, [] for a
+-- credential that lists none. A record with no projects key, or a null one, is a listener that does
+-- not know the session's projects, which is not a credential that lists none, so the object leaves
+-- that session out, and SessionClause passes it to no viewer but its own while a project is
+-- private.
+--
 -- The trigger follows every old and new writer of route_roster, including a release that does not
 -- name this table and test fixtures that insert the row directly. The insert below copies the one
 -- row an earlier release may already hold. Each trigger replacement is in the roster writer's
@@ -23,18 +29,18 @@ create table route_roster_session_projects (
 );
 
 insert into route_roster_session_projects (id, projects)
-select roster.id, coalesce(jsonb_object_agg(listed->>'session_id', coalesce(listed->'projects', '[]'::jsonb)), '{}'::jsonb)
+select roster.id, coalesce(jsonb_object_agg(listed->>'session_id', listed->'projects'), '{}'::jsonb)
 from route_roster roster cross join lateral jsonb_array_elements(roster.sessions) listed
-where listed->>'session_id' is not null
+where listed->>'session_id' is not null and jsonb_typeof(listed->'projects') = 'array'
 group by roster.id;
 
 create function sync_route_roster_session_projects() returns trigger language plpgsql as $$
 begin
     insert into route_roster_session_projects (id, projects)
     values (new.id, coalesce((
-        select jsonb_object_agg(listed->>'session_id', coalesce(listed->'projects', '[]'::jsonb))
+        select jsonb_object_agg(listed->>'session_id', listed->'projects')
         from jsonb_array_elements(new.sessions) listed
-        where listed->>'session_id' is not null
+        where listed->>'session_id' is not null and jsonb_typeof(listed->'projects') = 'array'
     ), '{}'::jsonb))
     on conflict (id) do update set projects = excluded.projects;
     return new;
@@ -90,8 +96,9 @@ as $$
             offset 0
         ) then
             coalesce((
-                select projects from route_roster_session_projects where id = true
-            )->$1 ?| array(select jsonb_array_elements_text($2->'sees')), false)
+                select jsonb_array_length(record.listed) > 0 and record.listed <@ ($2->'sees')
+                from (select projects->$1 as listed from route_roster_session_projects where id = true) record
+            ), false)
         else false
     end, false)
 $$;

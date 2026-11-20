@@ -601,7 +601,9 @@ func TestARouteStatusFilterAnswersAFailedRosterReadAsTheDatabases(t *testing.T) 
 // record from route_roster_session_projects, its indexed projection of route_roster's sessions.
 // The projection follows an insert and a later sessions update, so an older writer of
 // route_roster, and test fixtures that write it directly, leave the session rule the same answer
-// as the roster every route-status read shares.
+// as the roster every route-status read shares. It holds each session whose record lists its
+// projects, an empty list included, and no session whose record has no projects key: a list the
+// listener did not send is one Dispatch does not know, never a credential that lists none.
 func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -624,8 +626,8 @@ func TestTheSessionProjectsSnapshotFollowsTheStoredRoster(t *testing.T) {
 			t.Errorf("the session-projects snapshot after %s differs from %s", sessions, want)
 		}
 	}
-	write(`[{"session_id":"ses-priv","projects":["PRIV"]},{"session_id":"ses-none"}]`,
-		`{"ses-none":[],"ses-priv":["PRIV"]}`)
+	write(`[{"session_id":"ses-priv","projects":["PRIV"]},{"session_id":"ses-empty","projects":[]},{"session_id":"ses-none"}]`,
+		`{"ses-empty":[],"ses-priv":["PRIV"]}`)
 	write(`[{"session_id":"ses-pub","projects":["PUB"]}]`, `{"ses-pub":["PUB"]}`)
 }
 

@@ -175,12 +175,15 @@ type Session struct {
 	TmuxPlace    *listenerwire.TmuxPlace `json:"tmux_place,omitempty"`
 	Roles        []string                `json:"roles"`
 	Capabilities []string                `json:"capabilities"`
-	// Projects is the listener's sorted list of the projects the session's credential names (K6),
-	// never null once normalized: a listener that does not send it names none, and every session
-	// reads [] until the listener learns each session's projects. Dispatch reads it to filter the
-	// agents list and serves it to no caller: agentResponse shadows it with a field nothing sets,
-	// and omitempty keeps an empty list out of the route roster's stored rows.
-	Projects []string `json:"projects,omitempty" description:"Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)"`
+	// Projects is the listener's sorted list of the projects the session's credential names (K6):
+	// [] for a credential that names none, and nil for a session the listener sent no list for, as
+	// every listener does until it learns each session's projects. The two stay apart, because a
+	// list Dispatch does not know is no credential that names none: the route roster stores nil as
+	// no projects key and [] as "projects":[] (omitzero), and the session rule passes a session with
+	// no history and no stored list to no viewer but its own while a project is private
+	// (access.SessionClause). Dispatch reads it there and serves it to no caller: agentResponse
+	// shadows it with a field nothing sets.
+	Projects []string `json:"projects,omitzero" description:"Never in an answer: the projects of the session's token (K6), which Dispatch reads to filter the agents list and serves to no caller (R4, R9)"`
 	LastSeen int64    `json:"last_seen"`
 	// State is StateLive, StateUnresponsive or StateGone, as the listener judged this record
 	// when it answered, or StateStopped, which only SessionIncludingStopped reads. A listener
@@ -191,7 +194,8 @@ type Session struct {
 }
 
 // normalize fills in what a listener may leave out: the id of the one session that was asked
-// about, the empty lists a decoder leaves nil, and the state an older listener does not name.
+// about, the empty lists a decoder leaves nil, and the state an older listener does not name. It
+// leaves Projects as the listener sent it: a list it did not send is unknown, never empty.
 func (s *Session) normalize(sessionID string) {
 	if s.SessionID == "" {
 		s.SessionID = sessionID
@@ -201,9 +205,6 @@ func (s *Session) normalize(sessionID string) {
 	}
 	if s.Capabilities == nil {
 		s.Capabilities = []string{}
-	}
-	if s.Projects == nil {
-		s.Projects = []string{}
 	}
 	if s.State == "" {
 		s.State = StateLive
@@ -224,12 +225,24 @@ func sessionOf(info listenerwire.SessionInfo, sessionID string) Session {
 		TmuxPlace:    info.TmuxPlace,
 		Roles:        info.Roles,
 		Capabilities: info.Capabilities,
-		Projects:     info.Projects,
+		Projects:     projectsOf(info.Projects),
 		LastSeen:     info.LastSeen,
 		State:        string(info.State),
 	}
 	session.normalize(sessionID)
 	return session
+}
+
+// projectsOf is a session's projects as the listener sent them: nil for no list, and a list, never
+// nil, for one it sent, [] included.
+func projectsOf(sent *[]string) []string {
+	if sent == nil {
+		return nil
+	}
+	if *sent == nil {
+		return []string{}
+	}
+	return *sent
 }
 
 // SendInput is a targeted Dispatch delivery through the listener.

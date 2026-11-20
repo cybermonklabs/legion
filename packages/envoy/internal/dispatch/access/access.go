@@ -166,14 +166,17 @@ func PersonClause(loginExpr, viewerParam string) string {
 // acted in one of theirs too.
 //
 // A session with no pair, which has acted in no project, is judged by its listener record's
-// projects (listener_session_projects, the migration's primary-key projection of the credential it
-// registered with): it passes an open viewer when the record names no project the viewer does not
-// see, an empty list included, and a viewer that is not open when the record names a project it
-// sees (K6). While a project is private, a session with neither a pair nor a listener record passes
-// no viewer but its own: nothing Dispatch holds says which projects it works for. A deployment that
-// holds no private project skips the reads of the private pairs and of the listener records: every
-// project is public, the open viewer sees each one, no pair is of a private project, and a viewer
-// that is not open reads a session by its pairs alone, as before (R9).
+// projects (route_roster_session_projects, the migration's primary-key projection of the
+// credential it registered with): it passes an open viewer when every project the record names is
+// one the viewer sees, an empty list included, and a viewer that is not open when the record names
+// a project and every project it names is one the viewer sees (K6), so a session that lists a
+// project the viewer cannot see reaches no viewer of another. A record with no projects key is a
+// listener that does not know the session's projects, never a credential that lists none: while a
+// project is private, a session with neither a pair nor a listed record passes no viewer but its
+// own, since nothing Dispatch holds says which projects it works for. A deployment that holds no
+// private project skips the reads of the private pairs and of the listener records: every project
+// is public, the open viewer sees each one, no pair is of a private project, and a viewer that is
+// not open reads a session by its pairs alone, as before (R9).
 //
 // session_projects places every session in the projects it acted in only once
 // `envoy-dispatch backfill-session-projects` has written session_projects_filled's row: migration
