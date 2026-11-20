@@ -17,12 +17,6 @@ const (
 	TriggerPullRequestMerged   TriggerKind = "pull_request_merged"
 	TriggerSignOff             TriggerKind = "sign_off"
 	TriggerBackward            TriggerKind = "backward"
-	// TriggerConflict is a head GitHub will not merge into its base: the daemon's own reading of
-	// its own read, raised by no agent (mergeability). GitHub computes no merge ref for such a
-	// head and runs no checks on it, so nothing else would ever arrive for it, and the issue goes
-	// back to implementing from whatever later phase it stands in, for the implementer to merge
-	// the base forward.
-	TriggerConflict TriggerKind = "conflict"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -72,15 +66,6 @@ var Table = append([]Row{
 	{From: phase.Accepting, Trigger: TriggerSignOff, Guard: allow, To: phase.Retro, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Reviewing, Trigger: TriggerReviewRejected, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	{From: phase.Retro, Trigger: TriggerRetroCompleted, Guard: allow, To: phase.Merging, Effects: []EffectKind{EffectStart, EffectNotice}},
-	// A head that conflicts with its base goes back to implementing from every phase after the
-	// implementer's own (transition). It is one trigger for all of them so that the role's
-	// phase-ended message (phaseEnded) and the architect's notice (noticeFor) have a single name to
-	// key on, and so that the architect's own backward move stays the separate thing it is.
-	{From: phase.Testing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Reviewing, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Accepting, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Retro, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
-	{From: phase.Merging, Trigger: TriggerConflict, Guard: allow, To: phase.Implementing, Effects: []EffectKind{EffectStart, EffectNotice}},
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads
 	// GitHub's merge of the pull request as the phase's own terminating fact.
 	{From: phase.Merging, Trigger: TriggerPullRequestMerged, Guard: allow, To: phase.Done, Effects: []EffectKind{EffectSuspend, EffectNotice, EffectLinger}},

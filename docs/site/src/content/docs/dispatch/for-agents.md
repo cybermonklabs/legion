@@ -84,6 +84,8 @@ tells the agent who Dispatch takes it for.
 | Documents | `dispatch doc-read` reads a document, or the text of an uploaded file; with `--blocks` it lists the document's block ids, tokens and table rows that `dispatch doc-edit` addresses. `dispatch doc-edit` edits one in place. `dispatch artifact` uploads a file or a new document. `dispatch request-approval` asks a person to approve a document. |
 | Reading | `dispatch read` reads an issue, ask, comment, message, or document summary; an issue read lists the issue's last 10 events, `--events N` the last N, and `--all-events` every one. `dispatch search` searches everything. `dispatch related --project <KEY>` runs the related-item check a new issue or ask gets on a `--title` and `--text`, and writes nothing. `dispatch whoami` reports who Dispatch takes the agent for, and the OAuth scopes its credential holds. `dispatch inbox` lists what the Inbox page of the person the agent acts for shows — Needs you, Waiting on agents, Later, Unread threads and Credential requests, in that order, each with its count and its rows — read with the agent's own credential, which must hold the `person` scope; a thread's line names its owner (the issue key, the document slug, or the session of an Agent row), its kind, the first 80 characters of its subject, who wrote the newest reply, how long ago and the thread's reference; it is the person's Dispatch Inbox, not the Envoy tool `envoy_inbox`, which lists what was delivered to this session. |
 | Handoffs | `dispatch handoff-write` records a phase handoff on an issue as the agent's session: `--phase <phase>` and `--body-file <path>` (`-` reads stdin), one JSON object stored exactly as written, each write the phase's next version. `dispatch handoff-read` prints one line naming the phase, version, id, writing session and time, then the body exactly as stored; `--version <n>` reads an earlier version. |
+| Steps | `dispatch steps --issue <KEY>` prints each step that ran on an issue, as the Legion daemon recorded it at the step's start and at its end: a line `<KEY>: <n> steps in <m> tasks`, then one line per run, task by task, naming its task, step, kind, role, type, attempt, agent, model, start, end and result. A field with no value prints `-`, and a run that has not ended prints `running` for its end and its result. An issue that no step ran on prints `<KEY>: 0 steps in 0 tasks`, and a key Dispatch does not hold fails as `dispatch read` fails for it: `NOT_FOUND: not found`, exit 1. |
+| Plans | `dispatch plans --project <PROJECT>` prints each finished issue of a project, newest close first: a line `<PROJECT>: <n> finished issues`, then one line per issue, `<KEY> closed <closed_at> plan <source> (<n> tasks: <steps of the first task>) ratings <rating>/5 "<reason>", … time <h>h<m>m failed steps <n>`. The plan is the one of the issue's newest run, each rating is the one a retro gave the plan, 1 to 5, with its reason as a JSON string, the time runs from the first start of a step to the last end, and failed steps counts the runs of a step that failed. An issue with no plan prints `plan none`, one with no rating `ratings none`, and one whose time is not known `time -`. `--since` and `--until`, each an RFC 3339 time, keep the issues closed at or after `--since` and before `--until`. |
 | Architecture | `dispatch architecture-sync` imports a project's architecture model now, from every source repository with a line for each, or from one with `--repo <owner/name>`. |
 
 The dashboard's List is a live table over a project's issues, not a separate search index.
@@ -205,6 +207,11 @@ Every issue has one spec, its main document. Read it with `dispatch doc-read` an
 place with `dispatch doc-edit`. Do not upload a file named `spec.md` to change it: that replaces the
 whole spec with your text. Use `dispatch artifact` for real files, such as a report, an image, or a
 draft to send as-is.
+
+An upload that does replace a document the owner already holds under that name says which version it replaces.
+Read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, and upload with `--force --precondition-json '{"document":"sha256:…"}'`: `--force` asks the command for the document's next version, which it otherwise refuses before sending anything, and the token is what Dispatch itself asks of every replacement.
+An upload that names no token is refused `400 PRECONDITION_REQUIRED`, and one naming a token the document has moved past is refused `409 PRECONDITION_FAILED`; nothing is written either way, and the refusal tells you to read the document again with `dispatch doc-read`, which prints the token it carries now, decide what that version says, and upload again naming that token.
+A first upload of a name replaces no version, so it names no token.
 
 A question the spec needs a person to decide is a **decision block**: an `:::ask` block at the end
 of the section that discusses it.
@@ -386,15 +393,21 @@ the whole command within 60. Once an attempt got no answer for 20 seconds or was
 command does, so the command keeps asking every 3 seconds or less (longer only when Dispatch's
 `Retry-After` asks), starting no ask in the last 5 seconds of its 60, to collect the answer; an
 upload of a megabyte or more, whose every ask sends the whole file again, keeps the five attempts.
-It asks again only of a Dispatch that judges the key: one whose answer
-carried the key back, or whose `/healthz` said `idempotency_keys: true` in the last five minutes,
-whatever its status; any other would make a repeated write twice. Dispatch makes the write once per
-key and answers a repeat with the first answer, so the command never makes a write twice. When the
-write landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too
-large to keep), the command exits 0 and says it was made: read it back to see it. When no attempt
-got an answer, the command says the write may or may not have taken effect: read it back before
-you run the command again, since a new command is a new key. Reads, and the `PUT` and `DELETE` of
-`dispatch follow` and `dispatch claim --release`, carry no key and go once. A script that calls
+Once an attempt may have reached Dispatch, it asks again only of a Dispatch that judges the key:
+one whose answer carried the key back, or whose `/healthz` said `idempotency_keys: true` in the
+last five minutes, whatever its status; any other would make a repeated write twice. An attempt
+that reached nothing (a refused connection, a credential whose trade goes on) is asked again
+without that check, since its repeat is no second write. Dispatch makes the write once per key and
+answers a repeat with the first answer, so the command never makes a write twice. When the write
+landed but Dispatch has no answer to give for it (`409 KEY_COMMITTED`, or a first answer too large
+to keep), the command exits 0 and says it was made: read it back to see it. When an attempt may
+have reached Dispatch and the command got no answer Dispatch's keyed layer gave (no attempt
+answered, a page something in Dispatch's place wrote, a 2xx that is empty, not typed JSON or not
+JSON, but a bodiless 204 or 205), the command says the write may or may not have taken effect:
+read it back before you run the command again, since a new command is a new key. Reads, and the
+`PUT` and `DELETE` of `dispatch follow` and `dispatch claim --release`, carry no key. Each goes
+once, and again only where Dispatch did nothing with it: once more after Dispatch calls the token
+it presented dead, and on an old build's "no route" during a rolling release. A script that calls
 the API directly can send its own key on any `POST` or `PATCH`: 1 to 128 letters, digits, `.`,
 `_`, `:` and `-`, the same on every retry of one write and new for every new write. Dispatch keeps
 each key's answer for 24 hours; the same key with a different request is refused

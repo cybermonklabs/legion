@@ -30,9 +30,13 @@ import (
 // Asked for task agents, it resolves their models too, unless told to skip them. It answers the
 // capability check's two commands as this pod's omp does: `setup python --check --json` says
 // Python is available when python3 is on its PATH and $LEGION_TEST_NO_PYTHON is unset, else
-// `available: false` and exit 1; `config get retry.modelFallback --json` says the setting is
-// false, or true under $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1
-// under $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
+// `available: false` and exit 1; `config get retry.modelFallback --json` refuses an overlay whose
+// path holds `malformed` at once, with Oh My Pi's parse error, sleeps (`exec sleep 30`) under one
+// whose path holds `slow`, so only a stop ends it, and under one whose path holds `refuses-late`
+// answers like a refusal (`malformed overlay` on stderr, exit 1) once a SIGTERM reaches it, as the
+// probe's deadline sends one; otherwise it says the setting is false, or true under
+// $LEGION_TEST_FALLBACK_ON, or fails with a message on stderr and exit 1 under
+// $LEGION_TEST_FALLBACK_FAIL. With $LEGION_TEST_SEEN set, each run appends the
 // environment it saw there: PI_CONFIG_FILES, whether the first overlay it names exists, and
 // OMP_SESSION_STORAGE; with $LEGION_TEST_KEY_SEEN, the provider key TEST_PROVIDER_KEY.
 func imageOmp(t *testing.T) string {
@@ -63,8 +67,11 @@ case "$*" in
 "config get retry.modelFallback --json")
   IFS=:
   for overlay in $PI_CONFIG_FILES; do
-    case "$overlay" in *malformed*)
+    case "$overlay" in
+    *malformed*)
       printf '%s\n          ^\nerror: Failed to parse config overlay %s: SyntaxError: YAML Parse error\n' "` + strings.Repeat("x", 400) + `" "$overlay" >&2; exit 1 ;;
+    *refuses-late*) trap 'echo "malformed overlay" >&2; exit 1' TERM; sleep 30 & wait ;;
+    *slow*) exec sleep 30 ;;
     esac
   done
   unset IFS
@@ -118,7 +125,8 @@ func (i image) install(t *testing.T, name, script string) {
 // PATH that is one bin alone, stubbing every binary the capability check's image rows look for —
 // alone, not ahead of the process's PATH, since a runner's own python3 behind the stubs would
 // answer for one a test removed. No `claude` is among them: the image carries none. The `sh` the
-// probes run their scripts with is linked into that bin from the one on the process's PATH.
+// probes run their scripts with, and the `sleep` a stand-in that must be stopped runs, are linked
+// into that bin from the ones on the process's PATH.
 func inImage(t *testing.T, contract, omp string) image {
 	t.Helper()
 	home := t.TempDir()
@@ -140,12 +148,14 @@ func inImage(t *testing.T, contract, omp string) image {
 	}
 	capabilitiestest.WriteLock(t, home, capabilitiestest.CodeGraphLock)
 	capabilitiestest.InstallBinaries(t, roots.bin)
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(sh, filepath.Join(roots.bin, "sh")); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"sh", "sleep"} {
+		path, err := exec.LookPath(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(path, filepath.Join(roots.bin, name)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("HOME", home)
 	t.Setenv("OMP_PROFILE", "legion")
@@ -160,16 +170,30 @@ func inImage(t *testing.T, contract, omp string) image {
 // says model fallback is off.
 const capabilityMarks = " capabilities=checked model-fallback=off daemon-api-version="
 
+// probeImage runs `legion probe-image` with args, every TLS client and positive control passing.
 func probeImage(args ...string) (int, string, string) {
+	return probeImageWith(passingImageTLSClients, passingTLSPositiveControls, args...)
+}
+
+// probeImageWith runs `legion probe-image` with args, clients in place of the image's TLS clients
+// and controls in place of its positive controls.
+func probeImageWith(clients func(string, []string, string) []tlsClient, controls func(context.Context, []string) error, args ...string) (int, string, string) {
 	previousClients, previousControls := newImageTLSClients, newTLSPositiveControls
-	newImageTLSClients = passingImageTLSClients
-	newTLSPositiveControls = func(context.Context, []string, string) error { return nil }
+	newImageTLSClients, newTLSPositiveControls = clients, controls
 	defer func() {
 		newImageTLSClients, newTLSPositiveControls = previousClients, previousControls
 	}()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), append([]string{"legion", "probe-image"}, args...), &stdout, &stderr)
 	return code, stdout.String(), stderr.String()
+}
+
+// passingTLSPositiveControls stands in for positive controls that each accepted their pinned root.
+func passingTLSPositiveControls(context.Context, []string) error { return nil }
+
+// theseTLSClients stands in for the image's TLS clients with clients.
+func theseTLSClients(clients ...tlsClient) func(string, []string, string) []tlsClient {
+	return func(string, []string, string) []tlsClient { return clients }
 }
 
 // With --role-namespaces the probe runs a role generation's namespaces first
@@ -672,6 +696,77 @@ func TestProbeImageReadsEachRolesOwnOverlaysAsTheRoleStarts(t *testing.T) {
 			}
 			if role, why, ok := bootprobe.RoleOverlaysRefused(stderr); !ok || role != "merger" || why != tc.why {
 				t.Errorf("the daemon reads the refusal as %q %q %v, want the merger and %q", role, why, ok, tc.why)
+			}
+		})
+	}
+}
+
+// shortProbeBudget is a --probe-budget that outlasts the steps a stubbed image's probe makes before
+// its role overlays, with room to spare under load, and ends while a step still waits on it.
+const shortProbeBudget = "4s"
+
+// c-slow-probe-passes case (6): the steps after the TLS check still run, and each answer is judged
+// by the probe's deadline as its step returns. A role's overlay read the deadline cuts with no
+// answer (an overlay whose path holds `slow`) has no verdict, and so has one that answers like a
+// refusal once the deadline's SIGTERM reaches it (`refuses-late`), since that refusal may be the
+// deadline's own doing: each exits 75 naming the role's overlays, never exit 1. An overlay Oh My
+// Pi refuses before the deadline (`malformed`) fails the probe, exit 1, beside a TLS run with no
+// verdict.
+func TestTLSProbeJudgesAStepAfterTheTLSCheckByTheDeadline(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	t.Setenv("PI_CONFIG_FILES", "")
+	dir := t.TempDir()
+	overlay := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("retry:\n  modelFallback: true\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	slow, late, malformed := overlay("slow.yml"), overlay("refuses-late.yml"), overlay("malformed.yml")
+	slowTLS := shTLSClient("node", t.TempDir(), tlsSleepsAtEmSign, nodeAnswer)
+	budget := []string{"--probe-budget", shortProbeBudget}
+	for _, tc := range []struct {
+		name, file string
+		args       []string
+		clients    func(string, []string, string) []tlsClient
+		code       int
+		// noVerdict are what the no-verdict line holds, and refusal what the refusal line's reason
+		// holds; each is empty where the line must not be printed.
+		noVerdict []string
+		refusal   string
+	}{
+		{name: "a read the deadline cuts with no answer", file: slow, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
+			noVerdict: []string{"role overlays: implementer: ", "signal: terminated"}},
+		{name: "a read that answers like a refusal once the deadline's SIGTERM reaches it", file: late, args: budget, clients: passingImageTLSClients, code: bootprobe.NoVerdictExit,
+			noVerdict: []string{"role overlays: implementer: Oh My Pi refuses " + late + ": exited 1: malformed overlay"}},
+		{name: "an overlay refused before the deadline beside a TLS run with no verdict", file: malformed, clients: theseTLSClients(slowTLS), code: 1,
+			refusal: "Oh My Pi refuses " + malformed + ": "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, stdout, stderr := probeImageWith(tc.clients, passingTLSPositiveControls, img.flags(append([]string{"--role-config-files", "implementer=" + tc.file}, tc.args...)...)...)
+
+			if code != tc.code || strings.Contains(stdout, bootprobe.OKPrefix) {
+				t.Fatalf("probe-image = %d, stdout %q, stderr %q; want exit %d and no OK line", code, stdout, stderr, tc.code)
+			}
+			detail, hasNoVerdict := bootprobe.NoVerdict(stderr)
+			if hasNoVerdict != (len(tc.noVerdict) > 0) {
+				t.Errorf("stderr %q carries the no-verdict line: %t, want %t", stderr, hasNoVerdict, len(tc.noVerdict) > 0)
+			}
+			for _, want := range tc.noVerdict {
+				if !strings.Contains(detail, want) {
+					t.Errorf("the no-verdict line's detail = %q, want it to hold %q", detail, want)
+				}
+			}
+			role, why, refused := bootprobe.RoleOverlaysRefused(stderr)
+			if refused != (tc.refusal != "") || refused && (role != "implementer" || !strings.Contains(why, tc.refusal)) {
+				t.Errorf("the daemon reads the refusal as %q %q %t, want the implementer's refusal holding %q: %t", role, why, refused, tc.refusal, tc.refusal != "")
+			}
+			if tc.refusal != "" {
+				if lines := tlsLines(stdout, "node", emSignTLSSite.name); len(lines) != 2 || !strings.HasPrefix(lines[1], "probe-image: TLS client node emSign: no verdict (") {
+					t.Errorf("node's emSign lines = %q, want a run with no verdict after the second run", lines)
+				}
 			}
 		})
 	}

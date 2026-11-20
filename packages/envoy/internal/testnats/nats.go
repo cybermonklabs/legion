@@ -9,7 +9,8 @@
 // URL that survives a stop and a start (Server.Stop, Server.Start), a way to stop the bytes
 // moving in either direction without dropping a connection (Server.Freeze), a reload with no
 // client message in flight (Server.Reload), and a port no other test binary can take while the
-// test runs.
+// test runs. The relay listens on a loopback address of its own (testport.LoopbackIP), so a client
+// another test left dialing its own server's old address cannot reach it after that test.
 //
 // A package's tests share one server rather than start one each, and each test gets it as the user
 // of a JetStream account no earlier test used (URL), so no test ever deletes and recreates a
@@ -36,6 +37,8 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // Image is ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml), whose
@@ -246,6 +249,10 @@ type Server struct {
 	log        *logCapture
 	relay      *relay
 	url        string
+	// host is the server's own loopback address (testport.LoopbackIP): the relay listens there,
+	// and so do the server's own client and monitoring listeners, which a client that knows their
+	// port could reach as well as the relay's.
+	host string
 	// name is the server_name StartCluster gives a member, "" for a lone server.
 	name string
 
@@ -400,7 +407,7 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("write the new configuration: %v", err)
 	}
 	defer func() { _ = os.Remove(pending) }()
-	opts, err := serverOptions(pending, s.args, s.store)
+	opts, err := serverOptions(pending, s.args, s.store, s.host)
 	if err != nil {
 		return err
 	}
@@ -533,9 +540,10 @@ func (s *Server) natsServer() *natsserver.Server {
 func (s *Server) running() bool { return s.natsServer() != nil }
 
 // hostOnlyConfig is the configuration of a server a test starts with none of its own:
-// nats-server warns on an empty configuration file ("config has no values or is empty"), and the
-// host it names here is the one this rig imposes on every server anyway. The file is never empty,
-// so a server started without a configuration can still be reloaded with one.
+// nats-server warns on an empty configuration file ("config has no values or is empty"), and
+// serverOptions replaces the host it names with the server's own, as it does every
+// configuration's. The file is never empty, so a server started without a configuration can still
+// be reloaded with one.
 const hostOnlyConfig = "host: 127.0.0.1\n"
 
 // start runs a nats-server in this process whose whole configuration is config, with serverArgs as
@@ -553,7 +561,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 	if err != nil {
 		t.Fatalf("make the server's directory: %v", err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
@@ -565,6 +573,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 		args:       serverArgs,
 		log:        &logCapture{},
 		url:        "nats://" + address,
+		host:       listener.Addr().(*net.TCPAddr).IP.String(),
 	}
 	server.relay = newRelay(listener, server.address, true)
 	registerServer(address, server)
@@ -587,7 +596,7 @@ func start(t testing.TB, config string, serverArgs []string) *Server {
 // connections.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
-	opts, err := serverOptions(s.configPath, s.args, s.store)
+	opts, err := serverOptions(s.configPath, s.args, s.store, s.host)
 	if err != nil {
 		t.Fatalf("read the NATS configuration: %v", err)
 	}
@@ -633,12 +642,12 @@ const (
 )
 
 // serverOptions parses the configuration at path and serverArgs as nats-server parses its own
-// command line, then imposes what this rig owns: loopback, a client and a monitoring port the
-// server picks, the test's own store, no signal handlers, path as the configuration file, and the
-// lame duck's timing when the configuration sets none (rigLameDuck). serverArgs replace
-// nats-server's defaults rather than add to them, as the arguments after the image's own command
-// do.
-func serverOptions(path string, serverArgs []string, store string) (*natsserver.Options, error) {
+// command line, then imposes what this rig owns: host, the server's loopback address, for its
+// client and monitoring listeners, a port for each the server picks, the test's own store, no
+// signal handlers, path as the configuration file, and the lame duck's timing when the
+// configuration sets none (rigLameDuck). serverArgs replace nats-server's defaults rather than add
+// to them, as the arguments after the image's own command do.
+func serverOptions(path string, serverArgs []string, store, host string) (*natsserver.Options, error) {
 	flags := flag.NewFlagSet("nats-server", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	silent := func() {}
@@ -652,9 +661,9 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if err != nil {
 		return nil, err
 	}
-	opts.Host = "127.0.0.1"
+	opts.Host = host
 	opts.Port = -1
-	opts.HTTPHost = "127.0.0.1"
+	opts.HTTPHost = host
 	opts.HTTPPort = -1
 	opts.StoreDir = store
 	opts.NoSigs = true
@@ -662,6 +671,17 @@ func serverOptions(path string, serverArgs []string, store string) (*natsserver.
 	if opts.LameDuckDuration == 0 && opts.LameDuckGracePeriod == 0 {
 		opts.LameDuckDuration = rigLameDuck
 		opts.LameDuckGracePeriod = rigLameDuckGrace
+	}
+	// A server with an auth callout holds a client it sends to the service until the service
+	// answers or its authorization timeout passes (nats-server v2.15.1 server/auth_callout.go:457-464),
+	// and it starts that client's first PING timer before it asks (client.go:2352-2353): two seconds
+	// plus up to a fifth of that (client.go:7136-7142), against the callout's two. So a client the
+	// service never answers is now and then sent a PING before its refusal, and nats.go fails the
+	// connect with "expected 'PONG', got 'PING'" rather than nats.ErrAuthorization, which a test
+	// that waits out the hub's timeout for the refusal reads as a failure. The rig turns the short
+	// first PING off on such a server, so its first PING waits for the ping interval, two minutes.
+	if opts.AuthCallout != nil {
+		opts.DisableShortFirstPing = true
 	}
 	return opts, nil
 }
@@ -750,6 +770,24 @@ func (g *NkeyGrant) Grant(t testing.TB, allow ...string) {
 
 func publishGrantConfig(user string, allow []string) string {
 	return grantConfig(user, "publish", allow)
+}
+
+// StartNkeyDenied runs a NATS server with JetStream whose nkey user, the one whose public key is
+// user, may publish to anything but deny, and whose no_auth_user, an admin in the same account, may
+// do anything, and returns its client URL. A test plays a program whose grant lacks the subjects of
+// deny with the user (its seed in NATS_NKEY_SEED), and sets the server up, its stream included,
+// through a connection that names no credential.
+func StartNkeyDenied(t testing.TB, user string, deny ...string) string {
+	t.Helper()
+	_, admin := User(t)
+	quoted := make([]string, len(deny))
+	for index, subject := range deny {
+		quoted[index] = fmt.Sprintf("%q", subject)
+	}
+	config := fmt.Sprintf("jetstream {}\nauthorization {\n  users = [ { nkey: %q, permissions: { publish: { deny: [%s] } } }, { nkey: %q } ]\n}\nno_auth_user: %q\n",
+		user, strings.Join(quoted, ", "), admin, admin)
+	_, uri := StartConfig(t, config, []string{"-js"}, true)
+	return uri
 }
 
 // SubscribeGrantConfig is the configuration of a server with JetStream whose one user, the nkey user

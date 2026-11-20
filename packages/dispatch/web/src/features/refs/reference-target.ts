@@ -64,6 +64,8 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
 const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
   query.state.status === "error" ? "always" : false;
 
+export { refetchFailedOnFocus };
+
 export interface ReferenceTarget {
   readonly title: string | undefined;
   /** What the target says, as its author wrote it (Markdown): a message's body, a document's

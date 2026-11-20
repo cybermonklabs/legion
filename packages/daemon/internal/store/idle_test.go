@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 	"time"
@@ -82,7 +83,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !got.LastTurnAt.Equal(now.Add(-45 * time.Minute)) {
 		t.Fatalf("last turn = %s, want the delivery's confirmation %s", got.LastTurnAt, now.Add(-45*time.Minute))
 	}
-	if !got.Reported() {
+	if claim.ReadSessionWork(got.ActivityAt, got.LastTurnAt, got.ActivityBackground) == claim.WorkUnreported {
 		t.Fatalf("claim %+v reads as unreported, though its report is newer than its turn", got)
 	}
 	if since, ok := got.ActivityAt, got.UpdatedAt.IsZero(); ok || got.UpdatedAt.Before(since) {
@@ -287,6 +288,37 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 }
 
+// The idle release queues no row keyed by another project's issue (insertOutboxRow,
+// claim.KeyOfProject): an operator's spawn of that issue runs under this project's token, so its
+// pod is one the release reads, but a row keyed by the issue is run only by the other project's
+// daemon, against that daemon's own claims. A release whose rows are keyed so is refused whole
+// (claim.ErrKeyOfAnotherProject), with neither a row nor its mark written. The same release of this
+// project's own issue is marked.
+func TestTheIdleReleaseQueuesNoRowOfAnotherProjectsIssue(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	const theirs = "OTHERPROJECT-9"
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", theirs, func(pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: 1, Role: claim.RoleArchitect, Rows: []IdleReleaseRow{
+			{Kind: "issue_bundle", Payload: []byte(`{"tree":"OTHERPROJECT-9","generation":1,"treeGeneration":1,"role":"architect"}`)},
+			{Kind: "supervise", Payload: []byte(`{"op":"release","tree":"OTHERPROJECT-9","role":"architect","generation":1}`), Boundary: true},
+		}}, nil
+	})
+	if !errors.Is(err, claim.ErrKeyOfAnotherProject) || marked {
+		t.Errorf("the release of %s = %t, %v; want it refused with claim.ErrKeyOfAnotherProject: its rows are keyed by OTHERPROJECT's issue",
+			theirs, marked, err)
+	}
+	var rows, marks int
+	if err := st.Pool().QueryRow(ctx, `select (select count(*) from outbox where issue = $1),
+		(select count(*) from issue_releases where issue = $1)`, theirs).Scan(&rows, &marks); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || marks != 0 {
+		t.Errorf("after the release of %s the outbox holds %d rows keyed by it and %d marks of it, want none", theirs, rows, marks)
+	}
+	releaseThroughTheStore(t, st, rootIssue)
+}
+
 // The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves
 // no bundle, so its mark names no role and records the rule that wrote it instead: every row of
 // that release, and the cancel that ends it, read the kind to know what the release did. A mark
@@ -339,10 +371,10 @@ func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
 		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
 	}
 
-	resumed, suspendsNoRole, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
-	if err != nil || !suspendsNoRole || len(resumed) != 0 {
-		t.Fatalf("the cancel = %v, %t, %v; want no role resumed and the release named as the one that suspends none",
-			resumed, suspendsNoRole, err)
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+	if err != nil || !cancelled.SuspendsNoRole || len(cancelled.Resumed) != 0 {
+		t.Fatalf("the cancel = %+v, %v; want no role resumed and the release named as the one that suspends none",
+			cancelled, err)
 	}
 }
 
@@ -472,8 +504,8 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 	done := make(chan cancelled, 1)
 	go func() {
-		roles, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
-		done <- cancelled{roles: roles, err: err}
+		answer, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+		done <- cancelled{roles: answer.Resumed, err: err}
 	}()
 
 	var got cancelled
@@ -539,6 +571,78 @@ func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
 		if !slices.Contains(idleWaitingKinds, string(kind)) {
 			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
 		}
+	}
+}
+
+// A step record is history: its row reaches no session of the pod, so a record Dispatch has not
+// taken yet, due now or backing off for an hour behind a Dispatch that is down, keeps no idle pod
+// standing and cancels no release at its boundary, whether it was queued before the release's rows
+// or after them. A start of a role of the pod queued beside it does both, which shows the reads
+// see the queue at all.
+func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		nextAt   string
+	}{
+		{name: "due now", nextAt: "now()"},
+		{name: "backing off behind a Dispatch that is down", attempts: 6, nextAt: "now() + interval '1 hour'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{Token: claim.Token("legion-legion-legion-208-architect"),
+				Project: "legion", Tree: rootIssue, Issue: rootIssue, Role: claim.RoleArchitect, TreeEpoch: 1,
+				Generation: 1, ServingGeneration: 1, State: supervise.StateIdle}); err != nil {
+				t.Fatal(err)
+			}
+			started := time.Now().UTC()
+			queueRecord := func() {
+				t.Helper()
+				row, err := record.NewOutboxRow(rootIssue, record.StepRecord{ID: "0b9e5c2a-7f43-5d1e-9a6b-3c4d5e6f7a8b",
+					Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+					Agent: "legion-legion-legion-208-implementer", Generation: 1, StartedAt: &started}, started)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+					values ($1, $2, $3, $4, `+tc.nextAt+`, 'Dispatch is unreachable')`,
+					string(row.Kind), rootIssue, row.Payload, tc.attempts); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			queueRecord()
+			if view := idleViewOf(t, st, rootIssue); view.Waiting {
+				t.Fatal("the idle view reads a step record as waiting for a role of the pod, which would keep the idle pod standing")
+			}
+			candidates, err := st.IdlePods(ctx, "legion")
+			if err != nil || !slices.Contains(candidates, rootIssue) {
+				t.Fatalf("IdlePods = %v, %v; want %s, whose claim is live, a candidate", candidates, err, rootIssue)
+			}
+			_, boundary, _ := releaseThroughTheStore(t, st, rootIssue)
+			queueRecord()
+			decision, err := st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil || decision.Act != ReleaseActs {
+				t.Fatalf("the boundary with step records queued below and above the release's rows = %s for %s, %v; want %s",
+					decision.Act, decision.Cause, err, ReleaseActs)
+			}
+
+			if _, err := st.Pool().Exec(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+				values ('supervise', $1, '{"op":"start","tree":"LEGION-208","role":"tester","generation":1}', 0, now(), '')`,
+				rootIssue); err != nil {
+				t.Fatal(err)
+			}
+			if view := idleViewOf(t, st, rootIssue); !view.Waiting {
+				t.Fatal("control: the idle view reads nothing waiting, though a start of the pod's tester is queued")
+			}
+			decision, err = st.IssueReleaseStop(ctx, "legion", rootIssue, boundary)
+			if err != nil || decision.Act != ReleaseCancel || decision.Cause != ReleaseCauseOvertaken {
+				t.Fatalf("control: the boundary with a start of the tester queued = %s for %s, %v; want %s for %s",
+					decision.Act, decision.Cause, err, ReleaseCancel, ReleaseCauseOvertaken)
+			}
+		})
 	}
 }
 

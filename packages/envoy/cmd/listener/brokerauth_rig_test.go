@@ -12,9 +12,9 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -38,8 +38,8 @@ type brokerRig struct {
 	// apiAuth: a test resolves a path through it (ServeMux.Handler) to the pattern registered
 	// for it.
 	routes *http.ServeMux
-	broker *brokertokentest.StubBroker
-	caller *brokertokentest.Caller
+	broker *ciphertokentest.StubBroker
+	caller *ciphertokentest.Caller
 	logs   *bytes.Buffer
 }
 
@@ -50,12 +50,12 @@ type brokerRig struct {
 func newBrokerRig(t *testing.T) *brokerRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest and role registry: %v", err)
 	}
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -70,7 +70,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 	// connection, a listener without which refuses every registration (consumer_error). It
 	// needs the Legion agent registry too, which the /v1/legion/agents routes read: main always
 	// hands them one (openLegionAgentRegistry), so they read it with no nil check of their own.
-	agents, err := legionagents.Open(client.Conn, legionagents.WithReplicas(1))
+	agents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
@@ -82,7 +82,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		legionAgents: newLegionAgentRegistry(agents),
 	})
 
-	broker := brokertokentest.NewStubBroker(t)
+	broker := ciphertokentest.NewStubBroker(t)
 	accountFile := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountFile, []byte("listener-account-token\n"), 0o600); err != nil {
 		t.Fatalf("write the listener's own account token: %v", err)
@@ -92,7 +92,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		AccountTokenFile: accountFile,
 		Origin:           listenerBrokerOrigin,
 	})
-	if err := tokens.open(client.Conn, 1); err != nil {
+	if err := tokens.open(t.Context(), client.Conn, 1); err != nil {
 		t.Fatalf("open the spent-proof bucket: %v", err)
 	}
 
@@ -106,7 +106,7 @@ func newBrokerRig(t *testing.T) *brokerRig {
 		open:    apiAuth(listenerAPIAuth{logger: logger}, routes),
 		routes:  routes,
 		broker:  broker,
-		caller:  brokertokentest.NewCaller(t),
+		caller:  ciphertokentest.NewCaller(t),
 		logs:    logs,
 	}
 }
@@ -154,7 +154,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 		machines = "access-token-of-a-machine"
 	)
 	rig.broker.Says(token, sessionAnswer(bound, "ada@example.com", rig.caller.JKT()))
-	rig.broker.Says(revoked, brokertoken.Introspection{Active: false})
+	rig.broker.Says(revoked, ciphertoken.Introspection{Active: false})
 	rig.broker.Says(machines, serviceAnswer(service, "example-fleet", rig.caller.JKT()))
 	rig.register(t, bound)
 	rig.register(t, service)
@@ -332,7 +332,7 @@ const v1RoutePatterns = 15
 // R4 on a real bus, with no change to the listener's own code: a read-only token — the project
 // scope none beside the one scope read, which a read entry mints for Dispatch's read list — is
 // answered 401 not_a_session on every path registerV1Routes registers, because the verifier
-// brokerTokens.open builds leaves the read-only switch unset (brokertoken.Options.ServesReadOnly)
+// brokerTokens.open builds leaves the read-only switch unset (ciphertoken.Options.ServesReadOnly)
 // and so refuses the token as a build before the switch refuses it. A token of a named project,
 // the same kind of token but for its project scope, its project and its scope, is answered
 // anything but 401 on each of the same requests, and its presentation writes no rejection line,
@@ -440,7 +440,7 @@ func TestSpentProofsRefuseAProofTheBucketAlreadyHolds(t *testing.T) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 	open := func() spentProofs {
-		kv, err := bus.EnsureKeyValue(client.Conn, js, &natsgo.KeyValueConfig{
+		kv, err := bus.EnsureKeyValue(t.Context(), client.Conn, js, &natsgo.KeyValueConfig{
 			Bucket: bus.DPoPProofBucket, TTL: spentProofRetention, Storage: natsgo.FileStorage, Replicas: 1,
 		})
 		if err != nil {
@@ -496,7 +496,7 @@ func TestBrokerTokensRefuseABusWithNoJetStream(t *testing.T) {
 		AccountTokenFile: "/var/run/secrets/broker/token",
 		Origin:           listenerBrokerOrigin,
 	})
-	err = tokens.open(conn, 1)
+	err = tokens.open(t.Context(), conn, 1)
 	if err == nil {
 		t.Fatal("a listener took broker tokens on a bus with no JetStream")
 	}

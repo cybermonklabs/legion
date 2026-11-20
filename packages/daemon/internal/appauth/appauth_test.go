@@ -28,6 +28,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 )
 
@@ -150,8 +152,9 @@ func askedInExchange(t *testing.T, r *http.Request) (string, accessTokensBody) {
 // at the highest access any of them names: what an installation whose account has approved all
 // of Legion's grants is granted.
 var grantedEverythingAsked = map[string]string{
-	"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
-	"pull_requests": "write", "security_events": "write", "statuses": "write", "workflows": "write",
+	"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+	"metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "write",
+	"workflows": "write",
 }
 
 // installationGranting is GitHub's GET /app/installations/{id}: the installation and the
@@ -520,11 +523,11 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	// json.Marshal of a map sorts its keys, so each body is this exact text: the permissions and
-	// nothing else — the five read ones a reading lease carries, actions and issues among them and
-	// nothing writable, and the implement App's write set.
+	// nothing else — the read set a reading lease carries, each at read and nothing writable, and
+	// the implement App's write set.
 	want := []string{
-		`{"permissions":{"actions":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read"}}`,
-		`{"permissions":{"actions":"write","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
+		`{"permissions":{"actions":"read","attestations":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`,
+		`{"permissions":{"actions":"write","attestations":"read","checks":"read","contents":"write","issues":"write","metadata":"read","pull_requests":"write","security_events":"read","statuses":"write","workflows":"write"}}`,
 	}
 	if len(bodies) != len(want) || bodies[0] != want[0] || bodies[1] != want[1] {
 		t.Fatalf("exchange bodies = %q, want %q", bodies, want)
@@ -532,8 +535,8 @@ func TestReadTokenMintsANarrowedTokenCachedApartFromToken(t *testing.T) {
 }
 
 // A write mint asks for what the installation is granted of the role's set and leaves the rest
-// out: an account that has approved three of the implement App's nine permissions gets a token
-// holding those three, in one exchange, where asking for all nine would make GitHub refuse the
+// out: an account that has approved three of the implement App's ten permissions gets a token
+// holding those three, in one exchange, where asking for all ten would make GitHub refuse the
 // mint whole and cost the role its gh bundle. Each permission left out is logged once at warn,
 // issues among them, so an installation whose account has not approved a grant is named.
 func TestGrantedWriteSetAsksForTheThreeTheInstallationGrants(t *testing.T) {
@@ -665,11 +668,12 @@ func TestGrantedAnAccessThisDoesNotKnowIsGrantedNone(t *testing.T) {
 	}
 }
 
-// An account approves each of an App's grants, so an installation may be granted no actions at
-// all. The read mint leaves actions out of the request and asks for the other four in one
-// exchange, so every owner's read token is served rather than the first such owner's mint
-// failing. What the token cannot read is logged once at warn per App role and owner: a second
-// mint of the same scope logs nothing again, since the grant is the installation's.
+// An account approves each of an App's grants, so an installation may be granted no Actions, no
+// checks, no commit statuses and no attestations at all. The read mint leaves them out of the
+// request and asks for the four it is granted in one exchange, so every owner's read token is
+// served rather than the first such owner's mint failing. What the token cannot read is logged
+// once at warn per App role, owner and permission: a second mint of the same scope logs nothing
+// again, since the grant is the installation's.
 func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
@@ -679,8 +683,12 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 		grants: map[string]string{"contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"},
 	}
 	github.answer = func(exchange int, body accessTokensBody) (int, string) {
-		if body.Permissions["actions"] != "" {
-			return http.StatusUnprocessableEntity, `{"message":"The permissions requested are not granted to this installation."}`
+		// GitHub's own answer to a request naming a permission the installation is not granted:
+		// no token at all, rather than a token without that permission.
+		for permission := range body.Permissions {
+			if github.grants[permission] == "" {
+				return http.StatusUnprocessableEntity, `{"message":"The permissions requested are not granted to this installation."}`
+			}
 		}
 		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
 	}
@@ -712,13 +720,15 @@ func TestGrantedReadSetLeavesOutActionsAndSaysSoOncePerOwner(t *testing.T) {
 	}
 	records := loggedRecords(t, &stderr)
 	for _, owner := range []string{"acme", "sjawhar"} {
-		line := fmt.Sprintf("appauth: the review App's installation on %s is granted no actions, where its token asks for actions: read, so the token is minted without it; grant the App actions: read and approve it on that account", owner)
-		if count := shortfallLogged(records, line, Review, owner, "actions", "read", ""); count != 1 {
-			t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
+		for _, left := range []string{"actions", "attestations", "checks", "statuses"} {
+			line := fmt.Sprintf("appauth: the review App's installation on %s is granted no %s, where its token asks for %s: read, so the token is minted without it; grant the App %s: read and approve it on that account", owner, left, left, left)
+			if count := shortfallLogged(records, line, Review, owner, left, "read", ""); count != 1 {
+				t.Errorf("the log holds %d warn records of %q with its fields, want exactly one:\n%s", count, line, stderr.String())
+			}
 		}
 	}
-	if len(records) != 2 {
-		t.Errorf("the log holds %d records, want one for each of the two owners:\n%s", len(records), stderr.String())
+	if len(records) != 8 {
+		t.Errorf("the log holds %d records, want one for each of the two owners and each of the four permissions:\n%s", len(records), stderr.String())
 	}
 }
 
@@ -851,7 +861,7 @@ func TestASuspensionIsReadFromTheInstallationAndNeverFromTheWordsOfA403(t *testi
 // A 422 carrying GitHub's rate limit says nothing about what the installation is granted: it is
 // GitHub's trouble (TransientError), no lease is served, and nothing is said of a grant. GitHub
 // documents its limits on a 429 and a 403, so the three ways a 422 can still carry one are each
-// checked. The mint asked for the five reads whole, which this installation is granted, so the
+// checked. The mint asked for the whole read set, which this installation is granted, so the
 // answer is about the limit alone.
 func TestARateLimited422IsGitHubsTroubleAndNotAGrant(t *testing.T) {
 	for _, tc := range []struct {
@@ -1070,6 +1080,168 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			var transient *TransientError
 			if got := errors.As(err, &transient); got != tc.transient {
 				t.Fatalf("Token = %v, transient %v, want transient %v", err, got, tc.transient)
+			}
+		})
+	}
+}
+
+// Every GitHub call of the start's mint keeps GitHub's answer where only the start reads it
+// (dispatch://INFRA-2597/spec R4): each answer other than 2xx carries an *AnswerError holding the
+// request's method and path, GitHub's status, body and rate-limit headers, inside the
+// TransientError where one is made, and the error's message is the one it was before. The answer is
+// a field and no link of the chain, so errors.As finds no *githubrest.Answer in any of these errors:
+// every reader of one after the start (internal/daemon's defaultBranchLimit, answeredRefusal and
+// the outbox's githubrest.RetryAfter among them) reads a mint's error as it did before.
+//
+// One row per call: the installation discovery, the permissions read and the exchange, each
+// refused for a spent rate limit; the exchange's 422 that carries the limit's headers, which is
+// GitHub's trouble and no rate limit githubrest names (RateLimited false); the logins' GET /app;
+// the bot user; token mode's viewer, App and repository reads; key mode's installation read of a
+// repository (InstalledOn); and the answers that are no rate limit, the 404s of the exchange and of
+// the permissions read, and token mode's 401 of the repository list.
+func TestEveryGitHubCallOfTheStartsMintKeepsGitHubsAnswer(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	reset := strconv.FormatInt(time.Now().Add(30*time.Minute).Unix(), 10)
+	spent := githubrest.LimitHeaders{Limit: "15000", Remaining: "0", Reset: reset, Resource: "core"}
+	const limitBody = `{"message":"API rate limit exceeded for installation ID 77."}`
+	widgets := ghrepo.MustParse("acme/widgets")
+	keyMode := func(server *httptest.Server) *Manager {
+		return New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM}},
+			Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	}
+	broker := newFakeBroker(t, []string{"acme"}, time.Now().Add(time.Hour))
+	tokenMode := func(server *httptest.Server) *Manager {
+		return New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: broker.command}},
+			Options{BaseURL: server.URL, HTTPClient: server.Client(), Stderr: io.Discard})
+	}
+	mint := func(tokens *Manager) error {
+		_, err := tokens.Token(context.Background(), Implement, "acme")
+		return err
+	}
+	login := func(tokens *Manager) error {
+		_, err := tokens.AppLogin(context.Background(), Implement)
+		return err
+	}
+	installedOn := func(tokens *Manager) error {
+		_, err := tokens.InstalledOn(context.Background(), Implement, widgets)
+		return err
+	}
+	for _, tc := range []struct {
+		name      string
+		manager   func(*httptest.Server) *Manager
+		call      func(*Manager) error
+		method    string
+		path      string
+		status    int
+		limit     githubrest.LimitHeaders
+		body      string
+		message   string
+		transient bool
+	}{
+		{name: "the installation discovery", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App installation discovery failed (403)"},
+		{name: "the permissions read", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations/77",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App installation permissions read failed (403): " + limitBody},
+		{name: "the exchange", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App token exchange failed (403): " + limitBody},
+		{name: "the exchange's 422 with the limit's headers", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusUnprocessableEntity, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App token exchange failed (422): " + limitBody},
+		{name: "the logins read", manager: keyMode, call: login, method: http.MethodGet, path: "/app",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: GitHub App identity lookup failed (403)"},
+		{name: "the bot user", manager: keyMode, call: mint, method: http.MethodGet, path: "/users/legion-implementer[bot]",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "GitHub App bot identity lookup failed (403)"},
+		{name: "token mode's viewer", manager: tokenMode, call: login, method: http.MethodPost, path: "/graphql",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: read the implement App's bot login (GraphQL viewer) failed (403)"},
+		{name: "token mode's App", manager: tokenMode, call: login, method: http.MethodGet, path: "/apps/legion-implementer",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read the implement App's login: read the implement App legion-implementer (GET /apps/legion-implementer) failed (403)"},
+		{name: "token mode's repository list", manager: tokenMode, call: installedOn, method: http.MethodGet, path: "/installation/repositories",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read whether the implement App is installed on acme/widgets failed (403)"},
+		{name: "key mode's installation read of a repository", manager: keyMode, call: installedOn, method: http.MethodGet, path: "/repos/acme/widgets/installation",
+			status: http.StatusForbidden, limit: spent, body: limitBody, transient: true,
+			message: "read whether the implement App is installed on acme/widgets failed (403)"},
+		{name: "the exchange's 404", manager: keyMode, call: mint, method: http.MethodPost, path: "/app/installations/77/access_tokens",
+			status: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			message: `github_app_not_installed: implement's installation 77 on acme answers the installation is gone: GitHub App token exchange failed (404): {"message":"Not Found"}`},
+		{name: "the permissions read's 404", manager: keyMode, call: mint, method: http.MethodGet, path: "/app/installations/77",
+			status: http.StatusNotFound, body: `{"message":"Not Found"}`,
+			message: `github_app_not_installed: implement's installation 77 on acme answers the installation is gone: GitHub App installation permissions read failed (404): {"message":"Not Found"}`},
+		{name: "token mode's 401 of the repository list", manager: tokenMode, call: installedOn, method: http.MethodGet, path: "/installation/repositories",
+			status: http.StatusUnauthorized, body: `{"message":"Bad credentials"}`,
+			message: "read whether the implement App is installed on acme/widgets failed (401)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == tc.method && r.URL.Path == tc.path {
+					for header, value := range map[string]string{"X-RateLimit-Limit": tc.limit.Limit, "X-RateLimit-Remaining": tc.limit.Remaining,
+						"X-RateLimit-Reset": tc.limit.Reset, "X-RateLimit-Resource": tc.limit.Resource} {
+						if value != "" {
+							w.Header().Set(header, value)
+						}
+					}
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+					return
+				}
+				switch {
+				case r.URL.Path == "/app/installations":
+					fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+				case r.URL.Path == "/app/installations/77":
+					fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+				case r.URL.Path == "/app/installations/77/access_tokens":
+					_, asked := askedInExchange(t, r)
+					fmt.Fprint(w, mintedFor("ghs_installation", time.Now().Add(time.Hour), asked.Permissions, "legion"))
+				case r.URL.Path == "/app":
+					fmt.Fprint(w, `{"slug":"legion-implementer"}`)
+				case r.URL.Path == "/users/legion-implementer[bot]":
+					fmt.Fprint(w, `{"id":271566630}`)
+				case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+					fmt.Fprint(w, `{"data":{"viewer":{"login":"legion-implementer[bot]"}}}`)
+				case r.URL.Path == "/apps/legion-implementer":
+					fmt.Fprint(w, `{"id":12345,"slug":"legion-implementer"}`)
+				case r.URL.Path == "/installation/repositories":
+					fmt.Fprint(w, `{"total_count":1,"repositories":[{"full_name":"acme/widgets"}]}`)
+				case r.URL.Path == "/repos/acme/widgets/installation":
+					fmt.Fprint(w, `{"id":77}`)
+				default:
+					githubtest.Unexpected(t, w, r)
+				}
+			}})
+
+			err := tc.call(tc.manager(server))
+
+			if err == nil || err.Error() != tc.message {
+				t.Fatalf("the call = %v, want today's message %q", err, tc.message)
+			}
+			var trouble *TransientError
+			if got := errors.As(err, &trouble); got != tc.transient {
+				t.Fatalf("the call = %v, transient %v, want transient %v as before", err, got, tc.transient)
+			}
+			var hidden *githubrest.Answer
+			if errors.As(err, &hidden) {
+				t.Fatalf("errors.As found GitHub's answer %+v in %v, want it out of the chain, so no reader after the start reads it", hidden, err)
+			}
+			var kept *AnswerError
+			if !errors.As(err, &kept) {
+				t.Fatalf("the call = %v, want an *AnswerError holding GitHub's answer", err)
+			}
+			if tc.transient && !errors.As(trouble.Err, &kept) {
+				t.Fatalf("the TransientError = %v, want the *AnswerError inside it", trouble)
+			}
+			answer := kept.Answer
+			if answer == nil || answer.Method != tc.method || answer.Path != tc.path || answer.Status != tc.status || answer.Body != tc.body || answer.Limit != tc.limit {
+				t.Fatalf("the answer kept = %+v, want %s %s answered %d with %s and headers %+v", answer, tc.method, tc.path, tc.status, tc.body, tc.limit)
+			}
+			if wantLimited := tc.status == http.StatusForbidden; answer.RateLimited != wantLimited {
+				t.Errorf("the answer kept reads as a rate limit: %v, want %v, as githubrest reads it", answer.RateLimited, wantLimited)
 			}
 		})
 	}
@@ -1298,13 +1470,18 @@ func shortfallLogged(records []loggedRecord, line string, app AppRole, owner, pe
 // reaches is what the account chose when it installed the App, and what the token may do there
 // is these permissions. Each App's write lease asks for that App's own set, issues: write among
 // it, since the implementer's code, and the tester running that code under the review App, post
-// on an issue of the repository they work in. Either App's read lease asks for the five reads a
-// role and a controller need of a repository that is not their own issue's, issues: read among
-// them and nothing writable. Every other permission of each set is the one it was before issues
-// joined it. The installation holds more, such as projects and packages, and a token that asks
-// for none of it cannot be made to use them.
+// on an issue of the repository they work in, and attestations: read among it, since a role
+// reads the attestations of an artifact. The review App's set also asks for statuses: read, since
+// its roles read the commit statuses of a head and post none. Either App's read lease asks for
+// the read set a controller and a provisioning token need of a repository they only read —
+// contents, metadata, pull requests, issues, Actions, checks, commit statuses and attestations —
+// each at read and nothing writable. The installation holds more, such as projects and packages,
+// and a token that asks for none of it cannot be made to use them.
 func TestEachLeaseAsksForItsSetIssuesIncluded(t *testing.T) {
-	reads := map[string]string{"actions": "read", "contents": "read", "issues": "read", "metadata": "read", "pull_requests": "read"}
+	reads := map[string]string{
+		"actions": "read", "attestations": "read", "checks": "read", "contents": "read", "issues": "read",
+		"metadata": "read", "pull_requests": "read", "statuses": "read",
+	}
 	for _, tc := range []struct {
 		name string
 		role AppRole
@@ -1313,12 +1490,13 @@ func TestEachLeaseAsksForItsSetIssuesIncluded(t *testing.T) {
 		want map[string]string
 	}{
 		{"implement write", Implement, "legion-implementer", false, map[string]string{
-			"actions": "write", "checks": "read", "contents": "write", "issues": "write", "metadata": "read",
-			"pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write",
+			"actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write",
+			"metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write",
+			"workflows": "write",
 		}},
 		{"review write", Review, "legion-reviewer", false, map[string]string{
-			"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
-			"pull_requests": "write", "security_events": "write",
+			"actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+			"metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read",
 		}},
 		{"implement read", Implement, "legion-implementer", true, reads},
 		{"review read", Review, "legion-reviewer", true, reads},

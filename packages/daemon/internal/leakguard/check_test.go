@@ -4,7 +4,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -104,6 +106,136 @@ func TestResolveReadsTheCheckAgainAtEveryCall(t *testing.T) {
 	}
 	if got, err := guard.Resolve(); err == nil {
 		t.Fatalf("resolved %s after the check was published away, want it read again", got)
+	}
+}
+
+// A check named by a relative path — by PUBLIC_LEAK_CHECK, by the pointer file, or by the guard's
+// own Check option — names no one file: the guard would hash the one in its working directory and
+// exec would run a bare name from PATH. Each is refused as a broken setup naming it, under a
+// deployment's digest and under none, and nothing of the check's name runs, neither the copy in
+// the working directory nor the one on PATH.
+func TestACheckNamedByARelativePathIsABrokenSetup(t *testing.T) {
+	work, bin, home := t.TempDir(), t.TempDir(), t.TempDir()
+	record := filepath.Join(t.TempDir(), "record")
+	leakguardtest.Write(t, work, leakguardtest.Recording(passes))
+	leakguardtest.Companions(t, work, leakguardtest.Program)
+	digest, err := manifestSHA256(filepath.Join(work, checkName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	leakguardtest.Write(t, bin, leakguardtest.Recording(passes))
+	pointer := filepath.Join(home, ".config", pointerFile)
+	if err := os.MkdirAll(filepath.Dir(pointer), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pointer, []byte(checkName+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	withBin := "PATH=" + bin + ":/usr/bin:/bin"
+	for _, source := range []struct {
+		name, said, check string
+		env               []string
+	}{
+		{name: CheckVar, said: CheckVar, env: []string{CheckVar + "=" + checkName, withBin}},
+		// PATH holds no file of the check's name here, or PATH would answer before the pointer.
+		{name: "the pointer file", said: "the pointer file " + pointer, env: []string{"PATH=/usr/bin:/bin"}},
+		{name: "the Check option", said: "the guard's own Check option", check: checkName, env: []string{withBin}},
+	} {
+		for _, checker := range []string{"", digest} {
+			t.Run(source.name+", digest told "+strconv.FormatBool(checker != ""), func(t *testing.T) {
+				env := append(fixtureenv.Isolated(home), "LEAK_CHECK_RECORD="+record)
+				env = append(env, source.env...)
+				if checker != "" {
+					env = append(env, CheckerVar+"="+checker)
+				}
+				guard := New(Options{Check: source.check, Visibility: answers(Public, nil), Env: env})
+				_, resolved := guard.Resolve()
+				if at, broken := BrokenAt(resolved); !broken || at != checkName {
+					t.Fatalf("Resolve = %v, want a broken setup at %s", resolved, checkName)
+				}
+				failed := setupFailure(t, guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"}))
+				says(t, failed, whyNoCheck, source.said+" names "+checkName+", which is no absolute path")
+				if ran, _ := os.ReadFile(record); len(ran) != 0 {
+					t.Fatalf("a check of the name ran: %q", ran)
+				}
+			})
+		}
+	}
+}
+
+// The private copy of a check (Guard.sharedCheck) is made under a role's own private directory
+// where a directory is there, and under the fallback only where nothing is at that path at all:
+// anything else there — a file, a path through a file — refuses, so no copy is made where another
+// role may reach it. That the copy is made there and not under TMPDIR is
+// TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter's.
+func TestThePrivateCopyIsMadeUnderTheRolesOwnDirectory(t *testing.T) {
+	own, fallback := t.TempDir(), t.TempDir()
+	file := filepath.Join(t.TempDir(), "a-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, base, want string
+	}{
+		{"a directory there", own, own},
+		{"nothing there", filepath.Join(own, "absent"), fallback},
+		{"a file there", file, ""},
+		{"a path through a file", filepath.Join(file, "private"), ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := copyBase(tc.base, fallback)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("copyBase(%s) = %s, want a refusal", tc.base, got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("copyBase(%s) = %q, %v; want %s", tc.base, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// A file of the private copy is written only where nothing is (writeCopyFile): a link at its path
+// is neither followed nor written through, and a file already there is left as it is. A file it
+// writes has its mode exactly, whatever the umask took off the create's: under a umask that leaves
+// only the owner's read, the launcher is still 0500, so it runs.
+func TestACopyFileIsWrittenOnlyWhereNothingIsAndOfItsModeExactly(t *testing.T) {
+	dir := t.TempDir()
+	target, link, held := filepath.Join(dir, "target"), filepath.Join(dir, "link"), filepath.Join(dir, "held")
+	for path, body := range map[string]string{target: "the link's target\n", held: "a file already there\n"} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{link, held} {
+		if err := writeCopyFile(path, []byte("the copy\n"), 0o400); err == nil {
+			t.Errorf("writeCopyFile(%s) wrote where something is", path)
+		}
+	}
+	for path, want := range map[string]string{target: "the link's target\n", held: "a file already there\n"} {
+		if got, err := os.ReadFile(path); err != nil || string(got) != want {
+			t.Errorf("%s holds %q (%v) after the refused write, want %q", path, got, err, want)
+		}
+	}
+	fresh := filepath.Join(dir, "fresh")
+	umask := syscall.Umask(0o377)
+	err := writeCopyFile(fresh, []byte("the copy\n"), 0o500)
+	syscall.Umask(umask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(fresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body, _ := os.ReadFile(fresh); info.Mode() != 0o500 || string(body) != "the copy\n" {
+		t.Fatalf("the copy file is %s holding %q, want a regular file of mode 0500 holding the copy", info.Mode(), body)
 	}
 }
 
@@ -267,6 +399,68 @@ func TestASharedCheckKilledByACancelSaysSoWithItsTime(t *testing.T) {
 	says(t, failed, "the shared public leak check", "ran 2 s", "stopped by a cancel")
 	if failed.Err != nil {
 		t.Errorf("the setup failure carries %q beneath it, want the stop said once", failed.Err)
+	}
+}
+
+// A shared check a signal ended (the kernel's out-of-memory kill) is a setup failure that it could
+// not be run, with the signal and what the check printed before it beneath: the check may have said
+// why first. Read as a status, it was "exited -1, which it does not document", with that output.
+func TestASharedCheckASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	killsItself := "cat >/dev/null\necho 'LEAK CHECK ERROR: out of memory reading the history' >&2\nkill -KILL $$\n"
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), killsItself), Public)
+	err := guard.Push(bound(t), PushRequest{
+		Dir:     t.TempDir(),
+		Remote:  "origin",
+		URL:     "https://github.com/invented-org/invented-repo.git",
+		Updates: []Update{{LocalRef: "refs/heads/main", LocalSHA: noSHA, RemoteRef: "refs/heads/main", RemoteSHA: noSHA}},
+	})
+	failed := setupFailure(t, err)
+	says(t, failed, "the shared public leak check could not be run")
+	if want := "signal: killed\nLEAK CHECK ERROR: out of memory reading the history"; failed.Err == nil || failed.Err.Error() != want {
+		t.Errorf("the setup failure carries %v beneath it, want %q", failed.Err, want)
+	}
+}
+
+// A read of the guard's that a signal ended after its program printed (the kernel's out-of-memory
+// kill) fails naming the signal, with what it printed beneath, as the same read's failed exit
+// carries it: the gh visibility read, its GraphQL read, the curl read, the read with no credential,
+// a git read of a push's records, which quotes only git's standard error (gitSaid), never the
+// push's content on its standard output, and the token read, which quotes only its standard error,
+// never the password on its standard output. Each row's stand-in is the one program it names, first
+// on PATH, printing and killing itself; the curl read runs Guard.curl, never PATH's, so it is
+// pointed at the stand-in.
+func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
+	const slug = "invented-org/invented-repo"
+	killsItself := func(t *testing.T, name, script string, env ...string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"+script+"\nkill -KILL $$\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		guard := New(Options{Env: append(append(fixtureenv.Isolated(t.TempDir()), env...), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+		guard.curl = filepath.Join(dir, "curl")
+		return guard
+	}
+	said := "error connecting to api.github.com for " + slug
+	toStderr := "echo '" + said + "' >&2"
+	for _, row := range []struct {
+		name, program, script string
+		env                   []string
+		read                  func(g *Guard) error
+	}{
+		{"the gh visibility read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.ghVisibility(bound(t), slug); return err }},
+		{"the GraphQL read", "gh", toStderr, nil, func(g *Guard) error { _, err := g.graphQLVisibility(bound(t), slug); return err }},
+		{"the curl read", "curl", toStderr, []string{"GH_TOKEN=" + theToken}, func(g *Guard) error { _, err := g.curlVisibility(bound(t), slug); return err }},
+		{"the read with no credential", "git", toStderr, nil, func(g *Guard) error { _, err := g.lsRemote(bound(t), githubOrigin, slug); return err }},
+		{"a git read of a push's records", "git", "echo '+the pushed line'\n" + toStderr, nil, func(g *Guard) error { _, err := g.git(bound(t), t.TempDir(), "rev-list", "HEAD"); return err }},
+		{"the token read", "gh", "echo 'password=" + theToken + "'\n" + toStderr, nil, func(g *Guard) error { _, err := g.ghToken(bound(t), slug); return err }},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			err := row.read(killsItself(t, row.program, row.script, row.env...))
+			if want := "signal: killed\n" + said; err == nil || err.Error() != want {
+				t.Errorf("read = %v, want %q", err, want)
+			}
+		})
 	}
 }
 

@@ -1,15 +1,20 @@
 package cireconcile
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // A head whose checks reached the listener through no webhook at all settles after one pass: the
@@ -690,6 +695,276 @@ func TestTheStopNamesTheScopeTheReadWasBudgetedUnder(t *testing.T) {
 	wait, _, err := h.reconciler.Limits.Wait(h.ctx, want)
 	if err != nil || wait <= 0 {
 		t.Fatalf("the shared limit on %s has %s left (%v), want GitHub's own wait recorded under the scope the line names", want, wait, err)
+	}
+}
+
+// readRecorder is a githubreads.Recorder that keeps each attempt it is handed, in the order the
+// passes recorded them, so a test reads what a pass gave GET /healthz to answer.
+type readRecorder struct {
+	mu       sync.Mutex
+	recorded []recordedRead
+}
+
+// recordedRead is one attempt a readRecorder was handed.
+type recordedRead struct {
+	read      githubreads.Read
+	succeeded bool
+	cause     string
+}
+
+func (r *readRecorder) record(_ context.Context, read githubreads.Read, succeeded bool, cause string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.recorded = append(r.recorded, recordedRead{read: read, succeeded: succeeded, cause: cause})
+	return nil
+}
+
+// take answers the attempts recorded since the last take, and forgets them.
+func (r *readRecorder) take() []recordedRead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taken := r.recorded
+	r.recorded = nil
+	return taken
+}
+
+// recordReads makes the harness's Reconciler record each pass's attempt at reading GitHub into
+// the recorder it answers.
+func (h *harness) recordReads() *readRecorder {
+	reads := &readRecorder{}
+	h.reconciler.GitHubReads = reads.record
+	return reads
+}
+
+// Each pass records its attempt at reading GitHub, which GET /healthz answers: a pass whose first
+// request GitHub answered 503 records failed, with that answer as its cause; the next pass, which
+// GitHub answered, records succeeded; and a pass that asked GitHub nothing -- it bound no CI
+// record writer, so it read nothing -- records nothing at all.
+func TestEachPassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
+	h := newHarness(t, reviewerAppID)
+	reads := h.recordReads()
+	h.mapRepository(rowRepository)
+	h.listHead()
+	// The first request of a pass looks the installation of the mapped repository up, for the
+	// token every read of it is made with.
+	installation := "/repos/" + rowRepository + "/installation"
+	h.github.answerStatus(installation, http.StatusServiceUnavailable)
+
+	h.pass()
+
+	if sent := h.github.received(); len(sent) == 0 || sent[0].url != installation {
+		t.Fatalf("the pass sent %+v, want the installation lookup first", sent)
+	}
+	got := reads.take()
+	if len(got) != 1 || got[0].read != githubreads.CIReconcile || got[0].succeeded ||
+		!strings.Contains(got[0].cause, installation) || !strings.Contains(got[0].cause, "status 503") {
+		t.Fatalf("the pass GitHub answered 503 recorded %+v, want one failed %s attempt whose cause is that 503:\n%s", got, githubreads.CIReconcile, h.logs.String())
+	}
+
+	h.github.answerStatus(installation, 0)
+	h.pass()
+	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.CIReconcile || !got[0].succeeded || got[0].cause != "" {
+		t.Fatalf("the pass GitHub answered recorded %+v, want one succeeded %s attempt with no cause:\n%s", got, githubreads.CIReconcile, h.logs.String())
+	}
+
+	h.reconciler.Open = func() (Writer, error) { return nil, errors.New("NATS is not connected") }
+	sent := h.github.count()
+	h.pass()
+	if got := reads.take(); len(got) != 0 {
+		t.Fatalf("a pass that asked GitHub nothing recorded %+v, want nothing", got)
+	}
+	if more := h.github.count() - sent; more != 0 {
+		t.Fatalf("the pass that bound no writer sent GitHub %d requests, want none", more)
+	}
+}
+
+// A pass records failed when it gives up part of its read of GitHub on an answer the client takes
+// as data and notes nothing of -- a 404, a 422, a name the pass cannot key a record by, a head's
+// commit statuses a query or a REST read answers refused, or a limit recorded before any
+// request -- so in each failed row only the pass's own note can make the record say so, and its
+// cause names the repository it gave up (the limit in force at the start names the limit instead,
+// the pass having reached no repository). A query GitHub answered 502 whose repository the REST
+// listing then read is a read the pass made the other way, and it records succeeded; a pass its
+// caller cancelled, which is this process shutting down, records nothing.
+func TestAPassRecordsAReadItGaveUpOnAsFailed(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// arrange sets up the mapping, GitHub's answers and the shared limits before the pass.
+		arrange func(h *harness)
+		// pass runs the one pass; nil is h.pass.
+		pass func(h *harness)
+		// nothing is a pass that records no attempt, and succeeded one that records it succeeded.
+		nothing, succeeded bool
+		// causeHas is what the cause of a failed attempt must name.
+		causeHas []string
+	}{{
+		name: "a mapped repository the App is not installed on",
+		arrange: func(h *harness) {
+			// The stand-in knows no repository under the row, so the installation lookup is 404.
+			h.mapRepository(rowRepository)
+		},
+		causeHas: []string{"not installed", rowRepository},
+	}, {
+		name: "a mapped repository the App is not installed on, on a pass that holds GitHub's earlier answer",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			// A pass before the one measured asks GitHub and holds its answer, so the measured pass
+			// asks GitHub nothing about the repository and must still note the fault it stands for.
+			measured := h.reconciler.GitHubReads
+			h.reconciler.GitHubReads = nil
+			h.pass()
+			h.reconciler.GitHubReads = measured
+		},
+		causeHas: []string{"not installed", rowRepository},
+	}, {
+		name: "a repository only an issue names that the App is not installed on",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.issueInRepository(uninstalledRow)
+			h.listHead()
+			h.github.setCheckRuns(gitHubRepository, headSHA,
+				checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-05T03:01:00Z"),
+			)
+		},
+		succeeded: true,
+	}, {
+		name: "a repository whose identity GitHub answers 404",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.github.hideRepository(rowRepository)
+		},
+		causeHas: []string{"cannot read the repository", rowRepository},
+	}, {
+		name: "a repository GitHub names with no owner",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			// A full_name that is not owner/name: an empty one is no answer at all (identify).
+			h.github.setRepository(rowRepository, gitHubName, repositoryID)
+		},
+		causeHas: []string{"not owner/name", rowRepository},
+	}, {
+		name: "open pull requests GitHub refuses after it refused the query",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.listHead()
+			h.github.answerStatus("/graphql", http.StatusUnprocessableEntity)
+			h.github.answerStatus("/repos/"+gitHubRepository+"/pulls", http.StatusUnprocessableEntity)
+		},
+		causeHas: []string{"/repos/" + gitHubRepository + "/pulls", "422"},
+	}, {
+		name: "a head whose check runs GitHub refuses",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.listHead()
+			// The query cannot answer the head's checks, so the pass reads them over REST.
+			h.github.refuseChecks(gitHubRepository, headSHA)
+			h.github.answerStatus(checkRunsPath, http.StatusUnprocessableEntity)
+		},
+		causeHas: []string{checkRunsPath, "422"},
+	}, {
+		name: "a head whose commit statuses GitHub refuses",
+		arrange: func(h *harness) {
+			// The token holds Commit statuses, so the query asks for the head's status field, and
+			// GitHub answers it with an errors entry: the head is answered whole without them.
+			h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
+			h.github.refuseStatuses(gitHubRepository, headSHA)
+		},
+		causeHas: []string{"commit status", gitHubRepository},
+	}, {
+		name: "a head read over REST whose commit statuses GitHub refuses",
+		arrange: func(h *harness) {
+			// The query cannot answer the head's checks, so the pass reads the head over REST: its
+			// check runs, its check suites, and then, the token holding Commit statuses, its
+			// statuses, which GitHub answers 422. The query answered the head's status field with
+			// no errors entry, so only the REST read's failure can note the statuses given up.
+			h.headWithStatuses(tokenWithStatuses, commitStatus(101, "ci/build", "failure", "2026-11-17T05:01:00Z"))
+			h.github.refuseChecks(gitHubRepository, headSHA)
+			h.github.answerStatus("/repos/"+gitHubRepository+"/commits/"+headSHA+"/status", http.StatusUnprocessableEntity)
+		},
+		causeHas: []string{"commit status", gitHubRepository, "422"},
+	}, {
+		name: "a limit in force when the pass starts",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.listHead()
+			if err := h.reconciler.Limits.Record(h.ctx, githubapp.AppScope, 10*time.Minute); err != nil {
+				h.t.Fatalf("record a limit on the App: %v", err)
+			}
+		},
+		causeHas: []string{"rate limit on " + githubapp.AppScope, "before it read any repository"},
+	}, {
+		name: "a query GitHub gave up on whose repository the listing reads",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.listHead()
+			h.github.answerStatus("/graphql", http.StatusBadGateway)
+		},
+		succeeded: true,
+	}, {
+		name: "a pass its caller cancelled",
+		arrange: func(h *harness) {
+			h.mapRepository(rowRepository)
+			h.listHead()
+			// GitHub holds its answer about the repository past the moment the caller cancels.
+			h.github.stall("/repos/"+rowRepository, time.Minute)
+		},
+		pass: func(h *harness) {
+			ctx, cancel := context.WithCancel(h.ctx)
+			defer cancel()
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				h.reconciler.Pass(ctx)
+			}()
+			for until := time.Now().Add(20 * time.Second); h.github.countPath("/repos/"+rowRepository) == 0; {
+				if time.Now().After(until) {
+					cancel()
+					<-done
+					h.t.Fatalf("the pass never asked GitHub about the repository:\n%s", h.logs.String())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			cancel()
+			<-done
+		},
+		nothing: true,
+	}} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t, reviewerAppID)
+			reads := h.recordReads()
+			row.arrange(h)
+
+			if row.pass != nil {
+				row.pass(h)
+			} else {
+				h.pass()
+			}
+
+			got := reads.take()
+			if row.nothing {
+				if len(got) != 0 {
+					t.Fatalf("the pass recorded %+v, want nothing", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].read != githubreads.CIReconcile {
+				t.Fatalf("the pass recorded %+v, want one %s attempt:\n%s", got, githubreads.CIReconcile, h.logs.String())
+			}
+			if row.succeeded {
+				if !got[0].succeeded || got[0].cause != "" {
+					t.Fatalf("the pass recorded %+v, want succeeded with no cause:\n%s", got[0], h.logs.String())
+				}
+				return
+			}
+			if got[0].succeeded {
+				t.Fatalf("the pass recorded succeeded, want failed:\n%s", h.logs.String())
+			}
+			for _, text := range row.causeHas {
+				if !strings.Contains(got[0].cause, text) {
+					t.Fatalf("the recorded cause %q does not name %q", got[0].cause, text)
+				}
+			}
+		})
 	}
 }
 

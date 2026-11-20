@@ -4,7 +4,7 @@
  *  and the width a table row gives a long title.
  *
  *  Each reads what the browser does, so each runs against a recording rather than against a
- *  harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The walk that seeds nine issues,
+ *  harness (packages/dispatch/README.md, "The stubbed layer"). The walk that seeds nine issues,
  *  presses eight filters and creates a document in its editor stayed in `project.e2e.ts`.
  */
 import { expect, type Locator } from "@playwright/test";
@@ -171,11 +171,12 @@ referencesTest(
     await expect(references).toContainText("depth 1");
     await expect(references).toContainText("depth 2");
     const tabs = page.getByRole("main").getByRole("tab");
-    await expect(tabs).toHaveCount(9);
+    await expect(tabs).toHaveCount(10);
     for (const [index, name] of [
       "Spec",
       "Verification",
       "Plan",
+      "Steps",
       "Conversation",
       "Children",
       "Artifacts 2",

@@ -135,14 +135,68 @@ test("the reader's own Resolve while a margin reply is out keeps the reply's dra
     await expect(form.getByText(refused)).toBeVisible();
     await expect(field).toHaveValue("Reply under my resolve");
 
-    // Cancel reply drops the reply, and the resolved thread leaves the open ones, where the other
-    // thread still is. (Closing a resolved thread shows the resolved ones on a desktop, so the card
-    // may be on screen there.)
+    // Cancel reply keeps the reply for its thread, so the resolved thread stays among the open
+    // ones, saying so, until the reader drops the reply: Discard draft does, and the thread then
+    // leaves the open ones, where the other thread still is. (Closing a resolved thread shows the
+    // resolved ones on a desktop, so the card may be on screen there.)
     await form.getByRole("button", { name: "Cancel reply" }).click();
     const openCard = (id: string) =>
       page.locator(`section[aria-label="Anchored comments"] [data-margin-item="${id}"]`);
+    await expect(openCard(first.id).getByRole("status")).toHaveText(/ is kept\. /);
+    await openCard(first.id).getByRole("button", { exact: true, name: "Reply" }).click();
+    await form.getByRole("button", { name: "Discard draft" }).click();
     await expect(openCard(second.id)).toHaveCount(1);
     await expect(openCard(first.id)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// Cancel reply is the reader's own move, and a margin thread has no other composer to take its
+// reply to: the reply is kept for its thread, the closed card says so, and the card's Reply puts
+// the text and its refusal back in the field. Nothing is sent until the reader presses, and the
+// Retry then posts the reply to the thread.
+test("Cancel reply keeps a margin thread's refused reply, and the card's Reply brings it back", async ({
+  browser,
+}) => {
+  const { comments, first, issueKey } = await seed("Cancelled margin reply");
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    let posts = 0;
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().endsWith(`/issues/${issueKey}/comments`)) {
+        posts += 1;
+      }
+    });
+    await openSpec(page, issueKey, spec);
+    const card = await openThread(page, first.id);
+    const refuse = await refusePosts(page, comments);
+    const { field, form } = await sendReply(card, "Reply kept through Cancel reply");
+    refuse();
+    await expect(form.getByText(refused)).toBeVisible();
+
+    await form.getByRole("button", { name: "Cancel reply" }).click();
+    await expect(card).toHaveAttribute("aria-expanded", "false");
+    await expect(field).toHaveCount(0);
+    await expect(card.getByRole("status")).toHaveText(
+      /^Your reply to the comment by .+ is kept\. Press Reply to go on with it\.$/
+    );
+
+    await card.getByRole("button", { exact: true, name: "Reply" }).click();
+    await expect(card).toHaveAttribute("aria-expanded", "true");
+    await expect(field).toHaveValue("Reply kept through Cancel reply");
+    await expect(form.getByText(refused)).toBeVisible();
+    await expect(card.getByText(/ is kept\. /)).toHaveCount(0);
+    expect(posts).toBe(1);
+
+    await page.unroute(comments);
+    await form.getByRole("button", { name: "Retry" }).click();
+    await expect(
+      card.getByRole("list", { name: "Replies" }).getByText("Reply kept through Cancel reply")
+    ).toBeVisible();
+    expect(posts).toBe(2);
   } finally {
     await alice.close();
   }

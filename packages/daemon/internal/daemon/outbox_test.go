@@ -36,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -141,6 +142,8 @@ type outboxDispatch struct {
 	gatedSteps    [][]string
 	gatedStepsOf  []string
 	gatedStepsErr error
+	// recordErr is what a step record's write and a plan's write answer.
+	recordErr error
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -195,6 +198,15 @@ func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps 
 	d.gatedStepsOf = append(d.gatedStepsOf, project)
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
 	return d.gatedStepsErr
+}
+func (d *outboxDispatch) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return d.recordErr
+}
+func (d *outboxDispatch) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return d.recordErr
+}
+func (d *outboxDispatch) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+	return d.recordErr
 }
 func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
@@ -702,11 +714,11 @@ func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
 	}
 }
 
-// A workflow move that nothing else on Dispatch explains, here a head that conflicts with its base,
-// carries its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue,
-// under the row's marker, before it moves the issue, as it does a done write's.
+// A workflow move that nothing else on Dispatch explains, here a worker's backward move, carries
+// its reason on an ordinary row (workflow's moveReason): the runner posts it on the issue, under
+// the row's marker, before it moves the issue, as it does a done write's.
 func TestAWorkflowMoveWithAReasonPostsItBeforeItMovesTheIssue(t *testing.T) {
-	reason := "Legion moved this issue from testing back to implementing, because pull request #42 at head c0de conflicts with main. GitHub runs no checks on a head that conflicts with its base, so the implementer merges main forward."
+	reason := "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."
 	row := mustOutboxRow(t, "LEGION-208", record.OrdinaryStatusWrite("in_progress", "testing", reason), time.Now())
 	row.ID = 57
 	client := &outboxDispatch{issue: dispatch.Issue{Key: row.Issue, Status: "testing"}, postErr: errors.New("Dispatch refused the message")}
@@ -1217,6 +1229,77 @@ func TestOutboxRoleMessageAnswersOfTheConfirmedPublishRoute(t *testing.T) {
 	}
 	if got := client.messages; len(got) != 0 {
 		t.Fatalf("Dispatch messages = %q, want none: a role message posts nothing to the issue", got)
+	}
+}
+
+// A role message only informs - of a CI settlement, a design gate's move, an approved round stuck
+// on its merge state - so a role whose pod was released is told nothing and is not woken for it:
+// the row ends before any publish. Published, it would meet the listener's answer for a role
+// nobody holds, which raises the role's wake, and the pod would come back for a message the row
+// had already dropped.
+func TestOutboxRoleMessageToAReleasedRoleEndsWithoutAWake(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	implementer := releasedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	if published := publisher.publishes(); len(published) != 0 {
+		t.Fatalf("publishes = %#v, want none: the released role is not told", published)
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
+	}
+	// The row ends without a wake as well as without a publish: a wake here would bring the pod
+	// back for a message the row has already dropped.
+	if held := implementer.Claim(); !held.Released() {
+		t.Fatalf("the implementer is %s by %s, want it still released: the message is no wake", held.State, held.SuspendedBy)
+	}
+	if resumes := podResumes(t, pool, "LEGION-208"); resumes != 0 {
+		t.Fatalf("recorded wakes = %d, want none: the message is no wake", resumes)
+	}
+}
+
+// startedClaim creates role's claim on LEGION-208 as a launch that has not registered yet, so a
+// start queued for it finds it and hands it its task: what the claim then holds is what the start
+// delivered.
+func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Machine {
+	t.Helper()
+	machine, _, err := sup.Create(context.Background(), supervise.Claim{Token: mustClaimToken(t, "LEGION-208", role), Project: "legion",
+		Tree: "LEGION-208", Issue: "LEGION-208", Role: role, State: supervise.StateQueued}, "")
+	if err != nil {
+		t.Fatalf("create the %s's claim: %v", role, err)
+	}
+	return machine
+}
+
+// A role whose claim this daemon supervises and has not released is published to as before: the
+// claim read stops only the message to a released pod.
+func TestOutboxRoleMessageToAClaimNotReleasedIsPublished(t *testing.T) {
+	ctx := context.Background()
+	publisher := &outboxPublisher{}
+	runner, sup, pool := hookRunner(t, publisher)
+	startedClaim(t, sup, claim.RoleImplementer)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208",
+		record.RoleMessage{Role: string(token), Body: "CI settled at head"}, time.Now().Add(-time.Minute)))
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("drain the role message: %v", err)
+	}
+
+	published := publisher.publishes()
+	if len(published) != 1 || published[0].topic != notify.RoleTopicPrefix+string(token) || published[0].message != "CI settled at head" {
+		t.Fatalf("publishes = %#v, want the one message to %s", published, notify.RoleTopicPrefix+string(token))
+	}
+	if left := outboxRows(t, pool); left != 0 {
+		t.Fatalf("outbox rows left = %d, want the message finished", left)
 	}
 }
 
@@ -2140,14 +2223,12 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			}); err != nil {
 				t.Fatalf("put the pull request: %v", err)
 			}
-			// The reviewer's claim, which the daemon started it on: its completion arrives after
-			// its own review has moved the issue, and is recorded on its row (workflow's
-			// leftItsPhase).
-			if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-				state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-				values ('reviewer', 'LEGION', 'LEGION-208', 'LEGION-208', 'reviewer', 1, '', '', 'working', 0, 0, 0, 0)`); err != nil {
-				t.Fatalf("seed the reviewer's claim: %v", err)
-			}
+			// The reviewer's claim, which the daemon started it on, under the token it names the
+			// claim by, holding the session its agent registered, which the review's footer names
+			// (workflow's ReviewerSession): its completion arrives after its own review has moved
+			// the issue, and is recorded on its row (workflow's leftItsPhase).
+			const reviewerClaim = "legion-legion-legion-208-reviewer"
+			seedReviewerSession(t, pool, "LEGION", "LEGION-208", "ses-reviewer")
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"
@@ -2193,7 +2274,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			// The review itself ended the round; the reviewer's completion follows it, recorded on
 			// the reviewer's own row with the issue already in implementing.
 			apply("handoff:reviewer:reviewing:1", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-1", HandoffVersion: 1})
+				Claim: reviewerClaim, HandoffRecord: "review-round-1", HandoffVersion: 1})
 			due("the round-2 start")
 			machine, found := sup.Machine(implementer)
 			if !found {
@@ -2246,7 +2327,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			review.Body += legionFooter("ses-reviewer", head)
 			apply("review:after-round-2", review)
 			apply("handoff:reviewer:reviewing:2", intake.HandoffComplete{Generation: 1, Issue: issue.Key, Role: claim.RoleReviewer,
-				Claim: "reviewer", HandoffRecord: "review-round-2", HandoffVersion: 2})
+				Claim: reviewerClaim, HandoffRecord: "review-round-2", HandoffVersion: 2})
 			if tc.accept {
 				apply("signoff", intake.SignOff{Issue: issue.Key})
 			}
@@ -2587,21 +2668,35 @@ func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Sto
 	return st
 }
 
+// outboxPublisher is the listener as a publish that it answers with err meets it: every publish
+// is recorded, kept or not, and a kept publish (PublishKept) is answered as a live holder's 200
+// when err is nil, never as kept.
 type outboxPublisher struct {
 	mu      sync.Mutex
 	publish []outboxPublish
 	err     error
 }
 
+// outboxPublish is one publish a fake publisher recorded. keep is that the publish asked the
+// listener to keep the message for the role's next holder (notify.Publisher.PublishKept).
 type outboxPublish struct {
 	topic, message, key string
 	payload             any
+	keep                bool
 }
 
 func (p *outboxPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload})
+}
+
+func (p *outboxPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.record(outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: true})
+}
+
+func (p *outboxPublisher) record(published outboxPublish) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.publish = append(p.publish, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.publish = append(p.publish, published)
 	return p.err
 }
 
@@ -2700,6 +2795,9 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
 	// refused is the error every claim write answers while it is set, which is how a case drives
 	// a decision the store would not take (the stall backstop's own relaunch).
 	refused error
@@ -2723,6 +2821,10 @@ func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error 
 	}
 	s.claims[c.Token] = c
 	return nil
+}
+
+func (s *outboxClaimStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (s *outboxClaimStore) AdmitClaim(ctx context.Context, c supervise.Claim) (supervise.Claim, error) {
@@ -3288,6 +3390,122 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
+	}
+}
+
+// The router's 404 of a Dispatch with no route for a write ("no route for …", dispatch.NoRoute)
+// ends a status write, a message post and a claim release on their first attempt, each with its
+// follow-up, as any coded 404 does (dispatch.PermanentRefusal): their routes stand on every
+// Dispatch, so that answer means a dispatch_url that reaches no Dispatch of the project's, and a
+// status write left waiting would hold every later status write of its issue behind it (the
+// store's outboxInOrder). The status write's finish queues the architect's notice that the status
+// is not set, the message post's the architect's notice of the message it did not post, and the
+// claim release's tells nobody; each logs its line. A step record that meets the same answer in the
+// same run waits (waitsForTheRoute): it stays for its retry, logged as a wait and never as a
+// failure, since a Dispatch older than the record lane serves no route of it yet.
+func TestTheRoutersNotFoundEndsADispatchWriteAndAStepRecordWaitsOnIt(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		kind    record.OutboxKind
+		payload record.OutboxPayload
+		// route is the request the write makes, and meets gives that request the router's 404.
+		route string
+		meets func(d *outboxDispatch, noRoute error)
+		// logged is the line the finish logs, and told a part of the architect's notice it queues,
+		// "" where it queues none.
+		logged, told string
+	}{
+		{name: "a status write", kind: record.OutboxKindDispatchStatus, payload: record.OrdinaryStatusWrite("done", "in_progress", ""),
+			route: "PATCH /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.statusErr = noRoute },
+			logged: "outbox status write refused by Dispatch; its architect is told what the issue holds now", told: "The status done is not set"},
+		{name: "a message post", kind: record.OutboxKindDispatchMessage, payload: record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"},
+			route: "POST /api/v1/issues/LEGION-2/messages", meets: func(d *outboxDispatch, noRoute error) { d.postErr = noRoute },
+			logged: "outbox Dispatch message refused and dropped; its architect is told", told: "READY #42 at head"},
+		{name: "a claim release", kind: record.OutboxKindClaimRelease, payload: record.ClaimRelease{},
+			route: "GET /api/v1/issues/LEGION-2", meets: func(d *outboxDispatch, noRoute error) { d.getErr = noRoute },
+			logged: claimRefusedLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			now := time.Now().UTC()
+			noticeTree(t, pool, records, true)
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+			started := now.Add(-time.Minute)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", tc.payload, now))
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.StepRecord{ID: "1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b",
+				Task: "default", Step: 2, Kind: "step", Role: "implementer", Type: "implementation",
+				Agent: "legion-legion-legion-2-implementer", Generation: 1, StartedAt: &started}, now))
+			noRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "no route for " + tc.route}
+			noStepRoute := &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND",
+				Message: "no route for PUT /api/v1/issues/LEGION-2/steps/1f2e3d4c-5b6a-5978-8a9b-0c1d2e3f4a5b"}
+			client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, recordErr: noStepRoute}
+			tc.meets(client, noRoute)
+			logs := &syncBuffer{}
+			runner := &outbox{
+				project: "legion", dispatchProject: "LEGION", log: slog.New(slog.NewJSONHandler(logs, nil)),
+				pool: pool, records: records, dispatch: client, notices: &holderPublisher{}, supervisor: sup,
+				now: func() time.Time { return now },
+			}
+			if err := runner.RunOnce(ctx); err != nil {
+				t.Fatalf("run the outbox: %v", err)
+			}
+
+			attemptsOf := func(kind record.OutboxKind) []int {
+				t.Helper()
+				rows, err := pool.Query(ctx, `select attempts from outbox where kind = $1 order by id`, string(kind))
+				if err != nil {
+					t.Fatalf("read the %s rows: %v", kind, err)
+				}
+				attempts, err := pgx.CollectRows(rows, pgx.RowTo[int])
+				if err != nil {
+					t.Fatalf("read the %s rows: %v", kind, err)
+				}
+				return attempts
+			}
+			if left := attemptsOf(tc.kind); len(left) != 0 {
+				t.Errorf("the row of %s stands after the router's 404 with attempts %v, want it ended on its first attempt", tc.name, left)
+			}
+			if lines := loggedLines(t, logs.String(), tc.logged); len(lines) != 1 || !strings.Contains(fmt.Sprint(lines[0]["error"]), noRoute.Message) {
+				t.Errorf("logged %q %d times, want once naming the router's %q: %s", tc.logged, len(lines), noRoute.Message, logs.String())
+			}
+			rows, err := pool.Query(ctx, "select payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+			if err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+			if err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			var told []record.Notice
+			for _, payload := range payloads {
+				var notice record.Notice
+				if err := json.Unmarshal(payload, &notice); err != nil {
+					t.Fatalf("decode a notice: %v", err)
+				}
+				told = append(told, notice)
+			}
+			switch {
+			case tc.told == "" && len(told) != 0:
+				t.Errorf("notices queued = %+v, want none: the finish of %s tells nobody", told, tc.name)
+			case tc.told != "" && (len(told) != 1 || told[0].Kind != "message-refused" || told[0].Role != claim.RoleArchitect ||
+				!strings.Contains(told[0].Reason, tc.told) || !strings.Contains(told[0].Reason, noRoute.Message)):
+				t.Errorf("notices queued = %+v, want the architect's one message-refused notice saying %q, naming %q", told, tc.told, noRoute.Message)
+			}
+
+			if left := attemptsOf(record.OutboxKindStepRecord); !slices.Equal(left, []int{1}) {
+				t.Errorf("the step record's rows after the router's 404 have attempts %v, want the one row kept for its retry after 1", left)
+			}
+			waited := loggedLines(t, logs.String(), `"msg":"outbox row waits"`)
+			if len(waited) != 1 || !strings.Contains(fmt.Sprint(waited[0]), "step_record") {
+				t.Errorf("logged %d waits, want the step record's one: %s", len(waited), logs.String())
+			}
+			if failed := loggedLines(t, logs.String(), "outbox row failed"); len(failed) != 0 {
+				t.Errorf("logged %d failed attempts, want none: the row of %s ended and the step record waits: %s", len(failed), tc.name, logs.String())
+			}
+		})
 	}
 }
 

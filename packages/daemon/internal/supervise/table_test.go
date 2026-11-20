@@ -149,6 +149,7 @@ func samples(t *testing.T) map[string][]Event {
 		"IssueTurnEnded":       {IssueTurnEnded{}},
 		"StreamPromptResult":   {StreamPromptResult{}},
 		"StreamToolStep":       {StreamToolStep{}},
+		"StreamAnswered":       {StreamAnswered{}},
 		"StreamClosed":         {StreamClosed{}},
 		"StreamLateRefusal":    {StreamLateRefusal{}},
 		"PromptAcked":          {PromptAcked{}},
@@ -175,6 +176,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestExit":          {RequestExit{}},
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
 		"RequestCompact":       {RequestCompact{}},
+		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
 	}
 	for _, kind := range timers {
@@ -311,6 +313,9 @@ func fenced(ev Event, c Claim) Event {
 	case StreamToolStep:
 		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
+	case StreamAnswered:
+		// The stream stamps an answer with the generation of the launch whose connection read it.
+		return StreamAnswered{Claim: c.Token, Model: "anthropic/claude-sonnet-4-5", Generation: c.Generation}
 	case StreamLateRefusal:
 		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
 	case PromptAcked:
@@ -353,6 +358,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case ResumePause:
+		return ResumePause{Claim: c.Token, Pause: 1}
 	case RequestTurnOutcome:
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestCompact:
@@ -412,6 +419,15 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					after := h.claim()
 					if after.State != before.State || after.Budgets != before.Budgets || after.Generation != before.Generation {
 						t.Errorf("claim moved: %+v -> %+v", before, after)
+					}
+					// An answer reaches its ignore, not the generation fence in front of it
+					// (Machine.fence): a stop at the fence changes nothing too, and would pass. A
+					// claim with no process stops an observation at its fence by design (fenced), so
+					// this holds of the answer alone.
+					if _, answer := ev.(StreamAnswered); answer {
+						if lines := h.logs.lines("dropped a stale event", "event=StreamAnswered"); len(lines) > 0 {
+							t.Errorf("the answer stopped at a fence, not at its ignore: %q", lines)
+						}
 					}
 					if calls := h.rt.Methods(); len(calls) > 0 {
 						t.Errorf("asked the runtime %v", calls)

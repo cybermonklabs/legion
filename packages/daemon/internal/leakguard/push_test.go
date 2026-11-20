@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
@@ -358,4 +359,57 @@ func TestParseUpdates(t *testing.T) {
 	if _, err := ParseUpdates(strings.NewReader("refs/heads/main abc\n")); err == nil {
 		t.Error("a line of three fields was read as a pre-push line")
 	}
+}
+
+// A git read of a push's records that fails quotes what git wrote on its standard error, never its
+// standard output, which is the push's own content: a stand-in git that writes a megabyte of a
+// diff's added lines to its standard output and its reason to its standard error is refused with
+// the reason alone. A standard error past gitErrorBytes is cut to its end, which holds git's
+// `fatal:` line, after the count of the bytes left out. Each stand-in is the one git first on PATH.
+func TestAFailedGitReadQuotesItsCappedStandardErrorAlone(t *testing.T) {
+	failingGit := func(t *testing.T, script string) *Guard {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script+"\nexit 1\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), "PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))})
+	}
+	const content = "+the pushed line"
+	t.Run("a megabyte of the push's content on standard output", func(t *testing.T) {
+		guard := failingGit(t, "yes '"+content+"' | head -c 1048576\necho 'fatal: bad object HEAD' >&2")
+		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
+		if want := "git diff-tree exited 1: fatal: bad object HEAD"; err == nil || err.Error() != want {
+			t.Errorf("git = %.200v, want %q", err, want)
+		}
+	})
+	t.Run("a standard error past the cap, its reason last", func(t *testing.T) {
+		const reason = "fatal: unable to read tree"
+		guard := failingGit(t, "yes 'warning: refname is ambiguous' | head -n 4000 >&2\necho '"+reason+"' >&2")
+		_, err := guard.git(bound(t), t.TempDir(), "diff-tree", "HEAD")
+		if err == nil {
+			t.Fatal("git = nil, want its failure")
+		}
+		said := strings.TrimPrefix(err.Error(), "git diff-tree exited 1: ")
+		count, kept, found := strings.Cut(said, " bytes left out) …")
+		if !found || !strings.HasPrefix(count, "(") || len(kept) > gitErrorBytes || !strings.HasSuffix(kept, "\n"+reason) {
+			t.Errorf("git quoted %d bytes, from %q to %q, want the count of the bytes left out and at most the last %d bytes of its standard error, its reason included",
+				len(said), said[:min(len(said), 40)], said[max(0, len(said)-40):], gitErrorBytes)
+		}
+	})
+	// Two-byte characters then one byte put the cut on the second byte of a character.
+	t.Run("a cut inside a character moves to the next one", func(t *testing.T) {
+		said := gitSaid(strings.Repeat("é", gitErrorBytes) + "x")
+		if want := "(4098 bytes left out) …" + strings.Repeat("é", gitErrorBytes/2-1) + "x"; said != want {
+			t.Errorf("gitSaid = %d bytes ending %q, want %d bytes ending %q: whole characters after the count",
+				len(said), said[max(0, len(said)-25):], len(want), want[len(want)-25:])
+		}
+	})
+	// Bytes that start no character still leave gitErrorBytes of them quoted, never none.
+	t.Run("a run that starts no character keeps the whole cap", func(t *testing.T) {
+		said := gitSaid(strings.Repeat("\x80", gitErrorBytes+10))
+		if want := "(10 bytes left out) …" + strings.Repeat("\x80", gitErrorBytes); said != want {
+			t.Errorf("gitSaid = %d bytes, want %d: the count of 10 and the last %d bytes", len(said), len(want), gitErrorBytes)
+		}
+	})
 }

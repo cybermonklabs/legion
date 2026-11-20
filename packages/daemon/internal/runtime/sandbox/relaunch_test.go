@@ -33,6 +33,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -395,6 +397,243 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 	return g
 }
 
+// An issue's disk has one of two shapes, and keptVolume decides which: an ephemeral volume of its
+// own pod, its Sandbox owning no claim template, or, where its microVM pod keeps its volume, the
+// one `issue` template its Sandbox owns, labelled kept. spec.volumeClaimTemplates is immutable in
+// the CRD, so a launch into a Sandbox of the other shape deletes it, and the volume it owns with
+// it, and creates one of the shape the launch renders. It does so wherever it replaces the pod:
+// after the round has ended the pod (ReplacePod), or for a reason of its own, a moved address. A
+// live pod whose shape record drifted is its round's to end, once each role in it has pushed its
+// work, so a launch into it keeps the pod and the Sandbox and starts its role there. A Sandbox
+// that already has the shape the launch renders keeps its uid and its volume, also where the
+// launch replaces its pod. Each Sandbox a launch creates in place of another names the pod the
+// replacement ended as displaced, so the roles of that pod are resumed uncharged, and the
+// replacement logs its reason.
+func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
+	name := SandboxName(workerToken)
+	labels := claimLabels(claim.RoleTester)
+	// logged is the configuration edits make, with the runtime logging at info and above to log.
+	logged := func(log *logBuffer, edits ...func(*Options)) func(*Options) {
+		return func(o *Options) {
+			for _, edit := range edits {
+				edit(o)
+			}
+			o.Log = slog.New(slog.NewTextHandler(log, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		}
+	}
+	// mountsKept fails the test unless the pod of the issue mounts the claim of its kept volume.
+	mountsKept := func(t *testing.T, g *rig) {
+		t.Helper()
+		if source := podDiskSource(t, g.pod(name).Spec).PersistentVolumeClaim; source == nil || source.ClaimName != IssueClaimName(workerToken) {
+			t.Fatalf("the issue's pod mounts its disk from %+v, want the claim %s of its kept volume", source, IssueClaimName(workerToken))
+		}
+	}
+	// remade fails the test unless the launch that answered next deleted the issue's Sandbox, uid
+	// old, and then created one of the shape the launch renders, in place of the pod oldPod: the
+	// kept `issue` template on the microvm block's class where kept, whose claim the new pod mounts,
+	// and otherwise no template and an ephemeral disk of the pod's own. The new Sandbox names oldPod
+	// as displaced, and the one line the replacement logged names the issue, the old Sandbox, its
+	// claim and reason.
+	remade := func(t *testing.T, g *rig, next runtime.Locator, old types.UID, oldPod string, kept bool, log *logBuffer, reason sandboxReplacement) {
+		t.Helper()
+		if made := sandboxRemakes(g, name); !slices.Equal(made, []string{"delete", "create"}) {
+			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it deleted and then created", made)
+		}
+		s := g.sandbox(name)
+		if s == nil || s.UID == old {
+			t.Fatalf("the issue's Sandbox = %+v, want one the launch created in place of %s", s, old)
+		}
+		pod := g.pod(name)
+		if pod == nil || string(pod.UID) != next.Sandbox.PodUID || next.Sandbox.PodUID == oldPod {
+			t.Fatalf("pod %+v, locator %+v; want the new pod of the Sandbox the launch created, not %s", pod, next, oldPod)
+		}
+		if kept {
+			templates := s.Spec.VolumeClaimTemplates
+			if !ownsKeptVolume(s) || len(templates) != 1 || templates[0].Spec.StorageClassName == nil || *templates[0].Spec.StorageClassName != testMicroVMStorageClass {
+				t.Fatalf("the Sandbox the launch created owns %+v, want the one kept `issue` template on %s", templates, testMicroVMStorageClass)
+			}
+			mountsKept(t, g)
+		} else {
+			if len(s.Spec.VolumeClaimTemplates) != 0 {
+				t.Fatalf("the Sandbox the launch created owns %+v, want no claim template", s.Spec.VolumeClaimTemplates)
+			}
+			podDisk(t, pod.Spec)
+		}
+		if named := s.Annotations[displacedAnnotation]; named != oldPod {
+			t.Fatalf("the Sandbox the launch created names %q as the pod the daemon replaced, want %s", named, oldPod)
+		}
+		lines := linesHolding(log.String(), "replacing the issue's Sandbox")
+		if len(lines) != 1 {
+			t.Fatalf("the launch logged %d replacements of the issue's Sandbox, want one: %q", len(lines), log.String())
+		}
+		for _, want := range []string{"issue=" + testTree, "sandbox=" + name, "uid=" + string(old), "claim=" + IssueClaimName(workerToken), fmt.Sprintf("reason=%q", reason)} {
+			if !strings.Contains(lines[0], want) {
+				t.Errorf("the replacement logged %q, want it to name %s", lines[0], want)
+			}
+		}
+	}
+	// roundOver ends loc's pod as its update round does once every role in it has answered.
+	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
+		t.Helper()
+		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
+			t.Fatalf("ReplacePod: %v", err)
+		}
+	}
+
+	t.Run("a: the round took the pod, and the launch now keeps a volume", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		s := g.sandbox(name)
+		if len(s.Spec.VolumeClaimTemplates) != 0 {
+			t.Fatalf("the Sandbox built with keep_volume off owns %+v, or this case proves nothing", s.Spec.VolumeClaimTemplates)
+		}
+		r2 := restartedOver(t, g, loc, logged(log, keptVolumes(SandboxMicroVM)))
+		roundOver(t, g, r2, loc)
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), s.UID, loc.Sandbox.PodUID, true, log, replacedToKeepVolume)
+	})
+
+	t.Run("b: the round took the pod, and the launch now keeps none", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		s := g.sandbox(name)
+		if !ownsKeptVolume(s) {
+			t.Fatalf("the Sandbox built with keep_volume on owns %+v, or this case proves nothing", s.Spec.VolumeClaimTemplates)
+		}
+		r2 := restartedOver(t, g, loc, logged(log, sandboxBlock(SandboxMicroVM)))
+		roundOver(t, g, r2, loc)
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), s.UID, loc.Sandbox.PodUID, false, log, replacedToKeepNone)
+	})
+
+	for row, tc := range map[string]struct {
+		template func(*testing.T, *unstructured.Unstructured) *unstructured.Unstructured
+		reason   sandboxReplacement
+	}{
+		"c: the round took the pod, and its template is the release's before the pod-owned disk on the same class": {
+			func(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+				return withKeptTemplate(t, u, false)
+			},
+			replacedFromPreviousRelease,
+		},
+		"c: the round took the pod, and its kept template names another class": {
+			func(t *testing.T, u *unstructured.Unstructured) *unstructured.Unstructured {
+				return withKeptTemplate(t, u, true, func(spec *corev1.PersistentVolumeClaimSpec) {
+					class := "example-other-rwo"
+					spec.StorageClassName = &class
+				})
+			},
+			replacedForVolumeChange,
+		},
+	} {
+		t.Run(row, func(t *testing.T) {
+			log := &logBuffer{}
+			g := newRig(t, []k8sruntime.Object{
+				tc.template(t, sandboxObject(t, name, "uid-sandbox-other", modeRunning, labels)),
+				podObject(name, "uid-pod-old", "uid-sandbox-other", labels, runningStatus()),
+			}, withOptions(logged(log, keptVolumes(SandboxMicroVM))))
+			g.suspendDelay.Store(int64(50 * time.Millisecond))
+			roundOver(t, g, g.r, sandboxLocator(workerToken, "uid-pod-old"))
+			g.clearActions()
+			remade(t, g, g.spawn(workerSpec(t)), "uid-sandbox-other", "uid-pod-old", true, log, tc.reason)
+		})
+	}
+
+	for row, tc := range map[string]struct{ built, now func(*Options) }{
+		"d: a live pod of its own disk whose shape drifted, and the launch now keeps a volume": {
+			sandboxBlock(SandboxMicroVM), keptVolumes(SandboxMicroVM),
+		},
+		"d: a live pod of a kept volume whose shape drifted, and the launch now keeps none": {
+			keptVolumes(SandboxMicroVM), sandboxBlock(SandboxMicroVM),
+		},
+	} {
+		t.Run(row, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(tc.built))
+			loc := g.spawn(workerSpec(t))
+			old := g.sandbox(name).UID
+			r2 := restartedOver(t, g, loc, tc.now)
+			if drifted := driftOf(t, g.ctx, r2, loc); len(drifted) == 0 {
+				t.Fatal("PodDrift of the issue pod is empty, so this case proves nothing: its round is what ends it")
+			}
+			g.clearActions()
+			next := resumeTester(t, g, r2, loc)
+			if next.Sandbox.PodUID != loc.Sandbox.PodUID {
+				t.Fatalf("the launch replaced the live pod %s with %s, want it kept for its update round", loc.Sandbox.PodUID, next.Sandbox.PodUID)
+			}
+			if made := sandboxRemakes(g, name); len(made) > 0 {
+				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its live pod", made)
+			}
+			if s := g.sandbox(name); s == nil || s.UID != old {
+				t.Fatalf("the issue's Sandbox = %+v, want %s kept", s, old)
+			}
+			startSent(t, g, 2)
+		})
+	}
+
+	t.Run("e: a live pod of the other disk shape, replaced for a moved address", func(t *testing.T) {
+		log := &logBuffer{}
+		g := newRig(t, nil, withOptions(sandboxBlock(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		old := g.sandbox(name).UID
+		// The worker stream moved as well: the pod's launchers dial an address this daemon does not
+		// serve, so the launch replaces the pod where it stands (movedInPod), and its Sandbox with it.
+		r2 := restartedOver(t, g, loc, logged(log, keptVolumes(SandboxMicroVM), moveStream))
+		g.clearActions()
+		remade(t, g, resumeTester(t, g, r2, loc), old, loc.Sandbox.PodUID, true, log, replacedToKeepVolume)
+	})
+
+	for row, config := range map[string]func(*Options){
+		"f: a Sandbox of a microVM project that already has the kept shape":         keptVolumes(SandboxMicroVM),
+		"f: a Sandbox of a gVisor project's canary that already has the kept shape": keptVolumes(SandboxGVisor, testTree),
+	} {
+		t.Run(row, func(t *testing.T) {
+			g := newRig(t, []k8sruntime.Object{
+				withKeptTemplate(t, sandboxObject(t, name, "uid-sandbox-kept", modeSuspended, labels), true),
+			}, withOptions(config))
+			g.spawn(workerSpec(t))
+			if made := sandboxRemakes(g, name); len(made) > 0 {
+				t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept: it has the shape the launch renders", made)
+			}
+			if s := g.sandbox(name); s == nil || s.UID != "uid-sandbox-kept" || !ownsKeptVolume(s) {
+				t.Fatalf("the issue's Sandbox = %+v, want uid-sandbox-kept kept with its kept volume", s)
+			}
+			mountsKept(t, g)
+		})
+	}
+
+	t.Run("g: a live pod of a kept volume of the wanted shape, replaced for a moved address", func(t *testing.T) {
+		g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+		loc := g.spawn(workerSpec(t))
+		old := g.sandbox(name).UID
+		mountsKept(t, g)
+		r2 := restartedOver(t, g, loc, func(o *Options) {
+			keptVolumes(SandboxMicroVM)(o)
+			moveStream(o)
+		})
+		g.clearActions()
+		next := resumeTester(t, g, r2, loc)
+		if next.Sandbox.PodUID == loc.Sandbox.PodUID {
+			t.Fatalf("the launch kept the pod %s, whose launchers dial a stream this daemon does not serve", loc.Sandbox.PodUID)
+		}
+		if made := sandboxRemakes(g, name); len(made) > 0 {
+			t.Fatalf("the launch wrote %v of the issue's Sandbox, want it kept with its kept volume", made)
+		}
+		s := g.sandbox(name)
+		if s == nil || s.UID != old {
+			t.Fatalf("the issue's Sandbox = %+v, want %s kept", s, old)
+		}
+		if pod := g.pod(name); pod == nil || string(pod.UID) != next.Sandbox.PodUID {
+			t.Fatalf("pod %+v, locator %+v; want the launch's new pod", pod, next)
+		}
+		mountsKept(t, g)
+		if named := s.Annotations[displacedAnnotation]; named != loc.Sandbox.PodUID {
+			t.Fatalf("the Sandbox names %q as the pod the daemon replaced, want %s", named, loc.Sandbox.PodUID)
+		}
+	})
+}
+
 // A sibling role of the pod a migrating launch replaces may be evaluated while that launch is
 // between deleting the Sandbox of the superseded disk shape and creating its replacement, when
 // the API server holds no Sandbox of the issue's name at all: the observer takes no launch turn.
@@ -427,12 +666,10 @@ func TestASiblingReadBetweenAMigratingLaunchsDeleteAndCreateIsDisplaced(t *testi
 			// The launch has seen the delete through and has yet to send its create. The probe's own
 			// confirming read comes through this hook too, so it is marked first.
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, sibling)
 		},
 	}
@@ -482,12 +719,10 @@ func TestAGapReadOfARoleOfAnotherPodThanTheReplacementEndedIsNotDisplaced(t *tes
 				return
 			}
 			probed.Store(true)
-			for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
-				if s, _ := g.r.storedSandbox(name); s == nil {
-					storeHeldIt = false
-					break
-				}
-			}
+			storeHeldIt = !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+				s, _ := g.r.storedSandbox(name)
+				return s == nil
+			})
 			inGap, gapErr = g.r.Probe(g.ctx, older)
 		},
 	}
@@ -706,7 +941,8 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // for a route it no longer serves or a variable it no longer sets. It has drifted, and a live
 // drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
 // it there would end every role's turn in it and delete the issue's disk with everything unpushed
-// on it, so the pod is left to its update round, which first has every worker in it push its work.
+// on it, so the pod is left to its update round, which first has every worker in it do the steps
+// of its update message (supervise.UpdateTask).
 // The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
 // nobody to task — and is replaced by its next launch as it always was
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds that for every key of a pod's
@@ -1773,7 +2009,8 @@ func TestAnOKStartAnswerNamingAnotherGenerationIsStoppedNotTakenAsARefusal(t *te
 // scriptedStartLauncher is a launcher that starts its child at each Start it receives and answers it
 // as answer says: nil withholds the Start result and state until the runtime's cleanup sends Stop.
 // The Stop runs after the Start on the same connection, so the child it reports ended is exactly
-// the Start's generation.
+// the Start's generation. Its hello says of looking a session up by its id what the rig's own fake
+// launchers' do (withResumesBySession).
 type scriptedStartLauncher struct {
 	starts chan shimwire.LauncherStart
 	stops  chan shimwire.LauncherStop
@@ -1791,7 +2028,9 @@ func (g *rig) scriptedStartLauncher(
 	}
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "scripted-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
+		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
+	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	scripted := &scriptedStartLauncher{
 		starts: make(chan shimwire.LauncherStart, 2),
@@ -1936,7 +2175,12 @@ type sandboxMachineCancel struct{}
 
 func (sandboxMachineCancel) Stop() bool { return true }
 
-type supervisedSandboxStore struct{ claim supervise.Claim }
+type supervisedSandboxStore struct {
+	claim supervise.Claim
+	// Holds holds each session name for the first claim that records it, as the store's
+	// claim_sessions table does (supervise.Store.HoldSessions).
+	supervisetest.Holds
+}
 
 func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim) (supervise.Claim, error) {
 	s.claim = c
@@ -1948,6 +2192,10 @@ func (*supervisedSandboxStore) CheckLaunch(context.Context, supervise.Claim) err
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
 	return nil
+}
+
+func (s *supervisedSandboxStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds []supervise.Hold) ([]supervise.Hold, error) {
+	return s.Holds.ReleaseWith(ctx, s.PutClaim, c, holds)
 }
 
 func (*supervisedSandboxStore) PutDelivery(context.Context, claim.Token, supervise.Delivery) error {

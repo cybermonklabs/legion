@@ -413,7 +413,8 @@ func (g *roleKeepGuards) tryHold(role string) (func(), bool) {
 // (roles.Lapsed: unresponsive, or gone), on the publish route and the role lane alike. No
 // resolution releases a lapsed claim (dispatch://INFRA-392), and the copy kept for it still
 // reaches a live holder: a released Legion session claims its role again when it comes back, and
-// the role route starts a handover of the lane for a claim it grants (runKeptRoleDrain); a holder
+// the role route starts a handover of the lane for a claim it grants, after the role's takeover
+// passes (runTakenRoleDrain); a holder
 // that answers again with its claim still standing registers and claims nothing, and the
 // registration that makes it live again starts a handover of each role whose claim record its
 // renewal read for the session, renewed or not, so a session a new process resumed is handed its
@@ -476,22 +477,23 @@ type keptRoleCopy struct {
 type keptRolePublish func(ctx context.Context, subject string, item contracts.Envelope, msgID string) (bus.StoredAck, error)
 
 // keepRoleMessage stores item on role's kept lane, the copy the role's next live holder is handed
-// (drainKeptRole), within roleKeepPublishWindow, and returns what the lane holds for it and whether
-// it kept anything (storeKeptRoleCopy). A keep that failed is logged here, the one failure line
-// both give-up paths write (the publish route's noHolder and the role lane's
-// keepRoleLaneMessage), so neither carries a copy of it.
-func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, bool) {
+// (drainKeptRole), within roleKeepPublishWindow, and returns what the lane holds for it, or the
+// keep's failure (storeKeptRoleCopy), which a caller answering a sender reads: a keep whose publish
+// went unacknowledged may have stored the copy (bus.ErrUnacknowledged). A keep that failed is
+// logged here, the one failure line both give-up paths write (the publish route's noHolder and the
+// role lane's keepRoleLaneMessage), so neither carries a copy of it.
+func keepRoleMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepPublishWindow)
 	defer cancel()
-	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.client.PublishStoredAck)
+	kept, err := storeKeptRoleCopy(ctx, cfg, role, item, cfg.keepPublish)
 	if err != nil {
 		cfg.logger.Error(roleKeepFailedLine,
 			slog.String("role", role),
 			slog.String("event_id", item.EventID),
 			slog.String("error", err.Error()))
-		return keptRoleCopy{}, false
+		return keptRoleCopy{}, err
 	}
-	return kept, true
+	return kept, nil
 }
 
 // storeKeptRoleCopy is the keep itself, within ctx, through publish.
@@ -527,34 +529,56 @@ func storeKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, r
 	first := bus.KeptMsgID(item.DedupeKey, role)
 	msgID := first
 	// ownSend is whether a send of this keep under msgID went out unanswered before the stream
-	// refused a later one as in process.
+	// refused a later one as in process, or a duplicate answered the bus's resend: that send may
+	// have stored the copy, so a keep that then fails says so whatever its last failure was (fail).
 	ownSend := false
+	fail := func(err error) (keptRoleCopy, error) {
+		if ownSend && !mayHaveStored(err) {
+			err = fmt.Errorf("%w: %w", bus.ErrUnacknowledged, err)
+		}
+		return keptRoleCopy{}, err
+	}
 	for {
 		published := cfg.now()
-		ack, err := publish(ctx, subject, item, msgID)
-		if errors.Is(err, bus.ErrDuplicateInProcess) {
-			ownSend = ownSend || errors.Is(err, bus.ErrUnacknowledged)
-			if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
-				return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w (after %w)", role, msgID, waitErr, err)
-			}
-			continue
-		}
+		ack, refusedOwn, err := publishPastInProcess(ctx, publish, subject, item, msgID)
+		ownSend = ownSend || refusedOwn
 		if err != nil {
-			return keptRoleCopy{}, fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err)
+			return fail(fmt.Errorf("keep the role %s message on its kept lane under %s: %w", role, msgID, err))
 		}
 		if !ack.Duplicate {
 			return keptRoleCopy{item: item, until: keptRoleCopyUntil(ctx, cfg, role, item, ack.Sequence, published), sequence: ack.Sequence}, nil
 		}
+		ownSend = ownSend || ack.Resent
 		held, inside, err := heldKeptRoleCopy(ctx, cfg, role, ack.Sequence)
 		if err != nil {
-			return keptRoleCopy{}, fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err)
+			return fail(fmt.Errorf("keep the role %s message under %s: %w", role, msgID, err))
 		}
 		if inside {
-			held.repeat = !ack.Resent && !ownSend
+			held.repeat = !ownSend
 			return held, nil
 		}
 		msgID = first + ":after:" + strconv.FormatUint(ack.Sequence, 10)
 		ownSend = false
+	}
+}
+
+// publishPastInProcess publishes item on subject under msgID through publish, and publishes it again
+// roleKeepInProcessPause later each time a clustered stream refuses the id as still in process
+// under another publish (bus.ErrDuplicateInProcess), since the next answer names the copy that
+// publish stored. ownSend reports whether a refused send went out unanswered first
+// (bus.ErrUnacknowledged), which may have stored the copy. A wait that ctx ends is the error, after
+// the last refusal. A keep (storeKeptRoleCopy) and a takeover's copy (keepTakenRoleFrame) both
+// publish through it.
+func publishPastInProcess(ctx context.Context, publish keptRolePublish, subject string, item contracts.Envelope, msgID string) (ack bus.StoredAck, ownSend bool, err error) {
+	for {
+		ack, err = publish(ctx, subject, item, msgID)
+		if !errors.Is(err, bus.ErrDuplicateInProcess) {
+			return ack, ownSend, err
+		}
+		ownSend = ownSend || mayHaveStored(err)
+		if waitErr := waitUnlessDone(ctx, roleKeepInProcessPause); waitErr != nil {
+			return bus.StoredAck{}, ownSend, fmt.Errorf("%w (after %w)", waitErr, err)
+		}
 	}
 }
 
@@ -634,17 +658,21 @@ func heldKeptRoleCopy(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 // queue - opts out on the publish route's own request field instead (keep false, read by
 // roleSend.noHolder), which is the one give-up a sender can address: nothing publishes a raw role
 // message it would redeliver, so the role lane always keeps.
-func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, bool) {
+func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope) (keptRoleCopy, error) {
 	if !roles.Valid(role) {
-		return keptRoleCopy{}, false
+		return keptRoleCopy{}, errRoleNotKeepable
 	}
-	kept, ok := keepRoleMessage(cfg, role, item)
-	if !ok {
-		return keptRoleCopy{}, false
+	kept, err := keepRoleMessage(cfg, role, item)
+	if err != nil {
+		return keptRoleCopy{}, err
 	}
 	go runKeptRoleDrain(cfg, role)
-	return kept, true
+	return kept, nil
 }
+
+// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can name (roles.Valid),
+// which it keeps nothing for.
+var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
 
 // keepRoleLaneMessage keeps the role lane's copy of a message it found no live holder for, or
 // whose holder it could not read, and reports whether it was kept. reason is why, as the lane's
@@ -659,8 +687,8 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 // nothing is reported false, and the caller's own give-up, its exception, its metric and its line,
 // stands exactly as it was.
 func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason, holder string) bool {
-	kept, ok := keepForNextHolder(cfg, role, item)
-	if !ok {
+	kept, err := keepForNextHolder(cfg, role, item)
+	if err != nil {
 		return false
 	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
@@ -678,13 +706,15 @@ func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item co
 }
 
 // runKeptRoleDrain hands role's kept lane over to whoever holds the role, under a context of its
-// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the three starts of a
-// handover run in a goroutine of their own - the claim route's (roleSetHandler: the claimed role's
-// when the claim lands, and each role of a claimant its refresh makes live again), the
-// registration's that makes a holder live again (subscribeHandler) and the keep's
-// (keepForNextHolder) - since neither route's answer nor the keep's caller waits for a stream read
-// or a forward. The sweep starts its handovers itself, under the guard it already took
-// (sweepKeptRoleLanes). A copy's age is measured by the listener's clock (cfg.now).
+// own (roleKeepHandoverWindow), and logs a handover that failed. It is what the starts of a
+// handover run in a goroutine of their own - the claim route's for each role of a claimant its
+// refresh makes live again (roleSetHandler; the claimed role's own, when the claim lands, runs
+// runTakenRoleDrain, which runs the role's takeover passes first), the registration's that makes a
+// holder live again (subscribeHandler), the keep's (keepForNextHolder) and the session relay's
+// once it copied a frame of a role another session holds (sessionRelays.takeOverFrame) - since no
+// route's answer, keep's caller or relay waits for a stream read or a forward. The sweep starts
+// its handovers itself, under the guard it already took (sweepKeptRoleLanes). A copy's age is
+// measured by the listener's clock (cfg.now).
 func runKeptRoleDrain(cfg listenerDeliveryHandlerConfig, role string) {
 	ctx, cancel := context.WithTimeout(context.Background(), roleKeepHandoverWindow)
 	defer cancel()
@@ -760,10 +790,10 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 }
 
 // drainKeptRole hands role's kept lane to the session that holds the role. It is the whole of a
-// handover under role's own guard: runKeptRoleDrain is the goroutine the claim route, the
-// registration route and the keep run it in, and tests call it directly for one role's lane. How
-// the handover ended is the sweep's to read (keptRoleHandover), and no caller of this one reads
-// it.
+// handover under role's own guard: runKeptRoleDrain and runTakenRoleDrain are the goroutines its
+// starts run it in (the claim route, the registration route, the keep and the session relay), and
+// tests call it directly for one role's lane. How the handover ended is the sweep's to read
+// (keptRoleHandover), and no caller of this one reads it.
 //
 // The guard is held for the handover rather than for each of its walks, so two handovers of one
 // role inside this listener run one after the other and the sweep can tell that a role's lane is
@@ -834,12 +864,18 @@ type keptRoleHandover struct {
 // once, for the holder the next pass resolves.
 //
 // A walk that failed is not one that made no progress: it is waited out on a widening cadence
-// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk whose read of the
-// role's claim record did not answer is one (roleKeepDrainHolds), so the pass after its pause
-// resolves the holder again rather than forwarding on a claim no read answered. A read that did
-// not answer - the lane head's, on whichever pass it was made, or the holder's resolution behind
-// one - says nothing about the holder, so the role's claim record decides whether the handover
-// reads again (retry, readRoleClaimHolder): a record naming a session, live or lapsed, is a lane
+// (roleKeepDrainBackoff) and its error is carried out of the handover. A walk or a read the
+// server refused under the listener's grant (bus.ErrPublishDenied) is the exception: the server
+// refuses it again however often it is sent, so the handover ends with the walk or the read that
+// met the refusal, carrying it out, rather than holding the role's guard until its window ends,
+// and the lane is left to the role's next claim and to the sweep. A refused cursor write is named
+// only when its publish's own wait ends (sendStored), so that walk still costs that wait. A walk
+// whose read of the role's claim record did not answer is a walk that failed (roleKeepDrainHolds),
+// so the pass after its pause resolves the holder again rather than forwarding on a claim no read
+// answered. A read that did not answer - the lane head's, on whichever pass it was made, or the
+// holder's resolution behind one - says nothing about the holder, so the role's claim record
+// decides whether the handover reads again (retry, readRoleClaimHolder): a record naming a
+// session, live or lapsed, is a lane
 // whose copies have a holder waiting, so the read is waited out the same way, on any pass
 // including the first, and its failure is carried out too, which lifts a handover that ends still
 // failing above debug; a role no record names - and a record that could not be read either, which
@@ -897,6 +933,10 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),
 			slog.String("error", cause.Error()))
+		if errors.Is(cause, bus.ErrPublishDenied) {
+			readErr = cause
+			return false
+		}
 		if shutDown() {
 			return false
 		}
@@ -959,6 +999,12 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		// next walk forwards or sends again.
 		if err != nil && !result.unconfirmed && shutDown() {
 			return outcome, nil
+		}
+		// A walk the grant refused ends the handover whatever else this pass found, a holder
+		// resolution that did not answer included: the grant refuses the walk again however often
+		// the lane is walked.
+		if errors.Is(err, bus.ErrPublishDenied) {
+			return ended()
 		}
 		progressed := result.forwarded > 0 || result.ended > 0
 		if progressed {
@@ -1244,8 +1290,10 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		cfg.attemptCache.Record(item.DedupeKey, holder)
 		// The forward is named as the lane's own forward of this message to this holder is
 		// (roleForward.msgID), so the stream keeps one copy of it for this holder however many
-		// walks forward it.
-		forwarded := cfg.forwardAndWait(subject, forward, handed.msgID(subject), roleForwardTimeout)
+		// walks forward it; a takeover's copy carries a dedupe key of its own
+		// (takenFrameDedupeKey), so its forward takes no id an earlier forward took.
+		msgID := handed.msgID(subject)
+		forwarded := cfg.forwardAndWait(subject, forward, msgID, roleForwardTimeout)
 		if forwarded != nil {
 			// This walk is ending with the copy claimed and unforwarded, so it releases the
 			// claim: the cursor goes back to what it was before the claim, and the role's next
@@ -1321,21 +1369,26 @@ func readRoleClaimHolder(ctx context.Context, cfg listenerDeliveryHandlerConfig,
 }
 
 // isOutboxCopy reports whether item is a copy Dispatch's outbox kept on a role's kept lane rather
-// than one the listener kept: its source is dispatch and its dedupe key does not begin with
-// publishDedupePrefix. The outbox keeps a role-routed event under the key it published it under,
-// dispatch-<id> or a mention's key (internal/dispatch/outbox), and the publish route refuses a
-// dedupe key chosen for an envelope with source dispatch and makes one under publishDedupePrefix
-// for it (publishHandler, api.go), so a copy the route kept never reads as the outbox's, whatever
-// source it names. The rule reads the copies an earlier outbox wrote as well, since it needs no
-// mark the outbox would have to write. An outbox copy gets no dead letter, since the person or
-// session behind a Dispatch event sent no Envoy message, and it wakes no role from the sweep
-// (keptLaneWakesItsRole), as an outbox keep raises no wake report either.
+// than one the listener kept: its source is dispatch, its dedupe key does not begin with
+// publishDedupePrefix, and it carries no role mark. The outbox keeps a role-routed event under the
+// key it published it under, dispatch-<id> or a mention's key (internal/dispatch/outbox), and the
+// publish route refuses a dedupe key chosen for an envelope with source dispatch and makes one
+// under publishDedupePrefix for it (publishHandler, api.go), so a copy the route kept never reads
+// as the outbox's, whatever source it names. A send Dispatch's API made for a route to a role
+// carries the role's mark (contracts.Envelope.Role), which the outbox never writes: the send route
+// kept it (keepRoleSend), or a takeover copied it from its holder's subject, and Dispatch recorded
+// the send as made, so the listener alone answers for it. The rule reads the copies an earlier
+// outbox wrote as well, since it needs no mark the outbox would have to write. An outbox copy gets
+// no dead letter, since the person or session behind a Dispatch event sent no Envoy message, and it
+// wakes no role from the sweep (keptLaneWakesItsRole), as an outbox keep raises no wake report
+// either. A takeover's copy of a frame the publish route forwarded keeps publishDedupePrefix in
+// its own key (takenFrameDedupeKey), so it reads as the listener's after any number of takeovers.
 func isOutboxCopy(item contracts.Envelope) bool {
-	return item.Source == "dispatch" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
+	return item.Source == "dispatch" && item.Role == "" && !strings.HasPrefix(item.DedupeKey, publishDedupePrefix)
 }
 
-// keptCopyKeptBy is who kept item, as the kept_by label and attribute name it: keptByDispatchOutbox
-// for an outbox copy (isOutboxCopy), keptByListener for every other.
+// keptCopyKeptBy is who kept item, as the kept_by label and attribute name it:
+// keptByDispatchOutbox for an outbox copy (isOutboxCopy), keptByListener for every other.
 func keptCopyKeptBy(item contracts.Envelope) string {
 	if isOutboxCopy(item) {
 		return keptByDispatchOutbox
@@ -1532,7 +1585,7 @@ func judgeKeptRoleCopy(cfg listenerDeliveryHandlerConfig, role, holder string, e
 	if holder == "" {
 		return keptCopyVerdict{step: keptCopyWait, item: item}
 	}
-	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, seen)
+	verdict, report := keptRoleForwardAllowed(cfg, role, holder, entry, item, takenFrameOriginal(item, stored.MsgID, role), seen)
 	switch verdict.kind {
 	case forwardAllowed:
 		return keptCopyVerdict{step: keptCopyForward, item: item}
@@ -1811,13 +1864,17 @@ var keptRoleRefusalLines = roleForwardRefusalLines{
 // lines, which name the copy's sender beside the role. The copy is ended, and the report is the
 // walk's to run once its last cursor write has moved the lane past the copy, so no later walk
 // offers it again and no walk that lost that write reports it.
-func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
+//
+// reported is item as the refusal's exception names it: item itself, or for a takeover's copy the
+// envelope under the message's own dedupe key (takenFrameOriginal), which a reader of the
+// exception, such as the Legion daemon's re-hold, identifies the message by.
+func keptRoleForwardAllowed(cfg listenerDeliveryHandlerConfig, role, holder string, entry session.SessionEntry, item, reported contracts.Envelope, seen func(key, recipient string) bool) (forwardVerdict, func()) {
 	verdict := beforeForward(item, holder, entry, seen)
 	if verdict.kind == forwardAllowed {
 		return verdict, nil
 	}
-	outcome := refusedRoleForwardOutcome(verdict, item, holder, keptRoleRefusalLines,
+	outcome := refusedRoleForwardOutcome(verdict, reported, holder, keptRoleRefusalLines,
 		slog.String("role", role),
 		slog.String("source_session", item.SourceSession))
-	return verdict, func() { applyDeliveryOutcome(cfg, item, outcome) }
+	return verdict, func() { applyDeliveryOutcome(cfg, reported, outcome) }
 }

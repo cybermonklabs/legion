@@ -69,7 +69,7 @@ func TestAMoveWhoseRunIsOverArmsNoRetry(t *testing.T) {
 			if buffer, reconnects := client.Conn.Opts.ReconnectBufSize, client.Conn.Opts.MaxReconnect; buffer != -1 || reconnects != -1 {
 				t.Fatalf("the connection has ReconnectBufSize %d and MaxReconnect %d, want -1 and -1 as the bus sets them", buffer, reconnects)
 			}
-			known, err := OpenKnownSessions(client.Conn,
+			known, err := OpenKnownSessions(t.Context(), client.Conn,
 				WithKnownSessionReplicas(1),
 				WithKnownSessionLogger(slog.New(slog.NewTextHandler(&lockedWriter{}, nil))),
 				// A retry the move arms waits an hour before its first attempt, so nothing retires

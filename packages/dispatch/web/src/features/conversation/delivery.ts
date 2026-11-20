@@ -5,7 +5,7 @@ import {
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryAttemptState,
   type MessageDeliveryMode,
-  RECEIPT_TIMEOUT_CAUSE,
+  POSSIBLY_DELIVERED_CAUSES,
 } from "@legion/contracts";
 
 import type { AgentPart } from "../refs/AgentName";
@@ -22,8 +22,8 @@ export const MODE_LABELS: Record<MessageDeliveryMode, string> = {
   steer: "Send",
 };
 
-/** A capability a session advertises, as a person reads it: its mode's label, or the capability
- *  as the session wrote it when this dashboard knows no such mode. */
+/** A delivery mode as Dispatch stored it on an attempt or a broadcast, as a person reads it: its
+ *  mode's label, or the string as it was written when this dashboard knows no such mode. */
 export function capabilityLabel(capability: string): string {
   const mode = deliveryMode(capability);
   return mode === undefined ? capability : MODE_LABELS[mode];
@@ -34,6 +34,61 @@ export function capabilityLabel(capability: string): string {
  *  closed list that string is one of. Every surface that needs the mode itself narrows here. */
 export function deliveryMode(value: string): MessageDeliveryMode | undefined {
   return DELIVERY_CAPABILITIES.find((known) => known === value);
+}
+
+/**
+ * The delivery modes among the capabilities a session lists, in list order and each once. A list
+ * can also hold capabilities that are no mode this Dispatch knows - a newer plugin's, say - so an
+ * empty list is not the only list that takes no message: whether a session takes messages is
+ * whether this is empty, never whether its list is. Every surface that decides it reads it here.
+ */
+export function deliveryModesOf(capabilities: readonly string[]): MessageDeliveryMode[] {
+  const modes: MessageDeliveryMode[] = [];
+  for (const capability of capabilities) {
+    const mode = deliveryMode(capability);
+    if (mode !== undefined && !modes.includes(mode)) modes.push(mode);
+  }
+  return modes;
+}
+
+/**
+ * Why sessions whose capabilities hold no delivery mode (`deliveryModesOf`) take no message: the
+ * sentences that follow a warning naming them. An empty list is not the only list that takes no
+ * message, and the two have different causes, so each cause is said once, of the sessions it is
+ * true of: a session lists nothing while its plugin cannot reach its conversation, and a list whose
+ * every capability is unknown here says nothing of that. The second names its sessions only beside
+ * sessions the first is about; on its own, `it` or `they` already reads as the sessions warned of.
+ * The live view, the Inbox and the mention composer all say it from here, so they cannot differ.
+ */
+export function noDeliveryReasons(
+  sessions: readonly { readonly capabilities: readonly string[]; readonly title: string }[]
+): string {
+  const listing = sessions.filter((session) => session.capabilities.length > 0);
+  const reasons: string[] = [];
+  if (listing.length < sessions.length) {
+    reasons.push("A session advertises none while its plugin cannot reach its conversation.");
+  }
+  if (listing.length > 0) {
+    const subject =
+      listing.length < sessions.length
+        ? listing.map((session) => session.title).join(" and ")
+        : listing.length > 1
+          ? "they"
+          : "it";
+    reasons.push(
+      `None of the capabilities ${subject} ${listing.length > 1 ? "list" : "lists"} is a delivery mode this Dispatch knows.`
+    );
+  }
+  return reasons.join(" ");
+}
+
+/** What the live view and the Inbox say of a listed session whose capabilities hold no delivery
+ *  mode (`deliveryModesOf`): a message sent to it records a failed attempt, and why it takes none
+ *  (`noDeliveryReasons`). Undefined for a list that holds a mode, so no surface can say it of a
+ *  session that takes messages. */
+export function noDeliveryLine(capabilities: readonly string[]): string | undefined {
+  if (deliveryModesOf(capabilities).length > 0) return undefined;
+  return `This session advertises no delivery mode, so a message sent here records a failed attempt. ${noDeliveryReasons([{ capabilities, title: "This session" }])}`;
 }
 
 /** `value` as an attempt's state. Dispatch writes one of the four `DELIVERY_ATTEMPT_STATES` the
@@ -49,14 +104,15 @@ export function deliveryOutcomeState(value: string): DeliveryOutcome["state"] {
  * The mode a message with no `/aside ` or `/btw ` command goes in when it answers no thread, from
  * the capabilities of each live session it addresses: Send when every one of them advertises it,
  * else Aside when every one of them advertises that - so a plain message to a session that takes
- * only Aside is an Aside rather than a Send recorded as failed. A session that
- * advertises no mode takes none, so it does not decide the mode for the rest. BTW is never picked
- * for the reader: it answers in a side turn that leaves the conversation as it was, which a plain
- * message does not ask for. Otherwise, or with nobody live to ask, it is a Send, which the composer
- * then warns about.
+ * only Aside is an Aside rather than a Send recorded as failed. A session whose list holds no
+ * delivery mode (`deliveryModesOf`) - an empty list, or one of capabilities this Dispatch knows no
+ * mode for - takes none, so it does not decide the mode for the rest. BTW is never picked for the
+ * reader: it answers in a side turn that leaves the conversation as it was, which a plain message
+ * does not ask for. Otherwise, or with nobody live to ask, it is a Send, which the composer then
+ * warns about.
  */
 export function plainDelivery(capabilities: readonly (readonly string[])[]): MessageDeliveryMode {
-  const taking = capabilities.filter((list) => list.length > 0);
+  const taking = capabilities.filter((list) => deliveryModesOf(list).length > 0);
   const everyone = (mode: MessageDeliveryMode) => taking.every((list) => list.includes(mode));
   return taking.length > 0 && !everyone("steer") && everyone("aside") ? "aside" : "steer";
 }
@@ -65,14 +121,14 @@ export function plainDelivery(capabilities: readonly (readonly string[])[]): Mes
  * The mode a broadcast goes in until its sender picks one, from the capabilities of each live
  * session selected: BTW, the broadcast's own default, when every one of them advertises it, else
  * Aside when every one advertises that - so a selection that holds a session taking only Aside
- * reaches it rather than leaving it out. A session that advertises no mode takes
- * none and does not decide it. Otherwise, or with nobody live, it is BTW, and the composer names
- * who that leaves out.
+ * reaches it rather than leaving it out. A session whose list holds no delivery mode
+ * (`deliveryModesOf`), an empty list included, takes none and does not decide it. Otherwise, or
+ * with nobody live, it is BTW, and the composer names who that leaves out.
  */
 export function broadcastDelivery(
   capabilities: readonly (readonly string[])[]
 ): MessageDeliveryMode {
-  const taking = capabilities.filter((list) => list.length > 0);
+  const taking = capabilities.filter((list) => deliveryModesOf(list).length > 0);
   const everyone = (mode: MessageDeliveryMode) => taking.every((list) => list.includes(mode));
   return taking.length > 0 && !everyone("btw") && everyone("aside") ? "aside" : "btw";
 }
@@ -190,13 +246,16 @@ export function queuedParts(session: AgentPart): AgentPart[] {
  * "Retry won't deliver it twice" holds for any in-window failure but a restarted session's: if
  * the send landed, its repeat is recognised and dropped, and if it never landed there is nothing
  * to duplicate. The second clause does not. "Sending in a different mode delivers it again" is
- * only true of a send that may already have reached the recipient — a receipt timeout — so it is
- * keyed on that cause. It is also withheld on the mention surface, which has no mode-change
- * button to name.
+ * only true of a send that may already have reached the recipient — a receipt timeout, or a send
+ * whose store the listener could not confirm (`POSSIBLY_DELIVERED_CAUSES`) — so it is keyed on
+ * those causes. It is also withheld on the mention surface, which has no mode-change button to
+ * name.
  */
 export function safeRetryGuidance(surface: "card" | "mention", cause?: string | null): string {
   const safe = `Retry won't deliver it twice ${unlessRestarted}`;
-  if (surface === "mention" || cause !== RECEIPT_TIMEOUT_CAUSE) return `${safe}.`;
+  if (surface === "mention" || cause == null || !POSSIBLY_DELIVERED_CAUSES.includes(cause)) {
+    return `${safe}.`;
+  }
   return `${safe}; sending in a different mode delivers it again.`;
 }
 

@@ -6,7 +6,6 @@ import {
   type ReactNode,
   useEffect,
   useId,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -17,14 +16,18 @@ import {
   api,
   apiErrorCodeIn,
   apiErrorMessage,
+  isSubscriberNotFound,
   issuePatchRequest,
+  removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useScrollFadeTrailing } from "../../hooks/useScrollFadeTrailing";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -42,7 +45,6 @@ import {
   inputClasses,
   linkHoverText,
   linkText,
-  scrollFadeTrailing,
   secondaryButtonBorder,
   secondaryButtonDisabledText,
   secondaryButtonHoverBorder,
@@ -65,7 +67,8 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -73,7 +76,6 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
-import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -139,43 +141,8 @@ export function IssueHeader({
       parentInputRef.current?.focus();
     }
   }, [parentEditing]);
-  // Whether the details rail has anywhere left to scroll, which is what its trailing fade says.
-  // The rail element is state rather than a ref so this runs once per rail, not once per render:
-  // three things change the answer and none of them is a render of this component - the reader
-  // scrolling the rail, the rail's box changing with the viewport, and its content arriving (the
-  // labels, the subscriber count, a GitHub title). One listener and two observers cover them,
-  // and the mutation observer re-observes children a render added.
-  const [rail, setRail] = useState<HTMLDivElement | null>(null);
-  const [railScrollable, setRailScrollable] = useState(false);
-  useLayoutEffect(() => {
-    if (rail === null) {
-      return;
-    }
-    // A fractional layout leaves scrollLeft a hair short of the end; one pixel of slack keeps a
-    // rail scrolled to its end from wearing the fade.
-    const measure = () =>
-      setRailScrollable(rail.scrollWidth - rail.clientWidth - rail.scrollLeft > 1);
-    const sizes = new ResizeObserver(measure);
-    const observeAll = () => {
-      sizes.observe(rail);
-      for (const child of rail.children) {
-        sizes.observe(child);
-      }
-    };
-    observeAll();
-    const contents = new MutationObserver(() => {
-      observeAll();
-      measure();
-    });
-    contents.observe(rail, { characterData: true, childList: true, subtree: true });
-    rail.addEventListener("scroll", measure, { passive: true });
-    measure();
-    return () => {
-      rail.removeEventListener("scroll", measure);
-      sizes.disconnect();
-      contents.disconnect();
-    };
-  }, [rail]);
+  // The details rail's trailing fade, worn while the rail has anywhere left to scroll.
+  const railFade = useScrollFadeTrailing();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
@@ -186,10 +153,17 @@ export function IssueHeader({
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // Every write here names `write` before its callbacks: its answer and its variables are what
+  // the callbacks below read.
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
+    method: "DELETE",
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(
+        api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+        isSubscriberNotFound
+      ),
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -198,6 +172,9 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
+    // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
+    // release of an issue nobody holds with the issue, as it answers the first.
+    method: "DELETE",
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
@@ -305,7 +282,12 @@ export function IssueHeader({
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
+    // A read of the state asked while the pin is out could be answered before Dispatch takes it,
+    // with the pin as it was: it waits for the answer, for at most `SEND_DEADLINE_MS`. The state
+    // is the viewer's alone, so the wait keeps back nobody else's change.
+    holds: () => ({ keys: [userStateQuery().queryKey] }),
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
+    method: "PUT",
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();
@@ -331,7 +313,8 @@ export function IssueHeader({
     },
     onSuccess: (next) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      // Over any read of the state still out, asked before the answer (`replaceQueryData`).
+      replaceQueryData<UserState>(queryClient, userStateQuery().queryKey, (current) => ({
         ...current,
         [issue.key]: next,
       }));
@@ -355,9 +338,16 @@ export function IssueHeader({
     }
   };
   // A refused parent save (PARENT_INPUT, ISSUE_CLOSED) renders the server's reason inline,
-  // like a route validation error, instead of the generic update failure line.
+  // like a route validation error, instead of the generic update failure line. One the reader
+  // stopped may have been saved; the editor has closed, and saving it again is a press of its own
+  // (`requestParentSubmit`).
   const parentSaveFailed = updateIssue.isError && updateIssue.variables?.parent !== undefined;
-  const parentError = apiErrorMessage(updateIssue.error, "Could not save parent.");
+  const parentError =
+    updateIssue.error instanceof SendStoppedError
+      ? stoppedWriteNote("the new parent", "saved", {
+          anew: "Saving it again sends it as a new write.",
+        })
+      : apiErrorMessage(updateIssue.error, "Could not save parent.");
   // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
   // with no Retry, since the same title is refused every time; any other failure keeps the generic
   // line and its Retry.
@@ -524,7 +514,6 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl
@@ -617,9 +606,9 @@ export function IssueHeader({
             fade says the cut is a scroll, and it is off at the end of the scroll, where a fade
             would hide the last item instead. */}
         <div
-          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railScrollable ? scrollFadeTrailing : ""}`}
+          className={`flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto [scrollbar-width:thin] md:[&_button]:min-h-7 md:[&_button]:py-0 ${railFade.fade}`}
           data-testid="issue-metadata-rail"
-          ref={setRail}
+          ref={railFade.ref}
         >
           {whoseTurn === null ? null : (
             <span
@@ -868,22 +857,30 @@ export function IssueHeader({
       ) : null}
       {updateState.isError ? (
         <QueryError
-          message="Could not save pin status."
+          message={
+            stoppedNote(updateState, "the pin status", "saved") ?? "Could not save pin status."
+          }
           onRetry={() => pinGuard.retryLast(updateState)}
           retrying={updateState.isPending}
         />
       ) : null}
       {unsubscribe.isError ? (
         <QueryError
-          message="Could not unsubscribe this agent."
-          onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+          message={
+            stoppedNote(unsubscribe, "this agent's unsubscribe", "made") ??
+            "Could not unsubscribe this agent."
+          }
+          onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
         />
       ) : null}
       {releaseClaim.isError ? (
         <QueryError
-          message="Could not release this claim."
-          onRetry={() => releaseClaim.mutate()}
+          message={
+            stoppedNote(releaseClaim, "the release of this claim", "made") ??
+            "Could not release this claim."
+          }
+          onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}
         />
       ) : null}
@@ -897,8 +894,17 @@ export function IssueHeader({
             {titleRefusal}
           </p>
         ) : (
+          // A title or a route save. Its Retry is the field's own submit (`drafts.retry`): a press
+          // of its own, of what the field holds now, so a stopped save is never made again under
+          // its key from here.
           <QueryError
-            message="Could not update this issue."
+            message={
+              updateIssue.error instanceof SendStoppedError
+                ? stoppedWriteNote("this change to the issue", "saved", {
+                    anew: "Retry sends what the field holds now as a new write.",
+                  })
+                : "Could not update this issue."
+            }
             onRetry={drafts.retry}
             retrying={updateIssue.isPending}
           />

@@ -11,7 +11,6 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 )
 
@@ -72,7 +71,6 @@ func TestLoadForValidationSettlesEveryMemberOfTheKubernetesBlock(t *testing.T) {
     kubeconfig: kube/legion-daemon
     context: legion-daemon@example
     setup: [/bin/sh, -c, 'omp plugin marketplace add acme/agent-skills']
-    skills_repository: acme/agent-skills
     idle_release: {idle_minutes: 20, backstop_minutes: 120}
     sandbox:
       type: microvm
@@ -139,9 +137,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		Context:      "legion-daemon@example",
 		// A store that keeps sessions in a database is required under this runtime, so the one
 		// kubernetesFile names settles on every load of the block.
-		SessionStore:     ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Setup:            []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
-		SkillsRepository: ghrepo.MustParse("acme/agent-skills"),
+		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
+		Setup:        []string{"/bin/sh", "-c", "omp plugin marketplace add acme/agent-skills"},
 		Scheduling: Scheduling{
 			NodeSelector: map[string]string{"karpenter.k8s.aws/instance-family": "m7i", "zone": "4"},
 			Tolerations: []Toleration{
@@ -199,6 +196,8 @@ provider_keys: {ANTHROPIC_API_KEY: anthropic_api_key}
 		}},
 		// The file sets no memory_guard block, so the guard settles on at the wire's defaults.
 		MemoryGuard: DefaultMemoryGuard(),
+		// The file sets no volume_trim, so the whole block settles on the daemon's defaults.
+		VolumeTrim: DefaultVolumeTrim(),
 	}}
 	if cfg.Runtime.Name != want.Name || cfg.Runtime.Kubernetes == nil {
 		t.Fatalf("Runtime = %+v, want %q with its block", cfg.Runtime, want.Name)
@@ -338,7 +337,6 @@ func TestLoadForValidationDefaultsTheKubernetesBlock(t *testing.T) {
 		{"pod", block.Pod, PodConfig{}},
 		{"session_store", block.SessionStore, ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"}},
 		{"setup", block.Setup, []string(nil)},
-		{"skills_repository", block.SkillsRepository, ghrepo.Repository{}},
 		{"test_postgres", block.TestPostgres, false},
 		{"repository_cache", block.RepositoryCache, RepositoryCacheConfig{
 			Volume: "20Gi", RefreshMinutes: 10, RetainHours: 168,
@@ -439,7 +437,7 @@ func TestAPodRaisingALimitAloneStaysGuaranteed(t *testing.T) {
 }
 
 // A cpu or memory request is held to its settled limit, whichever side the file set, and must be a
-// positive quantity; each refusal names the key, as `legion start --check-config` prints it.
+// positive quantity; each refusal names the key, as `legion config check` prints it.
 func TestAPodRequestMustBeAQuantityNoGreaterThanItsLimit(t *testing.T) {
 	for _, tc := range []struct {
 		name, resources, want string
@@ -505,9 +503,10 @@ func TestAPodsEphemeralStorageBoundSettlesFieldByField(t *testing.T) {
 // `session_store` settles to the one kind with the one field that kind carries: `postgres` the
 // providers Secret's key that holds the session database's whole URL, `cloudsql-iam` the Cloud SQL
 // instance, database and IAM login each pod signs in as, and the Google service account, when the
-// block names one, that the pod impersonates to sign in as that login. Any of Google's service
-// account forms is taken, with its own login as `user`. `pvc` and an omitted store are refused
-// (TestLoadForValidationRefusesUnderKubernetes): no issue disk holds a session.
+// block names one, that the pod impersonates to sign in as that login, with the audience, when the
+// block names one, of the token only the launcher reads that the pod impersonates it with. Any of
+// Google's service account forms is taken, with its own login as `user`. `pvc` and an omitted
+// store are refused (TestLoadForValidationRefusesUnderKubernetes): no issue disk holds a session.
 func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -553,6 +552,14 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "service-123@gcp-sa-cloud-sql.iam",
 				ImpersonateServiceAccount: "service-123@gcp-sa-cloud-sql.iam.gserviceaccount.com",
 			}}},
+		{"cloudsql-iam impersonating a service account with the launcher's writer token", withSessionStore("    session_store: cloudsql-iam\n" +
+			"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam," +
+			" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com, writer_audience: \"" + testWriterAudience + "\"}\n"),
+			ompsessions.Store{Kind: ompsessions.StoreCloudSQLIAM, Database: ompsessions.Database{
+				Instance: "example-project:us-central1:example-instance", Name: "legion_sessions", User: "legion-sessions@example-project.iam",
+				ImpersonateServiceAccount: "legion-sessions@example-project.iam.gserviceaccount.com",
+				WriterAudience:            testWriterAudience,
+			}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := LoadForValidation(writeConfigFile(t, tc.body), noEnv)
@@ -563,6 +570,224 @@ func TestLoadForValidationSettlesTheSessionStore(t *testing.T) {
 				t.Errorf("SessionStore = %#v, want %#v", got, tc.want)
 			}
 		})
+	}
+}
+
+// testWriterAudience is a workload identity provider's full resource name, with placeholder ids.
+const testWriterAudience = "//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"
+
+// writerAudienceRefusal is the loader's answer to a writer_audience of another form than a
+// provider's full resource name. It spells the whole rule out, the gcp- prefix Google keeps for
+// itself included, so a refusal of a pool or provider id that starts with it says why.
+func writerAudienceRefusal(value string) string {
+	return fmt.Sprintf("runtime.kubernetes.session_database.writer_audience %q must be a workload identity provider's full resource name,"+
+		" //iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool id>/providers/<provider id>,"+
+		" each id 4 to 32 characters of a-z, 0-9 and - that does not start with gcp-", value)
+}
+
+// brokerAudienceRefusal is the loader's answer to a writer_audience that is the broker's audience
+// member (audience or exchange_audience): every role of a pod reads the broker's tokens.
+func brokerAudienceRefusal(member string) string {
+	return "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets." + member +
+		" (both " + testWriterAudience + "): the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone"
+}
+
+// brokerHTTPSAudienceRefusal is the loader's answer to a writer_audience whose https: form is the
+// broker's audience member: a provider whose allowed audiences are empty takes a token of that
+// form as one of the writer audience itself.
+func brokerHTTPSAudienceRefusal(member string) string {
+	return "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.agent_secrets." + member +
+		" (https:" + testWriterAudience + "), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix:" +
+		" the broker's tokens are mounted where every role of a pod reads them, and the writer token is the launcher's alone"
+}
+
+// `legion config check` (LoadForValidation) and the daemon's boot (Load) refuse the same
+// writer_audience files with the same words, so no file the check passes fails the boot and no
+// file the boot would refuse passes the check. Refused are: the member without
+// `impersonate_service_account`, since the writer token signs in only by impersonating that
+// account; a value that is not a provider's full resource name, a pool id that starts with
+// Google's reserved `gcp-` among them; a blank value; the member under `postgres`, where
+// `session_database` as a whole is inert and refused; a value that is the broker's `audience` or
+// `exchange_audience`, whose tokens every role of a pod reads; a value that an operator's
+// projected pod token carries, which every pod carries and a volume_mounts entry shows to every
+// role of the pod, its refusal naming the volume and the source that carry it; and a value whose
+// https: form is the audience of any of those tokens, which a provider whose allowed audiences are
+// empty takes as the writer audience itself. The App keys are commands that fail, so a boot load
+// that got past the session store would fail on them instead.
+func TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm(t *testing.T) {
+	const database = "{instance: example-project:us-central1:example-instance, name: legion_sessions, user: legion-sessions@example-project.iam"
+	const account = ", impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com"
+	for _, tc := range []struct {
+		name, body, want string
+	}{
+		{
+			name: "without impersonate_service_account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + ", writer_audience: \"" + testWriterAudience + "\"}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience needs runtime.kubernetes.session_database.impersonate_service_account:" +
+				" the writer token signs in to Cloud SQL only by impersonating that service account",
+		},
+		{
+			name: "the pool's name, not the provider's",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/legion-session-writer"),
+		},
+		{
+			name: "a trailing slash",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "/\"}\n"),
+			want: writerAudienceRefusal(testWriterAudience + "/"),
+		},
+		{
+			name: "the project's id in place of its number",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/example-project/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/example-project/locations/global/workloadIdentityPools/legion-session-writer/providers/example-cluster"),
+		},
+		{
+			name: "the STS URL's scheme in front",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"https:" + testWriterAudience + "\"}\n"),
+			want: writerAudienceRefusal("https:" + testWriterAudience),
+		},
+		{
+			name: "a pool id that starts with gcp-",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account +
+				", writer_audience: \"//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/gcp-session-writer/providers/example-cluster\"}\n"),
+			want: writerAudienceRefusal("//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/gcp-session-writer/providers/example-cluster"),
+		},
+		{
+			name: "of another form and without impersonate_service_account",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + ", writer_audience: legion-session-writer}\n"),
+			want: writerAudienceRefusal("legion-session-writer"),
+		},
+		{
+			name: "blank",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \" \"}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must not be empty",
+		},
+		{
+			name: "under postgres",
+			body: withSessionStore("    session_store: postgres\n    session_dsn_secret: SESSION_DSN\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n"),
+			want: "runtime.kubernetes.session_database is not used when runtime.kubernetes.session_store is postgres; remove it",
+		},
+		{
+			name: "the broker's audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"" + testWriterAudience + "\"\n"),
+			want: brokerAudienceRefusal("audience"),
+		},
+		{
+			name: "the broker's exchange audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      exchange_audience: \"" + testWriterAudience + "\"\n"),
+			want: brokerAudienceRefusal("exchange_audience"),
+		},
+		{
+			name: "the https: form on the broker's audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      audience: \"https:" + testWriterAudience + "\"\n"),
+			want: brokerHTTPSAudienceRefusal("audience"),
+		},
+		{
+			name: "the https: form on the broker's exchange audience",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+				"      exchange_audience: \"https:" + testWriterAudience + "\"\n"),
+			want: brokerHTTPSAudienceRefusal("exchange_audience"),
+		},
+		{
+			name: "an operator's pod token in a projected volume's first source",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
+			name: "an operator's pod token in a projected volume's second source",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-tokens\n" +
+				"          projected: {sources: [{service_account_token: {audience: model-gateway.example.com, path: gateway}}," +
+				" {service_account_token: {audience: \"" + testWriterAudience + "\", path: writer}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-tokens, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[1].service_account_token.audience" +
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
+			// A volume no volume_mounts entry names is refused all the same: every pod carries it,
+			// and one later mount would show it to every role.
+			name: "an operator's pod token in a volume no mount names",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (both " + testWriterAudience + "): every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod," +
+				" and the writer token is the launcher's alone",
+		},
+		{
+			name: "the https: form on an operator's pod token",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: " + database + account + ", writer_audience: \"" + testWriterAudience + "\"}\n" +
+				"    pod:\n      volumes:\n        - name: operator-token\n" +
+				"          projected: {sources: [{service_account_token: {audience: \"https:" + testWriterAudience + "\", expiration_seconds: 3600, path: token}}]}\n" +
+				"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n"),
+			want: "runtime.kubernetes.session_database.writer_audience must differ from runtime.kubernetes.pod.volumes[0].projected.sources[0].service_account_token.audience" +
+				" (https:" + testWriterAudience + "), which a provider whose allowed audiences are empty takes as the same audience, its full resource name with the https: prefix:" +
+				" every pod carries the operator's pod volumes, and a volume_mounts entry shows one to every role of the pod, and the writer token is the launcher's alone",
+		},
+	} {
+		for _, loader := range []struct {
+			name string
+			load func(string, func(string) string) (Config, error)
+		}{{"LoadForValidation", LoadForValidation}, {"Load", Load}} {
+			t.Run(tc.name+"/"+loader.name, func(t *testing.T) {
+				_, err := loader.load(writeConfigFile(t, tc.body), noEnv)
+				if err == nil || err.Error() != tc.want {
+					t.Fatalf("%s error =\n%v\nwant\n%q", loader.name, err, tc.want)
+				}
+			})
+		}
+	}
+}
+
+// A writer_audience that neither the broker's tokens nor an operator's pod token carries, in its
+// own form or its https: form, passes `legion config check`: here the broker's audience is its own
+// URL and the operator's projected token is a model gateway's. So each refusal of a role-readable
+// token in TestConfigCheckAndTheBootLoadRefuseAWriterAudienceWithoutTheAccountOrOfAnotherForm is
+// the audience's alone, not the broker's block's or the operator's volume's.
+func TestConfigCheckTakesAWriterAudienceThatNoRoleReadableTokenCarries(t *testing.T) {
+	body := withSessionStore("    session_store: cloudsql-iam\n" +
+		"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions," +
+		" user: legion-sessions@example-project.iam, impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com," +
+		" writer_audience: \"" + testWriterAudience + "\"}\n" +
+		"    agent_secrets:\n      url: https://secrets.internal.example\n" + agentSecretsTokenFile +
+		"      audience: \"https://secrets.internal.example\"\n" +
+		"    pod:\n      volumes:\n        - name: operator-token\n" +
+		"          projected: {sources: [{service_account_token: {audience: model-gateway.example.com, expiration_seconds: 3600, path: token}}]}\n" +
+		"      volume_mounts:\n        - {volume: operator-token, mount_path: /var/run/operator}\n")
+	if _, err := LoadForValidation(writeConfigFile(t, body), noEnv); err != nil {
+		t.Fatalf("LoadForValidation of the file with the broker's and the operator's tokens of other audiences: %v", err)
 	}
 }
 
@@ -722,7 +947,7 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 		},
 		{
 			// The tree-volume layout's key (LEGION-632): refused naming the key that replaced it, not
-			// as a generic unknown key, so --check-config says what to edit.
+			// as a generic unknown key, so `legion config check` says what to edit.
 			name: "the tree-volume layout's tree_volume",
 			body: kubernetesFile + "    tree_volume: 30Gi\n",
 			want: "runtime.kubernetes.tree_volume is now issue_volume: one volume per issue",
@@ -877,9 +1102,16 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			want: "unknown key runtime.kubernetes.role_profiles: an issue pod's reservation is runtime.kubernetes.resources.issue, its cpu and memory limits with optional lower cpu_request and memory_request, and a field absent there takes the daemon's default",
 		},
 		{
-			name: "skills_repository that is no owner/name",
-			body: kubernetesFile + "    skills_repository: agent-skills\n",
-			want: `runtime.kubernetes.skills_repository must be "owner/name" (got "agent-skills")`,
+			name: "skills_repository naming a repository",
+			body: kubernetesFile + "    skills_repository: acme/agent-skills\n",
+			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
+		},
+		{
+			// describedMembers leaves a null member out, so the key written with no value is
+			// refused too, rather than read as unset.
+			name: "skills_repository with no value",
+			body: kubernetesFile + "    skills_repository:\n",
+			want: "runtime.kubernetes.skills_repository was removed: a role installs its skills with Oh My Pi's own commands in runtime.kubernetes.setup (docs/kubernetes.md, Configuration); delete the key",
 		},
 		{
 			name: "session_store omitted",

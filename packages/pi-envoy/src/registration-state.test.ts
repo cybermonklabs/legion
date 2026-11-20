@@ -16,6 +16,7 @@ import {
 import type { NatsConnection } from "nats";
 import {
   createRegistrationState,
+  type DialLimit,
   type RegistrationInput,
   type RegistrationState,
   taskWasAbandoned,
@@ -93,7 +94,7 @@ interface HarnessControl {
   getRole: (role: string) => Promise<RoleInfo>;
   getInterest: (sessionID: string) => Promise<Interest>;
   unsubscribe: (input: UnsubscribeInput) => Promise<void>;
-  dial: () => Promise<NatsConnection>;
+  dial: (limit?: DialLimit) => Promise<NatsConnection>;
   /** The session's connection, as the extension's `ensureConnection` answers it: it dials when
    *  the session has none, and can wait again after the dial. */
   connect: (dial: () => Promise<NatsConnection>) => Promise<NatsConnection>;
@@ -118,6 +119,7 @@ interface Harness {
   readonly deregistrations: {
     readonly sessionID: string;
     readonly clientInstanceID: string | undefined;
+    readonly timeoutMs?: number;
   }[];
   readonly claims: SetRoleInput[];
   readonly fakeConnection: (name: string) => NatsConnection;
@@ -138,6 +140,7 @@ function createHarness(): Harness {
   const deregistrations: {
     readonly sessionID: string;
     readonly clientInstanceID: string | undefined;
+    readonly timeoutMs?: number;
   }[] = [];
   const claims: SetRoleInput[] = [];
 
@@ -180,6 +183,7 @@ function createHarness(): Harness {
       deregistrations.push({
         sessionID: input.sessionID,
         clientInstanceID: input.clientInstanceID,
+        ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
       });
     },
     setRole: async (input) => {
@@ -197,7 +201,7 @@ function createHarness(): Harness {
     notify: (message, level) => notices.push({ message, level }),
     log: { warn: (message, context) => warnings.push({ message, context }) },
     appendRoleClaimEntry: (claim) => roleEntries.push(claim),
-    dial: () => control.dial(),
+    dial: (limit) => control.dial(limit),
     connect: (dial) => control.connect(dial),
     subscribeTopic: (topic, connect) => {
       subscribedTopics.push(topic);
@@ -431,6 +435,32 @@ describe("the serial queues", () => {
     release.resolve();
     await finished.promise;
     expect(closedConnections).toEqual(["abandoned"]);
+  });
+
+  test("a queued task's dial is given the task's deadline, and is told it stopped once the task was abandoned", async () => {
+    const { state, control, fakeConnection } = createHarness();
+    control.open = "ses_a";
+    control.deadlineMs = 200;
+    const given = Promise.withResolvers<DialLimit | undefined>();
+    const release = Promise.withResolvers<void>();
+    control.dial = async (limit) => {
+      given.resolve(limit);
+      await release.promise;
+      return fakeConnection("limited");
+    };
+    const started = performance.now();
+    const running = state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      await handle.connect().catch(() => undefined);
+      return true;
+    });
+    const limit = await given.promise;
+    if (limit === undefined) throw new Error("the task's dial was given no limit");
+    expect(Math.abs(limit.deadlineAt - (started + 200))).toBeLessThan(100);
+    expect(limit.stopped()).toBe(false);
+    await expectAbandoned(running);
+    expect(limit.stopped()).toBe(true);
+    release.resolve();
   });
 
   test("a subscribe whose dial its task's session outran closes that dial and opens nothing", async () => {
@@ -742,6 +772,16 @@ describe("deregister", () => {
     await state.deregister("ses_a");
     expect(deregistrations).toEqual([
       { sessionID: "ses_a", clientInstanceID: state.clientInstanceID },
+    ]);
+  });
+
+  test("a deregistration with a shutdown's remaining time hands that time to the call", async () => {
+    // A shutdown has 1 s for its DELETE (`SHUTDOWN_DEADLINE_MS`); the call gets what is left, so
+    // its credential waits on that less the request's reserve and the DELETE goes in time.
+    const { state, deregistrations } = createHarness();
+    await state.deregister("ses_a", 750);
+    expect(deregistrations).toEqual([
+      { sessionID: "ses_a", clientInstanceID: state.clientInstanceID, timeoutMs: 750 },
     ]);
   });
 });

@@ -17,6 +17,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // On the real Oh My Pi: a Legion role pane dispatches `deep-worker`, gets its
 // `task` call back while the subagent is still running, reads a message that arrives in the
@@ -42,6 +43,10 @@ const { skip, setup } = ompNatsGuard();
 const ROLE = "implementer";
 const TREE = "BGSUB-1";
 const ISSUE = "BGSUB-2";
+
+/** The registration secret the stand-in daemon answers, and the boot token the pane starts with. */
+const REGISTRATION_SECRET = fixtureSecret("reg");
+const BOOT_TOKEN = fixtureSecret("boot");
 
 /**
  * The daemon's assignment, sent as the RPC prompt. Every turn of the role's own conversation
@@ -400,7 +405,7 @@ async function startRolePane(): Promise<RolePane> {
         issue: ISSUE,
         role: ROLE,
         generation: 1,
-        secret: "bgsub-secret",
+        secret: REGISTRATION_SECRET,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -411,14 +416,21 @@ async function startRolePane(): Promise<RolePane> {
         expiresAt: "2099-01-01T00:00:00Z",
       });
     }
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
+    // The reminder's record check reads one issue's record (dispatch://INFRA-2694).
+    if (url.pathname === `/legion/v1/issues/${ISSUE}/record`) {
+      return Response.json(MOVED_ON.issues[ISSUE]);
+    }
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
-    // registration is answered a consumer on the session's own relay subject, the one path a
-    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
-    // its claim boot fails.
+    // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
+    // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
+    // does not serve, and it is refused. A registration is answered a consumer on the session's
+    // own relay subject, the one path a message reaches a session by (INFRA-771); an answer
+    // without one leaves the pane deaf and its claim boot fails.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: "bgsub-machine",
@@ -460,7 +472,7 @@ async function startRolePane(): Promise<RolePane> {
         LEGION_ISSUE: ISSUE,
         LEGION_GENERATION: "1",
         LEGION_PROJECT: "bgsub",
-        LEGION_BOOT_TOKEN: "bgsub-boot",
+        LEGION_BOOT_TOKEN: BOOT_TOKEN,
         LEGION_STATE_DIR: path.join(workspace, ".state"),
         LEGION_WORKSPACE: workspace,
       },

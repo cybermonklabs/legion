@@ -69,8 +69,10 @@ type nearCopyCheck struct {
 	candidates []scoredDuplicate
 }
 
-// nearCopyCheckRow is one near_copy_checks row to write: the create the gate answered. The gate's
-// answer, nearCopyOutcome.Check, is passed beside it to each write, so it has one place.
+// nearCopyCheckRow is one near_copy_checks row to write: the create the gate answered, with the
+// candidates the gate read, which no outcome after the gate changes (nearCopyOutcome.unrecorded
+// keeps them). The rest of the gate's answer, nearCopyOutcome.Check, is passed beside it to each
+// write, so it has one place.
 type nearCopyCheckRow struct {
 	// id is chosen before the row's first write (newNearCopyRowID), so the row a create let in past
 	// an unconfirmed refusal writes in its transaction lands on that refusal's row if it exists.
@@ -82,6 +84,30 @@ type nearCopyCheckRow struct {
 	parent  string
 	// issue is the key the create wrote, empty for a refused create.
 	issue string
+	// specSHA256 is spec's hex sha256 and candidates the JSON of the candidates the gate read,
+	// worked out once when the row is built (newNearCopyCheckRow), before the create's transaction
+	// opens, so the write in that transaction only binds them; encodeErr is why the candidates
+	// could not be encoded, which each write answers instead of writing.
+	specSHA256 string
+	candidates []byte
+	encodeErr  error
+}
+
+// newNearCopyCheckRow is the row of a create that sent title, spec and parent to project as actor,
+// under id, whose gate answered check.
+func newNearCopyCheckRow(id, project string, actor model.Actor, title, spec, parent string, check *nearCopyCheck) nearCopyCheckRow {
+	candidates := make([]model.NearCopyCheckCandidate, 0, len(check.candidates))
+	for _, candidate := range check.candidates {
+		candidates = append(candidates, model.NearCopyCheckCandidate{
+			Key: candidate.Key, Title: candidate.Title, Score: candidate.Score,
+		})
+	}
+	encoded, err := encodeJSON(candidates)
+	sum := sha256.Sum256([]byte(spec))
+	return nearCopyCheckRow{
+		id: id, project: project, actor: actor, title: title, spec: spec, parent: parent,
+		specSHA256: hex.EncodeToString(sum[:]), candidates: encoded, encodeErr: err,
+	}
 }
 
 // nearCopyCheckInsert writes one row under the id its create chose and answers that id when the
@@ -116,27 +142,19 @@ func (s *server) newNearCopyRowID() string {
 // row is this very answer, an earlier attempt of this write that landed unseen (retryRecord says
 // how one can), and any other answer under the id is an error.
 func (s *server) writeNearCopyCheck(ctx context.Context, q queryer, row nearCopyCheckRow, check *nearCopyCheck) error {
-	candidates := make([]model.NearCopyCheckCandidate, 0, len(check.candidates))
-	for _, candidate := range check.candidates {
-		candidates = append(candidates, model.NearCopyCheckCandidate{
-			Key: candidate.Key, Title: candidate.Title, Score: candidate.Score,
-		})
-	}
-	encoded, err := encodeJSON(candidates)
-	if err != nil {
-		return err
+	if row.encodeErr != nil {
+		return row.encodeErr
 	}
 	// A refused create keeps its spec here, since no issue holds it; every other row's issue does.
 	var spec any
 	if check.outcome == nearCopyRefused {
 		spec = row.spec
 	}
-	sum := sha256.Sum256([]byte(row.spec))
 	var written string
-	err = q.QueryRow(ctx, nearCopyCheckInsert,
+	err := q.QueryRow(ctx, nearCopyCheckInsert,
 		row.id, row.project, row.actor.Kind, row.actor.ID, check.outcome, nullableText(check.reason),
-		check.force, row.title, spec, hex.EncodeToString(sum[:]), nullableText(row.parent),
-		nullableText(row.issue), encoded, duplicateRefuseScore, duplicateNudgeScore,
+		check.force, row.title, spec, row.specSHA256, nullableText(row.parent),
+		nullableText(row.issue), row.candidates, duplicateRefuseScore, duplicateNudgeScore,
 		nullableText(s.deps.BuildCommit),
 	).Scan(&written)
 	if !errors.Is(err, pgx.ErrNoRows) {

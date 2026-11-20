@@ -1,6 +1,7 @@
 # A copy of the two path lists in the reclaim paragraph of docs/kubernetes.md — the paragraph
-# that runs from "The remedy for a volume near full is manual" to "As for the rest:" — each list
-# in the guide's own order, the paths alone and none of the prose that argues for them.
+# that runs from "The remedy for a volume the trimmer cannot bring down is manual" to
+# "As for the rest:" — each list in the guide's own order, the paths alone and none of the prose
+# that argues for them.
 #
 # The guide still answers for the runtime, in two halves. This package's reclaim_doc_test.go
 # holds every directory the renderer puts on the issue's volume to these two lists;
@@ -27,5 +28,6 @@ delete:
 
 exempt:
 /legion/scratch/state/<role>
+/legion/scratch/leak-check
 /legion/scratch/data
 /legion/uv/python/<issue>

@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+  A pod enrolled under another daemon's session name no longer takes that session's grants. A
+  pod's grants now follow the pair of its account and the account of the token login that
+  enrolled it (`account:<pod account> launched-by account:<login account>`), since every public
+  Legion project's pods run as one account and each project's daemon logs in as its own; a pod
+  enrolled under a login that proved no account carries nothing. Its session name is still held
+  under its account alone, so a pod's enrollment and its own trade never refuse each other.
+  Migration 0037 rewrites once every pod row a login that proved an account enrolled, from the
+  account alone to the pair that login spells. A new broker takes such a row for its own daemon's
+  next enrollment with or without the rewrite, so running sessions keep their grants either way.
+  The rewrite is for the roll: an older broker replica matches the account alone, and without the
+  rewrite it would give a row written before 0037 to another daemon's pod enrolled under the
+  row's session name. It closes that for those rows alone: until the roll ends, an older replica
+  still gives another daemon's pod the rows older replicas write under the account alone after
+  0037 has run. While the broker rolls, a session enrolled on an older replica takes no rewritten
+  row, so it starts with no grants until its next enrollment reaches a new replica. A rollback to
+  a broker before 0037 strands every row that carries the pair: their grants are swept at the
+  carry window's end and the sessions ask again.
+time: 2026-11-16T15:28:23Z
+custom:
+    Issue: pr4220

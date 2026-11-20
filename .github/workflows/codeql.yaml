@@ -66,7 +66,7 @@ permissions: {}
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # The whole default setup took about 13.6 minutes per pull-request push for every language at
     # once, so this bounds a hung extractor, not an analysis.
     timeout-minutes: 60

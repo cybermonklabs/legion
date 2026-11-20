@@ -8,11 +8,12 @@ package api
 import (
 	"reflect"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -132,6 +133,12 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.UnownedIssue{}):              "DeliveryUnownedIssue",
 	reflect.TypeOf(delivery.DeliveryWaitingPRView{}):     "DeliveryWaitingPR",
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
+
+	// The Legion daemon setting's shape, whose Go package carries the word `Legion` in its import
+	// path and not in its type name: `Settings` is what legion calls it, and `LegionSetting` is
+	// what a client imports. The board's own types (legionBoardResponse and its members) already
+	// carry the word and take their Go names.
+	reflect.TypeOf(legion.Settings{}): "LegionSetting",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -250,6 +257,11 @@ var openAPIMultipartSchema = map[string]any{
 		"actor": map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
+		},
+		"precondition": map[string]any{
+			"type": "string",
+			"description": "the base this upload replaces as one JSON object, as the JSON body's " +
+				"`precondition` field",
 		},
 	},
 	"required": []any{"file"},

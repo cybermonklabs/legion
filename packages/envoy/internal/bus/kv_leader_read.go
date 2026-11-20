@@ -13,7 +13,7 @@ import (
 )
 
 // kvOperationHeader is the header nats.go marks a KV delete or a KV purge marker with, and
-// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.53.1 kv.go:304-306).
+// kvDeleteMarker and kvPurgeMarker are the two values it writes (nats.go@v1.55.0 kv.go:291-316).
 // A read that takes a key's newest message from the bucket's stream itself (GetFromLeader) reads
 // them for itself, where nats.go's Get reads them on its caller's behalf and reports either
 // marker as a key that is not there.
@@ -49,7 +49,7 @@ func (e leaderEntry) Operation() nats.KeyValueOp { return nats.KeyValuePut }
 // stream answers it. It is the stream message get of that stream,
 // `$JS.API.STREAM.MSG.GET.KV_<bucket>`, asking for the newest message on the key's subject
 // `$KV.<bucket>.<key>`, where Get is a direct get. nats.go sends exactly that request for
-// GetLastMsg unless the call is given nats.DirectGet (nats.go@v1.53.1 jsm.go:1242-1294), so this
+// GetLastMsg unless the call is given nats.DirectGet (nats.go@v1.55.0 jsm.go:1317-1334), so this
 // is that call rather than a request of this package's own; TestTheLeaderReadSendsTheStreamMessageGetWhereGetSendsTheDirectGet
 // reads the wire and is what holds nats.go to it.
 //
@@ -98,7 +98,11 @@ func (kv KeyValue) GetFromLeader(ctx context.Context, key string) (nats.KeyValue
 	if err != nil {
 		return nil, named(err)
 	}
-	message, err := js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	// A read the grant refuses draws no answer; the record names the refusal after the read's own
+	// wait (refusedAfter), which costs a read the leader answers nothing.
+	message, err := refusedAfter(kv.owner, func() []string { return []string{jsAPI("STREAM.MSG.GET", "KV_"+bucket)} }, func() (*nats.RawStreamMsg, error) {
+		return js.GetLastMsg("KV_"+bucket, "$KV."+bucket+"."+key, nats.Context(ctx))
+	})
 	if errors.Is(err, nats.ErrMsgNotFound) {
 		return nil, nats.ErrKeyNotFound
 	}

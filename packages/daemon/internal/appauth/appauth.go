@@ -79,14 +79,41 @@ type TransientError struct{ Err error }
 func (e *TransientError) Error() string { return e.Err.Error() }
 func (e *TransientError) Unwrap() error { return e.Err }
 
+// AnswerError is the failure of a GitHub call that GitHub answered with a status other than 2xx,
+// with GitHub's answer beside it (githubrest.AnswerOf): the request's method and its path under the
+// Manager's base URL, the status, the body, and the rate-limit headers as GitHub sent them. Its
+// message is Err's, and it unwraps to Err alone: the answer is a field and no link of the chain, so
+// errors.As finds no *githubrest.Answer in an error of this package, and every caller that reads
+// one in the errors of its own GitHub reads (internal/daemon's defaultBranchLimit, answeredRefusal
+// and githubrest.RetryAfter among them) reads a mint's error as it did before. Only a caller that
+// asks for an *AnswerError reads the answer: the daemon's start, which waits out GitHub's rate limit
+// on its App calls (internal/daemon's bootLimit). Every answer other than 2xx this package reads
+// carries one, inside the TransientError where one is made.
+type AnswerError struct {
+	Err    error
+	Answer *githubrest.Answer
+}
+
+func (e *AnswerError) Error() string { return e.Err.Error() }
+func (e *AnswerError) Unwrap() error { return e.Err }
+
+// answered is err, the failure of a call GitHub answered with response, whose body is body,
+// carrying that answer (AnswerError), its path the request's under the Manager's base URL
+// (githubrest.PathUnder).
+func (m *Manager) answered(response *http.Response, body []byte, err error) *AnswerError {
+	path := githubrest.PathUnder(m.baseURL, response.Request.URL)
+	return &AnswerError{Err: err, Answer: githubrest.AnswerOf(response.Request.Method, path, response, body)}
+}
+
 // transient marks a response, whose body is body, as GitHub's trouble rather than an answer: a
-// 5xx, or a rate limit (githubrest.RateLimited, which reads the body for a secondary limit GitHub
-// names there alone).
-func transient(response *http.Response, body []byte, err error) error {
-	if response.StatusCode >= http.StatusInternalServerError || githubrest.RateLimited(response, body) {
-		return &TransientError{Err: err}
+// 5xx, or a rate limit (the answer's RateLimited, githubrest.RateLimited, which reads the body for
+// a secondary limit GitHub names there alone). Either way err carries GitHub's answer (answered).
+func (m *Manager) transient(response *http.Response, body []byte, err error) error {
+	refused := m.answered(response, body, err)
+	if response.StatusCode >= http.StatusInternalServerError || refused.Answer.RateLimited {
+		return &TransientError{Err: refused}
 	}
-	return err
+	return refused
 }
 
 // refusalBody is the body GitHub sent with a refusal, read whole, and the response closed. One
@@ -112,8 +139,8 @@ const responseBound = 1 << 20
 // whatever the request named, and the request names none at all (accessTokensBody), so the list
 // is the installation's whole breadth. Those objects measure 4.9 to 5.3 KB each, which is what
 // the secrets broker bounds one of them at 64 KB on
-// (packages/envoy/internal/broker/secrets/githubapp.go, githubRepositoryAnswerBound), and this
-// deployment's theorem-labs installation held 216 repositories at 15:45Z on 2026-11-10, about
+// (packages/envoy/internal/cipher/secrets/githubapp.go, githubRepositoryAnswerBound), and this
+// deployment's example-org installation held 216 repositories at 15:45Z on 2026-11-10, about
 // 1.1 MB of answer. 16 MiB holds about 3,000 repositories at the measured size, far above any
 // installation a Legion deployment mints on, and an answer past it is refused rather than read
 // into the daemon's memory.
@@ -146,54 +173,25 @@ type Tokens interface {
 	// the App and the daemon narrows no further (INFRA-2543). An owner with no name is refused
 	// before anything is minted, since there is no account to mint on.
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
-	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, issues, Actions and metadata read. Two callers ask for it and no role's bundle does: a
+	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
+	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
+	// attestations, each at read. Two callers ask for it and no role's bundle does: a
 	// controller, which works no repository and holds one for every owner its App is installed
 	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
 	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
 	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
 	// directories hold that owner's own lease at the role's permissions instead (Token,
 	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
-	// release holds instead, which the command decides: the secrets broker's holds the same
-	// reads less issues (its readOnlyPermissions), so such a lease reads no issue. With a key of its own the mint asks for what the installation
-	// is granted of those five and leaves the rest out (exchangeGranted), so an installation
-	// whose account has not granted the App Actions gets the other four rather than nothing.
-	// An owner with no name is refused before anything is minted, as Token's is.
+	// release holds instead, which the command decides: the secrets broker's holds the broker's
+	// own set, contents, metadata, pull requests, Actions, checks and statuses read (its
+	// readOnlyPermissions), which differs from readPermissions, so such a lease reads no issue or
+	// attestation. With a key of its own the mint asks for what the installation is granted of
+	// readPermissions and leaves the rest out (exchangeGranted), so an installation whose account
+	// has not granted the App issues, Actions, checks, commit statuses or attestations gets a
+	// token without the ones it is not granted rather than nothing. An owner with no name is
+	// refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
-
-// readPermissions narrows an installation token to reading a repository's contents, its pull
-// requests, its issues, its Actions runs and its metadata: what a role needs of every repository
-// of the project but its own issue's, what a controller needs of every one of them, and what the
-// provisioning token takes of the issue's own repository, which a clone, a fetch and a
-// repository cache only read (implementTokens, internal/daemon). A mint asks for what the
-// installation is granted of this set, at the access it is granted (exchangeGranted), and
-// GitHub mints a token with the permissions the request names.
-//
-// actions:read is here because reading a repository includes reading what its merges did: a
-// deployment check of a merge reads the push run that carries it, that run's jobs and a job's
-// log, and a role that cannot read them cannot tell a deploy that applied from one that was
-// skipped. Measured on 2026-11-04 against a private repository whose installation holds
-// actions:write: unnarrowed, actions/runs and actions/runs/{id}/jobs answered 200 and
-// actions/jobs/{id}/logs answered 302 to a signed URL that answered 200; narrowed to contents,
-// pull requests and metadata, all three answered 403 "Resource not accessible by integration".
-// The narrowing was the whole refusal, and no App
-// or installation setting was missing. It stays a read: actions:read cannot cancel, re-run or
-// dispatch a workflow, and reaches no Actions secret or variable, which are permissions of their
-// own.
-//
-// issues:read is here because an issue is where a work's context is often written, and a role or
-// a controller reads the issues of every repository its project serves. Measured on 2026-11-10,
-// and again on 2026-11-15, from roles of both Apps on a private repository: with no issues
-// permission in the request, reading an issue answered 403 "Resource not accessible by
-// integration" while the same token read that repository's contents and pull requests. It stays
-// a read: issues:read cannot open, edit, close or comment on an issue.
-//
-// The set is the most a read lease holds, and the only thing that holds it: the lease reaches
-// every repository its installation holds, as every token this package mints does, so what
-// keeps a reading lease from writing is these five permissions and nothing beside them. A
-// permission the installation is granted none of is left out of the request rather than minted.
-var readPermissions = map[string]string{"contents": "read", "pull_requests": "read", "issues": "read", "actions": "read", "metadata": "read"}
 
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
 // the wall clock, the daemon's own stderr for what a token_command writes there, and
@@ -347,13 +345,15 @@ func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease,
 }
 
 // ReadToken is Token for a token narrowed to readPermissions, cached under a scope of its own,
-// so an owner's write and read tokens never stand in for each other. Each of those five
-// permissions is asked for at what the installation is granted of it, and one it is granted
-// none of is left out (exchangeGranted). In token mode it is the command's read-only release
-// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's is
-// readPermissions less its issues read, so a role reads no issue through it. A write request of the same owner is a run of its own either way:
-// it asks for no read-only release, so the two never stand in for each other. An owner with no
-// name is refused, and nothing is minted.
+// so an owner's write and read tokens never stand in for each other. Each permission of the set
+// is asked for at read where the installation is granted it, and one it is granted none of is
+// left out (exchangeGranted). In token mode it is the command's read-only release
+// (TokenCommandReadOnly) instead, which the command decides; the secrets broker's holds the
+// broker's own set, contents, metadata, pull requests, Actions, checks and statuses, which
+// differs from readPermissions, so its holder reads no issue or attestation through it. A write
+// request of the same owner is a run of its own either way: it asks for no read-only
+// release, so the two never stand in for each other. An owner with no name is refused, and
+// nothing is minted.
 func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
 	return m.lease(ctx, mintRequest{role: role, owner: owner, read: true, permissions: readPermissions})
 }
@@ -821,7 +821,7 @@ func (m *Manager) discoverInstallations(ctx context.Context, app config.GitHubAp
 			return nil, &TransientError{Err: fmt.Errorf("GitHub App installation discovery: %w", err)}
 		}
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-			return nil, transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
+			return nil, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App installation discovery failed (%d)", response.StatusCode))
 		}
 		body, err := readBody(response, "GitHub App installation discovery", responseBound)
 		if err != nil {
@@ -925,7 +925,7 @@ func (m *Manager) botIdentity(ctx context.Context, login, installationToken stri
 		return GitIdentity{}, &TransientError{Err: fmt.Errorf("GitHub App bot identity lookup: %w", err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return GitIdentity{}, transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
+		return GitIdentity{}, m.transient(response, refusalBody(response), fmt.Errorf("GitHub App bot identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App bot identity lookup", responseBound)
 	if err != nil {
@@ -960,7 +960,7 @@ func (m *Manager) appSlug(ctx context.Context, jwt string) (string, error) {
 		return "", &TransientError{Err: fmt.Errorf("GitHub App identity lookup: %w", err)}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
+		return "", m.transient(response, refusalBody(response), fmt.Errorf("GitHub App identity lookup failed (%d)", response.StatusCode))
 	}
 	body, err := readBody(response, "GitHub App identity lookup", responseBound)
 	if err != nil {

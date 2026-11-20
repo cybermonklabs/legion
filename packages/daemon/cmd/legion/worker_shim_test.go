@@ -74,6 +74,12 @@ func TestWorkerShimRefusesBeforeDialOrSpawn(t *testing.T) {
 		{"--warm-codegraph without LEGION_WORKSPACE", append([]string{"--connect", connect, "--boot-token-file", token, "--warm-codegraph"}, omp...), 1, []string{"--warm-codegraph", "LEGION_WORKSPACE"}},
 		{"a --stop-grace that is not positive", append([]string{"--connect", connect, "--boot-token-file", token, "--stop-grace", "0s"}, omp...), 1, []string{"--stop-grace 0s is not a positive duration"}},
 		{"--socket mode, which is not ported", append([]string{"--socket", socket}, omp...), 2, []string{"-socket"}},
+		// A word before -- is no flag of the shim's and no part of the agent's command: Go's flag
+		// package passed it on as the command's first word, and here it is a usage error.
+		{"a word before --", append([]string{"--connect", connect, "--boot-token-file", token, "stray"}, omp...), 2,
+			[]string{`legion worker-shim: unexpected argument "stray" before --`, "Run 'legion worker-shim --help' for usage."}},
+		{"a word and no --", []string{"--connect", connect, "--boot-token-file", token, "stray"}, 2,
+			[]string{`legion worker-shim: unexpected argument "stray": the command to run follows --`, "Run 'legion worker-shim --help' for usage."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -516,5 +522,128 @@ exit 9
 				t.Fatalf("the daemon side: %v", err)
 			}
 		})
+	}
+}
+
+// The shim's lines and its refusals pass the URL rule. An Oh My Pi extension that failed on a
+// URL carrying a user name and a token in its query is shown on the pane as the shim summarizes
+// an extension_error event (internal/shim's summarize), and a --connect the shim refuses is
+// quoted in its refusal: each keeps the URL's host and path, and neither the user name nor the
+// token reaches the pane.
+func TestWorkerShimWritesNoURLCredentials(t *testing.T) {
+	dir := t.TempDir()
+	socket := testtmp.Socket(t, "s")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failed := `{"type":"extension_error","extensionPath":"/opt/legion/pi-legion/dist/legion.js","event":"session_start",` +
+		`"error":"fetch https://legion-reader@daemon.example/legion/v1/claims?token=planted-query-token-1 failed: connection refused"}`
+	for _, tc := range []struct {
+		name string
+		args []string
+		// daemon is whether the shim reaches a daemon that acks it, and so starts the agent.
+		daemon bool
+		code   int
+		// shown is the URL as the line must show it, on stdout or on stderr; planted is the token.
+		shown, planted string
+	}{
+		{
+			name:   "the agent's extension_error, summarized on the pane",
+			args:   []string{"--connect", "unix://" + socket, "--boot-token-file", token, "--", "sh", "-c", `printf '%s\n' "$0"; exit 7`, failed},
+			daemon: true, code: 7,
+			shown: "fetch https://daemon.example/legion/v1/claims failed", planted: "planted-query-token-1",
+		},
+		{
+			name:  "a --connect the shim refuses",
+			args:  []string{"--connect", "tcp://legion-reader@127.0.0.1:1/?token=planted-query-token-2", "--boot-token-file", token, "--", "true"},
+			code:  1,
+			shown: `got "tcp://127.0.0.1:1/"`, planted: "planted-query-token-2",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var daemon chan error
+			if tc.daemon {
+				daemon = acknowledgeHello(ln)
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), append([]string{"legion", "worker-shim"}, tc.args...), &stdout, &stderr)
+			if daemon != nil {
+				if err := <-daemon; err != nil {
+					t.Fatalf("the daemon side: %v", err)
+				}
+			}
+			printed := stdout.String() + stderr.String()
+			if code != tc.code || !strings.Contains(printed, tc.shown) {
+				t.Fatalf("exit %d, printed %q; want %d with %q", code, printed, tc.code, tc.shown)
+			}
+			for _, credential := range []string{"legion-reader", tc.planted} {
+				if strings.Contains(printed, credential) {
+					t.Errorf("the shim printed %q, which holds %q", printed, credential)
+				}
+			}
+		})
+	}
+}
+
+// A line the daemon's side sends before its hello_ack is logged cut to 80 runes ("ignoring a frame
+// received before hello_ack"). A cut made before the URL rule would stop inside a URL's userinfo,
+// before its "@", where the rule finds no userinfo in what is left and keeps the start of the user
+// name and the password as the URL's host. The shim writes no part of either.
+func TestWorkerShimWritesNoPartOfAUserinfoCutBeforeItsAt(t *testing.T) {
+	// Built as the other tests of this package build one, so the pre-push leak check reads no
+	// credential in the source. The line's first 80 bytes end inside the password, before the "@".
+	const user, pass = "legion-reader", "demopass-not-a-secret-48c1-48c1-48c1-48c1-48c1-48c1"
+	early := strings.Replace("moved to https://d.example/launch", "://", "://"+user+":"+pass+"@", 1)
+	dir := t.TempDir()
+	socket := testtmp.Socket(t, "s")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	token := filepath.Join(dir, "token")
+	if err := os.WriteFile(token, []byte("boot-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	daemon := make(chan error, 1)
+	go func() {
+		daemon <- func() error {
+			conn, err := ln.Accept()
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+			if _, err := shimwire.NewReader(conn).ReadLine(); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(conn, early+"\n"); err != nil {
+				return err
+			}
+			if err := shimwire.NewWriter(conn).WriteFrame(shimwire.HelloAck{}); err != nil {
+				return err
+			}
+			_, err = io.Copy(io.Discard, conn)
+			return err
+		}()
+	}()
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"legion", "worker-shim", "--connect", "unix://" + socket, "--boot-token-file", token, "--", "true"}, &stdout, &stderr)
+	if err := <-daemon; err != nil {
+		t.Fatalf("the daemon side: %v", err)
+	}
+	printed := stdout.String() + stderr.String()
+	if code != 0 || !strings.Contains(printed, "ignoring a frame received before hello_ack") {
+		t.Fatalf("exit %d, printed %q; want 0 with the early line ignored", code, printed)
+	}
+	for _, credential := range []string{user, pass[:12]} {
+		if strings.Contains(printed, credential) {
+			t.Errorf("the shim printed %q, which holds %q", printed, credential)
+		}
 	}
 }

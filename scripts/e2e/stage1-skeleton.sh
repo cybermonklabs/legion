@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz,
 # /readyz and GET /legion/v1/state, registers itself, survives a restart against the same store
-# with its first boot time intact, and refuses an unreachable Postgres by the host it could not
-# reach and never by the password. Every step is fatal — no `|| true` outside the cleanup a trap
-# must never fail on — and the run leaves no container, no daemon, and nothing in the real state
-# home.
+# with its first boot time intact, refuses a wrong Postgres password at once by the host and never
+# by the password, and opens its store behind a proxy that resets its first two connections, by
+# trying again 1 s and then 2 s later. Every step is fatal — no `|| true` outside the cleanup a
+# trap must never fail on — and the run leaves no container, no daemon, no proxy, and nothing in
+# the real state home.
 #
-# Everything it takes is this run's own: its work directory, its container name, its project key
-# and its port. Two runs on one box (a CI job and a devbox session, or two sessions) do not
+# Everything it takes is this run's own: its work directory, its container name, its project keys
+# and its ports. Two runs on one box (a CI job and a devbox session, or two sessions) do not
 # collide, and neither reports the other as a leftover.
 #
 # The daemon supervises its agents under tmux, so it refuses to start without what a launch
@@ -18,31 +19,43 @@
 set -euo pipefail
 
 pid=
-# lib/rig.sh's start_kept and keep_port set these: the daemon's pid, copied to pid on each start,
+# lib/rig.sh's start_kept and keep_port set these: each daemon's pid, copied to pid on each start,
 # and its port keeper's.
 daemon_pid=
 daemon_keeper_pid=
+retry_daemon_pid=
+retry_keeper_pid=
+# Step 2's: the port its keeper holds (keep_port), and the proxy it puts in front of Postgres, with
+# the port that proxy serves on (read_port_file).
+retry_port=
+proxy_pid=
+proxy_port=
 ok=
 container=legion-e2e-pg-$$
-work=$(mktemp -d /tmp/legion-e2e.XXXXXXXX)
+work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e.XXXXXXXX")
 # lib/rig.sh's process helpers log each service to $evidence/logs/<name>.log.
 evidence=$work
 timeout_hook=
 mkdir -p "$work/logs"
 # cleanup never returns non-zero: a trap that fails under set -e would mask the real status. The
-# work directory survives a failure — its state documents, refusal log and daemon log are the
-# evidence, and the daemon log is printed — and goes when the run passed.
+# work directory survives a failure — its state documents, refusal log and the logs of the
+# daemons, the proxy and the keepers are the evidence, and each log that holds anything is
+# printed — and goes when the run passed.
 cleanup() {
+  local log
   if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
+  if [ -n "${proxy_pid:-}" ]; then kill -TERM "$proxy_pid" 2>/dev/null || true; fi
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
+  if [ -n "${retry_keeper_pid:-}" ]; then kill -TERM "$retry_keeper_pid" 2>/dev/null || true; fi
   docker rm -f -v "$container" >/dev/null 2>&1 || true
   if [ -n "${ok:-}" ]; then
     rm -rf "$work"
   else
-    if [ -s "$work/logs/daemon.log" ]; then
-      echo "--- the daemon's log ($work/logs/daemon.log)"
-      cat "$work/logs/daemon.log" || true
-    fi
+    for log in "$work"/logs/*.log; do
+      [ -s "$log" ] || continue
+      echo "--- $log"
+      cat "$log" || true
+    done
     echo "the run's workspace is $work"
   fi
   return 0
@@ -193,6 +206,31 @@ if [ -z "${LEGION_E2E_PG_DSN:-}" ]; then
   LEGION_E2E_PG_DSN="postgres://legion:legion@127.0.0.1:$pgport/legion"
 fi
 
+# The Postgres both paths name, read once from the DSN with urllib.parse, so no step reads
+# $pgport, which CI never sets (its service is localhost:5432, ci-job-daemon-go.yaml). The host
+# comes back twice: bare, for the proxy's socket.create_connection (step 2), and in the address,
+# host:port, that step 1's DSN writes and its grep reads, with a host that holds a colon in
+# brackets, since urlsplit's hostname drops an IPv6 host's brackets and the daemon's refusal names
+# the host as net.JoinHostPort writes it (internal/store's target). The user, the password and the
+# database come back percent-encoded, as a DSN spells them, for the two steps that write a DSN of
+# their own. The DSN reaches python3 in its environment, never in its arguments, which
+# /proc/<pid>/cmdline shows.
+pg=$(DSN=$LEGION_E2E_PG_DSN python3 -c '
+import os, sys, urllib.parse as p
+dsn = p.urlsplit(os.environ["DSN"])
+parts = [p.quote(p.unquote(part or ""), safe="") for part in (dsn.username, dsn.password, dsn.path[1:])]
+if not dsn.hostname or not all(parts):
+    sys.exit("LEGION_E2E_PG_DSN must name a host, a user, a password and a database: steps 1 and 2 write DSNs of them")
+port = dsn.port or 5432
+address = f"[{dsn.hostname}]:{port}" if ":" in dsn.hostname else f"{dsn.hostname}:{port}"
+print(dsn.hostname, port, address, *parts, sep="\n")')
+{ read -r pg_host; read -r pg_port; read -r pg_address; read -r pg_user; read -r pg_password; read -r pg_database; } <<<"$pg"
+# The two logins steps 1 and 2 write into a DSN, the server's own and one with a wrong password.
+# Each is a variable of its own because the pre-push leak guard refuses a line that writes a URL
+# with a password in its userinfo, a test's included.
+pg_login="$pg_user:$pg_password"
+wrong_login="$pg_user:hunter2"
+
 # The operator bearer, as the 0600 file operator_token_file names, and the OMP the daemon resolves
 # at boot (LEGION_OMP_PATH): a stub that answers the plugin gate's load probe (`omp models
 # --extension <probe> --json`) as a pane that loads pi-legion beside pi-envoy does — pi-legion
@@ -273,16 +311,18 @@ github_apps:
       -----END PRIVATE KEY-----
 EOF
 
-# 1. refuses without Postgres, naming the host and never the password. The bad DSN carries its
-#    own credentials so both halves of that assertion mean something wherever this runs.
-sed 's#^postgres_dsn: .*#postgres_dsn: postgres://legion:hunter2@127.0.0.1:5499/legion#' \
+# 1. refuses a wrong password at once, naming the host and never the password. Both paths' servers
+#    check passwords, so the answer is 28P01, which the start never tries again: only a connection
+#    error is (step 2). The DSN carries its own wrong password so both halves of that assertion
+#    mean something wherever this runs.
+sed "s#^postgres_dsn: .*#postgres_dsn: postgres://$wrong_login@$pg_address/$pg_database#" \
   "$work/legion.yaml" >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
   echo "expected refusal"
   exit 1
 fi
-grep -q '127.0.0.1:5499' "$work/refusal.log" || {
-  echo "the refusal does not name the host it could not reach"
+grep -qF "$pg_address" "$work/refusal.log" || {
+  echo "the refusal does not name the host that refused the password"
   exit 1
 }
 # `! grep …` would be read as a negation set -e ignores (shellcheck SC2251): the assertion could
@@ -292,7 +332,91 @@ grep -q 'hunter2' "$work/refusal.log" && {
   exit 1
 }
 
-# 2. starts, answers, restarts against the same store
+# 2. opens its store through a connection error at the start's first database connection, by
+#    trying again 1 s and then 2 s later (c-boot-db-retry case 2). A daemon of its own (its
+#    project key, legion.yaml, state directory and port, so step 3's count of boots for $project
+#    stays 1) reaches that Postgres through a proxy on 127.0.0.1 that resets its first two
+#    connections (SO_LINGER 0) and forwards every one after them. Its DSN sets sslmode=disable:
+#    under pgx's default, prefer, one attempt can open a TLS connection and then a plain one, which
+#    would spend both resets on the first attempt. The proxy writes its port through a rename, as
+#    lib/held-port.py does, logs what it does with each connection, and exits 0 on SIGTERM.
+keep_port retry_keeper retry_port
+python3 - "$pg_host" "$pg_port" "$work/proxy.port" <<'EOF' >>"$work/logs/proxy.log" 2>&1 &
+import itertools, os, signal, socket, struct, sys, threading
+
+host, port, port_file = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+
+
+def relay(source, sink):
+    try:
+        while data := source.recv(65536):
+            sink.sendall(data)
+    except OSError:
+        pass
+    try:
+        sink.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def forward(client):
+    with client, socket.create_connection((host, port)) as server:
+        back = threading.Thread(target=relay, args=(server, client), daemon=True)
+        back.start()
+        relay(client, server)
+        back.join()
+
+
+listener = socket.create_server(("127.0.0.1", 0))
+with open(f"{port_file}.tmp", "w", encoding="ascii") as written:
+    written.write(f"{listener.getsockname()[1]}\n")
+os.replace(f"{port_file}.tmp", port_file)
+for n in itertools.count(1):
+    client, _ = listener.accept()
+    if n <= 2:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        client.close()
+        print(f"connection {n}: reset", flush=True)
+        continue
+    print(f"connection {n}: forwarded to {host}:{port}", flush=True)
+    threading.Thread(target=forward, args=(client,), daemon=True).start()
+EOF
+proxy_pid=$!
+read_port_file "$work/proxy.port" "$proxy_pid" proxy_port ||
+  fail "the proxy exited or held no port within ${port_file_seconds}s; see $work/logs/proxy.log"
+mkdir -p "$work/retry-state"
+# sed takes its script on stdin, so the password in the DSN reaches no command's arguments.
+sed -f /dev/stdin "$work/legion.yaml" >"$work/retry.yaml" <<EOF
+s#^project: .*#project: ${project}R#
+s#^port: .*#port: $retry_port#
+s#^postgres_dsn: .*#postgres_dsn: postgres://$pg_login@127.0.0.1:$proxy_port/$pg_database?sslmode=disable#
+s#^state_dir: .*#state_dir: $work/retry-state#
+EOF
+start_kept retry_daemon retry_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/retry.yaml"
+pid=$retry_daemon_pid
+# The two helpers read the daemon's port from $port; the assignment before each call names this
+# daemon's for that call alone.
+port=$retry_port wait_healthz " behind the proxy"
+port=$retry_port readyz_200 " behind the proxy"
+# legion start logs JSON lines (slog's JSON handler), and bootprobe.Run logs each wait as one of
+# them; fromjson? and objects pass over a line that is no JSON object.
+waits=$(jq -Rnr '[inputs | fromjson? | objects
+  | select(.msg == "boot probe failed transiently; waiting to run it again" and .probe == "Postgres store")
+  | "\(.attempt) \(.retryIn)"] | join(", ")' "$work/logs/retry_daemon.log")
+[ "$waits" = "1/10 1s, 2/10 2s" ] ||
+  fail "the daemon behind the proxy logged the waits to open its store as '$waits', want '1/10 1s, 2/10 2s', one after each reset"
+kill -TERM "$pid"
+stop_daemon SIGTERM
+kill -TERM "$proxy_pid"
+wait "$proxy_pid"
+proxy_pid=
+# The daemon's keeper is the step's own too, and exits 0 on SIGTERM (lib/held-port.py keep).
+kill -TERM "$retry_keeper_pid"
+wait "$retry_keeper_pid"
+retry_keeper_pid=
+
+# 3. starts, answers, restarts against the same store
 start_kept daemon daemon_keeper LEGION_LISTEN_FD -- "${pane_home[@]}" "$work/legion" start --config "$work/legion.yaml"
 pid=$daemon_pid
 wait_healthz

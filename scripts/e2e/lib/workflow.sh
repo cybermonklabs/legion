@@ -24,10 +24,11 @@
 #                  production's)
 #   dispatch_actor the session every proof-human write names as its actor, or empty. A bearer caller
 #                  must name one (production Dispatch refuses the write otherwise, ACTOR_KIND); it
-#                  holds no claim, so the daemon sets back its status write on a live root as it does
-#                  any outside session's, and a proof takes a tree out with `legion status` instead.
-#                  Empty, the writes carry none and the human header alone says who wrote (a scratch
-#                  Dispatch's X-Dispatch-User), which the workflow reads as a person's move
+#                  holds no claim, so the daemon sets back its status write on a live root as it
+#                  does any outside session's, and a proof takes a tree out with
+#                  `legion issue status` instead. Empty, the writes carry none and the human header
+#                  alone says who wrote (a scratch Dispatch's X-Dispatch-User), which the workflow
+#                  reads as a person's move
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it
@@ -1365,7 +1366,7 @@ worker_notices() {
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-forgotten|session-store-fault) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

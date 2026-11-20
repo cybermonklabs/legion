@@ -27,6 +27,8 @@ envoy_module=packages/envoy
 mkdir -p "$bin"
 go -C "$root/$legion_module" build -o "$bin/legion" ./cmd/legion
 go -C "$root/$envoy_module" build -o "$bin/envoy-dispatch" ./cmd/dispatch
-go -C "$root/$envoy_module" build -o "$bin/envoy-broker" ./cmd/broker
-go -C "$root/$envoy_module" build -o "$bin/" ./cmd/agent-secrets ./cmd/agent-secrets-helper ./cmd/broker-refgen
+go -C "$root/$envoy_module" build -o "$bin/envoy-broker" ./cmd/cipherd
+go -C "$root/$envoy_module" build -o "$bin/agent-secrets" ./cmd/cipher
+go -C "$root/$envoy_module" build -o "$bin/agent-secrets-helper" ./cmd/cipher-helper
+go -C "$root/$envoy_module" build -o "$bin/broker-refgen" ./cmd/cipher-refgen
 echo "built legion, envoy-dispatch, envoy-broker, agent-secrets, agent-secrets-helper and broker-refgen into $bin"

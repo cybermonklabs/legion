@@ -199,7 +199,9 @@ type keptRace struct {
 // counts the answer each catch-up drew, so a run reports which modes its catch-ups actually met,
 // holds one publish open for the interleaving a step armed (keptRace), and records, for each
 // catch-up it takes, the generation that catch-up's own issue stood at then (atPublish): a root's,
-// or an adopted child's own.
+// or an adopted child's own. A kept publish (PublishKept) is answered by the run's mode as any
+// other is and never kept: the mode's no-holder is the 404 a listener before #4079 answers a
+// claim whose holder is gone.
 type keptPublisher struct {
 	mu        sync.Mutex
 	mode      keptPublishMode
@@ -219,6 +221,14 @@ type keptPublisher struct {
 }
 
 func (p *keptPublisher) Publish(_ context.Context, topic, message string, payload any, key string) error {
+	return p.publish(topic, message, payload, key, false)
+}
+
+func (p *keptPublisher) PublishKept(_ context.Context, topic, message string, payload any, key string) (bool, error) {
+	return false, p.publish(topic, message, payload, key, true)
+}
+
+func (p *keptPublisher) publish(topic, message string, payload any, key string, keep bool) error {
 	notice, isNotice := payload.(record.Notice)
 	catchUp := isNotice && notice.CatchUp != nil
 	var raced *keptRace
@@ -250,7 +260,7 @@ func (p *keptPublisher) Publish(_ context.Context, topic, message string, payloa
 	if err != nil {
 		return err
 	}
-	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload})
+	p.delivered = append(p.delivered, outboxPublish{topic: topic, message: message, key: key, payload: payload, keep: keep})
 	return nil
 }
 
@@ -1058,7 +1068,7 @@ func (l *keptLog) mark() int {
 }
 
 // mirror writes what Dispatch says of key — its status and the keys it waits on — as the
-// blockers.Mirror handler writes one from an event (record.DispatchIssueRow), under the project
+// blockers.Mirror handler writes one from an event (record.DispatchReading), under the project
 // key admission judges the line by ("LEGION", the one the records carry). It is the only thing
 // that holds a root out of the line here (blockers.WaitsOn) and a child at phase.Admitted
 // (blockers.Holds). The engine of this run reads the mirror under its own project key
@@ -1067,8 +1077,8 @@ func (l *keptLog) mark() int {
 // blocker holds is handed over by the step that writes that hand-over (handOverChildWithoutItsRun).
 func (r *keptRun) mirror(key, status string, seq int64, waits ...string) {
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchIssueRow{Key: key, Project: "LEGION",
-			Status: status, Blockers: waits, Seq: seq})
+		return r.records.PutDispatchIssue(r.ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	}); err != nil {
 		r.fatalf("mirror what Dispatch says of %s: %v", key, err)
 	}
@@ -2567,11 +2577,16 @@ func (r *keptRun) ready(tree *keptTree) {
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	launch := machine.Claim().Generation
 	r.handle(machine, supervise.StreamHello{Claim: tree.token, Generation: launch})
+	// Each architect is a session of its own, with a file of its own: the daemon holds a session's
+	// id and its file's path and name to the first claim of the project that recorded them
+	// (supervise's holdRecorded), so two trees' architects registering one would have the second
+	// refused.
+	session := "ses-architect-" + tree.key
 	if state := machine.Claim().State; state == supervise.StateShimConnected || state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"})
+		r.handle(machine, supervise.RequestRegister{Claim: tree.token, Generation: launch, Session: session, SessionFile: "/tmp/" + session + ".jsonl"})
 	}
 	if state := machine.Claim().State; state == supervise.StateRegistered || supervise.SaidReady(state) {
-		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: "ses-architect"})
+		r.handle(machine, supervise.RequestReady{Claim: tree.token, Generation: launch, Session: session})
 	}
 	r.waitMachines()
 	r.tracef("ready tree=%s launch=%d state=%s", tree.key, launch, machine.Claim().State)

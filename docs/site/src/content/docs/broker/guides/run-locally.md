@@ -264,13 +264,13 @@ Every row is a grant from the broker AGENT_SECRETS_URL names (AWS Secrets Manage
 Each list says on standard error which broker and store its rows are from, so the table on
 standard output stays one row per login or grant for a script.
 
-`machine list` shows your own machines' logins alone; Dispatch's machine-login page also lists
-every service's. `agent-secrets grant revoke <grant id>` ends a grant there, and
-`agent-secrets machine revoke <credential id>` one of your logins. `grant revoke` run in a
-session's shell is the session's own revoke, as `agent-secrets revoke` is: it ends only a grant
-given to the broker identity (enrollment) the session signs as. Run there, `machine list`,
-`machine revoke` and `grant list` are refused `IN_SESSION`, so the session's own commands cannot
-act as you:
+`machine list` shows your own machines' logins and your pods' logins alone; Dispatch's
+machine-login page also lists every service's. `agent-secrets grant revoke <grant id>` ends a
+grant there, and `agent-secrets machine revoke <credential id>` one of your logins.
+`grant revoke` run in a session's shell is the session's own revoke, as `agent-secrets revoke`
+is: it ends only a grant given to the broker identity (enrollment) the session signs as. Run
+there, `machine list`, `machine revoke` and `grant list` are refused `IN_SESSION`, so the
+session's own commands cannot act as you:
 
 ```console
 $ agent-secrets machine list
@@ -302,12 +302,18 @@ mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
 ```
 
 and ask the broker to reread it, as `agent-secrets secret` does right after each write
-([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). The same call
-answered `{"name":"DEMO_NEW_TOKEN","served":false,"reason":"absent"}` before the edit:
+([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). Signed as this
+shell's session, the broker answers once the reread is done, with what it now serves; the same
+call answered `{"name":"DEMO_NEW_TOKEN","served":false,"reason":"absent"}` before the edit. A
+call with no proof is answered `202` with `"accepted":true` and one fixed `reason` at once,
+whatever the name, and the reread runs after that answer:
 
 ```console
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_NEW_TOKEN/reread"
+$ reread() { curl -s -X POST -H "Proof: $(agent-secrets sign --method POST --url "$AGENT_SECRETS_URL/v1/secrets/$1/reread")" "$AGENT_SECRETS_URL/v1/secrets/$1/reread"; }
+$ reread DEMO_NEW_TOKEN
 {"name":"DEMO_NEW_TOKEN","served":true}
+$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_NEW_TOKEN/reread"
+{"accepted":true,"reason":"the reread was taken; this broker says what it serves only to a signed session, so upgrade agent-secrets to the broker's release (the write stands)"}
 ```
 
 The registered session gets it at once:
@@ -326,9 +332,9 @@ has no `app_id` is added, and then read twice:
 
 ```console
 $ jq '.secrets += [(.secrets[] | select(.name=="example/agent-secrets/demo-github-app") | .name="example/agent-secrets/demo-broken-app" | .value=(.value|fromjson|del(.app_id)|tojson))]' "$DEV_BROKER_DIR/fake-secrets.json" >"$DEV_BROKER_DIR/fake-secrets.json.new" && mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_BROKEN_APP/reread"
+$ reread DEMO_BROKEN_APP
 {"name":"DEMO_BROKEN_APP","served":false,"reason":"value-malformed"}
-$ curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/DEMO_BROKEN_APP/reread"
+$ reread DEMO_BROKEN_APP
 {"name":"DEMO_BROKEN_APP","served":false,"reason":"value-malformed"}
 ```
 
@@ -355,12 +361,16 @@ name its deployment registered for it and no other. The registration is a route 
 `BROKER_SERVICE_LOGINS` lets it log in as, here `legion-daemon`
 (`$DEV_BROKER_DIR/registrar-token`); its body carries that pod's own token for the broker's
 audience (`$DEV_BROKER_DIR/pod-token`, the token a daemon enrolls the pod with) and the name the
-pod may write under. The script makes that call before it prints `ready.`, which is the
-`registered the exchange pod to write under example-worker-session` line above. Making it again
-extends the registration, which lasts 24 hours from each write, and the same call with another
-name is how you add one. The body carries a token too, so it goes on standard input
-(`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash process
-substitution), which keeps both tokens out of every command line:
+pod may write under. The login alone registers nothing: the script sets
+`BROKER_POD_REGISTRARS=system:serviceaccount:example-ns:example-daemon=system:serviceaccount:example-ns:example-worker`,
+which pairs the registrar's account with the pod's, and the route refuses a registrar that no
+entry pairs with the pod's account `403 POD_REGISTRAR_NOT_LISTED`, naming both accounts
+([Operate](/legion/broker/operate/#what-to-run)). The script makes the registration call before it
+prints `ready.`, which is the `registered the exchange pod to write under example-worker-session`
+line above. Making it again extends the registration, which lasts 24 hours from each write, and
+the same call with another name is how you add one. The body carries a token too, so it goes on
+standard input (`--data @-`), and the header from a file curl reads (`-H @<(printf …)`, a bash
+process substitution), which keeps both tokens out of every command line:
 
 ```console
 $ printf '{"pod_token": "%s", "session": "example-worker-session"}' "$(cat "$DEV_BROKER_DIR/pod-token")" | curl -s -X POST -H @<(printf 'Authorization: Bearer %s' "$(cat "$DEV_BROKER_DIR/registrar-token")") -H 'Content-Type: application/json' --data @- "$AGENT_SECRETS_URL/v1/oauth/exchange/pod-sessions"
@@ -467,7 +477,7 @@ per line, so `jq` finds a line by any of its fields. Each refusal writes one lin
 `broker: answer refused`, but a `429` and the two answers of a device login's poll, which the
 broker counts and does not log. The line names the answer id, which the answer carries in its
 `X-Broker-Answer-Id` header and, in a JSON body, as `answer_id`. A reread of a name no secret can
-carry is one such refusal, and its route takes no credential:
+carry is one such refusal, to every caller, since its route needs no credential:
 
 ```console
 $ curl -si -X POST "$AGENT_SECRETS_URL/v1/secrets/bad%20name/reread"
@@ -495,7 +505,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP --github-owner acme-org --github-token -- sh -c 'printf "%s characters, starting %s\n" "${#DEMO_GITHUB_APP}" "${DEMO_GITHUB_APP%%_*}"'
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
-20 characters, starting ghs
+22 characters, starting ghs
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 6
 broker_policy_store_reads_total{read="list"} 6
@@ -520,22 +530,24 @@ and its token request two: the first answered `503`, `outcome="upstream"`, and t
 attempt minted. `broker_unservable_secrets` holds the one secret the broker refuses now. It drops
 that secret at the first scrape after a reread or a load reads a new version of its value, unless
 the decoder refuses that value too. After an edit of the fake secrets file, that is the next
-reread of the name (`curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`) or the
-five-minute reload.
+reread of the name (`reread <NAME>`, or a `curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`
+with no proof, which the broker rereads after its answer) or the five-minute reload.
 
 ## Reach a secret behind the airlock
 
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
-airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and records every
+airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
 request each one is sent; a rules file (`BROKER_AIRLOCK_RULES_FILE`) and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
 port of its own, behind one TCP front over both API ports and one over both proxy ports; one
-enrolled pod session, whose key directory the exports name; and the model judge on both brokers
-([let the judge decide a request](#let-the-judge-decide-a-request)). Run it in place of
-`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
-no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and
-up), so the machine must let this user bind 443, and one such stack runs at a time.
+enrolled pod session, whose key directory the exports name and whose lease an
+`agent-secrets renew` keeps alive for as long as the stack runs, as a Legion worker pod's is; and
+the model judge on both brokers ([let the judge decide a request](#let-the-judge-decide-a-request)).
+Run it in place of `dev-broker.sh`, from `packages/envoy`, and set the same
+`DEV_BROKER_POSTGRES_URL` where you have no Docker. Each bound host listens on port 443 of a
+loopback address of its own (127.0.0.2 and up), so the machine must let this user bind 443, and
+one such stack runs at a time.
 
 This run used the same Postgres server as the first section. The lines `dev-broker.sh` prints are
 the ones that section shows, and are cut here:
@@ -639,40 +651,45 @@ this script started, drops its database and prints the workdir it kept.
 ## Let the judge decide a request
 
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
-processes. Three more stand-ins of `cmd/dev-airlock-stands` serve it: a model endpoint, a
-Dispatch holding one open issue and one done one, and a Compute Engine metadata server, where
-the broker mints the identity token it presents to the model. Three human-tier secrets tell the
-judge's class from everything outside it:
+processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
+Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
+server, where the broker mints the identity token it presents to the model. Its rules file says
+who decides each human-tier secret:
 
-| Secret | Its rules entry and owner | A request for it |
+| Secret | Its rules entry and tags | Who decides a request for it |
 | --- | --- | --- |
-| `AIRLOCK_JUDGED_TOKEN` | `judge: 900`, owned by `ada@example.com` | The judge decides it. |
-| `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge decides it, in the place of anyone who signs in. |
-| `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | It waits for her, as every human-tier request does without a judge. |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
+| `AIRLOCK_HOSTLESS_TOKEN` | `judge: 900` with `guidance` and no `hosts`, owned by `ada@example.com` | The judge; the value is released to the command, since the entry binds no host. |
+| `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
+| `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
+| `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
 
-Ask for one with a lifetime inside that entry's seconds and a reason naming the Dispatch stand's
-open issue. The exports name the secret and the issue:
+`agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
+judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it
+with a reason that meets that guidance:
 
 ```sh
 agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
-  --reason "read the example service for $AIRLOCK_DISPATCH_OPEN_ISSUE" --wait 60s
+  --reason "the stack check run k10 reaches s.airlock.test for $AIRLOCK_DISPATCH_OPEN_ISSUE" --wait 60s
 ```
 
-`agent-secrets status <request id>` then names the judge as the decider,
+While the judge decides, the request carries `judge_deciding` and no page, and it is on nobody's
+list. `agent-secrets status <request id>` then names the judge as the decider,
 `decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
 `broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
 the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
 ([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
 recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
-`$AIRLOCK_DISPATCH_RECORDS`, which holds two GETs for each run that reached the check, and no
-write at all.
+`$AIRLOCK_DISPATCH_RECORDS`: the issue the reason names and the ask it cites, read and never
+written.
 
-The model stand approves until something tells it otherwise. A `POST` to
+The model stand grants until something tells it otherwise. A `POST` to
 `$AIRLOCK_MODEL_ANSWER_URL` sets what it answers from then on:
-`{"verdict": "refer", "reason": "…"}` for the other verdict, `{"text": "…"}` for a reply that is
-no such object, and `{"delay": "30s"}` for an answer that never arrives inside the judge's 20
-seconds. Each of those leaves the request pending for `ada@example.com`, which is what the judge
-does with everything it does not approve.
+`{"verdict": "deny", "reason": "…"}` for the other verdict, which refuses the request for good,
+`{"text": "…"}` for a reply that is no such object, and `{"delay": "30s"}` for an answer that
+never arrives inside the judge's 20 seconds, alone or beside either of the others. A reply that is
+no verdict, and one that never arrives, hand the request to `ada@example.com` once, as an ordinary
+card.
 
 Starting the stack with `--judge-skip-checks` sets `BROKER_JUDGE_TEST_SKIP_CHECKS`: the judge
 still makes every check and records each, and none of them holds a request back, so the model is
@@ -707,20 +724,24 @@ Manager and KMS. The broker reads that file again on every call it makes to it, 
 how you write a secret here.
 
 The airlock's proxy, its rules, its decision and its swap are the real ones too, and so is each
-broker process the airlock stack runs. Five more things stand in there. `cmd/dev-airlock-stands`
+broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`
 plays every host the rules bind: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its six checks, its one model call and
+address, as it does in production. The judge's own run — its five checks, its one model call and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
-answers whatever was last set for it, a Dispatch holding one open issue and one done one, and a
+answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
+answered ask on the open one, and a
 metadata server that mints the broker's identity token. The rules file the script writes stands
 in for the deployment's own, which lives in the deployment's repository. The proxy's certificate
 authority is made at each start, where a deployment keeps it in a Kubernetes Secret both broker
 pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
 call reaches either process. And the pod session the script enrols stands in for the Legion
 daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
+The two brokers start as processes outside any cluster even when the script runs in a pod: it
+empties `KUBERNETES_SERVICE_HOST` for them, so neither needs `BROKER_AIRLOCK_CLUSTER_RANGES`,
+which a deployed broker in a cluster refuses to start without.

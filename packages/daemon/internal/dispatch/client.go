@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/tlsalert"
 )
 
 const requestTimeout = 10 * time.Second
@@ -64,6 +66,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Parent:       issue.Parent,
 			Rank:         issue.Rank,
 			HandedOver:   CarriesLegionLabel(issue.Labels),
+			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
 			BlockedBy:    issue.BlockedBy,
@@ -166,9 +169,9 @@ func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
 // /api/v1/projects/{key}/gated-steps, as the daemon's own session, the actor every write of this
 // client carries. The list is always sent, empty for a deployment that gates nothing: Dispatch
 // refuses a body that names no list rather than read it as the empty one, so a nil slice would
-// be refused where it means the same thing. A Dispatch older than the route answers 404, which
-// the caller retries: the route arrives with the next server release, and nothing is lost by
-// waiting for it.
+// be refused where it means the same thing. A Dispatch older than the route answers its router's
+// 404 (NoRoute), which the outbox's row waits on: the route arrives with the next server release,
+// and nothing is lost by waiting for it.
 func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []string) error {
 	if steps == nil {
 		steps = []string{}
@@ -186,8 +189,8 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 // document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
 // nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
 // for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
-// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
-// retries until the server release that has it.
+// older than the route answers its router's 404 (NoRoute), which the outbox's row waits on until the
+// server release that has it.
 func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
 	if gates == nil {
 		gates = []DesignGateDocument{}
@@ -204,8 +207,8 @@ func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []Des
 // The list is always sent, empty for an issue where no session holds a role: Dispatch refuses a
 // body that names no list, and the empty list is the publication that removes every holder.
 // Dispatch answers 400 INVALID_ROLE_HOLDER for a set it will not take and 404 ISSUE_NOT_FOUND for
-// an issue it does not know; a Dispatch older than the route answers its router's 404 under the
-// code NOT_FOUND, which the caller retries until the server release that has it.
+// an issue it does not know; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
 func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []RoleHolder) error {
 	if holders == nil {
 		holders = []RoleHolder{}
@@ -213,6 +216,51 @@ func (c *HTTPClient) PutRoleHolders(ctx context.Context, key string, holders []R
 	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/role-holders", roleHoldersWrite{
 		Holders: holders,
 		Actor:   daemonActor(key),
+	}, nil)
+}
+
+// PutStep writes one start or one end of a step onto Dispatch's record id of the issue key,
+// through PUT /api/v1/issues/{key}/steps/{id}, as the daemon's own session, the one session the
+// route takes a record of the issue from. The write appends no event and notifies nobody. Dispatch
+// answers 400 STEP_INPUT for a value it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 STEP_OTHER_ISSUE for an id that is a
+// record of another issue; a Dispatch older than the route answers its router's 404 (NoRoute),
+// which the outbox's row waits on until the server release that has it.
+func (c *HTTPClient) PutStep(ctx context.Context, key, id string, write StepWrite) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id), stepWrite{
+		StepWrite: write,
+		Actor:     daemonActor(key),
+	}, nil)
+}
+
+// PutStepRating writes the rating a retro gave the plan onto the retro's record id of the issue
+// key, through the record's rating route, PUT /api/v1/issues/{key}/steps/{id}/rating, as the
+// daemon's own session. The body is the step write's, with the identity of the retro's run, which
+// makes the record where its start and end have not landed yet, and the rating and its reason. The
+// rating has a route of its own because the step route ignores a member it does not declare, so a
+// rating sent there would be answered 200 and lost. Dispatch answers the step route's refusals,
+// and 400 STEP_INPUT for a rating off its rule or on a record that is no retro; a Dispatch older
+// than the route answers its router's 404 (NoRoute), which the outbox's row waits on.
+func (c *HTTPClient) PutStepRating(ctx context.Context, key, id string, write StepWrite, rating PlanRating) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/steps/"+url.PathEscape(id)+"/rating", stepRatingWrite{
+		StepWrite:  write,
+		PlanRating: rating,
+		Actor:      daemonActor(key),
+	}, nil)
+}
+
+// PutPlan writes the plan one run of the issue key carries out onto Dispatch's plan id of that
+// issue, through PUT /api/v1/issues/{key}/plans/{id}, as the daemon's own session, the one session
+// the route takes a plan of the issue from. The write appends no event and notifies nobody, and
+// Dispatch sets each field once, so a plan sent again changes nothing. Dispatch answers 400
+// PLAN_INPUT for a plan it will not take, 403 STEP_WRITER for any other writer, 404
+// ISSUE_NOT_FOUND for an issue it does not know and 409 PLAN_OTHER_ISSUE for an id that is a plan
+// of another issue; a Dispatch older than the route answers its router's 404 (NoRoute), which the
+// outbox's row waits on until the server release that has it.
+func (c *HTTPClient) PutPlan(ctx context.Context, key, id string, plan PlanWrite) error {
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/plans/"+url.PathEscape(id), planWrite{
+		PlanWrite: plan,
+		Actor:     daemonActor(key),
 	}, nil)
 }
 
@@ -260,7 +308,9 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 // /api/v1/issues/{key}/artifacts, as the daemon's own session, and returns the slug Dispatch filed
 // it under, which a link to it names (dispatch://<key>/artifact/<slug>). The body holds only
 // fields Dispatch's JSON upload reads (its jsonArtifactUpload), since its decoder refuses any
-// other. A name the issue already holds is that document's next version.
+// other. It names no token, so it is a first upload: Dispatch refuses a name the issue already
+// holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the issue lists no
+// document under (messageArtifact).
 func (c *HTTPClient) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
 	var response struct {
 		Artifact struct {
@@ -496,22 +546,35 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	return nil
 }
 
-// transportFailure wraps err as a TransientError unless it is a misconfiguration no wait fixes,
-// never an outage: a certificate Go's client refuses to trust (a wrong or missing CA, a hostname
-// mismatch, an expired or otherwise invalid certificate — crypto/tls wraps every one of these as
-// *tls.CertificateVerificationError, never a bare x509 error, since httpClient sets no
-// VerifyPeerCertificate or VerifyConnection of its own), or an https:// dispatch_url pointed at a
-// plain-HTTP port (http.ErrSchemeMismatch) — dispatchBase's scheme check (internal/config)
-// catches a typo in the scheme itself before boot, but not a correct https:// whose port serves
-// plain HTTP. Left wrapped, either would satisfy Unreachable exactly like a dial refused or reset
-// would, and a boot gate would retry a certificate or scheme problem forever instead of refusing
-// loud.
-func transportFailure(err error) error {
+// TransportRefusal reports whether err, anywhere in its chain, is a failure of Dispatch's transport
+// that no wait fixes, never an outage: a certificate Go's client refuses to trust (a wrong or
+// missing CA, a hostname mismatch, an expired or otherwise invalid certificate — crypto/tls wraps
+// every one of these as *tls.CertificateVerificationError, never a bare x509 error, since
+// httpClient sets no VerifyPeerCertificate or VerifyConnection of its own), a TLS alert, on the
+// handshake or on a later record (tlsalert.In: a front door that demands a client certificate, say,
+// or speaks no TLS version the client does; crypto/tls returns it as a *net.OpError), an https://
+// dispatch_url pointed at a plain-HTTP port (http.ErrSchemeMismatch), or a TLS record the client
+// cannot take (tls.RecordHeaderError, on the handshake or on a later record), most often from a
+// port that answers in neither TLS nor HTTP/1.x, such as an SSH server or a server that answers
+// the client hello as an HTTP/0.9 request (net/http turns the record error into
+// http.ErrSchemeMismatch only when the answer starts with "HTTP/", net/http/client.go).
+// dispatchBase's scheme check (internal/config) catches a typo in the scheme itself before boot,
+// but not a correct https:// whose port does not serve TLS. transportFailure keeps each of these
+// out of TransientError, Unreachable reads it first so it wins over an outage it is joined with,
+// and the boot's catch-up of the roots that run or wait on a person (internal/daemon's
+// catchUpWithRetries) stops the start on one rather than skip the root.
+func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
-	if errors.As(err, &certErr) {
-		return err
-	}
-	if errors.Is(err, http.ErrSchemeMismatch) {
+	var record tls.RecordHeaderError
+	return errors.As(err, &certErr) || errors.As(err, &record) || tlsalert.In(err) ||
+		errors.Is(err, http.ErrSchemeMismatch)
+}
+
+// transportFailure wraps err as a TransientError unless it is a refusal of the transport no wait
+// fixes (TransportRefusal): TransientError says Dispatch gave no answer a later attempt may get,
+// which no refusal of the transport is.
+func transportFailure(err error) error {
+	if TransportRefusal(err) {
 		return err
 	}
 	return &TransientError{Err: err}
@@ -714,4 +777,24 @@ type designGatesWrite struct {
 type roleHoldersWrite struct {
 	Holders []RoleHolder `json:"holders"`
 	Actor   actor        `json:"actor"`
+}
+
+// stepWrite is the body of a step record's write: the record's fields and the daemon's actor.
+type stepWrite struct {
+	StepWrite
+	Actor actor `json:"actor"`
+}
+
+// stepRatingWrite is the body of a rating's write: the record's fields, the rating and its reason,
+// and the daemon's actor.
+type stepRatingWrite struct {
+	StepWrite
+	PlanRating
+	Actor actor `json:"actor"`
+}
+
+// planWrite is the body of a plan's write: the plan's fields and the daemon's actor.
+type planWrite struct {
+	PlanWrite
+	Actor actor `json:"actor"`
 }

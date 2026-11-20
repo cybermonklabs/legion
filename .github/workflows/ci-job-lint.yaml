@@ -1,15 +1,16 @@
 name: CI job lint
 
-# The steps of ci.yaml's `lint` job, in a file of its own.
+# The steps of ci.yaml's `lint` job, in a file of its own, and the private-name check of the
+# repository in a job beside it (private-names, below).
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
-# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
-# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# Each job's last step reports ci-ok for the caller: on a merge-group run its own result decides,
+# it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+# `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
@@ -31,6 +32,13 @@ on:
           that filter matched.
         type: string
         required: true
+    secrets:
+      PRIVATE_NAME_TERMS:
+        description: >-
+          The deployment's own private names, one a line, which the private-names job below
+          checks for (.github/scripts/check-private-names.sh's fifth rule, whose header says what
+          an unset list does on each event).
+        required: false
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -43,7 +51,7 @@ env:
 
 jobs:
   lint:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,9 +91,6 @@ jobs:
 
       - name: Check every remote action is pinned to a commit SHA
         run: .github/scripts/check-action-pins.sh
-
-      - name: Check no file names the private deployment repository, company, internal host, or tailnet host
-        run: .github/scripts/check-private-names.sh
 
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
@@ -156,9 +161,10 @@ jobs:
             exit 1
           fi
 
-      # A package's `bun run lint` checks only the paths its recipe names. This is the command
-      # AGENTS.md documents, over the whole tree, so a fixture, config or test file that Biome
-      # would rewrite fails here instead of on the next person who runs it.
+      # A package's `bun run lint` checks only the paths its recipe names. This is the command the
+      # root README.md's "Development" section documents, over the whole tree, so a fixture,
+      # config or test file that Biome would rewrite fails here instead of on the next person who
+      # runs it.
       - name: Check the whole tree with Biome
         run: bunx biome check .
 
@@ -185,6 +191,22 @@ jobs:
       # 2.2 GB entry per key change; keyed on the Go version, a go.sum change only downloads the
       # changed modules and rebuilds the changed packages, since Go's build cache is
       # content-addressed. Restored only when the notices step runs; ci-caches.yaml fills it.
+      #
+      # The runner's architecture comes before the OS in this family's key, where the other Go
+      # families put it after: the entry holds go-licenses, a program of the runner that built it,
+      # which the notices step runs. A run of a workflow file older than the architecture in the
+      # key (a pull request into a branch cut before it, a dispatch on such a branch, or a re-run of
+      # a run made before it) restores on ubuntu-24.04 by the prefix go-notices-Linux-, and an entry
+      # keyed go-notices-Linux-ARM64-go<version> starts with that prefix: such a run restored main's
+      # arm64 go-licenses on x86_64 and failed on it with "Exec format error" (run 44437023306). No
+      # key of this shape starts with go-notices-Linux-, so no older prefix matches an entry of this
+      # shape, and a run of this shape names its own runner's architecture first, so it matches only
+      # an entry of that architecture. An entry saved under the old shape still matches the older
+      # prefixes, and no one deletes it by hand: GitHub removes an entry after 7 days with no read,
+      # or earlier, oldest read first, once the repository's caches reach their size limit, and
+      # each such run's restore is a read. So an x86_64 run of an older workflow file on the entry's
+      # Go and go-licenses versions restores it and fails, and only a run of a commit that carries
+      # this key stops reading it.
       - if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -192,8 +214,8 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
             ~/.cache/legion
-          key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-notices-{0}-', runner.os) }}
+          key: go-notices-${{ runner.arch }}-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-notices-{0}-{1}-', runner.arch, runner.os) }}
 
       # Every Go archive a release ships carries THIRD_PARTY_NOTICES, written at build time with
       # the build's own GOOS, GOARCH and CGO_ENABLED (release.yaml's legion_build job and
@@ -209,11 +231,38 @@ jobs:
       # notices script changed), and whenever `changes` did not succeed.
       #
       # The loops are in .github/scripts/go-release-notices.sh, which
-      # .github/workflows/ci-caches.yaml's daemon job runs too, to fill the go-notices entry this
+      # .github/workflows/ci-caches.yaml's notices job runs too, to fill the go-notices entry this
       # step restores: one script, so the fill cannot warm anything but what this step builds.
       - name: Check every Go release archive's third-party notices can be written and the cross-built commands compile
         if: inputs.changes-result != 'success' || inputs.go_notices == 'true'
         run: .github/scripts/go-release-notices.sh "$RUNNER_TEMP/notices"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: lint
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  # The repository's private-name check, in a job of its own: it reads the deployment's term list
+  # (PRIVATE_NAME_TERMS), and no job that runs dependency code holds that list, as the lint job
+  # above does (bun install, Biome, go). This one checks the repository out and runs that shell
+  # script alone.
+  private-names:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # By the checkout's own path, the form every job that holds the list runs the check by.
+      - name: Check no file names the private deployment repository, company, internal host, tailnet host, or a term of the deployment's own list
+        env:
+          PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/check-private-names.sh"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

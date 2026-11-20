@@ -138,7 +138,14 @@ func (r *SessionRegistry) StartSessionReaper(ctx context.Context, interval time.
 // threshold takes it, as every session consumer did before, and the records behind this one are
 // reaped whatever became of it.
 func (r *SessionRegistry) ReapSessions(ctx context.Context, reaper SessionReaper) int {
-	if err := r.applyMaxAge(); err != nil {
+	// The age is settled under one request's budget, as it was before bus.SetKeyValueMaxAge sent
+	// an unanswered read again: that resending is for the start, which fails if the age cannot be
+	// set, and a pass that waited out the start's hang guard instead would hold its deletes back
+	// for 36 s of a one-minute tick over a question the next tick asks again.
+	ageCtx, cancelAge := context.WithTimeout(ctx, bus.RequestTimeout)
+	err := r.applyMaxAge(ageCtx)
+	cancelAge()
+	if err != nil {
 		r.logger().Warn("session reaper could not settle the session bucket's maximum age", slog.String("error", err.Error()))
 	}
 	now := r.now()

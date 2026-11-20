@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -550,7 +549,7 @@ func TestAFirstIndexingMarksNothingOutOfDate(t *testing.T) {
 		}
 	}
 	if linked == 0 {
-		t.Fatalf("the backfill left no link to judge: %s", mustJSON(t, view))
+		t.Fatalf("the backfill left no link to judge: %s", asJSON(t, view))
 	}
 }
 
@@ -601,12 +600,4 @@ func waitForOpenQuestions(t *testing.T, handler http.Handler, key string, want i
 	}
 	t.Fatalf("open_questions = %v, want %d of them", questions, want)
 	return view, questions
-}
-func mustJSON(t *testing.T, value any) string {
-	t.Helper()
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	return string(encoded)
 }
