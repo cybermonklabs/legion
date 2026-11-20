@@ -60,10 +60,9 @@
 #      root is removed once its rows are read.
 #  11. R10's verdicts, each beside one summary RESULT line for its command and budget.
 #
-# On this head the image's jj is still 0.45.1, since the release that carries the chunked mapping
-# does not exist yet, so R10's released rows run 0.45.1 where the release will be. They take the
-# released jj from the image itself, the binary behind its wrapper, so the same probe measures the
-# release once the image installs it, with no input of its own.
+# R10's released rows take the released jj from the image itself, the binary behind its wrapper,
+# which is the release that carries the chunked mapping (`ARG JJ_TOOL` of worker.Dockerfile), so the
+# probe measures whatever release the image installs, with no input of its own.
 #
 # Every measured command runs under pack-memory-peak.py beside this file, which prints one
 # `RESULT {json}` line for it: label, argv, exit, wall seconds, GNU time's maximum resident set,

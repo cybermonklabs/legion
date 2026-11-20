@@ -359,7 +359,7 @@ type guardedWorkspace struct {
 // maybe_migrate_legacy_config; automatic until jj 0.49). Those are a workspace's
 // `.jj/workspace-config.toml` beside `.jj/workspace-config-id`, and its repository's
 // `config.toml` beside `config-id`. Removing the legacy file leaves jj to open an empty
-// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.45; the tmux
+// configuration of its own, never one a tree agent wrote. The worker image's jj is 0.46; the tmux
 // daemon refuses a host jj older than 0.38 (internal/daemon's resolveTools).
 //
 // A workspace with no `.jj` is refused when requireJJ and clone are set: it was provisioned with
