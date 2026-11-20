@@ -693,10 +693,10 @@ type FailureBudget struct {
 // the round was opened for, as the ask states it. Waiting is every claim of the issue with a
 // session that has not failed (the daemon's noticeClaims), each with its state and marked with
 // whether it answered. A claim the daemon suspended is listed too, although the round neither
-// asks it nor waits for it, unless a project's pause stopped it and still keeps its pod. So the
-// controller can ask the operator to act on a suspended claim rather than read the whole claims
-// list to find out who is in the round; what each entry says is UpdateWaiting's. The notice's
-// issue is the outbox row's own.
+// asks it nor waits for it, unless a project's pause stopped it and still owes that role a launch
+// (internal/daemon's podHolds.owes). So the controller can ask the operator to act on a suspended
+// claim rather than read the whole claims list to find out who is in the round; what each entry
+// says is UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
@@ -714,8 +714,9 @@ type UpdateStalled struct {
 // UpdateWaiting is one claim the notice lists (UpdateStalled.Waiting): its token, the role it
 // holds, the state it is in (supervise.ClaimState — an operator-suspended claim waits for the
 // operator, and the round waits for no other suspended claim but one a project's pause stopped
-// while the pause keeps its pod; a pod round lists no `failed` claim, whose machine records no
-// round), and Answered for a claim that has already answered this round.
+// while the pause still owes that role a launch, internal/daemon's podHolds.owes; a pod round
+// lists no `failed` claim, whose machine records no round), and Answered for a claim that has
+// already answered this round.
 //
 // The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
 // asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound

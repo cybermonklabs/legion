@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,9 +50,9 @@ type roundShape struct {
 // (store.PausePodHold.Owed), and the daemon reads it for the claim's own role (podHolds.owes). So
 // the claim is in both sets under a hold that stands, and under a hold that ended at the resume,
 // wherever the hold owes its role a launch. A hold that owes its role nothing keeps it in neither
-// set, whatever the latest let-out of the pause: the role became ready since the pause stopped it,
-// or the pause held no launch of it. The pause keeps no other source in the round: a claim the
-// daemon's own rule suspended is in neither set under a hold that stands too.
+// set. No clock decides it: a let-out before the round opened changes nothing. The pause keeps no
+// other source in the round: a claim the daemon's own rule suspended is in neither set under a
+// hold that stands too.
 //
 // Each row is one shape of claim, with the membership the rule gives it, read at the round's
 // clock over the pause's holds the row names. The ask side is roundAsks: a claim the round asks,
@@ -92,12 +94,14 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		}
 		return podHolds{hold}
 	}
-	// resumedWithLetOut is a hold the resume ended a minute before the round opened, whose pause
-	// let out its last held launch of the pod at letOut.
-	resumedWithLetOut := func(letOut time.Time) func(*store.PausePodHold) {
-		return func(hold *store.PausePodHold) {
-			hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldResumed, letOut
-		}
+	// resumed is a hold the resume ended a minute before the round opened.
+	resumed := func(hold *store.PausePodHold) {
+		hold.EndedAt, hold.End = opened.Add(-time.Minute), store.PausePodHoldResumed
+	}
+	// letOutBeforeTheOpening is the latest let-out of a launch that the hold's pause held for a
+	// role of the pod, at the hold's end, which is before the round opened.
+	letOutBeforeTheOpening := func(hold *store.PausePodHold) {
+		hold.LetOut = hold.EndedAt
 	}
 	// owingTheClaim is a hold whose pause still owes the row's claim's role, the implementer, a
 	// launch (store.PausePodHold.Owed).
@@ -126,23 +130,16 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		// pause, whose clock is the moment of the stop.
 		{name: "suspended by released under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(owingTheClaim), want: inBoth},
-		{name: "suspended by released under a pause hold that ended with its let-out ahead", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(now.Add(10*time.Minute)), owingTheClaim), want: inBoth},
-		{name: "suspended by released under a pause hold that ended with its let-out passed", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(opened.Add(30 * time.Second))), want: inNeither},
-		// The resume set the held launch's stuck clock to its own moment, the hold's end, and the
-		// wake pacing has not reserved the launch yet: the stopped role still waits for its owed
-		// launch, so it is the pause's.
-		{name: "suspended by released under a pause hold whose held launch is not let out yet", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(opened.Add(-time.Minute)), owingTheClaim), want: inBoth},
-		// The role became ready since the pause stopped it, and its resume stays open, as a role
-		// the daemon suspends before its first turn leaves it: the store reads it as owed nothing
-		// (store.PausePodHold.Owed), so the latest let-out still ahead keeps nothing of the claim.
-		{name: "suspended by released under a pause hold whose owed role became ready", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(now.Add(10 * time.Minute))), want: inNeither},
-		// The pause held no launch of the pod: nothing of the pause is left to wait for.
-		{name: "suspended by released under a pause hold that ended with no launch held", claim: suspendedBy(supervise.SuspendedByReleased),
-			holds: pauseHold(resumedWithLetOut(time.Time{})), want: inNeither},
+		{name: "suspended by released under an ended pause hold that still owes its role a launch", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumed, owingTheClaim), want: inBoth},
+		// No clock decides whether the pause keeps the claim: a let-out before the round opened
+		// leaves the claim the pause's while the hold still owes its role a launch.
+		{name: "suspended by released under an ended pause hold that still owes its role a launch let out before the round opened",
+			claim: suspendedBy(supervise.SuspendedByReleased), holds: pauseHold(resumed, letOutBeforeTheOpening, owingTheClaim), want: inBoth},
+		// The store reads that the hold owes the role nothing (store.PausePodHold.Owed): the role
+		// became ready since the pause stopped it, or the pause held no launch of it.
+		{name: "suspended by released under an ended pause hold that owes its role nothing", claim: suspendedBy(supervise.SuspendedByReleased),
+			holds: pauseHold(resumed), want: inNeither},
 		{name: "suspended by released under a pause hold its pod's deletion ended", claim: suspendedBy(supervise.SuspendedByReleased),
 			holds: pauseHold(func(hold *store.PausePodHold) {
 				hold.EndedAt, hold.End, hold.LetOut = opened.Add(-time.Minute), store.PausePodHoldDeleted, opened.Add(-time.Minute)
@@ -235,6 +232,153 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 	for _, source := range supervise.SuspendSources() {
 		if !slices.ContainsFunc(rows, func(row roundShape) bool {
 			return row.claim.State == supervise.StateSuspended && row.claim.SuspendedBy == source
+		}) {
+			t.Errorf("no row holds a claim suspended by %s: add a row for the source", source)
+		}
+	}
+}
+
+// owedLaunchState is one claim state of the table of
+// TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule, with the answers that the rule
+// gives it written out.
+type owedLaunchState struct {
+	state supervise.ClaimState
+	// by is the source of a suspension, "" for a claim that is not suspended.
+	by supervise.SuspendSource
+	// bare and located are whether the round keeps the pod for the claim that has not answered,
+	// with no locator and with a locator in the round's pod.
+	bare, located bool
+	// sets is whether the claim with a session that has not answered is in both of the round's
+	// sets. Otherwise it is in neither. answeredAsked is whether the ask set holds the claim with a
+	// session once it answered. An answered claim is in no wait.
+	sets, answeredAsked bool
+}
+
+// dispatch://INFRA-4109 review round 5: one rule says whether a project's pause keeps the pod of a
+// round for a claim (podHolds.owes), and each reader takes it from that rule. The readers are what
+// holds the pod of a round with no process in it, read over every claim of the issue
+// (roundPodEnds), the same reading at a launch into the pod with the claim as the launching claim
+// (launchRoundPodEnds, roundPodEndsAtLaunch), and the round's two sets (roundAsks, waitingClaims,
+// through roundClock.passesOver). Review rounds 3, 4 and 5 each found a claim state that the keep
+// left out, so this table names every state.
+//
+// Each row is one state of supervise.States(), and a suspended claim has one row for each source
+// of supervise.SuspendSources(). The pause's hold of the pod ended at the resume, before the round
+// opened, and it still owes the claim's role, the implementer, a launch. The claim is a member of
+// the round that no ask reached. The other member is a tester that answered and that the daemon
+// then suspended, so no process runs in the pod. Each row is read with and without a locator in
+// the round's pod, with and without a session, and with and without an answer of the round. The
+// row gives the answers for a claim that has not answered. A session changes no keep: a launch
+// that forgot its role's lost session records no session. A claim with no session is in neither
+// set. An answered claim keeps nothing and is in no wait.
+//
+// The keep is read from the reason that each reading answers (a project's pause owes the
+// implementer a launch), because an operator's suspension holds the pod for a reason of its own.
+//
+// The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
+// added to supervise without a row here fails it.
+func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) {
+	const round = podUpdateRound
+	opened := podUpdateStart
+	// now is the round read a minute after it opened, long before its bound.
+	now := opened.Add(time.Minute)
+	answeredAt := opened.Add(30 * time.Second)
+	token := mustClaimToken(t, podUpdateIssue, claim.RoleImplementer)
+	clock := roundClock{now: now, grace: podUpdateGrace, holds: podHolds{{
+		ID: 1, Pause: 1, Project: "LEGION", Issue: podUpdateIssue, HeldAt: opened.Add(-time.Hour),
+		EndedAt: opened.Add(-time.Minute), End: store.PausePodHoldResumed, Owed: []claim.Role{claim.RoleImplementer},
+	}}}
+	tester := supervise.Claim{Token: mustClaimToken(t, podUpdateIssue, claim.RoleTester), Project: podUpdateProject,
+		Tree: podUpdateIssue, Issue: podUpdateIssue, Role: claim.RoleTester, State: supervise.StateSuspended,
+		SuspendedBy: supervise.SuspendedByDaemon, Session: "ses-tester", UpdateRound: round, UpdateReasons: podUpdateDrift,
+		UpdateOpenedAt: &opened, UpdateTaskedAt: &opened, UpdateSignalledAt: &answeredAt}
+
+	rows := []owedLaunchState{
+		{state: supervise.StateQueued, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateLaunchUncertain, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateLaunching, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateShimConnected, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateRegistered, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateReady, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateWorking, bare: true, sets: true, answeredAsked: true},
+		{state: supervise.StateIdle, bare: true, sets: true, answeredAsked: true},
+		// The pause's own stop. Once the claim answered, the pause owes it nothing, and the round
+		// passes over it as R1 passes over a released claim.
+		{state: supervise.StateSuspended, by: supervise.SuspendedByReleased, bare: true, located: true, sets: true},
+		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
+		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
+		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
+		// An operator's suspension holds the pod for the operator, never for the pause.
+		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},
+		{state: supervise.StateFailed},
+		{state: supervise.StateRetired},
+	}
+
+	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch.
+	keepsForThePause := func(ends bool, why string) bool {
+		return !ends && strings.Contains(why, fmt.Sprintf("owes the %s a launch", claim.RoleImplementer))
+	}
+	isClaim := func(of supervise.Claim) bool { return of.Token == token }
+	for _, row := range rows {
+		for _, located := range []bool{false, true} {
+			for _, session := range []bool{true, false} {
+				for _, answered := range []bool{false, true} {
+					c := supervise.Claim{Token: token, Project: podUpdateProject, Tree: podUpdateIssue, Issue: podUpdateIssue,
+						Role: claim.RoleImplementer, State: row.state, SuspendedBy: row.by,
+						UpdateRound: round, UpdateReasons: podUpdateDrift, UpdateOpenedAt: &opened}
+					shape := []string{string(row.state), "no locator", "no session", "unanswered"}
+					if row.by != "" {
+						shape[0] += " by " + string(row.by)
+					}
+					if located {
+						c.Locator = podUpdateLocator(token, podUpdateIssue, podUpdatePod)
+						shape[1] = "a locator"
+					}
+					if session {
+						c.Session = "ses-implementer"
+						shape[2] = "a session"
+					}
+					if answered {
+						c.UpdateTaskedAt, c.UpdateSignalledAt = &opened, &answeredAt
+						shape[3] = "answered"
+					}
+					t.Run(strings.Join(shape, ", "), func(t *testing.T) {
+						group := []supervise.Claim{c, tester}
+						keep := row.bare
+						if located {
+							keep = row.located
+						}
+						keep = keep && !answered
+						if got := keepsForThePause(roundPodEnds(group, round, clock)); got != keep {
+							t.Errorf("the sweep's reading keeps the pod for the claim's owed launch: %t, want %t", got, keep)
+						}
+						if got := keepsForThePause(launchRoundPodEnds(group, c, round, clock)); got != keep {
+							t.Errorf("the reading at the claim's own launch keeps the pod for its owed launch: %t, want %t", got, keep)
+						}
+						wantAsks, wantWaits := session && row.sets, session && row.sets
+						if answered {
+							wantAsks, wantWaits = session && row.answeredAsked, false
+						}
+						if got := roundAsks(c, round, clock); got != wantAsks {
+							t.Errorf("the round asks the claim: %t, want %t", got, wantAsks)
+						}
+						if got := slices.ContainsFunc(waitingClaims(group, round, clock), isClaim); got != wantWaits {
+							t.Errorf("the round waits for the claim: %t, want %t", got, wantWaits)
+						}
+					})
+				}
+			}
+		}
+	}
+
+	for _, state := range supervise.States() {
+		if !slices.ContainsFunc(rows, func(row owedLaunchState) bool { return row.state == state }) {
+			t.Errorf("no row holds a claim in state %s: add a row for the state", state)
+		}
+	}
+	for _, source := range supervise.SuspendSources() {
+		if !slices.ContainsFunc(rows, func(row owedLaunchState) bool {
+			return row.state == supervise.StateSuspended && row.by == source
 		}) {
 			t.Errorf("no row holds a claim suspended by %s: add a row for the source", source)
 		}

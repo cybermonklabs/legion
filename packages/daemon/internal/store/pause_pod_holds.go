@@ -85,11 +85,10 @@ type PausePodHold struct {
 	// pod_ready_at). A role that became ready has run in the pod again since the pause stopped it,
 	// so the pause owes it nothing more, even where its resume stays open because the daemon
 	// suspended it, or it failed or retired, before its first turn. A role whose held launch failed
-	// before it became ready has not run since the pause stopped it, so its work is still the
-	// pause's, and it stays owed. A role has one open resume at most
-	// (pod_resumes_one_open_per_role), so it is named once, and the roles are in order. Every other
-	// read of a hold leaves Owed nil. The daemon reads it for the one exception of an update round
-	// (internal/daemon's podHolds.owes).
+	// before it became ready has not run since the pause stopped it, so it stays owed. A role has
+	// one open resume at most (pod_resumes_one_open_per_role), so it is named once, and the roles
+	// are in order. Every other read of a hold leaves Owed nil. The daemon reads it for the one
+	// exception of an update round (internal/daemon's podHolds.owes).
 	Owed []claim.Role
 }
 

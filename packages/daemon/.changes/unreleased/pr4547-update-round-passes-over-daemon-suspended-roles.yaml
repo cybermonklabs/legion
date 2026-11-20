@@ -14,10 +14,11 @@ body: |-
     lets through over a role that has not answered, or over a turn, makes no read. A round whose pod
     has no role process in it is replaced by issue where nothing holds the pod, and a launch into
     such a pod reads the round's bound when it runs and replaces the pod first, so the role starts
-    once; a pod is kept while a project's pause still owes a launch to a role it stopped there, read
-    for each role, and so is the pod of that role's own launch. The sweep decides the end of a round
-    once while the end reaches the roles' machines, and a pod the runtime cannot read is told to the
-    controller once past the round's bound.
+    once. A pod is kept while a project's pause still owes a launch to a role it stopped there and
+    that role has not answered the round, read for each role: the sweep and every launch into the
+    pod keep it, after a daemon restart too, and where the launch forgets the role's lost session.
+    The sweep decides the end of a round once while the end reaches the roles' machines, and a pod
+    the runtime cannot read is told to the controller once past the round's bound.
 time: 2026-11-20T03:45:16Z
 custom:
     Issue: pr4547

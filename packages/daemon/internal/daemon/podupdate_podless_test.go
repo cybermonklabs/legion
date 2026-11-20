@@ -477,7 +477,9 @@ func (r *podUpdateRig) heldStart(role claim.Role) {
 // writeLetOut writes letOut as the stuck clock of role's open resume, as the daemon writes the
 // let-out of each reservation the wake pacing makes (projectPause.wakeLetOut,
 // store.Store.SetResumeClock), the one that lets the launch out at once included. The rig wires
-// no such write (supervise.Deps.WakeLetOut), so a test that runs a paced launch makes it.
+// no such write (supervise.Deps.WakeLetOut). The round's bound is the one reader of a let-out
+// (roundClock.roundBound), so a test makes the write where that bound must move by it, or where
+// it shows that a let-out decides no keep of the pod (podHolds.owes reads none).
 func (r *podUpdateRig) writeLetOut(role claim.Role, letOut time.Time) {
 	r.t.Helper()
 	if moved, err := r.st.SetResumeClock(r.ctx, podUpdateProject, podUpdateIssue, role, letOut); err != nil || !moved {
@@ -512,20 +514,12 @@ func (r *podUpdateRig) runParkedLaunch(role claim.Role, parkedAt, letOut time.Ti
 }
 
 // parkPauseHeldLaunch runs the held start of role (heldStart), and the rig's wake pacing parks
-// the launch until letOut (pacedUntil, wantLaunchParked). It writes that let-out as the daemon
-// does (writeLetOut).
+// the launch until letOut (pacedUntil, wantLaunchParked). It writes no let-out. The daemon writes
+// the let-out on a goroutine of its own after the park (projectPause.wakeLetOut): a read can come
+// before that write lands, and a write that fails is only logged. So the stuck clock of the role's
+// resume stays the moment of the project's resume (recordPause), and the round's bound does not
+// move by the let-out until a test writes it (writeLetOut).
 func (r *podUpdateRig) parkPauseHeldLaunch(role claim.Role, letOut time.Time) {
-	r.t.Helper()
-	r.parkPauseHeldLaunchWithNoLetOut(role, letOut)
-	r.writeLetOut(role, letOut)
-}
-
-// parkPauseHeldLaunchWithNoLetOut parks the held launch of role until letOut, as
-// parkPauseHeldLaunch does, and writes no let-out. The daemon writes the let-out on a goroutine of
-// its own after the park (projectPause.wakeLetOut): a read can come before that write lands, and a
-// write that fails is only logged. So the stuck clock of the role's resume stays the moment of the
-// project's resume (recordPause).
-func (r *podUpdateRig) parkPauseHeldLaunchWithNoLetOut(role claim.Role, letOut time.Time) {
 	r.t.Helper()
 	r.heldStart(role)
 	r.wantLaunchParked(role, letOut)
@@ -1116,10 +1110,11 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 	// implementer, which a project's pause stopped and the round never asked, and the tester, which
 	// answered and which the daemon then suspended (pauseKeepsThePod). The pause's hold of the pod
 	// has ended, the implementer's held start has run, and the wake pacing parks its launch until
-	// its let-out (parkPauseHeldLaunch). An operator then resumes the tester, whose launch the
-	// pacing does not hold, so it goes into the pod before that let-out. The implementer is
-	// launching with no process, and its machine is in no decision. But the pause still owes the
-	// implementer a launch and keeps the pod for its work, so the tester's launch keeps the pod too.
+	// its let-out, which the daemon has not written yet (parkPauseHeldLaunch). An operator then
+	// resumes the tester, whose launch the pacing does not hold, so it goes into the pod before
+	// that let-out. The implementer is launching with no process, and its machine is in no
+	// decision. But the pause still owes the implementer a launch and keeps the pod for its work,
+	// so the tester's launch keeps the pod too, and the hook's reason names the implementer.
 	t.Run("the project's pause keeps the pod for a member it stopped", func(t *testing.T) {
 		const launching = claim.RoleTester
 		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
@@ -1127,6 +1122,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 			rig.intoRoundPod(launching)
 			rig.handle(launching, supervise.RequestResume{Claim: rig.tokens[launching]})
 			rig.launchedIntoRoundPod(launching)
+			rig.wantLaunchKeptForOwed(launching, pauseStoppedRole)
 			rig.registerInto(launching, podUpdatePod)
 			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
 		})
@@ -1148,11 +1144,7 @@ func TestALaunchUnderARoundWithNoProcessKeepsThePodForAMemberThatHoldsItsAsk(t *
 			rig.intoRoundPod(pauseStoppedRole)
 			rig.runParkedLaunch(pauseStoppedRole, podUpdateStart, pauseLetOut)
 			rig.launchedIntoRoundPod(pauseStoppedRole)
-			if reasons := rig.launchKeptBecause(pauseStoppedRole); len(reasons) != 1 ||
-				!strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", pauseStoppedRole)) {
-				t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch",
-					pauseStoppedRole, reasons, pauseStoppedRole)
-			}
+			rig.wantLaunchKeptForOwed(pauseStoppedRole, pauseStoppedRole)
 			rig.registerInto(pauseStoppedRole, podUpdatePod)
 			rig.wantPodKept(fmt.Sprintf("the %s's answer", pauseStoppedRole))
 		})

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -284,12 +286,12 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 }
 
 // dispatch://INFRA-4109 R1 and R2 with the project pause carried (task t11 of its plan): a role a
-// project's pause stopped is the pause's, not R1's, while the pause keeps its pod. The pause
-// stopped the tester, suspended released, held the pod, and held the tester's launch. Its resume
-// ended the hold a minute before the round opened, because the implementer was live
-// (recordPause). The tester's held start then ran, and the wake pacing parked its launch until ten
-// minutes past the round's own bound (parkPauseHeldLaunch): the tester is launching, and it
-// records no process.
+// project's pause stopped is the pause's, not R1's, while the pause still owes that role a launch
+// (podHolds.owes). The pause stopped the tester, suspended released, held the pod, and held the
+// tester's launch. Its resume ended the hold a minute before the round opened, because the
+// implementer was live (recordPause). The tester's held start then ran, and the wake pacing parked
+// its launch until ten minutes past the round's own bound (parkPauseHeldLaunch): the tester is
+// launching, and it records no process. The daemon writes that let-out (writeLetOut).
 //
 // The round asks the implementer, which answers, and the round waits for the tester while its
 // launch is parked. The pod is not replaced at the opening, or a minute past the bound the grace
@@ -311,6 +313,7 @@ func TestPodUpdateRoundWaitsForARoleThePauseStoppedUntilTheLetOutOfItsHeldLaunch
 	rig.drifts(podUpdateDrift)
 	rig.recordPause(store.PausePodHoldResumed, stopped)
 	rig.parkPauseHeldLaunch(stopped, letOut)
+	rig.writeLetOut(stopped, letOut)
 
 	rig.tick()
 	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
@@ -374,6 +377,15 @@ func (r *podUpdateRig) launchKeptBecause(role claim.Role) []string {
 		}
 	}
 	return reasons
+}
+
+// wantLaunchKeptForOwed holds the launch hook to one reason for keeping the round's pod for role's
+// launch (launchKeptBecause): a project's pause owes the owed role a launch (roundPodEnds).
+func (r *podUpdateRig) wantLaunchKeptForOwed(role, owed claim.Role) {
+	r.t.Helper()
+	if reasons := r.launchKeptBecause(role); len(reasons) != 1 || !strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", owed)) {
+		r.t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch", role, reasons, owed)
+	}
 }
 
 // dispatch://INFRA-4109 R1 with the project pause carried, as its architect set the rule in
@@ -443,9 +455,7 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 		rig.intoRoundPod(sibling)
 		rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
 		rig.launchedIntoRoundPod(sibling)
-		if reasons := rig.launchKeptBecause(sibling); len(reasons) != 1 || !strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", second)) {
-			t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch", sibling, reasons, second)
-		}
+		rig.wantLaunchKeptForOwed(sibling, second)
 		rig.registerInto(sibling, podUpdatePod)
 		rig.wantPodKept(waitsFor)
 	})
@@ -475,52 +485,114 @@ func TestPodUpdateRoundKeepsThePodForEachRoleThePauseStillOwesALaunch(t *testing
 	})
 }
 
-// dispatch://INFRA-4109 review round 4: whether a project's pause still keeps the pod for a role it
-// stopped is read from the claim's own state, never from the let-out of the role's launch
-// (podHolds.owes). The daemon writes that let-out on a goroutine of its own after the wake pacing
-// parks the launch (projectPause.wakeLetOut), and a write that fails is only logged. So a sweep or
-// a launch can read the parked launch while the stuck clock of its resume is still the moment of
-// the project's resume, which is before the round opened.
+// dispatch://INFRA-4109 review round 5: a daemon restart while the wake pacing parks the launch
+// that a project's pause held does not let the sweep replace the pod that the pause kept. The
+// members are those of pauseKeepsThePod: the implementer, which the pause stopped and the round
+// never asked, and the tester, which answered and which the daemon then suspended. The
+// implementer's held start runs, and the pacing parks its launch (parkPauseHeldLaunch), so the
+// store holds the claim launching with no process. The daemon stops, and the next daemon boots
+// over the same store. Its restore puts the claim back to launch_uncertain, as it does every
+// launch with no process recorded (supervisor.restore). Its orphan reconciliation fails, so it does
+// not launch the claim again (reconcileBootOrphans). The sweeps before the bound keep the pod. The
+// next reconciliation succeeds, and the daemon releases the launch to queued, the first of the two
+// steps of its relaunch (launchUnfinishedClaim). The sweeps still keep the pod. The second step,
+// the spawn, waits in the wake pacing until the let-out. At the let-out the launch comes up in the
+// round's pod with one launch, and the hook's reason names the launch that the pause owes.
 //
-// The members are those of pauseKeepsThePod: the implementer, which the pause stopped and the
-// round never asked, and the tester, which answered and which the daemon then suspended. The
-// implementer's held start runs, and the wake pacing parks its launch until ten minutes into the
-// round, but no let-out is written (parkPauseHeldLaunchWithNoLetOut). The implementer is then
-// launching with no process, its machine is in no decision, and the store still reads its role as
-// owed a launch. In the first case, the sweeps keep the pod at the opening and a minute before the
-// let-out, and ask for no replacement by issue. In the second case, an operator resumes the
-// tester, whose launch the pacing does not hold, and the tester's launch keeps the pod for the
-// implementer's work: the hook's reason names the implementer.
-//
-// Where the keep is read from a let-out still ahead of now (review round 3), the implementer's
-// stuck clock is behind now. The sweep then replaces the pod by issue, and the tester's launch
-// replaces the pod as the round's own replacement.
-func TestPodUpdateRoundKeepsThePodForAParkedLaunchWhoseLetOutIsNotWritten(t *testing.T) {
-	t.Run("the sweep keeps the pod", func(t *testing.T) {
-		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
-			rig.parkPauseHeldLaunchWithNoLetOut(pauseStoppedRole, pauseLetOut)
-			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
-			rig.clockAt(pauseLetOut.Add(-time.Minute))
-			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
-		})
-	})
+// Where the keep is read of a launching claim alone (review round 4), the claim restored
+// launch_uncertain is no launch the pause owes, and the first sweep after the restart replaces the
+// pod by issue.
+func TestAPodlessRoundKeepsThePodForAHeldLaunchThatARestartLeftUncertain(t *testing.T) {
+	const stopped = pauseStoppedRole
+	pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
+		rig.parkPauseHeldLaunch(stopped, pauseLetOut)
+		restartedAt := podUpdateStart.Add(time.Minute)
+		rig.clockAt(restartedAt)
+		next := rig.restart()
+		next.s.log = rig.log
+		next.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+		next.rt.FailReconcileOrphans(errors.New("the Sandbox list timed out"))
+		if next.s.reconcileBootOrphans(next.ctx) {
+			t.Fatal("the boot's orphan reconciliation passed, want it failed as the runtime failed it")
+		}
+		if c := next.claimOf(stopped); c.State != supervise.StateLaunchUncertain || c.Locator != nil {
+			t.Fatalf("the %s after the restart is %s recording %+v, want launch_uncertain with no process", stopped, c.State, c.Locator)
+		}
+		next.wantPodKept(fmt.Sprintf("the launch of the %s that the restart left uncertain", stopped))
 
-	t.Run("a sibling's launch keeps the pod", func(t *testing.T) {
-		const sibling = claim.RoleTester
-		pauseKeepsThePod(t, func(t *testing.T, rig *podUpdateRig) {
-			rig.parkPauseHeldLaunchWithNoLetOut(pauseStoppedRole, pauseLetOut)
-			rig.intoRoundPod(sibling)
-			rig.handle(sibling, supervise.RequestResume{Claim: rig.tokens[sibling]})
-			rig.launchedIntoRoundPod(sibling)
-			if reasons := rig.launchKeptBecause(sibling); len(reasons) != 1 ||
-				!strings.Contains(reasons[0], fmt.Sprintf("owes the %s a launch", pauseStoppedRole)) {
-				t.Fatalf("the launch of the %s kept the pod because %q, want once because the pause owes the %s a launch",
-					sibling, reasons, pauseStoppedRole)
-			}
-			rig.registerInto(sibling, podUpdatePod)
-			rig.wantPodKept(heldLaunchLetOut(pauseStoppedRole))
-		})
+		next.rt.FailReconcileOrphans(nil)
+		if !next.s.reconcileBootOrphans(next.ctx) {
+			t.Fatal("the next orphan reconciliation failed, want it passed")
+		}
+		m, _ := next.sup.Machine(next.tokens[stopped])
+		if released, err := m.ReleaseUncertainLaunch(next.ctx); err != nil || !released {
+			t.Fatalf("release the %s's uncertain launch = %t, %v; want it released to queued", stopped, released, err)
+		}
+		if c := next.claimOf(stopped); c.State != supervise.StateQueued || c.Locator != nil {
+			t.Fatalf("the %s after its release is %s recording %+v, want queued with no process", stopped, c.State, c.Locator)
+		}
+		next.wantPodKept(fmt.Sprintf("the launch of the %s that the restart released", stopped))
+
+		next.intoRoundPod(stopped)
+		next.handle(stopped, supervise.RequestSpawn{Claim: next.tokens[stopped]})
+		next.wantLaunchParked(stopped, pauseLetOut)
+		next.runParkedLaunch(stopped, restartedAt, pauseLetOut)
+		next.launchedIntoRoundPod(stopped)
+		next.wantLaunchKeptForOwed(stopped, stopped)
 	})
+}
+
+// dispatch://INFRA-4109 review round 5: the launch that a project's pause still owes keeps the pod
+// that the pause kept where the launch forgets the role's session. The members are those of
+// pauseKeepsThePod, with the wake pacing off: the implementer, which the pause stopped and the
+// round never asked, and the tester, which answered and which the daemon then suspended. The
+// implementer's held start runs. No session store holds its recorded session any more, so the
+// launch forgets the session and spawns a fresh agent in the same try, charged nothing
+// (supervise's startFresh). The runtime refuses that spawn, which is a charged launch failure,
+// and the next try of the same launch spawns again into the round's pod. That try writes the
+// claim with no session, so the round's sets do not read it (roundAsks). The launch hook reads it
+// as the launch that the pause owes all the same (roundPodEnds over the whole group,
+// podHolds.owes): the launch keeps the pod and comes up in it, and the hook's reason names the
+// implementer.
+//
+// Where the keep is read only of the claims the round waits for (review round 4), the hook reads
+// no launch of the pause, and the launch replaces the pod that the pause kept as the round's own
+// replacement.
+func TestALaunchUnderARoundKeepsThePodWhereTheLaunchAPauseOwesForgetsItsSession(t *testing.T) {
+	const stopped = pauseStoppedRole
+	rig := newPodUpdateRig(t, releasedUnasked(stopped), answeredThenSuspended(claim.RoleTester))
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+	rig.recordPause(store.PausePodHoldResumed, stopped)
+	token := rig.tokens[stopped]
+	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		token, runtime.ErrSessionFileMissing)})
+	rig.rt.ScriptSpawn(fake.SpawnResult{Err: errors.New("the pod's launcher refused the start")},
+		fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdatePod)})
+	conn := fake.NewConn()
+	rig.conns.Register(token, conn)
+	rig.workers[stopped] = conn
+
+	rig.heldStart(stopped)
+	c := rig.awaitClaim(stopped, "its launch to record its process", func(c supervise.Claim) bool { return c.Locator != nil })
+	if pod := podOf(c.Locator); pod != podUpdatePod {
+		t.Fatalf("the %s was launched into pod %q, want the round's own pod %s, which the pause kept; the hook kept the pod because %q",
+			stopped, pod, podUpdatePod, rig.launchKeptBecause(stopped))
+	}
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("a launch replaced the round's pod %+v, which the pause kept", replaced)
+	}
+	if c.Session != "" || c.Budgets.LaunchFailures != 1 {
+		t.Fatalf("the %s records session %q after %d launch failures, want its session forgotten and the one refused spawn charged",
+			stopped, c.Session, c.Budgets.LaunchFailures)
+	}
+	var methods []string
+	for _, launch := range rig.launchesOf(stopped) {
+		methods = append(methods, launch.Method)
+	}
+	if strings.Join(methods, " ") != "Resume Spawn Spawn" {
+		t.Fatalf("the %s was launched by %v, want the resume of its lost session, the refused fresh spawn and the spawn that came up", stopped, methods)
+	}
+	rig.wantLaunchKeptForOwed(stopped, stopped)
 }
 
 // dispatch://INFRA-4109 R1 and R7 with the project pause carried, as its architect set the rule

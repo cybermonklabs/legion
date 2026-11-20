@@ -6480,7 +6480,7 @@ Four things hold it:
 
 - a hold of a project's pause on the pod, at any time ([Pausing a project](#pausing-a-project));
 
-- before the round's bound, a claim the round waits for whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), while that claim is still suspended by the pause or is launching with no process recorded, as while its launch waits in the wake pacing (`podHolds.owes`): the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
+- before the round's bound, a claim of the issue whose role a project's pause still owes a launch, read for each role (the role has not run in the pod since the pause stopped it, `PausePodHold.Owed`), that has not answered the round, and that is suspended by the pause or runs no process and is not suspended, failed or retired (`podHolds.owes`), as while its launch waits in the wake pacing, after a daemon restart left that launch `launch_uncertain` or the release of it made it `queued`, and after the launch forgot the role's lost session and recorded no session: the work on the disk is the pause's, whether or not an ask of the round reached that claim, and the launch of another role of the pod does not end that keep;
 
 - before the round's bound, a claim the round waits for that holds an ask of the round that reached its session and that it has not answered: its process went while it held the ask, so its unpushed work may be on the disk.
 
@@ -6494,8 +6494,9 @@ A launch reads the same rule when it runs (`roundPodEndsAtLaunch`, the Sandbox r
 Under the pod's launch turn, a launch that would keep the live pod of its issue asks the daemon whether the round over that pod ends by this rule, so the round's bound is read when the launch runs and not when its claim was resumed.
 Where no role process runs in the pod and nothing holds it, the launch replaces the pod as the round's own replacement and starts its role in a new pod, so the role is launched once.
 Before the bound, the launch also keeps the pod where the launching claim itself holds the round's ask and has not answered it.
-Before the bound, the launch keeps the pod as well where it is the launch of a claim whose role a project's pause still owes a launch on this pod: the launching claim is launching with no process recorded, so the third thing above holds the pod (`podHolds.owes`).
-The pause kept the pod for that role's work, so the role's own launch, when the wake pacing lets it out, does not replace it.
+Before the bound, the launch keeps the pod as well while the third thing above holds it: a claim of the issue whose role a project's pause still owes a launch on this pod, that has not answered the round, and that is suspended by the pause or runs no process and is not suspended, failed or retired (`podHolds.owes`).
+The launching claim is one such claim where the pause owes its own role the launch: it runs no process yet, with a session or with none.
+The pause kept the pod for that role's work, so neither the role's own launch, when the wake pacing lets it out, nor the launch of another role of the pod replaces it.
 The next sweep reads the replaced pod gone, or another pod in its place, and ends the round with the line and the message of a replacement by issue (`endRoundALaunchReplaced`).
 In every other case the launch goes into the kept pod: a launching claim that holds the ask is not asked again, any other launching claim is asked once its agent is ready, and before its bound the round waits for their answers and their turns, as for any claim.
 Once the round replaces that pod, each role launched into it is launched a second time, through the wake pacing: that is what keeping the pod for an unanswered ask, an operator's hold or a pause's hold costs.
