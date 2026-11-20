@@ -1,5 +1,6 @@
 kind: Fixed
 body: |-
   The published tarball's file modes no longer depend on the umask of whoever packs it: a pack
-  from a checkout made under umask 0002 shipped the bundle, the agents, the manifest and the README
-  writable by group. The prepack now takes group and other write from every path the pack ships.
+  from a checkout made under umask 0002 shipped the agents, the manifest, the README, the notices
+  file and the staged skills writable by group. The prepack now takes group and other write from
+  every path the pack ships.

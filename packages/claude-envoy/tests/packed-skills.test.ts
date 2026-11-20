@@ -301,7 +301,7 @@ test("a prepack whose chmod fails after the swap puts every link back", async ()
   await ran(["/bin/chmod", "0755", join(shims, "chmod")], scratch)
   const child = Bun.spawn([process.execPath, "pm", "pack"], {
     cwd: copy,
-    env: { ...process.env, PATH: `${shims}:${process.env.PATH ?? ""}` },
+    env: { ...process.env, PATH: `${shims}:${process.env["PATH"] ?? ""}` },
     stdout: "pipe",
     stderr: "pipe",
   })
