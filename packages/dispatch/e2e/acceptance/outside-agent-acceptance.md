@@ -74,7 +74,7 @@ The tailnet leg does these steps, in this order:
    answers the public side. On a local stack with no model, `OUTSIDE_PEER=probe` runs the scripted
    peer (`outside-agent-probe.ts peer`) instead; only with `OUTSIDE_ALLOW_HTTP=1`. It also keeps
    a session outside the project, `<peer>-foreign`, registered at the private listener, for row P6.
-5. It starts P10's hold login: `dispatch login --device --person <person>` with the client of this
+5. It starts T5's hold login: `dispatch login --device --person <person>` with the client of this
    checkout, its file in the scratch directory. It reads the code.
 6. It starts the public leg, within the codes' 15 minutes: `gh workflow run` of
    `OUTSIDE_WORKFLOW` (default `outside-edge-e2e.yaml`) in `OUTSIDE_WORKFLOW_REPO`, with
@@ -84,7 +84,7 @@ The tailnet leg does these steps, in this order:
 7. It waits for the scratch login to be approved, and runs rows T1-T3.
 8. It waits for the public run to end, downloads its artifacts `outside-agent-public` and
    `outside-edge-revocations`, and runs row T4.
-9. It runs row P10. It asks the operator on this terminal to remove the test person from the
+9. It runs row T5, last. It asks the operator on this terminal to remove the test person from the
    project's access list, and waits for Enter; with `OUTSIDE_OWNER_REMOVE_COMMAND` set, it runs that
    command instead, as a harness acting as the owner's browser does on a local stack. Re-adding the
    person is the operator's own act.
@@ -113,7 +113,7 @@ is the peer's, on the developer box.
 Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 20 minutes: P5 waits up to
 15 minutes for a GitHub event, beside P4 and P8, and P8 waits for a token to expire (300 s).
 
-The browser step also approves `tailnet_hold_code`, P10's hold login, on the same page, and the
+The browser step also approves `tailnet_hold_code`, T5's hold login, on the same page, and the
 workflow does not revoke it. The tailnet leg ends that login itself: its key and refresh token
 exist only in the tailnet leg's scratch directory, which the leg removes when it ends.
 
@@ -149,7 +149,7 @@ Every process the leg starts runs with `env -i`, a HOME of its own, and these se
 | T2 | `agent-secrets register` through the scratch helper is refused `403 RESTRICTED_MEMBER_ENROLLS_NOTHING`, by that code and no other, and the canary asked for through it gets no value. |
 | T3 | A fresh session enrolled through the box's own helper is granted the canary at once, and its value is 64 characters long. This is T2's positive control: the same broker build and the same route grant the canary, so a refusal in T2 is the member kind's. |
 | T4 | The public leg's last step revokes the scratch login (its `revoke-<credential id>` row passes), and `agent-secrets machine list` through the scratch helper is then refused `LAUNCHER_INVALID`. |
-| P10 | Before the prompt, which is the control: the test person is on the project's access list (read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and a trade of the hold login is answered. After the operator removes the person and presses Enter: the list no longer names them (else UNKNOWN), a fresh trade of the hold login is refused, and a relay socket opened at the edge with the token traded at the removal is closed, each within 325 s. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, or no approved hold login, reads UNKNOWN. |
+| T5 | Last. Before the prompt, which is the control: the test person is on the project's access list (read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and a trade of the hold login is answered. After the owner removes the person and Enter is pressed: the list no longer names them (else UNKNOWN), a fresh trade of the hold login is refused, and a relay socket opened at the edge with the token traded at the removal is closed, each within 325 s. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. The row also wants the test person's cookie answered 401 and their passkey sign-in refused; that browser is the public runner's and has ended by then, so the row reads UNKNOWN even when every part read here passes. No terminal, or no approved hold login, reads UNKNOWN. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
 The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
@@ -185,6 +185,6 @@ same check must fail on that copy.
   machines keep time. The model peer stamps its answers by running `date` just before each send, so
   its stamps include the model's own time between the two calls: a lag can read longer than the
   delivery took, never shorter.
-- P10 reads the access-list removal through the test person's live device login: its trade and
+- T5 reads the access-list removal through the test person's live device login: its trade and
   its socket. The parts that need the test person's browser, which lives on the runner and has
   ended by then (their cookie answered 401, their passkey sign-in refused), are not read.
