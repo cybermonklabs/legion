@@ -3,10 +3,10 @@ package daemon
 // The two limits on how fast the sweep opens pod rounds (INFRA-1116): pod_update_max_open_rounds,
 // how many issues may hold an open round at once, and pod_update_rounds_per_minute, how many
 // rounds one sweep may open. One change to the pod template drifts every pod of the project at
-// once, and with neither limit set the first sweep after it asks every worker of every issue to
-// stop what it is doing and push: the whole fleet goes quiet inside a minute, and every disk in
-// it is deleted and rebuilt at once. Under the limits the change reaches a few pods first, and
-// the rest as those finish.
+// once, and with neither limit set the first sweep after it asks every worker of every issue but
+// a failed one and one that has left the round's pod to stop what it is doing and push: the whole
+// fleet goes quiet inside a minute, and every disk in it is deleted and rebuilt at once. Under the
+// limits the change reaches a few pods first, and the rest as those finish.
 //
 // These tests drive the fleet rig (podupdate_fleet_test.go) over several issues, each with a pod
 // and one architect of its own, and tick it by hand: its clock is held, so which sweep runs when
@@ -96,8 +96,8 @@ func (r *fleetRig) awaitRounds(what string, want ...string) {
 // awaitRoundEnded waits for the round of issue to be gone from every claim of it, which the
 // replacement posts to each of them (endPodUpdates). It is what a test waits for before it
 // sweeps again: a sweep that read that end half landed would find the round open and complete,
-// and would ask its workers again over the claims the end has already reached, which puts the
-// round back on a claim that had left it (podupdate_test.go's awaitSwept).
+// and would post the round again to the claims the end has already reached (openPodUpdate),
+// which puts the round back on a claim that had left it (podupdate_test.go's awaitSwept).
 func (r *fleetRig) awaitRoundEnded(issue string) {
 	r.t.Helper()
 	testwait.Eventually(r.t, "the round of "+issue+" to end on every claim of it", func() bool {
@@ -210,13 +210,15 @@ func (r *fleetRig) recordAsServed(rounds api.PodUpdateRounds) string {
 }
 
 // The cap on open rounds is a cap on how much of the fleet is held waiting at once: an issue in a
-// round has every worker of it told to do the steps of its update message (supervise.UpdateTask)
-// and start nothing new, so a fleet-wide drift with no cap stops every worker of every issue at
-// the first sweep. Under the cap the issues that fit go first — in the order of their keys, which
-// is the order the sweep walks them in, and which is a fleet's keys as strings rather than as
-// numbers — and an issue waits until one of them has finished and freed its slot. Nothing is lost
-// by waiting: every pod of the fleet is replaced in the end, each after its own workers have
-// pushed.
+// round has every worker of it but a failed one and one that has left the round's pod told to
+// do the steps of its update message (supervise.UpdateTask) and start nothing new, so a
+// fleet-wide drift with no cap stops all of those workers of every issue at the first sweep.
+// Under the cap the issues that fit go first — in the order of their keys, which is the order the
+// sweep walks them in, and which is a fleet's keys as strings rather than as numbers — and an
+// issue waits until one of them has finished and freed its slot. Nothing is lost by waiting:
+// every pod of the fleet is replaced in the end, each once every worker in it but a failed one
+// and one that has left the round's pod has pushed and answered, or at its round's bound, unless
+// an operator's suspension holds one of them.
 func TestPodUpdateMaxOpenRounds(t *testing.T) {
 	keys := []string{"LEGION-2", "LEGION-10", "LEGION-1000", "LEGION-30", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
@@ -257,8 +259,9 @@ func TestPodUpdateMaxOpenRounds(t *testing.T) {
 // counts the rounds it finds rather than the ones it opened itself. Counted from its own memory
 // — which a boot empties — it would read the whole project as idle and open the cap again over
 // a fleet that is already at it, which is the one thing the cap is there to stop. And a round it
-// did not open is still none of its business to end: a worker told to do the steps of its update
-// message (supervise.UpdateTask) is waited for, boot or no boot.
+// did not open is still none of its business to end: every worker of it but a failed one and one
+// that has left the round's pod is told to do the steps of its update message
+// (supervise.UpdateTask) and is waited for, boot or no boot.
 func TestPodUpdateMaxOpenRoundsRestart(t *testing.T) {
 	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4"}
 	rig := newLimitRig(t, keys...)
@@ -333,8 +336,9 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 // one slot opens in that same sweep. The waiting issue is walked before the dead round's own, so
 // nothing the walk does to the dead round can be what freed the slot: the slots are counted once,
 // before the walk, and no end in the walk gives one back. The opening is read off the waiting
-// issue's claim recording its round: the sweep asks the round's roles only at a tick after the
-// one that opened it, once the claims record the round (askRound).
+// issue's claim recording its round: the sweep asks the round's roles, but a failed one and one
+// that has left the round's pod, only at a tick after the one that opened it, once the claims
+// record the round (askRound).
 func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
 	// LEGION-483 sorts before the rig's own LEGION-484, so the walk reaches it first.
 	const waiting, waitingPod = "LEGION-483", "7d2b5e90-1c4a-4e36-b8f7-03a9c6d1e5b8"
@@ -784,11 +788,13 @@ func (r *fleetRig) askRowsOf(issue string, role claim.Role) []int64 {
 }
 
 // The per-minute limit is what paces a fleet-wide roll in time rather than in slots: with it, the
-// workers of the fleet are asked a few at a minute, so a change lands as a sequence of small
-// interruptions rather than one that stops everyone at once. It paces openings and nothing else
-// — a round already open is neither ended nor paused nor asked again by it, since a worker told
-// to do the steps of its update message (supervise.UpdateTask) and wait must be waited for — and
-// every pod of the fleet is replaced in the end.
+// workers of the fleet, but a failed one and one that has left its round's pod, are asked a few at
+// a minute, so a change lands as a sequence of small interruptions rather than one that stops
+// everyone at once. It paces openings and nothing else — a round already open is neither ended
+// nor paused nor asked again by it, since a worker told to do the steps of its update message
+// (supervise.UpdateTask) and wait must be waited for, and the round tells each worker but a
+// failed one and one that has left the round's pod — and every pod of the fleet is replaced in
+// the end.
 func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	keys := []string{"LEGION-1", "LEGION-2", "LEGION-3", "LEGION-4", "LEGION-5"}
 	rig := newLimitRig(t, keys...)
@@ -801,9 +807,10 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 		}
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
-		// The sweep asks a round's roles at the tick after the one that opened it, once the
-		// claims record the round, and never again. No lane runs here, so each ask is the row
-		// the sweep enqueued, still queued, and the sweep asks no claim whose ask is queued.
+		// The sweep asks a round's roles, but a failed one and one that has left the round's pod,
+		// at the tick after the one that opened it, once the claims record the round, and asks
+		// no claim again whose ask has reached a session. No lane runs here, so each ask is the
+		// row the sweep enqueued, still queued, and the sweep asks no claim whose ask is queued.
 		for _, prev := range keys[:i] {
 			rows := rig.askRowsOf(prev, claim.RoleArchitect)
 			if len(rows) != 1 {

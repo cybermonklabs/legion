@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A pod update round''s ask that waits in the outbox no longer reaches a role that answered the round while the ask waited, a claim that the daemon started again in another pod than the round''s own, or a claim that failed while the ask waited. Before, the row checked only the round and whether an earlier ask had reached the role, so the role read the ask again after its answer, and a failed claim whose process the runtime had not suspended read it too. Such a row now ends on the line `outbox update ask finished without a publish: the role answered its round`, `outbox update ask finished without a publish: the claim left its round''s pod` or `outbox update ask finished without a publish: the claim failed`, and it marks no delivery. The round''s ask, the roles'' prompts, the `legion config reference` descriptions of `pod_update_grace_minutes` and `pod_update_max_open_rounds`, the refusal of an answer for another round and the daemon''s log lines about a round now say that a round neither asks nor waits for a failed role or one that has left the round''s pod.'
+time: 2026-11-18T13:05:32.096219993Z
+custom:
+    Issue: pr4417

@@ -71,13 +71,15 @@ type CapabilityRow struct {
 // ReadyForUpdateRequest is the worker's answer to its update round's ask: it has pushed
 // everything it wants kept, and the process holding this claim may now be replaced. The daemon
 // opens an update round over a pod whose configuration has drifted, and asks every claim of the
-// round, on its own role topic, to do the steps of its update message (supervise.UpdateTask) and
-// answer here. The round replaces the pod once every claim it asks has answered, no turn runs and
-// no claim's activity report holds it (internal/daemon's roundEnd.holding), or at its bound
-// (pod_update_grace_minutes) whatever the claims answered, so an answer only brings the
-// replacement forward. A role's own push is what keeps its work: the disk the replacement deletes
-// takes all work not pushed before the pod goes, which is why every step that pushes work comes
-// before the answer in the round's ask (supervise.UpdateTask). `Round` is the round the worker
+// round but a failed one and one that has left the round's pod, on its own role topic, to do the
+// steps of its update message (supervise.UpdateTask) and answer here. The round replaces the pod
+// once every claim it waits for has answered — each claim with a session but a failed one and
+// one that has left the round's pod — no turn runs and no claim's activity report holds it
+// (internal/daemon's roundEnd.holding), or at its bound (pod_update_grace_minutes) whatever the
+// claims answered, so an answer only brings the replacement forward. A role's own push is what
+// keeps its work: the disk the replacement deletes takes all work not pushed before the pod goes,
+// which is why every step that pushes work comes before the answer in the round's ask
+// (supervise.UpdateTask). `Round` is the round the worker
 // answers for, as the ask it read named it: an answer counts only for the round whose ask the
 // worker has in front of it, so the daemon refuses one that names any other round
 // (supervise.ErrForeignUpdateRound). `Head` is the commit the worker

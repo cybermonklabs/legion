@@ -63,7 +63,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	wantRefusal(t, h.readyForUpdate(foreign), http.StatusConflict,
 		"ready_for_update refused: the answer names an update round this claim is not in. "+
 			"It answers \""+foreign.Round+"\", and this claim is in \""+testUpdateRound+"\". "+
-			"The daemon asks each role one time in each update round. "+
+			"The daemon asks each role but a failed one and one that has left the round's pod one time in each update round. "+
 			"The daemon sends that ask as a message on the role's own topic. "+
 			"Answer with the round that the newest such message names. "+
 			"If no such message names round \""+testUpdateRound+"\", the daemon has nothing to ask you now. End your turn")

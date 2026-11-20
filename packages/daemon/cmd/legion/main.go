@@ -1101,8 +1101,10 @@ type issueRound struct {
 }
 
 // openRounds is every update round the state's issues have open, by issue and then round, each
-// with its claims in role order: a round is the daemon holding a process back from replacement
-// until its worker has pushed its work and answered.
+// with its claims in role order: a round is the daemon holding a pod's processes back from
+// replacement until every worker in the pod but a failed one and one that has left the round's
+// pod has pushed its work and answered and no turn runs, or until the round's bound, unless an
+// operator's suspension holds one of them (the daemon's heldByOperator).
 func openRounds(issues map[string]api.Issue) []issueRound {
 	rounds := map[string]*issueRound{}
 	var keys []string

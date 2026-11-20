@@ -260,14 +260,15 @@ func TestAPodsSessionStoreIsReadFromItsThreeRequiredFlags(t *testing.T) {
 // A pod carries its whole session store for its life — the providers volume's projection under
 // postgres, its launchers' proxy flags under cloudsql-iam — so a pod created under any other store
 // than a pod created now would get has drifted, and its update round replaces it: its next
-// generation would name a URL file the pod has no way to produce, and the workers in it are asked
-// to do the steps of their update message (supervise.UpdateTask) before it is ended. A change of
-// kind in either direction counts, and so does a changed key, or a changed instance, database or
-// login under the same kind, or a change of the service account the launcher impersonates: one
-// named where the pod has none, none where it has one, or another one — the row for another
-// account keeps the login, so the account is all that differs. Two cloudsql-iam pods that name no
-// account, or the same one, have not drifted. A pod an earlier release created under the file
-// store, which configure now refuses, has drifted under either database store.
+// generation would name a URL file the pod has no way to produce, and the workers in it but a
+// failed one and one that has left the round's pod are asked to do the steps of their update
+// message (supervise.UpdateTask) before it is ended. A change of kind in either direction counts,
+// and so does a changed key, or a changed instance, database or login under the same kind, or a
+// change of the service account the launcher impersonates: one named where the pod has none,
+// none where it has one, or another one — the row for another account keeps the login, so the
+// account is all that differs. Two cloudsql-iam pods that name no account, or the same one, have
+// not drifted. A pod an earlier release created under the file store, which configure now
+// refuses, has drifted under either database store.
 func TestAPodUnderAnotherSessionStoreHasDrifted(t *testing.T) {
 	runtimeFor := func(store ompsessions.Store) *Runtime {
 		t.Helper()

@@ -21,12 +21,15 @@ const (
 	askedText  = "The daemon must replace the pod that runs this issue's roles. The reasons are: image a, now b."
 )
 
-// The three lines the executor writes, one for each way a row ends without an error. The first
-// is the line the production check reads (requirement R8).
+// The lines the executor writes, one for each way a row ends without an error. The first is the
+// line the production check reads (requirement R8).
 const (
 	askPublishedLine = "outbox update ask published to the role topic"
 	askNoHolderLine  = "outbox update ask finished undelivered: no live session holds the role"
 	askLeftLine      = "outbox update ask finished without a publish: the claim no longer records its round"
+	askAnsweredLine  = "outbox update ask finished without a publish: the role answered its round"
+	askLeftPodLine   = "outbox update ask finished without a publish: the claim left its round's pod"
+	askFailedLine    = "outbox update ask finished without a publish: the claim failed"
 )
 
 // askRunner is an outbox runner as hook_prompt_test.go's unit case builds one — a project, a
@@ -54,11 +57,12 @@ func askRow(t *testing.T, id int64, role claim.Role) record.OutboxRow {
 	return row
 }
 
-// The ask reaches the role it names on that role's own topic, a worker and the architect alike,
-// since the architect's process runs in the pod too. The message is the sweep's text unchanged,
-// under the row's own key, so a retried row is one delivery. When the publisher has taken it, the
-// executor writes the one line the production check greps for, with the row, the issue, the round,
-// the pod, the claim, the role and the topic.
+// The ask reaches the role it names on that role's own topic, a worker and the architect alike:
+// the round asks each of its claims with a session that has not answered it, but a failed one
+// and one that has left the round's pod, and the architect's process runs in the pod too. The
+// message is the sweep's text unchanged, under the row's own key, so a retried row is one
+// delivery. When the publisher has taken it, the executor writes the one line the production
+// check greps for, with the row, the issue, the round, the pod, the claim, the role and the topic.
 func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 	for i, role := range []claim.Role{claim.RoleTester, claim.RoleArchitect} {
 		t.Run(string(role), func(t *testing.T) {
@@ -143,6 +147,75 @@ func TestPodUpdateAskForARoundTheClaimLeftPublishesNothing(t *testing.T) {
 			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
 				lines[0]["round"] != askedRound || lines[0]["pod"] != askedPod || lines[0]["current"] != tc.current {
 				t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round, its pod and the claim's %q", askLeftLine, lines, logs.String(), row.ID, tc.current)
+			}
+		})
+	}
+}
+
+// A claim whose own record owes no ask of the round any more (supervise's Claim.OwesUpdateAsk)
+// is published nothing, and its row ends with a line of its own: a claim whose role answered the
+// round while the row waited, a claim that has left the round's pod (the daemon started it again
+// in another pod than the round's own), or a failed claim. A claim fails even when the runtime
+// refuses to suspend its process (supervise's fail), so that process can still hold the role's
+// topic: the publisher here takes every publish, as a topic with a live holder does. No delivery
+// is recorded on the claim and no published line is written, because no ask reached the role.
+// The control is the same claim with none of these, which is asked once and marked.
+func TestPodUpdateAskToAClaimTheRoundNoLongerAsksPublishesNothing(t *testing.T) {
+	answeredAt := time.Date(2026, 11, 18, 9, 0, 0, 0, time.UTC)
+	for i, tc := range []struct {
+		name string
+		set  func(*supervise.Claim)
+		line string
+	}{
+		{name: "the control: a claim that has not answered, not left and not failed", set: func(*supervise.Claim) {}, line: askPublishedLine},
+		{name: "a claim whose role answered the round", set: func(c *supervise.Claim) {
+			c.UpdateSignalledAt, c.UpdateHead = &answeredAt, "c0ffee"
+		}, line: askAnsweredLine},
+		{name: "a claim that left the round's pod", set: func(c *supervise.Claim) { c.UpdateLeftRound = askedRound }, line: askLeftPodLine},
+		{name: "a claim that failed while the row waited", set: func(c *supervise.Claim) { c.State = supervise.StateFailed }, line: askFailedLine},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			publisher := &outboxPublisher{}
+			runner, logs := askRunner(t, publisher, map[claim.Role]string{})
+			row := askRow(t, int64(91+i), claim.RoleTester)
+			token := mustClaimToken(t, row.Issue, claim.RoleTester)
+			c := supervise.Claim{Token: token, Project: "legion", Tree: row.Issue, Issue: row.Issue, Role: claim.RoleTester,
+				State: supervise.StateQueued, UpdateRound: askedRound}
+			tc.set(&c)
+			if _, _, err := runner.supervisor.Create(context.Background(), c, ""); err != nil {
+				t.Fatalf("create the tester's claim: %v", err)
+			}
+
+			if err := runner.execute(context.Background(), row); err != nil {
+				t.Fatalf("the ask = %v, want the row finished", err)
+			}
+
+			asked, want := tc.line == askPublishedLine, 0
+			if asked {
+				want = 1
+			}
+			if published := publisher.publishes(); len(published) != want {
+				t.Fatalf("publishes = %#v, want %d", published, want)
+			}
+			lines := loggedLines(t, logs.String(), `"msg":"`+tc.line+`"`)
+			if len(lines) != 1 || lines[0]["level"] != "INFO" || lines[0]["row"] != float64(row.ID) ||
+				lines[0]["round"] != askedRound || lines[0]["claim"] != string(token) || lines[0]["role"] != string(claim.RoleTester) {
+				t.Fatalf("lines %q = %v in\n%s\nwant one Info line naming row %d, its round, the claim and the role", tc.line, lines, logs.String(), row.ID)
+			}
+			for _, other := range []string{askPublishedLine, askNoHolderLine, askLeftLine, askAnsweredLine, askLeftPodLine, askFailedLine} {
+				if other == tc.line {
+					continue
+				}
+				if more := loggedLines(t, logs.String(), `"msg":"`+other+`"`); len(more) != 0 {
+					t.Fatalf("the row also logged %q: %v", other, more)
+				}
+			}
+			m, ok := runner.supervisor.Machine(token)
+			if !ok {
+				t.Fatal("the tester's claim is not supervised")
+			}
+			if marked := m.View().UpdateTaskedAt; (marked != nil) != asked {
+				t.Fatalf("the claim records an ask at %v, want a mark only where the ask was published", marked)
 			}
 		})
 	}

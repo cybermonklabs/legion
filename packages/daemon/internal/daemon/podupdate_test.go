@@ -1,13 +1,13 @@
 package daemon
 
 // The update-round sweep: a running issue pod whose configuration has drifted is replaced once
-// every worker in it has done the steps of its update message (supervise.UpdateTask) and
-// answered, no turn runs and no claim's activity report holds the round (roundEnd.holding), or at
-// the round's bound whatever they said (podupdate_bound_test.go holds the bound). These tests
-// drive the real supervision — real machines over a real Postgres, with the runtime faked — one
-// sweep at a time, as the orphan sweep's tick calls it, and read what the store, the runtime and
-// the outbox then hold. The rig's clock is held, so every test here that moves no clock decides
-// before the round's bound.
+// every worker in it but a failed one and one that has left the round's pod has done the steps of
+// its update message (supervise.UpdateTask) and answered, no turn runs and no claim's activity
+// report holds the round (roundEnd.holding), or at the round's bound whatever they said
+// (podupdate_bound_test.go holds the bound). These tests drive the real supervision — real
+// machines over a real Postgres, with the runtime faked — one sweep at a time, as the orphan
+// sweep's tick calls it, and read what the store, the runtime and the outbox then hold. The rig's
+// clock is held, so every test here that moves no clock decides before the round's bound.
 //
 // Each rig seeds one issue's claims in Postgres, restores them as a boot does, and ticks by hand:
 // the sweep reads the claims the store holds, so a tick sees exactly what the previous tick's
@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -150,6 +152,9 @@ type podUpdateRig struct {
 	// asked is every update-ask row the sweep has written, by id, kept once read: the lane
 	// deletes each row it finishes, as the outbox does, and asks reads every row ever written.
 	asked map[int64]record.UpdateAsk
+	// afterTick, where it is set, runs at the end of each tick: a machine held inside a decision
+	// through a number of ticks is released there (holdDeciding).
+	afterTick func()
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -329,6 +334,9 @@ func (r *podUpdateRig) tick() {
 		r.t.Fatalf("read the claims for the sweep: %v", err)
 	}
 	r.s.reconcilePodUpdates(r.ctx, claims)
+	if r.afterTick != nil {
+		r.afterTick()
+	}
 }
 
 // claimOf is the claim as its machine holds it, which is what the next tick reads from the store.
@@ -464,14 +472,16 @@ func (r *podUpdateRig) runAsk(row record.OutboxRow) {
 // (roundGroup), so a claim whose machine is still settling a decision at that read counts as not
 // having answered, and what the round would have decided is left to the next sweep. Nothing is
 // given up by the sweeps this makes: the rig's clock is held, so no round's bound is crossed by
-// sweeping again, and a claim the sweep has asked is not asked again (supervision.askRound).
+// sweeping again, and a claim the sweep has asked is not asked again (supervision.askRound,
+// supervise's Claim.OwesUpdateAsk).
 //
 // The first poll sweeps nothing. A decision the last sweep made is posted to each claim's
 // machine and handled there (supervisor.post), so it is in flight rather than undecided, and a
 // sweep that read it half landed would decide the round a second time: it would replace the pod
-// again, or ask every worker of the round again over the claims the end has already reached
-// (openPodUpdate posts to every blocking claim). A wait for what a sweep has already decided is
-// awaitClaim's, as is one for what a posted event or a direct call brings about.
+// again, or ask the round's workers again over the claims the end has already reached
+// (openPodUpdate posts to every blocking claim, and a round asks only those supervise's
+// Claim.OwesUpdateAsk says it owes). A wait for what a sweep has already decided is awaitClaim's,
+// as is one for what a posted event or a direct call brings about.
 //
 // A settleAll before each tick was tried here in place of that skipped poll, as the more
 // deterministic shape, and it is not: it makes this rig's own
@@ -508,7 +518,8 @@ func (r *podUpdateRig) awaitSwept(role claim.Role, what string, want func(superv
 // After the answer, signal writes the activity report that the answering turn's end sends in
 // production: nothing of the worker's own runs (reportsNothingRunning). In production every
 // answer comes from a turn whose end sends such a report, and before its bound a round waits for
-// a claim with a process in its pod that has sent no report since its last turn started
+// a claim with a process in its pod, unless it is a failed claim, that has sent no report since
+// its last turn started
 // (backgroundClaims, dispatch://INFRA-4203 R1). Without the report, every round this rig's
 // answers end early would hold to its bound.
 func (r *podUpdateRig) signal(role claim.Role, head string) {
@@ -644,7 +655,7 @@ func (r *podUpdateRig) notices() []record.ControllerNotice {
 			r.t.Fatalf("decode controller notice %d: %v", row.ID, err)
 		}
 		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("controller notice %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+			r.t.Fatalf("controller notice %d is on the issue numbered %s, want the issue numbered %s", row.ID, issueNumber(row.Issue), issueNumber(podUpdateIssue))
 		}
 		notices = append(notices, notice)
 	}
@@ -679,12 +690,12 @@ func (r *podUpdateRig) replacements() []fake.Call {
 // so a test that reads the count once, immediately after the tick that follows the last answer,
 // asserts a race rather than the rule: it passes only when no machine happens to be deciding at
 // that moment, which CI run 41340112838 is the reproduction of. Sweeping until the count is
-// reached asks the question the rule answers — the pod is replaced once every worker has
-// answered — without asking it of one particular sweep. An assertion that a replacement has
-// *not* happened needs no such wait and keeps reading the count once, since no deferral can turn
-// nothing-yet into a replacement. Either failure names the count and what the caller waited for:
-// the wait's, the number of replacements it swept for, and the check below it, the number read
-// against the number wanted.
+// reached asks the question the rule answers — the pod is replaced once every worker but a failed
+// one and one that has left the round's pod has answered — without asking it of one particular
+// sweep. An assertion that a replacement has *not* happened needs no such wait and keeps reading
+// the count once, since no deferral can turn nothing-yet into a replacement. Either failure names
+// the count and what the caller waited for: the wait's, the number of replacements it swept for,
+// and the check below it, the number read against the number wanted.
 func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 	r.t.Helper()
 	testwait.Eventually(r.t, fmt.Sprintf("%d replacement(s) of the pod %s", n, what), func() bool {
@@ -702,9 +713,32 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 }
 
 // The round's early end: before its bound, the pod is replaced only once every claim that blocks
-// the round has answered, no turn runs and no claim's activity report holds it (roundEnd.holding).
-// A claim with no session — a role nothing has ever launched — blocks nothing.
+// the round has answered — but a failed one and one that has left the round's pod, which the
+// round neither asks nor waits for (askedClaims, waitingClaims) — no turn runs and no claim's
+// activity report holds it (roundEnd.holding). A claim with no session — a role nothing has ever
+// launched — blocks nothing.
+//
+// The replacement once every worker has answered is read as awaitReplacement reads it, sweeping
+// until it is made: a sweep that reads a worker while its machine is deciding reads it unanswered
+// (roundGroup's mask) and leaves the replacement to the next sweep, so how busy a machine was at
+// that sweep changes nothing the check reads; podupdate_deciding_test.go runs the check with a
+// machine held there. That no replacement is made before is read once.
+//
+// Before that read, the tester sends the activity report a turn's end sends, naming nothing of
+// its own that runs, and does not answer: the round's early end also waits for a claim with a
+// process in the round's pod that has sent no report since its last turn started, but a failed
+// one and one that has left the round's pod (backgroundClaims), and a tester with no report would
+// hold the round by that wait alone. So the read decides on the tester's answer and nothing else,
+// and a round that took a claim with no answer for one that answered (answered, waitingClaims)
+// replaces the pod there and fails it.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
+	replacesThePodOnceEveryBlockingClaimHasAnswered(t, nil)
+}
+
+// replacesThePodOnceEveryBlockingClaimHasAnswered is the steps and the assertions of the check
+// above, with busy, where it is not nil, run on the rig once the implementer's answer is read and
+// before the tester answers.
+func replacesThePodOnceEveryBlockingClaimHasAnswered(t *testing.T, busy func(*podUpdateRig)) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
 		readyWorker(claim.RoleTester),
@@ -731,22 +765,21 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 	}
 
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.reportsNothingRunning(claim.RoleTester)
 	rig.tick()
 
 	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("ReplacePod called %d times while the tester had not answered", len(calls))
+		t.Fatalf("ReplacePod called %d times while the tester had not answered, its report naming nothing that runs", len(calls))
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateHead != "a1b2c3d" {
 		t.Errorf("the implementer's reported head = %q, want a1b2c3d", c.UpdateHead)
 	}
 
-	rig.signal(claim.RoleTester, "")
-	rig.tick()
-
-	calls := rig.replacements()
-	if len(calls) != 1 {
-		t.Fatalf("ReplacePod called %d times once every worker answered, want once", len(calls))
+	if busy != nil {
+		busy(rig)
 	}
+	rig.signal(claim.RoleTester, "")
+	calls := rig.awaitReplacement(1, "once every worker answered")
 	if calls[0].Pod.Locator == nil || calls[0].Pod.Locator.Sandbox.PodUID != podUpdatePod {
 		t.Fatalf("ReplacePod called with %+v, want a process of pod %s", calls[0].Pod, podUpdatePod)
 	}
@@ -757,11 +790,12 @@ func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing
 	}
 }
 
-// A claim that left an *earlier* round is no claim of this round that has left. Its own pod died
-// while a round was open over it, the daemon started it again in the pod this issue runs in now,
-// and this round's open has not reached it yet: it still records the round it left, and it holds
-// this round's pod exactly as any claim the round has not asked does. So the replacement waits
-// for it, the next sweep's post asks it, and the pod goes only once it has answered.
+// A claim that left an *earlier* round is not one that has left this round's pod. Its own pod
+// died while a round was open over it, the daemon started it again in the pod this issue runs in
+// now, and this round's open has not reached it yet: it still records the round it left, and it
+// holds this round's pod exactly as does every claim the round has not asked yet, but for a failed
+// one and one that has left the round's pod. So the replacement waits for it, the next sweep's
+// post asks it, and the pod goes only once it has answered.
 //
 // The predicate is asked about the round being decided for this case alone (supervise's
 // Claim.LeftPodRound, read here by waitingClaims). Asked about the claim's own round instead —
@@ -809,9 +843,10 @@ func TestPodUpdateWaitsForAClaimThatLeftAnEarlierRound(t *testing.T) {
 // A drift the kept-pod rule leaves a role degraded for — here the operator's volume holding that
 // role's overlay, moved — is still a drift the round replaces the pod for, and the role the daemon
 // starts into that kept pod is still a worker of the round. It registers from the pod it was
-// started in, is asked the round like every other worker, holds the replacement back until it
-// answers, and ends the round when it does. A role that never registered would leave the round
-// waiting on the very pod it was opened to replace.
+// started in, is asked the round like every other worker but a failed one and one that has left
+// the round's pod, holds the replacement back until it answers, and ends the round when it does.
+// A role that never registered would leave the round waiting on the very pod it was opened to
+// replace.
 func TestPodUpdateEndsTheRoundOnceTheRoleStartedIntoTheKeptPodAnswers(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -890,11 +925,13 @@ func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 }
 
 // A claim the round has asked and that an operator's suspension holds pins the round past its
-// bound: only a person can end that wait, and nobody can say whether its workspace holds
-// unpushed work. The pod is not replaced, and the controller is told once, at the bound itself —
-// not before it, and not a bound after the last answer — naming the suspension, which is what
+// bound (heldByOperator): only a person can end that wait, and nobody can say whether its
+// workspace holds unpushed work. The pod is not replaced, and the controller is told once, at
+// the bound itself — not before it, and not a bound after the last answer —
+// naming the suspension, which is what
 // brings the operator (dispatch://INFRA-2981 R5, R6; verification's c-no-stall). The notice
-// lists every claim the round asks, each with whether it answered, and the store takes the row.
+// lists every claim with a session but a failed one, one that has left the round's pod included,
+// each with whether it answered, and the store takes the row.
 func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
@@ -957,12 +994,13 @@ func TestPodUpdateToldOnceAtTheBoundOfARoundAnOperatorsSuspensionHolds(t *testin
 	}
 }
 
-// A failed claim runs no process and no turn on the pod, and the round asks it nothing, so the
-// round does not wait for it: once every other claim has answered and no turn and no claim's
-// activity report holds the round (roundEnd.holding), the pod is replaced and the round is over.
-// This is the first contract-46 roll's shape: a planner failed at contract 41, which records no
-// round, beside three workers at contract 45 that each answered. Held for the planner, the round
-// would never end, and every answered worker's next task would wait behind it.
+// A failed claim runs no turn on the pod, and the round asks it nothing, so the round does not
+// wait for it: once every claim but a failed one and one that has left the round's pod has
+// answered and no turn and no claim's activity report holds the round (roundEnd.holding), the pod
+// is replaced and the round is over. This is the first contract-46 roll's shape: a planner failed
+// at contract 41, which records no round, beside three workers at contract 45 that each answered.
+// Held for the planner, the round would never end, and every answered worker's next task would
+// wait behind it.
 func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 	behind := supervise.PodUpdateContract - 1
 	answering := []claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}
@@ -990,11 +1028,12 @@ func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 	}
 }
 
-// A round every role answered with the ready_for_update call goes to its replacement on those
-// answers alone: from the first answer on, the runtime is asked nothing for it but the one
-// ReplacePod, with only the sweep's own reads of the pod (PodDrift) and of its processes beside
-// it. The answers end the round before its bound, so no line of a bounded end is written, and
-// the sweeps after the replacement replace nothing more.
+// Once every role the round waits for — each claim with a session but a failed one and one that
+// has left the round's pod — has answered with the ready_for_update call, the round goes to its
+// replacement on those answers alone: from the first answer on, the runtime is asked nothing for
+// it but the one ReplacePod, with only the sweep's own reads of the pod (PodDrift) and of its
+// processes beside it. The answers end the round before its bound, so no line of a bounded end
+// is written, and the sweeps after the replacement replace nothing more.
 func TestPodUpdateReplacesThePodOnReadyForUpdateAnswersWithOneReplacePod(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -1052,10 +1091,11 @@ const podUpdateAccountDrift = "account default, now legion-worker"
 // configuration has since moved off used to be replaced by the next launch of any of its roles,
 // which cut every turn running in the pod and deleted its disk with everything unpushed still on
 // it. The account is now one of PodDrift's reasons for every pod a round covers, so a round
-// opened on that reason alone does what a round does: every worker claim of the issue is asked
-// and answers, and only then is the pod replaced and the claims let go of the round. The rest of
-// the round's machinery is held by the tests around this one; this one holds the daemon's half of
-// the account's path, with PodDrift's half held in the sandbox package.
+// opened on that reason alone does what a round does: every worker claim of the issue but a
+// failed one and one that has left the round's pod is asked and answers, and only then is the pod
+// replaced and the claims let go of the round. The rest of the round's machinery is held by the
+// tests around this one; this one holds the daemon's half of the account's path, with PodDrift's
+// half held in the sandbox package.
 func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 	roles := []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleArchitect), readyWorker(claim.RoleImplementer))
@@ -1087,10 +1127,11 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 
 // Drift that clears while a round is open — the operator put the configuration back — ends
 // nothing. A round, once opened, ends only by replacing its pod or because that pod is gone: it
-// has already asked every worker in the pod to do the steps of its update message
-// (supervise.UpdateTask) and to start no new work, each has answered or is about to, and no path
-// is left that lets one carry on in a pod it was told would be replaced. So the pod is replaced
-// here too, which is one restart of each worker in its own session.
+// has already asked every worker of the issue but a failed one and one that has left the round's
+// pod to do the steps of its update message (supervise.UpdateTask) and to start no new work, each
+// of those has answered or is about to, and no path is left that lets one carry on in a pod it
+// was told would be replaced. So the pod is replaced here too, which is one restart of each
+// worker in its own session.
 func TestPodUpdateReplacesThePodWhenTheDriftClearsUnderAnOpenRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
@@ -1728,8 +1769,8 @@ func TestPodUpdateIgnoresARetiredClaimsLeftoverRound(t *testing.T) {
 // An operator suspends the only worker of an open round. No claim of the issue records a pod then
 // — a suspension lets the process go — and that is no evidence that the pod went: the round waits
 // where it stands, the issue is told nothing, and the claim an operator holds goes on blocking the
-// round until the operator acts. Reading an empty pod as "the pod went" would write a false
-// data-loss message on the issue and end a round no worker had answered.
+// round until the operator acts (heldByOperator). Reading an empty pod as "the pod went" would
+// write a false data-loss message on the issue and end a round no worker had answered.
 func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
@@ -1788,10 +1829,11 @@ func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
 
 // A suspended claim is not revived for the round, whoever suspended it and whatever contract it
 // last recorded: the round's ask is a message on the role's own topic, which a role with no live
-// session does not hold, and the round ends at its bound whether or not that role answers
+// session does not hold, and the round waits for its answer (waitingClaims) only up to its bound
 // (dispatch://INFRA-2981 R1). The claim is in the round, and it is not asked while it has no
 // live session: no row is enqueued for it and no mark is written on it, so the first sweep after
-// its agent says it is ready asks it (supervision.askRound). The claim stays suspended.
+// its agent says it is ready asks it (supervision.askRound, supervise's Claim.OwesUpdateAsk).
+// The claim stays suspended.
 func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -1861,8 +1903,9 @@ func TestPodUpdateReadsAReleasedPodAsNoPodRatherThanAPodThatWent(t *testing.T) {
 
 // The stale-plugin lane and the round divide the claims of a pod between them, and the round
 // takes every claim it covers. A claim in a round is left to it whatever contract it records:
-// each is asked on its role's own topic, and the round ends at its bound whether or not the role
-// answers, so neither needs a relaunch and a relaunch would cut a turn the round is waiting on.
+// each but a failed one and one that has left the round's pod is asked on its role's own topic,
+// and the round ends at its bound whether or not the role answers, so neither needs a relaunch
+// and a relaunch would cut a turn the round is waiting on.
 func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
@@ -2307,7 +2350,8 @@ func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T
 // launch installs no plugin, so the relaunch would keep the pod, bring the same plugin back and
 // charge the claim toward failed. Its registration is accepted for the same reason, charged
 // nothing and refused nothing. What carries such a claim is the round over its pod, which asks
-// it on its role's own topic like any other worker and wakes nothing for it.
+// it on its role's own topic as it asks every worker but a failed one and one that has left the
+// round's pod, and wakes nothing for it.
 func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
@@ -2357,9 +2401,9 @@ func TestStalePluginLeavesAClaudeWorkerBelowTheContractToItsRound(t *testing.T) 
 		t.Fatalf("the stale registration started %d processes, want none", len(resumes))
 	}
 
-	// The round over the pod is what carries such a claim: it asks it like any other worker, on
-	// its role's own topic, and starts nothing for it. Nobody is told and nothing is written on
-	// the issue.
+	// The round over the pod is what carries such a claim: it asks it on its role's own topic as
+	// it asks every worker but a failed one and one that has left the round's pod, and starts
+	// nothing for it. Nobody is told and nothing is written on the issue.
 	rig.drifts(podUpdateDrift)
 	rig.tick()
 	rig.awaitRound(claim.RoleTester, podUpdateRound)
@@ -2410,11 +2454,12 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 	}
 }
 
-// The no-pod notice lists every claim the round asks, each marked with whether it answered, and
-// names the operator's suspension that holds the round. A round where one worker answered and
-// another did not is held past its bound by the operator alone: the bound steps over the answer
-// it lacks, and not over the person's hold. The list is the same one every late-round notice
-// carries (waitingOf), so the controller reads what each role said.
+// The no-pod notice lists every claim with a session but a failed one, one that has left the
+// round's pod included, each marked with whether it answered, and names the operator's suspension
+// that holds the round. A round where one worker answered and another did not is held past its
+// bound by the operator alone (heldByOperator): the bound steps over the answer it lacks, and not
+// over the person's hold. The list is the same one every late-round notice carries (waitingOf),
+// so the controller reads what each role said.
 func TestPodUpdatePodlessNoticeMarksWhichWorkersAnswered(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -2683,7 +2728,6 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 // (reconcileIssuePodUpdate), the turn in the new pod is left running, and the operator's side is
 // told nothing, however long past the round's bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
-	const held = "supervise: every worker of this update round has answered; the replacement waits for the turns still running"
 	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -2694,6 +2738,20 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 		rig.awaitRound(role, podUpdateRound)
 		rig.signal(role, "a1b2c3d")
 	}
+	rig.settleAll()
+
+	// The reader's own control: a turn in the round's own pod, with every worker answered, holds
+	// the replacement, and the line that says so is the one turnWaits reads, naming the round and
+	// the implementer in its working field. Words of that line changed, or that field renamed,
+	// fail here rather than leave the read below finding nothing.
+	rig.envoyTurn(claim.RoleImplementer)
+	held := len(rig.logs.String())
+	rig.tick()
+	if waits := turnWaits(t, rig.logs.String()[held:], podUpdateIssue, podUpdateRound); len(waits) != 1 || !waits[0].names(claim.RoleImplementer) {
+		t.Fatalf("a turn in the round's own pod with every worker answered held the replacement by %d lines %q of issue number %s and round %s, want one, naming the implementer under %q: %v",
+			len(waits), podUpdateTurnWaitLine, issueNumber(podUpdateIssue), podUpdateRound, "working", waits)
+	}
+	rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: rig.tokens[claim.RoleImplementer]})
 	rig.settleAll()
 
 	// The pod goes, and the displaced path brings both workers back in the pod that replaced
@@ -2707,13 +2765,16 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	// turn would tell the operator's side of a pod that is gone.
 	rig.clock.advance(podUpdateGrace + time.Hour)
 
+	before := len(rig.logs.String())
 	rig.tick()
 
 	// What the sweep itself did, read before the round's end is waited for: a sweep that waited
-	// on the turn instead says so in these three, and leaves the round open behind them.
-	if lines := loggedLines(t, rig.logs.String(), held); len(lines) != 0 {
-		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %+v",
-			len(lines), lines)
+	// on the turn instead says so in these three, and leaves the round open behind them. The wait is
+	// read from the lines of this tick by the turn-wait line's own words and the issue and round it
+	// names (turnWaits), whatever else the line holds, and the control above shows the read finds it.
+	if waits := turnWaits(t, rig.logs.String()[before:], podUpdateIssue, podUpdateRound); len(waits) != 0 {
+		t.Errorf("the sweep waited for the turns still running %d times, and that turn is in the pod that replaced this round's own: %v",
+			len(waits), waits)
 	}
 	if lines := loggedLines(t, rig.logs.String(), overAGonePod); len(lines) != 1 {
 		t.Errorf("the sweep ended the round over a gone pod %d times, want once: %+v", len(lines), lines)
@@ -2736,6 +2797,49 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 		rig.awaitClaim(role, "its round to end over the pod that is gone",
 			func(c supervise.Claim) bool { return c.UpdateRound == "" })
 	}
+}
+
+// podUpdateTurnWaitLine is the line that holds a round's replacement for the turns still running
+// (completePodUpdate's waitsForTurn), in the daemon's words.
+const podUpdateTurnWaitLine = "supervise: every worker of this update round but a failed one and one that has left the round's pod has answered; the replacement waits for the turns still running, or for the round's bound"
+
+// turnWait is one turn-wait line of the daemon's JSON log, decoded.
+type turnWait map[string]any
+
+// names is whether the line's working field lists role.
+func (w turnWait) names(role claim.Role) bool {
+	list, _ := w["working"].([]any)
+	return slices.Contains(list, any(string(role)))
+}
+
+// String is the line's fields beside its time, level, message, issue and round, so a failure names
+// the field that names the roles in a turn, under whatever name it has.
+func (w turnWait) String() string {
+	var fields []string
+	for _, key := range slices.Sorted(maps.Keys(w)) {
+		switch key {
+		case "time", "level", "msg", "issue", "round":
+			continue
+		}
+		value, _ := json.Marshal(w[key])
+		fields = append(fields, fmt.Sprintf("%s=%s", key, value))
+	}
+	return fmt.Sprintf("[the turn-wait line with %s]", strings.Join(fields, " "))
+}
+
+// turnWaits is every turn-wait line of logs (podUpdateTurnWaitLine, selected by its message,
+// loggedMessages) that names issue and round, whatever else it holds: past the round's bound the
+// round counts no turn (roundEnd.holding), so such a line can list no role at all. The caller hands
+// it the lines of one tick.
+func turnWaits(t *testing.T, logs, issue, round string) []turnWait {
+	t.Helper()
+	var waits []turnWait
+	for _, fields := range loggedMessages(t, logs, podUpdateTurnWaitLine) {
+		if fields["issue"] == issue && fields["round"] == round {
+			waits = append(waits, fields)
+		}
+	}
+	return waits
 }
 
 // Two rounds can stand on one group at once while a dead round's end is still on its way: the
@@ -2890,7 +2994,11 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 				}
 			}
 			if calls := rig.rt.CallsOf("IssuePod"); len(calls) != 1 || calls[0].Issue != podUpdateIssue {
-				t.Fatalf("the sweep asked the runtime about the issue's pod %+v, want once about %s", calls, podUpdateIssue)
+				asked := make([]string, len(calls))
+				for i, call := range calls {
+					asked[i] = issueNumber(call.Issue)
+				}
+				t.Fatalf("the sweep asked the runtime about the pods of the issues numbered %v, want once about the issue numbered %s", asked, issueNumber(podUpdateIssue))
 			}
 			if lines := loggedLines(t, rig.logs.String(), waits); len(lines) != 1 {
 				t.Errorf("the sweep logged the podless round's wait %d times, want once: %+v", len(lines), lines)

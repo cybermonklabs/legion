@@ -1,7 +1,8 @@
 package daemon
 
-// The update round's ask reaches each role on one channel: the sweep publishes it once per claim
-// per round, as a role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
+// The update round's ask reaches, on one channel, each role of the round but a failed one and
+// one that has left the round's pod: the sweep publishes it once per claim per round, as a
+// role-message outbox row (record.UpdateAsk) to that claim's own Envoy topic, and
 // no claim is queued or sent a task for the round (dispatch://INFRA-2981 R1, verification's
 // c-one-channel). "Once" counts the asks that reached a session: the row marks its claim asked
 // when its publish reached a session, and an ask whose topic had no live holder is asked again
@@ -29,7 +30,7 @@ func (r *podUpdateRig) asks() []record.UpdateAsk {
 	r.t.Helper()
 	for _, row := range r.rows(record.OutboxKindUpdateAsk) {
 		if row.Issue != podUpdateIssue {
-			r.t.Fatalf("update ask %d is on %s, want %s", row.ID, row.Issue, podUpdateIssue)
+			r.t.Fatalf("update ask %d is on the issue numbered %s, want the issue numbered %s", row.ID, issueNumber(row.Issue), issueNumber(podUpdateIssue))
 		}
 		var ask record.UpdateAsk
 		if err := json.Unmarshal(row.Payload, &ask); err != nil {
@@ -61,7 +62,8 @@ func (r *podUpdateRig) prompts() map[claim.Role]int {
 
 // One pod round, over the five kinds of claim a pod holds: a role in a turn, an idle role, the
 // issue's architect, a failed claim and a claim that has left the round's pod. Over ten sweeps,
-// the role-message lane running after each, each asked claim gets exactly one update-ask row, the
+// the role-message lane running after each, each asked claim (every claim of the round but a
+// failed one and one that has left the round's pod) gets exactly one update-ask row, the
 // architect's included, each naming its own role, the round, the pod and the round's one text:
 // the reasons the round opened with and the moment it ends, its opening plus
 // pod_update_grace_minutes. Each row reaches its role's topic once and marks its claim asked. The
@@ -205,8 +207,9 @@ func TestPodUpdateALaterSweepThatReadsOtherDriftKeepsTheRoundsTerms(t *testing.T
 
 // A daemon with no outbox (no workflow, so supervision's enqueue is nil) publishes no ask and
 // marks no claim, and its round still runs: the claims record it, an answer is taken, and the pod
-// is replaced once every role has answered and no turn or claim's activity report holds the round
-// (roundEnd.holding).
+// is replaced once every role the round waits for has answered — each claim with a session but a
+// failed one and one that has left the round's pod — and no turn or claim's activity report holds
+// the round (roundEnd.holding).
 func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.s.enqueue = nil
@@ -239,14 +242,15 @@ func TestPodUpdateWithNoOutboxPublishesNothingAndStillRunsTheRound(t *testing.T)
 
 // An operator's spawn of another project's issue runs in a pod of this daemon's, which the
 // update-round sweep reads as it reads every pod, and the round over that pod asks its role as
-// every round does. But the ask is an outbox row keyed by that issue, which only that project's
-// daemon runs (claim.KeyOfProject), so the sweep's enqueue writes none (supervision.enqueue): the
-// round asks nothing, logs no Warn and marks the claim asked at no sweep, while the round itself
-// is recorded and runs on. The daemon's records are wrapped as the daemon wraps them
-// (projectRecords), whose refusal of such a key is a writer's defect. Before the fix the ask
-// reached that refusal, which logged its Warn at every sweep's ask, and the sweep then logged the
-// ask enqueued; the no-Warn check below is what fails without the fix, since #4337 left the ask's
-// mark to the outbox's delivery (supervise's Machine.PublishUpdateAsk).
+// every round asks a role it owes an ask (unaskedClaims). But the ask is an outbox row keyed by
+// that issue, which only that project's daemon runs (claim.KeyOfProject), so the sweep's enqueue
+// writes none (supervision.enqueue): the round asks nothing, logs no Warn and marks the claim
+// asked at no sweep, while the round itself is recorded and runs on. The daemon's records are
+// wrapped as the daemon wraps them (projectRecords), whose refusal of such a key is a writer's
+// defect. Before the fix the ask reached that refusal, which logged its Warn at every sweep's
+// ask, and the sweep then logged the ask enqueued; the no-Warn check below is what fails without
+// the fix, since #4337 left the ask's mark to the outbox's delivery (supervise's
+// Machine.PublishUpdateAsk).
 func TestAnUpdateRoundOverASpawnOfAnotherProjectsIssueAsksItNothing(t *testing.T) {
 	const (
 		other    = "OTHERPROJECT-9"

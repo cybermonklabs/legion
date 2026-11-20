@@ -758,11 +758,13 @@ func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
 // A broker enrollment changed under running roles — another audience or token expiry, which only a
 // daemon restart brings — is read on every role of the pod at once: PodDrift names, for each, the
 // projection the pod holds and the one a pod created now carries, so one update round is opened
-// over the whole pod and each role keeps running until it has answered. None of them is
-// StaleAddress, which would have the supervisor repoint it mid-turn, and no relaunch replaces the
-// pod under the rest. The round's one ReplacePod ends the pod: every role in it is reported ended
-// by the daemon's own act (Displaced), never dead, and relaunched together, as the supervisor's
-// machines relaunch them, they move into one new pod that has drifted from nothing.
+// over the whole pod and each role keeps running until the round replaces the pod, once every role
+// in it but a failed one and one that has left the round's pod has answered or at the round's
+// bound, unless an operator's suspension holds one of them. None of them is StaleAddress, which
+// would have the supervisor repoint it mid-turn, and no relaunch replaces the pod under the rest.
+// The round's one ReplacePod ends the pod: every role in it is reported ended by the daemon's own
+// act (Displaced), never dead, and relaunched together, as the supervisor's machines relaunch
+// them, they move into one new pod that has drifted from nothing.
 func TestChangingTheBrokersAudienceDriftsEveryRoleOfThePodTogether(t *testing.T) {
 	before := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	now := before
@@ -962,10 +964,11 @@ func heldInPod(r *Runtime, pod *corev1.Pod, roles []claim.Role) []movedAddress {
 // URL with its pod's enrollment unchanged) is stale too, but its relaunch starts a new generation
 // in the same pod. What has drifted instead is neither: the broker's enrollment, configured only
 // now or changed, leaves the role Alive and its pod kept, and is read by PodDrift alone, for its
-// update round to act on once its workers have pushed — and enrolling only now moves no address
-// of the running generation, which runs in a pod carrying no enrollment and so holds no broker
-// URL to move (Runtime.enrollsIn). A role holding nothing moved and whose pod has drifted from
-// nothing is alive and its pod kept.
+// update round to act on once every worker in it but a failed one and one that has left the
+// round's pod has pushed — and enrolling only now moves no address of the running generation,
+// which runs in a pod carrying no enrollment and so holds no broker URL to move
+// (Runtime.enrollsIn). A role holding nothing moved and whose pod has drifted from nothing is
+// alive and its pod kept.
 func TestEvaluateReadsAPodStaleExactlyWhenRelaunchReplacesIt(t *testing.T) {
 	broker := AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	enrolled := func(edit func(*AgentSecrets)) func(*Options) {

@@ -2597,8 +2597,10 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // the claim is in (RoleClaim.UpdateRound), the record of its agent's last step
 // (RoleClaim.Step) and what its own session last reported it was doing (RoleClaim.ActivityAt,
 // ActivityBackground, ActivityNextReminderAt), which a rule over a run reads to tell a worker
-// whose round prompts it, whose agent is still moving, or whose own process will prompt it,
-// from one nothing will prompt (workflow.SilentPhaseWorker).
+// in an update round, whose agent is still moving, or whose own process will prompt it, from
+// one nothing will prompt (workflow.SilentPhaseWorker). A pod round asks each of its claims but
+// a failed one and one that has left the round's pod, and a claim that has left the round's pod
+// is passed over all the same, since it records the round until the round ends.
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

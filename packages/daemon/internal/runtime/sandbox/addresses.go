@@ -321,10 +321,11 @@ func sameTokenProjection(held, want *corev1.ServiceAccountTokenProjection) bool 
 // pod lacks it. A role started now in a pod that lacks it is told no identity (tradesIn), and so
 // trades nothing for as long as it runs there; a pod's volumes are fixed when it is created, so
 // turning the exchange on, or moving its audience, leaves every enrolled pod lacking it until the
-// pod is replaced, which is its update round's to do once its workers have pushed, as the
-// enrollment's is (movedEnrollment). It compares the three fields the token file depends on, as
-// movedEnrollment does. A runtime that names no exchange audience, or enrolls no pod, lacks
-// nothing: a pod that still carries a token is no pod to replace for a generation told of none.
+// pod is replaced, which is its update round's to do once every worker in it but a failed one and
+// one that has left the round's pod has pushed, as the enrollment's is (movedEnrollment). It
+// compares the three fields the token file depends on, as movedEnrollment does. A runtime that
+// names no exchange audience, or enrolls no pod, lacks nothing: a pod that still carries a token
+// is no pod to replace for a generation told of none.
 func (r *Runtime) movedExchangeIdentity(pod *corev1.Pod) (movedAddress, bool) {
 	broker := r.agentSecrets
 	if broker == nil || broker.ExchangeAudience == "" {
@@ -375,9 +376,9 @@ func carriesExchangeIdentity(pod corev1.PodSpec, broker *AgentSecrets) bool {
 // ending every process in it.
 //
 // Where a round covers the pod (roundCovers), everything else a running pod cannot be changed to
-// carry is drift, not a moved address (driftedInPod, podShapeDrift): its worker can be asked to
-// do the steps of an update message first (supervise.UpdateTask), and an update round asks it
-// before the pod is replaced.
+// carry is drift, not a moved address (driftedInPod, podShapeDrift): its workers can be asked to
+// do the steps of an update message first (supervise.UpdateTask), and an update round asks every
+// one of them but a failed one and one that has left the round's pod before the pod is replaced.
 //
 // A pod no round covers holds every facet here, driftedInPod's five included. No round is ever
 // opened over such a pod — PodDrift answers nothing for it — so a facet that was neither a moved
@@ -411,12 +412,13 @@ func (r *Runtime) movedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 // (movedGhDirs). Each is fixed for the
 // pod's life, so the pod must be replaced for the role to run as one launched now — but each
 // leaves the workers already in the pod running and able to reach this daemon, so each is a
-// reason to open a round (PodDrift) and ask them to do the steps of its update message
-// (supervise.UpdateTask), where replacing the pod under them would end every turn in it and take
-// the issue's disk with it. The two facets whose worker cannot be reached at all are movedInPod's
-// and are never a round's — and for a pod no round covers (roundCovers), the project controller's
-// today, so are these five: no round is opened over such a pod, so movedInPod holds every facet
-// there and its launch replaces it, as it always did.
+// reason to open a round (PodDrift) and ask each of them but a failed one and one that has left
+// the round's pod to do the steps of its update message (supervise.UpdateTask), where replacing
+// the pod under them would end every turn in it and take the issue's disk with it. The two
+// facets whose worker cannot be reached at all are movedInPod's and are never a round's — and
+// for a pod no round covers (roundCovers), the project controller's today, so are these five: no
+// round is opened over such a pod, so movedInPod holds every facet there and its launch replaces
+// it, as it always did.
 func (r *Runtime) driftedInPod(pod *corev1.Pod, role claim.Role) []movedAddress {
 	var moved []movedAddress
 	if overlays, ok := r.movedRoleOverlays(pod.Spec, role); ok {

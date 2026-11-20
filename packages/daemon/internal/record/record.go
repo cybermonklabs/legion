@@ -2438,9 +2438,11 @@ type RoleClaim struct {
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
 	// UpdateRound is the round the claim is in, "" when none is open: a pod round over its pod
-	// or its own plugin round (supervise.Claim.UpdateRound). A rule over a run reads it to tell
-	// a worker the round itself prompts, whose replacement is what starts it again, from one
-	// nothing will prompt (workflow.SilentPhaseWorker).
+	// or its own plugin round (supervise.Claim.UpdateRound). A rule over a run reads it to pass
+	// over a worker in a round (workflow.SilentPhaseWorker): a pod round asks each of its claims
+	// but a failed one and one that has left the round's pod, and the pod's replacement starts
+	// again each claim it asked, so nothing else need prompt it. A claim that has left the round's
+	// pod still records the round, so the rule passes it over too until the round ends.
 	UpdateRound string
 	// Step is the claim's record of its agent's last step as far as the two columns this read
 	// takes it: At from step_at and TurnStartedAt from turn_started_at, both of them the zero

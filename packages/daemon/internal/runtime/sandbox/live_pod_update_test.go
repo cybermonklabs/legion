@@ -1,19 +1,21 @@
 //go:build e2e
 
 // The Stage 4a harness's update-round check (INFRA-484): a running issue pod whose configuration
-// has drifted is kept while the workers in it still hold unpushed work, and is replaced only once
-// each of them has pushed that work and answered. The rig is live_test.go.
+// has drifted is kept while any worker in it but a failed one and one that has left the round's
+// pod still holds unpushed work, and is replaced only once each of those has pushed that work and
+// answered. The rig is live_test.go.
 //
 // The round itself is the daemon's (internal/daemon's reconcilePodUpdates, which that package's
 // tests pin); what reaches a cluster is this package's two halves of it — PodDrift, which the
 // round is opened on, and ReplacePod, which ends it — and this check drives the two as that sweep
 // drives them. The harness plays the sweep here as it plays the daemon's machine for boot tokens,
-// enrollments and sessions: it reads the drift, asks every worker of the pod, holds the pod while
-// one of them has not answered, and replaces it once both have. That is the round's early end as
-// far as the answers go: the daemon's own early end also waits while a turn runs or a claim's
-// activity report holds the round (internal/daemon's roundEnd.holding), and the bound that ends a
-// round whatever its workers answer (pod_update_grace_minutes) is the daemon's alone; that
-// package's tests pin both.
+// enrollments and sessions: it reads the drift, asks every worker of the pod but a failed one and
+// one that has left the round's pod — here both, since neither has failed or left the pod —
+// holds the pod while one of them has not answered, and replaces it once both have. That is the
+// round's early end as far as the answers go: the daemon's own early end also waits while a turn
+// runs or a claim's activity report holds the round (internal/daemon's roundEnd.holding), and the
+// bound that ends a round whatever its workers answer (pod_update_grace_minutes) is the daemon's
+// alone; that package's tests pin both.
 //
 // Every pod of the run runs a stub agent (live_test.go's header), which reads no task and answers
 // nothing, so each worker's own side of the round is carried out as that role's agent in the pod
@@ -132,7 +134,7 @@ func (r *liveRig) checkPodUpdate() error {
 	for _, c := range workers {
 		turns = append(turns, &liveTurn{claim: c, from: mark})
 		tasked = append(tasked, c.name)
-		note("harness", "update round %s: %s is tasked with the steps of the update message (supervise.UpdateTask), as the sweep tasks every worker claim of issue %s", round, c.name, issue)
+		note("harness", "update round %s: %s is tasked with the steps of the update message (supervise.UpdateTask), as the sweep tasks each worker claim of issue %s but a failed one and one that has left the round's pod", round, c.name, issue)
 	}
 	var inPod []string
 	for _, c := range r.claims {
@@ -142,7 +144,7 @@ func (r *liveRig) checkPodUpdate() error {
 	}
 	slices.Sort(inPod)
 	if want := slices.Sorted(slices.Values(tasked)); !slices.Equal(inPod, want) {
-		return fmt.Errorf("the pod %s runs %v and the round tasked %v: a round tasks every live worker of its pod", short(old.Sandbox.PodUID), inPod, want)
+		return fmt.Errorf("the pod %s runs %v and the round tasked %v: a round tasks each live worker of its pod but a failed one and one that has left the round's pod, and this test's workers are neither", short(old.Sandbox.PodUID), inPod, want)
 	}
 
 	headFirst, err := r.answerUpdate(first, dir)
@@ -316,10 +318,11 @@ func (r *liveRig) branchHead(c *liveClaim, dir workspace.Workspace) (string, err
 	return fields[0], nil
 }
 
-// holdDriftedPod holds the drifted pod to what an open round promises: while one worker has not
-// answered, nothing replaces the pod. Over liveSettle no process in it is observed ending or
-// moving, the pod keeps its uid and stays Running with its Sandbox Running, and every worker in it
-// probes Alive — the drift is read and the pod is kept.
+// holdDriftedPod holds the drifted pod to what an open round promises before its bound: nothing
+// replaces the pod while any worker in it, but a failed one and one that has left the round's pod,
+// has not answered. Over liveSettle no process in it is observed ending or moving, the pod keeps
+// its uid and stays Running with its Sandbox Running, and every worker in it probes Alive — the
+// drift is read and the pod is kept.
 func (r *liveRig) holdDriftedPod(name, uid string, workers []*liveClaim, mark int, waiting *liveClaim) error {
 	time.Sleep(liveSettle)
 	for _, o := range r.obs.since(mark) {
@@ -422,15 +425,16 @@ func (round *liveFleetRound) names() []string {
 // every pod written after it — and the runtime then reads the same one reason for all four
 // workers.
 //
-// What the round then promises across the fleet is that each pod waits for its own workers: the
-// second issue's two answer, its pod is replaced, and the first issue's pod is untouched by that
-// — over a settle window nothing in it ends or moves, it keeps its uid and stays Running, and
-// both its workers still probe Alive. Only when its own two answer is it replaced in turn. No
-// architect — a root's own claim — is ended uncharged between its task and its answer
-// (assertNoTurnCut), which is this layer's whole say on a round leaving a root where it was: what
-// a completion, a park or a wait on a person does to an issue record is the daemon's, and
-// internal/daemon's own round tests hold it. Each worker's pushed work is on GitHub after the pod
-// that held it is gone, read as that role's own App.
+// What the round then promises across the fleet is that each pod waits for its own workers, every
+// one but a failed one and one that has left the round's pod, and for no other pod's: the second
+// issue's two answer, its pod is replaced, and the first issue's pod is untouched by that — over
+// a settle window nothing in it ends or moves, it keeps its uid and stays Running, and both its
+// workers still probe Alive. Only when its own two answer is it replaced in turn. No architect —
+// a root's own claim — is ended uncharged between its task and its answer (assertNoTurnCut),
+// which is this layer's whole say on a round leaving a root where it was: what a completion, a
+// park or a wait on a person does to an issue record is the daemon's, and internal/daemon's own
+// round tests hold it. Each worker's pushed work is on GitHub after the pod that held it is gone,
+// read as that role's own App.
 func (r *liveRig) checkPodUpdateFleet() error {
 	var rounds []*liveFleetRound
 	for _, pair := range [][]string{{"update-a", "update-b"}, {"fleet-a", "fleet-b"}} {
@@ -522,8 +526,8 @@ func (r *liveRig) checkPodUpdateFleet() error {
 	}
 	note("runtime", "PodDrift of both issue pods, for all four workers: %s — the one reason both rounds are opened on", reason)
 
-	// Every worker of every drifted pod is tasked, as the sweep tasks every worker claim of every
-	// issue whose pod has drifted.
+	// Every worker of every drifted pod is tasked, as the sweep tasks, in every issue whose pod has
+	// drifted, every worker claim but a failed one and one that has left the round's pod.
 	mark := r.obs.mark()
 	for _, round := range rounds {
 		for _, c := range round.workers {
@@ -607,10 +611,11 @@ func (r *liveRig) checkPodUpdateFleet() error {
 	return nil
 }
 
-// replaceFleetPod ends one issue's round: ReplacePod on the pod its workers have all answered for,
-// each worker's process observed ended at its recorded locator with Displaced set — the verdict
-// the supervisor resumes charging nothing, never a turn cut — and each resumed on its own session
-// into the one new pod, which reads no drift. It answers that new pod's locator.
+// replaceFleetPod ends one issue's round: ReplacePod on the pod once every worker in it but a
+// failed one and one that has left the round's pod has answered (here all of its workers), each
+// worker's process observed ended at its recorded locator with Displaced set — the verdict the
+// supervisor resumes charging nothing, never a turn cut — and each resumed on its own session into
+// the one new pod, which reads no drift. It answers that new pod's locator.
 func (r *liveRig) replaceFleetPod(round *liveFleetRound, mark int) (runtime.Locator, error) {
 	first := round.workers[0]
 	if err := r.rt.ReplacePod(r.ctx, runtime.Known{Claim: first.token, Locator: first.loc}, stillDue); err != nil {

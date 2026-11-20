@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -398,6 +399,183 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 	}
 	if n := rig.askedOf(claim.RoleImplementer); n != 1 {
 		t.Errorf("the implementer was asked %d times, want once", n)
+	}
+}
+
+// A round publishes its ask at most once to each claim it asks (supervise's Claim.OwesUpdateAsk),
+// and the answer a role gives stands for its round. So an ask the sweep queued before the role
+// answered, and that the outbox runs after the answer, reaches nobody and marks nothing: the
+// answer is what the ask was for. The same holds for a claim that has left the round's pod, which
+// the daemon started again in another pod while its ask waited: the round asks such a claim
+// nothing, as the sweep asks it nothing. In both cases the row ends with nothing marked, because
+// no ask reached the role.
+//
+// There are two controls. The ask that runs with nothing between the enqueue and the row is
+// delivered once and marked, and so is the ask of a claim started again in the round's own pod,
+// which is still in the round.
+func TestPodUpdateAskQueuedBeforeTheClaimNeededNoneReachesNobody(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		between   func(*podUpdateRig)
+		delivered int
+	}{
+		{name: "the control: nothing happens between the enqueue and the row", between: func(*podUpdateRig) {}, delivered: 1},
+		{name: "the role answers before the row runs", between: func(rig *podUpdateRig) {
+			rig.signal(claim.RoleImplementer, "c0ffee")
+		}, delivered: 0},
+		{name: "the control: the role is started again in the round's own pod before the row runs", between: func(rig *podUpdateRig) {
+			rig.displacedInto(claim.RoleImplementer, podUpdatePod)
+		}, delivered: 1},
+		{name: "the role is started again in another pod before the row runs", between: func(rig *podUpdateRig) {
+			rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+		}, delivered: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			rig.settleAll()
+			tc.between(rig)
+			if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || c.UpdateTaskedAt != nil {
+				t.Fatalf("the implementer before its row runs = %+v, want it in the round and unasked", c)
+			}
+
+			rig.runAsk(row)
+
+			if n := rig.deliveredTo(claim.RoleImplementer); n != tc.delivered {
+				t.Fatalf("the implementer's topic was delivered %d asks, want %d", n, tc.delivered)
+			}
+			var marked *time.Time
+			if err := rig.pool.QueryRow(rig.ctx, "select update_tasked_at from claims where token = $1",
+				string(rig.tokens[claim.RoleImplementer])).Scan(&marked); err != nil {
+				t.Fatalf("read the implementer's stored claim: %v", err)
+			}
+			if asked := rig.claimOf(claim.RoleImplementer).UpdateTaskedAt; (asked != nil) != (tc.delivered == 1) || (marked != nil) != (tc.delivered == 1) {
+				t.Fatalf("the implementer records an ask at %v, stored %v; want a mark only where the ask was delivered", asked, marked)
+			}
+		})
+	}
+}
+
+// A claim can fail for real while the ask the sweep queued for it waits in the outbox, and its
+// process can run on: its turn ends in a provider error that holds the issue (HTTP 400) while the
+// runtime refuses the suspension fail asks for, so the listener still holds the role's topic. The
+// row publishes nothing and marks nothing, and so does the same row run by a second daemon, which
+// restores the failed claim from the store with nothing of the first daemon's memory. The control
+// is the same turn ending in an error that clears (HTTP 503): the claim does not fail, and the row
+// is delivered once and marked, by either daemon.
+func TestPodUpdateAskQueuedBeforeTheClaimFailedReachesNobodyAcrossARestart(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		status    int
+		failed    bool
+		restart   bool
+		delivered int
+	}{
+		{name: "the control: a turn that ends in an error that clears", status: 503, delivered: 1},
+		{name: "a claim that failed with its suspension refused", status: 400, failed: true},
+		{name: "the control: a turn that ends in an error that clears, then a restart", status: 503, restart: true, delivered: 1},
+		{name: "a claim that failed with its suspension refused, then a restart", status: 400, failed: true, restart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+			rig.drifts(podUpdateDrift)
+			rig.tick()
+			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+			row := rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+			rig.settleAll()
+
+			token := rig.tokens[claim.RoleImplementer]
+			rig.rt.FailSuspend(errors.New("the runtime refused the suspension"))
+			rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, Task: "implement the plan",
+				ID: "outbox:4801", Phase: phase.Implementing, Generation: 1})
+			rig.settle(claim.RoleImplementer)
+			rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
+			rig.settle(claim.RoleImplementer)
+			sent := rig.workers[claim.RoleImplementer].Prompts()
+			if len(sent) == 0 || rig.claimOf(claim.RoleImplementer).Pending == nil {
+				t.Fatalf("the implementer was sent %+v and holds %+v; want its task sent and held, or this case shows nothing",
+					sent, rig.claimOf(claim.RoleImplementer).Pending)
+			}
+			rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: token})
+			rig.handle(claim.RoleImplementer, supervise.StreamPromptResult{Claim: token, DeliveryID: sent[len(sent)-1].DeliveryID,
+				AgentInvoked: true, Error: "the provider answered an error", HTTPStatus: tc.status})
+			rig.settleAll()
+			c := rig.claimOf(claim.RoleImplementer)
+			if c.ProviderErrorRun == 0 {
+				t.Fatalf("the implementer is %s with no provider error counted: the turn's result was not taken, so this case shows nothing", c.State)
+			}
+			if (c.State == supervise.StateFailed) != tc.failed || c.UpdateRound != podUpdateRound || c.UpdateTaskedAt != nil {
+				t.Fatalf("the implementer before its row runs is %s in round %q, marked %v; want failed=%t, still in round %s, unasked",
+					c.State, c.UpdateRound, c.UpdateTaskedAt, tc.failed, podUpdateRound)
+			}
+			if tc.failed && len(rig.rt.CallsOf("Suspend")) == 0 {
+				t.Fatal("the failure asked the runtime for no suspension, so this case shows nothing")
+			}
+
+			drains := rig
+			if tc.restart {
+				drains = rig.restart()
+				if c := drains.claimOf(claim.RoleImplementer); (c.State == supervise.StateFailed) != tc.failed || c.UpdateRound != podUpdateRound {
+					t.Fatalf("the implementer after the restart is %s in round %q; want failed=%t in round %s", c.State, c.UpdateRound, tc.failed, podUpdateRound)
+				}
+			}
+			drains.runAsk(row)
+
+			if n := drains.deliveredTo(claim.RoleImplementer); n != tc.delivered {
+				t.Fatalf("the implementer's topic was delivered %d asks, want %d", n, tc.delivered)
+			}
+			var marked *time.Time
+			if err := drains.pool.QueryRow(drains.ctx, "select update_tasked_at from claims where token = $1", string(token)).Scan(&marked); err != nil {
+				t.Fatalf("read the implementer's stored claim: %v", err)
+			}
+			if (marked != nil) != (tc.delivered == 1) {
+				t.Fatalf("the stored ask mark = %v, want a mark only where the ask was delivered", marked)
+			}
+		})
+	}
+}
+
+// The sweep asks no claim that left the round's pod, at any sweep after it left. Two roles stand
+// in the round's pod. The implementer is started again in another pod, which leaves the round
+// (supervise's leftPodRoundAt writes that once, and no later launch takes it back), and then
+// started again in the round's own pod, where the tester still holds the round open. While the
+// issue's claims record two pods the sweep asks nobody, as a replacement in flight, so only the
+// move back puts the left claim in front of the sweep's ask. Over three later sweeps, with the
+// lane run after each, the implementer's rows of the round stay at the one the sweep queued
+// before it left.
+//
+// The negative control is the sweep with its left-pod case taken out (unaskedClaims asking a
+// claim that OwesUpdateAsk refuses as left): it queues the implementer a row of the round at each
+// of the three sweeps. Without the move back, this case passes with that case taken out.
+func TestPodUpdateNoSweepAsksAClaimThatLeftTheRoundsPod(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitAskQueued(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+	rig.displacedInto(claim.RoleImplementer, podUpdateReplacementPod)
+	rig.runLane()
+	rig.displacedInto(claim.RoleImplementer, podUpdatePod)
+	for range 3 {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		rig.runLane()
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound || !c.LeftPodRound(podUpdateRound) {
+		t.Fatalf("the implementer at the end = round %q, left %q; want it still in round %s and left, or this case shows nothing", c.UpdateRound, c.UpdateLeftRound, podUpdateRound)
+	}
+	n := 0
+	for _, ask := range rig.asks() {
+		if ask.Role == claim.RoleImplementer && ask.Round == podUpdateRound {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("the sweep queued the implementer %d asks of round %s, want only the one before it left the pod", n, podUpdateRound)
 	}
 }
 

@@ -862,14 +862,14 @@ type ClaimView struct {
 	// earlier daemon's: the stale-plugin lane asks its worker nothing and opens no round, and a
 	// boot takes every claim out of one it finds (daemon's endPluginRounds), so the key carries
 	// such a round only in the moments before that boot pass reaches it. Once its worker has
-	// answered, the process holding
-	// this claim is waiting to be replaced and the daemon holds the claim's next task. UpdateHead
-	// is the commit the worker reported as the head of its issue branch at origin when it answered
-	// the round, and is absent until it answers and for a worker that reported none (a planner
-	// before its first push). It is the worker's word, which nothing verifies. UpdateReasons is
-	// what the round was opened for, as the daemon found the drift, and is absent while no round
-	// is open: the worker answering a round is told to act on it, so the seat that answers reads
-	// why its pod is being replaced rather than the task's word for it alone.
+	// answered, the process holding this claim is waiting to be replaced and the daemon holds
+	// the claim's next task. UpdateHead is the commit the worker reported as the head of its
+	// issue branch at origin when it answered the round, and is absent until it answers and for
+	// a worker that reported none (a planner before its first push). It is the worker's word,
+	// which nothing verifies. UpdateReasons is what the round was opened for, as the daemon
+	// found the drift, and is absent while no round is open: the worker answering a round is
+	// told to act on it, so the seat that answers reads why its pod is being replaced rather
+	// than the task's word for it alone.
 	UpdateRound   string `json:"updateRound,omitempty"`
 	UpdateHead    string `json:"updateHead,omitempty"`
 	UpdateReasons string `json:"updateReasons,omitempty"`

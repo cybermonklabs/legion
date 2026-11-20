@@ -456,9 +456,10 @@ type Claim struct {
 	// identity and its kind in one string. PodRoundPrefix and the pod's uid is the drift round of
 	// the pod the claim runs on, which every claim of that pod shares, and PluginRoundPrefix and
 	// the daemon's contract the per-claim round of a claim whose plugin is behind this daemon. A
-	// round ends when the process it waits for is replaced. The daemon asks each role of the
-	// round and replaces the pod once every asked role has answered, no turn runs and no claim's
-	// activity report holds it (internal/daemon's roundEnd.holding), or at the round's bound
+	// round ends when what it was opened over is replaced. The daemon asks each role of the
+	// round but a failed one and one that has left the round's pod (OwesUpdateAsk), and replaces
+	// the pod once every asked role has answered, no turn runs and no claim's activity report
+	// holds it (internal/daemon's roundEnd.holding), or at the round's bound
 	// (pod_update_grace_minutes) whatever the roles answered and whatever runs, an operator's
 	// suspension excepted. Work that a role did not push goes with the disk the replacement
 	// deletes.
@@ -469,7 +470,8 @@ type Claim struct {
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
 	// UpdateTaskedAt is when the round's ask reached a session of this claim's role
 	// (record.UpdateAsk, Machine.PublishUpdateAsk), nil until one has: the mark that makes the
-	// sweep ask each claim of a round until one ask reaches it, and never after.
+	// sweep ask each claim of a round the rule owes an ask (OwesUpdateAsk) until one ask reaches
+	// it, and never after.
 	// UpdateSignalledAt is when the worker answered ready_for_update, nil until it has.
 	UpdateOpenedAt    *time.Time
 	UpdateTaskedAt    *time.Time
@@ -1008,9 +1010,9 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: its role is asked the steps of UpdateTask like any other, on its own Envoy
-	// topic (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
-	// (internal/daemon's refreshStalePlugins).
+	// what carries it: its role is asked the steps of UpdateTask like any other (OwesUpdateAsk), on
+	// its own Envoy topic (internal/daemon's openPodUpdate), and the replacement brings it up on a
+	// new image (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
 	// agent took the work the daemon gave it. The workflow decides what a root still owes its
@@ -1859,15 +1861,60 @@ const (
 	UpdateAskAlreadyDelivered
 	// UpdateAskOutOfRound is an ask of a round the claim is not in: nothing is published.
 	UpdateAskOutOfRound
+	// UpdateAskAnswered is an ask of a round whose role has answered it while no ask of it had
+	// reached a session: nothing is published and nothing is marked, since the answer stands for
+	// its round and no ask reached the role.
+	UpdateAskAnswered
+	// UpdateAskLeftPodRound is an ask of a pod round the claim has left (Claim.LeftPodRound):
+	// nothing is published and nothing is marked, since the work the round asks about went with
+	// that round's pod and no process the claim runs now holds any of it.
+	UpdateAskLeftPodRound
+	// UpdateAskClaimFailed is an ask of a round whose claim has failed: nothing is published and
+	// nothing is marked. A failed claim runs no turn, so the round asks it nothing (OwesUpdateAsk)
+	// and does not wait for it (internal/daemon's askedClaims). Its process can still hold the
+	// role's topic, because a claim fails even when the runtime refuses to suspend that process
+	// (fail). A retry starts the claim again, and the sweep asks it at the first tick after its
+	// agent is ready again.
+	UpdateAskClaimFailed
 )
+
+// OwesUpdateAsk is whether this claim's own record still owes it an ask of round, and, when it
+// owes none, the outcome that says why: the claim is not in round, an ask of round already
+// reached a session of its role, its role has answered round, it is a claim that has left the
+// round's pod, or it is a failed claim. Each of those makes an ask of round needless, because the
+// round publishes once per claim, an answer stands for its round, and a failed claim runs no turn.
+//
+// It is the one statement of whom a round asks, which is neither a failed claim nor one that has
+// left the round's pod. The sweep reads it where it enqueues an ask
+// (internal/daemon's unaskedClaims), and the outbox's row reads it again under this claim's lock
+// where it publishes that ask (PublishUpdateAsk), because the row runs after the enqueue and the
+// claim can move in between: its role can answer, the daemon can start it again in another pod,
+// or it can fail. Two statements of the rule would drift apart, and the one at the publish is the
+// one that decides what reaches the role.
+func (c Claim) OwesUpdateAsk(round string) (bool, UpdateAskOutcome) {
+	switch {
+	case c.UpdateRound != round:
+		return false, UpdateAskOutOfRound
+	case c.UpdateTaskedAt != nil:
+		return false, UpdateAskAlreadyDelivered
+	case c.answeredOpenRound():
+		return false, UpdateAskAnswered
+	case c.LeftPodRound(round):
+		return false, UpdateAskLeftPodRound
+	case c.State == StateFailed:
+		return false, UpdateAskClaimFailed
+	}
+	return true, 0
+}
 
 // PublishUpdateAsk publishes one ask of the claim's update round through publish, and marks the
 // claim asked (UpdateTaskedAt) when, and only when, that publish reached a session. publish
 // answers true for a publish a session of the role took, false for a topic no live session holds
 // (notify.ErrNoHolder), and an error for every other failure; it must not call into this machine,
 // whose lock it runs under. The outbox's update-ask row is the one caller (internal/daemon's
-// updateAsk). The sweep only enqueues the row and marks nothing (internal/daemon's askRound): an
-// ask counts once it reached a session, and an ask that reached none is lost, not given, so the
+// updateAsk). The sweep only enqueues the row, for each claim the rule still owes an ask
+// (OwesUpdateAsk), and marks nothing (internal/daemon's askRound): an ask counts once it reached a
+// session of the role, and an ask that reached no session is lost, not given, so the
 // claim stays unasked and a later sweep asks it again (dispatch://INFRA-4109 R4,
 // dispatch://INFRA-4131 R4).
 //
@@ -1880,10 +1927,17 @@ const (
 //     that waited would hold every role message of that issue behind that decision. Held, the
 //     call answers ErrMachineBusy having published nothing, and the row's next attempt is still
 //     the first publish.
-//  2. The claim is read under the lock: a claim no longer in round is published nothing, and so
-//     is one an earlier ask of round already reached. Two rows of one round — a row left by an
-//     older daemon beside the sweep's own — therefore deliver one ask between them, whichever
-//     order they run in and whichever of them finds a holder.
+//  2. An owed mark is answered first: an ask of round already reached a session, and the write of
+//     its mark is one the store has not taken (owedWrite). That answers UpdateAskAlreadyDelivered
+//     with an error, so the row stays until the write lands, before the rule below is read at
+//     all: whatever the claim became since — answered, out of round's pod or failed — no case of
+//     the rule, now or added later, can end that row first. Then the claim is read under the lock
+//     (OwesUpdateAsk): a claim no longer in round is published nothing, and so is one an earlier
+//     ask of round already reached, one whose role has answered round, one that has left round's
+//     pod, and one that has failed. Two rows of one round — a row left by an older daemon beside
+//     the sweep's own — therefore deliver one ask between them, whichever order they run in and
+//     whichever of them finds a holder, and a row that runs after the role answered, after the
+//     claim left the round's pod, or after the claim failed, delivers none.
 //  3. The publish runs under the lock, so nothing else of this claim reads or writes the mark
 //     between the publish and the mark. The section holds the lock for at most the owed write's
 //     repair, the publish and the mark's write: the claim-write deadline twice and notify's
@@ -1917,13 +1971,11 @@ func (m *Machine) PublishUpdateAsk(ctx context.Context, round string, publish fu
 	}
 	defer m.unlock()
 	m.repair(ctx)
-	switch {
-	case m.claim.UpdateRound != round:
-		return UpdateAskOutOfRound, nil
-	case m.claim.UpdateTaskedAt != nil && m.owedWrite != nil:
+	if m.owedWrite != nil && m.claim.UpdateRound == round && m.claim.UpdateTaskedAt != nil {
 		return UpdateAskAlreadyDelivered, fmt.Errorf("the mark of the ask of round %s that reached the role waits on a claim write the store has not taken", round)
-	case m.claim.UpdateTaskedAt != nil:
-		return UpdateAskAlreadyDelivered, nil
+	}
+	if owed, why := m.claim.OwesUpdateAsk(round); !owed {
+		return why, nil
 	}
 	delivered, err := publish(ctx)
 	if err != nil {
@@ -2537,7 +2589,8 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 	case RequestExit:
 		return m.fenceRequest("exit", ev.Generation, ev.Session)
 	case PodUpdateSignalled:
-		// The worker's answer ends a round, and a round ending deletes a disk: a process of a
+		// The worker's answer can end a round, as the last answer the round waits for
+		// (internal/daemon's waitingClaims), and a round ending deletes a disk: a process of a
 		// superseded generation, or of another session, must never be what says the work is
 		// pushed.
 		return m.fenceRequest("ready_for_update", ev.Generation, ev.Session)
@@ -3006,11 +3059,11 @@ func (m *Machine) launchWaits() bool {
 // whole of what any reader of that part needs beside the answer it already records
 // (Claim.LeftPodRound, the sweep's report of what the pod took with it).
 //
-// It is written once. A claim is asked nothing of a round it has left (internal/daemon's
-// openPodUpdate publishes no ask to it), so it can answer nothing between one launch and the
-// next, and the first launch out of the round's own pod is the one that says what was lost. Only
-// the round's end clears it (clearUpdate), so a later relaunch, a suspension and a restart each
-// leave it exactly as it is.
+// It is written once. A claim that has left the round's pod is asked nothing of that round
+// (internal/daemon's openPodUpdate publishes no ask to it), so it can answer nothing between one
+// launch and the next, and the first launch out of the round's own pod is the one that says what
+// was lost. Only the round's end clears it (clearUpdate), so a later relaunch, a suspension and a
+// restart each leave it exactly as it is.
 //
 // A process in no pod leaves no pod round: a tmux pane runs outside one, and a claim in a plugin
 // round or in no round at all has no pod round to leave.

@@ -281,3 +281,27 @@ func TestPodUpdateRoundWaitsOverAPodAPauseHoldsAndItsBoundMovesByTheHeldTime(t *
 		t.Fatalf("the controller was told %+v of a round the moved bound ended", notices)
 	}
 }
+
+// A supervision that leaves pauseHoldsSince unset, as openSupervision and the pod-update rig do,
+// reads the holds of a project's pause from its supervisor's store at the update sweep
+// (podPauseHolds): the field is the sweep rig's way to answer that read from memory, and a
+// supervision built without it holds its update rounds to the pause rather than calling a read it
+// was never given. The negative control is the sweep's read through the field alone: this case
+// then panics on the nil read, and so does every pod-update test that ticks the rig.
+func TestPodUpdateSweepReadsAPausesHoldsFromTheStoreWhereNoReadIsSet(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	if rig.s.pauseHoldsSince != nil {
+		t.Fatal("the rig's supervision sets pauseHoldsSince, and this case is of one that leaves it unset")
+	}
+	pause := openLegionPause(t, rig.pool, podUpdateStart)
+	holdLegionPod(t, rig.st, pause, podUpdateIssue, podUpdateStart)
+
+	holds, err := rig.s.podPauseHolds(rig.ctx, []supervise.Claim{rig.claimOf(claim.RoleImplementer)}, podUpdateStart.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("the sweep's read of the pause's holds: %v", err)
+	}
+	got := holds[podUpdateIssue]
+	if len(holds) != 1 || len(got) != 1 || got[0].Pause != pause || !got[0].EndedAt.IsZero() {
+		t.Fatalf("the sweep read holds of %d pods, %d of them of the rig's issue, want the one standing hold of pause %d on the rig's issue", len(holds), len(got), pause)
+	}
+}

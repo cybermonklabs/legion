@@ -438,9 +438,9 @@ func TestAGVisorPodRecordedBeforeThisReleaseReadsNoDrift(t *testing.T) {
 
 // An issue put on a gVisor project's canary list runs in a microVM from then on, so its gVisor pod
 // has drifted, and PodDrift names the sandbox alone, from none to the microVM the pod would be
-// built in now: the round that reason opens has its workers push, then replaces the pod with a
-// microVM one. The pod of an issue the list does not name still runs where its issue does, and has
-// drifted from nothing.
+// built in now: the round that reason opens has each of its workers but a failed one and one that
+// has left the round's pod push, then replaces the pod with a microVM one. The pod of an issue the
+// list does not name still runs where its issue does, and has drifted from nothing.
 func TestPuttingAnIssueOnTheCanaryListDriftsThatIssuesPodAlone(t *testing.T) {
 	g := newRig(t, nil)
 	canary, other := g.spawn(workerSpec(t)), g.spawn(childSpec(t))
@@ -635,9 +635,10 @@ func TestPodDriftReadsTheFacetsThatAreNoLongerStaleAddresses(t *testing.T) {
 // A pod runs as the ServiceAccount it was created with for its whole life, so an operator's
 // change of runtime.kubernetes.pod.service_account is drift of every issue pod created under the
 // account before it, and PodDrift is what names it: the round that reason opens asks every worker
-// in the pod to do the steps of its update message (supervise.UpdateTask), and only then replaces
-// the pod (accountDrift). The reason carries both accounts, the one the pod runs as and the one
-// configured now, each read through serviceAccountOr — so a pod already on the configured
+// in the pod but a failed one and one that has left the round's pod to do the steps of its update
+// message (supervise.UpdateTask), and only then replaces the pod (accountDrift). The reason
+// carries both accounts, the one the pod runs as and the one configured now, each read through
+// serviceAccountOr — so a pod already on the configured
 // account has drifted from nothing, and so has one on `default` under a configuration naming no
 // account, which is that same account spelled the other way, while a pod on a named account
 // under a configuration naming none has drifted, with `default` read into the configured half of
@@ -1021,9 +1022,10 @@ func TestReplacePodNamesTheDisplacedPodAndWaitsItOut(t *testing.T) {
 // The pod the replacement's next launch provisions runs as the account the configuration names
 // now, and has drifted from nothing: that is the whole of moving the account to the round. An
 // operator changes runtime.kubernetes.pod.service_account, each issue pod's own round names the
-// account among its reasons (PodDrift, accountDrift), the round replaces the pod once its workers
-// have pushed, and the role that resumes next comes up in a pod holding the new identity, with
-// nothing of the old account left for a launch to replace.
+// account among its reasons (PodDrift, accountDrift), the round replaces the pod once each of its
+// workers but a failed one and one that has left the round's pod has pushed, and the role that
+// resumes next comes up in a pod holding the new identity, with nothing of the old account left
+// for a launch to replace.
 func TestTheLaunchAfterAReplacementProvisionsAPodOnTheConfiguredAccount(t *testing.T) {
 	g := newRig(t, nil)
 	loc := g.spawn(workerSpec(t))

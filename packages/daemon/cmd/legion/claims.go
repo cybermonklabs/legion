@@ -144,8 +144,9 @@ func printClaims(w io.Writer, answer []byte) error {
 // podUpdateRoundsLine is the one line an operator reads for the pod rounds the daemon's last
 // sweep decided (api.PodUpdateRounds): the project's two limits, the issues holding a round under
 // them, and the issues each limit held back. No claim's own line says either half — an issue in a
-// round has every worker of it told to do the steps of its update message (supervise.UpdateTask)
-// and start nothing new, and an issue a limit held back is drifted and was posted nothing at
+// round has every worker of it but a failed one and one that has left the round's pod told to
+// do the steps of its update message (supervise.UpdateTask) and start nothing new, and an issue a
+// limit held back is drifted and was posted nothing at
 // all — so a roll an operator thinks is stuck is read here.
 //
 // A daemon that has not swept says so rather than print each list empty, which would read as a

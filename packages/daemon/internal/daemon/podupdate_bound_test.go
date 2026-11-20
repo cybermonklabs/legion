@@ -1,7 +1,8 @@
 package daemon
 
 // The round's bound (dispatch://INFRA-2981 R2, R3, R5, R6, R8): a round ends as soon as every
-// claim it asks has answered, no turn runs and no claim's activity report holds it
+// claim it waits for has answered (each claim with a session but a failed one and one that has
+// left the round's pod), no turn runs and no claim's activity report holds it
 // (roundEnd.holding, dispatch://INFRA-4203 R1), and at its bound — pod_update_grace_minutes after
 // it opened — whatever its roles said. An operator's suspension is the one wait the bound does not
 // step over, and the controller is told only of a round something holds past its bound, once, at
@@ -54,7 +55,8 @@ func (r *podUpdateRig) replacementClocks() func() []time.Time {
 }
 
 // wantWaiting holds a notice's list to exactly the roles of want, each marked answered as want
-// says: every late-round notice lists every claim the round asks (waitingOf).
+// says: every late-round notice lists every claim with a session but a failed one, one that has
+// left the round's pod included (waitingOf).
 func wantWaiting(t *testing.T, notice record.ControllerNotice, want map[claim.Role]bool) {
 	t.Helper()
 	if notice.Update == nil || len(notice.Update.Waiting) != len(want) {
@@ -93,8 +95,9 @@ func wantField(t *testing.T, line map[string]any, field string, want ...claim.Ro
 	}
 }
 
-// Every claim answers at once, so the round ends at once, before its bound, and the line of the
-// replacement says no bound made it. No line of a bounded end is written (R8's other half).
+// Both claims answer at once, so every claim the round waits for has answered (waitingClaims)
+// and the round ends at once, before its bound, and the line of the replacement says no bound
+// made it. No line of a bounded end is written (R8's other half).
 func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
@@ -128,7 +131,8 @@ func TestPodUpdateBoundEveryAnswerEndsTheRoundBeforeTheBound(t *testing.T) {
 // A claim stays in a turn and never answers. Before the bound the pod is not replaced, whatever
 // the clock reads, and no turn is cut; at the bound the pod is replaced, and the bounded end is
 // logged with the claims that answered and those that did not. Nobody is told: a round that
-// waits on its roles is no stall.
+// waits on its roles, each claim with a session but a failed one and one that has left the
+// round's pod, is no stall.
 func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateWorking, session: true, inPod: true, contract: readyWorker(claim.RoleImplementer).contract},
@@ -167,7 +171,7 @@ func TestPodUpdateBoundReplacesThePodOfAClaimThatNeverAnswers(t *testing.T) {
 	}
 	line := bounded[0]
 	if line["msg"] != podUpdateBoundLine || line["round"] != podUpdateRound || line["pod"] != podUpdatePod || line["issue"] != podUpdateIssue {
-		t.Errorf("the bounded end's line is %+v, want the exact words with round %s, pod %s and issue %s", line, podUpdateRound, podUpdatePod, podUpdateIssue)
+		t.Errorf("the bounded end's line says %q with round %v, pod %v and issue number %s, want the exact words with round %s, pod %s and issue number %s", line["msg"], line["round"], line["pod"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, podUpdatePod, issueNumber(podUpdateIssue))
 	}
 	wantField(t, line, "answered", claim.RoleTester)
 	wantField(t, line, "unanswered", claim.RoleImplementer)
@@ -304,8 +308,9 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 
 // Both claims answer, and the operator suspends the tester after its answer. The suspension holds
 // the pod past the bound. Once the operator resumes the tester, the pod is replaced, and the
-// answers end the round: the bound is past, but no claim is unanswered, no turn runs and no
-// claim's activity report holds the round, so the bound did not end it. The R8 line
+// answers end the round: the bound is past, but no claim the round waits for is unanswered
+// (waitingClaims), no turn runs and no claim's activity report holds the round, so the bound did
+// not end it. The R8 line
 // `supervise pod update replaced at the bound` says that the bound ended a round, and the
 // production check greps it, so it must not be written here. The line that every replacement
 // writes is written, with atTheBound false.
@@ -566,7 +571,8 @@ func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
 }
 
 // A round whose claims never answer is told to nobody at any clock: before its bound it waits on
-// its roles, which is no stall, at its bound the bound ends it, and after it there is no round.
+// its roles, each claim with a session but a failed one and one that has left the round's pod,
+// which is no stall, at its bound the bound ends it, and after it there is no round.
 func TestPodUpdateBoundTellsNobodyOfARoundWhoseClaimsNeverAnswer(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -660,10 +666,11 @@ const podUpdateDeployReset = `update claims
 // later, which is far past the round's bound, and its daemon starts from the store.
 //
 // With the migration's reset, the round starts its bound at the deploy: the first sweeps publish
-// the ask to each role, once, naming the deploy plus pod_update_grace_minutes as the end, and
-// replace nothing. The control keeps the clock the earlier release left: the first sweep finds
-// the round past its bound and replaces the pod, and no role is ever asked, because each claim
-// already holds the mark this release reads as its ask.
+// the ask to each role the round asks (supervise's Claim.OwesUpdateAsk), once, naming the deploy
+// plus pod_update_grace_minutes as the end, and replace nothing. The control keeps the clock the
+// earlier release left: the first sweep finds the round past its bound and replaces the pod, and
+// no role is ever asked, because each claim already holds the mark this release reads as its ask
+// (supervise's Claim.UpdateTaskedAt, read by Claim.OwesUpdateAsk).
 func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
@@ -735,16 +742,31 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 
 // A round open at the deploy whose members stand three ways: the implementer has not answered,
 // the tester answered under the earlier release, and the planner failed. The migration's reset
-// keeps the tester's answer and starts every member's clock at the deploy. So the first sweeps
-// ask the implementer alone, once, with the end at the deploy plus pod_update_grace_minutes: the
-// tester has answered and the planner is failed, and the round asks neither. Nothing is replaced
-// while the implementer has not answered. Once it answers, with no turn running and no claim's
-// activity report holding the round, the next sweep replaces the pod, still before the new bound,
-// because the tester's answer from before the deploy counts and the failed planner is waited for
-// by no one.
+// keeps the tester's answer and starts every member's clock at the deploy. So over the first
+// sweeps an ask reaches the implementer alone, once, with the end at the deploy plus
+// pod_update_grace_minutes: the tester has answered and the planner is failed, and the round asks
+// neither. Nothing is replaced while the implementer has not answered. Once it answers, with no
+// turn running and no claim's activity report holding the round, a sweep replaces the pod, still
+// before the new bound, because the tester's answer from before the deploy counts and the failed
+// planner is waited for by no one.
+//
+// What the check counts is what reached each role: every row the sweeps queued is run through the
+// role-message lane, which publishes an ask under the claim's own machine and reads the rule there
+// (supervise's Machine.PublishUpdateAsk). A sweep that reads the tester while its machine is
+// deciding reads it unanswered (roundGroup's mask) and queues a row for it; that row reaches nobody,
+// because the tester's own record holds its answer. So how busy a machine was at a sweep changes
+// nothing the check reads, and an ask that did reach the tester fails it; the deciding test
+// (podupdate_deciding_test.go) runs the check with the tester's machine held at those sweeps.
 //
 // The control is a reset that also clears update_signalled_at: then the tester is asked as well.
 func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
+	roundOpenAtTheDeployAsksOnlyTheUnanswered(t, nil)
+}
+
+// roundOpenAtTheDeployAsksOnlyTheUnanswered is the steps and the assertions of the check above,
+// with busy, where it is not nil, run on the restarted rig once the implementer's ask has reached
+// it and before the three sweeps that follow.
+func roundOpenAtTheDeployAsksOnlyTheUnanswered(t *testing.T, busy func(*podUpdateRig)) {
 	deploy := podUpdateStart.Add(3 * time.Hour)
 	unanswered := readyWorker(claim.RoleImplementer)
 	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
@@ -769,21 +791,23 @@ func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *
 
 	next.tick()
 	next.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	if busy != nil {
+		busy(next)
+	}
 	for range 3 {
 		next.tick()
 	}
+	next.runLane()
 	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace))
-	asked := map[claim.Role]int{}
 	for _, ask := range next.asks() {
-		asked[ask.Role]++
 		if ask.Text != text {
 			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
 		}
 	}
 	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
 	for role, n := range want {
-		if asked[role] != n {
-			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		if got := next.deliveredTo(role); got != n {
+			t.Errorf("the %s's topic was delivered %d asks after the deploy, want %d", role, got, n)
 		}
 	}
 	if calls := next.replacements(); len(calls) != 0 {
@@ -833,9 +857,13 @@ func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *test
 }
 
 // A claim whose agent has not said it is ready holds no live session on its role's topic, so the
-// round does not ask it, and does not mark it asked: an operator's suspension holds it here. Once
-// the operator resumes it and its agent is ready in the round's pod, the next sweep asks it, and
-// it is asked exactly once however many sweeps follow. The other role is asked once all along.
+// round does not ask it yet (askRound skips a claim of unaskedClaims until supervise.SaidReady),
+// and does not mark it asked: an operator's suspension holds it here. Once the operator resumes
+// it and its agent is ready in the round's pod, the next sweep asks it, and it is asked exactly
+// once however many sweeps follow. The round asks each of its claims with a session but a failed
+// one and one that has left the round's pod in the same way: from the first sweep that finds its
+// agent ready, until an ask of the round reaches it or it answers. The other role is asked once
+// all along.
 func TestPodUpdateAsksAClaimOnceItsAgentIsReady(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),

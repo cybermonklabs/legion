@@ -2,12 +2,12 @@ package daemon
 
 // The fleet-wide update round (INFRA-419, folded into INFRA-484): one change to the pod template —
 // the deployment's session store here — drifts the pod of every issue of the project at once. Each
-// issue's pod is a round of its own: it is replaced only once its own workers have answered, and
-// an answer in one issue's pod replaces no other issue's. Nothing of the round suspends a root
-// architect, parks an issue or sends a root to await a person, and the daemon goes on serving every
-// claim in an open round — a worker tasked with the steps of its update message
-// (supervise.UpdateTask) completes its phase through the same route it would on any other day
-// (api's handoff/complete).
+// issue's pod is a round of its own: before the round's bound it is replaced only once each of its
+// own workers but a failed one and one that has left the round's pod has answered, and an answer
+// in one issue's pod replaces no other issue's. Nothing of the round suspends a root architect,
+// parks an issue or sends a root to await a person, and the daemon goes on serving every claim in
+// an open round — a worker tasked with the steps of its update message (supervise.UpdateTask)
+// completes its phase through the same route it would on any other day (api's handoff/complete).
 //
 // The rig is podupdate_test.go's over two issues rather than one: real machines over a real
 // Postgres with the runtime faked, ticked by hand one sweep at a time. The completion is driven
@@ -70,9 +70,10 @@ var fleetStart = time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)
 // role whose process has started and whose agent has not registered yet. Such a claim blocks no
 // round (blockingClaims), so the sweep's ask never reaches it, and it records the issue's pod
 // all the same. failed is each role seeded failed — its launches or prompts ran out — with the
-// session its agent registered and no locator, as supervise's fail leaves one: such a claim
-// blocks the round (blockingClaims) and the round asks it nothing (askedClaims), because its
-// machine ignores the round's post (supervise's table).
+// session its agent registered and no locator, as supervise's fail leaves one: such a claim is
+// one of the round's claims with a session (blockingClaims), and the round neither asks a failed
+// claim nor waits for it (askedClaims, waitingClaims), because its machine ignores the round's
+// post (supervise's table).
 type fleetIssue struct {
 	key          string
 	phase        phase.Phase
@@ -357,7 +358,8 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 // After the answer, signal writes the activity report that the answering turn's end sends in
 // production: nothing of the worker's own runs, onto the claim's current launch through the
 // store's own call. In production every answer comes from a turn whose end sends such a report,
-// and before its bound a round waits for a claim with a process in its pod that has sent no
+// and before its bound a round waits for a claim with a process in its pod, unless it is a failed
+// claim, that has sent no
 // report since its last turn started (backgroundClaims, dispatch://INFRA-4203 R1). Without the
 // report, every round this rig's answers end early would hold to its bound.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
@@ -616,9 +618,10 @@ func (r *fleetRig) assertNoRootLeftTheWorkflow(issues ...string) {
 }
 
 // One template change drifts every pod of the fleet at once, and each issue's pod is still its own
-// round: the pod of the issue whose workers have answered is replaced, and no other. The claims of
-// the issue that has not finished answering keep their round, their pod and their processes, and
-// their pod is replaced only once the last of them answers.
+// round: an issue's pod is replaced once every worker in it but a failed one and one that has left
+// the round's pod has answered, and no other issue's pod with it. The claims of the issue that has
+// not finished answering keep their round, their pod and their processes, and their pod is
+// replaced only once the last claim its round waits for has answered (waitingClaims).
 //
 // The round refuses no completion while it waits, either: a worker tasked with the steps of its
 // update message (supervise.UpdateTask) completes its phase through the daemon's own route, the
@@ -779,12 +782,12 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 // snapshots that workspace and then runs `jj metaedit --update-author` or `jj new` on its `@`
 // under whoever is working there, so the daemon adopts only for a task that names a phase and
 // holds such a task while another claim of the issue is in a turn (supervise's adopts
-// and sendPending). A round's ask is no task at all: the sweep publishes it to each role's own
-// Envoy topic (askRound, record.UpdateAsk), so it queues nothing on a claim, prompts no process
-// and adopts nothing, whoever is in a turn. So with the implementer in the turn of its own phase
-// task, the architect and the planner record the round and are sent nothing, and the end of the
-// implementer's turn queues nothing for the round either, with no adoption beyond the one its
-// phase task made.
+// and sendPending). A round's ask is no task at all: the sweep publishes it to each role it asks
+// on that role's own Envoy topic (askRound, record.UpdateAsk, supervise's Claim.OwesUpdateAsk),
+// so it queues nothing on a claim, prompts no process and adopts nothing, whoever is in a turn.
+// So with the implementer in the turn of its own phase task, the architect and the planner
+// record the round and are sent nothing, and the end of the implementer's turn queues nothing for
+// the round either, with no adoption beyond the one its phase task made.
 //
 // The releases those projects' daemons ran, from before cybermonklabs/legion#2539, adopted before
 // every send and held none, which is the shape OSSV-343, OSSV-388, OSSV-400, BET-846 and

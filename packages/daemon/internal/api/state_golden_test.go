@@ -386,14 +386,16 @@ func populatedState(t *testing.T) State {
 									Container: "roles", Generation: 2,
 								},
 							},
-							// The pod's update round, which every claim of that pod shares: the round
-							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered, no turn runs and no claim's activity report holds it
-							// (internal/daemon's roundEnd.holding), or at the round's bound
-							// (pod_update_grace_minutes) whatever the roles answered, an operator's
-							// suspension excepted. This one has answered, and reported the head it
-							// pushed. The reasons are the round's own, so every claim of the pod
-							// carries the same text: what the worker answering is told to act on.
+							// The pod's update round, which every claim of that pod shares:
+							// the round asks each role but a failed one and one that has left
+							// the round's pod, and the daemon replaces the pod once every
+							// asked role has answered, no turn runs and no claim's activity
+							// report holds it (internal/daemon's roundEnd.holding), or at the
+							// round's bound (pod_update_grace_minutes) whatever the roles
+							// answered, an operator's suspension excepted. This one has
+							// answered, and reported the head it pushed. The reasons are the
+							// round's own, so every claim of the pod carries the same text:
+							// what the worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",

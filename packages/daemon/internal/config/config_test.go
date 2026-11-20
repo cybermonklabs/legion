@@ -1765,7 +1765,7 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		},
 		{
 			key: "pod_update_retask_hours", line: "pod_update_retask_hours: 1", class: warned,
-			want: "setting pod_update_retask_hours changes nothing: no update round asks a worker again, since the round publishes its ask once to each role's topic rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound (dispatch://INFRA-2981 R7)",
+			want: "setting pod_update_retask_hours changes nothing: no clock sends an update round's ask again: the round publishes its ask to the topic of each role it asks, every role of the round that has not answered but a failed one and one that has left the round's pod, until an ask reaches a session of the role, rather than queueing it as a task, and the round ends at its bound whatever the roles answer; remove pod_update_retask_hours from legion.yaml, where pod_update_grace_minutes is the round's one bound",
 		},
 		{
 			key: "pod_update_notice_hours", line: "pod_update_notice_hours: 4", class: warned,

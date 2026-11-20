@@ -403,12 +403,12 @@ func supersededIssue(t *testing.T, options ...rigOption) *rig {
 // the CRD, so a launch into a Sandbox of the other shape deletes it, and the volume it owns with
 // it, and creates one of the shape the launch renders. It does so wherever it replaces the pod:
 // after the round has ended the pod (ReplacePod), or for a reason of its own, a moved address. A
-// live pod whose shape record drifted is its round's to end, once each role in it has pushed its
-// work, so a launch into it keeps the pod and the Sandbox and starts its role there. A Sandbox
-// that already has the shape the launch renders keeps its uid and its volume, also where the
-// launch replaces its pod. Each Sandbox a launch creates in place of another names the pod the
-// replacement ended as displaced, so the roles of that pod are resumed uncharged, and the
-// replacement logs its reason.
+// live pod whose shape record drifted is its round's to end, once each role in it but a failed one
+// and one that has left the round's pod has pushed its work, so a launch into it keeps the pod and
+// the Sandbox and starts its role there. A Sandbox that already has the shape the launch renders
+// keeps its uid and its volume, also where the launch replaces its pod. Each Sandbox a launch
+// creates in place of another names the pod the replacement ended as displaced, so the roles of
+// that pod are resumed uncharged, and the replacement logs its reason.
 func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 	name := SandboxName(workerToken)
 	labels := claimLabels(claim.RoleTester)
@@ -472,7 +472,8 @@ func TestALaunchReplacesASandboxOfTheOtherDiskShape(t *testing.T) {
 			}
 		}
 	}
-	// roundOver ends loc's pod as its update round does once every role in it has answered.
+	// roundOver ends loc's pod as its update round does once every role in it but a failed one and
+	// one that has left the round's pod has answered.
 	roundOver := func(t *testing.T, g *rig, r *Runtime, loc runtime.Locator) {
 		t.Helper()
 		if err := r.ReplacePod(g.ctx, runtime.Known{Claim: workerToken, Locator: &loc}, stillDue); err != nil {
@@ -941,8 +942,9 @@ const nextImage = "ghcr.io/cybermonklabs/legion-worker@sha256:2e2e2e2e0000000000
 // for a route it no longer serves or a variable it no longer sets. It has drifted, and a live
 // drifted pod a round covers is kept by every launch into it (INFRA-484, roundCovers): replacing
 // it there would end every role's turn in it and delete the issue's disk with everything unpushed
-// on it, so the pod is left to its update round, which first has every worker in it do the steps
-// of its update message (supervise.UpdateTask).
+// on it, so the pod is left to its update round, which first has every worker in it but a failed
+// one and one that has left the round's pod do the steps of its update message
+// (supervise.UpdateTask).
 // The controller's pod is covered by no round — nobody in it holds an issue workspace, so there is
 // nobody to task — and is replaced by its next launch as it always was
 // (TestALaunchReplacesAPodNoRoundCoversWhoseShapeHasDrifted holds that for every key of a pod's

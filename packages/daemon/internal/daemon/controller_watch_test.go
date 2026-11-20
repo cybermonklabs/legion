@@ -43,13 +43,20 @@ func loggedLines(t *testing.T, logs, text string) []map[string]any {
 		if !strings.Contains(line, text) {
 			continue
 		}
-		var fields map[string]any
-		if err := json.Unmarshal([]byte(line), &fields); err != nil {
-			t.Fatalf("decode the log line %q: %v", line, err)
-		}
-		lines = append(lines, fields)
+		lines = append(lines, decodedLogLine(t, line))
 	}
 	return lines
+}
+
+// decodedLogLine is one line of the daemon's JSON log as its fields, and fails the test on a line
+// that is no JSON object.
+func decodedLogLine(t *testing.T, line string) map[string]any {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(line), &fields); err != nil {
+		t.Fatalf("decode the log line %q: %v", line, err)
+	}
+	return fields
 }
 
 // loggedMessages is every line of the daemon's JSON log whose message starts with msg, decoded.

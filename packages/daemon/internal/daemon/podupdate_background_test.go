@@ -1,9 +1,10 @@
 package daemon
 
 // The early end's wait for background work (dispatch://INFRA-4203 R1, R4, R5): before its bound,
-// a round whose asked claims have all answered, and in which no turn runs, still keeps its pod
-// while a claim that records a process in that pod reports background work that runs, has sent no
-// activity report, or has sent none since its last turn started (supervise.Claim.LastTurnStart).
+// a round whose claims have all answered, but a failed one and one that has left the round's pod,
+// and in which no turn runs, still keeps its pod while a claim that records a process in that pod
+// reports background work that runs, has sent no activity report, or has sent none since its last
+// turn started (supervise.Claim.LastTurnStart).
 // A failed, retired or suspended claim holds nothing, nor does a claim whose process is in another
 // pod. At the bound the round ends as it did before, whatever runs, and the bound's line names
 // each claim that R1's hold still named.
@@ -34,9 +35,10 @@ const (
 	// bound (completePodUpdate). It names the issue and the round, a background object from each
 	// holding role to the kinds its report names, and an unreported list of the roles with no
 	// report since their last turn. Each of those two fields is written only when it names a role,
-	// and the line carries no working and no unanswered list: it is written only once every asked
-	// claim has answered and no turn runs, so either list would name nobody.
-	backgroundWaitLine = "supervise: every worker of this update round has answered and no turn runs; the replacement waits for the background work its roles report, or for the round's bound"
+	// and the line carries no working and no unanswered list: it is written only once every claim
+	// the round waits for has answered (waitingClaims) and no turn runs, so either list would name
+	// nobody.
+	backgroundWaitLine = "supervise: every worker of this update round but a failed one and one that has left the round's pod has answered and no turn runs; the replacement waits for the background work its roles report, or for the round's bound"
 	// backgroundTwoPodsLine is the walk's line for a live group whose claims record two pods, a
 	// replacement in flight (completePodUpdate's waitsForPodInFlight).
 	backgroundTwoPodsLine = "supervise: the claims of this issue run in two pods now; this round's replacement waits for the one in flight"
@@ -98,7 +100,7 @@ func heldLines(t *testing.T, rig *podUpdateRig) []map[string]any {
 	lines := loggedMessages(t, rig.logs.String(), backgroundWaitLine)
 	for _, line := range lines {
 		if line["issue"] != podUpdateIssue || line["round"] != podUpdateRound {
-			t.Errorf("the hold's line is %+v, want it of issue %s and round %s", line, podUpdateIssue, podUpdateRound)
+			t.Errorf("the hold's line names round %v and issue number %s, want round %s and issue number %s", line["round"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, issueNumber(podUpdateIssue))
 		}
 		for _, field := range []string{"working", "unanswered"} {
 			if _, present := line[field]; present {
@@ -300,7 +302,7 @@ func TestPodUpdateBackgroundThatOutlivesTheBoundEndsAtTheBound(t *testing.T) {
 	}
 	line := bounded[0]
 	if line["round"] != podUpdateRound || line["pod"] != podUpdatePod || line["issue"] != podUpdateIssue {
-		t.Errorf("the bounded end's line is %+v, want it of round %s, pod %s and issue %s", line, podUpdateRound, podUpdatePod, podUpdateIssue)
+		t.Errorf("the bounded end's line names round %v, pod %v and issue number %s, want round %s, pod %s and issue number %s", line["round"], line["pod"], issueNumber(fmt.Sprint(line["issue"])), podUpdateRound, podUpdatePod, issueNumber(podUpdateIssue))
 	}
 	wantHold(t, line, map[claim.Role][]string{claim.RoleImplementer: {"subagent"}})
 	wantField(t, line, "unanswered")
@@ -469,9 +471,9 @@ func TestPodUpdateBackgroundHeldLineNamesEachRoleAndItsKinds(t *testing.T) {
 }
 
 // A claim with a process in the round's pod and no activity report at all (activity_at null)
-// holds the round (R1, R5 case 9): a session that cannot report degrades to the bound, not to the
-// loss of its work. The line names it as unreported, and its first report that nothing runs ends
-// the round.
+// holds the round, unless it is a failed claim or a suspended one (R1, R5 case 9): a session that
+// cannot report degrades to the bound, not to the loss of its work. The line names it as
+// unreported, and its first report that nothing runs ends the round.
 func TestPodUpdateBackgroundNoReportAtAllHoldsTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.openRoundAnsweredBy(claim.RoleImplementer, claim.RoleTester)
@@ -570,11 +572,11 @@ func TestPodUpdateBackgroundOfAClaimInAnotherPodHoldsNothing(t *testing.T) {
 	}
 }
 
-// A claim in the round's pod that the round has not asked holds the round too (R1, R5 case 12).
-// The planner is still launching there with no session, so the round neither asks it nor waits
-// for its answer (askedClaims): only its report can hold the round, and that report names a
-// subagent. The line names the planner with that kind, and the planner's report that nothing
-// runs ends the round.
+// A claim in the round's pod that the round has not asked holds the round too, unless it is a
+// failed claim or a suspended one (R1, R5 case 12). The planner is still launching there with no
+// session, so the round neither asks it nor waits for its answer (askedClaims): only its report can
+// hold the round, and that report names a subagent. The line names the planner with that kind, and
+// the planner's report that nothing runs ends the round.
 func TestPodUpdateBackgroundOfAClaimTheRoundHasNotAskedHoldsTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),

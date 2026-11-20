@@ -634,7 +634,8 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 // repositories reachable from no directory at all for an issue on cybermonklabs/legion. Neither
 // case may change a directory name, which is why each asserts the whole set against GitHubDirs
 // as well: a pod's gh projection is fixed when the pod is created, so a name this rule added or
-// dropped would be drift the sweep answers with an update round over every worker in the pod.
+// dropped would be drift the sweep answers with an update round, which asks every worker in the
+// pod but a failed one and one that has left the round's pod to push.
 //
 // The third case is that state with the tree recorded on the pair's `from`, which is the tree
 // the failure stopped. Both accounts have the App, so both directories hold their own owner's

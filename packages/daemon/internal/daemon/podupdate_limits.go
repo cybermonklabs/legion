@@ -194,10 +194,10 @@ func (s *supervision) beginPodUpdateSweep(now time.Time, byIssue map[string][]su
 //
 // The second case is what keeps a lost opening from holding its slot for ever. The post that
 // carries a round to a machine is asynchronous, and a machine whose claim has failed or retired
-// ignores it (supervise's table), so where every claim the round asked fails before its machine
-// takes the post, no claim of that issue ever records the round. Read only as "a claim records a
-// pod", a sibling claim running in the pod that replaced the round's own would hold the entry —
-// and with it one of the project's slots — until the daemon restarts.
+// ignores it (supervise's table), so where every claim the round was posted to fails before its
+// machine takes the post, no claim of that issue ever records the round. Read only as "a claim
+// records a pod", a sibling claim running in the pod that replaced the round's own would hold the
+// entry — and with it one of the project's slots — until the daemon restarts.
 //
 // The openings are answered rather than counted, because the sweep weighs them twice: once as
 // the slots they hold over the whole project, and once at the issue each was made for, whose

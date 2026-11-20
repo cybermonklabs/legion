@@ -1511,6 +1511,14 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets enqueue above.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
+	// pauseHoldsSince, where it is set, is how each sweep of the update rounds reads the holds a
+	// project's pause has or had on the project's pods since a moment (podPauseHolds); left unset,
+	// as openSupervision leaves it, the sweep reads the supervisor's store
+	// (store.Store.PausePodHoldsSince). Only the update round sweep's own tests set it: they put
+	// groups of claims to the sweep hundreds of thousands of times, hold no pause, and answer it
+	// from memory rather than with one database round trip per sweep
+	// (podupdate_sweep_rig_test.go).
+	pauseHoldsSince func(ctx context.Context, project string, since time.Time) ([]store.PausePodHold, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -2163,10 +2171,10 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // launch budget fails the claim. The contract decides nothing: a claim at this release's own
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
-// what the pod round replaces the pod for. So it is left running and is asked its round like any
-// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
-// accepts such a registration and charges it nothing, for the same reason
-// (supervise.Deps.NoPluginInstall).
+// what the pod round replaces the pod for. So it is left running, and the round asks it as it
+// asks any other worker (supervise's Claim.OwesUpdateAsk), on its role's own Envoy topic
+// (supervision.openPodUpdate). staleRegistration accepts such a registration and charges it
+// nothing, for the same reason (supervise.Deps.NoPluginInstall).
 //
 // A claim in a pod round is passed over and a claim in a plugin round is not. That term is the
 // lane's own rather than this pass's: staleForTheLane holds it and says what each kind of round

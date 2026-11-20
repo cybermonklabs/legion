@@ -251,7 +251,8 @@ type StallBackstop struct {
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
 // about to be replaced, and the role is asked first to do the steps of its update message
-// (UpdateTask) and answer ready_for_update. Round is the round's identity and kind in one string
+// (UpdateTask) and answer ready_for_update, unless it is a failed claim or one that has left the
+// round's pod (Claim.OwesUpdateAsk). Round is the round's identity and kind in one string
 // (Claim.UpdateRound), and Reasons the drift the daemon read of the pod it runs in.
 //
 // The daemon's sweep posts it to every claim of the round at every tick while the round is open,
@@ -259,21 +260,23 @@ type StallBackstop struct {
 // clock, and each later post of the same round changes nothing. The round's terms are fixed when
 // it opens, so the ask a role reads and the record an operator reads name the same reasons. The
 // machine asks the role nothing: the sweep enqueues the round's ask to the role's own Envoy topic
-// (record.UpdateAsk), and the outbox marks it on the claim once it reached a session
-// (Machine.PublishUpdateAsk).
+// while the claim owes one (Claim.OwesUpdateAsk, record.UpdateAsk), and the outbox marks it on the
+// claim once it reached a session (Machine.PublishUpdateAsk).
 type PodUpdateOpen struct {
 	Claim   claim.Token
 	Round   string
 	Reasons string
 }
 
-// UpdateTask is the text a pod's update round asks each role with. round is the round, which the
-// role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
-// the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
-// plus pod_update_grace_minutes. The sweep (internal/daemon) builds the text from the round's
-// record, so the text names one moment for every role of the round, and the text rides
-// record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of a
-// turn, so the text tells the role to act now rather than after the turn.
+// UpdateTask is the text a pod's update round asks a role with, and the round asks each role but
+// a failed one and one that has left the round's pod (Claim.OwesUpdateAsk). round is the round,
+// which the role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it.
+// endsAt is the moment the round ends at the latest: the round's recorded opening
+// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. The sweep (internal/daemon) builds the
+// text from the round's record, so the text names one moment for every role the round asks
+// (Claim.OwesUpdateAsk), and the text rides record.UpdateAsk to the role's own Envoy topic. That
+// message can arrive in the middle of a turn, so the text tells the role to act now rather than
+// after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -281,15 +284,16 @@ type PodUpdateOpen struct {
 // a later round has already replaced it names the round it read, and is refused rather than
 // counted for the round it never saw (podUpdateSignalled).
 //
-// An answer from every role brings the round's end forward only while no role reports background
-// work: before endsAt the round ends once every role it asks has answered, no role is in a turn,
-// and no role with a process in the round's pod has an activity report that names a subagent or a
-// background job that runs, or no report since its last turn started. internal/daemon's
-// roundEnd.holding is the one statement of that rule. No answer, no turn and no background work
-// holds the pod past endsAt, so the text names that moment and what goes with the pod then: the
-// turn in progress, each subagent, each background job and each named service that still runs,
-// each commit and each file the role did not push, the pod's test database and its caches. A
-// named service is in no activity report, so it holds nothing and goes with the pod.
+// An answer from every role but a failed one and one that has left the round's pod brings the
+// round's end forward only while no role reports background work: before endsAt the round ends
+// once every role it asks has answered, no role is in a turn, and no role but a failed one with a
+// process in the round's pod has an activity report that names a subagent or a background job
+// that runs, or no report since its last turn started. internal/daemon's roundEnd.holding is the
+// one statement of that rule. No answer, no turn and no background work holds the pod past
+// endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
+// each subagent, each background job and each named service that still runs, each commit and
+// each file the role did not push, the pod's test database and its caches. A named service is in
+// no activity report, so it holds nothing and goes with the pod.
 //
 // So the text gives five steps, in this order (dispatch://INFRA-4203 R2): push, let each subagent
 // and each background job the role started finish or stop it and push what it made, put a scratch
@@ -301,8 +305,8 @@ type PodUpdateOpen struct {
 //
 // The step to answer is the one step a role can be unable to do: the op list its `legion` tool
 // holds is a closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
-// ready_for_update in it. Such a role is told to do the first three steps all the same, because
-// its round ends at endsAt whatever it does.
+// ready_for_update in it. Such a role is told to do the first three steps all the same when the
+// round asks it (Claim.OwesUpdateAsk), because its round ends at endsAt whatever it does.
 //
 // Only the role's own push keeps its work: the daemon saves nothing of the disk before the pod
 // goes, so the text says that work not pushed before the pod goes is lost.
@@ -324,7 +328,7 @@ func UpdateTask(round, reasons string, endsAt time.Time) string {
 
 The round is %[1]s. The round ends at %[2]s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace. Only your own push keeps your work. Work that you do not push before the pod goes is lost.
 
-If every role answers, the round can end before that moment. It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
+If every role but a failed one and one that has left the round's pod answers, the round can end before that moment. It then ends once the last report of each role but a failed one and one that has left the round's pod names no subagent and no background job that runs, and no role is in a turn. Your plugin sends that report at the end of each turn. If a role does not answer, the round still ends at %[2]s. A turn in progress does not delay that moment. A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.
 
 This message can arrive while you are in a turn. Do these five steps, in this order:
 
@@ -1117,7 +1121,7 @@ func fillTable(t *builder) {
 	t.ignore(onPodUpdateOpen, "the claim failed; what happens to it next is not the supervisor's decision, and no process of it would read the ask", StateFailed)
 	t.ignore(onPodUpdateOpen, "the claim is retired; nothing of it runs on the pod being replaced", StateRetired)
 
-	t.row(onPodUpdateEnded, "the update round is over: clear it, and relaunch the process or release the task it held", endPodUpdate,
+	t.row(onPodUpdateEnded, "the update round is over: clear it, and release the task it held", endPodUpdate,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, append(slices.Clone(inRound), StateFailed)...)
 	t.ignore(onPodUpdateEnded, "the claim is retired; its update round ended with it", StateRetired)
 
@@ -2951,11 +2955,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the same reasons for one round id, however the drift the sweep reads moves while the round runs.
 //
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
-// topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
-// the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
-// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
+// topic once the claim records the round, unless it is a failed claim or one that has left the
+// round's pod (Claim.OwesUpdateAsk, internal/daemon's openPodUpdate, record.UpdateAsk), and the
+// outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk): an
+// ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
 // suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers.
+// once its agent is ready again, unless it is a failed claim by then or one that has left the
+// round's pod, and the round ends at its bound whether or not the role answers, unless an
+// operator's suspension holds it (heldByOperator).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an
@@ -2998,8 +3005,9 @@ func openPodUpdate(m *Machine, ctx context.Context, ev Event) error {
 
 // updateTaskPrefix starts the delivery id of every ask an update round queued as a task, which
 // only an older daemon did; the round and a fresh word of that ask's own complete it
-// (updateTaskID). This daemon publishes the round's ask to the role's Envoy topic instead
-// (record.UpdateAsk), so an id of this shape is one a restored claim brings back from the store.
+// (updateTaskID). This daemon publishes the round's ask to the Envoy topic of each role that
+// owes one instead (Claim.OwesUpdateAsk, record.UpdateAsk), so an id of this shape is one a
+// restored claim brings back from the store.
 const updateTaskPrefix = "update:"
 
 // updateTaskID is a delivery id of one ask of round, and names no other ask of it. A rotation
@@ -3118,9 +3126,10 @@ func (m *Machine) dropUpdateTask(ctx context.Context) error {
 // round nobody has weighed.
 //
 // A pod's round ends only once the pod it was opened over is gone: the replacement the round
-// itself made, a pod replaced under it, or a pod that went for a failure of its own. Each role's
-// process died with that pod, and the displaced path brings each one back on its own session, so
-// nothing is launched here, whatever state the claim is in: a claim that failed while the round
+// itself made, a pod replaced under it, or a pod that went for a failure of its own. Each process
+// that ran in that pod died with it — a claim that has left the round's pod runs in another pod
+// already — and the displaced path brings each one back on its own session, so nothing is
+// launched here, whatever state the claim is in: a claim that failed while the round
 // ran is left failed for the workflow's retry to decide, and sendPending hands a claim with no
 // agent nothing (delivery.go). Leaving the round on it instead would outlive the pod the round
 // was opened over, and the sweep reads the round of every claim.
@@ -3206,11 +3215,13 @@ func (m *Machine) clearUpdate() {
 // podUpdateSignalled records the worker's answer to the round's ask — its work is pushed, and the
 // process holding this claim may now be replaced — and the head it reported, which nothing
 // verifies. It changes no state: the round's own sweep is what reads the signal and replaces the
-// process, at the round's bound, or before it once every claim the round asks has answered, no
-// turn runs and no claim with a process in the round's pod reports background work that runs or
-// has sent no report since its last turn started (internal/daemon's roundEnd.holding, the one
-// statement of that rule). So an answer brings the round's end forward only while no role reports
-// background work.
+// process, at the round's bound, or before it once every claim the round waits for has answered
+// (each claim with a session but a failed one and one that has left the round's pod), no turn
+// runs and no claim but a failed one with a process in the round's pod reports background work
+// that runs or has sent no report since its last turn started (internal/daemon's
+// roundEnd.holding, the one statement of that rule). So an answer brings the round's end forward
+// only while no role but a failed one and one that has left the round's pod reports background
+// work.
 //
 // A second answer for the same round records again, the newer head in place of the first: the
 // ask tells a role whose subagent or background job finishes after its answer to push what that
@@ -3264,16 +3275,17 @@ func podUpdateSignalled(m *Machine, ctx context.Context, ev Event) error {
 // does next.
 //
 // What it does next is never "answer the round named here". A round that replaced another is
-// asked of the role only at a later sweep (internal/daemon's openPodUpdate publishes once the
-// claim records the round), so the id this refusal prints is one whose words the worker may not
-// have read, and an answer given for it would be counted for a round the worker was never asked
-// (podUpdateSignalled is the one guard that stops exactly that). So the worker is told how the
-// daemon asks — once per round, as a message on the role's own topic — and to answer the round
-// the newest such message names, or to end its turn where no message names the claim's round.
-// For a claim the daemon is asking nothing of, it is told so.
+// asked of the role only at a later sweep, once the claim records the round, and only while the
+// claim owes the ask (internal/daemon's openPodUpdate, Claim.OwesUpdateAsk), so the id this
+// refusal prints is one whose words the worker may not have read, and an answer given for it
+// would be counted for a round the worker was never asked (podUpdateSignalled is the one guard
+// that stops exactly that). So the worker is told how the daemon asks — once per round, as a
+// message on the role's own topic — and to answer the round the newest such message names, or
+// to end its turn where no message names the claim's round. For a claim the daemon is asking
+// nothing of, it is told so.
 func foreignRoundRefusal(c Claim, answered string) error {
 	in, next := fmt.Sprintf("%q", c.UpdateRound), fmt.Sprintf(
-		"The daemon asks each role one time in each update round. "+
+		"The daemon asks each role but a failed one and one that has left the round's pod one time in each update round. "+
 			"The daemon sends that ask as a message on the role's own topic. "+
 			"Answer with the round that the newest such message names. "+
 			"If no such message names round %q, the daemon has nothing to ask you now. End your turn",

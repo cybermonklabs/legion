@@ -2120,15 +2120,17 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // updateAsk publishes an update round's ask (record.UpdateAsk) to the Envoy topic of the role the
 // row names, the claim of that role on the row's issue, and to nothing else. The text is the
 // sweep's, built for the round when it opened (supervise.UpdateTask), and it reaches a worker and
-// the issue's architect alike: every role whose process runs in the pod loses that process when
-// the round replaces the pod. It rides the role-message lane (record.LaneRoleMessage), so it
-// waits behind no architect notice of its issue.
+// the issue's architect alike, since every role whose process runs in the pod loses that process
+// when the round replaces the pod: the round asks each of its claims with a session that has not
+// answered it, but a failed one and one that has left the round's pod. It rides the role-message
+// lane (record.LaneRoleMessage), so it waits behind no architect notice of its issue.
 //
 // It wakes nothing, where hookPrompt, mergeQueueRemoval and mergeForwardMessage call
 // wakeForDelivery first. A role whose pod an idle release took is not brought back to be asked:
 // its topic has no holder, so its ask is lost as every ask that reached no session is (below), the
-// sweep asks the claim again once its agent is ready again, and the round ends at its bound
-// whether or not the role answers.
+// sweep asks the claim again once its agent is ready again, as it asks every claim whose record
+// still owes it an ask (supervise's Claim.OwesUpdateAsk), and the round ends at its bound whether
+// or not the role answers.
 //
 // An outbox row cannot be withdrawn, and the round it names can end while the row waits. So the
 // row reads the claim before it publishes, through the machine's view as every other read of a
@@ -2145,12 +2147,18 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 // that lock for minutes, so waiting for it would hold every role message of this issue behind one
 // decision. The row keeps its place, nothing was published, and its next attempt is the first
 // publish. A claim an earlier ask of the round already reached is published nothing, so a second
-// row of one round asks no role twice.
+// row of one round asks no role twice. Nor is a claim whose role answered the round while the row
+// waited, one the daemon started again in another pod than the round's own, or one that failed:
+// the answer stands for its round, the round asks a claim that left its pod nothing, and a failed
+// claim runs no turn, though its process can outlive a suspension the runtime refused. Each of
+// those rows ends on a line of its own and marks nothing, because no ask reached the role.
 //
 // A topic with no live holder (notify.ErrNoHolder) is logged on one line and ends the row with
 // nothing marked: the ask is lost, not given, and the sweep's next reading of the round asks the
-// claim again (askRound). The round waits for every claim it asks until its bound, and a claim
-// the ask never reached has nothing to answer: a fresh session that has not claimed its topic yet
+// claim again while its record still owes it an ask (askRound, supervise's Claim.OwesUpdateAsk).
+// Until its bound the round waits for every claim with a session but a failed one and one that
+// has left the round's pod, and a claim the ask never reached has nothing to answer: a fresh
+// session that has not claimed its topic yet
 // is the ordinary case, and a mark that counted such an ask as given held BET-1291's and BET-690's
 // rounds for hours on 2026-11-17 (dispatch://INFRA-4109 R4). Every other failure of the publish
 // keeps the ordinary retry, as hookPrompt's does: a holder that did not confirm in time, one that
@@ -2196,6 +2204,12 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		r.log.Info("outbox update ask finished without a publish: an earlier ask of its round reached the role", fields...)
 	case supervise.UpdateAskOutOfRound:
 		r.updateAskLeftRound(row, payload, token, machine.View().UpdateRound)
+	case supervise.UpdateAskAnswered:
+		r.log.Info("outbox update ask finished without a publish: the role answered its round", fields...)
+	case supervise.UpdateAskLeftPodRound:
+		r.log.Info("outbox update ask finished without a publish: the claim left its round's pod", fields...)
+	case supervise.UpdateAskClaimFailed:
+		r.log.Info("outbox update ask finished without a publish: the claim failed", fields...)
 	}
 	return nil
 }

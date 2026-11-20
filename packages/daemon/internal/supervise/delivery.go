@@ -661,14 +661,15 @@ func (c Claim) openRoundHoldsTask() bool {
 // Its text is the older daemon's, and that text can tell the worker that the daemon reads the end
 // of the turn as its answer. This daemon reads no end of a turn as an answer: only the worker's
 // ready_for_update call answers a round. A worker that read that text would end its turn and
-// take the end for its answer, so this daemon never sends it; a role that read it before the
-// deploy gets the round's Envoy ask as well. A claim that has answered its open round reaches no
-// drop here (answeredOpenRound): the task waits for the round's end, which takes back an ask of
-// that round (dropUpdateTask), and the send after the end drops an ask of any other round here.
-// The delivery id names the round, and keeps it across every take-back (rotateTaskID), so an ask
-// whose turn a death cut off comes back still an ask and is dropped here rather than sent again.
-// That drop and the phase check's are one shape below, and both leave through the answer every
-// drop of a delivery gives the mark armed for it (answerAskFirstAfterDrop).
+// take the end for its answer, so this daemon never sends it; a role that read it before the deploy
+// gets the round's Envoy ask as well, where the rule still owes it one (OwesUpdateAsk). A claim
+// that has answered its open round reaches no drop here (answeredOpenRound): the task waits for the
+// round's end, which takes back an ask of that round (dropUpdateTask), and the send after the end
+// drops an ask of any other round here. The delivery id names the round, and keeps it across every
+// take-back (rotateTaskID), so an ask whose turn a death cut off comes back still an ask and is
+// dropped here rather than sent again. That drop and the phase check's are one shape below, and
+// both leave through the answer every drop of a delivery gives the mark armed for it
+// (answerAskFirstAfterDrop).
 //
 // A third drop takes the same shape: the daemon's own delivery of a relaunch's record
 // (Delivery.Relaunch, queueRelaunch) whose record no longer tells. Its text is that record's

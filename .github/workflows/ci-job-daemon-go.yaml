@@ -232,12 +232,18 @@ jobs:
 
       # What the race step's packages hold that the race build cannot run, run plain by name, one
       # go test per package (ci_job_reads.py's DAEMON_RACE_IMPOSSIBLE_*, built from the race step's
-      # package list and the source, so the two cannot drift). The first is internal/launcher's
-      # call-graph walk, under `//go:build !race`: it loads the launcher's whole program from source
-      # and builds its call graph twice, which without the detector took about a minute at a 2.3 GB
-      # peak, and the detector multiplies both.
+      # package list and the source, so the two cannot drift). The first is the update round
+      # sweep's field test in internal/daemon, which reads raceEnabled: plain, it also sets each
+      # pair of a claim's fields alone on every kind of claim, at the round's opening and beside
+      # the ready claim of each other role, and puts each state of the machine's view at the
+      # round's opening and beside each field of the claim; under the detector it does none of
+      # those, so this is its full-size run. The second is internal/launcher's call-graph walk,
+      # under `//go:build !race`: it loads the launcher's whole program from source and builds its
+      # call graph twice, which without the detector took about a minute at a 2.3 GB peak, and the
+      # detector multiplies both.
       - name: Test what the race build cannot run
         run: |
+          go test -count=1 -timeout 10m -run '^(TestPodUpdateSweepOwesAnAskExactlyWhereTheRuleDoesWhateverElseTheClaimHolds)$' ./internal/daemon
           go test -count=1 -timeout 10m -run '^(TestEveryChildTheLaunchersProcessWaitsForStartsWhereNoReapTakesIt)$' ./internal/launcher
         working-directory: packages/daemon
 

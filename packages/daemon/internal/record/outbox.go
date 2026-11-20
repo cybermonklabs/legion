@@ -89,17 +89,17 @@ const (
 // the issue on that role's own topic: a hook's words, which go to a phase worker (hook_prompt),
 // the message that tells the merger its pull request left the merge queue (merge_queue_removal),
 // the messages of a merge forward, which go to the implementer and to the worker of the phase the
-// issue stays in (merge_forward), and an update round's ask, which goes to any role whose process
-// runs in the issue's pod, its architect included (update_ask). It also runs the two reads of
-// GitHub that come before a message: the read before a merge-queue removal's message
-// (merge_queue_read), and the second read of a head a first read found conflicting, whose
-// confirmation is what writes a merge forward's messages (conflict_confirm). It is a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them
-// waits for as long as its architect holds no role (the daemon's errNoticeWaits): a role given the
-// words a hook fired on a move back, told that its pull request left the merge queue, asked to
-// merge the base forward or to hold while that merge runs, or asked to get ready for the
-// replacement of its pod must hear it while that is news, not after whatever the architect that
-// owns its issue is owed.
+// issue stays in (merge_forward), and an update round's ask, which goes to every role of the
+// round's pod, its architect included, but a failed one and one that has left the round's pod
+// (update_ask). It also runs the two reads of GitHub that come before a message: the read before a
+// merge-queue removal's message (merge_queue_read), and the second read of a head a first read
+// found conflicting, whose confirmation is what writes a merge forward's messages
+// (conflict_confirm). It is a lane of its own because the board lane's architect notices are
+// ordered among themselves and one of them waits for as long as its architect holds no role (the
+// daemon's errNoticeWaits): a role given the words a hook fired on a move back, told that its pull
+// request left the merge queue, asked to merge the base forward or to hold while that merge runs,
+// or asked to get ready for the replacement of its pod must hear it while that is news, not after
+// whatever the architect that owns its issue is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -690,17 +690,18 @@ type FailureBudget struct {
 // UpdateStalled is what an update-stalled controller notice carries: the update round the daemon
 // opened over an issue's pod, and why something holds it past its bound. Round is the round's
 // identity (supervise.Claim.UpdateRound), Pod the pod it was opened over, and Reasons the drift
-// the round was opened for, as the ask states it. Waiting is every claim the round asked, each
-// marked with whether it answered, so the controller can ask the operator to act on a suspended
-// claim rather than read the whole claims list to find out who the round asked; what
-// each entry says is UpdateWaiting's. The notice's issue is the outbox row's own.
+// the round was opened for, as the ask states it. Waiting is every claim of the round with a
+// session but a failed one, one that has left the round's pod included, each marked with whether
+// it answered, so the controller can ask the operator to act on a suspended claim rather than
+// read the whole claims list to find out which claims have not answered; what each entry says is
+// UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
 // plugin round's reason, which only an earlier daemon's round carries, names both contracts — so
-// a list built by splitting what the claim
-// records (supervise.Claim.UpdateReasons, one string) would cut each reason into pieces that read
-// as reasons of their own. It is the drift exactly as the round's ask states it to each role.
+// a list built by splitting what the claim records (supervise.Claim.UpdateReasons, one string)
+// would cut each reason into pieces that read as reasons of their own. It is the drift exactly
+// as the round's ask states it to each role it asks (supervise's Claim.OwesUpdateAsk).
 type UpdateStalled struct {
 	Round   string          `json:"round"`
 	Pod     string          `json:"pod,omitempty"`
@@ -708,15 +709,17 @@ type UpdateStalled struct {
 	Waiting []UpdateWaiting `json:"waiting"`
 }
 
-// UpdateWaiting is one claim an update round asked: its token, the role it holds, the state it
-// is in (supervise.ClaimState — an operator-suspended claim waits for the operator; a pod round
-// lists no `failed` claim, since it asks none), and Answered for a claim that has already
-// answered this round.
+// UpdateWaiting is one claim of UpdateStalled.Waiting, which lists every claim of the round with
+// a session but a failed one, one that has left the round's pod included: its token, the role it
+// holds, the state it is in (supervise.ClaimState — an operator-suspended claim waits for the
+// operator; a pod round lists no `failed` claim, since it asks none), and Answered for a claim
+// that has already answered this round.
 //
 // The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
-// asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound
-// whether or not it answers, so such a claim is one the round is waiting on like any other, and
-// the controller has nothing of its own to do about it.
+// asked like any other claim the round owes an ask (supervise's Claim.OwesUpdateAsk), on its
+// role's own topic (UpdateAsk), and the round ends at its bound whether or not it answers, so
+// such a claim is one the round waits on like any other (the daemon's waitingClaims), and the
+// controller has nothing of its own to do about it.
 //
 // Answered tells the controller what each role said. It is no list of roles to prompt: the round
 // ends at its bound whether or not a role answers, and the notice is told only for what holds the
@@ -890,10 +893,11 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose update round
 // has passed its bound (`pod_update_grace_minutes` after it opened) while something still holds
-// it: an operator's suspension of a role the round asks, a ReplacePod the runtime refused, no
-// claim recording a process in the round's pod (or in any pod), or claims recording two pods. It
-// is told once per round (the daemon's reconcilePodUpdates). A
-// provider-errors notice names an issue whose role has ended six turns in a row in a provider
+// it: an operator's suspension of a role with a session but a failed one and one that has left
+// the round's pod (the daemon's heldByOperator), a ReplacePod the runtime refused, no claim
+// recording a process in the round's pod (or in any pod), or claims recording two pods. It is
+// told once per round (the daemon's reconcilePodUpdates).
+// A provider-errors notice names an issue whose role has ended six turns in a row in a provider
 // error: its Role is that role, and its Reason the model and the HTTP status the provider
 // answered, where it answered one, in words built from structured fields alone (supervise's
 // tellControllerOfProviderErrors). It is told once, and not again until a turn with no error puts

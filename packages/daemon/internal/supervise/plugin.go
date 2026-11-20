@@ -10,10 +10,11 @@ import (
 // 46), the op a worker answers the update round over its pod with. A claim whose registration
 // declared a contract below it has no op to answer that round's ask with: the op list is a
 // closed enum compiled into the plugin, and a Claude Code role's plugin is its image's own,
-// never installed. Such a claim is asked all the same, on its role's own Envoy topic
-// (internal/daemon's openPodUpdate), and the round over it ends at its bound whether or not it
-// answers, so its pod is replaced like any other. The end of a turn is no answer, at any
-// contract: an ask an older daemon queued as a task is answered with the op or not at all.
+// never installed. Such a claim is asked all the same, but for a failed one and one that has
+// left the round's pod (Claim.OwesUpdateAsk), on its role's own Envoy topic (internal/daemon's
+// openPodUpdate), and the round over it ends at its bound whether or not it answers, so its pod
+// is replaced like any other. The end of a turn is no answer, at any contract: an ask an older
+// daemon queued as a task is answered with the op or not at all.
 //
 // The stale-plugin lane reads it no longer. That lane asks its worker nothing: a stale claim is
 // relaunched onto this daemon's plugin at one paced wake (refreshPlugin, relaunchStale), which
@@ -442,9 +443,10 @@ func (m *Machine) refreshOverturned() bool {
 // failed — so the rule is the install alone.
 //
 // What replaces such a claim's plugin is a new image, which the update round over its pod is
-// opened for: it is asked like every other worker, answers with the op or not at all, and the
-// round's replacement brings the image, at the latest at the round's bound (internal/daemon's
-// refreshStalePlugins, which posts no relaunch for it either).
+// opened for: the round asks it as it asks every worker in the pod but a failed one and one that
+// has left the round's pod, it answers with the op or not at all, and the round's replacement
+// brings the image, at the latest at the round's bound (internal/daemon's refreshStalePlugins,
+// which posts no relaunch for it either).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the

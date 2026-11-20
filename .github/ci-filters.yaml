@@ -468,6 +468,7 @@ plugin_pack:
   - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
   - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
   - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+  - '!packages/daemon/internal/daemon/race_enabled_test.go'
   - '!packages/daemon/internal/daemon/review_range_live_test.go'
   - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
   - '!packages/daemon/internal/daemon/share_volumes_live_test.go'

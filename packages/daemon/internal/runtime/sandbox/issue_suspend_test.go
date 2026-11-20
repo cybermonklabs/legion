@@ -324,7 +324,8 @@ func TestAKeptVolumeOutlivesItsPodsAndItsRelease(t *testing.T) {
 			loc = g.relaunchOnNewPod(loc, &spec)
 			keeps(t, g, "an eviction", loc, uid, template)
 
-			// The update round ends the pod once every role in it has answered.
+			// The update round ends the pod once every role in it but a failed one and one that has
+			// left the round's pod has answered.
 			if err := g.r.ReplacePod(g.ctx, runtime.Known{Claim: childToken, Locator: &loc}, stillDue); err != nil {
 				t.Fatalf("ReplacePod: %v", err)
 			}
