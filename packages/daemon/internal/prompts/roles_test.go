@@ -381,13 +381,15 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 		}
 	}
 	// The pod half is what survives, and the two parts that carry it are listed rather than
-	// counted: a part that stopped telling a role how to answer an update round fails here.
+	// counted: a part that stopped telling a role how to answer an update round fails here, and so
+	// does one that lost the step that lets a role's own background work finish before it answers
+	// (dispatch://INFRA-4203 R2).
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
 		body, err := goParts.ReadFile(part)
 		if err != nil {
 			t.Fatalf("read %s: %v", part, err)
 		}
-		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles", "Step 2: let each subagent and each background job that you started finish."} {
 			if !strings.Contains(string(body), want) {
 				t.Errorf("%s does not say %q", part, want)
 			}
