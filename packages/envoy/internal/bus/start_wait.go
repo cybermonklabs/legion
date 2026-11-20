@@ -228,10 +228,10 @@ func awaitStream(ctx context.Context, js nats.JetStreamContext, step streamStep,
 // unanswered too while its meta leader changes.
 //
 // A request that draws no answer never draws one later, because neither side sends it again:
-// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
-// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
+// nats.go sends each JetStream management request once and waits (nats.go@v1.55.0
+// js.go:3711-3729), and nats-server v2.15.1 returns from several paths these requests take with
 // no response to the requester:
-//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
+//   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.55.0 kv.go:422-434)
 //     and a STREAM.CREATE, each at a member that is not the metadata leader
 //     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
 //     member holds no assignment for (a bucket not yet created, or one whose create this member

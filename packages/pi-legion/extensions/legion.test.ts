@@ -874,9 +874,10 @@ interface ClaimPane {
   /** What `console.error` printed while `start()` ran. */
   readonly errors: string[];
   readonly intervals: (() => void)[];
-  /** Every one-shot timer the pane armed on its session context, in order: the phase reminder's.
-   * The host's own cannot be cancelled, so a test fires one by calling its callback, exactly as
-   * the host does when the delay is up. */
+  /** Every one-shot timer the pane armed on its session context, in order: the phase reminder's
+   * and the model fallback's return. This repository's `SessionContext` slice keeps no handle to
+   * clear one by, so a test fires one by calling its callback, exactly as the host does when the
+   * delay is up. */
   readonly timers: {
     readonly callback: () => void | Promise<void>;
     readonly delayMs: number;
@@ -1086,8 +1087,8 @@ async function claimPane(options: {
     ...(options.asyncJobs === undefined ? {} : { getAsyncJobSnapshot: options.asyncJobs }),
     ...(options.idle === undefined ? {} : { isIdle: options.idle }),
     ...(options.abort === undefined ? {} : { abort: options.abort }),
-    // The reminder's own timer: the host's `setTimeout` cannot be cancelled, so the pane keeps
-    // every one armed and a test fires the one it means to.
+    // The pane's own timers: this repository's `SessionContext` slice keeps no handle to clear one
+    // by, so the pane keeps every one armed and a test fires the one it means to.
     setTimeout: (callback, delayMs) => {
       timers.push({ callback, delayMs });
     },
@@ -7237,7 +7238,8 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
 
 // The model fallback (src/model-fallback.ts) as the entry wires it: every Legion role gets it,
 // the architect included, the arming is persisted in the transcript and restored from it, and
-// the return happens in the `context` hook, which runs before every provider request.
+// the return happens in `before_agent_start`, ahead of a run's first provider request, and in the
+// `context` hook, which runs before every provider request after the host has read its model.
 describe("the model fallback", () => {
   const OPUS = "anthropic/claude-opus-5-5";
   const SONNET = "anthropic/claude-sonnet-5";
@@ -7286,15 +7288,17 @@ describe("the model fallback", () => {
     expect(armings(pane)[1]).toEqual({ levels: {} });
   });
 
+  /** The arming a worker's transcript holds when the daemon relaunches it, its wait long over. */
+  const recorded = {
+    type: "custom",
+    customType: LEGION_FALLBACK_ENTRY,
+    data: {
+      arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
+      levels: { [OPUS]: 3 },
+    },
+  };
+
   test("a relaunched worker takes the return its transcript records", async () => {
-    const recorded = {
-      type: "custom",
-      customType: LEGION_FALLBACK_ENTRY,
-      data: {
-        arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
-        levels: { [OPUS]: 3 },
-      },
-    };
     const pane = await bootPane({
       role: "implementer",
       issue: "REPO-43",
@@ -7307,6 +7311,25 @@ describe("the model fallback", () => {
     expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     // The levels the record carried survive the return: the next refusal of that model waits on
     // the one it left off at.
+    expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
+  });
+
+  test("a run that starts past the wait takes the return before its first request", async () => {
+    // The host reads a request's model before it runs the `context` hook, so a return made there
+    // is the model of the request after it: the run's first request goes out on the model
+    // `before_agent_start` leaves the session on.
+    const pane = await bootPane({
+      role: "implementer",
+      issue: "REPO-43",
+      branch: [walked, recorded],
+    });
+    pane.models.current = SONNET;
+
+    expect(
+      await pane.handlers.get("before_agent_start")?.({ prompt: "task" }, pane.context)
+    ).toBeUndefined();
+
+    expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
   });
 
@@ -7543,6 +7566,50 @@ describe("the model fallback", () => {
     ]);
     await controller.handlers.get("context")?.({ messages: [] }, session);
     expect(controller.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
+  });
+
+  // A controller's session change moves the pane onto the new session first, re-claims the
+  // controller there, and reads the new session's fallback only after that. The old session's
+  // arming still has its return's timer, and one that fires while the re-claim runs has no session
+  // to make its return into: the new session's transcript gets nothing of the old one's.
+  test("a return timer that fires during a controller's re-claim writes nothing to the new session", async () => {
+    let holdRoleClaim = false;
+    const roleClaimReached = Promise.withResolvers<void>();
+    const roleClaimHeld = Promise.withResolvers<void>();
+    const controller = await launchedController({
+      sessionId: "ses_controller_timer_before",
+      roleClaim: async () => {
+        if (!holdRoleClaim) return undefined;
+        roleClaimReached.resolve();
+        await roleClaimHeld.promise;
+        return undefined;
+      },
+    });
+    const before = controllerFallbackSession(controller, "ses_controller_timer_before");
+    controller.models.current = SONNET;
+    await controller.handlers.get("session_start")?.({}, before);
+    expect(await runStartCommand(controller, before)).toEqual([]);
+    // The claim armed the branch's fallback, its wait already over, and set its return's timer,
+    // which the host has not run yet.
+    expect(armings(controller)).toHaveLength(1);
+
+    // A `/new`: a session of its own, whose branch holds no fallback.
+    const fresh = controllerFallbackSession(controller, "ses_controller_timer_after");
+    const after: SessionContext = {
+      ...fresh,
+      sessionManager: { ...fresh.sessionManager, getBranch: () => [ranOn] },
+    };
+    holdRoleClaim = true;
+    const switched = controller.handlers.get("session_switch")?.({ reason: "new" }, after);
+    await roleClaimReached.promise;
+
+    // The timer fires while the re-claim waits on the role claim.
+    await runScheduledTimeouts();
+    expect(armings(controller)).toHaveLength(1);
+    expect(controller.models.set).toEqual([]);
+
+    roleClaimHeld.resolve();
+    await switched;
   });
 
   // What the host actually hands a command: a `CommandContext` and nothing of a session's — no

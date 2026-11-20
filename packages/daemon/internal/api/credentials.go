@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -45,24 +46,27 @@ type Failure struct {
 // tells it, since the code is in hand here and the writer would otherwise read the body back.
 type refusalNoter interface{ noteRefusal(code string) }
 
-// writeFailure is the one writer of a refusal in the Failure shape. A refusal is an answer of the
-// table like any other (AnswerRefusal), so it goes through the shaping every answer goes through,
-// and the request is threaded here for that.
+// writeFailure is the one writer of a refusal in the Failure shape. The message passes the URL
+// rule (redact.URLCredentials): a refusal can quote a far side's error, a Dispatch or GitHub
+// transport error that names the URL it asked (dispatch_url's user name, a redirect's query), and
+// the answer goes to an agent. A refusal is an answer of the table like any other (AnswerRefusal),
+// so it goes through the shaping every answer goes through, and the request is threaded here for
+// that.
 func (s *server) writeFailure(w http.ResponseWriter, r *http.Request, status int, code, message string) {
 	if noter, ok := w.(refusalNoter); ok {
 		noter.noteRefusal(code)
 	}
-	s.writeAnswer(w, r, AnswerRefusal, status, Failure{Code: code, Error: message})
+	s.writeAnswer(w, r, AnswerRefusal, status, Failure{Code: code, Error: redact.URLCredentials(message)})
 }
 
 // refuse is the one writer of a refusal in the sentence-only shape the claim and operator routes
-// use, as writeFailure is the one writer of the coded shape. The body is a claim.Refusal, so the
-// refusal's row of shapeAnswer reads one type for every sentence-only refusal, and its status
-// rides beside it, as refuse's own argument. A refusal is an answer of the table like any other
-// (AnswerRefusal), so it goes through the shaping every answer goes through, and the request is
-// threaded here for that.
+// use, as writeFailure is the one writer of the coded shape, and its message passes the same URL
+// rule. The body is a claim.Refusal, so the refusal's row of shapeAnswer reads one type for every
+// sentence-only refusal, and its status rides beside it, as refuse's own argument. A refusal is an
+// answer of the table like any other (AnswerRefusal), so it goes through the shaping every answer
+// goes through, and the request is threaded here for that.
 func (s *server) refuse(w http.ResponseWriter, r *http.Request, status int, message string) {
-	s.writeAnswer(w, r, AnswerRefusal, status, claim.Refusal{Message: message})
+	s.writeAnswer(w, r, AnswerRefusal, status, claim.Refusal{Message: redact.URLCredentials(message)})
 }
 
 // requireFailureFields refuses the first field that is blank, by its wire name, in the Failure
@@ -135,7 +139,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		return nil, false, err
 	}
 	for _, current := range claims {
-		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
+		if !current.HoldsSession(sessionID) || current.Tree != tree || current.Issue != issue {
 			continue
 		}
 		m, _, ok := s.authenticated(current.Token, secret)

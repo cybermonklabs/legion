@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -273,7 +274,12 @@ var podTrimmer = func(ctx context.Context, trim *trimmer) { trim.run(ctx) }
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard). Every line the
+// launcher writes passes the URL rule (redact.Writer): the controller pod's manager writes its own
+// lines through it, and an issue pod's role log writes every line through it, the launcher's and
+// each role child's alike, since the role log writes each line whole. The controller pod's shim
+// is handed cfg.Stdout and cfg.Stderr themselves (command), so its descriptors stay the
+// container's files rather than a pipe through the launcher.
 func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
 	// connection it reaches, and the first role to start applies it for the pod, with every other
@@ -292,11 +298,11 @@ func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check, guard: guard,
+			stderr: redact.Writer(cfg.Stderr), requests: map[string]request{}, restore: restore, check: check, guard: guard,
 			acknowledged: make(chan struct{}),
 		}}, nil
 	}
-	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
+	log := &roleLog{stdout: redact.Writer(cfg.Stdout), stderr: redact.Writer(cfg.Stderr)}
 	managers := make([]*manager, 0, len(cfg.Roles))
 	for _, role := range cfg.Roles {
 		file := filepath.Join(cfg.RolesDir, role, RoleLauncherDir, LauncherTokenFile)
@@ -611,9 +617,10 @@ type child struct {
 
 // manager serves one role: its own daemon connection, its own launcher id, its own token and
 // private directory, its own child, and, in an issue pod's container, its own prefix in the log
-// and a namespace of its own for every generation it starts. stdout and stderr are where the
-// controller's one role writes; in an issue pod's container stderr is the launcher's own lines
-// for the role, and log gives each generation writers of its own.
+// and a namespace of its own for every generation it starts. stderr is where the launcher's own
+// lines for the role go, through the URL rule (newManagers): in the controller's pod the
+// container's stderr, in an issue pod's container the role's own writer of log, which gives each
+// generation writers of its own too.
 type manager struct {
 	cfg        Config
 	role       string
@@ -621,7 +628,6 @@ type manager struct {
 	private    string
 	namespaced bool
 	launcherID string
-	stdout     io.Writer
 	stderr     io.Writer
 	log        *roleLog
 	writer     *shimwire.Writer
@@ -955,7 +961,9 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // command is one generation's process: in an issue pod's container, role-init as the init of
 // this role's new user, mount, PID and IPC namespaces, with the pipe it reports the shim's own
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
-// itself in the container's own namespaces.
+// itself in the container's own namespaces, writing to the container's stdout and stderr
+// themselves (cfg.Stdout and cfg.Stderr, never the launcher's own writer, which is no file), so
+// the shim's descriptors are the container's files and no pipe through the launcher.
 func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
@@ -970,7 +978,7 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 	}
 	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = m.stdout, m.stderr
+	cmd.Stdout, cmd.Stderr = m.cfg.Stdout, m.cfg.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
 }
@@ -1146,7 +1154,10 @@ func (m *manager) writeFiles(command shimwire.LauncherStart) (string, error) {
 // roles where one container per role showed six. Whole lines are written under one lock, so two
 // roles never interleave inside a line. Each writer holds its own unfinished line, so the
 // launcher's lines for a role and each generation of its child are written through writers of
-// their own, and none is ever joined to another's unfinished line.
+// their own, and none is ever joined to another's unfinished line. stdout and stderr are the
+// container's behind the URL rule (newManagers): each line reaches them in one write, so the rule
+// reads it whole, a child's lines among them however its pipe was read, but for a line longer than
+// maxLogLine, which reaches them where logLineCut cuts it.
 type roleLog struct {
 	mu             sync.Mutex
 	stdout, stderr io.Writer
@@ -1176,7 +1187,8 @@ func (l *roleLog) linef(format string, args ...any) {
 }
 
 // maxLogLine bounds how much of one unfinished line a role can make PID 1 hold: a longer line is
-// written out as a line of its own at that length, and the rest follows behind the prefix again.
+// written out as lines of their own, each at most that length and cut where logLineCut says, and
+// the rest follows behind the prefix again.
 const maxLogLine = 64 * 1024
 
 // prefixWriter holds back a partial line until its newline arrives, so a prefix only ever
@@ -1195,18 +1207,22 @@ type prefixWriter struct {
 func (w *prefixWriter) Write(p []byte) (int, error) {
 	w.log.mu.Lock()
 	defer w.log.mu.Unlock()
+	// What partial holds from earlier writes holds no newline, so the search starts after it.
+	start, scanned := 0, len(w.partial)
 	w.partial = append(w.partial, p...)
-	start := 0
 	for {
 		rest := w.partial[start:]
-		end := bytes.IndexByte(rest, '\n')
+		end := bytes.IndexByte(rest[scanned:], '\n')
 		switch {
 		case end >= 0:
+			end += scanned
 			w.emit(rest[:end+1], false)
-			start += end + 1
+			start, scanned = start+end+1, 0
 		case len(rest) >= maxLogLine:
-			w.emit(rest[:maxLogLine], true)
-			start += maxLogLine
+			cut := logLineCut(rest[:maxLogLine])
+			w.emit(rest[:cut], true)
+			// rest holds no newline, so neither does what follows the cut.
+			start, scanned = start+cut, len(rest)-cut
 		default:
 			w.partial = w.partial[:copy(w.partial, rest)]
 			return len(p), nil
@@ -1214,13 +1230,33 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 }
 
-// emit writes one line behind the role's prefix, ending a line cut at maxLogLine itself.
+// emit writes one line behind the role's prefix. It ends itself a line that holds no newline of
+// its own: a run Write cut at logLineCut, or the unfinished line flush writes out.
 func (w *prefixWriter) emit(line []byte, cut bool) {
 	w.line = append(append(w.line[:0], w.prefix...), line...)
 	if cut {
 		w.line = append(w.line, '\n')
 	}
 	_, _ = w.out.Write(w.line)
+}
+
+// logLineCut is where prefixWriter cuts run, a line's first maxLogLine bytes with no newline in
+// them, so that a line longer than maxLogLine reaches the container's log in writes of its own:
+// just after run's last byte that ends a URL for the URL rule (redact.EndsURLByte). Each URL of
+// the part before the cut then ends inside it, and each of the rest starts after it, so the rule
+// of the container's log (redact.Writer) reads each whole, in one write, and removes from the two
+// writes what it would remove from the line whole. A run whose only such byte is its first, or
+// that holds none, is cut at its end: one URL can be such a run, and that cut is the one cut of
+// the role log that can fall inside a URL. The search reads back from the run's end to the cut,
+// and the bytes it read past hold no such byte, so a line's cuts read each of its bytes twice at
+// most.
+func logLineCut(run []byte) int {
+	for i := len(run) - 1; i > 0; i-- {
+		if redact.EndsURLByte(run[i]) {
+			return i + 1
+		}
+	}
+	return len(run)
 }
 
 // flush writes the unfinished line the writer holds, behind its prefix and ended as a line of its

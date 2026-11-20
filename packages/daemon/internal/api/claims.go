@@ -620,9 +620,10 @@ func capabilityHash(secret string) []byte {
 // decodeJSON decodes r's body (bounded by maxRequestBytes) into into once: strict disallows a
 // member the route does not read, lenient ignores it (the register route, and the lenient
 // identity read of an undecodable body). It reports "more than one JSON value" for trailing
-// bytes either way, and a string anywhere in the body that holds U+0000, which PostgreSQL's text
-// and jsonb cannot hold, naming where it stands (unstorableJSON). The raw bytes are returned too,
-// so a strict failure can be retried leniently for a route family's identity.
+// bytes either way, and a string anywhere in the body that holds U+0000, naming where it stands
+// (unstorableJSON): PostgreSQL's text and jsonb cannot hold that character, so the store would
+// keep U+FFFD in its place, which the caller would never see. The raw bytes are returned too, so
+// a strict failure can be retried leniently for a route family's identity.
 func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) ([]byte, error) {
 	if requestDecoded != nil {
 		requestDecoded(r.Pattern, reflect.TypeOf(into).Elem())

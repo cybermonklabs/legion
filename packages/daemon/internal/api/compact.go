@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/reviewround"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -331,16 +331,15 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 
 // boundReason is a compaction's reason cut to reasonBound bytes, on a rune boundary so the cut
 // leaves no partial character behind, with an ellipsis where it cut so a reader sees that the
-// sentence did not end there.
+// sentence did not end there. The reason is Oh My Pi's or the transport's, so redact.Bytes reads it
+// whole through the URL rule before the cut: a cut made first could end inside a URL's userinfo,
+// before its "@", and leave the start of a user name where the rule no longer finds it.
 func boundReason(text string) string {
-	if len(text) <= reasonBound {
-		return text
+	kept, cut := redact.Bytes(text, reasonBound)
+	if cut {
+		return kept + "…"
 	}
-	cut := reasonBound
-	for cut > 0 && !utf8.RuneStart(text[cut]) {
-		cut--
-	}
-	return text[:cut] + "…"
+	return kept
 }
 
 // refuseState is the refusal the machine answered a compaction with, in the words of the state
