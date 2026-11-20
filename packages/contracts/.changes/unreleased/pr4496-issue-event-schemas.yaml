@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `IssueEventEnvelopeSchema` reads the envelope Dispatch's outbox publishes an issue event in:
+  `EnvelopeSchema` with `payload` required and never empty. `PublishedIssueEventSchema` reads
+  that event: `PublishedEventSchema` with `issue_key` never null. Shared schemas now refuse
+  values that no producer writes and the Legion daemon refuses: an event's `id` and `seq`
+  below 1, an empty `type`, `created_at` or `issue_key`; an envelope's `issued_at` of 0 or
+  less; an issue's empty `key`, and a `parent` that is no issue key; and a session actor's
+  empty `id`.
+time: 2026-11-20T19:50:09.608663779Z
+custom:
+    Issue: pr4496

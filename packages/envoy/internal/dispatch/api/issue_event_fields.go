@@ -14,51 +14,6 @@ import (
 // value, and its components inherit from nobody (componentsScan.resolve's unassigned attachment).
 var unsetIssue = model.Issue{Components: model.IssueComponents{Mode: "inherit"}}
 
-// issueChangedFields is an issue event's changed list: the name of every field whose value differs
-// between before and after, in one fixed order. repo moves with the issue's own repository or the
-// one it resolves to (a reparent can move the second alone), and components with the effective
-// attachment, so an inherited change counts too. closed_at moves only with a close or a reopen
-// (whether the issue is closed, not the time), which a status alone cannot say: a reader learns
-// from it that the issue's open asks entered or left the Inbox and the projects' open-ask counts.
-func issueChangedFields(before, after model.Issue) []string {
-	changed := []string{}
-	add := func(field string, moved bool) {
-		if moved {
-			changed = append(changed, field)
-		}
-	}
-	add("title", before.Title != after.Title)
-	add("status", before.Status != after.Status)
-	add("closed_at", (before.ClosedAt == nil) != (after.ClosedAt == nil))
-	add("rank", before.Rank != after.Rank)
-	add("priority", !intPointersEqual(before.Priority, after.Priority))
-	add("assignee", !stringPointersEqual(before.Assignee, after.Assignee))
-	add("parent", !stringPointersEqual(before.Parent, after.Parent))
-	add("labels", !slices.Equal(before.Labels, after.Labels))
-	add("route", !stringPointersEqual(before.Route, after.Route))
-	add("repo", !stringPointersEqual(before.Repo, after.Repo) || !stringPointersEqual(before.ResolvedRepo, after.ResolvedRepo))
-	add("components", !issueComponentsEqual(before.Components, after.Components))
-	add("advances", !slices.Equal(before.Advances, after.Advances))
-	add("blocked_by", !slices.Equal(before.BlockedBy, after.BlockedBy))
-	add("external_links", !slices.Equal(before.ExternalLinks, after.ExternalLinks))
-	return changed
-}
-
-func intPointersEqual(left, right *int) bool {
-	if left == nil || right == nil {
-		return left == right
-	}
-	return *left == *right
-}
-
-func issueComponentsEqual(left, right model.IssueComponents) bool {
-	return left.Mode == right.Mode &&
-		slices.Equal(left.IDs, right.IDs) &&
-		slices.Equal(left.Unknown, right.Unknown) &&
-		stringPointersEqual(left.Reason, right.Reason) &&
-		stringPointersEqual(left.InheritedFrom, right.InheritedFrom)
-}
-
 // issueAncestors is an issue event's ancestors: issue's parent chain, parent first up to the
 // root, [] for a root, which it answers without a query. The walk is refs.IssueAncestors, the
 // server's one recursive ancestor query, bounded by parentDepthCap as every recursive issue walk

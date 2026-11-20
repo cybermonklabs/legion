@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import document from "../schemas/dispatch-openapi.json";
 import * as contract from "./dispatch-api";
+import { schemaNode, takes } from "./schema-inspection.testing";
 
 /**
  * A shape the Go route table holds is spelled twice, and this is what keeps the two from
@@ -28,36 +29,36 @@ import * as contract from "./dispatch-api";
  * here later, or a schema whose shape the route table takes over, is covered with no edit.
  */
 
-/** The property names a zod schema declares, reading through the wrappers a schema is built
- *  with: `.readonly()` and `.optional()` hold their inner schema, and a union's fields are its
- *  members' together, since a payload may arrive as any one of them. */
-function fieldsOf(schema: unknown, seen = new Set<unknown>()): Set<string> | undefined {
-  if (schema === null || typeof schema !== "object" || seen.has(schema)) return undefined;
+/** The property names a zod schema declares, read through the wrappers a schema is built with
+ *  (`schemaNode`): an object's keys, a list's element's, and a union's or an intersection's
+ *  members' together, since a payload may arrive as any one of them and must satisfy every
+ *  part. */
+function fieldsOf(
+  schema: unknown,
+  where: string,
+  seen = new Set<unknown>()
+): Set<string> | undefined {
+  if (seen.has(schema)) return undefined;
   seen.add(schema);
-  const held = "_def" in schema ? schema._def : "def" in schema ? schema.def : undefined;
-  if (held === null || typeof held !== "object") return undefined;
-  const def: Record<string, unknown> = { ...held };
-  const type = def.type ?? def.typeName;
-  if (type === "object" || type === "ZodObject") {
-    const shape = typeof def.shape === "function" ? def.shape() : def.shape;
-    if (shape === null || typeof shape !== "object") return undefined;
-    return new Set(Object.keys(shape));
-  }
-  if (type === "union" || type === "ZodUnion" || type === "discriminated_union") {
-    const fields = new Set<string>();
-    const options = Array.isArray(def.options) ? def.options : [];
-    for (const option of options) {
-      for (const field of fieldsOf(option, seen) ?? []) fields.add(field);
+  const node = schemaNode(schema, where);
+  switch (node.kind) {
+    case "object":
+      return new Set(Object.keys(node.shape));
+    case "union":
+    case "intersection": {
+      const fields = new Set<string>();
+      for (const member of node.kind === "union" ? node.options : node.parts) {
+        for (const field of fieldsOf(member, where, seen) ?? []) fields.add(field);
+      }
+      return fields;
     }
-    return fields;
+    case "wrapper":
+      return fieldsOf(node.inner, where, seen);
+    case "array":
+      return fieldsOf(node.element, where, seen);
+    default:
+      return undefined;
   }
-  for (const key of ["innerType", "in", "out", "element", "schema"]) {
-    const inner = def[key];
-    if (inner === undefined) continue;
-    const fields = fieldsOf(inner, seen);
-    if (fields !== undefined) return fields;
-  }
-  return undefined;
 }
 
 /** The document's own shapes, read once: a declared shape may carry properties or not - a map
@@ -115,13 +116,13 @@ const SPELLED_TWICE = Object.entries(SCHEMAS)
 /** How many shapes are spelled twice today. A derivation that found none would pass every row
  *  below in silence, so the count is pinned here and moves deliberately: a schema added beside a
  *  generated type raises it, and a shape that stops being the route table's lowers it. */
-const SPELLED_TWICE_COUNT = 39;
+const SPELLED_TWICE_COUNT = 40;
 
 /** The fields one spelling of a pair knows and the other does not, each named by its shape and
  *  by the side that knows it: a count that mixed the two directions would pass a swap across
  *  them as readily as within one, so the printed set says which way each difference runs. */
 function fieldDifferences(name: string, declaredName: string, schema: unknown): string[] {
-  const written = comparedFields(fieldsOf(schema) ?? []);
+  const written = comparedFields(fieldsOf(schema, `${name}Schema`) ?? []);
   const declared = comparedFields(declaredFields(declaredName) ?? []);
   return [
     ...written.filter((field) => !declared.includes(field)).map((f) => `${name}.${f} (schema)`),
@@ -166,7 +167,7 @@ describe("a shape spelled twice knows the same fields in both spellings", () => 
   for (const { name, declaredName, schema } of SPELLED_TWICE) {
     if (name === COUNTED_PAIR) continue;
     test(name, () => {
-      const written = fieldsOf(schema);
+      const written = fieldsOf(schema, `${name}Schema`);
       expect(written, `${name}Schema's fields are readable`).toBeDefined();
       expect(
         comparedFields(written ?? []),
@@ -184,40 +185,22 @@ describe("a shape spelled twice knows the same fields in both spellings", () => 
   });
 });
 
-/** The object a schema's fields are read from, where it is one: a union's members each have
- *  their own optionality, so there is nothing to compare one field of a union against, and the
- *  comparison below passes such a schema over. `ActorSchema` is the one such schema today. */
-function objectOf(schema: unknown, seen = new Set<unknown>()): Record<string, unknown> | undefined {
-  if (schema === null || typeof schema !== "object" || seen.has(schema)) return undefined;
-  seen.add(schema);
-  const held = "_def" in schema ? schema._def : "def" in schema ? schema.def : undefined;
-  if (held === null || typeof held !== "object") return undefined;
-  const def: Record<string, unknown> = { ...held };
-  const type = def.type ?? def.typeName;
-  if (type === "object" || type === "ZodObject") {
-    const shape = typeof def.shape === "function" ? def.shape() : def.shape;
-    return shape === null || typeof shape !== "object" ? undefined : { ...shape };
+/** The object a schema's fields are read from, where it is one, through its wrappers and a
+ *  list's element (`schemaNode`): a union's members each have their own optionality, so there is
+ *  nothing to compare one field of a union against, and the comparison below passes such a
+ *  schema over. `ActorSchema` is the one such schema today. */
+function objectOf(schema: unknown, where: string): Record<string, unknown> | undefined {
+  const node = schemaNode(schema, where);
+  switch (node.kind) {
+    case "object":
+      return { ...node.shape };
+    case "wrapper":
+      return objectOf(node.inner, where);
+    case "array":
+      return objectOf(node.element, where);
+    default:
+      return undefined;
   }
-  for (const key of ["innerType", "in", "out", "element", "schema"]) {
-    const inner = def[key];
-    if (inner === undefined) continue;
-    const object = objectOf(inner, seen);
-    if (object !== undefined) return object;
-  }
-  return undefined;
-}
-
-/** Whether a zod field takes an absent value, which is what the document's `required` list
- *  answers on its side: the field is parsed with nothing, and a field that accepts nothing is
- *  optional however it was spelled (`.optional()`, `.nullish()`, a default). */
-function takesNothing(field: unknown): boolean {
-  if (field === null || typeof field !== "object" || !("safeParse" in field)) return false;
-  const parse = field.safeParse;
-  if (typeof parse !== "function") return false;
-  const answer: unknown = parse.call(field, undefined);
-  return answer !== null && typeof answer === "object" && "success" in answer
-    ? answer.success === true
-    : false;
 }
 
 /** The fields of one shape whose two spellings disagree about absence, each side's reading
@@ -228,13 +211,16 @@ function optionalityDifferences(
   declaredName: string,
   schema: unknown
 ): { tolerated: string[]; refused: string[] } {
-  const object = objectOf(schema);
+  const object = objectOf(schema, `${name}Schema`);
   const declared = DECLARED[declaredName];
   const required = new Set<string>(Array.isArray(declared?.required) ? declared.required : []);
   const tolerated: string[] = [];
   const refused: string[] = [];
   for (const [field, written] of Object.entries(object ?? {})) {
-    const optionalHere = takesNothing(written);
+    // Whether the field takes an absent value, which is what the document's `required` list
+    // answers on its side: a field that accepts nothing is optional however it was spelled
+    // (`.optional()`, `.nullish()`, a default).
+    const optionalHere = takes(written, undefined);
     if (optionalHere && required.has(field)) tolerated.push(`${name}.${field}`);
     if (!optionalHere && !required.has(field)) refused.push(`${name}.${field}`);
   }
@@ -331,6 +317,199 @@ describe("a shape spelled twice agrees about which fields may be absent", () => 
   });
 });
 
+/**
+ * The JSON type a value of one schema takes, written as text so two readings compare as strings:
+ * each kind of value it takes, sorted and joined by `|` - `string`, `number` (an `integer` of the
+ * document's included), `boolean`, `object` (a map included), `any` for a schema that takes every
+ * value, and `array<…>` with its element's type. `null` counts only for a schema that takes
+ * nothing else: the document marks every Go pointer, slice and map as nullable whether or not its
+ * writer ever sends null, so the two readings would disagree about null on every list, and the
+ * null a writer does send is held by the shared examples instead (the contracts test parses each
+ * with its strict schema).
+ */
+function typeText(kinds: readonly string[]): string {
+  const set = new Set(kinds);
+  if (set.size > 1) set.delete("null");
+  return [...set].sort().join("|");
+}
+
+/** The kinds of value a zod schema reads (`typeText`), read through `schemaNode`. */
+function schemaKinds(schema: unknown, where: string): string[] {
+  const node = schemaNode(schema, where);
+  switch (node.kind) {
+    case "object":
+    case "record":
+      return ["object"];
+    case "array":
+      return [`array<${typeText(schemaKinds(node.element, `${where}[]`))}>`];
+    case "union":
+      return node.options.flatMap((option) => schemaKinds(option, where));
+    case "intersection": {
+      const [first = [], ...rest] = node.parts.map((part) => schemaKinds(part, where));
+      return first.filter((kind) => rest.every((part) => part.includes(kind)));
+    }
+    case "wrapper":
+      return schemaKinds(node.inner, where);
+    case "leaf":
+      return [...node.json];
+  }
+}
+
+/** The keywords a property of the document is read by: the ones that say its type, and the ones
+ *  that bound or describe a value of that type without changing it. Any other keyword is an
+ *  error, so a document that grows one is read rather than passed over. */
+const DOCUMENT_KEYWORDS: Readonly<Record<string, true>> = {
+  $ref: true,
+  additionalProperties: true,
+  anyOf: true,
+  description: true,
+  enum: true,
+  format: true,
+  items: true,
+  maximum: true,
+  minimum: true,
+  properties: true,
+  required: true,
+  type: true,
+};
+
+/** The kinds of value the document declares (`typeText`), through its `$ref`s. */
+function documentKinds(property: unknown, where: string): string[] {
+  if (property === null || typeof property !== "object") {
+    throw new Error(`${where} is not a schema of the document`);
+  }
+  const schema: Record<string, unknown> = { ...property };
+  for (const keyword of Object.keys(schema)) {
+    if (DOCUMENT_KEYWORDS[keyword] !== true) {
+      throw new Error(
+        `${where} carries the keyword ${keyword}, which this comparison does not read`
+      );
+    }
+  }
+  const ref = schema.$ref;
+  if (typeof ref === "string") {
+    const name = ref.replace("#/components/schemas/", "");
+    return documentKinds(DECLARED[name], name);
+  }
+  if (Array.isArray(schema.anyOf)) {
+    return schema.anyOf.flatMap((member, index) => documentKinds(member, `${where}|${index}`));
+  }
+  const declared = schema.type;
+  if (declared === undefined) {
+    return Array.isArray(schema.enum)
+      ? schema.enum.map((value) => (value === null ? "null" : typeof value))
+      : ["any"];
+  }
+  const types: unknown[] = Array.isArray(declared) ? declared : [declared];
+  return types.map((type) => {
+    if (type === "integer") return "number";
+    if (type === "array") {
+      const items =
+        schema.items === undefined ? ["any"] : documentKinds(schema.items, `${where}[]`);
+      return `array<${typeText(items)}>`;
+    }
+    return String(type);
+  });
+}
+
+/** The object shapes a schema's fields are read from: an object's own, and each member's of a
+ *  union, whose fields the document declares together on one shape. */
+function shapesOf(schema: unknown, where: string): Record<string, unknown>[] {
+  const node = schemaNode(schema, where);
+  switch (node.kind) {
+    case "object":
+      return [{ ...node.shape }];
+    case "union":
+      return node.options.flatMap((option) => shapesOf(option, where));
+    case "wrapper":
+      return shapesOf(node.inner, where);
+    default:
+      return [];
+  }
+}
+
+/** Each field whose two spellings declare a different type for a reason, by shape and field, with
+ *  the reason. Each must be a difference the comparison below measures, so an entry whose field
+ *  came to agree, or went, fails too. */
+const TYPED_APART: Record<string, string> = {
+  "Event.payload":
+    "model.Event.Payload is a Go any, which the document declares as any value; every payload Dispatch " +
+    "writes is a JSON object (each type of DispatchEvent has an object payload), which EventSchema reads",
+};
+
+/** The fields of one shape whose two spellings declare a different type, by `Shape.field`, each
+ *  with both types. */
+function typeDifferences(name: string, declaredName: string, schema: unknown): Map<string, string> {
+  const declared = DECLARED[declaredName];
+  const properties: Record<string, unknown> =
+    declared !== undefined &&
+    typeof declared.properties === "object" &&
+    declared.properties !== null
+      ? { ...declared.properties }
+      : {};
+  const differences = new Map<string, string>();
+  for (const shape of shapesOf(schema, `${name}Schema`)) {
+    for (const [field, written] of Object.entries(shape)) {
+      if (properties[field] === undefined) continue;
+      const here = typeText(schemaKinds(written, `${name}Schema.${field}`));
+      const there = typeText(documentKinds(properties[field], `${declaredName}.${field}`));
+      if (here !== there) {
+        differences.set(
+          `${name}.${field}`,
+          `${name}.${field}: ${here} here, ${there} in the document`
+        );
+      }
+    }
+  }
+  return differences;
+}
+
+/**
+ * The issue event payloads, which the document declares no shape for (they are written to the
+ * event log, not answered by a route): each carries fields of the issue it is about under the
+ * issue's own names (`model.IssueEventPayload` embeds `model.Issue`; `model.IssueClaimEventPayload`
+ * holds the issue's `key`, `status`, `repo`, `resolved_repo` and `claim`, "as on every issue
+ * event"), so each such field is held to the type the document declares on `Issue`. Their other
+ * fields name nothing there and are passed over.
+ */
+const READ_AS_ISSUE = [
+  { name: "WrittenIssueEventPayload", schema: contract.WrittenIssueEventPayloadSchema },
+  { name: "IssueClaimEventPayload", schema: contract.IssueClaimEventPayloadSchema },
+  { name: "IssueReleasedEventPayload", schema: contract.IssueReleasedEventPayloadSchema },
+].map((pair) => ({ ...pair, declaredName: "Issue" }));
+
+/** Every pair whose fields' types are compared: the shapes spelled twice, and the issue
+ *  payloads. */
+const TYPED_PAIRS = [...SPELLED_TWICE, ...READ_AS_ISSUE];
+
+const TYPE_DIFFERENCES = TYPED_PAIRS.map(({ name, declaredName, schema }) =>
+  typeDifferences(name, declaredName, schema)
+);
+
+describe("a shape spelled twice declares each field's value as the same type", () => {
+  test("the issue payloads READ_AS_ISSUE pairs are shapes the document does not declare", () => {
+    expect(READ_AS_ISSUE.filter(({ name }) => declaredNameOf(name) !== undefined)).toEqual([]);
+  });
+
+  for (const [index, { name, declaredName, schema }] of TYPED_PAIRS.entries()) {
+    test(name, () => {
+      const differences = TYPE_DIFFERENCES[index] ?? typeDifferences(name, declaredName, schema);
+      expect(
+        [...differences]
+          .filter(([field]) => TYPED_APART[field] === undefined)
+          .map(([, text]) => text),
+        `${name}Schema and the contract's ${declaredName} read a field as different types: the bus ` +
+          "refuses a value the server sends, or reads one the server never sends"
+      ).toEqual([]);
+    });
+  }
+
+  test("each field TYPED_APART names is one whose two spellings differ", () => {
+    const measured = new Set(TYPE_DIFFERENCES.flatMap((differences) => [...differences.keys()]));
+    expect(Object.keys(TYPED_APART).filter((field) => !measured.has(field))).toEqual([]);
+  });
+});
+
 /** The two names of the split that are neither the document's alias nor `z.output` of a schema:
  *  the route row written out by hand, with the bus's tolerance taken off it. */
 const HAND_COMPOSITIONS = [
@@ -341,30 +520,33 @@ const HAND_COMPOSITIONS = [
 /** Whether a zod field reads a closed set of strings where the document declares a plain string:
  *  the enum, the literal and the union of literals a schema writes for a value this release
  *  knows the spellings of. */
-function readsAClosedSet(field: unknown, seen = new Set<unknown>()): boolean {
-  if (field === null || typeof field !== "object" || seen.has(field)) return false;
+function readsAClosedSet(field: unknown, where: string, seen = new Set<unknown>()): boolean {
+  if (seen.has(field)) return false;
   seen.add(field);
-  const held = "_def" in field ? field._def : "def" in field ? field.def : undefined;
-  if (held === null || typeof held !== "object") return false;
-  const def: Record<string, unknown> = { ...held };
-  const type = def.type ?? def.typeName;
-  if (type === "enum" || type === "ZodEnum" || type === "literal" || type === "ZodLiteral") {
-    return true;
+  const node = schemaNode(field, where);
+  switch (node.kind) {
+    case "leaf":
+      return node.closed;
+    case "union":
+      return (
+        node.options.length > 0 &&
+        node.options.every((option) => readsAClosedSet(option, where, seen))
+      );
+    case "intersection":
+      return node.parts.some((part) => readsAClosedSet(part, where, seen));
+    case "wrapper":
+      return readsAClosedSet(node.inner, where, seen);
+    case "array":
+      return readsAClosedSet(node.element, where, seen);
+    default:
+      return false;
   }
-  if (type === "union" || type === "ZodUnion") {
-    const options = Array.isArray(def.options) ? def.options : [];
-    return options.length > 0 && options.every((option) => readsAClosedSet(option, seen));
-  }
-  for (const key of ["innerType", "in", "out", "element", "schema"]) {
-    if (def[key] !== undefined && readsAClosedSet(def[key], seen)) return true;
-  }
-  return false;
 }
 
 /** The fields of one hand composition the bus reads differently from the document, each named by
  *  the mechanism that makes it differ. */
 function handCompositionDifferences(name: string, declaredName: string, schema: unknown): string[] {
-  const object = objectOf(schema) ?? {};
+  const object = objectOf(schema, `${name}Schema`) ?? {};
   const declared = DECLARED[declaredName];
   const properties: Record<string, unknown> =
     declared !== undefined &&
@@ -375,7 +557,7 @@ function handCompositionDifferences(name: string, declaredName: string, schema: 
   const required = new Set<string>(Array.isArray(declared?.required) ? declared.required : []);
   const differences: string[] = [];
   for (const [field, written] of Object.entries(object)) {
-    if (takesNothing(written) && required.has(field)) {
+    if (takes(written, undefined) && required.has(field)) {
       differences.push(`${name}.${field} (the bus tolerates its absence)`);
       continue;
     }
@@ -385,7 +567,7 @@ function handCompositionDifferences(name: string, declaredName: string, schema: 
       typeof property === "object" &&
       (property as Record<string, unknown>).type === "string" &&
       (property as Record<string, unknown>).enum === undefined;
-    if (declaresAnySpelling && readsAClosedSet(written)) {
+    if (declaresAnySpelling && readsAClosedSet(written, `${name}Schema.${field}`)) {
       differences.push(`${name}.${field} (the bus reads a closed set)`);
     }
   }

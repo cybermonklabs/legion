@@ -71,6 +71,7 @@ import {
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
 } from "./dispatch-api";
+import { objectShape } from "./schema-inspection.testing";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
   for (const source of ["insert", "backfill"] as const) {
@@ -246,9 +247,12 @@ test("preserves labels on an issue update event payload", () => {
   });
 });
 
+// Each of the four priorities: the shared issue event examples hold two of them, and
+// dispatch-issue-events.test.ts's UNHELD names this test for the others.
 test("preserves a coarse priority on an issue update event payload", () => {
-  expect(IssueEventPayloadSchema.parse({ priority: 0 })).toEqual({ priority: 0 });
-  expect(IssueEventPayloadSchema.parse({ priority: null })).toEqual({ priority: null });
+  for (const priority of [0, 1, 2, 3, null] as const) {
+    expect(IssueEventPayloadSchema.parse({ priority })).toEqual({ priority });
+  }
 });
 
 test("reads the proven mark of an actor and of its act's session, only as true", () => {
@@ -405,8 +409,15 @@ test("the envelope Dispatch publishes for an announcement carries a payload this
     import.meta.url
   );
   const envelope = JSON.parse(await Bun.file(path).text());
+  const payload = JSON.parse(envelope.payload);
   expect(envelope.topic).toBe(DISPATCH_SERVER_STARTED_SUBJECT);
-  expect(DispatchServerStartedPayloadSchema.parse(JSON.parse(envelope.payload))).toEqual({
+  expect(DispatchServerStartedPayloadSchema.parse(payload)).toEqual(payload);
+  const declared = objectShape(
+    DispatchServerStartedPayloadSchema,
+    "DispatchServerStartedPayloadSchema"
+  );
+  expect(Object.keys(payload).sort()).toEqual(Object.keys(declared ?? {}).sort());
+  expect(payload).toEqual({
     commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
     started_at: "2026-10-27T12:00:00Z",
   });

@@ -7,14 +7,16 @@ import type {
   AskFollowerEventPayload,
 } from "./dispatch-api-asks";
 import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
-import type {
-  ArchitectureSourceUpdatedEventPayload,
-  ArchitectureSyncedEventPayload,
-  ArchitectureSyncFailedEventPayload,
-  DisplayTree,
-  PriorityUpdatedEventPayload,
-  ProjectDefaultAssigneeUpdatedEventPayload,
-  RepoProjectUpdatedEventPayload,
+import {
+  ActorSchema,
+  type ArchitectureSourceUpdatedEventPayload,
+  type ArchitectureSyncedEventPayload,
+  type ArchitectureSyncFailedEventPayload,
+  type DisplayTree,
+  DisplayTreeSchema,
+  type PriorityUpdatedEventPayload,
+  type ProjectDefaultAssigneeUpdatedEventPayload,
+  type RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
 import type {
   ArtifactCreatedEventPayload,
@@ -366,3 +368,41 @@ export const DispatchEventSchema = z.object({
 });
 
 export type InboundDispatchEvent = z.output<typeof DispatchEventSchema>;
+
+/** The fields of one event as Dispatch writes it (Go's `model.Event`), each as it is always
+ *  written: `trees` alone is left out, of every frame but a reply to `Dispatch-Trees: 1` and a
+ *  `/ws/live` frame. The payload is read by its type's own schema. */
+const eventFields = {
+  /** The event log's row id (events.id, a bigserial), above 0. */
+  id: z.number().int().positive(),
+  issue_key: z.string().min(1).nullable(),
+  artifact_id: z.string().nullable(),
+  project: z.string(),
+  /** The event's place in its owner's log (the insert takes the owner's last_seq and 1), above 0. */
+  seq: z.number().int().positive(),
+  type: z.string().min(1),
+  actor: ActorSchema,
+  notify: z.boolean(),
+  /** The insert's own time, which Go writes as RFC 3339 (model.Event.CreatedAt). */
+  created_at: z.string().min(1),
+  payload: z.record(z.string(), z.unknown()),
+  trees: z.record(z.string(), DisplayTreeSchema).optional(),
+};
+
+/** One event as Dispatch writes it, read strictly: the document's `Event`, which the spellings
+ *  test holds to the same fields, where `DispatchEventSchema` is a reader's tolerant reading. */
+export const EventSchema = z.strictObject(eventFields).readonly();
+
+/** One event as Dispatch's outbox writes it into an envelope (`PublishedDispatchEvent`): the event
+ *  and `quiet`, which the outbox writes on every copy it publishes. */
+export const PublishedEventSchema = z
+  .strictObject({ ...eventFields, quiet: z.boolean() })
+  .readonly();
+
+/** One issue event (`issue.*`) as Dispatch's outbox publishes it on its issue's topic:
+ *  `PublishedEventSchema` with `issue_key` the issue's own key, never null - an issue owns the
+ *  event, and the Legion daemon refuses an issue event with no issue key. Each field keeps the
+ *  shared definition of `eventFields`. */
+export const PublishedIssueEventSchema = z
+  .strictObject({ ...eventFields, issue_key: eventFields.issue_key.unwrap(), quiet: z.boolean() })
+  .readonly();

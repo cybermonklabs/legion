@@ -1,0 +1,12 @@
+{
+  "event_id": "dispatch-4804",
+  "source": "dispatch",
+  "source_event_id": "4804",
+  "source_session": "ses_operator2",
+  "topic": "notifications.dispatch.issue.CAPTURE-9.issue.claimed",
+  "dedupe_key": "dispatch-4804",
+  "issued_at": 1795065900500,
+  "payload_summary": "CAPTURE-9 issue claimed: claimed",
+  "payload": "{\"id\":4804,\"issue_key\":\"CAPTURE-9\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":7,\"type\":\"issue.claimed\",\"actor\":{\"kind\":\"session\",\"id\":\"ses_operator2\",\"origin\":{\"host\":\"worker-7\",\"machine\":\"worker-7\",\"cwd\":\"/work/widgets\",\"tmux\":\"legion\",\"pane\":\"%5\",\"session_title\":\"CAPTURE-7 implementer\"}},\"notify\":false,\"created_at\":\"2026-11-19T05:25:00.5Z\",\"payload\":{\"claim\":{\"actor\":{\"id\":\"ses_operator2\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-7\",\"machine\":\"worker-7\",\"pane\":\"%5\",\"session_title\":\"CAPTURE-7 implementer\",\"tmux\":\"legion\"}},\"at\":\"2026-11-19T05:25:00.5Z\"},\"key\":\"CAPTURE-9\",\"reason\":\"claimed\",\"repo\":null,\"resolved_repo\":null,\"status\":\"todo\"},\"quiet\":false}",
+  "trace_id": "dispatch-4804"
+}

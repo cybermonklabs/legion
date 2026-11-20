@@ -1994,9 +1994,10 @@ type AskAnsweredEventPayload struct {
 // creating transaction, so `issue.created` names the nodes that body cited.
 //
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
-// transaction: Changed names each field whose value the write moved (title, status, closed_at
-// for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
+// transaction: Changed names each field whose value the write moved (IssueChangedFields: title,
+// status, closed_at for a close or a reopen, rank, priority, assignee, parent, labels, route,
+// repo, components, advances, blocked_by, external_links; for issue.created every field the new
+// issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
@@ -2034,6 +2035,57 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 		Issue:                   issue,
 		ReferenceChangesPayload: NewReferenceChangesPayload(changes),
 	}
+}
+
+// IssueChangedFields is an issue event's changed list: the name of every field whose value
+// differs between before and after, in one fixed order. repo moves with the issue's own
+// repository or the one it resolves to (a reparent can move the second alone), and components
+// with the effective attachment, so an inherited change counts too. closed_at moves only with a
+// close or a reopen (whether the issue is closed, not the time), which a status alone cannot
+// say: a reader learns from it that the issue's open asks entered or left the Inbox and the
+// projects' open-ask counts. Every writer of the list calls it (api/issue_patch.go,
+// api/issue_create.go), and so does the outbox's test of the shared issue event examples, so an
+// example's list is one Dispatch writes.
+func IssueChangedFields(before, after Issue) []string {
+	changed := []string{}
+	add := func(field string, moved bool) {
+		if moved {
+			changed = append(changed, field)
+		}
+	}
+	add("title", before.Title != after.Title)
+	add("status", before.Status != after.Status)
+	add("closed_at", (before.ClosedAt == nil) != (after.ClosedAt == nil))
+	add("rank", before.Rank != after.Rank)
+	add("priority", !pointersEqual(before.Priority, after.Priority))
+	add("assignee", !pointersEqual(before.Assignee, after.Assignee))
+	add("parent", !pointersEqual(before.Parent, after.Parent))
+	add("labels", !slices.Equal(before.Labels, after.Labels))
+	add("route", !pointersEqual(before.Route, after.Route))
+	add("repo", !pointersEqual(before.Repo, after.Repo) || !pointersEqual(before.ResolvedRepo, after.ResolvedRepo))
+	add("components", !before.Components.Equal(after.Components))
+	add("advances", !slices.Equal(before.Advances, after.Advances))
+	add("blocked_by", !slices.Equal(before.BlockedBy, after.BlockedBy))
+	add("external_links", !slices.Equal(before.ExternalLinks, after.ExternalLinks))
+	return changed
+}
+
+// Equal is whether c and other are one attachment: the same mode, ids, retired ids, reason and
+// issue it is inherited from, a nil list equal to an empty one.
+func (c IssueComponents) Equal(other IssueComponents) bool {
+	return c.Mode == other.Mode &&
+		slices.Equal(c.IDs, other.IDs) &&
+		slices.Equal(c.Unknown, other.Unknown) &&
+		pointersEqual(c.Reason, other.Reason) &&
+		pointersEqual(c.InheritedFrom, other.InheritedFrom)
+}
+
+// pointersEqual is whether left and right are both nil, or both point at equal values.
+func pointersEqual[T comparable](left, right *T) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 // WithOwnerLastSeq is the payload carrying seq as the issue's last_seq. An issue event's payload

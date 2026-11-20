@@ -16,8 +16,10 @@
       "body": "Can this ship?",
       "target": "session:ses_target",
       "in_reply_to": null,
+      "broadcast_id": null,
       "created_at": "2026-09-12T00:00:00Z",
-      "deliveries": []
+      "deliveries": [],
+      "reply_block": null
     }
   },
   "delivery": { "attempt": 1, "mode": "btw" }

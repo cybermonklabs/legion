@@ -1,0 +1,12 @@
+{
+  "event_id": "dispatch-4823",
+  "source": "dispatch",
+  "source_event_id": "4823",
+  "source_session": "ses_reviewer4",
+  "topic": "notifications.dispatch.issue.CAPTURE-7.issue.claimed",
+  "dedupe_key": "dispatch-4823",
+  "issued_at": 1795070700500,
+  "payload_summary": "CAPTURE-7 issue claimed: forced",
+  "payload": "{\"id\":4823,\"issue_key\":\"CAPTURE-7\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":11,\"type\":\"issue.claimed\",\"actor\":{\"kind\":\"session\",\"id\":\"ses_reviewer4\",\"origin\":{\"host\":\"worker-9\",\"machine\":\"worker-9\",\"cwd\":\"/work/widgets\"},\"owner\":\"bob@example.com\"},\"notify\":false,\"created_at\":\"2026-11-19T06:45:00.5Z\",\"payload\":{\"claim\":{\"actor\":{\"id\":\"ses_reviewer4\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-9\",\"machine\":\"worker-9\"},\"owner\":\"bob@example.com\"},\"at\":\"2026-11-19T06:45:00.5Z\"},\"key\":\"CAPTURE-7\",\"previous_claim\":{\"actor\":{\"id\":\"ses_implementer8\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-7\",\"machine\":\"worker-7\",\"pane\":\"%4\",\"session_title\":\"CAPTURE-7 implementer\",\"tmux\":\"legion\"},\"owner\":\"alice@example.com\",\"project\":\"CAPTURE\",\"proven\":true},\"at\":\"2026-11-19T06:31:00.654321Z\"},\"reason\":\"forced\",\"repo\":\"acme/widgets\",\"resolved_repo\":\"acme/widgets\",\"status\":\"in_progress\"},\"quiet\":false}",
+  "trace_id": "dispatch-4823"
+}

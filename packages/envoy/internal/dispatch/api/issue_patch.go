@@ -558,7 +558,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// Inbox rows it can move. A retitle keeps the issue's child_of and blocked_by edges but moves
 	// the excerpt they show, so it names their targets; a blocked_by change moves the count of
 	// each blocker it added or removed, so it names those.
-	changedFields := issueChangedFields(before, after)
+	changedFields := model.IssueChangedFields(before, after)
 	edgeChanges, err := issueEdgeChanges(r.Context(), tx, before, after, slices.Contains(changedFields, "title"))
 	if err != nil {
 		s.writeHandlerError(w, err)

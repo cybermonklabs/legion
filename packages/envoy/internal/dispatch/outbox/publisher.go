@@ -1580,6 +1580,13 @@ func publishedDestinationSet(subjects []string) map[string]struct{} {
 	return delivered
 }
 
+// publishedEvent is the event as an envelope's payload carries it: the event log's record and
+// one field the log does not hold, `quiet` (events.Quiet).
+type publishedEvent struct {
+	model.Event
+	Quiet bool `json:"quiet"`
+}
+
 // envelope builds the bus envelope of one event. Its payload is the event with one field the
 // event log does not hold: `quiet` (events.Quiet), whether the event carries nothing for a
 // reader following its owner topic. A reader takes it as the whole answer, where `notify` says
@@ -1592,10 +1599,7 @@ func publishedDestinationSet(subjects []string) map[string]struct{} {
 // instead, whether that session is a destination of its own or the holder a role route reaches
 // (destinations.addSession, roleFallbackKey, destination.dedupeKey).
 func envelope(event model.Event, slug string) (contracts.Envelope, error) {
-	payload, err := json.Marshal(struct {
-		model.Event
-		Quiet bool `json:"quiet"`
-	}{Event: event, Quiet: events.Quiet(event)})
+	payload, err := json.Marshal(publishedEvent{Event: event, Quiet: events.Quiet(event)})
 	if err != nil {
 		return contracts.Envelope{}, fmt.Errorf("encode event: %w", err)
 	}

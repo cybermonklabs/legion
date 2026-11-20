@@ -22,6 +22,8 @@ import {
   ReplyBlockSchema,
   SubscriptionRemovedEventPayloadSchema,
 } from "./dispatch-api";
+import { DispatchTargetedMessageDeliverySchema } from "./dispatch-api-targeted";
+import { ExampleWalk, type Wider } from "./example-walk.testing";
 
 /**
  * What the inbound parsers accepted, refused and kept on the day the payload types were still
@@ -1324,4 +1326,155 @@ describe("the inbound parsers read every recorded frame as they did", () => {
       expect(samples.map(disagreement).filter((found) => found !== null)).toEqual([]);
     });
   }
+});
+
+/** Each key a reading schema of the targeted-delivery fixture declares that the fixture leaves
+ *  out, by its path, with the reason. Every other declared key, at every depth, must be in the
+ *  fixture (`example-walk.testing.ts`, the walk the issue event examples are held by), so a reader
+ *  that starts reading a key the fixture does not carry, or renames one, fails here by name. */
+const TARGETED_ABSENT: Record<string, string> = {
+  "event.payload.reply_body": "model.MessageEventPayload omits it on a root message",
+  "event.payload.thread_target": "model.MessageEventPayload omits it on a root message",
+  "event.payload.thread_logins": "model.MessageEventPayload omits it on a delivery frame",
+  "event.payload.body_truncated": "model.MessageEventPayload omits it when the body is whole",
+  "event.payload.payload_omitted": "the outbox sets it on a stand-in alone (outbox/batch.go)",
+};
+
+const FRAME_TOLERANT =
+  "DispatchEventSchema reads a frame tolerantly, so a frame lacking it keeps its header; Go writes it on every event (model.Event, model.Actor), and the issue event examples hold PublishedEventSchema to that";
+const ISSUE_LESS =
+  "a pointer, null where no issue owns the message: one sent to a session outside any issue (POST /api/v1/agents/{session_id}/messages)";
+/** A form Go writes on a message the fixture's own message is not: the fixture is one root
+ *  message aimed at one session, and its other forms are written on other messages. */
+const ON_ANOTHER_MESSAGE = (written: string) =>
+  `Go writes it ${written}; the fixture's message is a root message aimed at one session, which carries none`;
+/** A string whose schema states no length: the reason it takes "", which the fixture does not
+ *  hold. */
+const NO_LENGTH =
+  'the reader states no length for the string, as Go\'s string has none, so it takes "", which the fixture does not hold';
+
+/** Each form - a key absent, a value null, a string, an empty one, a number of each form, a
+ *  boolean, an object, a list, any value - that a reading schema of the targeted-delivery fixture
+ *  takes and the fixture does not hold, as zod's parse of each probe says (`takenForms`), by the
+ *  schema's key (`<place>[]` for a list's element) and the form, with the reason the schema takes
+ *  it.
+ *  Every other form a reading schema takes must be the fixture's (the walk's `widenings`), so a
+ *  key a reader makes optional or nullable where Dispatch always writes it, or gives another
+ *  type, or an entry here for a form the fixture holds or the schema refuses, fails here by name. */
+const TARGETED_WIDER: Wider = {
+  "DispatchEventSchema.issue_key": {
+    null: `Go's model.Event.IssueKey is ${ISSUE_LESS}`,
+    "empty string": NO_LENGTH,
+  },
+  "DispatchEventSchema.artifact_id": {
+    absent: FRAME_TOLERANT,
+    string:
+      "DispatchEventSchema reads every event's frame: Go's model.Event.ArtifactID is a string on an event an unlinked document owns (api.documentOwner), and null on a message's",
+    "empty string": NO_LENGTH,
+  },
+  "DispatchEventSchema.project": {
+    absent: FRAME_TOLERANT,
+    string:
+      'Go writes the key of the project that owns the event (model.Event.Project); the fixture\'s frame was recorded with none, so it holds ""',
+  },
+  "DispatchEventSchema.type": { "empty string": NO_LENGTH },
+  "DispatchEventSchema.actor.kind": { "empty string": NO_LENGTH },
+  "DispatchEventSchema.actor.id": { absent: FRAME_TOLERANT, "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.issue_key": {
+    null: `Go's model.Message.IssueKey is ${ISSUE_LESS}`,
+    "empty string": NO_LENGTH,
+  },
+  "DispatchTargetedMessagePayloadSchema.author.kind": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.author.id": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.body": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.target": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.created_at": { "empty string": NO_LENGTH },
+  "DispatchTargetedMessagePayloadSchema.in_reply_to": {
+    string: ON_ANOTHER_MESSAGE(
+      "on a reply, naming the message it answers (model.Message.InReplyTo)"
+    ),
+    "empty string": NO_LENGTH,
+  },
+  "DispatchTargetedMessagePayloadSchema.broadcast_id": {
+    absent:
+      "a frame is untrusted, so neither its broadcast_id nor that one is absent proves anything (dispatch-api-targeted.ts)",
+    string: ON_ANOTHER_MESSAGE(
+      "on a broadcast's copy, naming the broadcast (model.Message.BroadcastID)"
+    ),
+    "empty string": NO_LENGTH,
+  },
+  "DispatchTargetedMessagePayloadSchema.reply_block": {
+    absent:
+      "a message from a Dispatch older than the field carries none (dispatch-api-messages.ts)",
+    object: ON_ANOTHER_MESSAGE(
+      "on a reply to a block, naming the block (model.Message.ReplyBlock)"
+    ),
+  },
+  "DispatchTargetedMessagePayloadSchema.reply_body": {
+    string: ON_ANOTHER_MESSAGE(
+      "on a reply, the start of what it answers (model.MessageEventPayload.ReplyBody)"
+    ),
+    "empty string": NO_LENGTH,
+  },
+  "DispatchTargetedMessagePayloadSchema.thread_target": {
+    string: ON_ANOTHER_MESSAGE(
+      "on a reply, its thread root's target (model.MessageEventPayload.ThreadTarget)"
+    ),
+    "empty string": NO_LENGTH,
+  },
+  "DispatchTargetedMessagePayloadSchema.thread_logins": {
+    array:
+      "Go writes it on message.created and message.answered (model.MessageEventPayload.ThreadLogins), and omits it on a delivery frame, which the fixture is",
+  },
+  "DispatchTargetedMessagePayloadSchema.body_truncated": {
+    boolean:
+      "Go writes true on a message whose body was cut to fit (model.MessageEventPayload.BodyTruncated, omitempty), and the fixture's body is whole",
+  },
+  "DispatchTargetedMessagePayloadSchema.payload_omitted": {
+    boolean: "the outbox sets it on a stand-in alone (outbox/batch.go)",
+  },
+  "DispatchTargetedMessagePayloadSchema.deliveries[]": {
+    any: "Go writes each delivery as an object (model.MessageDelivery), and the payload's reader keeps them unread; a targeted frame's own delivery is the line beside it, which DispatchTargetedMessageDeliverySchema reads",
+  },
+};
+
+/** Each place a reading schema of the targeted-delivery fixture reads a closed set of values at,
+ *  which must read its set alone and refuse a value outside it (the walk's `closedSets`): so a
+ *  set opened to any value fails here by its place, and so does a new closed set until this
+ *  names it. */
+const TARGETED_CLOSED: readonly string[] = ["DispatchTargetedMessageDeliverySchema.mode"];
+
+test("the targeted-delivery fixture carries every key its reading schemas declare", () => {
+  // Each walk below is a reader's, so no schema is asked to refuse an undeclared key (LOOSE).
+  const walk = new ExampleWalk({
+    never: {},
+    labels: new Map(),
+    absentTable: "TARGETED_ABSENT",
+    loose: {},
+  });
+  const fixture = { name: "the targeted-delivery fixture", absent: TARGETED_ABSENT };
+  // Each schema is a reader's, which keeps the keys it declares and passes the others over.
+  const reader = { tolerant: true };
+  const { event, delivery } = targetedDeliveryFixture;
+  walk.walk(DispatchEventSchema, event, fixture, "event", "DispatchEventSchema", reader);
+  walk.walk(
+    DispatchTargetedMessagePayloadSchema,
+    event.payload,
+    fixture,
+    "event.payload",
+    "DispatchTargetedMessagePayloadSchema",
+    reader
+  );
+  walk.walk(
+    DispatchTargetedMessageDeliverySchema,
+    delivery,
+    fixture,
+    "delivery",
+    "DispatchTargetedMessageDeliverySchema",
+    reader
+  );
+  walk.staleExceptions([fixture]);
+  walk.closedSets(TARGETED_CLOSED);
+  walk.widenings(TARGETED_WIDER);
+  expect(walk.problems).toEqual([]);
 });

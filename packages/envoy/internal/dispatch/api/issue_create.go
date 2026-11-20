@@ -526,7 +526,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A new issue changed every field it holds a value in, measured from an issue with none.
-	payload, err := newIssueEventPayload(r.Context(), tx, issue, refs.MergeChanges(specChanges, blockerChanges), issueChangedFields(unsetIssue, issue))
+	payload, err := newIssueEventPayload(r.Context(), tx, issue, refs.MergeChanges(specChanges, blockerChanges), model.IssueChangedFields(unsetIssue, issue))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

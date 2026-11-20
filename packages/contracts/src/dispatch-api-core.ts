@@ -85,7 +85,9 @@ export const ActorSchema = z.union([
   z
     .strictObject({
       kind: z.literal("session"),
-      id: z.string(),
+      /** The session's id, never empty: a broker token's session, or the session a request's body
+       *  names, which bearerSessionActor refuses empty. */
+      id: z.string().min(1),
       origin: ActorOriginSchema.optional(),
       owner: z.string().optional(),
       /** The subject of the verified service token that authenticated the write

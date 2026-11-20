@@ -1,0 +1,11 @@
+{
+  "event_id": "dispatch-4790",
+  "source": "dispatch",
+  "source_event_id": "4790",
+  "topic": "notifications.dispatch.issue.CAPTURE-3.issue.released",
+  "dedupe_key": "dispatch-4790",
+  "issued_at": 1795020000500,
+  "payload_summary": "CAPTURE-3 issue released: closed",
+  "payload": "{\"id\":4790,\"issue_key\":\"CAPTURE-3\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":11,\"type\":\"issue.released\",\"actor\":{\"kind\":\"user\",\"id\":\"alice@example.com\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-11-18T16:40:00.5Z\",\"payload\":{\"claim\":null,\"key\":\"CAPTURE-3\",\"previous_claim\":{\"actor\":{\"id\":\"ses_implementer8\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-7\",\"machine\":\"worker-7\",\"pane\":\"%4\",\"session_title\":\"CAPTURE-7 implementer\",\"tmux\":\"legion\"},\"owner\":\"alice@example.com\",\"project\":\"CAPTURE\",\"proven\":true},\"at\":\"2026-11-18T09:00:00Z\"},\"reason\":\"closed\",\"repo\":null,\"resolved_repo\":\"acme/widgets\",\"status\":\"done\"},\"quiet\":false}",
+  "trace_id": "dispatch-4790"
+}

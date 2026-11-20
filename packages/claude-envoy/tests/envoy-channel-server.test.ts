@@ -378,7 +378,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     JSON.stringify({
       source: "agent",
       source_session: "ses_sender",
-      issued_at: 0,
+      issued_at: 1_795_000_000_000,
       payload_summary: summary,
     })
 

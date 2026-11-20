@@ -1,0 +1,12 @@
+{
+  "event_id": "dispatch-4822",
+  "source": "dispatch",
+  "source_event_id": "4822",
+  "source_session": "ses_implementer8",
+  "topic": "notifications.dispatch.issue.CAPTURE-7.issue.claimed",
+  "dedupe_key": "dispatch-4822",
+  "issued_at": 1795069860654,
+  "payload_summary": "CAPTURE-7 issue claimed: takeover",
+  "payload": "{\"id\":4822,\"issue_key\":\"CAPTURE-7\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":10,\"type\":\"issue.claimed\",\"actor\":{\"kind\":\"session\",\"id\":\"ses_implementer8\",\"origin\":{\"host\":\"worker-7\",\"machine\":\"worker-7\",\"cwd\":\"/work/widgets\",\"tmux\":\"legion\",\"pane\":\"%4\",\"session_title\":\"CAPTURE-7 implementer\"},\"owner\":\"alice@example.com\",\"project\":\"CAPTURE\",\"proven\":true},\"notify\":false,\"created_at\":\"2026-11-19T06:31:00.654321Z\",\"payload\":{\"claim\":{\"actor\":{\"id\":\"ses_implementer8\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-7\",\"machine\":\"worker-7\",\"pane\":\"%4\",\"session_title\":\"CAPTURE-7 implementer\",\"tmux\":\"legion\"},\"owner\":\"alice@example.com\",\"project\":\"CAPTURE\",\"proven\":true},\"at\":\"2026-11-19T06:31:00.654321Z\"},\"key\":\"CAPTURE-7\",\"previous_claim\":{\"actor\":{\"id\":\"ses_implementer7\",\"kind\":\"session\",\"origin\":{\"cwd\":\"/work/widgets\",\"host\":\"worker-7\",\"machine\":\"worker-7\",\"pane\":\"%3\",\"session_title\":\"CAPTURE-7 implementer\",\"tmux\":\"legion\"},\"proven\":true,\"service\":\"legion-fleet\"},\"at\":\"2026-11-19T06:00:00.25Z\"},\"reason\":\"takeover\",\"repo\":\"acme/widgets\",\"resolved_repo\":\"acme/widgets\",\"status\":\"in_progress\"},\"quiet\":false}",
+  "trace_id": "dispatch-4822"
+}

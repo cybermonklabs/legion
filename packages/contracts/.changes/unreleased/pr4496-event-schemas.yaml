@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  `EventSchema` reads one Dispatch event strictly, with the fields the OpenAPI document's `Event`
+  declares, and `PublishedEventSchema` reads the copy Dispatch's outbox publishes, which adds
+  `quiet`. Nine shared issue event envelopes in `packages/daemon/internal/intake/testdata/dispatch/`
+  hold the Dispatch writer, these schemas, the issue event schemas and the Legion daemon's intake to
+  the same `issue.updated`, `issue.claimed` and `issue.released` events, each claim reason Dispatch
+  writes among them, and `daemon-verdicts.json` beside them holds each schema to the values the
+  daemon's decoder takes at every place of them. `IssueClaimEventPayload.claim` is now never null: an `issue.claimed` always
+  names the holder it writes, as `issue.released` always names the claim it cleared. The
+  documentation of an issue event's `changed` now names `advances`, which Dispatch writes there
+  when a write moves them.
+time: 2026-11-19T11:45:20.899893725Z
+custom:
+    Issue: pr4496

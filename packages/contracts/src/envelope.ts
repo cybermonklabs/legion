@@ -42,7 +42,10 @@ export const EnvelopeSchema = z.object({
   source_session: z.string().optional(),
   topic: z.custom<string>(isSubject, { message: "topic must be a non-empty subject" }),
   dedupe_key: z.string().min(1),
-  issued_at: z.number().int(),
+  /** Unix milliseconds of the envelope, above 0: every producer stamps its own clock or an
+   *  event's time, the listener refuses 0 (listenerwire.Envelope's check), and so does the Legion
+   *  daemon. */
+  issued_at: z.number().int().positive(),
   expires_at: z.number().int().optional(),
   /**
    * The Unix-millisecond time the listener kept this copy because it could not deliver it,
@@ -94,6 +97,14 @@ export const EnvelopeSchema = z.object({
 });
 
 export type Envelope = z.infer<typeof EnvelopeSchema>;
+
+/** The envelope Dispatch's outbox publishes an issue event in: `EnvelopeSchema` with `payload`, the
+ *  event's own text, required and never empty - the outbox writes every issue event's text there,
+ *  and the Legion daemon refuses an issue event's envelope whose payload is no JSON. Every other
+ *  field keeps `EnvelopeSchema`'s definition. */
+export const IssueEventEnvelopeSchema = EnvelopeSchema.extend({
+  payload: EnvelopeSchema.shape.payload.unwrap().min(1),
+});
 
 /**
  * The shape of a dedupe key the code that sends a message mints once for it: the listener's own

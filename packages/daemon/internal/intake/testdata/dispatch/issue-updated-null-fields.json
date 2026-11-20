@@ -1,0 +1,11 @@
+{
+  "event_id": "dispatch-4801",
+  "source": "dispatch",
+  "source_event_id": "4801",
+  "topic": "notifications.dispatch.issue.CAPTURE-9.issue.updated",
+  "dedupe_key": "dispatch-4801",
+  "issued_at": 1795065000500,
+  "payload_summary": "CAPTURE-9 issue updated",
+  "payload": "{\"id\":4801,\"issue_key\":\"CAPTURE-9\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":4,\"type\":\"issue.updated\",\"actor\":{\"kind\":\"user\",\"id\":\"alice@example.com\",\"proven\":true},\"notify\":true,\"created_at\":\"2026-11-19T05:10:00.5Z\",\"payload\":{\"advances\":[],\"advances_revision\":0,\"ancestors\":[],\"assignee\":null,\"blocked_by\":[],\"changed\":[\"status\",\"closed_at\"],\"claim\":null,\"closed_at\":null,\"components\":{\"ids\":[],\"inherited_from\":null,\"mode\":\"inherit\",\"reason\":null,\"unknown\":[]},\"created_at\":\"2026-11-17T14:00:00Z\",\"created_by\":{\"id\":\"alice@example.com\",\"kind\":\"user\",\"proven\":true},\"decisions_artifact_id\":\"\",\"external_links\":[],\"key\":\"CAPTURE-9\",\"labels\":[],\"last_seq\":4,\"number\":9,\"parent\":null,\"plan_artifact_id\":\"\",\"primary_artifact_id\":\"0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a09\",\"priority\":null,\"project\":\"CAPTURE\",\"rank\":\"UUUm\",\"repo\":null,\"resolved_repo\":null,\"route\":null,\"status\":\"todo\",\"thread_logins\":[],\"title\":\"Reopen a root nobody holds\",\"updated_at\":\"2026-11-19T05:10:00.5Z\",\"verification_artifact_id\":\"\"},\"quiet\":false}",
+  "trace_id": "dispatch-4801"
+}

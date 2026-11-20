@@ -215,7 +215,7 @@ func TestAdvancesRelation(t *testing.T) {
 		t.Fatalf("the write moved the repository to %v (resolved %v), want %v (%v)",
 			written.Repo, written.ResolvedRepo, child.Repo, child.ResolvedRepo)
 	}
-	if !issueComponentsEqual(written.Components, child.Components) {
+	if !written.Components.Equal(child.Components) {
 		t.Fatalf("the write moved the components to %+v, want %+v", written.Components, child.Components)
 	}
 	kind, payload := newestIssueEvent(t, database, child.Key)

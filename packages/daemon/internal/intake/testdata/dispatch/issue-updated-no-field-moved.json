@@ -1,0 +1,12 @@
+{
+  "event_id": "dispatch-4815",
+  "source": "dispatch",
+  "source_event_id": "4815",
+  "source_session": "ses_implementer8",
+  "topic": "notifications.dispatch.issue.CAPTURE-3.issue.updated",
+  "dedupe_key": "dispatch-4815",
+  "issued_at": 1795069200500,
+  "payload_summary": "CAPTURE-3 issue updated",
+  "payload": "{\"id\":4815,\"issue_key\":\"CAPTURE-3\",\"artifact_id\":null,\"project\":\"CAPTURE\",\"seq\":12,\"type\":\"issue.updated\",\"actor\":{\"kind\":\"session\",\"id\":\"ses_implementer8\",\"origin\":{\"host\":\"worker-7\",\"machine\":\"worker-7\",\"cwd\":\"/work/widgets\",\"tmux\":\"legion\",\"pane\":\"%4\",\"session_title\":\"CAPTURE-7 implementer\"},\"owner\":\"alice@example.com\",\"project\":\"CAPTURE\",\"proven\":true},\"notify\":false,\"created_at\":\"2026-11-19T06:20:00.5Z\",\"payload\":{\"advances\":[],\"advances_revision\":0,\"ancestors\":[\"CAPTURE-1\"],\"assignee\":\"alice@example.com\",\"blocked_by\":[],\"changed\":[],\"claim\":null,\"closed_at\":\"2026-11-18T16:40:00.5Z\",\"components\":{\"ids\":[],\"inherited_from\":null,\"mode\":\"none\",\"reason\":\"a chore of the build no component owns\",\"unknown\":[]},\"created_at\":\"2026-11-17T11:00:00Z\",\"created_by\":{\"id\":\"alice@example.com\",\"kind\":\"user\",\"proven\":true},\"decisions_artifact_id\":\"\",\"external_links\":[{\"kind\":\"github\",\"url\":\"https://github.com/acme/widgets/pull/31\"}],\"key\":\"CAPTURE-3\",\"labels\":[\"legion\"],\"last_seq\":12,\"number\":3,\"parent\":\"CAPTURE-1\",\"plan_artifact_id\":\"\",\"primary_artifact_id\":\"0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a04\",\"priority\":2,\"project\":\"CAPTURE\",\"rank\":\"UUUj\",\"repo\":null,\"resolved_repo\":\"acme/widgets\",\"route\":null,\"status\":\"done\",\"title\":\"Name the outbox's components\",\"updated_at\":\"2026-11-18T16:40:00.5Z\",\"verification_artifact_id\":\"\"},\"quiet\":false}",
+  "trace_id": "dispatch-4815"
+}

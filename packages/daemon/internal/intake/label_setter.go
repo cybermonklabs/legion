@@ -18,6 +18,8 @@ import (
 // removed and set again names whoever set it last. It is "" when no event added the label. An
 // event that does not decode as a Dispatch event, or whose issue payload does not decode, is an
 // error naming its position, since a log the daemon cannot read names no setter it can act on.
+// It reads each payload into dispatchIssuePayload, the type the live decoder reads it into, so a
+// field Dispatch renames moves both readings together.
 //
 // The daemon reads the log for this because an unrecorded issue has no earlier state in the
 // daemon: the event that reaches it says the label is there, not who put it there (DispatchIssue.
@@ -32,9 +34,7 @@ func LabelSetter(events []json.RawMessage) (string, error) {
 		if event.Type != "issue.created" && event.Type != "issue.updated" {
 			continue
 		}
-		var issue struct {
-			Labels []string `json:"labels"`
-		}
+		var issue dispatchIssuePayload
 		if len(event.Payload) > 0 {
 			if err := json.Unmarshal(event.Payload, &issue); err != nil {
 				return "", fmt.Errorf("decode Dispatch issue payload of event %d of %d: %w", i+1, len(events), err)
