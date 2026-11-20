@@ -2464,7 +2464,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 191: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 196: INFRA-4605 (cybermonklabs/legion) -- a pod's `legion launcher` may be told
 // `--session-writer-audience <audience>`, a fifth session flag after
 // `--session-impersonate-service-account` (`sessionWriterAudienceFlag` after
 // `sessionProxyAccountFlag`, `internal/runtime/sandbox/manifest.go`). The daemon renders it only
@@ -2482,7 +2524,7 @@ package api
 // controller's pod runs the launcher's roles-dir form for its one role in place of the
 // single-role form (`--roles-dir` and `--role controller`, sandbox's
 // controllerPod.rolesDirContainer), so role-init hides the writer token and the controller's
-// launcher token from the controller's agent. A launcher built before 191 exits 2 on the unknown
+// launcher token from the controller's agent. A launcher built before 196 exits 2 on the unknown
 // flag in every pod the daemon creates with it, so the image probe, which holds the image's
 // pi-legion to this number, refuses such an image at boot instead, as it did for 137's flag. An
 // older daemon refuses the member by name (`internal/config`'s readSessionDatabase), so it
@@ -2491,7 +2533,7 @@ package api
 // launcher's command for its life, and an older daemon sends no `agentExecutable`, so that
 // launcher refuses every Oh My Pi start an older daemon sends it (`internal/launcher`'s
 // newSessionPeer). An older daemon also reads no fifth flag, and where it knows a plugin pair
-// every relaunch of an Oh My Pi claim recorded at 191 installs that pair and so keeps the pod
+// every relaunch of an Oh My Pi claim recorded at 196 installs that pair and so keeps the pod
 // whatever its image: each Oh My Pi start is refused and charged as a launch failure (a Claude
 // Code start is admitted), the controller's claim fails and its retries install into the same pod
 // until its Sandbox is deleted, and each issue claim on Oh My Pi fails and needs a retry once its
@@ -2501,7 +2543,7 @@ package api
 // round, the controller's pod at its next launch). The writer pool, its provider and the
 // account's grant to the pool's principal stay until then, since a pod that carries the flag
 // exchanges the writer token until it is replaced. Only once no launcher command carries the flag
-// is the daemon rolled back below 191 (docs/kubernetes.md, "Selecting the store"). A deployment
+// is the daemon rolled back below 196 (docs/kubernetes.md, "Selecting the store"). A deployment
 // that sets no writer audience renders no fifth flag, and its launcher reads no
 // `agentExecutable`, so its pods carry the command they carried before. (The
 // number was first read at 2026-11-19T10:30Z-10:34Z as 170, the lowest above main's 160 (46795520,
@@ -2538,6 +2580,12 @@ package api
 // forward merge of 2026-11-20 that brought in 1c7c8253 brought main's 188 (#4543's entry above). A
 // reading of every open pull request at that merge, which ended at 2026-11-20T10:16:19Z, found 189
 // (#3831, #4592 and #4596) and 190 (#4493 and #4578) declared, so this entry moved to 191, the
-// lowest number above main's 188 that no other open pull request declares. Read the base's own
-// number and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 191
+// lowest number above main's 188 that no other open pull request declares. The forward merge of
+// 2026-11-20 that brought in a4cd4949 brought main's 189 (#4581's entry above). A reading of every
+// open pull request at that merge, which ended at 2026-11-20T16:05:12Z, found 190 (#4578), 191
+// (#2230, #4049 and #4573), 192 (#3993, #4173, #4175, #4182, #4193, #4273, #4392 and #4580), 193
+// (#3659, #3712, #4065, #4432 and #4553), 194 (#3831 and #4030) and 195 (#4493 and #4590)
+// declared, so this entry moved to 196, the lowest number above main's 189 that no other open pull
+// request declares. Read the base's own number and every open pull request again at every forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 196

@@ -650,7 +650,11 @@ func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime
 // issue's (SandboxConfig.Of), and the controller's pod runs in gVisor whatever the configuration
 // names. The system prompt is composed here (runtime.ComposePrompt), and a prompt whose start
 // frame no launcher would read is refused here too (runtime.PromptTooLarge, wrapped so the
-// supervisor can tell it from a launch that failed).
+// supervisor can tell it from a launch that failed). So is a Claude Code spec that names its
+// session by its id alone (ResumeSession), whoever was to resolve that id: a Claude Code claim's
+// recorded session is its transcript's path, which the id is read from (claudelaunch.ResumeSession),
+// and supervise forgets a Claude Code session recorded with no file rather than look it up, so no
+// Claude Code command is started on an id it would find no transcript of.
 func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 	if err := runtime.ValidateSpawnSpec(spec, r.specOwned()); err != nil {
 		return launch{}, err
@@ -669,6 +673,9 @@ func (r *Runtime) prepare(spec runtime.SpawnSpec) (launch, error) {
 		l.microVM = r.sandboxConfig.MicroVM
 	}
 	if l.runsClaude() {
+		if spec.ResumeSession != "" {
+			return launch{}, refuse("a Claude Code claim resumes its session from its recorded transcript, never by the session id %s alone", spec.ResumeSession)
+		}
 		mcp, err := claudelaunch.MCPConfig(claudeBun, claudePluginDir, claudeConfigDir(spec.Role))
 		if err != nil {
 			return launch{}, refuse("its Claude Code MCP configuration: %v", err)
@@ -751,7 +758,10 @@ func SessionFromVolume(file, root string) (string, error) {
 // agentArgv is the command the shim runs, the launch's own harness: the Claude Code command for a
 // Claude role (claudeArgv), and otherwise the image's Oh My Pi with its two explicit extensions,
 // the Envoy plugin first, `--model @default` so the session runs the model the pod's overlay puts
-// on the `default` role, `--resume` on the recorded session when resuming, then RPC mode and
+// on the `default` role, `--resume` on the session being resumed — the recorded file, or for a
+// claim that records no file the session's id (ResumeSession), which the launcher replaces with the
+// file it looks up where it was told the id (launcherCommand) and which Oh My Pi resolves itself
+// where the launch has the agent resolve it (ResumeByAgent) — then RPC mode and
 // `--append-system-prompt` naming the file the launcher writes the launch's system prompt to
 // (systemPromptPath), never the text: Oh My Pi 18.16.0 reads a value with no newline as a path
 // and appends that file's contents, so the prompt meets no argv bound however long the
@@ -789,8 +799,11 @@ func (l launch) agentArgv(agent []string) []string {
 		envoy, legion = pluginRoots(pluginGenDir(roleStateHome(l.spec.Role), l.spec.Generation))
 	}
 	argv := append(slices.Clone(agent), "--extension", envoy, "--extension", legion, "--model", "@default")
-	if l.spec.ResumeSessionFile != "" {
+	switch {
+	case l.spec.ResumeSessionFile != "":
 		argv = append(argv, "--resume="+l.spec.ResumeSessionFile)
+	case l.spec.ResumeSession != "":
+		argv = append(argv, "--resume="+l.spec.ResumeSession)
 	}
 	return append(argv, "--mode", "rpc", "--append-system-prompt", systemPromptPath(l.spec.Generation))
 }
@@ -1790,11 +1803,13 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// A launch that resumes a recorded Oh My Pi session holds its Oh My Pi to that session
 	// (runtime.SessionExclusiveVariable): a resume of a session another live process still holds
 	// exits non-zero after the lease wait rather than moving the role onto a session id the daemon
-	// never recorded. A fresh launch is told nothing of it, and neither is a Claude role, whose
-	// resume is Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an
-	// operator's pod env may set it, and it comes after both. It is plain, so it travels in the
-	// start command alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && spec.ResumeSessionFile != "" {
+	// never recorded. A resume of a session named by its id alone (spec.ResumeSession, the file the
+	// launcher finds or Oh My Pi's own lookup) resumes a recorded session too, so it is held the
+	// same way. A fresh launch is told nothing of it, and neither is a Claude role, whose resume is
+	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
+	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
+	// alone (launchEnvironment) and changes nothing of the pod.
+	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env

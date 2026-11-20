@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -368,11 +369,14 @@ func (m *manager) logf(format string, args ...any) {
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
 // state, then start, stop, bundle and leak-check commands until the connection ends. The hello
 // names the launcher's leak-check pin and whether this process has installed it, so the daemon
-// pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
-// line, so a launcher the daemon accepted reads apart from one still dialing. The memory guard
-// settings it carries, or their absence, go to the pod's guard, and what it carries decides
-// whether the kill reports of this role's processes go on this connection (openMemoryReports);
-// what it carries for the pod's cache trimmer is put in force with the writer (applyAck).
+// pushes the check only to a launcher that still needs it. It also says that this launcher looks a
+// session named by its id alone up in the session table (resumesBySession, which start's lookup
+// serves): the daemon names a session that way only to a launcher whose hello said so. The
+// acknowledgement is logged as one line, so a launcher the daemon accepted reads apart from one
+// still dialing. The memory guard settings it carries, or their absence, go to the pod's guard,
+// and what it carries decides whether the kill reports of this role's processes go on this
+// connection (openMemoryReports); what it carries for the pod's cache trimmer is put in force with
+// the writer (applyAck).
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -384,6 +388,7 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	writer := shimwire.NewWriter(conn)
 	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
+		ResumesBySession: true,
 	}
 	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
 	if err := writer.WriteFrame(hello); err != nil {
@@ -915,6 +920,24 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	}
 	if err != nil {
 		return abandon(err)
+	}
+	// A start that names its session by its id alone (ResumeSession, which the daemon sends only to
+	// a launcher whose hello said resumesBySession, and which Validate refused beside a ResumeFile)
+	// resumes the newest session the table holds under that id (sessionByID). The found path
+	// becomes the start's ResumeFile and takes the place of the argv's one `--resume=<id>`, so the
+	// child resumes that exact file rather than leave Oh My Pi to resolve the id, and from here the
+	// start is a path resume: resumable, the recreated-workspace notice and the child. A table that
+	// holds no such session refuses the start before any child, as resumable refuses a file it
+	// does not hold. The record a retry of the same id is compared with keeps the frame as
+	// received: body was marshalled from it above, and the change is made to this call's copy of
+	// the frame with its argv copied (resumeArgv), so the caller's frame is not changed either.
+	if command.ResumeSession != "" {
+		file, err := sessionByID(ctx, env, command.ResumeSession, clientURL)
+		if err != nil {
+			return abandon(err)
+		}
+		command.Argv = resumeArgv(command.Argv, command.ResumeSession, file)
+		command.ResumeFile = file
 	}
 	// A Claude Code child's session is kept in the session table (claudeKeeper): the order is
 	// the resume's lookup, which decides the recreated-workspace notice from the row's last save,
@@ -1474,6 +1497,47 @@ func sessionWritten(parent context.Context, sessions sessionDial, file string) (
 		return time.Time{}, nil, fmt.Errorf("resume session %s: %w", file, shimwire.SessionGone)
 	}
 	return written, conn, nil
+}
+
+// sessionByID is the file of the newest session the session table holds under the session id id
+// (ompsessions.FindByID), for a start that names its session by its id alone, asked through the
+// same sessionDial resumable's lookup uses. The connection is closed once it answers, since the
+// path resume that follows (resumable) dials its own and hands it to the keeper. A table that could
+// not be asked at all is shimwire.SessionStoreUnreachable; a table that answers it holds no such
+// session is shimwire.SessionGone, refused at once, so no child starts.
+func sessionByID(ctx context.Context, env []string, id, clientURL string) (string, error) {
+	sessions, err := newSessionDial(env, clientURL)
+	if err != nil {
+		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+	}
+	var file string
+	var found bool
+	conn, err := sessions.dial(ctx, func(ctx context.Context, conn *pgx.Conn) (err error) {
+		file, found, err = ompsessions.FindByID(ctx, conn, id)
+		return err
+	})
+	if err != nil {
+		return "", fmt.Errorf("resume session %s: %w: %v", id, shimwire.SessionStoreUnreachable, err)
+	}
+	closeSessions(conn)
+	if !found {
+		return "", fmt.Errorf("resume session %s: %w", id, shimwire.SessionGone)
+	}
+	return file, nil
+}
+
+// resumeArgv is a copy of argv whose element `--resume=<id>` reads `--resume=<file>`, so the
+// child resumes the exact file the table holds and the frame the argv came from is left as the
+// daemon sent it. LauncherStart.Validate holds a start naming its session by its id to exactly one
+// such element.
+func resumeArgv(argv []string, id, file string) []string {
+	resumed := slices.Clone(argv)
+	for i, arg := range resumed {
+		if arg == "--resume="+id {
+			resumed[i] = "--resume=" + file
+		}
+	}
+	return resumed
 }
 
 // envValue is name's value in env, the last entry naming it, "" when none does.

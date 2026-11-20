@@ -51,9 +51,10 @@ func requireTraceScope() error {
 
 // sessionPeer is the Admit of one generation's session proxy when the session database names a
 // writer audience (sessionproxy.Config.Admit): it decides which process may use the socket.
-// It admits the launcher's own process, because the resume lookup (resumable) and a Claude Code
-// keeper (claudeKeeper) connect from it. A Claude Code generation has no agent that connects, so
-// for it the check admits nothing else. For an Oh My Pi generation it admits the agent alone.
+// It admits the launcher's own process, because the resume lookups (resumable, and sessionByID for
+// a start that names its session by its id alone) and a Claude Code keeper (claudeKeeper) connect
+// from it. A Claude Code generation has no agent that connects, so for it the check admits nothing
+// else. For an Oh My Pi generation it admits the agent alone.
 //
 // The check finds the agent in the process table, never from the process that connects: the
 // generation's role-init (the manager's active child), its shim (roleShim), and the oldest direct
