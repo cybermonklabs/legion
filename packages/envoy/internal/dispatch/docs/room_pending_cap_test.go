@@ -165,7 +165,10 @@ func TestABrowsersDeleteRangesParkUpToTheRoomsCapAndOnePastItIsAnsweredNotApplie
 	if clock := room.StateVector().Clock(alice.Given); clock != 0 {
 		t.Fatalf("the room holds alice's given id to clock %d before she sends anything, want 0", clock)
 	}
-	alice.Hear()
+	// The page's own sync step 2 is answered once every commit the room had made is stored
+	// (AnswerOnceStored), which can come after the document it asked for, so the answers heard are
+	// kept only once every frame the page sent is answered: those heard are the frames' below.
+	hearFromNow(t, alice, "alice's page")
 	send := func(what string, frame []byte, answers int) string {
 		t.Helper()
 		if err := alice.Write(ygsync.EncodeUpdate(frame)); err != nil {
