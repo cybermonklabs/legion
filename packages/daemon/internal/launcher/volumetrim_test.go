@@ -659,7 +659,7 @@ func (f *trimFixture) start(tr *trimmer) (context.CancelFunc, <-chan struct{}) {
 // hand-over itself (handTick). What the loop does once the interval has returned is the case's to
 // wait for: the next clock, which the loop makes after it stops the old one, after a sweep or after
 // settings that change the period; the wait for settings the loop ends for; the switch-off at a
-// reading's third fault in a row, whose last report run sends after tick returns; and the loop that
+// third fault in a row, whose last report run sends after tick returns; and the loop that
 // run starts again after a panic its interval did not contain. A case that holds a sweep's
 // interval open past its line on purpose takes tickUntil.
 func (f *trimFixture) tick(ends string) {
