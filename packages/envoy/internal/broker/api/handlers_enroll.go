@@ -31,7 +31,9 @@ type createEnrollmentBody struct {
 	// A pod only, optional: which of the pod's independent enrollments this is.
 	Slot string `json:"slot"`
 	// Optional: the operator the session runs for. The broker records the machine credential's own
-	// operator whatever is sent, and refuses any other login. Absent or null for a pod.
+	// operator whatever is sent, and refuses any other login. Absent or null for a service's pod.
+	// A pod that a person's pod login (enroll.PersonPodLogin) enrols records that person, sent or
+	// not.
 	Operator *string `json:"operator"`
 	// The RFC 7638 JWK thumbprint of the session's P-256 signing key.
 	Thumbprint string `json:"thumbprint"`
@@ -84,7 +86,11 @@ type selfResponse struct {
 	Kind string `json:"kind"`
 	// When the session's lease lapses unless it is renewed.
 	LeaseExpiresAt time.Time `json:"lease_expires_at"`
-	// The person the session runs for; null for a pod.
+	// The person the session runs for, as its enrollment row recorded it. For a pod it is the
+	// person that a person's pod login (enroll.PersonPodLogin) carried when it enrolled the pod,
+	// and null for any other pod. The row keeps that person after BROKER_POD_OPERATORS stops
+	// mapping the pod's account, while the pod then acts for no person
+	// (requests.Machine.requester).
 	Operator *string `json:"operator"`
 	// The pod slot it holds; null for every enrollment without one.
 	Slot *string `json:"slot"`
@@ -178,10 +184,12 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 // design, so it never writes a spurious audit row for an enrollment that never transitioned);
 // DELETE's own idempotent semantics mean the caller doesn't need to know or care which happened.
 // Ownership is checked first: a launcher credential may only revoke an enrollment of its own
-// operator, and a pod enrollment, which carries no operator, only when it is the credential that
-// enrolled the pod (enroll.Service.Revoke says why, and what that leaves a restarted Legion daemon)
-// — so a mismatch is always 403 (OPERATOR_MISMATCH, or NOT_ENROLLING_CREDENTIAL for another
-// service credential's pod), never a no-op 204, regardless of whether the target enrollment is live.
+// operator, and a pod enrollment only when it is the credential that enrolled the pod. A service's
+// pod enrollment carries no operator. A pod enrollment that a person's pod login made
+// (enroll.PersonPodLogin) carries that person, and the same rule holds it (enroll.Service.Revoke
+// says why, and what that leaves a restarted Legion daemon). So a mismatch is always 403
+// (OPERATOR_MISMATCH, or NOT_ENROLLING_CREDENTIAL for a pod enrollment that another credential or
+// another pod made), never a no-op 204, regardless of whether the target enrollment is live.
 func (s *server) deleteEnrollment(w http.ResponseWriter, r *http.Request, cred enroll.Credential) {
 	id, ok := pathUUID(w, r, "id", "ENROLLMENT_ID_INPUT", "enrollment")
 	if !ok {

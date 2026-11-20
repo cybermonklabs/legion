@@ -176,6 +176,7 @@ func TestAnUploadOfTheApprovedTextCarriesTheApproval(t *testing.T) {
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+document.issueKey+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, document.artifactID, 1),
+		"precondition": uploadBase(t, handler, document.artifactID),
 	})
 	advice := adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 	waitForArtifactVersion(t, handler, document.artifactID, 3)
@@ -235,6 +236,7 @@ func TestAnUploadOfTheApprovedTextOverABlockDecidedSinceCarriesNothing(t *testin
 
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+document.issueKey+"/artifacts", map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": versionMarkdown(t, handler, document.artifactID, 1),
+		"precondition": uploadBase(t, handler, document.artifactID),
 	})
 	adviceFromResponse(t, uploaded.Code, uploaded.Body.String())
 	waitForArtifactVersion(t, handler, document.artifactID, 3)

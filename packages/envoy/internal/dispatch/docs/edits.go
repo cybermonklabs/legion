@@ -299,7 +299,27 @@ func (e *ErrInvalidPrecondition) Error() string {
 // ErrPreconditionBusy reports that a room's bounded conditional-edit queue is full.
 var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 
+// ErrPreconditionRequired reports a whole-document upload replacing a document that already
+// exists and naming no token for the version it replaces, which every replacement names. The
+// write read the live tree to decide it and left it untouched. Its caller knows the document by
+// name and tells its reader where that token is printed, so the refusal a client reads is
+// written there (api's uploadBaseAdvice).
+var ErrPreconditionRequired = errors.New("an upload replacing a document must name the token of the version it replaces")
+
+// ErrPreconditionUnavailable reports a whole-document upload repairing a document whose live
+// tree is outside the Proof schema and naming a token for the version it replaces. Such a tree
+// renders no markdown and has no token at all, so the caller named a token this document has
+// never had: the upload is refused rather than taken with its guard dropped, which would tell
+// the caller its write was conditional when nothing had checked it. The write read the live tree
+// to decide it and left it untouched. Its caller knows the document by name and words the
+// refusal for its reader (api's upload).
+var ErrPreconditionUnavailable = errors.New("an upload repairing a document outside the Proof schema must name no token, since such a document has none")
+
 // ErrPreconditionFailed reports a stale document or block token without changing the live tree.
+// CurrentDocument is the token the live tree carries now, which is what the write read. How far
+// behind the client is, and what it should do next, are the caller's: the write reads no version
+// rows and knows no command its reader runs, so the route that answers the client words both
+// (api's writeUploadDocumentError).
 type ErrPreconditionFailed struct {
 	CurrentDocument string
 	Mismatches      []model.EditPreconditionMismatch
@@ -470,6 +490,22 @@ func validateEditPrecondition(precondition model.EditPrecondition) error {
 			return &ErrInvalidPrecondition{Reason: fmt.Sprintf("block %q appears more than once", block.ID)}
 		}
 		seen[block.ID] = struct{}{}
+	}
+	return nil
+}
+
+// ValidateUploadPrecondition holds a whole-document upload's precondition to what an upload can
+// mean. The upload replaces the whole document, so only the document token says which text it
+// believes it is replacing: a blocks precondition guards part of a tree the upload rewrites
+// whole, and a precondition naming nothing guards nothing at all. Each is refused in words
+// true of an upload rather than in the doc-edit rule about selecting document or blocks, which
+// offers a choice an upload does not have.
+func ValidateUploadPrecondition(precondition model.EditPrecondition) error {
+	if len(precondition.Blocks) > 0 {
+		return &ErrInvalidPrecondition{Reason: "an upload's precondition names the document token and nothing else"}
+	}
+	if precondition.Document == "" {
+		return &ErrInvalidPrecondition{Reason: "an upload's precondition names the token of the version it replaces as document"}
 	}
 	return nil
 }

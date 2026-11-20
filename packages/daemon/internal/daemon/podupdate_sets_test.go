@@ -171,7 +171,9 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			named := func(claims []supervise.Claim) bool {
 				return slices.ContainsFunc(claims, func(of supervise.Claim) bool { return of.Token == c.Token })
 			}
-			unanswered, _ := readRoundEnd(group, round, clock).holding()
+			// The background hold is a wait on the pod's processes, not on an answer, and it never
+			// names a suspended or failed claim (backgroundClaims): the answer side is what R2 sets.
+			unanswered, _, _ := readRoundEnd(group, round, clock).holding()
 			waiting, held, holding := named(waitingClaims(group, round, clock)), named(heldByOperator(group, round, clock)), named(unanswered)
 			t.Logf("over %d claims: waitingClaims %t, heldByOperator %t, holding %t", len(group), waiting, held, holding)
 			read = append(read, waiting || held || holding)

@@ -87,8 +87,8 @@ var writePermissions = map[AppRole]map[string]string{
 // (exchangeGranted), and GitHub mints a token with the permissions the request names, so an
 // installation granted less gets a lease that holds less. This package alone declares the set.
 // The secrets broker's read-only release, which a daemon on token_command gets in its place
-// (tokencommand.go), holds the broker's own set, contents, metadata, pull requests and Actions,
-// which differs from this one.
+// (tokencommand.go), holds the broker's own set, contents, metadata, pull requests, Actions,
+// checks and statuses, which differs from this one.
 //
 // The set is the most a read lease holds, and the only thing that holds it: the lease reaches
 // every repository its installation holds, as every token this package mints does, so what

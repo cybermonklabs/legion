@@ -69,8 +69,12 @@ type GrantLogEvent struct {
 	GrantID string `json:"grant_id,omitzero"`
 	// Session is the enrollment's own identity: its kind, its session id and its runtime id.
 	Session GrantLogSession `json:"session,omitzero"`
-	// Person is the operator the enrollment acts for (enrollments.operator), empty for a pod and
-	// for a machine's own session.
+	// Person is the operator the enrollment was made for (enrollments.operator): the person of a
+	// person's machine session, box or sign-in session, and the person of a pod whose login
+	// BROKER_POD_OPERATORS mapped to that person. It is empty for any other pod and for a machine's
+	// own session. It reads the enrollment's row and not the person the policy reads now, so it
+	// keeps naming that person after the setting drops the pod's account or maps it to another
+	// person.
 	Person string `json:"person,omitzero"`
 	// Service is the service the broker VERIFIED for the request, read from the request's own
 	// request.created audit row: the service account the enrollment proved still named this

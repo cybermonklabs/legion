@@ -5,12 +5,11 @@ import { createContext, type ReactNode, useContext, useEffect, useId, useReducer
  * shell mounts beside it.
  *
  * A link to a block shows the block's own words, and reading them one link at a time is one
- * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` exists to
- * replace ("the read a page that draws a chip per reference makes once instead of one
- * `GET /api/v1/references` per chip", `packages/contracts/AGENTS.md`). A page that has made that
- * batched read publishes its answer here, and every link under the shell reads its own name from
- * it instead of asking for it again. A page that publishes nothing leaves every link exactly as
- * it was, reading its own target.
+ * `GET /api/v1/references` per pointer - the read `GET /api/v1/reference-targets` makes once for
+ * them all (its entry in `packages/envoy/internal/dispatch/api/routes_table.go`). A page that has
+ * made that batched read publishes its answer here, and every link under the shell reads its own
+ * name from it instead of asking for it again. A page that publishes nothing leaves every link
+ * exactly as it was, reading its own target.
  *
  * The store sits above the router, beside the margin's slot (`margin-slot.tsx`),
  * because the margin is mounted beside the router and its cards draw the same references as the

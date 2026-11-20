@@ -1748,23 +1748,23 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/go-test-step-expansion.test.sh'
-              # :40 loads the script by path, and the script imports the engine, which imports
+              # :42 loads the script by path, and the script imports the engine, which imports
               # the path model and the Go build-tag module.
               - '.github/scripts/go-test-step-expansion.py'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/go_build_tags.py'
-              # One case reads the two step lines the reader exists for, out of the files that
-              # hold them.
-              - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
-              - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
-              # Another reads the two steps that run database-skips.sh, each with its own arguments.
-              - '.github/workflows/ci-job-envoy-go.yaml'
-              - '.github/workflows/ci-job-envoy-go-race-api.yaml'
+              # Its cases read every workflow a job of ci.yaml calls.
+              - '.github/workflows/ci-job-*.yaml'
+              - '.github/workflows/browser-image.yaml'
+              - '.github/workflows/dispatch-browser.yaml'
+              - '.github/workflows/docs-site.yaml'
+              - '.github/workflows/worker-image.yaml'
               # Its last case hashes each script AUDITED_SCRIPTS reads, so a pull request that
               # edits one runs it and is told to read the script again, and it imports
               # ci_job_reads.py to hold each such script to this gate's declared reads.
               - 'packages/envoy/scripts/database-skips.sh'
+              - 'packages/envoy/scripts/backend-count.sh'
               - '.github/scripts/ci_job_reads.py'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
@@ -2617,6 +2617,9 @@ jobs:
               - 'packages/envoy/going/testdata/**'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
+              # e2e/acceptance/replace-blocks.sh sources it for proc_group, and
+              # e2e/__tests__/replace-blocks-guard.test.ts, which this job runs, runs that script.
+              - 'scripts/e2e/lib/process-tree.sh'
               # The dashboard's tsc program compiles @legion/envoy-client's sources, and its e2e
               # helpers' test/fake-dispatch with them, through the workspace's "bun" export
               # condition, so check-ts-filters.sh holds this filter to both. The two suites that
@@ -2924,7 +2927,7 @@ jobs:
               # entry, and its way backs of the step records and of the plan ratings, to the block
               # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:473)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
               # backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
@@ -2938,7 +2941,7 @@ jobs:
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:483; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
               - 'docs/site/src/content/docs/legion/concepts.md'

@@ -772,11 +772,12 @@ func terminal(p *corev1.Pod) bool {
 // another release of the daemon, and its agents call this daemon as that release — for a route it
 // no longer serves, a variable it no longer sets — until the pod is replaced. A launch into an
 // issue pod on another image keeps it (relaunch): such a pod is replaced by its update round,
-// once every role in it has answered the update message and no turn runs, or at the round's
-// bound (PodDrift, ReplacePod). The controller's pod, which no round covers, is replaced by the
-// next launch into it that installs nothing (roundCovers), and the repository cache's own pod,
-// which holds no worker, by its next sweep (reconcileCachePod). ReconcileOrphans warns of each
-// one it finds. A nil pod holds no drift: it is replaced for being absent.
+// once every role in it has answered the update message, no turn runs and no claim's activity
+// report holds it (internal/daemon's roundEnd.holding), or at the round's bound (PodDrift,
+// ReplacePod). The controller's pod, which no round covers, is replaced by the next launch into it
+// that installs nothing (roundCovers), and the repository cache's own pod, which holds no worker,
+// by its next sweep (reconcileCachePod). ReconcileOrphans warns of each one it finds. A nil pod
+// holds no drift: it is replaced for being absent.
 func imageDrift(p *corev1.Pod, image string) (string, bool) {
 	if p == nil {
 		return "", false
@@ -817,10 +818,11 @@ func serviceAccountOr(name string) string {
 // daemon writes to the Sandbox moves it — so an operator who changes service_account reaches a
 // running pod only by replacing it: until then its agents hold the identity the old account
 // grants, whatever the configuration now says they may reach. Such a pod is replaced by its own
-// update round, which asks every worker in it to push first, where a round covers its kind
-// (roundCovers, PodDrift), by the next launch of one of its roles where no round does (relaunch),
-// and by reconcileCachePod at the next ensure of a cache's (a sweep, or a new issue pod of its
-// repository); ReconcileOrphans warns of each one it finds, as all of them do for imageDrift.
+// update round, which first asks every worker in it to do the steps of its update message
+// (supervise.UpdateTask), where a round covers its kind (roundCovers, PodDrift), by the next
+// launch of one of its roles where no round does (relaunch), and by reconcileCachePod at the next
+// ensure of a cache's (a sweep, or a new issue pod of its repository); ReconcileOrphans warns of
+// each one it finds, as all of them do for imageDrift.
 // The comparison is of the live pod's spec.ServiceAccountName, never the Sandbox's stored
 // template: the API server keeps a named account as written. It reads an unset account as
 // `default` on both sides, because the two sides spell the same account differently — the daemon
