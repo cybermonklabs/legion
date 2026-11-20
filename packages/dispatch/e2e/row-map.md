@@ -271,6 +271,8 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
+| `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
+| `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
 | `e2e/issue-page-h.e2e.ts` | the seed's approvals, claim, blockers and pins are the server's own, and one row writes each control's value through Dispatch and reads it back after a reload |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
