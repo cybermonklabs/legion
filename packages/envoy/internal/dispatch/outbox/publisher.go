@@ -59,6 +59,11 @@ const (
 	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
 	// claim it took. It is one statement too, so it is given the bound its pass's write is given.
 	claimTimeout = recordTimeout
+	// privateHoldRecheck is how long an event the private-delivery hold kept (heldPrivateOwners)
+	// waits before a batch reads it again and asks Deps.PrivateHubsReady anew: the most a private
+	// project's event waits, past the moment every hub is proven, for its publish, and what one held
+	// event costs while they are not, one read and one write of its row each wait.
+	privateHoldRecheck = 5 * time.Second
 )
 
 // Publisher is the NATS client the outbox publishes through (bus.Client).
@@ -121,6 +126,19 @@ type Deps struct {
 	// rather than paging whoever alerts on publish failures.
 	PublishFailures  *metrics.Counter
 	RoleForwardsHeld *metrics.Counter
+	// PrivateHubsReady reports whether every hub admits this Dispatch to the private projects'
+	// subjects, the proof a private event waits on before it is published (the private-delivery
+	// hold, heldPrivateOwners): while it answers false, a batch publishes no event of an owner
+	// whose project the database holds private, and holds it unpublished for privateHoldWait, after
+	// which a batch asks again and publishes it once it answers true. A public project's events
+	// publish as before. Each batch asks it once, and the batches of one scan ask side by side. A
+	// nil func holds nothing and reads nothing, which is safe while no project can be private;
+	// cmd/dispatch sets it once a hub can prove it.
+	PrivateHubsReady func() bool
+	// privateHoldWait is how long an event the hold kept waits before a batch reads it again, and
+	// zero is privateHoldRecheck, which is what cmd/dispatch runs. A test shortens it, so a held
+	// event is read again within its run; it is unexported, so no importer can.
+	privateHoldWait time.Duration
 	// Metrics is the registry New registers the gauges of the fallback copies held behind an
 	// earlier event on (heldCopies.register); nil registers none, as this package's tests run it.
 	Metrics *metrics.Registry
@@ -147,6 +165,59 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// privateHoldDelay is how long an event the private-delivery hold kept waits before a batch reads
+// it again (heldPrivateOwners), from privateHoldWait.
+func (d Deps) privateHoldDelay() time.Duration {
+	if d.privateHoldWait > 0 {
+		return d.privateHoldWait
+	}
+	return privateHoldRecheck
+}
+
+// heldPrivateOwners is the owners of events the private-delivery hold keeps out of this batch:
+// while Deps.PrivateHubsReady answers false, every owner one of whose events the batch read
+// belongs to a project the database holds private, by the project the event's owner resolves to
+// (readBatchSQL's project column), read in one statement. Such an owner's events are held whole,
+// so its later events never overtake a held one, and an owner of a public project, or none, is
+// published as before. A nil func, and one that answers true, holds nothing and reads nothing. A
+// read that fails is the batch's error, so no event of an unknown project leaves.
+func heldPrivateOwners(ctx context.Context, deps Deps, events []*batchEvent) (map[string]struct{}, error) {
+	if deps.PrivateHubsReady == nil || deps.PrivateHubsReady() {
+		return nil, nil
+	}
+	var projects []string
+	for _, event := range events {
+		if event.owner != "" && event.event.Project != "" && !slices.Contains(projects, event.event.Project) {
+			projects = append(projects, event.event.Project)
+		}
+	}
+	if len(projects) == 0 {
+		return nil, nil
+	}
+	var private []string
+	if err := deps.lanes.statement(func() error {
+		rows, err := deps.Store.Pool.Query(ctx, `select key from projects where visibility = 'private' and key = any($1::text[])`, projects)
+		if err != nil {
+			return err
+		}
+		private, err = pgx.CollectRows(rows, pgx.RowTo[string])
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("read which of the batch's projects are private: %w", err)
+	}
+	held := map[string]struct{}{}
+	for _, event := range events {
+		if event.owner != "" && slices.Contains(private, event.event.Project) {
+			held[event.owner] = struct{}{}
+		}
+	}
+	if len(held) > 0 {
+		slog.Info("dispatch outbox: a private project's events wait for every hub to prove it serves the private projects",
+			"owners", len(held))
+	}
+	return held, nil
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
@@ -304,12 +375,26 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.release(owner)
 		}
 	}()
-	resolvedRoles, err := resolveDestinations(ctx, deps, events)
+	// The private-delivery hold is decided before anything else is read or sent for the batch: a
+	// held owner's events resolve no destination, take no chain and are written, at the batch's
+	// end, as waiting privateHoldDelay with no attempt counted (settleAndRecord).
+	heldPrivate, err := heldPrivateOwners(ctx, deps, events)
 	if err != nil {
 		return batchResult{}, err
 	}
-	resolveRoleHolders(ctx, deps, events, resolvedRoles)
-	chains := planChains(events)
+	live := events
+	if len(heldPrivate) > 0 {
+		live = slices.DeleteFunc(slices.Clone(events), func(event *batchEvent) bool {
+			_, held := heldPrivate[event.owner]
+			return held
+		})
+	}
+	resolvedRoles, err := resolveDestinations(ctx, deps, live)
+	if err != nil {
+		return batchResult{}, err
+	}
+	resolveRoleHolders(ctx, deps, live, resolvedRoles)
+	chains := planChains(live)
 
 	changed := deps.Publisher.ConnectionChanged()
 	window := deps.Publisher.WindowUntil(hold.Deadline)
@@ -339,6 +424,17 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		var settled []*batchEvent
 		var done settlement
 		for _, event := range owned {
+			if _, held := heldPrivate[event.owner]; held {
+				// Held as a blocked event whose wait is the hold's: next_attempt_at alone is
+				// written, so it leaves the batches' reads of fresh events and is read again
+				// once the wait has passed, when the hold is asked anew; its attempts, its
+				// error and what it owes stay as they were. An event that is not due is left
+				// as it is.
+				if event.due {
+					outcomes = append(outcomes, outcome{id: event.event.ID, state: blocked, delay: new(deps.privateHoldDelay())})
+				}
+				continue
+			}
 			if !event.due {
 				outcomes = append(outcomes, outcome{
 					id: event.event.ID, state: owedAgain, owed: owedKeys(event, nil), owedKnown: true, owedSeq: event.ownerSeq,
@@ -423,13 +519,16 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 			deps.lanes.releaseEarly(owner)
 		}
 	}
-	// An owner with no chain has no send to wait for, so it settles before the window opens.
+	// An owner with no chain has no send to wait for, so it settles before the window opens. An
+	// owner the private-delivery hold keeps settles at the batch's end instead, and its lane goes
+	// back with no wake: it is read again once its wait has passed (nextRetry), not at once.
 	sending := map[string]struct{}{}
 	for _, c := range chains {
 		sending[c.owner] = struct{}{}
 	}
 	for _, owner := range owners {
-		if _, ok := sending[owner]; !ok {
+		_, held := heldPrivate[owner]
+		if _, ok := sending[owner]; !ok && !held {
 			settleOwner(owner)
 		}
 	}
