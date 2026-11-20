@@ -84,6 +84,19 @@ var tokenCommandLimit = 35 * time.Minute
 // when its wait ended: no answer about the App, so a later run may pass.
 const exitPending = 75
 
+// brokerRequestPending is the code the secrets broker refuses a request with while another request
+// of the session for the same name waits (packages/envoy/internal/cipher/api,
+// handlers_requests.go), which `agent-secrets` prints on stderr and exits exitRefused with. A
+// profile's grant is reused, and its waiting request joined, only for the same target, so while a
+// human-tier profile's request for one owner waits on a person, the request for another owner is
+// refused this way. Like exit 75 it is no answer about the App: a later run may pass. Only a run
+// that exited exitRefused is read so; the text in a run that exited otherwise is not
+// `agent-secrets`' refusal.
+const brokerRequestPending = "(REQUEST_PENDING)"
+
+// exitRefused is `agent-secrets`' exit status for a refusal its message names.
+const exitRefused = 1
+
 // ErrCommandPending is a token_command still running when its caller's deadline ended, wrapped in
 // a TransientError: most often a grant that waits on a person's approval. The run goes on, and the
 // caller's next attempt joins it.
@@ -196,10 +209,11 @@ func (m *Manager) recordOwners(role AppRole, installations map[string]releasedIn
 }
 
 // execTokenCommand runs app's token_command once, under ctx, for the request's owner and read.
-// A run ctx ended, or that exited 75 (`agent-secrets`' request still waiting for approval), is
-// transient; one that exited otherwise, printed too much, or printed no release is the
-// configuration's answer. Its stderr reaches the daemon's and the error with every GitHub token
-// redacted.
+// A run ctx ended, one that exited 75 (`agent-secrets`' request still waiting for approval), and
+// one the broker refused REQUEST_PENDING (another target's request of the same profile still
+// waiting, brokerRequestPending) are transient; one that exited otherwise, printed too much, or
+// printed no release is the configuration's answer. Its stderr reaches the daemon's and the error
+// with every GitHub token redacted.
 func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
 	field := tokenCommandField(request.role)
 	runCtx, cancel := context.WithCancel(ctx)
@@ -241,7 +255,7 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 		if message := strings.TrimSpace(stderr.String()); message != "" {
 			failed = fmt.Errorf("%s failed (%s): %s", field, end, message)
 		}
-		if end.ExitedWith(exitPending) {
+		if end.ExitedWith(exitPending) || (end.ExitedWith(exitRefused) && strings.Contains(stderr.String(), brokerRequestPending)) {
 			return nil, &TransientError{Err: failed}
 		}
 		return nil, failed

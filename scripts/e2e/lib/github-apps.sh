@@ -291,9 +291,12 @@ require_app_inputs() {
 # deployment may hold a role's github-app secret at human tier, a human-tier request naming no
 # lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so
 # without the flag every renewal of such a run would wait for a person again. With it the approver
-# reads the twelve hours on the card and decides them once. The `${…}` expansions are the
-# command's own, expanded by the sh the daemon runs it with: LEGION_GITHUB_READ_ONLY, when set,
-# picks the read profile, and LEGION_GITHUB_OWNER, when set, narrows the profile to that owner's
+# reads the twelve hours on the card and decides them for one profile and target: the broker
+# reuses a grant only for the same profile and target, so such a run needs one decision per profile
+# and owner, up to 2N+1 every twelve hours for N owners (docs/deployment.md). The `${…}`
+# expansions are the command's own, expanded by the sh the daemon runs it with:
+# LEGION_GITHUB_READ_ONLY, when set, picks the read profile, and LEGION_GITHUB_OWNER, when set,
+# narrows the profile to that owner's
 # installation (--target). A release reaches every repository the installation holds: the daemon
 # asks for no narrowing by repository. It depends on nothing but NAME.
 app_token_command() {

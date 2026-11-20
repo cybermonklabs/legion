@@ -11,6 +11,4 @@ body: |-
   does not, as from a broker from before `--target`, which releases the whole profile, runs
   nothing and exits 2. A release whose values answer names `github_left_out` writes one line on
   stderr for each account, naming the profile, the account and the permissions the installation
-  does not hold. The exec form's
-  `--github-owner`, `--github-repo`, `--github-read-only` and `--github-token` are removed: each
-  exits 2, sends nothing, and names what replaces it.
+  does not hold.

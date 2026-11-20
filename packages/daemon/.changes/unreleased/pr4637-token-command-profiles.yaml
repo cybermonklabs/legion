@@ -3,7 +3,13 @@ body: |-
   Each role's `token_command` in `docs/deployment.md` names a profile of that App's broker secret:
   the role's profile, or its read profile (the same name with `_READ`) when
   `LEGION_GITHUB_READ_ONLY` is set, narrowed with `--target "$LEGION_GITHUB_OWNER"` when that is
-  set. The runbook gives the four profiles those commands name, each `"value": "installations"`
-  with the daemon's own write or read set, so a lease holds the same permissions in token mode as
-  with a key; the live proofs' token command takes the same form. The architect and worker
-  prompts describe a GitHub credential as a profile.
+  set. A deployment rewrites its `token_command` when it moves to this release: the earlier
+  command passes GitHub flags `agent-secrets` no longer takes whenever the daemon names an owner,
+  so it exits 2 and the daemon gets no token for that owner. The broker's profiles file must
+  declare the four profiles the commands name, which the
+  runbook gives, each `"value": "installations"` with the daemon's own write or read set, so a
+  lease holds the same permissions in token mode as with a key. A human-tier App on
+  `token_command` needs one decision per profile and owner, and a request refused
+  `REQUEST_PENDING` while another owner's waits is retried, as exit 75 is. The live proofs' token
+  command takes the same form, and the architect and worker prompts describe a GitHub credential
+  as a profile.
