@@ -209,15 +209,14 @@ func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T
 
 // The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
 // shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
-// takes only what its server encoding can read, so supervise scrubs the text before it is stored
-// (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
+// holds only what its server encoding can read, and the store's text rule is what makes such a
+// text fit: the NUL is stored as U+FFFD, and every other character as it was written.
 //
-// Both halves of that are pinned here, against the real server. The raw text is refused outright,
-// which is what made the record's write fail; that failure used to return before the refused
-// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
-// without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
-// reads survives a restart.
-func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
+// Pinned here against the real server. A write of this text once failed, and that failure
+// returned before the refused adoption was charged, so the send was re-sent with no bound
+// (INFRA-1480). The raw text is taken now and reads back whole, with U+FFFD where the NUL was, so
+// the diagnosis an operator reads survives a restart.
+func TestADeliverysSendErrorWithANULRoundTripsWithAReplacementCharacter(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	c := tmuxClaim("legion-LEGION-209-implementer")
@@ -227,23 +226,18 @@ func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
 	const raw = "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
 		"Command failed (exit 1): jj metaedit: the git lock " +
 		"/legion/workspaces/acme/widgets/legion-209/.git/index.lock\x00 was last written 31m ago"
-	scrubbed := strings.ReplaceAll(raw, "\x00", "")
+	stored := strings.ReplaceAll(raw, "\x00", "\uFFFD")
 	d := supervise.Delivery{
 		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
 		SendFailures: 1, LastSendFailureAt: at(5), LastSendError: raw,
 	}
 
-	if err := store.PutDelivery(ctx, c.Token, d); err == nil {
-		t.Fatal("the store took a send error holding a NUL; this test needs the write the server refuses")
-	}
-
-	d.LastSendError = scrubbed
 	if err := store.PutDelivery(ctx, c.Token, d); err != nil {
-		t.Fatalf("put the scrubbed delivery: %v", err)
+		t.Fatalf("put the delivery whose send error holds a NUL: %v", err)
 	}
 	got := onlyClaim(t, store).Pending
-	if got == nil || got.LastSendError != scrubbed {
-		t.Fatalf("delivery read back = %+v, want the scrubbed text whole", got)
+	if got == nil || got.LastSendError != stored {
+		t.Fatalf("delivery read back = %+v, want the send error whole with U+FFFD in place of the NUL", got)
 	}
 }
 

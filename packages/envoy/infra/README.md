@@ -3674,8 +3674,9 @@ below 2 s moves it earlier). Measured on the hub's image (nats-server 2.15.1, na
 under an authorization timeout of 5 s, an answer after 3.5 s failed the client at 2.1 s. The
 TypeScript client the plugins use (nats.js 2.29.3) waits that PING out: on nats-server 2.15.1 it
 was admitted on answers at 1.0 s and 1.8 s under the default timeout and at 3.5 s under 5 s, while
-nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. So the 1.5 s budget is the Go
-client's. Without a callout the text is byte for byte what it was before callouts existed. With a
+nats.go was admitted at 1.0 s and 1.8 s and failed at 3.5 s. nats.go v1.55.0 still rejects an
+unexpected first protocol response during connection initialization (`nats.go:2942-3306`). So the
+1.5 s budget is the Go client's. Without a callout the text is byte for byte what it was before callouts existed. With a
 `noAuthUser`, `no_auth_user` follows the authorization block, naming that user's key.
 
 With a callout, the text then ends with three top-level lines, after the authorization block and
@@ -3705,8 +3706,8 @@ connection, because its process froze or its node lost its network. dispatch://I
 the auth service a liveness probe that restarts a replica whose process stops answering, which acts
 in seconds. A liveness probe does nothing when a replica's node loses its network: then only these
 lines act, in 40 to 80 s. The lines do not catch a replica whose request handler deadlocks while its
-process runs, since nats.go answers a PING from its read loop (nats.go v1.53.1 `processPing`, called
-at `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
+process runs, since nats.go answers a PING from its read loop (nats.go v1.55.0 `processPing`,
+called at `nats.go:4278`, from `parser.go:324`). Neither the ping nor the pod's readiness takes such a replica out of the queue
 group: a queue subscriber leaves the group only when the service itself unsubscribes or closes its
 connection, so INFRA-840's service must do that when its handler stops answering.
 
