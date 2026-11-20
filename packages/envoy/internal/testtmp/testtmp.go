@@ -35,6 +35,10 @@ func maxSocketPath(goos string) int {
 	return 103
 }
 
+// MaxSocketPath is maxSocketPath of the system running this, for a test elsewhere in the module
+// that holds a path of its own to the limit Dir holds its directories to.
+var MaxSocketPath = maxSocketPath(runtime.GOOS)
+
 // prefix names every directory this package makes. It is two bytes because each byte it spends is
 // one the caller's own path under the directory cannot have, and nothing has to recognise the
 // directory later: the helper removes it itself when the test ends.

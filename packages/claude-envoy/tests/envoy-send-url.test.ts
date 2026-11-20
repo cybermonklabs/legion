@@ -13,6 +13,7 @@ import { randomBytes } from "node:crypto"
 import { writeFileSync } from "node:fs"
 import * as path from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
+import { unresolvedNames } from "./unresolved-names"
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
 afterEach(() => {
@@ -21,17 +22,22 @@ afterEach(() => {
 const tempDir = temporaryDirectories("envoy-send-url")
 const command = path.join(import.meta.dir, "..", "bin", "envoy-send.ts")
 
-/** Runs envoy-send against `url` as the listener the session's envoy.json names. */
-async function send(url: string): Promise<{ exitCode: number; stderr: string; stdout: string }> {
+/** Runs envoy-send against `url` as the listener the session's envoy.json names, with `preload`
+ *  given to Bun first where set. */
+async function send(
+  url: string,
+  preload?: string,
+): Promise<{ exitCode: number; stderr: string; stdout: string }> {
   const home = tempDir()
   const config = path.join(home, "envoy.json")
   writeFileSync(
     config,
     JSON.stringify({ envoy: { enabled: true, url }, dispatch: { enabled: false } }),
   )
+  const preloading = preload === undefined ? [] : ["--preload", preload]
   // This Bun by its path: the child's HOME is its own, where a version manager's `bun` shim first on
   // the caller's PATH finds no version to run.
-  const child = Bun.spawn([process.execPath, command, "ses_target", "hello"], {
+  const child = Bun.spawn([process.execPath, ...preloading, command, "ses_target", "hello"], {
     env: { PATH: process.env["PATH"] ?? "", HOME: home, TMPDIR: home, ENVOY_CONFIG_FILE: config },
     stdout: "pipe",
     stderr: "pipe",
@@ -67,9 +73,18 @@ describe("envoy-send's failure line names no part of the listener URL's user inf
     expect(stderr).not.toContain(password)
   }, 20_000)
 
+  // The host the URL parser reads is the password's tail, under `.invalid`; the send's fetch of it
+  // is answered by a stand-in that fails as Bun's resolver does (`unresolved-names.ts`), so the row
+  // asks no DNS server and does not wait on its answer.
   test("a password with an `@` in it", async () => {
     const secret = `s${randomBytes(8).toString("hex")}`
-    const { exitCode, stderr } = await send(`http://user:p@ss${secret}`)
+    const names = await unresolvedNames(tempDir())
+    const { exitCode, stderr } = await send(`http://user:p@ss${secret}.invalid`, names.preload)
+    // The send's error named the secret, so the checks below can fail. The send tries a request
+    // that reached nothing again, so the stand-in may be asked more than once, and only this host.
+    const asked = await names.asked()
+    expect(asked.length).toBeGreaterThan(0)
+    expect(asked.filter((name) => name !== `ss${secret}.invalid`)).toEqual([])
     expect(exitCode).toBe(1)
     expect(stderr).toContain("Claude Envoy send failed")
     expect(stderr).not.toContain(secret)
