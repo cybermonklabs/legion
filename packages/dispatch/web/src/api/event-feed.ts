@@ -9,7 +9,7 @@ import {
 
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
-import { inboxQuery } from "./queries";
+import { inboxQuery, projectsQuery } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
@@ -306,6 +306,14 @@ export function useEventFeed({
         // does not replay in full refresh spread as well.
         if (!replayComplete) {
           refreshEverything();
+        } else {
+          // A resume Dispatch replays in full still holds no event of an access change no event
+          // carried - one written by SQL alone, which the socket's heartbeat finds and ends the
+          // subscription for (api/live_events.go, recheckEventsReader) - so the project list the
+          // shell, the project routes and Settings read, which says which projects the caller
+          // sees, is read again after every gap: one small read, and the list can never stay
+          // behind a change of what the caller may see.
+          queueRefresh([{ queryKey: projectsQuery().queryKey }]);
         }
         // The queries a refresh may pass over: a credential list held at `null`, and a grants
         // list held at 404 FEATURE_OFF that only a restricted member's Settings reads (no broker
