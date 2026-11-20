@@ -1,19 +1,22 @@
 // `socketOwner` (./socket-owner) names the process that owns this machine's end of a loopback TCP
 // connection, read from /proc, so the reopen rows that ask it (./reopen-server) need no iproute2:
 // a worker pod's image has none. The rows on a stand-in /proc hold the parse and the choice of
-// owner; the last holds a real connection on this machine's /proc, with no `ss` on PATH.
+// owner; the last names a real connection's owner from this machine's /proc, in a process whose
+// PATH finds no `ss`.
 import { expect, test } from "bun:test"
-import { mkdir, symlink, writeFile } from "node:fs/promises"
+import { mkdir, open, rm, symlink, writeFile } from "node:fs/promises"
 import { basename, join } from "node:path"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
 import { connectionRows, socketOwner } from "./socket-owner"
 
 const makeDirectory = temporaryDirectories("claude-envoy-socket-owner")
 
-/** The hang guard of the rows that start a process or build a large stand-in, the package test
- *  script's own `--timeout`, so a run of this file alone has it too: it decides no verdict. At
- *  loads of 500 to 700 the live row passed Bun's default 5 s in 5 of 300 runs, each a correct
- *  run that had not finished. */
+/** The hang guard of the two rows that start a process, the package test script's own
+ *  `--timeout`, so a run of this file alone has it too: the live row starts a Bun process, which
+ *  scans every process on the machine, and the read-order row runs `mkfifo`. At loads of 500 to
+ *  700 the live row passed Bun's default 5 s in 5 of 300 runs, each a correct run that had not
+ *  finished. Each makes at most one small stand-in, so the hook that removes stand-ins after it
+ *  has almost nothing to remove. */
 const ROW_TIMEOUT_MS = 60_000
 
 const HEADER =
@@ -133,9 +136,46 @@ test("the owner is the holder of the connection's inode that ss names first, the
     { pid: 200, comm: "bash", fds: { "0": "/dev/null", "3": "socket:[111]" } },
     { pid: 1000, comm: "sleep", fds: { "1": "pipe:[9]", "3": "socket:[111]" } },
   ])
-  expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=1000")
-  expect(await socketOwner(4222, 54321, proc)).toBe("nats-server pid=300")
+  expect(await socketOwner(54321, 4222, { proc })).toBe("sleep pid=1000")
+  expect(await socketOwner(4222, 54321, { proc })).toBe("nats-server pid=300")
 })
+
+test("the process the caller expects is the owner when it holds the connection, and is read before any scan", async () => {
+  const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
+    { pid: 300, comm: "nats-server", fds: { "3": "socket:[222]" } },
+    { pid: 200, comm: "bun", fds: { "3": "socket:[111]" } },
+    { pid: 9000, comm: "sleep", fds: { "3": "socket:[111]" } },
+  ])
+  // A scan would name the higher pid, as `ss` does.
+  expect(await socketOwner(54321, 4222, { proc, expected: 200 })).toBe("bun pid=200")
+  expect(await socketOwner(54321, 4222, { proc })).toBe("sleep pid=9000")
+  // One that does not hold it, or is no process, leaves the owner to the scan.
+  expect(await socketOwner(54321, 4222, { proc, expected: 300 })).toBe("sleep pid=9000")
+  expect(await socketOwner(54321, 4222, { proc, expected: 77 })).toBe("sleep pid=9000")
+  // It is not the owner of a connection the tables do not list.
+  expect(await socketOwner(54321, 443, { proc, expected: 200 })).toBe("unknown (no connection)")
+})
+
+test(
+  "the expected process's fds are read before the tables, so a scan starts only for a connection another process holds",
+  async () => {
+    // The tcp table is a FIFO: the lookup's read of it waits until this row writes it, and
+    // opening it to write waits until the lookup opens it to read. The fd link goes between the
+    // two, so only a read of the fds before the tables still sees it.
+    const proc = await standInProc({ tcp6: EMPTY }, [
+      { pid: 200, comm: "bun", fds: { "3": "socket:[111]" } },
+    ])
+    const tcp = join(proc, "net", "tcp")
+    expect(await Bun.spawn(["mkfifo", tcp]).exited).toBe(0)
+    const owner = socketOwner(54321, 4222, { proc, expected: 200 })
+    const writer = await open(tcp, "w")
+    await rm(join(proc, "200", "fd", "3"))
+    await writer.writeFile(TABLE)
+    await writer.close()
+    expect(await owner).toBe("bun pid=200")
+  },
+  ROW_TIMEOUT_MS,
+)
 
 test("of the sockets on one local port, the owner is the connection's, not a higher pid's socket to another destination", async () => {
   // On a machine whose pids have wrapped, the other sockets on the port belong to higher pids.
@@ -145,25 +185,21 @@ test("of the sockets on one local port, the owner is the connection's, not a hig
     { pid: 8500, comm: "broker", fds: { "7": "socket:[555]" } },
     { pid: 8800, comm: "dispatch-head", fds: { "7": "socket:[666]" } },
   ])
-  expect(await socketOwner(54321, 4222, proc)).toBe("bun pid=200")
-  expect(await socketOwner(54321, 443, proc)).toBe("unknown (no connection)")
+  expect(await socketOwner(54321, 4222, { proc })).toBe("bun pid=200")
+  expect(await socketOwner(54321, 443, { proc })).toBe("unknown (no connection)")
 })
 
-test(
-  "a holder whose pid is below every pid of the scan's first batches is found",
-  async () => {
-    // Processes this user cannot read, which the scan reads and passes over, as many as fill more
-    // than two of its batches.
-    const others = Array.from({ length: 600 }, (_, index) => ({ pid: 1000 + index, comm: "other" }))
-    const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
-      ...others,
-      { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
-      { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
-    ])
-    expect(await socketOwner(54321, 4222, proc)).toBe("sleep pid=9")
-  },
-  ROW_TIMEOUT_MS,
-)
+test("a holder whose pid is below every pid of the scan's first batches is found", async () => {
+  // Processes this user cannot read, which the scan reads and passes over, as many as fill three
+  // of its batches of two.
+  const others = Array.from({ length: 6 }, (_, index) => ({ pid: 1000 + index, comm: "other" }))
+  const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
+    ...others,
+    { pid: 3, comm: "bash", fds: { "3": "socket:[111]" } },
+    { pid: 9, comm: "sleep", fds: { "3": "socket:[111]" } },
+  ])
+  expect(await socketOwner(54321, 4222, { proc, batchSize: 2 })).toBe("sleep pid=9")
+})
 
 test("a connection on /proc/net/tcp6 has its owner named too", async () => {
   const tcp6 = [
@@ -188,58 +224,57 @@ test("a connection on /proc/net/tcp6 has its owner named too", async () => {
     { pid: 41, comm: "bun", fds: { "9": "socket:[777]" } },
     { pid: 900, comm: "other", fds: { "9": "socket:[778]" } },
   ])
-  expect(await socketOwner(54321, 4222, proc)).toBe("bun pid=41")
+  expect(await socketOwner(54321, 4222, { proc })).toBe("bun pid=41")
 })
 
 test("what no process this user can read holds is unknown, naming the rows read", async () => {
   const proc = await standInProc({ tcp: TABLE, tcp6: EMPTY }, [
     { pid: 300, comm: "nats-server", fds: { "3": "socket:[222]" } },
   ])
-  expect(await socketOwner(54321, 4222, proc)).toBe(`unknown (${THE_CONNECTION.trim()})`)
-  expect(await socketOwner(8080, 4222, proc)).toBe("unknown (no connection)")
+  expect(await socketOwner(54321, 4222, { proc })).toBe(`unknown (${THE_CONNECTION.trim()})`)
+  expect(await socketOwner(8080, 4222, { proc })).toBe("unknown (no connection)")
 })
 
 test("a table that cannot be read is named in the unknown, never read as no connection", async () => {
   const proc = await standInProc({ tcp6: EMPTY }, [])
-  const owner = await socketOwner(54321, 4222, proc)
+  const owner = await socketOwner(54321, 4222, { proc })
   expect(owner).toStartWith(`unknown (no connection; cannot read ${join(proc, "net", "tcp")}: `)
   expect(owner).toContain("ENOENT")
 })
 
 test(
-  "a live connection's owner is named from this machine's /proc, with no ss on PATH",
+  "a live connection's owner is named from this machine's /proc, by a process whose PATH finds no ss",
   async () => {
-    const { promise: clientPort, resolve: accepted } = Promise.withResolvers<number>()
     const listener = Bun.listen({
       hostname: "127.0.0.1",
       port: 0,
-      socket: {
-        open(socket) {
-          accepted(socket.remotePort)
-        },
-        data() {},
-      },
+      socket: { data() {} },
     })
-    // Another process dials and holds its socket until its stdin ends: the owner to tell from this
-    // one, which holds the accepted end, and from any other socket that shares the client's port.
-    const client = Bun.spawn(
-      [
-        process.execPath,
-        "-e",
-        `await Bun.connect({ hostname: "127.0.0.1", port: ${listener.port}, socket: { data() {} } }); await Bun.stdin.text()`,
-      ],
-      { stdin: "pipe", stdout: "ignore", stderr: "inherit" },
-    )
-    const path = process.env["PATH"]
+    // Another process dials and names its own connection's owner twice, by a scan and as the
+    // process it expects: the owner to tell from this one, which holds the accepted end, and from
+    // any other socket that shares the client's port. It starts with a PATH of one directory
+    // that does not exist, so it cannot run `ss`: Bun finds `ss` through a default search path
+    // when PATH is empty or unset.
+    const lookup = `
+      import { socketOwner } from ${JSON.stringify(join(import.meta.dir, "socket-owner.ts"))}
+      const socket = await Bun.connect({ hostname: "127.0.0.1", port: ${listener.port}, socket: { data() {} } })
+      const scanned = await socketOwner(socket.localPort, ${listener.port})
+      const expected = await socketOwner(socket.localPort, ${listener.port}, { expected: process.pid })
+      console.log(JSON.stringify([scanned, expected]))
+      socket.end()
+    `
+    const client = Bun.spawn([process.execPath, "-e", lookup], {
+      env: { PATH: "/nonexistent" },
+      stdout: "pipe",
+      stderr: "inherit",
+    })
     try {
-      const port = await clientPort
-      process.env["PATH"] = ""
+      const printed = await new Response(client.stdout).text()
       // The kernel names a process by the first 15 bytes of the file it executed.
-      expect(await socketOwner(port, listener.port)).toBe(
-        `${basename(process.execPath).slice(0, 15)} pid=${client.pid}`,
-      )
+      const owner = `${basename(process.execPath).slice(0, 15)} pid=${client.pid}`
+      expect(printed.trim()).toBe(JSON.stringify([owner, owner]))
+      expect(await client.exited).toBe(0)
     } finally {
-      process.env["PATH"] = path
       client.kill("SIGKILL")
       await client.exited
       listener.stop(true)

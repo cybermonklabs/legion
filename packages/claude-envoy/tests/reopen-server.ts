@@ -175,13 +175,18 @@ export interface ReopenServer {
 export async function startReopenServer(options: ReopenServerOptions): Promise<ReopenServer> {
   const relay = deliverSubject(options.sessionId)
   const broker = new FakeNatsServer(options.nonce === undefined ? {} : { nonce: options.nonce })
-  // Each client's owner is looked up as the gate accepts it, while its socket is still up: the
-  // owner of the connection from its port to the gate's, not of any socket on its port, since
-  // Linux gives one ephemeral port to connects to other destinations too.
+  // Each carried client's owner: the owner of the connection from its port to the gate's, not of
+  // any socket on its port, since Linux gives one ephemeral port to connects to other destinations
+  // too. The lookup starts as the gate carries the connection, which can close before a scan of
+  // every process reaches its holder: so it reads the server's fds first, in milliseconds, and
+  // scans only for another holder.
   const owners = new Map<number, Promise<string>>()
+  let serverPid: number | undefined
   const gate = natsGate(Number(new URL(broker.url).port), (leg) => {
-    owners.set(leg.clientPort, socketOwner(leg.clientPort, gate.port))
+    const expected = serverPid === undefined ? {} : { expected: serverPid }
+    owners.set(leg.clientPort, socketOwner(leg.clientPort, gatePort, expected))
   })
+  const gatePort = Number(new URL(gate.url).port)
   if (options.gateOpen !== false) gate.open()
   const requests: string[] = []
   const sessions: string[] = []
@@ -243,6 +248,7 @@ export async function startReopenServer(options: ReopenServerOptions): Promise<R
     stdout: "ignore",
     stderr: "pipe",
   })
+  serverPid = server.pid
   let stderr = ""
   const decoder = new TextDecoder()
   const stderrEnded = (async () => {

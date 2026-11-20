@@ -52,8 +52,9 @@ export function connectionRows(table: string, localPort: number, remotePort: num
     const remote = fields[2]
     const state = fields[3]
     const inode = fields[9]
-    if (local === undefined || remote === undefined || state === undefined) continue
-    if (inode === undefined) continue
+    if (local === undefined || remote === undefined || state === undefined || inode === undefined) {
+      continue
+    }
     if (portOf(local) !== localPort || portOf(remote) !== remotePort) continue
     if (LOOPBACK_V4[remote.slice(0, remote.lastIndexOf(":")).toUpperCase()] !== true) continue
     if (LISTED_STATES[state] !== true) continue
@@ -62,22 +63,37 @@ export function connectionRows(table: string, localPort: number, remotePort: num
   return rows
 }
 
+/** What `socketOwner` takes besides the connection's two ports. */
+export interface OwnerOptions {
+  /** The procfs root: a stand-in's for a test. */
+  readonly proc?: string
+  /** The process the caller expects to hold the connection, such as the server it started. Its
+   *  fds are read first, before the tables, and it is the owner when it held the connection. */
+  readonly expected?: number
+  /** How many processes' fds one step of the scan reads at once. */
+  readonly batchSize?: number
+}
+
 /**
  * The process that owns the connection from local port `localPort` to port `remotePort` of
- * 127.0.0.1, named as `ss -tnp` names a socket's holder (`bun pid=123`): of the processes with
- * an fd linked to the connection's inode, the one `ss` lists first, which is the one with the
- * highest pid, by its `comm`. A process this user cannot read is passed over, as `ss` run by
- * this user passes it over. With no owner found, it is `unknown (...)`, naming the rows it read,
- * or `no connection`, and each table it could not read: it never throws, so a lookup started
- * for a diagnosis cannot fail the row that started it.
- *
- * `proc` is the procfs root, a stand-in's for a test.
+ * 127.0.0.1, named as `ss -tnp` names a socket's holder (`bun pid=123`), by its `comm`. It is
+ * the `expected` process when that held the connection as the lookup began. Else it is, of the
+ * processes with an fd linked to the connection's inode, the one `ss` lists first: the one with
+ * the highest pid. A process this user cannot read is passed over, as `ss` run by this user
+ * passes it over. With no owner found, it is `unknown (...)`, naming the rows it read, or
+ * `no connection`, and each table it could not read: it never throws, so a lookup started for a
+ * diagnosis cannot fail the row that started it.
  */
 export async function socketOwner(
   localPort: number,
   remotePort: number,
-  proc = "/proc",
+  { proc = "/proc", expected, batchSize = SCAN_BATCH }: OwnerOptions = {},
 ): Promise<string> {
+  // The expected process's fds are read before the tables. A connection the tables then list
+  // with an inode is still held: by that process when its fds named the inode, else by another,
+  // which the scan looks for. Once its last holder closes it, a connection keeps no inode in the
+  // tables, so a connection the expected process closed in between starts no scan.
+  const held = expected === undefined ? [] : await fdTargets(join(proc, String(expected), "fd"))
   const rows: SocketRow[] = []
   const unread: string[] = []
   for (const table of ["tcp", "tcp6"]) {
@@ -89,55 +105,64 @@ export async function socketOwner(
     }
   }
   // A socket with no fd, one being closed, has inode 0.
-  const inodes = new Set(rows.map((each) => each.inode).filter((inode) => inode !== "0"))
-  const owner = inodes.size === 0 ? undefined : await highestHolder(proc, inodes)
-  if (owner !== undefined) return owner
+  const links = new Set(
+    rows.filter((each) => each.inode !== "0").map((each) => `socket:[${each.inode}]`),
+  )
+  if (links.size > 0) {
+    const pid = held.some((target) => links.has(target))
+      ? expected
+      : await highestHolder(proc, links, batchSize)
+    if (pid !== undefined) {
+      const comm = await readFile(join(proc, String(pid), "comm"), "utf8").catch(() => "?")
+      return `${comm.trim()} pid=${pid}`
+    }
+  }
   const seen = rows.length === 0 ? "no connection" : rows.map((each) => each.row).join("; ")
   return `unknown (${[seen, ...unread].join("; ")})`
 }
 
-/** How many processes' fds one step of the scan reads at once. Measured 2026-11-20 on a 288-CPU
- *  box of 14,000 processes, a whole scan: every process at once took 190 to 250 ms and 2.2 to
- *  6.9 s of this process's CPU; 256 at once took 170 to 190 ms and 1.2 to 1.4 s of CPU, about
- *  the 0.3 s `ss -tnp` takes there. */
+/** How many processes' fds one step of a scan reads at once. Measured 2026-11-20 at 23:20Z on a
+ *  288-CPU box of 27,500 processes at a load of 1,400, a whole scan: every process at once took
+ *  0.36 s and 1.9 to 3.7 s of this process's CPU; 256 at a step took 0.75 to 0.91 s and 1.3 to
+ *  1.4 s of CPU. `ss -tnpH`, which reads every process too, took 1.2 to 2.4 s and 0.8 s of CPU in
+ *  its own process, and 6 to 53 ms of this one's: a whole scan costs this process far more than
+ *  `ss` did, which is why a caller that knows the process to expect names it. */
 const SCAN_BATCH = 256
 
 /**
- * `<comm> pid=<pid>` of the highest pid under `proc` with an fd linked to one of `inodes`. `ss`
- * prints a socket's holders highest pid first: for a shell's socket that its `sleep` inherited,
+ * The highest pid under `proc` with an fd linked to one of `links`. `ss` prints a socket's
+ * holders highest pid first: for a shell's socket that its `sleep` inherited,
  * `users:(("sleep",pid=3203274,fd=3),("bash",pid=3202662,fd=3))`. The scan reads the fds from
- * the highest pid down, a batch at a time, and stops at the first batch with a holder: every
- * later batch holds only lower pids. It reads asynchronously, since this process also carries
- * the gate and the hub a row watches, which a synchronous scan would stall for as long as it
- * takes.
+ * the highest pid down, `batchSize` processes at a time, and stops at the first batch with a
+ * holder: every later batch holds only lower pids. It reads asynchronously, since this process
+ * also carries the gate and the hub a row watches, which a synchronous scan would stall for as
+ * long as it takes.
  */
 async function highestHolder(
   proc: string,
-  inodes: ReadonlySet<string>,
-): Promise<string | undefined> {
-  const links = new Set([...inodes].map((inode) => `socket:[${inode}]`))
+  links: ReadonlySet<string>,
+  batchSize: number,
+): Promise<number | undefined> {
   const pids = (await readdir(proc).catch(() => []))
     .filter((name) => /^\d+$/.test(name))
     .map(Number)
     .sort((a, b) => b - a)
-  for (let start = 0; start < pids.length; start += SCAN_BATCH) {
-    const batch = pids.slice(start, start + SCAN_BATCH)
+  for (let start = 0; start < pids.length; start += batchSize) {
+    const batch = pids.slice(start, start + batchSize)
     const holds = await Promise.all(
-      batch.map((pid) => holdsOne(join(proc, String(pid), "fd"), links)),
+      batch.map(async (pid) => {
+        const targets = await fdTargets(join(proc, String(pid), "fd"))
+        return targets.some((target) => links.has(target))
+      }),
     )
     const pid = batch.find((_, index) => holds[index])
-    if (pid === undefined) continue
-    const comm = await readFile(join(proc, String(pid), "comm"), "utf8").catch(() => "?")
-    return `${comm.trim()} pid=${pid}`
+    if (pid !== undefined) return pid
   }
   return undefined
 }
 
-/** Whether an fd under `fdDirectory` links to one of `links`; false when it cannot be read. */
-async function holdsOne(fdDirectory: string, links: ReadonlySet<string>): Promise<boolean> {
+/** The targets of the fd links under `fdDirectory`; none when it cannot be read. */
+async function fdTargets(fdDirectory: string): Promise<string[]> {
   const fds = await readdir(fdDirectory).catch(() => [])
-  const targets = await Promise.all(
-    fds.map((fd) => readlink(join(fdDirectory, fd)).catch(() => "")),
-  )
-  return targets.some((target) => links.has(target))
+  return Promise.all(fds.map((fd) => readlink(join(fdDirectory, fd)).catch(() => "")))
 }
