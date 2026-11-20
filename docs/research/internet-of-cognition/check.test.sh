@@ -4097,6 +4097,24 @@ else
     case_failed "$none_landed_case" "$(grep -E '^(PASS|FAIL) landed-(proof|order)' "$out/text" | head -3 | cut -c1-400 | tr '\n' ' ')$RUN_LINE"
 fi
 
+# 135. A test against our own records names one input, and it is a record of ours (test
+# round 40, case 127's class in another field reader). R7 gives each candidate one test
+# "against our own records, never against the project's own fixtures", and our-data-input
+# holds each of tests/concord.md, scope.md and mas-lab.md to an Input line naming a Dispatch
+# key or a commit of ours and no fixture. At a4e9fb5a it reads a file's first Input line alone
+# (grep -m1 '^Input:'), so a file whose first Input line names dispatch://INFRA-3134 and whose
+# second names the project's tests/fixtures/golden-transcript.json passed, although the test
+# names a fixture of the project as an input. The case writes that second line under the
+# fixture's tests/concord.md and runs --replay, which must fail our-data-input, naming the file.
+dir="$(fresh input-two-lines)"
+sed -i '0,/^Input: dispatch:\/\/INFRA-3134$/s//Input: dispatch:\/\/INFRA-3134\nInput: tests\/fixtures\/golden-transcript.json/' "$dir/repo/docs/research/internet-of-cognition/tests/concord.md"
+[ "$(grep -c '^Input:' "$dir/repo/docs/research/internet-of-cognition/tests/concord.md")" -eq 2 ] || {
+    printf 'FAIL the second Input line could not be planted in the fixture tests/concord.md\n'
+    exit 1
+}
+case_result "a test file whose second Input line names a project fixture fails --replay, naming the file" \
+    'our-data-input: concord\.md' "$(fixture_run "$dir" --replay)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
