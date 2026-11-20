@@ -51,16 +51,17 @@ func seedRepositoryIssues(t *testing.T) *store.Store {
 }
 
 // TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt: a repository is hidden from a
-// viewer when an issue of a project the viewer does not see resolves to it, through the issue's own
-// repository, its parent's or its project's default, whether the issue is open or done, or when such
-// a project maps it, under any name a rename gives it; any other repository passes for an open
-// viewer, and for any other viewer only when an issue it sees resolves to it or a project it sees
-// maps it. alice, open and seeing PUB, reads acme/pub and the unnamed acme/none, and not acme/both,
+// viewer when a private project the viewer does not see owns it: an issue of that project resolves
+// to it, through the issue's own repository, its parent's or its project's default, whether the
+// issue is open or done, or the project maps it, under any name a rename gives it. Any other
+// repository passes for an open viewer, and for any other viewer only when a project it sees owns
+// it. alice, open and seeing PUB, reads acme/pub and the unnamed acme/none, and not acme/both,
 // which PRIV-5 names beside PUB-2, nor acme/newname, PRIV's acme/oldname under its new name; bob, a
-// restricted member seeing PRIV, reads every repository only PRIV holds, acme/newname among them,
-// and not acme/privparent, which PRIV2-1 names, nor acme/both, which PUB-2 names; carol, seeing
-// every project, and the server's own viewer read all nine; the closed viewer reads none. Names are
-// compared without case, and the clause is never null.
+// restricted member seeing PRIV, reads every repository PRIV owns that no other private project
+// does: acme/newname among them, and acme/both, which public PUB shares, and not acme/privparent,
+// which private PRIV2's PRIV2-1 names; carol, seeing every project, and the server's own viewer
+// read all nine; the closed viewer reads none. Names are compared without case, and the clause is
+// never null.
 func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T) {
 	database := seedRepositoryIssues(t)
 	for _, viewer := range []struct {
@@ -71,7 +72,7 @@ func TestRepositoryClauseShowsARepositoryByTheIssuesThatResolveToIt(t *testing.T
 		{"alice", model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}},
 			[]string{"acme/pub", "acme/none"}},
 		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}},
-			[]string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/oldname", "acme/newname"}},
+			[]string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname", "acme/newname"}},
 		{"carol", model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}},
 			clauseRepositories},
 		{"the server's own viewer", model.Actor{Viewer: model.ServerViewer}, clauseRepositories},
@@ -227,6 +228,53 @@ func TestRepositoryClauseHidesARepositoryAProjectTheViewerCannotSeeHolds(t *test
 	for _, repository := range []string{"acme/pub", "acme/none"} {
 		if !repositoryPasses(t, database, alice, repository) {
 			t.Errorf("RepositoryClause(%s) for alice = false, want true: no project she does not see holds it", repository)
+		}
+	}
+}
+
+// TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee: a repository a project the
+// viewer sees owns is hidden from that viewer when a private project the viewer does not see owns
+// it too, and passes when the only other owners are public projects. To seedRepositoryIssues' and
+// seedHiddenRepositories' rows it adds PRIV2-2, which names acme/privdefault, PRIV's default. For
+// bob (a restricted member seeing PRIV), carol's token listing PRIV and an open viewer seeing PRIV
+// and PUB alike: acme/privparent, which PRIV-3 resolves to and private PRIV2's PRIV2-1 names, and
+// acme/privdefault, which PRIV maps and PRIV2-2 names, are hidden; acme/both and acme/privmapped,
+// which PRIV shares with public PUB, and acme/pubwalk, which PUB-5 names and its PRIV child resolves
+// to, pass. carol, who sees PRIV2 as well, reads every one of them.
+func TestRepositoryClauseCountsOnlyPrivateOwnersTheViewerCannotSee(t *testing.T) {
+	database := seedRepositoryIssues(t)
+	seedHiddenRepositories(t, database)
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
+			('PRIV2-2', 'PRIV2', 2, 'Names acme/privdefault', '{"kind":"user","id":"alice"}', 'b', null, 'acme/privdefault', 'triage')
+	`); err != nil {
+		t.Fatalf("seed PRIV2-2: %v", err)
+	}
+	hidden := []string{"acme/privparent", "acme/privdefault"}
+	shown := []string{"acme/both", "acme/privmapped", "acme/pubwalk"}
+	for _, viewer := range []struct {
+		name string
+		who  model.Actor
+	}{
+		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}},
+		{"carol's token listing PRIV", model.Actor{Viewer: &model.Viewer{Person: "carol", Sees: []string{"PRIV"}, AnyPrivate: true, Lists: []string{"PRIV"}}}},
+		{"an open viewer seeing PRIV and PUB", model.Actor{Viewer: &model.Viewer{Person: "dave", Open: true, Sees: []string{"PRIV", "PUB"}, AnyPrivate: true}}},
+	} {
+		for _, repository := range hidden {
+			if repositoryPasses(t, database, viewer.who, repository) {
+				t.Errorf("RepositoryClause(%s) for %s = true, want false: private PRIV2, which %s does not see, owns it", repository, viewer.name, viewer.name)
+			}
+		}
+		for _, repository := range shown {
+			if !repositoryPasses(t, database, viewer.who, repository) {
+				t.Errorf("RepositoryClause(%s) for %s = false, want true: PRIV owns it and no private project %s does not see does", repository, viewer.name, viewer.name)
+			}
+		}
+	}
+	carol := model.Actor{Viewer: &model.Viewer{Person: "carol", Open: true, Sees: []string{"PRIV", "PRIV2", "PUB"}, AnyPrivate: true}}
+	for _, repository := range slices.Concat(hidden, shown) {
+		if !repositoryPasses(t, database, carol, repository) {
+			t.Errorf("RepositoryClause(%s) for carol = false, want true: she sees every project", repository)
 		}
 	}
 }

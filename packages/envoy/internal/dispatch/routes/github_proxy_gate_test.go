@@ -65,18 +65,19 @@ var proxiedRepositories = []string{
 const uninstalledRepository = "acme/uninstalled"
 
 // TestTheGitHubProxyShowsARepositoryByItsIssues (c-proxy-by-issue): the proxy hides from a person a
-// repository that an issue of a project the person does not see resolves to, or that such a project
-// maps, under any name a rename gives it, shows any other repository to an open viewer and to any
-// other person only when an issue the person sees resolves to it or a project the person sees maps
-// it, and answers every hidden repository, in status and bytes, as one the App is not installed on,
-// reading nothing of it from GitHub. An issue resolves through its own repository, its parent's and
-// its project's default, and a done issue counts as an open one does.
+// repository that a private project the person does not see owns (an issue of it resolves to the
+// repository, or it maps the repository, under any name a rename gives it), shows any other
+// repository to an open viewer and to any other person only when a project the person sees owns
+// it, and answers every hidden repository, in status and bytes, as one the App is not installed
+// on, reading nothing of it from GitHub. An issue resolves through its own repository, its
+// parent's and its project's default, and a done issue counts as an open one does.
 //
 // alice, a full member no private list names, reads acme/pub and acme/none; bob, a restricted
-// member PRIV's list names, reads acme/priv, acme/privdone, acme/privdefault, acme/oldname and
-// acme/newname, its new name, and not acme/privparent, which PRIV2's issue names, nor acme/both,
-// which PUB's names; carol, on PRIV's and PRIV2's lists, reads all nine. Each readable repository is
-// read through a pull request path and a check path, and each hidden one through both too.
+// member PRIV's list names, reads acme/priv, acme/privdone, acme/privdefault, acme/both, which PRIV
+// shares with public PUB, acme/oldname and acme/newname, its new name, and not acme/privparent,
+// which private PRIV2's issue names; carol, on PRIV's and PRIV2's lists, reads all nine. Each
+// readable repository is read through a pull request path and a check path, and each hidden one
+// through both too.
 func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 	database := seedProxyGate(t)
 	fake := &gateGitHub{installed: proxiedRepositories}
@@ -86,7 +87,7 @@ func TestTheGitHubProxyShowsARepositoryByItsIssues(t *testing.T) {
 		reads []string
 	}{
 		{"alice@example.com", []string{"acme/pub", "acme/none"}},
-		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/oldname", "acme/newname"}},
+		{"bob@example.com", []string{"acme/priv", "acme/privdone", "acme/privdefault", "acme/both", "acme/oldname", "acme/newname"}},
 		{"carol@example.com", proxiedRepositories},
 	} {
 		for _, path := range []struct{ name, suffix string }{

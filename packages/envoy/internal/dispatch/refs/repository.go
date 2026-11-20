@@ -48,18 +48,20 @@ func ProjectRepositoriesSQL(projects string) string {
 }
 
 // RepositoryClause passes the GitHub repository repoExpr names, as owner/name, to the viewer bound
-// at viewerParam (VisibilityArg) unless a project that owns it (ProjectRepositoriesSQL) is one the
-// viewer does not see. Every repository no such project owns passes for an open viewer; for any
-// other viewer it passes only when a project the viewer sees owns it. So an issue's own repository,
-// which may name any owner/name, never shows a repository a hidden project owns, and a repository
-// no project owns passes for an open viewer alone. The server's own viewer passes every
-// repository, and so does an open viewer of a deployment with no private project, which reads no
-// issue and no mapping for it (R9).
+// at viewerParam (VisibilityArg) when no private project the viewer does not see owns it
+// (ProjectRepositoriesSQL), and, for a viewer that is not open, when also a project the viewer sees
+// owns it. So an issue's own repository, which may name any owner/name, never shows a repository a
+// private project hidden from the viewer owns; a repository a project the viewer sees shares with a
+// public project the viewer does not see passes, since that project hides nothing of the
+// repository from anyone; and a repository no project owns passes for an open viewer alone. The
+// server's own viewer passes every repository, and so does an open viewer of a deployment with no
+// private project, which reads no issue and no mapping for it (R9).
 //
-// For an open viewer only the projects it does not see are read, since only they can hide a
-// repository from it; for any other viewer every project is. It is in refs rather than access
-// because refs imports access. The GitHub proxy (routes), the App-installation route and
-// delivery's pull requests that name no issue (api, delivery) each hold a repository to it.
+// For an open viewer only the projects it does not see are read, since only a private one of them
+// can hide a repository from it; for any other viewer every project is. It is in refs rather than
+// access because refs imports access. The GitHub proxy (routes), the App-installation route and
+// delivery's pull requests that name no issue and runs that name none (api, delivery) each hold a
+// repository to it.
 //
 // repoExpr is spliced once, and must not be a bare column named repo or project; the clause answers
 // true or false, never null.
@@ -68,8 +70,8 @@ func RepositoryClause(repoExpr, viewerParam string) string {
 	seen := access.ProjectClause("owned.project", viewerParam)
 	read := `(not ` + open + ` or not ` + access.ProjectClause("project_key", viewerParam) + `)`
 	return `(` + access.ViewerFlag(viewerParam, "all") + ` or (` + open + ` and not ` + access.ViewerFlag(viewerParam, "private") + `) or coalesce((
-		select coalesce(bool_and(` + seen + `), true) and (` + open + ` or coalesce(bool_or(` + seen + `), false))
-		from (` + ProjectRepositoriesSQL(read) + `) owned
+		select not coalesce(bool_or(not ` + seen + ` and owner.visibility = 'private'), false) and (` + open + ` or coalesce(bool_or(` + seen + `), false))
+		from (` + ProjectRepositoriesSQL(read) + `) owned join projects owner on owner.key = owned.project
 		where owned.repo = (select lower(` + CanonicalRepoSQL("named.repo") + `) from (select (` + repoExpr + `)::text as repo) named)
 	), false))`
 }
