@@ -450,10 +450,11 @@ func relayedEventIDs(run []relayedEvent) []int64 {
 // resolveAgain resolves caller again at event, one that can move what it sees (movesSight), keeps
 // what it reads in view, and reports whether what the caller sees moved. An access change at or
 // below view.through may already be in the reader view held, so it moves it whatever the caller
-// sees now; any other event moves it when the caller now sees another set of projects, or is open
-// where it was not or the reverse, beyond the project a project.created adds (sightMoved).
+// sees now, where it can have moved what the page shows (mayPredatePage); any other event moves it
+// when the caller now sees another set of projects, or is open where it was not or the reverse,
+// beyond the project a project.created adds (sightMoved).
 func (s *server) resolveAgain(ctx context.Context, view *eventsReader, caller model.Actor, event model.Event) (bool, error) {
-	if event.Type != projectCreatedEvent && event.ID <= view.through {
+	if event.ID <= view.through && mayPredatePage(view.reader, event) {
 		return true, nil
 	}
 	next, err := s.readerFor(ctx, caller)
@@ -463,6 +464,44 @@ func (s *server) resolveAgain(ctx context.Context, view *eventsReader, caller mo
 	held := view.reader.Viewer
 	view.reader = next
 	return sightMoved(held, next.Viewer, event), nil
+}
+
+// mayPredatePage reports whether event, an access change at or below eventsReader.through that the
+// reader held may already hold, can have moved what the page shows though the reader did not move:
+// the page read before the change, and the reader was resolved after it. A project.created never
+// has, since that event tells the page of the project. For a reader that sees every object
+// (seesEveryObject) only a change of a project's visibility can have, a project made public, which
+// a page read while it was private lacks (the resume asks the same, madePublicSQL); no write of a
+// group, a list, an owner or a project's Slack channels moves what such a reader sees, as none did
+// before a project could be private (R9). A change whose payload names none is taken as one that
+// can.
+func mayPredatePage(held model.Actor, event model.Event) bool {
+	switch {
+	case event.Type == projectCreatedEvent:
+		return false
+	case !seesEveryObject(held):
+		return true
+	case event.Type != projectAccessChangedEvent:
+		return false
+	}
+	change, named := accessChangeOf(event)
+	return !named || change == model.AccessVisibilityChanged
+}
+
+// accessChangeOf is the change a project.access_changed event names (model.ProjectAccessEventPayload),
+// and false when its payload names none: the relay's events carry the JSON the log holds
+// (readEventRows).
+func accessChangeOf(event model.Event) (string, bool) {
+	switch payload := event.Payload.(type) {
+	case model.ProjectAccessEventPayload:
+		return payload.Change, payload.Change != ""
+	case json.RawMessage:
+		var decoded model.ProjectAccessEventPayload
+		if json.Unmarshal(payload, &decoded) == nil && decoded.Change != "" {
+			return decoded.Change, true
+		}
+	}
+	return "", false
 }
 
 // sightMoved reports whether next sees otherwise than held, past what event explains. A
@@ -620,17 +659,24 @@ func (s *server) resumeAfterOverflow(ctx context.Context, caller model.Actor, af
 // began at cursor, and in the same statement how many events a resume from since stands behind
 // it: the rows of (since, cursor] in the gap of reader's page (eventGapSQL), counted up to
 // maxLiveReplay+1, which is all the bound needs (replayThrough), and whether an access change that
-// moved what reader sees stands among them (accessChanged, sightMovedSQL). behind is -1 when there
-// is nothing to count: no since, or a since above the cursor, which resolveEventReplay answers
-// without a replay read. One statement, so a resume waits for the shared pool once before its
-// replay read rather than twice: on a restart every page resumes at once, behind every request
-// queued for a connection.
+// moved what reader sees stands among them (accessChanged, sightMovedSQL). For a reader that sees
+// every object (seesEveryObject) that is a project made public alone (madePublicSQL): no other
+// access change moves what such a reader sees, so its resume across a write of a group or of a list
+// is replayed and complete, as every resume was before a project could be private (R9). behind is
+// -1 when there is nothing to count: no since, or a since above the cursor, which
+// resolveEventReplay answers without a replay read. One statement, so a resume waits for the shared
+// pool once before its replay read rather than twice: on a restart every page resumes at once,
+// behind every request queued for a connection.
 func eventSubscriptionCheck(ctx context.Context, q queryer, reader model.Actor, cursor int64, since *int64) (maxID int64, cursorAt *time.Time, behind int, accessChanged bool, err error) {
+	moved := sightMovedSQL("e", "$4")
+	if seesEveryObject(reader) {
+		moved = madePublicSQL("e")
+	}
 	if err := q.QueryRow(ctx, `
 		select coalesce((select max(id) from events), 0), (select created_at from events where id = $1),
 			case when $2::bigint is null or $2::bigint > $1 then -1 else count(*)::int end,
 			coalesce(bool_or(missed.moved), false)
-		from (select `+sightMovedSQL("e", "$4")+` as moved from events e
+		from (select `+moved+` as moved from events e
 			where e.id > $2::bigint and e.id <= $1 and `+eventGapSQL("e", "$4")+` order by e.id limit $3) as missed
 	`, cursor, since, maxLiveReplay+1, refs.VisibilityArg(reader)).Scan(&maxID, &cursorAt, &behind, &accessChanged); err != nil {
 		return 0, nil, 0, false, err
@@ -658,6 +704,16 @@ func eventGapSQL(eventAlias, viewerParam string) string {
 func sightMovedSQL(eventAlias, viewerParam string) string {
 	e := eventAlias
 	return `(` + e + `.type = '` + accessGroupChangedEvent + `' or ` + lostSightSQL(e, viewerParam) + ` or ` + gainedSightSQL(e, viewerParam) + `)`
+}
+
+// madePublicSQL is sightMovedSQL for a viewer that sees every object (seesEveryObject): whether the
+// event eventAlias names made a project public, which that viewer's page, read while the project
+// was private, may lack. It reads the server's record of the event, as lostSightSQL does.
+func madePublicSQL(eventAlias string) string {
+	e := eventAlias
+	return `(` + e + `.type = '` + projectAccessChangedEvent + `' and ` + e + `.payload->>'change' = '` + model.AccessVisibilityChanged + `' and exists (
+		select 1 from project_access_changes recorded where recorded.event_id = ` + e + `.id and recorded.visibility = '` + model.ProjectPublic + `'
+		offset 0))`
 }
 
 // lostSightSQL is whether the event eventAlias names is a change of the access of a project the
