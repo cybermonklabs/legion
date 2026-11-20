@@ -332,7 +332,8 @@ func passes(callers ...string) map[string]bool {
 // sees or is the viewer. A conversation of no project passes when the viewer's own person or
 // session is a party, or the viewer is open, and every session party passes SessionClause: carol's
 // token that lists no project does not read her own conversation with ses_priv, nor bob his with
-// ses_pub.
+// ses_pub. A conversation that names no party (null parties, an empty list, a direct message whose
+// node Dispatch does not hold) passes no viewer but the server's while a project is private.
 //
 // With no private project every session, role and conversation reads as before a project could be
 // private (R9): an open viewer reads each one, and a viewer that is not open reads a session only
@@ -413,6 +414,10 @@ func TestTheClausesOverTheSeededCallers(t *testing.T) {
 		{"PartyClause bob and ses_pub", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_pub"}, passes(byAlice, byCarol, byCarolUnlisted, byShared), openAnd()},
 		{"PartyClause bob and ses_priv", PartyClause("$2", "$1"), []string{"person:" + bob, "session:ses_priv"}, passes(byBob, byCarol), openAnd(byBob)},
 		{"PartyClause carol and ses_priv", PartyClause("$2", "$1"), []string{"person:" + carol, "session:ses_priv"}, passes(byCarol, byCarolPriv), openAnd(byCarolPriv)},
+		{"PartyClause of no stated parties", PartyClause("$2::text[]", "$1"), []string(nil), passes(), openAnd()},
+		{"PartyClause of an empty list of parties", PartyClause("$2::text[]", "$1"), []string{}, passes(), openAnd()},
+		{"PartyClause of a direct message whose node Dispatch does not hold", PartyClause(MessagePartiesSQL("$2::text"), "$1"),
+			"00000000-0000-4000-8000-0000000000d1", passes(), openAnd()},
 	}
 	read := func(who string, viewer model.Viewer, p probe) bool {
 		t.Helper()

@@ -271,18 +271,23 @@ func RoleClause(roleExpr, viewerParam string) string {
 
 // PartyClause passes a conversation that belongs to no project, by its parties ("person:<login>",
 // "session:<id>"), when the viewer's own person or session is a party, or the viewer is open, and
-// every session party passes SessionClause.
+// every session party passes SessionClause. A conversation that names no party - null parties, a
+// direct message whose node Dispatch does not hold, or an empty list - says nothing of who may read
+// it: it passes an open viewer while no project is private, as every conversation did before one
+// could be (R9), and no viewer but the server's once one is, as a node naming neither a project
+// nor parties does (refs' unscoped rule). The switch to private refuses while a direct message is
+// one of them (api's privateProjectIncomplete).
 func PartyClause(partiesExpr, viewerParam string) string {
 	return clause("PartyClause", fmt.Sprintf(`(%[2]s
 		or ((('person:' || (%[4]s::jsonb->>'person')) = any(%[1]s)
 				or ('session:' || (%[4]s::jsonb->>'session')) = any(%[1]s)
-				or %[3]s)
+				or (%[3]s and (not %[6]s or coalesce(cardinality(%[1]s), 0) > 0)))
 			and not exists (
 				select 1 from unnest(%[1]s) party
 				where party like 'session:%%' and not %[5]s
 				offset 0)))`,
 		partiesExpr, ViewerFlag(viewerParam, "all"), ViewerFlag(viewerParam, "open"), viewerParam,
-		SessionClause("substr(party, 9)", viewerParam)))
+		SessionClause("substr(party, 9)", viewerParam), ViewerFlag(viewerParam, "private")))
 }
 
 // Resolve answers what actor may see, in one read of VisibleProjectsSQL. actor is the request's
