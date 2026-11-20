@@ -767,6 +767,13 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			return v.fetchArgs()
 		}
 	}
+	// timedOut is how the error of a fetch that ran out of its time begins: its git command, whose
+	// first flags are the four pack settings (workspace.PackWindowConfig) as `-c` pairs.
+	timedOut := "command timed out: git"
+	for _, pair := range workspace.PackWindowConfig() {
+		timedOut += " -c " + pair[0] + "=" + pair[1]
+	}
+	timedOut += " -c gc.auto=0 -c maintenance.auto=false --git-dir="
 	for _, tc := range []struct {
 		name string
 		// fetch prepares the volume, its git, its cache, the clock and the environment, and
@@ -799,7 +806,7 @@ func TestWorkspaceInitFetchExitsThreeForAFailureFromGitHub(t *testing.T) {
 			fetchBound = time.Second
 			t.Cleanup(func() { fetchBound = saved })
 			return args
-		}, code: 3, says: "command timed out: git -c gc.auto=0 -c maintenance.auto=false --git-dir="},
+		}, code: 3, says: timedOut},
 		{name: "a read of the provisioning token before a retry that fails", fetch: func(t *testing.T, v *issueVolume, clock *instantClock) []string {
 			args := failing(http408Failure, 128)(t, v, clock)
 			clock.atFirstWait = func() {
