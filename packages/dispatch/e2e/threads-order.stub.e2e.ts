@@ -4,7 +4,7 @@
  *
  *  Every row reads what the page draws over one fixed answer, the order being the reader's own
  *  choice kept in their browser, so each runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The two rows that read a document block's
+ *  (packages/dispatch/README.md, "The stubbed layer"). The two rows that read a document block's
  *  thread and a margin thread stayed in `threads-order.e2e.ts`: both sit on the live document.
  */
 import { expect } from "@playwright/test";

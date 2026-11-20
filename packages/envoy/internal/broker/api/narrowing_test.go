@@ -55,7 +55,7 @@ func newNarrowingServer(t *testing.T) *narrowingServer {
 	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	s.Secrets.Put(policytest.Secret("PLAIN_KEY", testApprover, policy.TierAgent, "plain-v1"))
 	for _, name := range []string{"APP_KEY", "PLAIN_KEY"} {
-		if status, body := s.req(t, http.MethodPost, "/v1/secrets/"+name+"/reread", nil, nil); status != http.StatusOK {
+		if status, body := s.sessionReread(t, name); status != http.StatusOK {
 			t.Fatalf("reread %s = %d %s", name, status, body)
 		}
 	}
@@ -256,7 +256,7 @@ func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.
 		}
 	})
 	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	if status, body := s.req(t, http.MethodPost, "/v1/secrets/APP_KEY/reread", nil, nil); status != http.StatusOK {
+	if status, body := s.sessionReread(t, "APP_KEY"); status != http.StatusOK {
 		t.Fatalf("reread APP_KEY = %d %s", status, body)
 	}
 	enrollmentID, key := s.newSessionEnrollment(t, "session-"+t.Name(), testApprover)

@@ -520,7 +520,7 @@ func TestTheContainersStopCutsTheSizeWalkDropsTheHeldReportAndRunReturnsInsideTh
 
 	f.clock.advance(volumeWalkInterval + time.Minute)
 	armed.Store(true)
-	f.tick("the sweep ended")
+	f.tickUntil("the sweep ended") // the walk is held at its third target until the container stops
 	awaitClosed(t, walking, "the second sweep's size walk to reach its third target")
 
 	stoppedAt := time.Now()
@@ -926,7 +926,7 @@ func TestAReportIsNeverWrittenOnAConnectionWhoseAnswerCarriesNoSettings(t *testi
 			ackPod(pod, trimSettings())
 			trim := trims.await()
 
-			f.tick("the sweep ended")
+			f.tickUntil("the sweep ended") // the walk is held at its first directory until the case releases it
 			awaitClosed(t, walking, "the size walk the report is built from")
 
 			// The daemon goes away with the report half made, and its answer to the redial is

@@ -178,6 +178,11 @@ type Reconciler struct {
 	// a record apart from ci_reconcile_passes, which says how the pass ended: a pass can complete
 	// there and still have failed here, on a repository it skipped. Nil records nothing.
 	GitHubReads githubreads.Recorder
+	// MappingRepairs is what the WARN of a skipped mapped name names beside it, as slog fields:
+	// the settings route's request that mends the mapping, which api.MappingRepairs reads from
+	// repo_projects (resolve). It is a field because that reading inverts api's readers of the
+	// route's path, and package api imports this one. Nil names no repairs.
+	MappingRepairs func(ctx context.Context, row string) []any
 	// now is the clock the answers held in absent are timed by, and time.Now when it is nil,
 	// which is every Reconciler but a test's: a test of how long an answer is held moves its
 	// own clock rather than waiting out AbsentAppRecheck.

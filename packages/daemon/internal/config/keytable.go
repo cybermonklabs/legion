@@ -333,7 +333,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_grace_minutes", Default: "`30`", RequiredBy: "no",
-			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered, and an answer from every role with no turn running ends it sooner; decimals allowed.",
+			Description: "How many minutes a pod's update round waits for its roles after it opens: the round ends at that bound whatever the roles answered and whatever still runs, and an answer from every role ends it sooner once no turn runs and each role's report since its last turn names no running background work; decimals allowed.",
 			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.PodUpdateGrace = v }),
 		},
 		{
@@ -343,7 +343,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
-			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
+			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push its work, let its subagents and background jobs finish or stop them, push what they made and wait.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),
 		},
 		{
@@ -858,6 +858,8 @@ var nestedKeys = []memberGroup{
 			Description: "The GKE ComputeClass whose nodes run the microVM pods, which a microVM pod selects by `cloud.google.com/compute-class` in place of any class `scheduling.node_selector` names, and whose taint it tolerates."},
 		{Name: "storage_class", Default: "`runtime.kubernetes.storage_class`", RequiredBy: "no",
 			Description: "The StorageClass a microVM pod's own workspace volume is provisioned from."},
+		{Name: "keep_volume", Default: "`false`", RequiredBy: "no",
+			Description: "Whether each microVM issue pod's workspace volume is a claim that its issue's Sandbox owns, which stays through the pod's ends and the issue's idle releases and is deleted with the Sandbox; a gVisor issue pod's volume ends with its pod whatever this says."},
 		{Name: "metadata", Default: "a microVM pod's launcher serves no metadata endpoint", RequiredBy: "no",
 			Description: "Has each microVM pod's launcher serve the metadata server's paths for the pod's own account at `127.0.0.1:8169`, exchanging the pod's projected token at Google's Security Token Service, for a microVM pod that does not reach the node's metadata server."},
 	}},

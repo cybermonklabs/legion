@@ -27,10 +27,11 @@ import (
 // check exits with as well — `legion leak-check`, which a pre-push hook runs — and a second copy
 // of the three numbers is one an edit here would silently part from. StatusWantsStdin stays
 // unexported: it is a step of the gh shape's own handshake (Guard.askAgain), never a status this
-// package answers a caller with.
+// package answers a caller with. `legion leak-check` also exits StatusSetupFailure for a
+// destination GitHub answers 404 for (a *NotFound), a write it has not cleared either.
 const (
 	StatusClean        = 0 // the write is clean
-	StatusSetupFailure = 2 // the check could not be made to run, or could not finish
+	StatusSetupFailure = 2 // a check could not run or finish, or a 404 for the destination
 	StatusRefused      = 3 // the write names something private
 	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )
@@ -400,7 +401,7 @@ type child struct {
 	// inherit, where it is not nil, is which names of the base environment the child keeps;
 	// the guard's own names and env go on top either way. Nil keeps the whole base, which is
 	// what every child keeps but the visibility read made with no credential (Guard.lsRemote)
-	// and the one made through curl (Guard.curlVisibility).
+	// and the read through curl (Guard.CurlGet).
 	inherit func(name string) bool
 	// stdin is the child's standard input, nil for none.
 	stdin io.Reader
@@ -408,8 +409,8 @@ type child struct {
 	files []*os.File
 	// stderr, where it is not nil, takes the child's standard error apart from the standard
 	// output run answers, which the GraphQL visibility read needs to read gh's body alone
-	// (Guard.graphQLVisibility), the curl read to read curl's answer alone
-	// (Guard.curlVisibility), the token read to quote gh's error without its output
+	// (Guard.graphQLVisibility), the read through curl to read curl's answer alone
+	// (Guard.CurlGet), the token read to quote gh's error without its output
 	// (Guard.ghToken), and a git read of a push's records to quote git's error without the push's
 	// content (Guard.git). Nil answers the two together.
 	stderr io.Writer
