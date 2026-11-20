@@ -20,7 +20,7 @@ import shutil  # noqa: E402
 
 STAGE_FILE = "s10-judged.json"
 OUTCOMES_FILE = "outcomes.jsonl"
-STAGE_VERSION = 3
+STAGE_VERSION = 4
 CODE_DIRECTORY = "code"
 REQUESTS_DIRECTORY = "requests"
 OUTCOME_FILE = "outcome.json"

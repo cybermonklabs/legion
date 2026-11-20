@@ -64,22 +64,23 @@ Each request, once, in the inventory's order (point 6):
   sent to the sandbox (`s10_sandbox.py`, one Kubernetes Job, `s10_job.py`), whose one `omp -p`
   makes those five calls. Its result is read from the Job's log, the Job is deleted, and every
   file of the result is kept, the gateway key's bytes replaced. Then, in code and before any
-  answer is compared (point 5, version 5, `s10_transcripts.py`): the sandbox's checks, made again
-  here from its record, and a result whose files can be read (`sandbox`); the bundle and skill
-  directories had the required trees before the first judge and the same after the last
+  answer is compared (point 5, version 6, `s10_transcripts.py`): the sandbox's checks, made again
+  here from its record, and a result whose files can be read (`sandbox`); the work tree and the
+  skill tree had the required manifests before the first judge and the same after the last
   (`manifest`); no kept file held the gateway key's bytes (`key`); the session's own transcript
   holds the one `eval` call and nothing else (`session`); there are five judges' transcripts
-  (`transcript`); no judge made a tool call but its `yield` answer, a `read` or `grep` of its own
-  bundle file or of a `skill://approval-review` file, a `read` of the bundle directory, the skill
-  directory or its `references/`, or a `glob` whose scope is its own bundle file, the bundle
-  directory, a skill file or the skill directory, every target as given, defaulted and resolved,
-  and every path a result returns inside the manifested trees (`tool-call`); each judge was asked
-  point 2's model, none is marked a fallback, and each model omp reports serving it is that model
-  (`model`). Then five valid answers (`answers`); the verdict is S10's `aggregate` over them,
-  through its `finish_judgement`, and it must be the verdict point 2's rule gives (`verdict`).
-  Each outcome also records its outcome under the tool rule of versions 3, 4 and 5, with the
-  calls each makes a deviation (`byRule`), so the analysis reports what changes under each with
-  no further judging; version 5's is the one that counts.
+  (`transcript`); no judge made a tool call but its `yield` answer, a text read (a `read` of a
+  file, any `grep`) of only its own bundle file or `skill://approval-review` files, or a listing
+  (a `read` the checker establishes is of a directory of the two trees and answers only names,
+  sizes and ages, or any `glob`) whose whole scope lies inside the work tree or the skill tree,
+  every target as given, defaulted and resolved, and every entry a result returns one its tree's
+  manifest holds (`tool-call`); each judge was asked point 2's model, none is marked a fallback,
+  and each model omp reports serving it is that model (`model`). Then five valid answers
+  (`answers`); the verdict is S10's `aggregate` over them, through its `finish_judgement`, and it
+  must be the verdict point 2's rule gives (`verdict`). Each outcome also records its outcome under
+  the tool rule of versions 3, 4, 5 and 6, with the calls each makes a deviation (`byRule`), so the
+  analysis reports what changes under each with no further judging; version 6's is the one that
+  counts.
 
 Stops. A request is started once its `started.json` is kept, before S10's code runs on it, and a
 request started and not finished is a deviation (`started`) that no later run judges again (point
@@ -674,7 +675,7 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held, sent)
     problems["sandbox"] = sandbox_problems(context, run, record, sent)
     if problems["sandbox"]:
         return ended()
-    manifest = SANDBOX.manifest_problem(record.get("manifests"))
+    manifest = SANDBOX.manifest_problem(record.get("manifests"), line["askId"])
     if manifest is not None:
         problems["manifest"].append(manifest)
     held = sorted(set(record.get("keyFound") or []) | set(key_held))
@@ -703,7 +704,7 @@ def judged_request(context, line, calls, bundles, run, row, job, key_held, sent)
             name, entries = transcripts[index]
             bundle = next(path for path in bundles if f"`{path}`" in call["prompt"])
             made = CHECKS.tool_calls_of(entries)
-            scope = CHECKS.scope_of(bundle, shadow.WORK, listing)
+            scope = CHECKS.scope_of(bundle, shadow.WORK, listing, record.get("manifests"))
             for version in CHECKS.RULE_VERSIONS:
                 tool_calls[version].extend(CHECKS.tool_call_problems(call["label"], made, scope, version))
             wrong, served = CHECKS.model_problems(call["label"], entries, pins.asked, pins.model)
@@ -843,7 +844,7 @@ def judge(context, line):
 # ---------- the run ----------
 
 def counts_of(outcomes):
-    """The stage's counts: by version 5's rule, which counts, and under each version (`byRule`)."""
+    """The stage's counts: by version 6's rule, which counts, and under each version (`byRule`)."""
     def counted(rows):
         kinds = Counter(row["deviation"] for row in rows if row["outcome"] == "deviation")
         verdicts = Counter(row["verdict"] for row in rows if row["outcome"] == "verdict")

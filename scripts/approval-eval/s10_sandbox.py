@@ -33,17 +33,18 @@ Each of those refusals stops the run, since every later request would meet the s
 payload of no file is the driver's preflight, made once a run before any request starts: every
 check above, and no judge (`main`).
 
-Then, as point 5 has it from version 4 on, it records the recursive relative-path and type manifests
-of the bundle directory and the skill directory (`manifests_now`): the first must hold exactly the
-five bundles, the second exactly the skill's three files of point 2 (`manifest_problem`). Where
-either does not, it starts no judge, and the request is a deviation. Otherwise it runs one
-`omp -p` in `WORK` with the `eval` tool alone (the scouts it starts keep the tools their
-definition declares, measured on omp 18.16.0), its transcripts kept as files, asked to make one
-`eval` call whose code is `CELL`: the five recorded `agent()` calls and one `wait()` for them, as
-S10's round waits. omp 18.16.0 has no command that runs an eval cell without a model, so the
-session's own model makes that one call; the driver holds its transcript to that one call. It
-writes nothing in either directory, and once the last judge has returned it records both
-manifests again, which must be the ones it recorded before.
+Then, as point 5 has it (version 6), it records the recursive relative-path and type manifests of
+the work tree, `WORK`, and the skill tree (`manifests_now`): the first must hold exactly
+`bundles/`, holding exactly the request's ask-id directory, holding exactly the five bundles; the
+second exactly the skill's three files of point 2 (`manifest_problem`). Where either does not, it
+starts no judge, and the request is a deviation. Otherwise it runs one `omp -p` in `WORK` with the
+`eval` tool alone (the scouts it starts keep the tools their definition declares, measured on omp
+18.16.0), its transcripts kept as files, asked to make one `eval` call whose code is `CELL`: the
+five recorded `agent()` calls and one `wait()` for them, as S10's round waits. omp 18.16.0 has no
+command that runs an eval cell without a model, so the session's own model makes that one call;
+the driver holds its transcript to that one call. It writes nothing in either tree, and once the
+last judge has returned it records both manifests again, which must be the ones it recorded
+before.
 
 What comes back is written to the pod's log only (`print_result`): the record, the listing, every
 transcript file, the answers and omp's own output, as one xz-compressed tar in base64 lines that
@@ -93,14 +94,27 @@ CALLS_FILE = "/work/s10/calls.json"
 RESULTS_FILE = "/work/s10/results.json"
 SESSIONS = "/work/s10/sessions"
 
-# Point 5, from version 4: the directory `skill://approval-review` resolves to, the skill's files of
-# point 2 in it, and the recursive relative-path and type manifest each of the two directories a
-# judge may `glob` or `read` must have, before its first judge and after its last.
+# Point 5 (version 6): the directory `skill://approval-review` resolves to (the skill tree), the
+# skill's files of point 2 in it, and the recursive relative-path and type manifest each of the two
+# trees a judge may list must have, before its first judge and after its last: the skill tree's,
+# and the work tree's (`WORK`), which holds the request's five bundles and the directories to them.
 SKILL_DIR = "/opt/legion/pi-envoy/dist/skills/approval-review"
 SKILL_FILES = ("SKILL.md", "references/never-decide.md", "references/reviewer-principles.md")
 SKILL_MANIFEST = sorted([[name, "f"] for name in SKILL_FILES]
                         + [[name, "d"] for name in sorted({os.path.dirname(one) for one in SKILL_FILES} - {""})])
-BUNDLE_MANIFEST = [[f"judge-{index}.md", "f"] for index in range(1, 6)]
+BUNDLE_NAMES = tuple(f"judge-{index}.md" for index in range(1, 6))
+
+
+def work_manifest(ask_id):
+    """The work tree's manifest while the judges of `ask_id` run: `bundles/`, holding exactly the
+    ask-id directory, holding exactly the five bundles, each a regular file."""
+    return sorted([["bundles", "d"], [f"bundles/{ask_id}", "d"]]
+                  + [[f"bundles/{ask_id}/{name}", "f"] for name in BUNDLE_NAMES])
+
+
+# A file shaped as an evidence bundle: one named as a judge's bundle, or one under a directory named
+# `bundles`. Admission holds that the five the driver sent are the only such files in the sandbox.
+BUNDLE_SHAPED = re.compile(r"(^|/)bundles/|(^|/)judge-[^/]*\.md$", re.IGNORECASE)
 
 # The mounts the kernel and the kubelet make in every container, which hold no file of a run.
 SYSTEM_TREES = ("/proc", "/dev", "/sys")
@@ -310,14 +324,15 @@ def image_own(path, layout):
 
 
 def listing_refusal(lines, payload, layout):
-    """Why the listing holds a credential, a claim stage's file, or a file outside the bundles, the
-    calls and the runtime.
+    """Why the listing holds a credential, a claim stage's file, an evidence bundle but the five
+    sent, or a file outside the bundles, the calls and the runtime.
 
     `payload` names the files the driver sent, by path. Under the `emptyDir` only those, and the
     directories that hold them, may be there; under the gateway key's mount only the key, by
     Kubernetes' own `..data` links to it; under every other root a run can write, only directories
-    and the image's own runtime (`image_own`). Every other file is the image's own, whose digest the
-    driver checks."""
+    and the image's own runtime (`image_own`). Anywhere, a file shaped as an evidence bundle
+    (`BUNDLE_SHAPED`) must be one sent: the five bundles are the only ones in the sandbox (point 5,
+    version 6). Every other file is the image's own, whose digest the driver checks."""
     wanted_directories = {layout["work"]}
     for path in payload:
         parent = os.path.dirname(path)
@@ -332,6 +347,8 @@ def listing_refusal(lines, payload, layout):
         entry = line[0] in "flo"
         if entry and (os.path.basename(path) in CLAIM_FILE_NAMES or CLAIM_FILE_PATTERN.search(path)):
             return f"{path} bears the name of a file a claim stage writes"
+        if entry and BUNDLE_SHAPED.search(path) and path not in payload:
+            return f"{path} is shaped as an evidence bundle and is none of the five sent"
         if under(path, layout["work"]):
             if path in payload and line.startswith("f "):
                 placed.add(path)
@@ -373,31 +390,31 @@ def manifest_of(directory):
     return sorted(entries)
 
 
-def manifests_now(bundle_dir):
-    """The manifests of the bundle directory and of the directory `skill://approval-review`
+def manifests_now():
+    """The manifests of the work tree and of the skill tree, the directory `skill://approval-review`
     resolves to."""
-    return {"bundle": None if bundle_dir is None else manifest_of(bundle_dir),
-            "skill": manifest_of(os.path.realpath(SKILL_DIR))}
+    return {"work": manifest_of(WORK), "skill": manifest_of(os.path.realpath(SKILL_DIR))}
 
 
-def manifest_problem(manifests, finished=True):
-    """Why the manifests recorded around one request's judges break point 5 (version 5), or None:
-    before the first judge, the bundle directory holds exactly `judge-1.md` to `judge-5.md` and the
-    skill directory exactly `SKILL.md` and `references/` with its two files, each a regular file,
-    and no link or other entry in either; once the last judge has returned, the same manifests.
-    `finished` is a result's check, which needs both: a result whose manifests before the judges
-    pass and that holds none after them broke the rule. Only the check before the first judge,
-    where no judge has run yet, passes `finished=False`."""
+def manifest_problem(manifests, ask_id, finished=True):
+    """Why the manifests recorded around the judges of `ask_id` break point 5 (version 6), or
+    None: before the first judge, the work tree holds exactly `bundles/`, holding exactly the
+    ask-id directory, holding exactly `judge-1.md` to `judge-5.md`, and the skill tree exactly
+    `SKILL.md` and `references/` with its two files, each file regular, and no link or other entry
+    in either; once the last judge has returned, the same manifests. `finished` is a result's
+    check, which needs both: a result whose manifests before the judges pass and that holds none
+    after them broke the rule. Only the check before the first judge, where no judge has run yet,
+    passes `finished=False`."""
     if not isinstance(manifests, dict) or not isinstance(manifests.get("before"), dict):
-        return "the sandbox recorded no manifests of the bundle and skill directories before the judges"
+        return "the sandbox recorded no manifests of the work and skill trees before the judges"
     before = manifests["before"]
-    for name, wanted in (("bundle", BUNDLE_MANIFEST), ("skill", SKILL_MANIFEST)):
+    for name, wanted in (("work", work_manifest(ask_id)), ("skill", SKILL_MANIFEST)):
         if before.get(name) != wanted:
-            return f"before the first judge the {name} directory's manifest is {before.get(name)}, not {wanted}"
+            return f"before the first judge the {name} tree's manifest is {before.get(name)}, not {wanted}"
     if not finished:
         return None
     if not isinstance(manifests.get("after"), dict):
-        return "the sandbox recorded no manifests of the bundle and skill directories after the last judge"
+        return "the sandbox recorded no manifests of the work and skill trees after the last judge"
     if manifests["after"] != before:
         return f"after the last judge the manifests are {manifests['after']}, not the ones recorded before"
     return None
@@ -616,13 +633,14 @@ def main():
     record["preflight"] = record.get("payload") == {}
     omp_output = None
     if record["refused"] is None and not record["preflight"]:
-        record["manifests"] = {"before": manifests_now(record.get("bundleDirectory"))}
-        if manifest_problem(record["manifests"], finished=False) is None:
+        ask_id = os.path.basename(record["bundleDirectory"]) if record.get("bundleDirectory") else None
+        record["manifests"] = {"before": manifests_now()}
+        if manifest_problem(record["manifests"], ask_id, finished=False) is None:
             returncode, stdout, stderr = run_omp(environ)
             record["omp"] = {"returncode": returncode}
             omp_output = (stdout, stderr)
-            record["manifests"]["after"] = manifests_now(record.get("bundleDirectory"))
-        record["manifest"] = manifest_problem(record["manifests"])
+            record["manifests"]["after"] = manifests_now()
+        record["manifest"] = manifest_problem(record["manifests"], ask_id)
     print_result(collected(record, listing, omp_output))
     return 0
 

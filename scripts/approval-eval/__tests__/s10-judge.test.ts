@@ -286,7 +286,11 @@ describe("s10_judge.py and the modules beside it", () => {
     expect(judged?.byRule.v3.toolCallDeviations.map((one) => one.tools)).toEqual(
       Array(5).fill(["yield"])
     );
-    expect([judged?.byRule.v4.verdict, judged?.byRule.v5.verdict]).toEqual(["approve", "approve"]);
+    expect([4, 5, 6].map((version) => judged?.byRule[`v${version}` as "v4"].verdict)).toEqual([
+      "approve",
+      "approve",
+      "approve",
+    ]);
     expect(stage.lines?.[0]?.byRule.v3).toEqual({
       outcome: "deviation",
       verdict: null,
@@ -303,16 +307,16 @@ describe("s10_judge.py and the modules beside it", () => {
       change(outcome);
       return JSON.stringify(outcome);
     };
-    expect(judgedOutcomeOf(text, "outcome.json").byRule.v5.verdict).toBe("approve");
+    expect(judgedOutcomeOf(text, "outcome.json").byRule.v6.verdict).toBe("approve");
     for (const refused of [
       changed((outcome) => {
-        outcome.byRule.v5.verdict = "request_changes";
+        outcome.byRule.v6.verdict = "request_changes";
       }),
       changed((outcome) => {
         delete outcome.byRule.v4;
       }),
       changed((outcome) => {
-        outcome.byRule.v6 = outcome.byRule.v5;
+        outcome.byRule.v7 = outcome.byRule.v6;
       }),
       changed((outcome) => {
         delete outcome.byRule.v3.toolCallDeviations;
@@ -372,11 +376,9 @@ describe("s10_judge.py and the modules beside it", () => {
       "started",
       UNJUDGED,
     ]);
-    expect(Object.values(reported[2]?.byRule ?? {}).map((one) => one.deviation)).toEqual([
-      UNJUDGED,
-      UNJUDGED,
-      UNJUDGED,
-    ]);
+    expect(Object.values(reported[2]?.byRule ?? {}).map((one) => one.deviation)).toEqual(
+      Array(4).fill(UNJUDGED)
+    );
     expect(() => reportedOutcomesOf([line(DEVIATION)], stage)).toThrow();
   }, 180_000);
 });

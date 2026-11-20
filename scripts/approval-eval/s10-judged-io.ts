@@ -12,7 +12,7 @@ import type { InventoryLine } from "./s10-inputs-io";
  * `s10-judged.json` (`JudgedRecord`, `judgedRecordOf`) chains the stage to its inputs and names the
  * sha256 of every file written; `requests/<ask id>/outcome.json` (`JudgedOutcome`,
  * `judgedOutcomeOf`) is one request's one outcome, every key present, with its outcome under the
- * tool rule of each version of point 5 (`byRule`, version 5's the one that counts) and the calls
+ * tool rule of each version of point 5 (`byRule`, version 6's the one that counts) and the calls
  * each refuses; and `outcomes.jsonl` (`OutcomeLine`, `outcomeLinesOf`), which only a run that gave
  * every request its outcome writes, lists them in the inventory's order. `judgedStageOf` reads a
  * directory whole, each file held to the sha256 its record names. A stage that stopped stays
@@ -28,7 +28,7 @@ export const OUTCOME_FILE = "outcome.json";
 export const STARTED_FILE = "started.json";
 
 /** The version of the stage's shapes, which every reader checks. */
-export const JUDGED_VERSION = 3;
+export const JUDGED_VERSION = 4;
 
 /** The deviation kinds the stage writes, in `s10_judge.py`'s order (its `DEVIATION_KINDS`). */
 export const DEVIATION_KINDS = [
@@ -65,9 +65,9 @@ export interface Deviation {
  * The versions of point 5's tool rule each outcome is recorded under, over the same transcripts,
  * and the one that counts (`s10_transcripts.py`'s `RULE_VERSIONS` and `COUNTING_RULE`).
  */
-export const RULE_VERSIONS = ["v3", "v4", "v5"] as const;
+export const RULE_VERSIONS = ["v3", "v4", "v5", "v6"] as const;
 export type RuleVersion = (typeof RULE_VERSIONS)[number];
-export const COUNTING_RULE: RuleVersion = "v5";
+export const COUNTING_RULE: RuleVersion = "v6";
 
 /** One tool call a version of the rule makes a deviation. */
 export interface ToolCallDeviation {
@@ -219,7 +219,7 @@ export interface OutcomeCounts {
   deviationsByKind: Record<string, number>;
 }
 
-/** The written stage's counts, by version 5's rule and under each version (`byRule`). */
+/** The written stage's counts, by version 6's rule and under each version (`byRule`). */
 export interface JudgedCounts extends OutcomeCounts {
   byRule: Record<RuleVersion, OutcomeCounts>;
 }

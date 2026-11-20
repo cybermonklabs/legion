@@ -211,9 +211,12 @@ def entries_text(entries):
 
 
 def tool_entries(calls, upstream=None):
-    """omp's entries of each tool call: the assistant's call, its execution's start, its result."""
+    """omp's entries of each tool call: the assistant's call, its execution's start, its result. A
+    call is `(name, arguments, details)`, or with a fourth part, the text its result answered."""
     entries = []
-    for number, (name, arguments, details) in enumerate(calls):
+    for number, call in enumerate(calls):
+        name, arguments, details = call[:3]
+        text = call[3] if len(call) > 3 else None
         call_id = f"toolu_{number}"
         entries.append({"type": "message", "message": {
             "role": "assistant", "provider": "anthropic", "model": "claude-opus-5-5", "upstreamModel": upstream,
@@ -221,9 +224,24 @@ def tool_entries(calls, upstream=None):
                         {"type": "toolCall", "id": call_id, "name": name, "arguments": arguments}]}})
         entries.append({"type": "custom", "customType": "tool_execution_start",
                         "data": json.dumps({"toolCallId": call_id, "toolName": name, "args": arguments})})
+        content = [] if text is None else [{"type": "text", "text": text}]
         entries.append({"type": "message", "message": {"role": "toolResult", "toolCallId": call_id, "toolName": name,
-                                                       "isError": False, "details": details, "content": []}})
+                                                       "isError": False, "details": details, "content": content}})
     return entries
+
+
+def listing_answer(entries):
+    """A `read`'s answer that lists a directory as omp prints one: its root, then each entry (one
+    written with its own indentation and `- ` kept so), with a size and an age."""
+    lines = ["."]
+    for entry in entries:
+        line = entry if entry.lstrip().startswith("- ") else f" - {entry}"
+        lines.append(f"{line} 26.5KB just now")
+    return "\n".join(lines) + "\n"
+
+
+# The manifests a fake sandbox records unless a test hands it others: the ones its request requires.
+REQUIRED = "required"
 
 
 class FakeSandbox:
@@ -244,8 +262,7 @@ class FakeSandbox:
         self.served = {}
         self.resolved = {}
         self.top_calls = None
-        self.manifests = {"before": {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST},
-                          "after": {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST}}
+        self.manifests = REQUIRED
         self.listing = []
         self.record = {}
         self.preflight_record = {}
@@ -267,9 +284,18 @@ class FakeSandbox:
                 "work": self.test.root}
 
     def checked_record(self, files, preflight):
-        """The record and listing of a sandbox whose every check passed over the files sent."""
+        """The record and listing of a sandbox whose every check passed over the files sent: the
+        skill's files and directories, each file sent and the directories of the work tree above
+        them, and the test's own lines."""
         layout = self.layout()
+        directories = {HARNESS, HARNESS + "/references"}
+        for path in files:
+            parent = os.path.dirname(path)
+            while STORE.under(parent, self.test.work):
+                directories.add(parent)
+                parent = os.path.dirname(parent)
         listing = sorted([f"f 644 10 {HARNESS}/{name}" for name in SANDBOX.SKILL_FILES]
+                         + [f"d 755 4096 {path}" for path in directories]
                          + [f"f 644 {len(data)} {path}" for path, data in files.items()]
                          + (self.preflight_listing if preflight else self.listing))
         record = {"refused": None, "preflight": preflight, "layout": layout, "payload": {
@@ -335,7 +361,11 @@ class FakeSandbox:
         record, listing = self.checked_record(files, False)
         result["listing.txt"] = ("\n".join(listing) + "\n").encode()
         result.update(self.files)
-        record.update({"manifests": self.manifests, "omp": {"returncode": 0}, **self.record})
+        manifests = self.manifests
+        if manifests == REQUIRED:
+            wanted = {"work": SANDBOX.work_manifest(ask), "skill": SANDBOX.SKILL_MANIFEST}
+            manifests = {"before": wanted, "after": wanted}
+        record.update({"manifests": manifests, "omp": {"returncode": 0}, **self.record})
         result["record.json"] = json.dumps(record).encode()
         return JOB.SandboxRun(job=f"fake-job-{len(self.runs)}", files=result,
                               facts={"pod": "fake-pod", "imageId": self.image_id})
@@ -622,11 +652,11 @@ class JudgingTest(Base):
         self.assertEqual((found["outcome"], found["verdict"], found["deviation"]), ("verdict", "approve", None))
         self.assertEqual(sorted(found), sorted(["askId", "issueKey", "group", "cases", "outcome", "verdict",
                                                 "deviation", "judgement", "judges", "sandbox", "judgedAt", "byRule"]))
-        # Its `yield` answers are version 3's deviations, and allowed by versions 4 and 5.
+        # Its `yield` answers are version 3's deviations, and allowed by versions 4, 5 and 6.
         self.assertEqual({name: (one["outcome"], one["verdict"], one["deviation"], len(one["toolCallDeviations"]))
                           for name, one in found["byRule"].items()},
                          {"v3": ("deviation", None, "tool-call", 5), "v4": ("verdict", "approve", None, 0),
-                          "v5": ("verdict", "approve", None, 0)})
+                          "v5": ("verdict", "approve", None, 0), "v6": ("verdict", "approve", None, 0)})
         self.assertEqual(found["judgement"]["votes"], {"approve": 5})
         self.assertEqual(found["judgement"]["neighbour_asks"], [ask_id("c1")])
         self.assertEqual(found["judgement"]["judge_models"],
@@ -658,7 +688,7 @@ class JudgingTest(Base):
         self.assertIn(f"requests/{ask_id('a1')}/sandbox/listing.txt.xz", written)
         self.assertEqual(record["counts"]["byVerdict"], {"approve": 1})
         counted = {name: (one["verdicts"], one["deviationsByKind"]) for name, one in record["counts"]["byRule"].items()}
-        self.assertEqual(counted, {"v3": (0, {"tool-call": 1}), "v4": (1, {}), "v5": (1, {})})
+        self.assertEqual(counted, {"v3": (0, {"tool-call": 1}), "v4": (1, {}), "v5": (1, {}), "v6": (1, {})})
         self.assertEqual(self.outcomes()[0]["byRule"]["v3"], {"outcome": "deviation", "verdict": None,
                                                               "deviation": "tool-call"})
 
@@ -713,12 +743,14 @@ class JudgingTest(Base):
         self.assertEqual(self.outcome("a1")["deviation"]["kind"], "started")
         self.assertEqual(self.outcome("a2")["verdict"], "approve")
 
-    def test_point_five_version_five_lets_these_calls_pass(self):
+    def test_point_five_version_six_lets_these_calls_pass(self):
         def allowed(index, bundle):
             directory = os.path.dirname(bundle)
+            ask = os.path.basename(directory)
             relative = os.path.relpath(directory, self.work)
+            names = [f"judge-{n}.md" for n in range(1, 6)]
             listed = {"scopePath": relative, "cwd": self.work,
-                      "files": [os.path.relpath(os.path.join(directory, f"judge-{n}.md"), self.work) for n in range(1, 6)]}
+                      "files": [os.path.relpath(os.path.join(directory, name), self.work) for name in names]}
             return [
                 ("read", {"path": os.path.relpath(bundle, self.work) + ":1-40", "i": "Reading"}, None),
                 ("read", {"path": bundle + ":5-16,960-973"}, None),
@@ -741,20 +773,35 @@ class JudgingTest(Base):
                 ("read", {"path": "skill://approval-review/references/never-decide.md:raw"},
                  {"resolvedPath": HARNESS + "/references/never-decide.md"}),
                 ("read", {"path": HARNESS + "/references/reviewer-principles.md"}, None),
-                # Version 5's directory reads: its bundle directory, the skill directory, its references/.
-                ("read", {"path": relative}, {"isDirectory": True, "resolvedPath": directory}),
-                ("read", {"path": HARNESS}, {"isDirectory": True, "resolvedPath": HARNESS}),
-                ("read", {"path": "skill://approval-review/references"}, None),
+                # Directory reads whose answers are listings: its bundle directory, the skill tree, references/.
+                ("read", {"path": relative}, {"isDirectory": True, "resolvedPath": directory}, listing_answer(names)),
+                ("read", {"path": HARNESS}, {"isDirectory": True, "resolvedPath": HARNESS},
+                 listing_answer(["SKILL.md", "references/", "  - never-decide.md"])),
+                ("read", {"path": "skill://approval-review/references"},
+                 {"isDirectory": True, "resolvedPath": HARNESS + "/references"},
+                 listing_answer(["never-decide.md", "reviewer-principles.md"])),
+                # Version 6's: any listing inside the work tree or the skill tree, and a grep of the skill tree.
+                ("glob", {"path": "."}, {"scopePath": ".", "cwd": self.work,
+                                         "files": ["bundles/", f"bundles/{ask}/", f"bundles/{ask}/judge-1.md"]}),
+                ("glob", {"path": self.work + "/**"}, None),
+                ("glob", {"path": "skill://approval-review/references/*"},
+                 {"files": ["skill://approval-review/references/never-decide.md"]}),
+                ("grep", {"pattern": "never", "path": HARNESS},
+                 {"searchPath": HARNESS, "fileMatches": [{"path": HARNESS + "/references/never-decide.md"}]}),
+                ("read", {"path": self.work}, {"isDirectory": True, "resolvedPath": self.work},
+                 listing_answer(["bundles/", f"  - {ask}/"])),
+                ("glob", {}, {"scopePath": ".", "cwd": self.work, "files": ["bundles/"]}),
                 ("yield", {"data": json.dumps({"path": "/etc/passwd"})}, None)]
         self.assertEqual(self.judged_kind(judge_tools=allowed), "approve")
         by_rule = self.outcome("a1")["byRule"]
-        self.assertEqual(by_rule["v5"], {"outcome": "verdict", "verdict": "approve", "deviation": None,
+        self.assertEqual(by_rule["v6"], {"outcome": "verdict", "verdict": "approve", "deviation": None,
                                          "toolCallDeviations": []})
-        # Version 4 refuses the three directory reads of each judge, and nothing else.
-        refused = by_rule["v4"]["toolCallDeviations"]
-        self.assertEqual((by_rule["v4"]["outcome"], by_rule["v4"]["deviation"]), ("deviation", "tool-call"))
-        self.assertEqual(sorted(Counter(one["judge"] for one in refused).values()), [3] * 5)
-        self.assertEqual({tuple(one["tools"]) for one in refused}, {("read",)})
+        # Version 5 refuses the six calls of each judge only version 6 allows; version 4 its three
+        # directory reads beside them.
+        for version, count in (("v5", 6), ("v4", 9)):
+            refused = by_rule[version]["toolCallDeviations"]
+            self.assertEqual((by_rule[version]["outcome"], by_rule[version]["deviation"]), ("deviation", "tool-call"))
+            self.assertEqual(sorted(Counter(one["judge"] for one in refused).values()), [count] * 5, version)
         self.assertEqual(by_rule["v3"]["deviation"], "tool-call")
 
     def test_any_other_tool_call_is_a_deviation(self):
@@ -764,27 +811,44 @@ class JudgingTest(Base):
         def globbed(path):
             return own(lambda bundle, directory: [("glob", {"path": path(bundle, directory)}, None)])
 
+        def other(bundle, directory):
+            return os.path.join(directory, "judge-2.md" if bundle.endswith("judge-1.md") else "judge-1.md")
+
+        def directory_read(path, text):
+            return own(lambda bundle, directory: [
+                ("read", {"path": path(bundle, directory)}, {"isDirectory": True, "resolvedPath": path(bundle, directory)},
+                 text)])
+
         cases = {
-            "a read of another bundle": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
-            "a read of the bundles' parent": own(lambda bundle, directory: [
+            "a read of another bundle": own(lambda bundle, directory: [("read", {"path": other(bundle, directory)}, None)]),
+            "a read of no file": own(lambda bundle, directory: [("read", {"path": bundle[:-4] + "x.md"}, None)]),
+            "a directory read no answer establishes": own(lambda bundle, directory: [
                 ("read", {"path": os.path.dirname(directory)}, None)]),
+            "a directory read with an empty answer": directory_read(lambda bundle, directory: directory, ""),
+            "a directory read naming an entry no manifest holds": directory_read(
+                lambda bundle, directory: directory, listing_answer(["judge-1.md", "secret.md"])),
+            "a directory read answering a file's text": directory_read(lambda bundle, directory: directory, "# The spec\n"),
+            "a directory read outside the trees": directory_read(lambda bundle, directory: self.root,
+                                                                 listing_answer(["shadow/"])),
             "a grep of the bundle directory": own(lambda bundle, directory: [
                 ("grep", {"pattern": "x", "path": directory}, None)]),
+            "a grep of the work tree": own(lambda bundle, directory: [("grep", {"pattern": "x", "path": self.work}, None)]),
+            "a grep of the skill tree's parent": own(lambda bundle, directory: [
+                ("grep", {"pattern": "x", "path": os.path.dirname(HARNESS)}, None)]),
             "a grep with no path": own(lambda bundle, directory: [("grep", {"pattern": "x"}, None)]),
-            "a glob with no path": own(lambda bundle, directory: [("glob", {}, None)]),
-            "a glob of the bundles' parent": globbed(lambda bundle, directory: os.path.dirname(directory) + "/*/judge-1.md"),
-            "a glob scoped at references/": globbed(lambda bundle, directory: "skill://approval-review/references/*"),
-            "a glob scoped at references/ by its path": globbed(lambda bundle, directory: HARNESS + "/references/**"),
-            "a glob of another judge's file": globbed(lambda bundle, directory: os.path.join(
-                directory, "judge-2.md" if bundle.endswith("judge-1.md") else "judge-1.md")),
-            "a glob whose pattern climbs": globbed(lambda bundle, directory: directory + "/../*"),
+            "a glob of the work tree's parent": globbed(lambda bundle, directory: os.path.dirname(self.work) + "/*"),
+            "a glob of the root": globbed(lambda bundle, directory: "/*"),
+            "a glob of the run's own output": globbed(lambda bundle, directory: os.path.join(self.root, "s10") + "/**"),
+            "a glob that climbs out of the work tree": globbed(lambda bundle, directory: directory + "/../../../*"),
+            "a glob whose pattern climbs": globbed(lambda bundle, directory: directory + "/*/../*"),
             "a glob whose pattern holds a dot part": globbed(lambda bundle, directory: directory + "/*/./x"),
-            "a glob of the working directory": globbed(lambda bundle, directory: "."),
             "a glob of another skill": globbed(lambda bundle, directory: "skill://dispatch/**"),
             "a glob its result says left": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": "/etc", "files": ["/etc/passwd"]})]),
-            "a glob that returns a path outside the trees": own(lambda bundle, directory: [
+            "a glob that returns a path no manifest holds": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": directory, "files": ["../outside.md"], "cwd": directory})]),
+            "a glob that returns a sixth bundle": own(lambda bundle, directory: [
+                ("glob", {"path": directory}, {"scopePath": directory, "files": [directory + "/judge-6.md"]})]),
             "a glob over two scopes, one left": own(lambda bundle, directory: [
                 ("glob", {"path": directory}, {"scopePath": f"{directory}, /etc"})]),
             "a glob with an argument that may be a target": own(lambda bundle, directory: [
@@ -828,8 +892,8 @@ class JudgingTest(Base):
         }
         for name, tools in cases.items():
             with self.subTest(name=name):
+                shutil.rmtree(self.out, ignore_errors=True)
                 self.assertEqual(self.judged_kind(judge_tools=tools), "tool-call")
-                shutil.rmtree(self.out)
 
     def test_a_link_the_listing_records_is_followed_before_the_scope_is_read(self):
         def through_link(index, bundle):
@@ -839,9 +903,13 @@ class JudgingTest(Base):
         self.assertEqual(self.judged_kind(judge_tools=through_link, listing=listing), "tool-call")
 
     def test_manifests_that_are_not_the_required_trees_or_that_change_are_a_deviation(self):
-        wanted = {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST}
+        wanted = {"work": SANDBOX.work_manifest(ask_id("a1")), "skill": SANDBOX.SKILL_MANIFEST}
+        work = wanted["work"]
         cases = {
-            "a changed after": {"before": wanted, "after": dict(wanted, bundle=SANDBOX.BUNDLE_MANIFEST + [["x", "f"]])},
+            "a changed after": {"before": wanted, "after": dict(wanted, work=work + [["notes.txt", "f"]])},
+            "a stray file in the work tree": {"before": dict(wanted, work=sorted(work + [["notes.txt", "f"]]))},
+            "a second request's directory": {"before": dict(wanted, work=sorted(work + [["bundles/other", "d"]]))},
+            "another request's bundles": {"before": dict(wanted, work=SANDBOX.work_manifest(ask_id("a2")))},
             "a link before": {"before": dict(wanted, skill=SANDBOX.SKILL_MANIFEST[:3] + [
                 ["references/reviewer-principles.md", "l"]])},
             "none recorded": None,
@@ -964,6 +1032,10 @@ class JudgingTest(Base):
         self.assertEqual(self.judged_kind(listing=stray), "sandbox")
         self.assertIn("outside the bundles", self.outcome("a1")["deviation"]["reason"])
         shutil.rmtree(self.out)
+        # Admission: the five sent are the only evidence bundles anywhere in the sandbox.
+        self.assertEqual(self.judged_kind(listing=["f 644 1 /opt/legion/examples/judge-1.md"]), "sandbox")
+        self.assertIn("evidence bundle", self.outcome("a1")["deviation"]["reason"])
+        shutil.rmtree(self.out)
         self.assertEqual(self.judged_kind(record={"mounts": ["/", "/proc", "/elsewhere"]}), "sandbox")
         shutil.rmtree(self.out)
         self.assertEqual(self.judged_kind(record={"layout": None}), "sandbox")
@@ -1013,6 +1085,7 @@ class StageTest(Base):
             "another image": {"preflight_image_id": "registry.example.test/sandbox@sha256:" + "b" * 64},
             "no readable result": {"preflight_failure": "the Job did not finish by its deadline"},
             "a file outside": {"preflight_listing": [f"f 644 1 {self.root}/stray"]},
+            "an evidence bundle": {"preflight_listing": ["f 644 1 /tmp/judge-1.md"]},
             "a record of a request's Job": {"preflight_record": {"preflight": False}},
         }
         for name, changes in cases.items():
@@ -1225,7 +1298,11 @@ class SandboxTest(unittest.TestCase):
                  "f 600 10 /home/legion/github_token": "credential",
                  "f 600 10 /run/agent-secrets/key": "credential",
                  "f 644 10 /work/shadow/notes.txt": "outside the bundles",
-                 "f 644 10 /run/model-gateway-key/..2026_11_20_15_47_29.1/token": "one item"}
+                 "f 644 10 /run/model-gateway-key/..2026_11_20_15_47_29.1/token": "one item",
+                 "f 644 10 /opt/legion/examples/judge-1.md": "evidence bundle",
+                 "f 644 10 /tmp/judge-6.md": "evidence bundle",
+                 "f 644 10 /var/tmp/bundles/abc/notes.md": "evidence bundle",
+                 "l 777 9 /usr/share/judge-2.md -> /dev/null": "evidence bundle"}
         for line, reason in cases.items():
             with self.subTest(line=line):
                 self.assertIn(reason, SANDBOX.listing_refusal(LISTING + [line], PAYLOAD, LAYOUT))
@@ -1370,16 +1447,22 @@ class SandboxTest(unittest.TestCase):
             os.symlink("/etc/passwd", os.path.join(root, "references", "more.md"))
             self.assertIn(["references/more.md", "l"], SANDBOX.manifest_of(root))
             self.assertIsNone(SANDBOX.manifest_of(os.path.join(root, "SKILL.md")))
-        wanted = {"bundle": SANDBOX.BUNDLE_MANIFEST, "skill": SANDBOX.SKILL_MANIFEST}
-        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted}, finished=False))
-        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted, "after": wanted}))
-        self.assertIn("after the last judge", SANDBOX.manifest_problem({"before": wanted}))
-        self.assertIn("bundle directory", SANDBOX.manifest_problem({"before": dict(wanted, bundle=None)}))
-        self.assertIn("bundle directory",
-                      SANDBOX.manifest_problem({"before": dict(wanted, bundle=None)}, finished=False))
-        self.assertIn("skill directory", SANDBOX.manifest_problem({"before": dict(wanted, skill=wanted["skill"][:3])}))
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "bundles", "a1x"))
+            for name in SANDBOX.BUNDLE_NAMES:
+                put(os.path.join(root, "bundles", "a1x", name), "x")
+            self.assertEqual(SANDBOX.manifest_of(root), SANDBOX.work_manifest("a1x"))
+        wanted = {"work": SANDBOX.work_manifest("a1x"), "skill": SANDBOX.SKILL_MANIFEST}
+        self.assertEqual(wanted["work"][:2], [["bundles", "d"], ["bundles/a1x", "d"]])
+        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted}, "a1x", finished=False))
+        self.assertIsNone(SANDBOX.manifest_problem({"before": wanted, "after": wanted}, "a1x"))
+        self.assertIn("after the last judge", SANDBOX.manifest_problem({"before": wanted}, "a1x"))
+        self.assertIn("work tree", SANDBOX.manifest_problem({"before": wanted}, "a2x"))
+        self.assertIn("work tree", SANDBOX.manifest_problem({"before": wanted}, None, finished=False))
+        self.assertIn("work tree", SANDBOX.manifest_problem({"before": dict(wanted, work=None)}, "a1x", finished=False))
+        self.assertIn("skill tree", SANDBOX.manifest_problem({"before": dict(wanted, skill=wanted["skill"][:3])}, "a1x"))
         self.assertIn("after the last judge",
-                      SANDBOX.manifest_problem({"before": wanted, "after": dict(wanted, skill=[])}))
+                      SANDBOX.manifest_problem({"before": wanted, "after": dict(wanted, skill=[])}, "a1x"))
 
     def test_the_one_cell_makes_the_recorded_calls_and_waits_as_s10_waits(self):
         calls = [{"prompt": f"p{index}", "agent": "scout", "label": f"l{index}", "schema": {"type": "object"},
