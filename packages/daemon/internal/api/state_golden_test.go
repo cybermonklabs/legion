@@ -952,32 +952,37 @@ func populatedState(t *testing.T) State {
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
-		// Four repositories of two owners: two the daemon serves, both role Apps being installed
-		// on them; one the review App is not installed on, which the daemon leaves out saying what
-		// GitHub answered of each App; and one whose implement App read GitHub did not answer,
-		// left out for now with no answer of the Apps at all, since GitHub gave it none.
-		// zeta/tools stands for a repository only a record names, which the daemon serves exactly
-		// as a mapped one and which is the project's default in no mapping (INFRA-2543 R6).
-		// acme/widgets' cache is Ready and its last health read answered, zeta/tools' could not be
-		// read, and acme/legacy, served no longer, keeps its cache until its retention ends.
+		// Five repositories the live records name, of three owners, sorted by name, each showing
+		// an answer the block carries: acme/gadgets, the review App not installed on it, which
+		// GitHub answered of both Apps; acme/widgets, both role Apps installed, its cache Ready and
+		// its last health read answered; sjawhar/legion, which the records keep under its name
+		// before a configured transfer and the rename rule serves as cybermonklabs/legion, both
+		// Apps installed there; zeta/archive, whose implement App read GitHub did not answer, so it
+		// carries why and no answer of the Apps at all; and zeta/tools, both Apps installed and its
+		// cache failing, which withoutWebhookApp names as Dispatch's GitHub App not installed on
+		// it, served all the same. acme/legacy, which no live record names any more, keeps its
+		// cache until its retention ends.
 		Repositories: RepositoriesView{
-			Owners: []string{"acme", "zeta"},
-			Mapped: []MappedRepositoryView{
-				{Repo: "acme/widgets", Default: true, Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
+			Live: []LiveRepositoryView{
+				{Repo: "acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
+				{Repo: "acme/widgets", Apps: &AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
 					Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992", LastFetchAt: time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC), Bytes: 6612345678,
 				}},
-				{Repo: "zeta/tools", Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
-					Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
-					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
-				}},
+				{Repo: "sjawhar/legion", ServedAs: "cybermonklabs/legion", Apps: &AppInstallationsView{Implement: true, Review: true}},
+				{Repo: "zeta/archive", ReadError: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+				{
+					Repo: "zeta/tools", Apps: &AppInstallationsView{Implement: true, Review: true},
+					Cache: &CacheView{
+						Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
+						Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+					},
+				},
 			},
-			Refused: []RefusedRepositoryView{
-				{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
-				{Repo: "zeta/archive", Reason: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
-			},
-			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
-			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
+			WithoutWebhookApp: []WebhookAppGapView{{
+				Repo:   "zeta/tools",
+				Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed",
+			}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
@@ -1111,6 +1116,24 @@ func TestStateGolden(t *testing.T) {
 	state := populatedState(t)
 	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
 	golden(t, "state.json", state)
+}
+
+// The state route's body for a caller whose plugin is at the contract before
+// repositoriesLiveContract, 199, asking from a pod whose claims record it and stating it in
+// `Legion-Plugin-Contract`, as every plugin from shapedAnswersContract on does: the state golden's
+// own state, asked through the route itself. 199 is no contract SupportedContracts records, so the
+// caller is served at 193, the recorded contract below it (recordedContractAtOrBelow), which the
+// mark names: its `repositories` block in the shape contract 152 gave it, written from the same
+// entries (withoutRepositoriesLive), and every other key as a caller at 193 is served it, since no
+// other row of stateNarrowings stands above 193. shapedAnswersContract's row and pauseContract's
+// stand at or below it, which is why the golden carries `lowestPluginContract`, each claim view's
+// `updateState` and `paused`. `packages/contracts/src/legion-api.test.ts` parses it with a copy of
+// contract 152's schema of the block, so the narrowing is held to the reader it is written for,
+// and its drift gate holds every key of the file to that copy.
+func TestStateNarrowedRepositoriesGolden(t *testing.T) {
+	server := stateServer(t, populatedState(t), podClaims(repositoriesLiveContract-1))
+	body := stateStating(t, server, statePodAddr+":41000", repositoriesLiveContract-1)
+	golden(t, "state-narrowed-repositories.json", json.RawMessage(body))
 }
 
 // One issue's record, what `GET /legion/v1/issues/{key}/record` answers: the very `api.Issue`

@@ -397,15 +397,30 @@ const issueVolume = "issue"
 // it names no repository, which a label value cannot hold (`/`) and a DNS-safe form of it cannot
 // be read back from. The repository is the annotation annotationCacheRepo alone, exactly as GitHub
 // names it, on the Sandbox, its pod template and its Secret (cacheRepository). The sweep marks a
-// cache whose repository left the mapping with annotationCacheUnmappedAt. cacheVolume is a cache
-// Sandbox's one claim template and cacheContainer its pod's one container.
+// cache whose repository left the cache set (Options.CacheRepositories) with
+// annotationCacheUnusedAt. cacheVolume is a cache Sandbox's one claim template and cacheContainer
+// its pod's one container.
+//
+// annotationCacheOldUnusedAt is the annotation the sweep of a release before INFRA-4401 marked such
+// a cache with. The sweep reads it because INFRA-4401's A4 requires its first pass to take it off
+// every cache the sweep judges (sweepOldMarkedCache): a cache in the set loses it with the new one,
+// and one outside the set keeps the time of its first mark, the earlier of its marks that parse as
+// a time, retired at that pass when that mark is one retention old or more and otherwise marked
+// with that time under annotationCacheUnusedAt in the patch that removes it, so it retires one
+// retention after its first mark (one none of whose marks parses is marked with the time of that
+// pass instead). A cache the sweep cannot judge keeps it, and the next boot's census refuses that
+// cache by name, so once that first pass has run no cache a daemon boots beside carries it. The
+// literal goes in dispatch://INFRA-3532's pull request, once A4's first pass has run on every
+// daemon, with sweepOldMarkedCache, the one `if` of sweepCache that calls it, and its key in
+// markUnused's patch: that pass, which reads it, is why A8 keeps it until then.
 const (
-	labelCache                = "legion.dev/cache"
-	cacheMarker               = "true"
-	annotationCacheRepo       = "legion.dev/cache-repo"
-	annotationCacheUnmappedAt = "legion.dev/cache-unmapped-at"
-	cacheVolume               = "cache"
-	cacheContainer            = "cache"
+	labelCache                 = "legion.dev/cache"
+	cacheMarker                = "true"
+	annotationCacheRepo        = "legion.dev/cache-repo"
+	annotationCacheUnusedAt    = "legion.dev/cache-unused-at"
+	annotationCacheOldUnusedAt = "legion.dev/cache-unmapped-at"
+	cacheVolume                = "cache"
+	cacheContainer             = "cache"
 )
 
 // maxNameLength is a DNS-1123 label's length: a Sandbox name is also its pod's and, were one

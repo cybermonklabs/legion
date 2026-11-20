@@ -130,7 +130,7 @@ type Kubernetes struct {
 
 // RepositoryCacheConfig is `runtime.kubernetes.repository_cache`: the volume each repository's
 // cache owns (a Kubernetes quantity), how many minutes between its fetches from GitHub, how many
-// hours the cache of a repository the mapping no longer names is kept before the orphan sweep
+// hours the cache of a repository no live record names is kept before the orphan sweep
 // deletes it with its volume, and its one container's reservation, in a role's shape and settled as
 // a role's: cpu and memory limits, each requested in full unless a lower request is set, and its
 // ephemeral storage a limit over a request.
@@ -143,7 +143,7 @@ type RepositoryCacheConfig struct {
 
 // defaultRepositoryCache is the cache when the file sets none of it: a 20Gi volume, enough for one
 // repository's bare clone and sized on its own rather than against an issue's volume, fetched
-// every ten minutes, kept a week after its repository leaves the mapping; one CPU and 4Gi,
+// every ten minutes, kept a week after no live record names its repository; one CPU and 4Gi,
 // each requested in full, for a process whose daily `git repack -a -d` of a large repository wants
 // the memory, and the roles' 1Gi request over a 2Gi limit on the node's disk, since the clone lives
 // on the volume.
@@ -2192,7 +2192,7 @@ func checkKubernetesKeys(file fileConfig) error {
 		{"operator_token_file", file.OperatorTokenFile == nil, "legion claims presents this token, as legion controller start does under controller: operator"},
 		{"dispatch_url", file.DispatchURL == nil, "the workflow is what launches every pod"},
 		{"github_apps", file.GitHubApps == nil, "every pod's workspace is cloned with the implement App's token"},
-		{"projects", file.Projects == nil, "every pod's workspace is a repository Dispatch maps to the daemon's project"},
+		{"projects", file.Projects == nil, "every pod works one issue of a configured project"},
 	} {
 		if rule.absent {
 			return fmt.Errorf("%s is required when runtime is kubernetes: %s", rule.key, rule.why)
