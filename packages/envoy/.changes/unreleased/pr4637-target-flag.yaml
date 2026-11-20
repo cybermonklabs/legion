@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `agent-secrets NAME --target ACCOUNT -- command`, or one `--target ACCOUNT/REPOSITORY` for each
+  repository of one account, narrows the run's one GitHub profile: the client lowercases the
+  account and signs the target into the request as the `locations` of its one authorization
+  detail, sorted and each once, and `agent-secrets-helper`'s `sign-request` signs the `locations`
+  it is given; a helper from before them is refused before anything is sent. A target beside two
+  names, targets of two accounts, the account form beside a repository, more than 100 targets, or
+  an account or repository GitHub cannot hold exits 2 before anything is sent. A release whose
+  values answer names `github_left_out` writes one line on stderr for each account, naming the
+  profile, the account and the permissions the installation does not hold. The exec form's
+  `--github-owner`, `--github-repo`, `--github-read-only` and `--github-token` are removed: each
+  exits 2, sends nothing, and names what replaces it.

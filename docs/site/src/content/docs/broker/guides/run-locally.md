@@ -554,12 +554,14 @@ This scrape was taken on a stack that had answered only these calls since it sta
 listener token's refusal and the `bad name` reread above, the two rereads of `DEMO_BROKEN_APP`,
 the enrolment of the pod session the banner's command makes (its key directory in `$KEYS`), and
 one release of `DEMO_GITHUB_APP` to that session, with the GitHub stand set to `fail-once` first.
-The release prints the installation id of each account it holds a token for, and no token:
+The release prints the installation id of each account it holds a token for, and no token;
+`agent-secrets` names first what the token leaves out:
 
 ```console
 $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
+agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
 agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'

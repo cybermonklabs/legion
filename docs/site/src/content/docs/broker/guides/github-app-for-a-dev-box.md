@@ -269,7 +269,9 @@ the JSON object of installations, so a command that sends it to GitHub in a head
 Such a profile needs one account in effect: give `--target` when it names more than one.
 
 The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and
-names each permission it left out in the release (`github_left_out`).
+names each permission it left out in the release (`github_left_out`); `agent-secrets` writes one
+line on stderr for each account, `the profile <NAME> left out <permissions> for <account>, since
+the installation there does not hold them`, and runs the command.
 A profile that asks for more than `metadata` and whose permissions the installation holds none of
 but `metadata`, which every installation holds and which alone does nothing the profile is for,
 or that names a repository the installation does not reach, is refused `422 PROFILE_MINT_REFUSED`;
