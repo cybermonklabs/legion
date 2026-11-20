@@ -106,38 +106,75 @@ func routeRoleProject(route string) string {
 	return ""
 }
 
-// nameRoute adds what a route and its reach name: the session a session route names, the project
-// the role a role route names works for, and the session the route reaches. A nil route or reach
-// names nothing.
-func (r references) nameRoute(route *string, reach *model.IssueRouteReach) {
+// nameRoute adds what a route names: the session a session route names, and the project the role a
+// role route names works for. A nil route names nothing.
+func (r references) nameRoute(route *string) {
 	if route != nil {
 		r.name(sessionReference, routeSession(*route))
 		r.name(roleProjectReference, routeRoleProject(*route))
 	}
-	if reach != nil && reach.RouteHolder != nil {
-		r.name(sessionReference, *reach.RouteHolder)
+}
+
+// leaveOutRoute writes a route as the reader the set answers reads it: a route that names a
+// session, or a role of a project, the reader does not see is null, as an issue with no route. It
+// runs before the roster is read (leaveOutHiddenRouteHolders says why), so no reach is judged yet.
+func (r references) leaveOutRoute(route **string) {
+	if *route == nil {
+		return
+	}
+	session, project := routeSession(**route), routeRoleProject(**route)
+	if (session != "" && !r.holds(sessionReference, session)) || (project != "" && !r.holds(roleProjectReference, project)) {
+		*route = nil
 	}
 }
 
-// leaveOutRoute writes a route and its reach as the reader the set answers reads them. A route that
-// names a session, or a role of a project, the reader does not see is null with its reach, as an
-// issue with no route. A reach whose holder the reader does not see is the reach of a route nobody
-// holds (model.RouteNoHolder): never live or holder_unresponsive with no holder named, which no
-// reach answers otherwise. reach may be nil where the answer carries none.
-func (r references) leaveOutRoute(route **string, reach *model.IssueRouteReach) {
-	if *route != nil {
-		session, project := routeSession(**route), routeRoleProject(**route)
-		if (session != "" && !r.holds(sessionReference, session)) || (project != "" && !r.holds(roleProjectReference, project)) {
-			*route = nil
-			if reach != nil {
-				*reach = model.IssueRouteReach{}
-			}
-			return
+// routedReach is one answer's route, as leaveOutRoute left it, and the reach the roster judged
+// for it.
+type routedReach struct {
+	route *string
+	reach *model.IssueRouteReach
+}
+
+// leaveOutHiddenRouteHolders writes each reach of a role route as who reads it: a holder who does
+// not see reads as no holder (model.RouteNoHolder), never live or holder_unresponsive with no
+// holder named, which no reach answers otherwise. A session route's holder is the session the
+// route names, which leaveOutRoute already judged, so only a role route is read here.
+//
+// The reads that answer a reach judge what their answer names in two steps, so that what a hidden
+// object costs is what its absence costs: first the routes and the claims, before the roster is
+// read at all (leaveOutRoute, at a fixed cost: seenReferencesAtFixedCost), so a route or a claim
+// the reader does not see reads no roster, as no route and no claim read none; then, once the
+// roster named each role's holder, this one statement, made whenever a role route remains, a
+// holder or none, so a role held by a hidden session costs what an unheld role costs. A reader
+// that sees every object reads nothing here, as before.
+func leaveOutHiddenRouteHolders(ctx context.Context, q queryer, who model.Actor, routes []routedReach) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	roles := false
+	named := references{}
+	for _, routed := range routes {
+		if routed.route == nil || !strings.HasPrefix(*routed.route, "role:") {
+			continue
+		}
+		roles = true
+		if routed.reach.RouteHolder != nil {
+			named.name(sessionReference, *routed.reach.RouteHolder)
 		}
 	}
-	if reach != nil && reach.RouteHolder != nil && !r.holds(sessionReference, *reach.RouteHolder) {
-		*reach = model.IssueRouteReach{RouteStatus: new(model.RouteNoHolder)}
+	if !roles {
+		return nil
 	}
+	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
+	if err != nil {
+		return err
+	}
+	for _, routed := range routes {
+		if holder := routed.reach.RouteHolder; holder != nil && !seen.holds(sessionReference, *holder) {
+			*routed.reach = model.IssueRouteReach{RouteStatus: new(model.RouteNoHolder)}
+		}
+	}
+	return nil
 }
 
 // empty reports whether the set names nothing.
@@ -197,7 +234,18 @@ func roleProjectSeenSQL(keyExpr, viewerParam string) string {
 // that sees every object (seesEveryObject) is answered named itself, with no read; a set that
 // names nothing reads nothing.
 func seenReferences(ctx context.Context, q queryer, who model.Actor, named references) (references, error) {
-	if seesEveryObject(who) || named.empty() {
+	if named.empty() {
+		return named, nil
+	}
+	return seenReferencesAtFixedCost(ctx, q, who, named)
+}
+
+// seenReferencesAtFixedCost is seenReferences making its one statement for a set that names
+// nothing too, for a read whose cost must not tell whether it named an object its reader does not
+// see: an issue claimed by a hidden session costs what an unclaimed one costs. A reader that sees
+// every object still reads nothing.
+func seenReferencesAtFixedCost(ctx context.Context, q queryer, who model.Actor, named references) (references, error) {
+	if seesEveryObject(who) {
 		return named, nil
 	}
 	rows, err := q.Query(ctx, seenReferencesSQL, seenReferencesArgs(who, named)...)
@@ -255,11 +303,11 @@ func leaveOutHiddenFollowers(ctx context.Context, q queryer, who model.Actor, fo
 	return nil
 }
 
-// leaveOutHiddenReaches is reaches with every session who does not see null: a claimant, and a
-// route as leaveOutRoute writes it - a route to a session, or to a role of a project, who does not
-// see is no route, and a route whose holder who does not see reaches nobody.
+// leaveOutHiddenReaches is reaches with every session who does not see null, judged before the
+// roster is read (leaveOutHiddenRouteHolders), at a fixed cost: a claimant who does not see is
+// null, and so is a route to a session, or to a role of a project, who does not see.
 func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reaches map[string]askReach) error {
-	if seesEveryObject(who) {
+	if seesEveryObject(who) || len(reaches) == 0 {
 		return nil
 	}
 	named := references{}
@@ -267,9 +315,9 @@ func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reac
 		if reach.Claimant != nil {
 			named.name(sessionReference, *reach.Claimant)
 		}
-		named.nameRoute(reach.Route, &reach.IssueRouteReach)
+		named.nameRoute(reach.Route)
 	}
-	seen, err := seenReferences(ctx, q, who, named)
+	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
 	if err != nil {
 		return err
 	}
@@ -277,7 +325,7 @@ func leaveOutHiddenReaches(ctx context.Context, q queryer, who model.Actor, reac
 		if reach.Claimant != nil && !seen.holds(sessionReference, *reach.Claimant) {
 			reach.Claimant = nil
 		}
-		seen.leaveOutRoute(&reach.Route, &reach.IssueRouteReach)
+		seen.leaveOutRoute(&reach.Route)
 		reaches[askID] = reach
 	}
 	return nil

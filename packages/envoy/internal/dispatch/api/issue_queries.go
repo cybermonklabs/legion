@@ -667,6 +667,12 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// What each row names is judged before the roster is read, so a route the reader does not see
+	// reads no roster, as no route does; a role route's holder is judged after it.
+	if err := leaveOutHiddenSummaryReferences(r.Context(), s.deps.Store.Pool, who, issues); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if routed := slices.ContainsFunc(issues, func(issue model.IssueSummary) bool { return issue.Route != nil }); routed {
 		judged := routeStatus != "" && routeStatus != model.RouteUnknown
 		var roster routeRoster
@@ -695,10 +701,10 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		for index := range issues {
 			issues[index].IssueRouteReach = roster.reach(issues[index].Route)
 		}
-	}
-	if err := leaveOutHiddenSummaryReferences(r.Context(), s.deps.Store.Pool, who, issues); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		if err := leaveOutHiddenSummaryRouteHolders(r.Context(), s.deps.Store.Pool, who, issues); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if routeStatus != "" {
 		issues = slices.DeleteFunc(issues, func(issue model.IssueSummary) bool {
@@ -850,6 +856,11 @@ func (s *server) scanIssuePage(ctx context.Context, listQuery string, arguments 
 // The route's reach is read after both (routeRosterOrUnknown), and only for an issue with a route:
 // a statement of its own for the listener's stored answer (storedRouteRoster), and a shared listener
 // fetch only when that answer is stale, so a routed issue's read is one round trip more.
+//
+// What the issue names is judged as the reader reads it before the roster is read
+// (leaveOutHiddenIssueReferences), and a role route's holder after it (leaveOutHiddenRouteHolders),
+// so a claim or a route the reader does not see costs what no claim and no route cost: it reads no
+// roster. A reader that sees every object makes neither read.
 func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.readerOf(w, r)
 	if !ok {
@@ -860,18 +871,21 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &read.Issue, read.Children); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// One roster read serves both answers beside the issue: where its route reaches, and what
 	// state the session holding its claim is in. An issue with neither costs no listener call.
 	if read.Route != nil || issueClaimSession(read.Claim) != "" {
 		roster := s.routeRosterOrUnknown(r.Context())
 		read.IssueRouteReach = roster.reach(read.Route)
 		read.IssueClaimLiveness = roster.claimLiveness(read.Claim, time.Now())
-	}
-	if err := leaveOutHiddenIssueReferences(r.Context(), s.deps.Store.Pool, who, &read.Issue, &issueBeside{
-		reach: &read.IssueRouteReach, liveness: &read.IssueClaimLiveness, children: read.Children,
-	}); err != nil {
-		s.writeHandlerError(w, err)
-		return
+		if err := leaveOutHiddenRouteHolders(r.Context(), s.deps.Store.Pool, who,
+			[]routedReach{{route: read.Route, reach: &read.IssueRouteReach}}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	WriteJSON(w, http.StatusOK, read)
 }
@@ -1031,29 +1045,18 @@ func (s *server) loadIssue(ctx context.Context, q queryer, who model.Actor, key 
 	return issue, err
 }
 
-// issueBeside is what the issue page answers beside the issue that names an object
-// (issueDetail): the route's reach, the liveness of the claim's holder and the claims of the
-// issue's children.
-type issueBeside struct {
-	reach    *model.IssueRouteReach
-	liveness *model.IssueClaimLiveness
-	children []model.IssueChild
-}
-
-// leaveOutHiddenIssueReferences writes issue, and what beside names when beside is not nil, as who
+// leaveOutHiddenIssueReferences writes issue, and the claims of children when it is not nil, as who
 // reads them (the rule of references, references_seen.go), in one read: a blocker who does not see
 // is dropped; an assignee, and a claim whose holder (a session or a person), who does not see are
-// null, the claim with its holder's liveness, so the issue reads as one nobody claims; a child's
-// claim whose holder who does not see is left out; and the route is written as leaveOutRoute writes
-// it - a route to a session, or to a role of a project, who does not see is no route, and a route
-// whose holder who does not see reaches nobody. A reader that sees every object is answered the
-// issue as it stands, with no read.
-func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, beside *issueBeside) error {
+// null, so the issue reads as one nobody claims; a child's claim whose holder who does not see is
+// left out; and a route to a session, or to a role of a project, who does not see is no route
+// (leaveOutRoute). The issue page runs it before it reads the roster (getIssue), so the read is at a
+// fixed cost (seenReferencesAtFixedCost): an issue claimed by a hidden holder, or routed to a role
+// of a hidden project, costs what an unclaimed, unrouted one costs. A reader that sees every object
+// is answered the issue as it stands, with no read.
+func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Actor, issue *model.Issue, children []model.IssueChild) error {
 	if seesEveryObject(who) {
 		return nil
-	}
-	if beside == nil {
-		beside = &issueBeside{}
 	}
 	named := references{}
 	for _, blocker := range issue.BlockedBy {
@@ -1065,13 +1068,13 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 	if issue.Claim != nil {
 		named.nameActor(issue.Claim.Actor)
 	}
-	for _, child := range beside.children {
+	for _, child := range children {
 		if child.Claim != nil {
 			named.nameActor(child.Claim.Actor)
 		}
 	}
-	named.nameRoute(issue.Route, beside.reach)
-	seen, err := seenReferences(ctx, q, who, named)
+	named.nameRoute(issue.Route)
+	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
 	if err != nil {
 		return err
 	}
@@ -1083,24 +1086,21 @@ func leaveOutHiddenIssueReferences(ctx context.Context, q queryer, who model.Act
 	}
 	if issue.Claim != nil && !seen.holdsActor(issue.Claim.Actor) {
 		issue.Claim = nil
-		if beside.liveness != nil {
-			*beside.liveness = model.IssueClaimLiveness{}
+	}
+	for index := range children {
+		if claim := children[index].Claim; claim != nil && !seen.holdsActor(claim.Actor) {
+			children[index].Claim = nil
 		}
 	}
-	for index := range beside.children {
-		if claim := beside.children[index].Claim; claim != nil && !seen.holdsActor(claim.Actor) {
-			beside.children[index].Claim = nil
-		}
-	}
-	seen.leaveOutRoute(&issue.Route, beside.reach)
+	seen.leaveOutRoute(&issue.Route)
 	return nil
 }
 
 // leaveOutHiddenSummaryReferences writes each listing row as who reads it, as
-// leaveOutHiddenIssueReferences writes one issue: an assignee, a claim and the actor who moved the
-// issue (?moved=true), that who does not see, are null, and the route is written as leaveOutRoute
-// writes it. A row's blockers are left out in its statement (issueSummaryJoins). One read answers
-// every row.
+// leaveOutHiddenIssueReferences writes one issue, before the listing reads the roster and at a
+// fixed cost: an assignee, a claim and the actor who moved the issue (?moved=true), that who does
+// not see, are null, and so is a route to a session, or to a role of a project, who does not see. A
+// row's blockers are left out in its statement (issueSummaryJoins). One read answers every row.
 func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
 	if seesEveryObject(who) || len(issues) == 0 {
 		return nil
@@ -1117,9 +1117,9 @@ func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.A
 		if issue.MovedBy != nil {
 			named.nameActor(*issue.MovedBy)
 		}
-		named.nameRoute(issue.Route, &issue.IssueRouteReach)
+		named.nameRoute(issue.Route)
 	}
-	seen, err := seenReferences(ctx, q, who, named)
+	seen, err := seenReferencesAtFixedCost(ctx, q, who, named)
 	if err != nil {
 		return err
 	}
@@ -1134,9 +1134,22 @@ func leaveOutHiddenSummaryReferences(ctx context.Context, q queryer, who model.A
 		if issue.MovedBy != nil && !seen.holdsActor(*issue.MovedBy) {
 			issue.MovedBy = nil
 		}
-		seen.leaveOutRoute(&issue.Route, &issue.IssueRouteReach)
+		seen.leaveOutRoute(&issue.Route)
 	}
 	return nil
+}
+
+// leaveOutHiddenSummaryRouteHolders is leaveOutHiddenRouteHolders over the listing's rows, once the
+// roster judged their routes.
+func leaveOutHiddenSummaryRouteHolders(ctx context.Context, q queryer, who model.Actor, issues []model.IssueSummary) error {
+	if seesEveryObject(who) {
+		return nil
+	}
+	routes := make([]routedReach, len(issues))
+	for index := range issues {
+		routes[index] = routedReach{route: issues[index].Route, reach: &issues[index].IssueRouteReach}
+	}
+	return leaveOutHiddenRouteHolders(ctx, q, who, routes)
 }
 
 // issueRowStatement reads one issue with its progress, $1 its key and $2 the reader's viewer,
