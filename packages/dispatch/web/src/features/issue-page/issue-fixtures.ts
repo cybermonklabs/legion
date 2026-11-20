@@ -1,8 +1,9 @@
 import { issue } from "../../__tests__/issue-picks";
 import type { Issue, IssueClaim, IssueDetails, UpdateIssueInput } from "../../api/types";
 
-/** The answer the tests of the page's writes (`shared-writes.test.ts`, `IssueMargin.test.tsx`,
- *  `issue-writes.test.tsx`) give a PATCH of the issue. */
+// What tests of the issue's writes share: the server's answer to a PATCH of the issue
+// (`shared-writes.test.ts`, `IssueMargin.test.tsx`, `issue-writes.test.tsx`), and the issue the
+// claim's tests claim and release, with the claim they put on it.
 
 /** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
 export function narrowIssue(details: IssueDetails): Issue {

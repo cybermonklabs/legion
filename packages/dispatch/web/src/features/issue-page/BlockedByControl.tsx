@@ -191,9 +191,9 @@ export function BlockedByControl({
               Dispatch's own words. A save the reader stopped is no refusal: it may have been
               saved, and the page says so in its own words, as it says a save that ended in an
               error of its own, which holds no word of Dispatch's. */}
-          {write.stopped !== undefined || write.failed !== undefined ? (
+          {write.unansweredLine !== undefined ? (
             <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...pageChrome}>
-              {write.stopped ?? write.failed}
+              {write.unansweredLine}
             </span>
           ) : write.error === undefined ? null : typeof write.error === "string" ? (
             <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...authorText}>

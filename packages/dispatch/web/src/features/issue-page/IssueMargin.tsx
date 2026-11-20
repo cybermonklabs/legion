@@ -83,11 +83,18 @@ export const PARENT_ERROR_ID = "issue-parent-error";
 
 /** What the line of a write the reader stopped says on a closed issue, whose row of Details draws
  *  no Retry and no control that would save `field` again, since Dispatch refuses that field of a
- *  closed issue (`ISSUE_CLOSED`). `what` is what Dispatch has not confirmed. */
-function closedStoppedNote(what: string, field: string): string {
-  return stoppedWriteNote(what, "saved", {
-    anew: `The issue is closed, so the ${field} cannot be saved again.`,
-  });
+ *  closed issue (`ISSUE_CLOSED`); `undefined` where the issue is open or the write was not
+ *  stopped, so the line says its own words instead. `what` is what Dispatch has not confirmed. */
+function closedStoppedNote(
+  write: { readonly isClosed: boolean; readonly stopped: boolean },
+  what: string,
+  field: string
+): string | undefined {
+  return write.isClosed && write.stopped
+    ? stoppedWriteNote(what, "saved", {
+        anew: `The issue is closed, so the ${field} cannot be saved again.`,
+      })
+    : undefined;
 }
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`: undefined while
@@ -394,7 +401,8 @@ export function IssueMarginPanel({
     failure.kind === "write" ? (
       <DetailsErrorLine
         message={
-          isClosed && failure.stopped ? closedStoppedNote(repoWhat, "repository") : failure.message
+          closedStoppedNote({ isClosed, stopped: failure.stopped }, repoWhat, "repository") ??
+          failure.message
         }
         onRetry={isClosed ? undefined : failure.retry}
         retryRef={repoRetryLeft}
@@ -554,9 +562,11 @@ export function IssueMarginPanel({
               issue's row draws no control, so there its line says the issue is closed instead. */}
           {writes.parentSaveFailed ? (
             <p className={`w-full text-sm ${pageFailedText}`} id={PARENT_ERROR_ID} role="alert">
-              {isClosed && writes.updateIssue.error instanceof SendStoppedError
-                ? closedStoppedNote("the new parent", "parent")
-                : writes.parentError}
+              {closedStoppedNote(
+                { isClosed, stopped: writes.updateIssue.error instanceof SendStoppedError },
+                "the new parent",
+                "parent"
+              ) ?? writes.parentError}
             </p>
           ) : null}
         </Row>
@@ -697,13 +707,16 @@ export function IssueMarginPanel({
               error={fieldFailure.error}
               failure={fieldFailure.count}
               message={
-                fieldFailure.error instanceof SendStoppedError
-                  ? isClosed
-                    ? closedStoppedNote("this change to the issue", "route")
-                    : stoppedWriteNote("this change to the issue", "saved", {
-                        anew: "Retry sends what the field holds now as a new write.",
-                      })
-                  : apiErrorMessage(fieldFailure.error, "Could not update this issue.")
+                closedStoppedNote(
+                  { isClosed, stopped: fieldFailure.error instanceof SendStoppedError },
+                  "this change to the issue",
+                  "route"
+                ) ??
+                (fieldFailure.error instanceof SendStoppedError
+                  ? stoppedWriteNote("this change to the issue", "saved", {
+                      anew: "Retry sends what the field holds now as a new write.",
+                    })
+                  : apiErrorMessage(fieldFailure.error, "Could not update this issue."))
               }
               onRetry={isClosed ? undefined : writes.drafts.retry}
               refused={writes.updateIssue.isPending}

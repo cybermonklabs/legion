@@ -186,6 +186,12 @@ export function IssueAddMenu({
   // value in this render is gone from them at once; one that lost it joins once the commit is read.
   const entries = fields.filter((field) => reachable.includes(field.label));
 
+  // Add is drawn nowhere on a closed issue or with no entry to list, and the menu shuts with it,
+  // set during the render as React has a prop's change reset state. Left open, it would come back
+  // drawn open when the issue reopens or a property loses its value again, with the focus not in
+  // it, since the effect above puts the focus on its first entry only as it opens, and its
+  // listeners on the document would stay on meanwhile.
+  if (open && (isClosed || entries.length === 0)) setOpen(false);
   if (isClosed || entries.length === 0) return null;
   return (
     <div className="relative flex shrink-0" ref={wrapper}>

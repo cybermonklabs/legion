@@ -20,23 +20,20 @@ export interface BlockedByWrite {
    *  (`forgetRefusal`): one of the page's sentences for a refusal it knows, else Dispatch's answer
    *  (its message, or the client's line for an answer that carried none, as the page's other
    *  controls mark it too); `undefined` for a save that ended without Dispatch's answer, which
-   *  `failed` or `stopped` says. */
+   *  `unansweredLine` says. */
   readonly error: BlockedByRefusal | string | undefined;
-  /** The page's line for a save that ended in an error of the page's own rather than Dispatch's
-   *  answer, and that the reader did not stop, until the next save starts or the control forgets
-   *  it (`forgetRefusal`); `undefined` otherwise. It is the page's own words, where `error` may
-   *  be Dispatch's. */
-  readonly failed: string | undefined;
   /** Drops that refusal, so an editor opened again never draws the one before it. */
   readonly forgetRefusal: () => void;
   readonly pending: boolean;
   /** Saves the issues this one waits on. `onSaved` runs on a landing and on nothing else, so
    *  the editor stays open over a refusal with the reader's list still in it. */
   readonly save: (keys: readonly string[]) => void;
-  /** The page's sentence of a save the reader stopped, which may have been saved, until the next
-   *  save starts or the control forgets it (`forgetRefusal`); `undefined` otherwise. It is the
-   *  page's own words, where `error` may be Dispatch's. */
-  readonly stopped: string | undefined;
+  /** The page's own line for the last save where it ended without Dispatch's answer, until the
+   *  next save starts or the control forgets it (`forgetRefusal`): the sentence of a save the
+   *  reader stopped, which may have been saved, or the line of a save that ended in an error of
+   *  the page's own; `undefined` otherwise. It is the page's words, where `error` may be
+   *  Dispatch's. */
+  readonly unansweredLine: string | undefined;
 }
 
 /**
@@ -81,8 +78,8 @@ export function blockedByRefusal(
  * stopped save is asked again under its key.
  *
  * A save that ends in an error of the page's own holds no word of Dispatch's, so the editor says
- * the page's own line for it (`failed`), kept apart from what Dispatch said (`error`) for the
- * control to mark each as whose words it is.
+ * the page's own line for it, as it says a stopped save's (`unansweredLine`), kept apart from
+ * what Dispatch said (`error`) for the control to mark each as whose words it is.
  */
 export function useIssueBlockedBy(issueKey: string, onSaved: () => void): BlockedByWrite {
   const queryClient = useQueryClient();
@@ -112,10 +109,6 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
       ended instanceof ApiError
         ? (blockedByRefusal(ended, issueKey, write.variables ?? []) ?? ended.message)
         : undefined,
-    failed:
-      ended !== null && !(ended instanceof ApiError)
-        ? `Could not save what ${issueKey} waits on.`
-        : undefined,
     forgetRefusal: () => {
       if (write.isError) write.reset();
     },
@@ -123,10 +116,12 @@ export function useIssueBlockedBy(issueKey: string, onSaved: () => void): Blocke
     save: (keys) => {
       guard.guard(() => write.mutate(keys));
     },
-    stopped: stopped
+    unansweredLine: stopped
       ? stoppedWriteNote(`what ${issueKey} waits on`, "saved", {
           anew: "Saving again sends what the box holds now as a new write.",
         })
-      : undefined,
+      : ended !== null && !(ended instanceof ApiError)
+        ? `Could not save what ${issueKey} waits on.`
+        : undefined,
   };
 }

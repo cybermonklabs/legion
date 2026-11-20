@@ -2218,6 +2218,79 @@ test("the add control is not drawn on a closed issue, nor when every property ha
   }
 });
 
+// Add's menu shuts as another session closes the issue, though the reader pressed nothing: left
+// open, it would come back drawn open when the issue reopens, with the focus not in it.
+test("a close made elsewhere shuts Add's open menu, so a reopen draws Add with its menu closed", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(await screen.findByRole("menu", { name: CONTROL_LABELS.add })).toBeInTheDocument();
+    drawIssue(getIssue, queryClient, closedIssue);
+    await waitFor(() => expect(addMenuControl(), "the close left Add on the page").toBeNull());
+    drawIssue(getIssue, queryClient, issue);
+    const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
+    expect(add, "Add came back with its menu open").toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menu"), "Add came back with its menu drawn").not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// Add draws nothing once the issue has a value for every property it lists, and its menu shuts
+// then too: on an issue whose parent is its one empty property, another session sets a parent and
+// then takes it away again. Left open, the menu would come back drawn open, with the focus not in
+// it, though the reader pressed nothing.
+test("a value set elsewhere for Add's last entry shuts its open menu, so Add comes back with its menu closed", async () => {
+  const user = userEvent.setup();
+  const { getIssue, restore } = stubIssueApi();
+  // The Advances row reads the priorities, to name the one the issue advances.
+  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+  const orphan: IssueDetails = {
+    ...issue,
+    advances: [{ id: "PRI-7", inherited: false }],
+    assignee: "alice",
+    blocked_by: ["CORE-3"],
+    components: {
+      mode: "inherit",
+      ids: ["api"],
+      unknown: [],
+      reason: null,
+      inherited_from: "CORE-2",
+    },
+    labels: ["bug"],
+    parent: null,
+    repo: "acme/widgets",
+    resolved_repo: "acme/widgets",
+    route: "role:legion-controller-core",
+  };
+  getIssue.mockResolvedValue(orphan);
+  const { queryClient, unmount } = renderDetails();
+
+  try {
+    await screen.findByRole("link", { name: "CORE-3" });
+    await waitFor(() => expect(priorities).toHaveBeenCalled());
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
+    expect(
+      (await screen.findAllByRole("menuitem")).map((entry) => entry.textContent),
+      "Add lists other than Parent"
+    ).toEqual([PROPERTY_LABELS.parent]);
+    drawIssue(getIssue, queryClient, { ...orphan, parent: "CORE-2" });
+    await waitFor(() => expect(addMenuControl(), "the parent left Add on the page").toBeNull());
+    drawIssue(getIssue, queryClient, orphan);
+    const add = await screen.findByRole("button", { name: CONTROL_LABELS.add });
+    expect(add, "Add came back with its menu open").toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("menu"), "Add came back with its menu drawn").not.toBeInTheDocument();
+  } finally {
+    unmount();
+    priorities.mockRestore();
+    restore();
+  }
+});
+
 // Add is drawn while a property it lists has no value and its control is on the page. An issue
 // with a value for every other property loses its last label; while the save is out the labels'
 // control is named "Saving labels of CORE-1", and in the render where the save landed Add looked

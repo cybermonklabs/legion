@@ -27,8 +27,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
-import { useMarginDrawer } from "../issue-page/margin-slot";
-import { EVENT_FRESH } from "../refs/reference-target";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -345,11 +344,7 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
-  // The drawer is the new issue page's alone, whose outline reads these comments under this key
-  // and keeps them fresh by events (`useIssueTree.ts`): there a window focus 30 s after the read,
-  // the app's staleness, would fetch them again for nothing. Every other page keeps the app's
-  // defaults.
-  const drawer = useMarginDrawer();
+  const freshness = useNewIssuePageFreshness();
   const comments = useQuery({
     enabled: owner !== undefined,
     queryKey: commentsQueryKey,
@@ -361,7 +356,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
-    ...(drawer === undefined ? undefined : EVENT_FRESH),
+    ...freshness,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
@@ -494,11 +489,9 @@ export function useMarginItems(
   // once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  // In the drawer the outline reads these decisions under this key and keeps them fresh by
-  // events (`useIssueTree.ts`), as it does the comments above, so the same options hold here.
   const decisionsView = useQuery({
     ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
-    ...(drawer === undefined ? undefined : EVENT_FRESH),
+    ...freshness,
   });
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];

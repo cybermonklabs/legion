@@ -4,6 +4,8 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
+import type { Artifact } from "../../api/types";
+import { specArtifact } from "../margin/margin-fixture";
 import { type MarginOwner, type MarkPlacement, useMarginItems } from "../margin/useMarginItems";
 import { type MarginDrawer, MarginSlotProvider } from "./margin-slot";
 import { appClient, focusPastStaleness, restoreWindowFocus } from "./window-focus-fixture";
@@ -48,12 +50,32 @@ function stubMarginReads(): MarginReads {
   return reads;
 }
 
+/** The decisions beside the issue's spec, answered empty: the margin reads them only while the
+ *  spec is shown (`useMarginItems`' `showsDecisions`). */
+function stubDecisionsRead(): Mock<typeof api.getIssueDecisions> {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    decisions: [],
+    document: null,
+    open_questions: [],
+  });
+  const before = restore;
+  restore = () => {
+    before();
+    read.mockRestore();
+  };
+  return read;
+}
+
 /** The margin's reads of the issue (`useMarginItems`, which reads the asks through
  *  `useAnsweredAsks`): in the Details drawer where `inDrawer` is given, as the new page's shell
- *  draws the margin, and with no drawer otherwise, as every other page draws it. */
-function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined) {
+ *  draws the margin, and with no drawer otherwise, as every other page draws it. Where `spec` is
+ *  given, the margin is beside that document, shown, and so reads its decisions too. */
+function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined, spec?: Artifact) {
   return renderHook(
-    () => useMarginItems(OWNER, "comments", undefined, NO_PLACEMENTS, NO_PLACEMENTS, undefined),
+    () =>
+      useMarginItems(OWNER, "comments", spec, NO_PLACEMENTS, NO_PLACEMENTS, undefined, {
+        documentShown: spec !== undefined,
+      }),
     {
       wrapper: ({ children }: { children: ReactNode }) => (
         <QueryClientProvider client={client}>
@@ -64,10 +86,16 @@ function renderMargin(client: QueryClient, inDrawer: MarginDrawer | undefined) {
   );
 }
 
-/** Waits until each read has gone out once and every one has answered. */
-async function firstAnswers(client: QueryClient, reads: MarginReads): Promise<void> {
+/** Waits until each read, and the decisions' read where it is given, has gone out once and every
+ *  one has answered. */
+async function firstAnswers(
+  client: QueryClient,
+  reads: MarginReads,
+  decisions?: Mock<typeof api.getIssueDecisions>
+): Promise<void> {
   await waitFor(() => {
     for (const read of Object.values(reads)) expect(read).toHaveBeenCalledTimes(1);
+    if (decisions !== undefined) expect(decisions).toHaveBeenCalledTimes(1);
     expect(client.isFetching()).toBe(0);
   });
 }
@@ -109,6 +137,47 @@ test("with no drawer, a focus past 30 s reads the margin's asks and comments aga
       expect(reads.getMyState).toHaveBeenCalledTimes(2);
       expect(reads.listIssueAsks).toHaveBeenCalledTimes(2);
       expect(reads.listComments).toHaveBeenCalledTimes(2);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// Beside the shown spec the margin reads its decisions too, which the outline also reads under
+// this key and keeps fresh by events (`useIssueTree.ts`): in Details the same focus reads them
+// again no more than it reads the asks and the comments.
+test("in Details, a focus past 30 s sends no read of the decisions beside the shown spec", async () => {
+  const reads = stubMarginReads();
+  const decisions = stubDecisionsRead();
+  const client = appClient();
+  const view = renderMargin(client, drawer, specArtifact);
+  try {
+    await firstAnswers(client, reads, decisions);
+    await focusPastStaleness(client);
+    await waitFor(() => {
+      expect(reads.getInbox).toHaveBeenCalledTimes(2);
+      expect(reads.getMyState).toHaveBeenCalledTimes(2);
+    });
+    expect(decisions).toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+// With no drawer the decisions keep the app's defaults, as the asks and the comments do: the same
+// focus reads them again.
+test("with no drawer, a focus past 30 s reads the decisions beside the shown spec again", async () => {
+  const reads = stubMarginReads();
+  const decisions = stubDecisionsRead();
+  const client = appClient();
+  const view = renderMargin(client, undefined, specArtifact);
+  try {
+    await firstAnswers(client, reads, decisions);
+    await focusPastStaleness(client);
+    await waitFor(() => {
+      expect(reads.getInbox).toHaveBeenCalledTimes(2);
+      expect(reads.getMyState).toHaveBeenCalledTimes(2);
+      expect(decisions).toHaveBeenCalledTimes(2);
     });
   } finally {
     view.unmount();

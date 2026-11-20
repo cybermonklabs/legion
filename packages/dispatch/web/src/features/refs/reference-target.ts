@@ -26,6 +26,7 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useMarginDrawer } from "../issue-page/margin-slot";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
@@ -80,6 +81,22 @@ export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
+
+/**
+ * `EVENT_FRESH` while the shell shows the new issue page, and `undefined` on every other page,
+ * spread into a read's query: there the read is kept fresh by events, and elsewhere it keeps the
+ * app's defaults. The shell hands its margin the Details drawer for as long as the new page is
+ * open, and on no other page (`app.tsx`), so the drawer's presence (`useMarginDrawer`) is that
+ * page's. There the outline reads the issue's asks, comments and decisions under the margin's
+ * keys and keeps them fresh by events (`useIssueTree.ts`), and the event refresh rules name what
+ * references a record (`api/event-refresh.ts`), so a window focus 30 s after the read, the app's
+ * staleness, would read it again for nothing. The drawer is the whole shell's, so the rule holds
+ * for every view drawn while the new page is open, Details or not: an ask card's Referenced by in
+ * the inbox drawer takes it too.
+ */
+export function useNewIssuePageFreshness(): typeof EVENT_FRESH | undefined {
+  return useMarginDrawer() === undefined ? undefined : EVENT_FRESH;
+}
 
 export interface ReferenceTarget {
   readonly title: string | undefined;

@@ -1,4 +1,3 @@
-import type { QueryStatus } from "@tanstack/react-query";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 
@@ -20,6 +19,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import type { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { pickLook } from "./issue-field-looks";
 import { useIssueRepo } from "./useIssueRepo";
@@ -217,13 +217,12 @@ export function RepoControl({
    *  app's defaults. A host whose reads events keep fresh passes their options, since the event
    *  of a mapping's write reads the mappings again (`api/event-refresh.ts`), and a window focus
    *  30 s after the read, the app's staleness, would read them again for nothing. Without it the
-   *  read keeps the app's defaults. */
-  mappingsFreshness?: {
-    readonly refetchOnWindowFocus: (query: {
-      readonly state: { readonly status: QueryStatus };
-    }) => boolean | "always";
-    readonly staleTime: number;
-  };
+   *  read keeps the app's defaults. The host passes the options rather than this file importing
+   *  them because the new page's browser tests load this file in Node
+   *  (`e2e/issue-page-h.e2e.ts`), and `EVENT_FRESH`'s module reaches the document schema's JSON
+   *  (`refs/markdown-engine.ts`, `doc/schema.ts`), which stops that test file from loading. Only
+   *  its type is imported, which the build removes. */
+  mappingsFreshness?: typeof EVENT_FRESH;
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
