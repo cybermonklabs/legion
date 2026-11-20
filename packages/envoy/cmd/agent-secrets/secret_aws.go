@@ -310,21 +310,37 @@ func awsStoreFailure(operation string, err error) error {
 }
 
 // awsAPIWords is err's AWS API error as a message prints it, and whether err is one: its code
-// alone, where the code has the shape of one AWS registers (awsCode), never AWS's message.
+// alone, where it is a code this client names (awsCodes), never AWS's message.
 func awsAPIWords(err error) (string, bool) {
 	var api smithy.APIError
 	if !errors.As(err, &api) {
 		return "", false
 	}
-	if code := api.ErrorCode(); awsCode.MatchString(code) {
+	if code := api.ErrorCode(); awsCodes[code] {
 		return "AWS refused it: " + code + " (AWS's message is not printed)", true
 	}
-	return "AWS refused it (its code and message are not printed)", true
+	return "AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)", true
 }
 
-// awsCode is the shape of an error code AWS registers (AccessDenied, ExpiredToken,
-// InvalidClientTokenId): a word of letters and digits, at most 64 long.
-var awsCode = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._]{0,63}$`)
+// awsCodes are the AWS error codes a message prints by name: the ones the forms act on
+// (awsDefiniteRefusals, isAccessDenied), and the ones STS, IAM Identity Center, KMS and Secrets
+// Manager answer that the docs name. A code is the answering server's text, and whoever answers
+// at AWS_ENDPOINT_URL chooses it, so any other code prints as "an AWS error" (awsAPIWords), as
+// redact.Answered prints only an OAuth or Google code it lists.
+var awsCodes = func() map[string]bool {
+	codes := map[string]bool{}
+	for _, code := range append(slices.Clone(awsDefiniteRefusals),
+		"AccessDenied", "ExpiredToken", "InvalidIdentityToken", "IDPCommunicationError", "IDPRejectedClaim",
+		"RegionDisabledException", "SignatureDoesNotMatch", "MalformedPolicyDocument", "PackedPolicyTooLarge",
+		"ThrottlingException", "Throttling", "TooManyRequestsException", "RequestLimitExceeded",
+		"KMSAccessDeniedException", "KMSDisabledException", "KMSInvalidStateException", "KMSNotFoundException",
+		"InternalServiceError", "InternalFailure", "InternalServiceErrorException", "ServiceUnavailable", "ServiceUnavailableException",
+		"InvalidGrantException", "InvalidClientException", "UnauthorizedException", "UnauthorizedClientException",
+	) {
+		codes[code] = true
+	}
+	return codes
+}()
 
 // awsSDKWords is err, the AWS SDK's failure to sign in, as a message prints it. The SDK's own
 // error text quotes what it was configured with: the path of a shared config or credentials file

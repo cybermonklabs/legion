@@ -254,6 +254,16 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 		_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>AccessDenied</Code><Message>echo: ` + secret + `</Message></Error><RequestId>r1</RequestId></ErrorResponse>`))
 	}))
 	t.Cleanup(refusing.Close)
+	// refusingAs is an STS that refuses with code, which whoever answers there chooses.
+	refusingAs := func(t *testing.T, code string) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<ErrorResponse><Error><Type>Sender</Type><Code>` + code + `</Code><Message>no</Message></Error><RequestId>r2</RequestId></ErrorResponse>`))
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
 	directory := func(t *testing.T) string {
 		dir := filepath.Join(t.TempDir(), secret)
 		if err := os.Mkdir(dir, 0o700); err != nil {
@@ -301,6 +311,8 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 			"load your AWS sign-in: the AWS SDK could not sign in from this environment (its message is not printed: it can quote an AWS setting's value); check AWS_MAX_ATTEMPTS and ~/.aws/config"},
 		{"STS refuses with its own message: its code prints, never the message", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusing.URL) },
 			"read your AWS sign-in: AWS refused it: AccessDenied (AWS's message is not printed)"},
+		{"STS refuses with a code that is a made-up credential", func(t *testing.T) { t.Setenv("AWS_ENDPOINT_URL_STS", refusingAs(t, user+"CodeEcho")) },
+			"read your AWS sign-in: AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))

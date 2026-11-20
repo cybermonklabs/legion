@@ -33,32 +33,44 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
-// echoingList is a Secrets Manager whose ListSecrets refuses with a message that echoes planted.
+// echoingList is a Secrets Manager whose ListSecrets refuses with code and message, which
+// whoever answers at the store's address writes.
 type echoingList struct {
 	*secrets.Local
-	planted string
+	code, message string
 }
 
 func (e echoingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
-	return nil, &smithy.GenericAPIError{Code: "ValidationException", Message: "1 validation error detected: Value '" + e.planted + "' failed to satisfy constraint"}
+	return nil, &smithy.GenericAPIError{Code: e.code, Message: e.message}
 }
 
 // TestAStoresRefusalPrintsItsCodeNeverItsMessage: a refusal of AWS Secrets Manager's, and one of
 // GCP Secret Manager's, whose message repeats a made-up secret, prints the call and the code the
-// store answered with, and no part of the message. The code is the control: the check sees the
+// store answered with, and no part of the message. An AWS code prints only where it is one this
+// client names (awsCodes): whoever answers at the store's address chooses it, so a code that is a
+// made-up secret prints as "an AWS error". A listed code is the control: the check sees the
 // store's answer.
 func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 	planted := "hunter2pw-" + "storeecho-" + "4b1f"
-	t.Run("AWS Secrets Manager", func(t *testing.T) {
-		local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, echoingList{Local: local, planted: planted}, testAccount, adaSignIn)
-		_, stderr, code := runSecret("list")
-		if code != 1 {
-			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
-		}
-		wantNamedNotPrinted(t, "stderr", stderr, []string{"Secrets Manager ListSecrets: AWS refused it: ValidationException (AWS's message is not printed)"}, planted, "validation error detected")
-	})
+	for _, row := range []struct {
+		name, code, message, says string
+	}{
+		{"AWS Secrets Manager, a listed code", "ValidationException", "1 validation error detected: Value '" + planted + "' failed to satisfy constraint",
+			"Secrets Manager ListSecrets: AWS refused it: ValidationException (AWS's message is not printed)"},
+		{"AWS Secrets Manager, a code that is a made-up secret", "hunter2pwCodeEcho77", "echo: " + planted,
+			"Secrets Manager ListSecrets: AWS refused it: an AWS error (its code is none this client names, and AWS's message is not printed)"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			local := secrets.NewLocal(policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+			startSecretBroker(t, servedBy(local))
+			useAWS(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
+			_, stderr, code := runSecret("list")
+			if code != 1 {
+				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+			}
+			wantNamedNotPrinted(t, "stderr", stderr, []string{row.says}, planted, "hunter2pw", "validation error detected")
+		})
+	}
 	t.Run("GCP Secret Manager", func(t *testing.T) {
 		fake := newFakeSecretManager()
 		lis, err := net.Listen("tcp", "127.0.0.1:0")
