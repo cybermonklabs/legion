@@ -90,10 +90,11 @@ func workflowRunsOfOneCommit(rawQuery string) bool {
 // passes through as GitHub sent it, but a rate limit. Any other method is 405; a path the web app
 // does not read, or a workflow-runs read whose query is not one commit's head_sha and its page, is
 // 404 GITHUB_PATH_REFUSED; a repository the App is not installed on, or a deployment with no App
-// key, is 503 GITHUB_TOKEN_UNAVAILABLE. A rate limit is 503 GITHUB_RATE_LIMITED with Retry-After:
-// GitHub's answer to the token mint or to the read, or a limit another request or process already
-// met (githubapp.Limits), in which case GitHub is not asked. The caller has already established
-// that a person is asking.
+// key, is 503 GITHUB_TOKEN_UNAVAILABLE, and so is a read GitHub redirects to any repository but the
+// one the path names (githubapp.HoldToRepository), whose redirect is not followed. A rate limit is
+// 503 GITHUB_RATE_LIMITED with Retry-After: GitHub's answer to the token mint or to the read, or a
+// limit another request or process already met (githubapp.Limits), in which case GitHub is not
+// asked. The caller has already established that a person is asking.
 //
 // hidden answers whether the person asking may not see the repository (its owner and name as the
 // path spells them), and an error from it is a 500. It is asked before GitHub is sent anything, and
@@ -136,13 +137,18 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	}
-	token, err := client.RepositoryToken(r.Context(), owner, repo)
+	// Every request GitHub is sent for this read is held to the repository the gate passed
+	// (githubapp.HoldToRepository): GitHub redirects an old name of a renamed or transferred
+	// repository to that repository as it is now, which the gate never read, so such a redirect is
+	// not followed and answers as a repository the App is not installed on.
+	held := githubapp.HoldToRepository(r.Context(), owner, repo)
+	token, err := client.RepositoryToken(held, owner, repo)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
 		return
 	}
 	switch {
-	case errors.Is(err, githubapp.ErrNoInstallation):
+	case errors.Is(err, githubapp.ErrNoInstallation), errors.Is(err, githubapp.ErrRedirectedOffRepository):
 		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	case err != nil:
@@ -160,9 +166,13 @@ func ProxyREST(w http.ResponseWriter, r *http.Request, client *githubapp.Client,
 			return client.ReadWithin(ctx, token, path, workflowRunsResponseLimit)
 		}
 	}
-	body, status, header, err := read(r.Context(), token, target)
+	body, status, header, err := read(held, token, target)
 	if limited, ok := githubapp.AsRateLimit(err); ok {
 		rateLimited(w, limited)
+		return
+	}
+	if errors.Is(err, githubapp.ErrRedirectedOffRepository) {
+		unavailable(w, "the GitHub App is not installed on "+owner+"/"+repo)
 		return
 	}
 	if err != nil {
