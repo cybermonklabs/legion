@@ -767,8 +767,8 @@ func TestLoadAndRefreshFollowAPauseAnotherDaemonMade(t *testing.T) {
 }
 
 // A pause and a resume another daemon made are no acts of this one. Its Refresh, and its own acts
-// the store refuses for them, move its flag as main's do, and run none of its Effects: the daemon
-// that made each act runs its own, and this daemon's machines meet the flag at their next decision.
+// the store refuses for them, move its flag and run none of its Effects: the daemon that made each
+// act runs its own, and this daemon's machines meet the flag at their next decision.
 // Only an act of this daemon's own whose outcome the store could not say is owed its Effects
 // (TestAPauseWhoseCommitReplyIsLostKeepsItsSuccessWork).
 func TestARefreshOfAnotherDaemonsPauseAndResumeRunsNoEffects(t *testing.T) {
