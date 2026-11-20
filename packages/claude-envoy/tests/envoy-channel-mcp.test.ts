@@ -354,7 +354,7 @@ test(
     const stateDirectory = await modSocketScratch("claude-envoy-dial-")
     const client = new Client({ name: "test", version: "0" })
     const transport = new StdioClientTransport({
-      command: "bun",
+      command: process.execPath,
       args: [entry],
       cwd: stateDirectory,
       env: {
@@ -466,7 +466,7 @@ test("a broker token keeper's warning while the start registers leaves the tool 
   await writeFile(tokenFile, `${fixtureSecret("proj")}\n`)
   const client = new Client({ name: "test", version: "0" })
   const transport = new StdioClientTransport({
-    command: "bun",
+    command: process.execPath,
     args: [entry],
     cwd: stateDirectory,
     env: {
