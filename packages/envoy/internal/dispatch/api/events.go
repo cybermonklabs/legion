@@ -50,8 +50,11 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 //     message.accepted of a conversation on no issue), when the viewer may read the message's
 //     conversation (access.PartyClause over the parties its node carries, its root's);
 //   - user_agent_state.updated, the one other ownerless event about a person's own thread, built
-//     with no owner (state.go, userAgentStateEvent), when its login is the viewer's person, or when
-//     the viewer is open and sees the session it names (access.SessionClause);
+//     with no owner (state.go, userAgentStateEvent), when the viewer may see the session it names
+//     (access.SessionClause) and either its login is the viewer's person or the viewer is open:
+//     the rule GET /api/v1/me/agents/state reads that person's state of the session by
+//     (userAgentStatesSeenQuery), so a credential reads no state event of a session whose state it
+//     does not read;
 //   - any other ownerless event (priority.updated, access_group.changed), to an open viewer alone.
 //
 // An event whose one subject is a session (sessionSubjectEvents) passes, beside that, only when the
@@ -70,8 +73,9 @@ func eventReadableSQL(eventAlias, viewerParam string) string {
 		when ` + e + `.type like 'message.%'
 			then ` + access.PartyClause(access.MessagePartiesSQL(`coalesce(`+e+`.payload->>'message_id', `+e+`.payload->>'id')`), viewerParam) + `
 		when ` + e + `.type = 'user_agent_state.updated'
-			then coalesce(` + e + `.payload->>'login' = ` + access.ViewerPerson(viewerParam) + `, false)
-				or (` + access.OpenClause(viewerParam) + ` and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)
+			then (coalesce(` + e + `.payload->>'login' = ` + access.ViewerPerson(viewerParam) + `, false)
+					or ` + access.OpenClause(viewerParam) + `)
+				and ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `
 		else ` + access.OpenClause(viewerParam) + `
 	end) and (` + e + `.type not in (` + sessionSubjectEvents + `)
 		or ((` + e + `.payload->>'session_id' is null or ` + access.SessionClause(e+`.payload->>'session_id'`, viewerParam) + `)

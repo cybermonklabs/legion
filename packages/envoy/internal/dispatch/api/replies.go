@@ -507,8 +507,8 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// What the caller sees, resolved before the read's transaction holds a connection: the Reply
-	// rows are those of its projects (myRepliesSeen). The Agent rows are the caller's own
-	// conversations, which it is a party of, so its viewer narrows nothing there.
+	// rows are those of its projects (myRepliesSeen), and the Agent rows those of the
+	// conversations it may read (agentConversationSeen), a session it may not see being no row.
 	who, ok := s.readerOf(w, r)
 	if !ok {
 		return
@@ -588,10 +588,16 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 	}
 	if wantAgent {
 		// The Agent half answers its own total beside its rows when the read is counted, rather
-		// than in a second statement: it reads every root the state holds either way.
-		args := unreadDirectRepliesArgs(caller.ID, nil)
-		read, total, err := s.readMyAgentRows(r.Context(), tx,
-			myAgentPageQuery(state, from, counted), myRepliesPageArgs(args, reach, from), counted)
+		// than in a second statement: it reads every root the state holds either way. A reader
+		// that may not see every object binds its viewer after the page's own parameters, and
+		// one that sees every object reads the statements every reader read before a project
+		// could be private (myAgentSeenAnd).
+		seen := !seesEveryObject(who)
+		args := myRepliesPageArgs(unreadDirectRepliesArgs(caller.ID, nil), reach, from)
+		if seen {
+			args = append(args, refs.VisibilityArg(who))
+		}
+		read, total, err := s.readMyAgentRows(r.Context(), tx, myAgentPageQuery(state, from, counted, seen), args, counted)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
