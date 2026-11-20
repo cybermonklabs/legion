@@ -178,7 +178,7 @@ func awsStoreFailure(operation string, err error) error {
 
 // awsAPIWords is err's AWS API error as a message prints it, and whether err is one: its code
 // alone, where it is a code this client names (awsCodes), and the permission AWS's message says is
-// missing, where it names one in the shape AWS writes it (awsMissingPermission); never the rest of
+// missing, where it names one this client's calls need (awsMissingPermission); never the rest of
 // AWS's message.
 func awsAPIWords(err error) (string, bool) {
 	var api smithy.APIError
@@ -200,15 +200,36 @@ func awsAPIWords(err error) (string, bool) {
 // action a word that starts with a capital letter, as every IAM action does.
 var awsPermission = regexp.MustCompile(`not authorized to perform: ([a-z0-9-]{1,64}:[A-Z][A-Za-z0-9]{0,127})(?:[\s.,;)]|$)`)
 
+// awsPermissions are the IAM actions a message names by name (awsMissingPermission): the ones the
+// forms' calls need - Secrets Manager's, the agent-secrets key's KMS actions Secrets Manager takes
+// on the caller's behalf, and STS's - and no other.
+var awsPermissions = map[string]bool{
+	"secretsmanager:ListSecrets": true, "secretsmanager:DescribeSecret": true, "secretsmanager:GetSecretValue": true,
+	"secretsmanager:CreateSecret": true, "secretsmanager:PutSecretValue": true, "secretsmanager:TagResource": true,
+	"secretsmanager:UntagResource": true, "secretsmanager:DeleteSecret": true, "secretsmanager:RestoreSecret": true,
+	"kms:Decrypt": true, "kms:GenerateDataKey": true, "kms:Encrypt": true, "kms:DescribeKey": true,
+	"sts:GetCallerIdentity": true, "sts:AssumeRoleWithWebIdentity": true,
+}
+
+// permissionNotNamed is what a store's refusal prints in place of a permission its message names
+// that is none of the ones this client's calls need (awsPermissions, gcpPermissions).
+const permissionNotNamed = "a permission this client does not name (not printed)"
+
 // awsMissingPermission is the IAM action message, AWS's own text, says the caller is not
-// authorized to perform, where it names one in AWS's shape (awsPermission), else "". Nothing else
-// of the message prints: it can name an ARN, and whoever answers at the store's address writes
-// it, but an action's name is no secret, and a person must know which one to ask for.
+// authorized to perform, where it names one in AWS's shape (awsPermission), else "": the action
+// where it is one this client's calls need (awsPermissions), else permissionNotNamed. Nothing else
+// of the message prints: it can name an ARN, and whoever answers at the store's address writes it,
+// a text of an action's shape among it, which can be a value the call sent; but the name of an
+// action this client needs is no secret, and a person must know which one to ask for.
 func awsMissingPermission(message string) string {
-	if match := awsPermission.FindStringSubmatch(message); match != nil {
+	match := awsPermission.FindStringSubmatch(message)
+	switch {
+	case match == nil:
+		return ""
+	case awsPermissions[match[1]]:
 		return match[1]
 	}
-	return ""
+	return permissionNotNamed
 }
 
 // awsCodes are the AWS error codes a message prints by name: the ones the forms act on

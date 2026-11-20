@@ -74,15 +74,30 @@ func (e *storeRefusal) GRPCStatus() *status.Status { return e.status }
 // '<service>.<resource>.<verb>' denied", dotted words of letters.
 var gcpPermission = regexp.MustCompile(`Permission '([a-z]{1,64}(?:\.[a-zA-Z]{1,64}){1,8})' denied`)
 
+// gcpPermissions are the IAM permissions a message names by name (gcpMissingPermission): the ones
+// the forms' calls need - Secret Manager's, and the agent-secrets key's Cloud KMS ones - and no other.
+var gcpPermissions = map[string]bool{
+	"secretmanager.secrets.list": true, "secretmanager.secrets.get": true, "secretmanager.secrets.create": true,
+	"secretmanager.secrets.update": true, "secretmanager.versions.access": true, "secretmanager.versions.add": true,
+	"secretmanager.versions.get": true, "secretmanager.versions.list": true,
+	"cloudkms.cryptoKeyVersions.useToEncrypt": true, "cloudkms.cryptoKeyVersions.useToDecrypt": true,
+}
+
 // gcpMissingPermission is the IAM permission message, Google's own text, says is denied, where it
-// names one in Google's shape (gcpPermission), else "". Nothing else of the message prints: it
-// names the resource, and whoever answers at the store's address writes it, but a permission's
-// name is no secret, and a person must know which one to ask for.
+// names one in Google's shape (gcpPermission), else "": the permission where it is one this
+// client's calls need (gcpPermissions), else permissionNotNamed. Nothing else of the message
+// prints: it names the resource, and whoever answers at the store's address writes it, a text of a
+// permission's shape among it; but the name of a permission this client needs is no secret, and a
+// person must know which one to ask for.
 func gcpMissingPermission(message string) string {
-	if match := gcpPermission.FindStringSubmatch(message); match != nil {
+	match := gcpPermission.FindStringSubmatch(message)
+	switch {
+	case match == nil:
+		return ""
+	case gcpPermissions[match[1]]:
 		return match[1]
 	}
-	return ""
+	return permissionNotNamed
 }
 
 // storeTokens is the token source the Secret Manager client signs its calls with, which keeps its
