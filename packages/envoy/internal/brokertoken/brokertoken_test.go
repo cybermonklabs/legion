@@ -28,7 +28,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
 const (
 	// dispatchOrigin is DISPATCH_SERVER_URL for these tests: the origin a caller signs its
-	// proof's 'htu' against, whatever host the request reaches Dispatch under.
+	// proof's 'htu' against. A verifier of this origin alone checks every request against it,
+	// whatever host the request reaches Dispatch under; a verifier of two origins (twoOrigins)
+	// checks against it every request whose host is not outsideOrigin's.
 	dispatchOrigin = "https://dispatch.test"
 	// outsideOrigin is DISPATCH_OUTSIDE_ORIGIN for the tests of a verifier of two origins: the
 	// second origin Dispatch answers at, the one a caller outside signs its proof's 'htu' against
