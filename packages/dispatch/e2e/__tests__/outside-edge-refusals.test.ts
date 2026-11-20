@@ -204,11 +204,12 @@ const probeSeconds = "40";
  *  PATH (the host's unless `path` is given), TMPDIR, `label` as DISPATCH_E2E_CASE (which tells its
  *  cost line from the others and the script never reads), the flag that lets the stand-in's http
  *  address through, and `probeSeconds`; a name of `env` given no value is left out. `shell` runs
- *  the script where it is given, bash otherwise. */
+ *  the script where it is given, bash otherwise; `argv`, where it is given, is run in place of the
+ *  shell and the script. */
 async function check(
   label: string,
   env: Record<string, string | undefined>,
-  options: { path?: string; shell?: string; tmp?: string } = {}
+  options: { path?: string; shell?: string; tmp?: string; argv?: string[] } = {}
 ): Promise<Run> {
   const given: Record<string, string> = {
     HOME: scratch,
@@ -224,7 +225,7 @@ async function check(
     else given[name] = value;
   }
   const { code, stdout, stderr } = await runBounded({
-    argv: [options.shell ?? bash, script],
+    argv: options.argv ?? [options.shell ?? bash, script],
     bound: "short",
     env: given,
     from: import.meta.url,
@@ -292,18 +293,24 @@ function markerNotVisible(name: string): string {
  *  each probe to `log` (one per line, then `--end--`), and answers the probe by its Host header
  *  and the path of its URL from `answers`, where an entry gives the status (000 for no answer),
  *  the marker header as it is written (name and value) or none, the exit code, and a message for
- *  stderr. Every probe no entry names answers 404 with no marker. It writes the headers and the
- *  body where `-D` and `-o` say, and the status on stdout, as curl's `-w '%{http_code}'` does;
- *  `--version` goes to the host's curl, whose version the script reads. */
+ *  stderr; or, in place of the marker header, `blocks`, the whole text curl's `-D` writes, every
+ *  header block of the answer (an informational `1xx` before the final one, as curl writes it),
+ *  with `\r\n` written as such. Every probe no entry names answers 404 with no marker. It writes
+ *  the headers and the body where `-D` and `-o` say, and the status on stdout, as curl's
+ *  `-w '%{http_code}'` does; `--version` goes to the host's curl, whose version the script
+ *  reads. */
 function httpsCurl(
-  answers: Record<string, { status: string; header?: string; exit?: number; message?: string }>
+  answers: Record<
+    string,
+    { status: string; header?: string; blocks?: string; exit?: number; message?: string }
+  >
 ): { path: string; log: string } {
   const directory = join(scratch, `path-${randomUUID()}`);
   mkdirSync(directory);
   const log = join(directory, "probes.log");
   const cases = Object.entries(answers).map(
-    ([key, { status, header, exit, message }]) =>
-      `  '${key}') status=${status} header='${header ?? ""}' code=${exit ?? 0} message='${message ?? ""}' ;;`
+    ([key, { status, header, blocks, exit, message }]) =>
+      `  '${key}') status=${status} header='${header ?? ""}' blocks='${blocks ?? ""}' code=${exit ?? 0} message='${message ?? ""}' ;;`
   );
   writeFileSync(
     join(directory, "curl"),
@@ -324,9 +331,12 @@ function httpsCurl(
       "path=/${rest#*/}",
       'case "$host $path" in',
       ...cases,
-      "  *) status=404 header='' code=0 message='' ;;",
+      "  *) status=404 header='' blocks='' code=0 message='' ;;",
       "esac",
-      'if [ "$status" != 000 ]; then',
+      'if [ -n "$blocks" ]; then',
+      `  printf '%b' "$blocks" >"$headers"`,
+      `  printf 'answer %s\\n' "$status" >"$body"`,
+      'elif [ "$status" != 000 ]; then',
       `  { printf 'HTTP/1.1 %s Stand-in\\r\\n' "$status"; [ -z "$header" ] || printf '%s\\r\\n' "$header"; printf '\\r\\n'; } >"$headers"`,
       `  printf 'answer %s\\n' "$status" >"$body"`,
       "fi",
@@ -388,6 +398,8 @@ function httpsArgv(line: Line, address: string, connect = "3", read = "10"): str
     connect,
     "--max-time",
     read,
+    "--max-filesize",
+    "1048576",
     `https://${line.sni}${line.path}`,
   ];
 }
@@ -648,6 +660,189 @@ describe(scriptName, () => {
       expect(run.code, said(run)).toBe(2);
     },
     // The script, a bounded child under the short bound.
+    rowLimit("short")
+  );
+
+  // curl's `-D` writes every header block of an answer, an informational `1xx` before the final
+  // one, and the status it prints is the final answer's. A marker is read from every block: a line
+  // whose sixth field names its answer is refused only when the final answer carries a marker and
+  // every marker of every block is the named one, so neither an earlier block nor a second marker
+  // in the final one can stand for the answer; a routed control is read the same way; and for a
+  // line of five fields a marker in any block is a route reached, as before.
+  const blocks = (...each: [number, ...string[]][]) =>
+    each
+      .map(([status, ...markers]) =>
+        [
+          `HTTP/1.1 ${status} Stand-in`,
+          ...markers.map((value) => `X-Outside-Edge-Backend: ${value}`),
+          "",
+          "",
+        ].join("\\r\\n")
+      )
+      .join("");
+  const finalAnswers: {
+    name: string;
+    key: string;
+    status: string;
+    blocks: string;
+    line: string;
+    verdict: string;
+    code: number;
+  }[] = [
+    {
+      name: "a 103 marked broker before a final 405 marked canary, on the line that names 405:broker",
+      key: "secrets.edge.example /v1/oauth/token",
+      status: "405",
+      blocks: blocks([103, "broker"], [405, "canary"]),
+      line: `REACHED broker-token-get 405 broker,canary body-sha256 ${sha("answer 405\n")}`,
+      verdict: "FAIL: reached broker-token-get",
+      code: 1,
+    },
+    {
+      name: "one final 405 carrying two markers, broker then canary, on the line that names 405:broker",
+      key: "secrets.edge.example /v1/oauth/token",
+      status: "405",
+      blocks: blocks([405, "broker", "canary"]),
+      line: `REACHED broker-token-get 405 broker,canary body-sha256 ${sha("answer 405\n")}`,
+      verdict: "FAIL: reached broker-token-get",
+      code: 1,
+    },
+    {
+      name: "a 103 marked broker before a final 405 with no marker, on the line that names 405:broker",
+      key: "secrets.edge.example /v1/oauth/token",
+      status: "405",
+      blocks: blocks([103, "broker"], [405]),
+      line: `REACHED broker-token-get 405 broker body-sha256 ${sha("answer 405\n")}`,
+      verdict: "FAIL: reached broker-token-get",
+      code: 1,
+    },
+    {
+      name: "a 103 marked canary before a final 404 with no marker, on a line of five fields",
+      key: "envoy.edge.example /metrics",
+      status: "404",
+      blocks: blocks([103, "canary"], [404]),
+      line: `REACHED listener-metrics 404 canary body-sha256 ${sha("answer 404\n")}`,
+      verdict: "FAIL: reached listener-metrics",
+      code: 1,
+    },
+    {
+      name: "a routed control whose final answer carries its marker and a second one",
+      key: "dispatch.edge.example /healthz",
+      status: "200",
+      blocks: blocks([200, "dispatch", "canary"]),
+      line: `control dispatch-healthz 200 dispatch,canary body-sha256 ${sha("answer 200\n")}`,
+      verdict: markerNotVisible("dispatch-healthz"),
+      code: 2,
+    },
+    {
+      name: "a routed control whose marker came only on a 103 before its final answer",
+      key: "dispatch.edge.example /healthz",
+      status: "200",
+      blocks: blocks([103, "dispatch"], [200]),
+      line: `control dispatch-healthz 200 dispatch body-sha256 ${sha("answer 200\n")}`,
+      verdict: markerNotVisible("dispatch-healthz"),
+      code: 2,
+    },
+  ];
+  for (const { name, key, status, blocks: written, line, verdict: says, code } of finalAnswers) {
+    test.skipIf(withoutTools)(
+      `(g) reads the marker of every header block, never the first alone: ${name}`,
+      async () => {
+        const { path } = httpsCurl({ ...httpsControls, [key]: { status, blocks: written } });
+        const run = await check(
+          `g ${name}`,
+          {
+            OUTSIDE_EDGE_ADDRESS: "192.0.2.10",
+            OUTSIDE_EDGE_ALLOW_HTTP: undefined,
+            ...planLists(),
+          },
+          { path }
+        );
+        expect(run.stdout.split("\n"), said(run)).toContain(line);
+        expect(verdict(run), said(run)).toBe(says);
+        expect(run.code, said(run)).toBe(code);
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
+  }
+
+  // Each probe's body is bounded (`curl --max-filesize`), so an answer cannot fill the disk: a 404
+  // with no marker whose body is past the bound was not read whole, so it proves nothing.
+  test.skipIf(withoutTools)(
+    "reads UNKNOWN, never refused, when a 404 with no marker carries a body past the 1 MiB bound",
+    async () => {
+      const pending = refusals.find((line) => line.name === "broker-pending") as Line;
+      const edge = await standIn([
+        planted(pending, { status: 404, marker: undefined, body: "x".repeat(2 * 2 ** 20) }),
+        ...production,
+      ]);
+      try {
+        const run = await check("oversized body", {
+          OUTSIDE_EDGE_ADDRESS: edge.address,
+          ...planLists(),
+        });
+        expect(linesOf(run, "UNKNOWN"), said(run)).toHaveLength(1);
+        expect(linesOf(run, "UNKNOWN")[0], said(run)).toMatch(
+          /^UNKNOWN broker-pending 404 none body-sha256 [0-9a-f]{64}; curl exit 63: /
+        );
+        expect(verdict(run), said(run)).toBe(
+          "UNKNOWN: no answer could be read whole for broker-pending"
+        );
+        expect(run.code, said(run)).toBe(2);
+      } finally {
+        await edge.stop();
+      }
+    },
+    // The script, a bounded child under the short bound.
+    rowLimit("short")
+  );
+
+  // A signal can come while the script reads its lists, before any probe: here the refusal list is
+  // a named pipe that a bash wrapper holds open with nothing written, so the read waits. The
+  // wrapper's open of the pipe returns only once the script has opened it to read; a moment later
+  // it sends SIGTERM to the script's own bash, and then ends the list once the script has ended, or
+  // after 10 s. The run must end at its verdict line and exit 2, not at bash's own exit 143 with
+  // nothing printed. bash runs a trap when the read it waits in is interrupted, so the run ends
+  // while the list is held, unless the signal came in the moment between bash starting the read and
+  // waiting in it: then the trap runs once the read ends, here when the wrapper ends the list. The
+  // wrapper prints which it was.
+  test.skipIf(withoutTools)(
+    "reads UNKNOWN, never 143 with nothing printed, when a signal comes while it reads its lists",
+    async () => {
+      const fifo = join(scratch, `fifo-${randomUUID()}`);
+      const sleep = hostTool("sleep") ?? "sleep";
+      const wrapper = [
+        "shell=$1 script=$2 fifo=$3",
+        'mkfifo "$fifo" || exit 70',
+        '"$shell" "$script" &',
+        "pid=$!",
+        'exec 3>"$fifo"',
+        `${sleep} 0.2`,
+        'kill -TERM "$pid"',
+        "n=0",
+        `while kill -0 "$pid" 2>/dev/null && [ "$n" -lt 200 ]; do ${sleep} 0.05; n=$((n + 1)); done`,
+        'if kill -0 "$pid" 2>/dev/null; then held=no; else held=yes; fi',
+        "exec 3>&-",
+        'wait "$pid"',
+        'printf "exit %s, ended while the list was held: %s\\n" "$?" "$held" >&2',
+      ].join("\n");
+      const run = await check(
+        "signal while reading",
+        {
+          OUTSIDE_EDGE_ADDRESS: `http://127.0.0.1:${await closedPort()}`,
+          OUTSIDE_EDGE_ROUTED: listFile(routedTable),
+          OUTSIDE_EDGE_REFUSALS: fifo,
+        },
+        { argv: [bash, "-c", wrapper, "signal-while-reading", bash, script, fifo] }
+      );
+      expect(run.stdout, said(run)).toBe(
+        "UNKNOWN: the run was stopped by a signal before its verdict\n"
+      );
+      expect(run.stderr, said(run)).toMatch(/^exit 2, ended while the list was held: (yes|no)\n$/);
+      expect(run.code, said(run)).toBe(0);
+    },
+    // The wrapper, a bounded child under the short bound, which runs the script inside it.
     rowLimit("short")
   );
 
@@ -1078,15 +1273,24 @@ describe(scriptName, () => {
       },
       says: "line 1 of {refusals} is not 'name method sni host path [status:marker]': a GET dispatch.edge.example dispatch.tailnet.example /x 405:broker extra",
     },
-    ...["405", "405:", ":broker", "40x:broker", "099:broker", "600:broker", "405:br/oker"].map(
-      (field) => ({
-        name: `the expected answer ${field}`,
-        env: {
-          OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example /x ${field}`,
-        },
-        says: `line 1 of {refusals}: the expected answer ${field} is not '<status>:<marker>', a status of 100 to 599 and a marker of letters, digits, '.', '_' and '-'`,
-      })
-    ),
+    ...[
+      "405",
+      "405:",
+      ":broker",
+      "40x:broker",
+      "099:broker",
+      "200:dispatch",
+      "302:broker",
+      "500:broker",
+      "600:broker",
+      "405:br/oker",
+    ].map((field) => ({
+      name: `the expected answer ${field}`,
+      env: {
+        OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example /x ${field}`,
+      },
+      says: `line 1 of {refusals}: the expected answer ${field} is not '<status>:<marker>', a status of 400 to 499 and a marker of letters, digits, '.', '_' and '-'`,
+    })),
     {
       name: "a routed line of five fields",
       env: {
@@ -1125,6 +1329,18 @@ describe(scriptName, () => {
       },
       says: "line 1 of {refusals}: the path /x#y is not an absolute path of URL characters",
     },
+    // curl rewrites a dot segment (`/a/../blocked` goes out as `/blocked`), and the Gateway API
+    // refuses a route whose path holds one, `//` or an encoded slash, so no route can be planted
+    // for any of them: each is refused before any probe.
+    ...["/a/../blocked", "/a/./b", "/a//b", "/a%2fb", "/a%2Fb", "/a/.", "/a/..", "/..", "/."].map(
+      (path) => ({
+        name: `the path ${path}`,
+        env: {
+          OUTSIDE_EDGE_REFUSALS: `list:a GET dispatch.edge.example dispatch.tailnet.example ${path}`,
+        },
+        says: `line 1 of {refusals}: the path ${path} holds a dot segment, '//' or an encoded slash, which curl rewrites or no route can name, so none could be planted for it`,
+      })
+    ),
     {
       name: "two lines of one name",
       env: {

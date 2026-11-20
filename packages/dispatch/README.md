@@ -721,15 +721,17 @@ All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an u
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
-`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
-(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
-were given to Dispatch, to measure which of our listed addresses that device reaches. What it
-measures is TCP connects from that device to the listed addresses and ports, nothing more: it
-cannot see a service the origin itself forwards by path or by Host on its own host and port, and
-it must run on the device itself, not in a VM, a container or a remote shell, whose network is
-another one. It is handed to that person as the one file with its target list, so it sources
-nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
-three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
+measures which of our listed addresses a machine reaches over the path given to a person from
+outside. What it measures is TCP connects from the machine it runs on to the listed addresses and
+ports, nothing more: it cannot see a service the origin itself forwards by path or by Host on its
+own host and port. So it runs where the path starts. For a path that only that person's device
+has, such as a tunnel, that is the device itself, not a VM, a container or a remote shell, whose
+network is another one; for a public path, any host on the public internet will do, since a public
+load balancer answers every address alike. It is handed to that person as the one file with its
+target list, so it sources nothing and needs only bash (3.2, as macOS ships it, or later), curl
+7.40 or later and sleep, all three on a stock macOS or Linux; curl's own `--connect-timeout` and
+`--max-time` bound every
 probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
 bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
 `sh` of macOS is bash, and runs it. Its inputs:
@@ -843,7 +845,7 @@ and stops. Its inputs:
   `X-Outside-Edge-Backend: <backend>`;
 - `OUTSIDE_EDGE_REFUSALS`, a file of `name method sni host path [status:marker]` lines, each a
   request the edge must refuse. The optional sixth field names the answer that refuses a line
-  where that is not the Gateway's 404: a status of 100 to 599 and a marker of letters, digits,
+  where that is not the Gateway's 404: a status of 400 to 499 and a marker of letters, digits,
   `.`, `_` and `-`, such as `405:broker` for a `GET` on the broker's token path. No route of the
   edge matches on method (its Gateway class supports none), so that `GET` reaches the broker, and
   the broker's own `405`, marked, is its refusal. Any other sixth field refuses the run.
@@ -853,8 +855,11 @@ starts with `#`, and take LF or CRLF line endings; any other byte outside printa
 refuses the run. Each name belongs to one line across both lists. `method` is one of `GET`, `POST`,
 `PUT`, `PATCH`, `DELETE` and `OPTIONS`; `sni` and `host` are host names, never an address, since a
 route's hostname cannot be an address and no route could be planted for one; `path` starts with
-`/` and holds URL characters alone. `OUTSIDE_EDGE_CONNECT_SECONDS` and `OUTSIDE_EDGE_READ_SECONDS`
-bound each probe as curl's `--connect-timeout` and `--max-time`, 3 and 10 s when unset or empty,
+`/` and holds URL characters alone, and no dot segment, `//` or encoded slash (`%2f`), since curl
+rewrites a dot segment before it sends the path (`/a/../b` goes out as `/b`) and the Gateway API
+refuses a route whose path holds any of them. `OUTSIDE_EDGE_CONNECT_SECONDS` and
+`OUTSIDE_EDGE_READ_SECONDS` bound each probe as curl's `--connect-timeout` and `--max-time`, 3 and
+10 s when unset or empty,
 on the rule `outside-path-reach.sh`'s two settings follow. `OUTSIDE_EDGE_ALLOW_HTTP=1` lets the
 address be `http://127.0.0.1:<port>`, and nothing else, for the script's own tests.
 
@@ -864,21 +869,26 @@ OUTSIDE_EDGE_ADDRESS=192.0.2.10 OUTSIDE_EDGE_ROUTED=routed.txt \
 ```
 
 Each probe is one HTTP/1.1 request, which keeps the Host it sends literal: `curl --http1.1
---resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] https://<sni><path>`, with an
-empty body for `POST`, `PUT` and `PATCH`, and the certificate verified against the SNI. Its curls
-ignore `~/.curlrc` and any proxy, and read no URL as a pattern. The routed controls go first: each
-must answer with its backend's marker, whatever its status, or the run prints `UNKNOWN: the marker
-of <name> is not visible, so no refusal can be read` and reads no refusal line, since a 404 with no
-marker says nothing where no marker can be seen. Then each refusal line reads:
+--resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] --max-filesize 1048576
+https://<sni><path>`, with an empty body for `POST`, `PUT` and `PATCH`, and the certificate
+verified against the SNI; a body past 1 MiB is not read. Its curls ignore `~/.curlrc` and any
+proxy, and read no URL as a pattern. curl writes every header block of an answer, an
+informational `1xx` before the final one, and the status it prints is the final answer's; an
+answer names a backend when its final block carries a marker and every marker of every block is
+that backend. The routed controls go first: each must answer naming its backend, whatever its
+status, or the run prints `UNKNOWN: the marker of <name> is not visible, so no refusal can be read`
+and reads no refusal line, since a 404 with no marker says nothing where no marker can be seen.
+Then each refusal line reads:
 
 | The answer | Line |
 |---|---|
-| the one the line names, read whole: 404 with no marker for a line of five fields, exactly the sixth field's status and marker for a line of six | `refused` |
-| any other answer: for a line of five fields, a marker of any value or a status other than 404 | `REACHED` |
-| no status (a connect or TLS failure, a timeout), or the named answer that curl did not read whole | `UNKNOWN` |
+| the one the line names, read whole: 404 with no marker in any block for a line of five fields, exactly the sixth field's status, naming exactly its marker, for a line of six | `refused` |
+| any other answer: for a line of five fields, a marker of any value in any block or a status other than 404 | `REACHED` |
+| no status (a connect or TLS failure, a timeout), or the named answer that curl did not read whole, its body past 1 MiB included | `UNKNOWN` |
 
-Each line prints the status, the marker (`none` for none) and the SHA-256 of the body, so two runs
-can be compared, and curl's exit code and first message where curl did not exit 0; no line names
+Each line prints the status, every marker in order (`none` for none) and the SHA-256 of the body,
+so two runs can be compared, and curl's exit code and first message where curl did not exit 0; no
+line names
 the machine's host name, since the output goes to logs anyone may read. `PASS` (exit 0)
 needs every control's marker and every refusal line refused; `FAIL` (exit 1) names each line
 reached, whatever else the run could not read; every run that proved nothing is `UNKNOWN` (exit
@@ -894,8 +904,9 @@ routes an edge serves and sixteen refusal lines (spoofed Hosts, cluster names, p
 routed ones), a route planted for exactly one line makes the run fail naming that line and no
 other, once for each line. A line whose sixth field is `405:broker` is refused on the broker's
 `405` marked `broker`, and fails naming it on a `404` with no marker, a `405` with another marker
-or none, and a `200`. Its rows that run the script under dash and zsh skip where either is
-missing; CI's `dispatch-ui` job installs zsh.
+or none, a `200`, a `103` marked `broker` before a final answer marked otherwise or not at all, and
+a final `405` with a second marker. Its rows that run the script under dash and zsh skip where
+either is missing; CI's `dispatch-ui` job installs zsh.
 
 ## Acceptance run against the deployed image
 

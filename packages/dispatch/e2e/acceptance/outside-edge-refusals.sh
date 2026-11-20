@@ -24,7 +24,7 @@
 #   OUTSIDE_EDGE_REFUSALS  a file of `name method sni host path [status:marker]` lines, each a
 #                          request the edge must refuse. The optional sixth field names the
 #                          answer that refuses it, where that is not the Gateway's 404: a status
-#                          of 100 to 599 and a marker of letters, digits, `.`, `_` and `-`, such
+#                          of 400 to 499 and a marker of letters, digits, `.`, `_` and `-`, such
 #                          as `405:broker` for a GET on the broker's token path. No route of the
 #                          edge matches on method (its Gateway class supports none), so that GET
 #                          reaches the broker, and the broker's own 405, marked, is its refusal.
@@ -35,7 +35,10 @@
 # not HEAD, for which `curl -X HEAD` waits for a body that never comes. `sni` and `host` are host
 # names, never an address: a route's hostname cannot be an address, so no route could be planted
 # for one, and a refusal line that no planted route can reach has no control. `path` starts with
-# `/` and holds URL characters alone (RFC 3986's path and query), so no `#`.
+# `/` and holds URL characters alone (RFC 3986's path and query), so no `#`; and no dot segment
+# (`/./`, `/../`, or `/.` or `/..` at its end), no `//` and no encoded slash (`%2f`, `%2F`): curl
+# rewrites a dot segment before it sends the path (`/a/../b` goes out as `/b`), and the Gateway
+# API refuses a route whose path holds any of them, so none could be planted for such a line.
 # OUTSIDE_EDGE_CONNECT_SECONDS and OUTSIDE_EDGE_READ_SECONDS bound each probe, as curl's
 # --connect-timeout and --max-time: 3 and 10 s when unset or empty. Each must be a whole number of
 # seconds from 2 to 999999, in digits, as outside-path-reach.sh's own bounds are, for the reasons
@@ -45,22 +48,29 @@
 #
 # Each probe is one HTTP/1.1 request, which keeps the Host it sends literal:
 #   curl --http1.1 --resolve <sni>:443:<address> -H 'Host: <host>' -X <method> [-d ''] \
-#     -D <headers> -o <body> -w '%{http_code}' --connect-timeout 3 --max-time 10 https://<sni><path>
+#     -D <headers> -o <body> -w '%{http_code}' --connect-timeout 3 --max-time 10 \
+#     --max-filesize 1048576 https://<sni><path>
 # with an empty body (`-d ''`) for POST, PUT and PATCH. The certificate is verified against the SNI.
+# A body past 1 MiB is not read (curl exit 63), so no answer fills the disk the run writes to.
+# curl's `-D` writes every header block of the answer, an informational 1xx before the final one,
+# and the status it prints is the final answer's. A marker is read from every block: an answer
+# names a backend when its final block carries a marker and every marker of every block is that
+# backend, so neither an earlier block nor a second marker can stand for the answer.
 #
-# The routed controls are read first. Each must answer with `X-Outside-Edge-Backend: <backend>`,
-# whatever its status; one that does not shows this run cannot see a route of this edge, and the
-# run stops at UNKNOWN before it reads any refusal line. Then each refusal line is
+# The routed controls are read first. Each must answer naming its backend, whatever its status;
+# one that does not shows this run cannot see a route of this edge, and the run stops at UNKNOWN
+# before it reads any refusal line. Then each refusal line is
 #   refused  when its answer came whole and is the one the line names: status 404 and no marker
-#            for a line of five fields, and exactly the sixth field's status with exactly its
-#            marker for a line of six;
-#   REACHED  when any other answer came: for a line of five fields, a marker of any value or a
-#            status other than 404;
+#            in any block for a line of five fields, and exactly the sixth field's status, naming
+#            exactly its marker, for a line of six;
+#   REACHED  when any other answer came: for a line of five fields, a marker of any value in any
+#            block or a status other than 404;
 #   UNKNOWN  when no status came (a connect or TLS failure, a timeout before the answer), or the
-#            named answer came and curl did not read it whole.
-# Each probe prints its status (000 where none came), its marker (`none` where it had none) and the
-# SHA-256 of its body (`none` where no answer came), so two runs can be compared, and curl's exit
-# code and first message where curl did not exit 0. Then the verdict:
+#            named answer came and curl did not read it whole, its body past 1 MiB included.
+# Each probe prints its status (000 where none came), every marker of its answer in order and
+# separated by `,` (`none` where it had none), and the SHA-256 of its body (`none` where no answer
+# came), so two runs can be compared, and curl's exit code and first message where curl did not
+# exit 0. Then the verdict:
 #   PASS     exit 0: every routed control showed its marker and every refusal line was refused.
 #   FAIL     exit 1: a refusal line was REACHED, whatever else the run could not read: an answer
 #            is evidence, where a probe that came short only failed to look.
@@ -88,6 +98,9 @@ unknown() {
   printf 'UNKNOWN: %s\n' "$1"
   exit 2
 }
+# Set before anything else can wait, the lists' reads included: a HUP, INT or TERM ends the run at
+# its UNKNOWN verdict, never at bash's own exit with nothing printed.
+trap 'unknown "the run was stopped by a signal before its verdict"' HUP INT TERM
 
 is_count() { case $1 in '' | *[!0-9]*) return 1 ;; esac; }
 is_port() {
@@ -152,10 +165,10 @@ is_path() {
   case $1 in *$url_outside*) return 1 ;; esac
 }
 
-# is_expected TEXT: TEXT is a refusal line's expected answer, `<status>:<marker>`: a status of 100
-# to 599, a colon, and a marker of letters, digits, `.`, `_` and `-`, never empty.
+# is_expected TEXT: TEXT is a refusal line's expected answer, `<status>:<marker>`: a status of 400
+# to 499, a refusal's, a colon, and a marker of letters, digits, `.`, `_` and `-`, never empty.
 is_expected() {
-  case $1 in [1-5][0-9][0-9]:?*) ;; *) return 1 ;; esac
+  case $1 in 4[0-9][0-9]:?*) ;; *) return 1 ;; esac
   case ${1#*:} in *[!A-Za-z0-9._-]*) return 1 ;; esac
 }
 
@@ -252,13 +265,17 @@ read_list() {
       unknown "line $number of $file: the host $4 is not a host name; no route can name an address, so none could be planted for it"
     is_path "$5" ||
       unknown "line $number of $file: the path $5 is not an absolute path of URL characters"
+    case $5 in */./* | */../* | */. | */.. | *//* | *%2[fF]*)
+      unknown "line $number of $file: the path $5 holds a dot segment, '//' or an encoded slash, which curl rewrites or no route can name, so none could be planted for it"
+      ;;
+    esac
     if [ "$kind" = routed ]; then
       case $6 in *[!A-Za-z0-9._-]*)
         unknown "line $number of $file: the backend $6 is not letters, digits, '.', '_' and '-'"
         ;;
       esac
     elif [ "$#" -eq 6 ] && ! is_expected "$6"; then
-      unknown "line $number of $file: the expected answer $6 is not '<status>:<marker>', a status of 100 to 599 and a marker of letters, digits, '.', '_' and '-'"
+      unknown "line $number of $file: the expected answer $6 is not '<status>:<marker>', a status of 400 to 499 and a marker of letters, digits, '.', '_' and '-'"
     fi
     total=$((total + 1))
     names[total]=$1
@@ -346,7 +363,6 @@ fi
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-edge-refusals.XXXXXX" 2>/dev/null) && [ -d "$work" ] ||
   unknown "mktemp could not make a directory under ${TMPDIR:-/tmp} for the answers"
 trap 'rm -rf "$work"' EXIT
-trap 'unknown "the run was stopped by a signal before its verdict"' HUP INT TERM
 
 now=''
 if command -v date >/dev/null 2>&1; then
@@ -374,36 +390,43 @@ digest_of() {
 }
 
 # probe ROW: one request for row ROW of the table, as the header writes it. Sets `status`, to 000
-# where no status came; `marked`, yes or no; `marker`, the marker's value as it came, and `shown`,
-# that value with any byte outside letters, digits, `.`, `_` and `-` written `?`, `''` when
-# empty, and `none` where there was no marker; `digest`, the body's SHA-256, of an empty body where
-# an answer came with none, and `none` where no answer came; `code`, curl's exit code; and
-# `said`, curl's first line on stderr.
+# where no status came; `marked`, yes or no: whether any header block carried a marker; `seen`,
+# every marker value of every block as it came, and `final`, those of the final block, each one
+# per line; `shown`, every marker value in order, each with any byte outside letters, digits, `.`,
+# `_` and `-` written `?` and `''` for an empty one, separated by `,`, and `none` where there was
+# none; `digest`, the body's SHA-256, of an empty body where an answer came with none, and `none`
+# where no answer came; `code`, curl's exit code; and `said`, curl's first line on stderr.
 probe() {
   local row=$1 headers="$work/$1.headers" body="$work/$1.body" errors="$work/$1.errors" header
+  local value part
   set -- -q --noproxy '*' -g -sS --http1.1 --resolve "${snis[row]}:$port:$address" \
     -H "Host: ${hosts[row]}" -X "${methods[row]}"
   case ${methods[row]} in POST | PUT | PATCH) set -- "$@" -d '' ;; esac
   set -- "$@" -D "$headers" -o "$body" -w '%{http_code}' --connect-timeout "$connect" \
-    --max-time "$max_time" "$scheme://${snis[row]}$authority_port${paths[row]}"
+    --max-time "$max_time" --max-filesize 1048576 "$scheme://${snis[row]}$authority_port${paths[row]}"
   status=$(LC_ALL=C curl "$@" </dev/null 2>"$errors")
   code=$?
   case $status in [0-9][0-9][0-9]) ;; *) status=000 ;; esac
   marked=no
-  marker=''
+  seen=''
+  final=''
   shown=none
   if [ -f "$headers" ]; then
     while IFS= read -r header || [ -n "$header" ]; do
-      [ "$marked" = no ] || break
-      case $header in [Xx]-[Oo][Uu][Tt][Ss][Ii][Dd][Ee]-[Ee][Dd][Gg][Ee]-[Bb][Aa][Cc][Kk][Ee][Nn][Dd]:*)
-        marker=${header#*:}
-        marker=${marker%$'\r'}
-        marker=${marker#"${marker%%[![:blank:]]*}"}
-        marker=${marker%"${marker##*[![:blank:]]}"}
-        marked=yes
-        shown=${marker//[!A-Za-z0-9._-]/?}
-        [ -n "$shown" ] || shown="''"
-        ;;
+      header=${header%$'\r'}
+      case $header in
+        HTTP/*) final='' ;;
+        [Xx]-[Oo][Uu][Tt][Ss][Ii][Dd][Ee]-[Ee][Dd][Gg][Ee]-[Bb][Aa][Cc][Kk][Ee][Nn][Dd]:*)
+          value=${header#*:}
+          value=${value#"${value%%[![:blank:]]*}"}
+          value=${value%"${value##*[![:blank:]]}"}
+          marked=yes
+          seen="$seen$value$newline"
+          final="$final$value$newline"
+          part=${value//[!A-Za-z0-9._-]/?}
+          [ -n "$part" ] || part="''"
+          if [ "$shown" = none ]; then shown=$part; else shown="$shown,$part"; fi
+          ;;
       esac
     done <"$headers"
   fi
@@ -422,6 +445,18 @@ probe() {
   fi
 }
 
+# answer_names MARKER: the answer of the probe just made names MARKER: its final header block
+# carried a marker, and every marker of every block is MARKER.
+answer_names() {
+  local left=$seen each
+  [ -n "$final" ] || return 1
+  while [ -n "$left" ]; do
+    each=${left%%"$newline"*}
+    left=${left#*"$newline"}
+    [ "$each" = "$1" ] || return 1
+  done
+}
+
 # report LABEL ROW: prints the line of the probe just made of row ROW.
 report() {
   local tail=''
@@ -429,14 +464,14 @@ report() {
   printf '%s %s %s %s body-sha256 %s%s\n' "$1" "${names[$2]}" "$status" "$shown" "$digest" "$tail"
 }
 
-# The routed controls, every one of them, before any refusal line: a control whose marker did not
-# come shows that a refusal's 404 with no marker would say nothing.
+# The routed controls, every one of them, before any refusal line: a control whose answer did not
+# name its backend shows that a refusal's 404 with no marker would say nothing.
 missing=''
 row=1
 while [ "$row" -le "$routed" ]; do
   probe "$row"
   report control "$row"
-  if [ "$marked" != yes ] || [ "$marker" != "${backends[row]}" ]; then
+  if ! answer_names "${backends[row]}"; then
     [ -n "$missing" ] || missing=${names[row]}
   fi
   row=$((row + 1))
@@ -450,7 +485,9 @@ while [ "$row" -le "$total" ]; do
   # matched: the answer is the one this line names, whether or not curl read it whole.
   matched=no
   if [ -n "${expects[row]}" ]; then
-    if [ "$marked" = yes ] && [ "$status:$marker" = "${expects[row]}" ]; then matched=yes; fi
+    if [ "$status" = "${expects[row]%%:*}" ] && answer_names "${expects[row]#*:}"; then
+      matched=yes
+    fi
   elif [ "$marked" = no ] && [ "$status" = 404 ]; then
     matched=yes
   fi

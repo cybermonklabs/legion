@@ -1,6 +1,6 @@
 /** The fixtures of the tests of `e2e/acceptance/outside-path-reach.sh`, the driver of the check
- *  `c-outside-path-reach` (dispatch://INFRA-3862), which a person from outside runs on their own
- *  device to measure which of our listed addresses that device reaches over the path we give them.
+ *  `c-outside-path-reach`, which measures which of our listed addresses a machine reaches over the
+ *  path we give a person from outside.
  *  Four files use them: `outside-path-reach-input.test.ts` (the inputs the script refuses, the
  *  origin's two answers and its classifier, none of which reaches a probe),
  *  `outside-path-reach.test.ts` (runs that probe), `outside-path-reach-blackhole.test.ts` (the
