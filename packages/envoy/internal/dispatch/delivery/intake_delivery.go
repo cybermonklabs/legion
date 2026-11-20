@@ -142,7 +142,8 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // and the hold's release (up to intakeHoldRenew, 5 s) run before the close. Only a pending
 // hand-back's finalizer, with its release, follows the close: Client.Close waits for nats.go's
 // connection lock, which a write can hold until its one-minute write deadline; a kubelet kill
-// then ends the client and renewal. It is also well past what a handler GitHub answers needs, a pull request and its commit
+// then ends the client and renewal. It is also well past what a handler GitHub answers needs,
+// a pull request and its commit
 // pages with a page GitHub answered 502 asked again (after 1 s, then 2 s: githubPageRetryWait), so
 // an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
 // answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,

@@ -509,9 +509,18 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 		t.Fatal("the hand-back did not land within 30 s on the reconnecting link")
 	}
 	// The error is logged in callNATS's Bounded goroutine after the deferred that closes
-	// published runs. A brief wait lets that goroutine log before the read.
-	time.Sleep(50 * time.Millisecond)
-	var found bool
+	// published runs. Wait for the INFO record itself, with a 30 s guard.
+	waitFor(t, 30*time.Second, func() bool {
+		for _, record := range logs() {
+			msg, _ := record["msg"].(string)
+			if strings.Contains(msg, "hand a message back for redelivery") {
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		return fmt.Sprintf("no log record for the hand-back on a reconnecting link; logged: %v", loggedMessages(logs()))
+	})
 	for _, record := range logs() {
 		msg, _ := record["msg"].(string)
 		if !strings.Contains(msg, "hand a message back for redelivery") {
@@ -524,10 +533,6 @@ func TestAHandBackOnAReconnectingLinkLogsAtInfo(t *testing.T) {
 		if level != "INFO" {
 			t.Fatalf("the hand-back on a reconnecting link logged at %s: %v; want INFO", level, record)
 		}
-		found = true
-	}
-	if !found {
-		t.Fatalf("no log record for the hand-back on a reconnecting link; logged: %v", loggedMessages(logs()))
 	}
 }
 

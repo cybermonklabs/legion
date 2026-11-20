@@ -109,7 +109,8 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // given up and handed back to NATS, delivery's intakeStopBudget (15 s) after the signal at the latest.
 // A hand-back still pending then is settled when waitIntakes closes each intake's NATS client
 // through its durable, sent in its close flush or dropped with the connection; waitIntakes then
-// waits for its finalizer to release the hold through the pool. That wait normally ends 10 s inside the latest the document service's
+// waits for its finalizer to release the hold through the pool. That wait normally ends 10 s
+// inside the latest the document service's
 // budget ends (stopGrace less its 5 s reserve, 25 s after the signal). One exception can outlive
 // that bound: Client.Close waits for nats.go's connection lock, which a write can hold until its
 // one-minute write deadline, then a finalizer can spend up to intakeHoldRenew (5 s) releasing its
