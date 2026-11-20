@@ -224,10 +224,15 @@ func (s *server) refuseHiddenSessions(w http.ResponseWriter, r *http.Request, li
 // groupTitleRule is the read rule a group write's title rule reads under (delivery.CreateSessionGroup):
 // the writer's own (readableEvents), so a name is held only to the sessions it sees, each by the
 // titles it reads; and every event (events.EveryEvent), which holds a name to every session as
-// before, for a writer that sees every object (R9) and for work with no reader in ctx.
+// before, for a writer that sees every object (R9). A context with no reader reads as the closed
+// viewer (closedViewer), which sees no session, failing closed as sessionsHiddenFromReader does: no
+// refusal of its write answers a session or a title.
 func groupTitleRule(ctx context.Context) events.Readable {
 	reader, ok := readerFromContext(ctx)
-	if !ok || seesEveryObject(reader) {
+	if !ok {
+		return readableEvents(model.Actor{Viewer: closedViewer()})
+	}
+	if seesEveryObject(reader) {
 		return events.EveryEvent
 	}
 	return readableEvents(reader)

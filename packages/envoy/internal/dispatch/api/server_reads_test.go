@@ -126,6 +126,9 @@ var serverReads = map[string]string{
 	"issue_assignee.go:allowedLogin": "a check with no request's reader in its context - work the server does for itself - holds a " +
 		"login only to having signed in, and answers whether it may be assigned, never the person's row; every request's check " +
 		"binds the reader its gate put in the context",
+	"envoy_resolve.go:resolveDeliveryTarget": "a session route resolved with no request's reader in its context - the delivery " +
+		"sweep's resume, a mention send queued with none - was held to its author's reader when it was written, so its " +
+		"session is read as the server's; a resolve with a reader reads it as that reader, and a role is never read so",
 }
 
 // TestAServerWithNoStoreResolvesTheClosedViewer: a server built with no store - a router test's,

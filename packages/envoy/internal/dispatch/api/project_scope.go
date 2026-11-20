@@ -443,21 +443,28 @@ func (s *server) withinSessionScope(route apiRoute, handler http.HandlerFunc) ht
 // sessionHiddenFromReader reports whether the request's reader - the one a check put in ctx
 // (withReader) - may not see session id (sessionHiddenFrom, access.SessionClause): a session that
 // is not its own and has acted in a project it does not see, or, for a restricted member's or a
-// listing credential's reader, in none it sees. Work with no reader in ctx, which the server does
-// for itself, sees every session.
+// listing credential's reader, in none it sees. A context with no reader is answered hidden,
+// failing closed: every request's check puts its reader in ctx, and the server's own work names
+// the server's reader (everyReader) where it reads every session, as the delivery's resolve of a
+// session route does (resolveDeliveryTarget).
 func (s *server) sessionHiddenFromReader(ctx context.Context, id string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
 	if !ok {
-		return false, nil
+		return true, nil
 	}
 	return s.sessionHiddenFrom(ctx, reader, id)
 }
 
 // personHiddenFromReader reports, through q, whether the request's reader may not see the person
-// login names (access.PersonClause), as sessionHiddenFromReader does for a session.
+// login names (access.PersonClause), as sessionHiddenFromReader does for a session: a context with
+// no reader is answered hidden, and a reader with no viewer reads as the closed viewer it binds
+// (refs.VisibilityArg). An open reader sees every person and costs no read.
 func personHiddenFromReader(ctx context.Context, q queryer, login string) (bool, error) {
 	reader, ok := readerFromContext(ctx)
-	if !ok || reader.Viewer == nil || reader.Viewer.Open {
+	if !ok {
+		return true, nil
+	}
+	if reader.Viewer != nil && reader.Viewer.Open {
 		return false, nil
 	}
 	var sees bool

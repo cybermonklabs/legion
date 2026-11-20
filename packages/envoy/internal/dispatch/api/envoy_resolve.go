@@ -169,7 +169,15 @@ func (s *server) resolveDeliveryTarget(ctx context.Context, route model.Route, d
 			target, err = dispatchenvoy.Session{}, dispatchenvoy.NoRoleHolder(route.ID)
 		}
 	} else {
-		hidden, hiddenErr := s.sessionHiddenFromReader(ctx, route.ID)
+		// A session route was held to its author's reader when it was written, so a resolve with
+		// no reader in ctx - the delivery sweep's resume, a mention send queued with none - reads
+		// the session as the server's own reader, by name, where sessionHiddenFromReader answers a
+		// context with no reader hidden. The listener's read below takes ctx as it came.
+		seen := ctx
+		if _, ok := readerFromContext(ctx); !ok {
+			seen = withReader(ctx, everyReader)
+		}
+		hidden, hiddenErr := s.sessionHiddenFromReader(seen, route.ID)
 		if hiddenErr != nil {
 			return "", "", hiddenErr.Error()
 		}
