@@ -38,10 +38,18 @@
 #     Job says so in its own log, and the release lane, which reads the file from a checkout, is
 #     where those two are driven.
 #
-# The negative control is the base branch's published image, driven by the same Job with the same
-# probe: it carries no wrappers, so every one of the five cases lands. Pass it as `--control`.
-# A run with no `--control` proves only the head: it shows that the head's image refuses, and
-# nothing about whether the cases would have been let through without the change.
+#   - A `jj gerrit upload` of the message case run with `--config git.executable-path=/usr/bin/git`,
+#     which jj would upload through that git, with no wrapper and so no pre-push hook: the image's
+#     jj wrapper refuses it before the upload starts, with exit 2 and its `LEAK CHECK SETUP ERROR`
+#     line naming `git.executable-path`, and the remote is unchanged.
+#
+# The negative control runs in the same Job: a `jj git push` of the message case with
+# /opt/legion/bin taken off PATH, so jj is the real /usr/local/bin/jj and the git it runs the real
+# /usr/bin/git, with no wrapper and no hook. The probe expects it to land on the scratch remote,
+# which shows it tells a push the guard checked from one the guard never saw. The base branch's
+# image carries the wrappers too, so it is no control: run the head's image with no `--control`.
+# `--control` drives an image published before the wrappers, on which every push lands, should a
+# second control be wanted.
 #
 # Inputs, all of them required unless marked:
 #
@@ -49,8 +57,8 @@
 #                                    the `Record digest` step of the `Worker Image` run of the
 #                                    commit under test (docs/kubernetes.md, "Pin by digest, never
 #                                    by tag"). Also the first positional argument.
-#   --control <ref>@sha256:<64 hex>  optional: the base branch's image, driven as the negative
-#                                    control. Also the second positional argument.
+#   --control <ref>@sha256:<64 hex>  optional: an image published before the wrappers, driven as
+#                                    a second control. Also the second positional argument.
 #   --node-selector <key=value>[,…]  the deployment's compute class, which docs/kubernetes.md
 #                                    requires a workload to select by `nodeSelector`. Its value is
 #                                    in the deployment's own declaration, which this public
@@ -72,8 +80,9 @@
 # Exit statuses:
 #
 #   0  every check of every arm held: on the head's image the four refusable cases were refused
-#      and named their class, the clean case landed, and both shared-check failures refused under
-#      both commands; on the control's image, if one was given, all five landed.
+#      and named their class, the clean case landed, both shared-check failures refused under both
+#      commands, the gerrit upload was refused and the push outside the guard landed; on the
+#      control's image, if one was given, every push landed.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
@@ -86,7 +95,7 @@
 #
 #   log=$(mktemp "${TMPDIR:-/tmp}/leak-guard.XXXXXX")
 #   flock "$log" setsid -f bash scripts/e2e/leak-guard-image-job.sh \
-#     --image <head digest> --control <base digest> --node-selector <key=value> \
+#     --image <head digest> --node-selector <key=value> \
 #     > "$log" 2>&1 < /dev/null
 #   flock "$log" cat "$log"     # waits for the run to end, then prints everything it printed
 #
@@ -131,10 +140,10 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       the base branch's image, driven as the negative control, which lets all five
-                  cases through; the second positional argument too. A run without it proves only
-                  the head: it says nothing about whether the cases would have been let through
-                  without the change.
+  --control       optional: an image published before the wrappers, driven as a second control,
+                  on which every push lands; the second positional argument too. The base branch's
+                  image carries the wrappers, so it is no control. Every run carries its own
+                  negative control: a jj git push with /opt/legion/bin off PATH, which must land.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.
@@ -188,7 +197,7 @@ digest_shape='^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}$'
 [[ $image =~ $digest_shape ]] || refuse "the image $image is not a digest reference <ref>@sha256:<64 hex>"
 if [ -n "$control" ]; then
   [[ $control =~ $digest_shape ]] || refuse "the control $control is not a digest reference <ref>@sha256:<64 hex>"
-  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is the base branch's image"
+  [ "$control" != "$image" ] || refuse "the control is the image under test; the control is an image published before the wrappers"
 fi
 [ -n "$node_selector" ] || refuse "no --node-selector: the namespace's admission requires the deployment's compute class, which is in the deployment's own declaration"
 case "$prefix" in
@@ -238,6 +247,7 @@ workload=""
 run_label=""
 cleanup_status=0
 
+# shellcheck disable=SC2317 # the EXIT trap below is what runs it
 cleanup() {
   status=$?
   trap - EXIT INT TERM HUP
@@ -274,8 +284,8 @@ trap 'exit 129' HUP
 # The probe. It runs inside the image, as the Job's one container, and decides its own verdict:
 # every check prints `CHECK <name>: got [x] want [y]`, and the last line is `JOB-RESULT pass` or
 # `JOB-RESULT fail`. Its one argument is the arm — `head` for an image whose wrappers must refuse,
-# `control` for the base branch's image, which has none and must let everything through — so one
-# probe serves both and the expectations are stated once.
+# `control` for an image published before the wrappers, on which every push lands — so one probe
+# serves both and the expectations are stated once.
 #
 # Read the probe's own verdict and never the Job's phase: a Job reports `Succeeded` when its
 # container exited 0 and nothing more (skills/legion-worker/references/tools.md).
@@ -361,7 +371,7 @@ run_id() { od -An -N4 -tx1 /dev/urandom | tr -d ' \n'; }
 echo "== leak-guard-image-job"
 echo "namespace: $namespace"
 echo "image:     $image"
-echo "control:   ${control:-none — this run proves only the head}"
+echo "control:   ${control:-none — the head arm runs the negative control, the push outside the guard}"
 echo "selector:"
 printf '%s' "$selector_yaml"
 
@@ -558,7 +568,7 @@ echo "head ($image): $head_verdict"
 if [ -n "$control" ]; then
   echo "control ($control): $control_verdict"
 else
-  echo "control: none was given, so this run proves only that the head's image refuses"
+  echo "control: none was given; the head's Job carries its own negative control, the push outside the guard"
 fi
 
 verdict_status() { # verdict_status <word>

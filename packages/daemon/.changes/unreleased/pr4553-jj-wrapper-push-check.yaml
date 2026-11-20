@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The worker image's jj wrapper also checks a `jj gerrit upload`, which pushes through the same
+    git as a `jj git push`. It reads a `-R` written after the subcommand, so a push to another
+    repository is checked against that repository's `git.executable-path`. A configuration read
+    that fails is refused, since it names no git.
+time: 2026-11-20T10:48:15Z
+custom:
+    Issue: pr4553

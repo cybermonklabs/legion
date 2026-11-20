@@ -1,10 +1,11 @@
 #!/bin/sh
 # The jj first on a pod's PATH, /opt/legion/bin/jj (worker.Dockerfile). Every command runs the
 # real jj, /usr/local/bin/jj, with the arguments it was given; what this wrapper adds is one
-# check, and only before a `jj git push`.
+# check, and only before a `jj git push` or a `jj gerrit upload`, which pushes through the same
+# git subprocess (`git::push_updates`, cli/src/commands/gerrit/upload.rs).
 #
 # jj makes a push by shelling out to the `git` its PATH names (`git -c core.fsmonitor=false …
-# --git-dir <dir> push --porcelain --no-verify …`, measured with jj 0.45.1-sami), so Legion's git
+# --git-dir <dir> push --porcelain --no-verify …`, measured with jj 0.46.0-sami), so Legion's git
 # wrapper is what puts the leak guard's pre-push hook in front of jj's push as well as a role's
 # own. This checks that the git jj would run is that wrapper: the `git` on PATH, and jj's own
 # `git.executable-path`, which jj runs in place of a bare `git` when a configuration file sets it.
@@ -19,11 +20,16 @@ real=/usr/local/bin/jj
 wrapper=/opt/legion/bin/git
 
 # jj's subcommand pair, past jj's global options, which clap takes before a subcommand as well as
-# after one. The options whose value is the next argument are `jj --help`'s Global Options; the
-# attached spellings (`-R<path>`, `--repository=<path>`) are one word and need no skip. The
-# repository is kept because the configuration read below must be the one this command would
-# make: a repository's own configuration file can name a `git.executable-path` of its own, and
-# so can the caller's own `--config`, which that read takes as well.
+# after one. The options whose value is the next argument are `jj --help`'s Global Options (read
+# from jj 0.46.0-sami, which refuses a `--config-toml`); the attached spellings (`-R<path>`,
+# `--repository=<path>`) are one word and need no skip. The repository is kept because the
+# configuration read below must be the one this command would make: a repository's own
+# configuration file can name a `git.executable-path` of its own, and so can the caller's own
+# `--config`, which that read takes as well. The scan goes on past the pair, since a `-R` written
+# after the subcommand names the repository as one written before it does, and the last `-R`
+# written is the one jj opens. A `-R` clustered after another short option needs no reading: the
+# only short options of the two commands that take no value are `-h` and the upload's `-n`,
+# neither of which pushes.
 repository=
 takes=
 first=
@@ -38,24 +44,24 @@ for arg; do
   fi
   case "$arg" in
     -R | --repository) takes=repository ;;
-    --at-operation | --at-op | --color | --config | --config-file | --config-toml) takes=other ;;
+    --at-operation | --at-op | --color | --config | --config-file) takes=other ;;
     -R?*) repository=${arg#-R} ;;
     --repository=*) repository=${arg#--repository=} ;;
     -*) ;;
     *)
       if [ -z "$first" ]; then
         first=$arg
-      else
+      elif [ -z "$second" ]; then
         second=$arg
-        break
       fi
       ;;
   esac
 done
 
-if [ "$first" != git ] || [ "$second" != push ]; then
-  exec "$real" "$@"
-fi
+case "$first $second" in
+  "git push" | "gerrit upload") ;;
+  *) exec "$real" "$@" ;;
+esac
 
 found=$(command -v git) || found=
 if [ "$found" != "$wrapper" ]; then
@@ -64,15 +70,17 @@ if [ "$found" != "$wrapper" ]; then
 fi
 
 # --ignore-working-copy because this is a read: a configuration read must not snapshot the
-# working copy of the repository the push is about. The caller's own `--config`, `--config-file`
-# and `--config-toml` go to the read too, in the order they were written and in both spellings
-# of each, because the value the read must answer is the one the push would use: a `jj git push
-# --config git.executable-path=<another git>` names its git on the command line, which outranks
-# every configuration file, and a read without those arguments would answer for a push nobody is
-# making and pass this one through to an unwrapped git. They are selected by rebuilding the
-# positional parameters inside the command substitution, whose subshell has a copy of its own,
-# so the arguments the exec at the end hands jj are the caller's untouched. jj exits non-zero
-# when nothing sets the value, which is the usual case and means the bare `git` above.
+# working copy of the repository the push is about. The caller's own `--config` and
+# `--config-file` go to the read too, wherever they were written, in that order and in both
+# spellings of each, because the value the read must answer is the one the push would use: a `jj
+# git push --config git.executable-path=<another git>` names its git on the command line, which
+# outranks every configuration file, and a read without those arguments would answer for a push
+# nobody is making and pass this one through to an unwrapped git. They are selected by rebuilding
+# the positional parameters inside the command substitution, whose subshell has a copy of its
+# own, so the arguments the exec at the end hands jj are the caller's untouched. jj prints `git`
+# and exits 0 when nothing sets the value, which is the usual case and means the bare `git`
+# above, so a read that fails answers for no git at all and is refused rather than taken for
+# that one.
 configured=$(
   keep=
   left=$#
@@ -86,11 +94,11 @@ configured=$(
       continue
     fi
     case "$arg" in
-      --config | --config-file | --config-toml)
+      --config | --config-file)
         keep=1
         set -- "$@" "$arg"
         ;;
-      --config=* | --config-file=* | --config-toml=*)
+      --config=* | --config-file=*)
         set -- "$@" "$arg"
         ;;
     esac
@@ -99,11 +107,14 @@ configured=$(
     exec "$real" -R "$repository" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
   fi
   exec "$real" --ignore-working-copy "$@" config get git.executable-path 2>/dev/null
-) || configured=
+) || {
+  echo "LEAK CHECK SETUP ERROR: the push: jj could not read its git.executable-path, so the git jj's push would run is unknown and could be one with no leak check" >&2
+  exit 2
+}
 case "$configured" in
-  "" | git | "$wrapper") ;;
+  git | "$wrapper") ;;
   *)
-    echo "LEAK CHECK SETUP ERROR: the push: jj's git.executable-path is $configured, not git or Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
+    echo "LEAK CHECK SETUP ERROR: the push: jj's git.executable-path is ${configured:-empty}, not git or Legion's git wrapper $wrapper, so jj's push would reach the remote with no leak check" >&2
     exit 2
     ;;
 esac

@@ -543,11 +543,11 @@ func sharedRepository(jjDir, clone string) (string, error) {
 }
 
 // workspaceRepository is the path jj opens as the repository of the workspace whose `.jj` is
-// jjDir, built as jj 0.45's DefaultWorkspaceLoader builds it (lib/src/workspace.rs): `.jj/repo`
-// itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
-// is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
-// `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens.
+// jjDir, built as jj's DefaultWorkspaceLoader builds it (lib/src/workspace.rs, verified against
+// jj 0.46.0-sami): `.jj/repo` itself unless it is a regular file, else the path that file holds,
+// appended to `.jj` unless it is absolute. It is never cleaned: jj canonicalizes it physically,
+// each symlink resolved before a `..` after it, and filepath.Join would cancel `link/..` before
+// anything resolved `link`, naming a different directory than the one jj opens.
 //
 // The pointer file is read through readGitdir, the bounded read of a pointer file a role can
 // write, with no link followed and no wait: a tree agent can write it, and this read runs under

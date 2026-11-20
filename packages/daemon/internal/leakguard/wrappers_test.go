@@ -285,7 +285,9 @@ func TestTheGitWrapperPutsItsHooksPathAfterTheCallersGlobalOptions(t *testing.T)
 // configuration arguments included: a `jj git push --config git.executable-path=<another git>`
 // names a git on the command line, which outranks every configuration file, and a read without
 // those arguments answered for a push nobody was making and let that one through to an unwrapped
-// git — a push with no pre-push hook and so no leak check.
+// git — a push with no pre-push hook and so no leak check. jj prints `git` and exits 0 when
+// nothing sets the value, so a read that fails answers for no git, and the wrapper refuses the
+// push rather than take it for the bare `git` the read used to stand for.
 func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -310,19 +312,29 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 	if err := os.WriteFile(configFile, []byte("git.executable-path = \"/usr/bin/git\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// The repository has a remote, so a push the wrapper lets through finds nothing to push and
+	// exits 0: jj 0.46 fails a push from a repository with no remote at all, where 0.45 printed
+	// "Nothing changed.". The git that makes the remote is the test's own, not the stand-in.
+	setup := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	remote := filepath.Join(dir, "remote.git")
+	setup.Run(dir, fixturegit.InitBare(remote, "main")...)
 	repo := filepath.Join(dir, "repo")
-	run := fixturegit.Isolated(t, filepath.Join(dir, "home")).With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
-	run.Run(dir, fixturegit.JJInit(repo, false)...)
+	setup.Run(dir, fixturegit.JJInit(repo, false)...)
+	setup.Run(repo, "jj", "git", "remote", "add", "origin", remote)
+	run := setup.With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
 
 	for _, tc := range []struct {
 		name string
 		args []string
 		// refused is whether the wrapper must refuse the push rather than run it.
 		refused bool
+		// says is what a refusal must say: the git jj would have run, or that there is none to name.
+		says string
 	}{
-		{name: "a --config naming another git", args: []string{"git", "push", "--config", "git.executable-path=/usr/bin/git"}, refused: true},
-		{name: "an attached --config naming another git", args: []string{"git", "push", "--config=git.executable-path=/usr/bin/git"}, refused: true},
-		{name: "a --config-file naming another git", args: []string{"git", "push", "--config-file", configFile}, refused: true},
+		{name: "a --config naming another git", args: []string{"git", "push", "--config", "git.executable-path=/usr/bin/git"}, refused: true, says: "git.executable-path is /usr/bin/git"},
+		{name: "an attached --config naming another git", args: []string{"git", "push", "--config=git.executable-path=/usr/bin/git"}, refused: true, says: "git.executable-path is /usr/bin/git"},
+		{name: "a --config-file naming another git", args: []string{"git", "push", "--config-file", configFile}, refused: true, says: "git.executable-path is /usr/bin/git"},
+		{name: "a --config-file jj cannot read", args: []string{"git", "push", "--config-file", filepath.Join(dir, "missing.toml")}, refused: true, says: "jj could not read its git.executable-path"},
 		{name: "no configuration argument at all", args: []string{"git", "push"}},
 		{name: "a --config naming the wrapper itself", args: []string{"git", "push", "--config", "git.executable-path=" + gitWrapper}},
 	} {
@@ -342,8 +354,165 @@ func TestTheJJWrapperReadsTheConfigurationThePushWouldUse(t *testing.T) {
 			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
 				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
 			}
-			if !strings.Contains(out, "/usr/bin/git") {
-				t.Fatalf("the refusal does not name the git jj would have run:\n%s", out)
+			if !strings.Contains(out, tc.says) {
+				t.Fatalf("the refusal does not say %q:\n%s", tc.says, out)
+			}
+		})
+	}
+}
+
+// The jj wrapper checks a `jj gerrit upload` as it checks a `jj git push`: jj uploads through the
+// same git subprocess (`git::push_updates`, cli/src/commands/gerrit/upload.rs), so an upload run
+// with `--config git.executable-path=<another git>` would reach a git with no pre-push hook and so
+// no leak check. The refusal comes before the upload starts: the stand-in behind the git wrapper
+// records nothing. The control is the same upload with git.executable-path at the git wrapper,
+// which the jj wrapper lets through: jj runs its push through the git wrapper, and the stand-in
+// records it with the git wrapper's hooks path in front of the subcommand. The stand-in answers
+// the push with nothing, which jj then reports as a failed push; that failure is the stand-in's,
+// and what this test reads is what reached it.
+func TestTheJJWrapperChecksAGerritUploadAsAPush(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the real jj, which uploads: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "argv")
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
+	})
+	script := wrapperCopy(t, dir, "jj",
+		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+	)
+	// A change to upload and a remote to upload it to, made by the test's own git and jj, so the
+	// stand-in records the upload's git alone.
+	setup := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	remote := filepath.Join(dir, "remote.git")
+	setup.Run(dir, fixturegit.InitBare(remote, "main")...)
+	repo := filepath.Join(dir, "repo")
+	setup.Run(dir, fixturegit.JJInit(repo, false)...)
+	setup.Run(repo, "jj", "git", "remote", "add", "origin", remote)
+	if err := os.WriteFile(filepath.Join(repo, "file"), []byte("a change\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	setup.Run(repo, "jj", "describe", "-m", "a change")
+	run := setup.With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+
+	for _, tc := range []struct {
+		name       string
+		executable string
+		refused    bool
+	}{
+		{name: "an upload naming another git", executable: "/usr/bin/git", refused: true},
+		{name: "the same upload naming the git wrapper", executable: gitWrapper},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Remove(log); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			out, err := run.Try(repo, script, "gerrit", "upload", "-r", "@", "--remote-branch", "main",
+				"--config", "git.executable-path="+tc.executable)
+			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
+			if refused != tc.refused {
+				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, tc.refused, err, out)
+			}
+			if !tc.refused {
+				got := ranAs(t, log)
+				at := slices.Index(got, "push")
+				if at < 2 || !slices.Equal(got[at-2:at], []string{"-c", "core.hooksPath=/opt/legion/githooks"}) ||
+					!strings.HasSuffix(got[len(got)-1], ":refs/for/main") {
+					t.Fatalf("the upload reached the git wrapper's git as %q, want a push to refs/for/main with the wrapper's hooks path in front of it\n%s", got, out)
+				}
+				return
+			}
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
+				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
+			}
+			if !strings.Contains(out, "git.executable-path is /usr/bin/git") {
+				t.Fatalf("the refusal does not name git.executable-path and the git jj would have run:\n%s", out)
+			}
+			if _, err := os.Stat(log); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("a git ran for the refused upload, so the refusal came after the upload started: %v", err)
+			}
+		})
+	}
+}
+
+// The jj wrapper reads the configuration of the repository the push opens, however the caller
+// names it: a `-R` written after the subcommand names it as one written before it does, in each
+// spelling, and of two the last written is the one jj opens. A wrapper that stopped reading at the
+// subcommand read the configuration of the directory it ran in, and let `jj git push -R <a
+// repository whose own configuration names another git>` through to that git.
+func TestTheJJWrapperReadsTheRepositoryNamedAfterTheSubcommand(t *testing.T) {
+	jj, err := exec.LookPath("jj")
+	if err != nil {
+		t.Fatalf("this test runs the real jj, which reads the configuration: %v", err)
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitWrapper := wrapperCopy(t, bin, "git", [2]string{
+		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), filepath.Join(dir, "argv")),
+	})
+	script := wrapperCopy(t, dir, "jj",
+		[2]string{"real=/usr/local/bin/jj", "real=" + jj},
+		[2]string{"wrapper=/opt/legion/bin/git", "wrapper=" + gitWrapper},
+	)
+	// named is the repository whose own configuration each case sets, and clean sets nothing. Each
+	// has a remote, so a push the wrapper lets through finds nothing to push and exits 0. The
+	// pushes run in dir, which is no repository, so a wrapper that missed the -R would read no
+	// repository's configuration at all.
+	setup := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	remote := filepath.Join(dir, "remote.git")
+	setup.Run(dir, fixturegit.InitBare(remote, "main")...)
+	named := filepath.Join(dir, "named")
+	clean := filepath.Join(dir, "clean")
+	for _, repo := range []string{named, clean} {
+		setup.Run(dir, fixturegit.JJInit(repo, false)...)
+		setup.Run(repo, "jj", "git", "remote", "add", "origin", remote)
+	}
+	run := setup.With("PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH"))
+
+	for _, tc := range []struct {
+		name string
+		// executable is the git.executable-path named's own configuration sets.
+		executable string
+		args       []string
+		refused    bool
+	}{
+		{name: "a -R after the subcommand", executable: "/usr/bin/git", args: []string{"git", "push", "-R", named}, refused: true},
+		{name: "an attached -R after the subcommand", executable: "/usr/bin/git", args: []string{"git", "push", "-R" + named}, refused: true},
+		{name: "an attached --repository after the subcommand", executable: "/usr/bin/git", args: []string{"git", "push", "--repository=" + named}, refused: true},
+		{name: "a later -R naming it", executable: "/usr/bin/git", args: []string{"-R", clean, "git", "push", "-R", named}, refused: true},
+		{name: "a -R after the subcommand naming a repository set to the wrapper", executable: gitWrapper, args: []string{"git", "push", "-R", named}},
+		{name: "an earlier -R naming it", executable: "/usr/bin/git", args: []string{"-R", named, "git", "push", "-R", clean}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setup.Run(dir, "jj", "-R", named, "config", "set", "--repo", "git.executable-path", tc.executable)
+			out, err := run.Try(dir, append([]string{script}, tc.args...)...)
+			refused := strings.Contains(out, "LEAK CHECK SETUP ERROR")
+			if refused != tc.refused {
+				t.Fatalf("the wrapper refused=%v, want %v: %v\n%s", refused, tc.refused, err, out)
+			}
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("the wrapper did not run the push: %v\n%s", err, out)
+				}
+				return
+			}
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.ExitCode() != 2 {
+				t.Fatalf("the refusal exited %v, want 2, the shared check's own setup-error status\n%s", err, out)
+			}
+			if !strings.Contains(out, "git.executable-path is /usr/bin/git") {
+				t.Fatalf("the refusal does not name git.executable-path and the git jj would have run:\n%s", out)
 			}
 		})
 	}

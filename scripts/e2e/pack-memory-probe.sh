@@ -917,7 +917,7 @@ for arg; do
     continue
   fi
   case "$arg" in
-    -R | --repository | --config | --config-file | --config-toml | --at-operation | --at-op | --color | \
+    -R | --repository | --config | --config-file | --at-operation | --at-op | --color | \
       -r | --revision | --revisions | -m | --message | -T | --template | --name | --sparse-patterns) skip=1 ;;
     -*) ;;
     *[!a-z-]*) break ;;
