@@ -21,7 +21,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -312,19 +311,17 @@ func (a *Attempt) Outcome() (sent, failed bool, cause string) {
 
 // Cause is value made storable and cut to CauseLimit bytes. The text is made storable first
 // (text.StorableReplacement: invalid UTF-8 and U+0000 become U+FFFD, which a Postgres text column
-// needs), then cut on a rune boundary and ended with " … (cut from <n> bytes)", n being the
-// storable text's length, inside the limit, so a reader sees that it was cut and by how much.
+// needs), then cut at a whole character (text.HeadBytes) and ended with
+// " … (cut from <n> bytes)", n being the storable text's length, inside the limit, so a reader
+// sees that it was cut and by how much.
 func Cause(value string) string {
 	value = text.StorableReplacement(value)
 	if len(value) <= CauseLimit {
 		return value
 	}
 	marker := " … (cut from " + strconv.Itoa(len(value)) + " bytes)"
-	cut := CauseLimit - len(marker)
-	for cut > 0 && !utf8.RuneStart(value[cut]) {
-		cut--
-	}
-	return value[:cut] + marker
+	head, _ := text.HeadBytes(value, CauseLimit-len(marker))
+	return head + marker
 }
 
 // Recorder writes a read's newest attempt: whether it succeeded, and the cause of its first

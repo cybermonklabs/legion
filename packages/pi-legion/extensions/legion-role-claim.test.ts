@@ -33,6 +33,7 @@ const registered: Record<string, unknown> = JSON.parse(
 // stand-in.
 const natsStandInConnect = async () => ({
   isClosed: () => false,
+  closed: () => new Promise<void>(() => undefined),
   close: async () => undefined,
   drain: async () => undefined,
   flush: async () => undefined,

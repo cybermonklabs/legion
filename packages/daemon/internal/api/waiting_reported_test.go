@@ -114,8 +114,8 @@ func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, st
 	t.Helper()
 	ctx := context.Background()
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: key, Project: waitProject,
-			Status: status, Parent: parent, Blockers: waits, Seq: 1})
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: waitProject, Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)})
 	}); err != nil {
 		t.Fatalf("seed the mirror of %s: %v", key, err)
 	}

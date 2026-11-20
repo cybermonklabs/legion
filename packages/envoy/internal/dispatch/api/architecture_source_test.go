@@ -667,6 +667,10 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 		"dot-dot after .git trim":  {"legion/...git", "main"},
 		"dot after .git trim":      {"legion/..git", "main"},
 		"empty after .git trim":    {"legion/.git", "main"},
+		// The stored form is held to the rule too: canonicalising trims one `.git`, and every
+		// later read trims another.
+		"empty after two .git trims":   {"acme/.git.git", "main"},
+		"dot-dot after two .git trims": {"acme/...git.git", "main"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			response := dispatchRequest(t, handler, http.MethodPut, sourcePath("CORE", input.repo), map[string]string{"branch": input.branch}, "alice")
@@ -691,6 +695,12 @@ func TestArchitectureSourceInputValidation(t *testing.T) {
 	// holds `//` to its cleaned form first. So the parse is asked directly.
 	if owner, name, err := parseSourceRepo("/arch"); err == nil {
 		t.Fatalf("parseSourceRepo(/arch) = %q, %q; want an empty owner refused", owner, name)
+	}
+	// The parse trims the space around a repository before it reads it, as a deploy repository
+	// or a renamed_to typed with a space after it carries. The negative control is a parse that
+	// reads the value untrimmed, which refuses it.
+	if owner, name, err := parseSourceRepo(" Legion/Arch.git\n"); err != nil || owner != "legion" || name != "arch" {
+		t.Fatalf("parseSourceRepo(%q) = %q, %q, %v; want legion and arch", " Legion/Arch.git\n", owner, name, err)
 	}
 
 	// A managed user's login ends in `_<shortcode>`, and a source in such an account is saved

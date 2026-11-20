@@ -438,9 +438,9 @@ func TestAReplicaClosedWhileReconnectingStaysOutOfTheGroup(t *testing.T) {
 
 // A replica whose connection drops and comes back while a connected Close drains it does not stay
 // in the queue group. The drain unsubscribes from the hub at once, but nats.go sends a draining
-// subscription again on a reconnect (nats.go:5997-6033, resendSubscriptions, which does not check
-// draining), so the hub puts the replica back in the group, and the drain's end then removes the
-// subscription on the client's side only (nats.go:5366-5370, checkDrained). A Close that then
+// subscription again on a reconnect (nats.go v1.55.0:6179-6230, resendSubscriptions, which does
+// not check draining), so the hub puts the replica back in the group, and the drain's end then
+// removes the subscription on the client's side only (nats.go:5504-5554, checkDrained). A Close that then
 // waited out its decisions on that connection left the hub routing requests to a replica with no
 // subscriber for as long as the longest of them ran, and each of those clients waited out the
 // hub's whole authorization timeout. Here the closing replica holds a decision of five seconds,
@@ -521,7 +521,7 @@ func TestAReplicaThatReconnectsWhileItDrainsLeavesTheGroup(t *testing.T) {
 
 // Close returns only once the request its subscription was delivering when it unsubscribed has
 // been decided. An unsubscribe, which Close makes on a connection that is reconnecting, ends the
-// subscription at once (nats.go:5444, removeSub) while its callback may still be delivering a
+// subscription at once (nats.go v1.55.0 Unsubscribe, :5477-5495) while its callback may still be delivering a
 // request; a Close that went straight on to wait for the decisions started so far waited without
 // the one that callback was about to start, and returned with it still to run. Here delivery is
 // held with one request at the hold when the hub stops, the replica is closed while reconnecting,
