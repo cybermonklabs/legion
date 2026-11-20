@@ -537,6 +537,52 @@ test("useOutOfTabOrder with keepScrollers judges a scroller again on every chang
   }
 });
 
+// The size observer of decision 317 watches the box and each of its scrollers once: a browser
+// reports a target again each time it is watched, and each report runs the pass that watches
+// them, so a second watch would report the scrollers on every frame. A scroller that leaves the
+// box is let go, so the observer holds nothing the row no longer draws.
+test("useOutOfTabOrder with keepScrollers watches each scroller once, and lets go of one that leaves the box", async () => {
+  const sizes = installResizeObserver();
+  const unobserve = spyOn(ResizeObserver.prototype, "unobserve");
+  try {
+    const view = draw(<KeptScrollers keepScrollers />);
+    try {
+      const box = view.container.firstElementChild;
+      const other = view.container.querySelector("[data-other]");
+      if (box === null || other === null) throw new Error("the box draws no other scroller");
+      // A target by the mark it carries, so a failure prints words: printed whole, an element of
+      // the test's DOM drags its document with it.
+      const markOf = (target: Element) =>
+        target === box ? "box" : (KEPT_SCROLLERS.find((mark) => target.matches(mark)) ?? "?");
+      // A second pass: the window narrows the box.
+      sizes.resize(box);
+      expect(sizes.observed().map(markOf), "a second pass watched a scroller again").toEqual([
+        "box",
+        ...KEPT_SCROLLERS,
+      ]);
+      act(() => {
+        other.remove();
+      });
+      await waitFor(() => {
+        expect(
+          unobserve.mock.calls.map(([target]) => markOf(target)),
+          "the scroller that left the box is still watched"
+        ).toEqual(["[data-other]"]);
+      });
+      sizes.resize(box);
+      expect(
+        unobserve.mock.calls.map(([target]) => markOf(target)),
+        "a scroller was let go twice, or one in the box was"
+      ).toEqual(["[data-other]"]);
+    } finally {
+      view.unmount();
+    }
+  } finally {
+    unobserve.mockRestore();
+    sizes.restore();
+  }
+});
+
 // A row that loses the focus stops passing `keepScrollers`, and its scrollers leave the tab order
 // again, with no name or role left of the ones they carried while it held the focus.
 test("useOutOfTabOrder takes every kept scroller out of the tab order, unnamed, once keepScrollers turns off", () => {
