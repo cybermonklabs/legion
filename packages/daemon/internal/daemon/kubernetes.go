@@ -55,12 +55,13 @@ var workerImageTools = sandbox.Tools{
 
 // imageProbeRetry is how often the daemon tries its worker image again after an attempt that said
 // nothing definitive: the daemon's backoff, bounded like `legion probe-image`'s at six attempts.
-// Its transient outcomes (a pod that never finished, a kubelet failure) can repeat for a reason no
-// wait changes, such as a memory limit too small for Oh My Pi, so an unbounded retry would hold a
-// deterministic refusal as a boot that never ends. A probe pod the pool has no room for is no such
-// outcome: it is waited on at the policy's longest interval, outside the six (bootprobe.Run,
-// Outcome.Waiting), since a full pool is the pool's state and not the image's, and the daemon
-// exiting would not make room.
+// Its transient outcomes (a pod that never finished, a kubelet failure, a probe that exited
+// bootprobe.NoVerdictExit because a TLS run or a check had no verdict) can repeat for a reason no
+// wait changes, such as a memory limit too small for Oh My Pi or a client that never answers, so
+// an unbounded retry would hold a deterministic refusal as a boot that never ends. A probe pod
+// the pool has no room for is no such outcome: it is waited on at the policy's longest interval,
+// outside the six (bootprobe.Run, Outcome.Waiting), since a full pool is the pool's state and not
+// the image's, and the daemon exiting would not make room.
 var imageProbeRetry = bootprobe.Image
 
 // sandboxReads is what Agent Sandbox needs that readBoot reads: the cluster's client and the
@@ -269,6 +270,10 @@ func sandboxBootOf(cfg config.Config, reads sandboxReads) (sandboxBoot, error) {
 // 250m (CPU time × 4, plus the wall time off CPU), the worst takes 184 s, 56 s inside the budget,
 // short of the 60 s; at 500m (CPU time × 2) it takes 112 s, 128 s inside. The runs are at 1 CPU
 // because the builds namespace refuses a Job under 1 CPU, so the 500m figures are predictions.
+// None of these runs met a cold image: a TLS run its own limit stops at a site an earlier run
+// reached runs once more at two times that limit (probeTLSClients), which adds up to two times
+// the limit for each such run to a probe on a node where the image is new, and a probe its
+// deadline cuts exits 75, which the daemon reads as a transient attempt.
 // Five fresh runs at 250m / 1Gi, before the probe held gcloud, bq, az, mise, wget, git, go,
 // kubectl, redis-cli and socat, took 57.68–77.43 s, so 1Gi held the probe, and the reservation
 // still fits a pool that cannot place a controller or issue pod. It has a 5Gi bound on node disk

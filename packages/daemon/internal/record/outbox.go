@@ -2528,13 +2528,20 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
 // and not a repair: it names the kinds the session reported and how long the report has stood,
 // and says that nothing was sent and nothing will be sent for it.
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left

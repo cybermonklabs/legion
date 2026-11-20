@@ -27,25 +27,47 @@ import (
 // Spawn starts a fresh agent for spec's claim, over whatever the claim's Sandbox already holds
 // (decision 3a): a relaunch before the agent's first registration — the registration deadline, a
 // death before registration, a retried launch, boot finishing a launch a crash interrupted — is a
-// Spawn over an existing Sandbox. A spec with a ResumeSessionFile is refused: continuing a
-// recorded agent is Resume's. spec.Plugins travels with a claim that has registered a session
-// (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here anyway, so Spawn
-// always installs nothing and a fresh pod always loads the image's copies.
+// Spawn over an existing Sandbox. A spec that names a session to continue, by its file
+// (ResumeSessionFile) or by its id (ResumeSession), or that asks the agent's own command to
+// resolve one (ResumeByAgent), is refused before anything is touched: continuing a recorded agent
+// is Resume's, and a fresh agent continues nothing. spec.Plugins travels with a claim that has
+// registered a session (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here
+// anyway, so Spawn always installs nothing and a fresh pod always loads the image's copies.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	if spec.ResumeSessionFile != "" {
+	switch {
+	case spec.ResumeSessionFile != "":
 		return runtime.Locator{}, fmt.Errorf("spawn %s: a ResumeSessionFile is Resume's to set", spec.Claim)
+	case spec.ResumeSession != "":
+		return runtime.Locator{}, fmt.Errorf("spawn %s: a ResumeSession is Resume's to set", spec.Claim)
+	case spec.ResumeByAgent:
+		return runtime.Locator{}, fmt.Errorf("spawn %s: ResumeByAgent is Resume's to set, with a ResumeSession", spec.Claim)
 	}
 	spec.Plugins = nil
 	return r.relaunch(ctx, nil, spec)
 }
 
-// Resume starts the agent spec's claim recorded, again, from spec.ResumeSessionFile. prev is a
-// hint: the issue's Sandbox is found by name. A suspended Sandbox waits out its pod before
-// restarting; an active issue pod starts only this role. The launcher checks the session file
-// before starting the child, so a missing retained session never becomes a fresh agent.
+// Resume starts the agent spec's claim recorded, again, from the session spec names by exactly one
+// of its file (ResumeSessionFile) and its id (ResumeSession, for a claim that records no file of
+// it): a spec naming neither has nothing to continue, and one naming both names two sessions. A
+// spec that asks the agent's own command to resolve the id (ResumeByAgent) names that id, or it is
+// refused: there is nothing for the agent to resolve. Each refusal comes before anything is
+// touched. prev is a hint: the issue's Sandbox is found by name. A suspended Sandbox waits out its
+// pod before restarting; an active issue pod starts only this role. The launcher checks the
+// session file before starting the child, and looks a session named by its id alone up in the
+// session table, so a missing retained session never becomes a fresh agent. A session named by its
+// id alone is named only to a launcher whose hello said it can make that lookup: through any other,
+// relaunch answers runtime.ErrSessionLookupUnavailable having sent nothing, and the caller's next
+// Resume, with ResumeByAgent, names no session to the launcher and has Oh My Pi's own
+// `--resume=<id>` resolve it (agentArgv, launcherCommand).
 func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
-	if spec.ResumeSessionFile == "" {
-		return runtime.Locator{}, fmt.Errorf("resume %s: no session file to resume from", spec.Claim)
+	switch {
+	case spec.ResumeSessionFile == "" && spec.ResumeSession == "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: no session file or session id to resume from", spec.Claim)
+	case spec.ResumeSessionFile != "" && spec.ResumeSession != "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: the spec names both session file %s and session id %s; a resume continues one session",
+			spec.Claim, spec.ResumeSessionFile, spec.ResumeSession)
+	case spec.ResumeByAgent && spec.ResumeSession == "":
+		return runtime.Locator{}, fmt.Errorf("resume %s: ResumeByAgent asks the agent to resolve a session id the spec does not name", spec.Claim)
 	}
 	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
 		return runtime.Locator{}, fmt.Errorf("sandbox runtime: resume: %w", err)
@@ -189,6 +211,13 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // Sandbox (secretsReleasedAnnotation). A launch that keeps such a Sandbox removes that record
 // before it writes the first Secret (provision), so the record is never on a Sandbox that owns a
 // Secret. A Sandbox that a replacement creates carries no record.
+//
+// A Resume of a session by its id alone (spec.ResumeSession without ResumeByAgent) whose role's
+// launcher has not said in its hello that it can look the id up ends once that launcher has
+// connected, with an error wrapping runtime.ErrSessionLookupUnavailable that names the claim, its
+// Sandbox and the pod, having stopped, recorded and sent nothing in the pod; the supervisor's next
+// Resume, which has the agent's own command resolve the id, ensures the Sandbox, reads the launcher
+// bindings and waits for the launcher again.
 func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	ctx = launching(ctx)
 	l, err := r.prepare(spec)
@@ -391,6 +420,21 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// charged a launcher timeout that end explains.
 		r.join(loc)
 		return loc, nil
+	}
+	// A session named by its id alone goes only to a launcher whose hello said it can look the id
+	// up (launchers.resumesBySession). Any other would ignore the id and start Oh My Pi on the
+	// argv's bare `--resume=<id>`, a launch the supervisor built as a lookup by the launcher and
+	// not as the agent's own (ResumeByAgent), whose prompt says the workspace may have been
+	// recreated. So the launch ends here, answering runtime.ErrSessionLookupUnavailable, which the
+	// supervisor follows in the same try with a Resume that has the agent resolve the id. It ends
+	// before anything is done in the pod: no earlier generation is stopped, no address is recorded,
+	// no leak check or saved workspace is sent, and no start, so there is no issued child to stop
+	// (stopIssuedChild). A spec with ResumeByAgent is held to nothing here: it names no
+	// session to the launcher (launcherCommand), so any launcher the pod has can start it.
+	if spec.ResumeSession != "" && !spec.ResumeByAgent && !r.launchers.resumesBySession(spec.Claim, loc.Sandbox.PodUID) {
+		return fail("resume session "+spec.ResumeSession+" by its id", fmt.Errorf(
+			"sandbox %s's pod %s: its launcher has not said in its hello that it can look a session up by its id, so it was sent nothing: %w",
+			loc.Sandbox.Name, loc.Sandbox.PodUID, runtime.ErrSessionLookupUnavailable))
 	}
 	// A launcher still running an earlier generation of this role runs a process the supervisor has
 	// already given up on: it is stopped before the new generation starts, so two generations of a
