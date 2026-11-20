@@ -2868,13 +2868,13 @@ package api
 // a plugin from 193 to 199, which states its contract, is served 193's keys and the block in 152's
 // shape, a pod whose claims record 178 to 192 and that states nothing is served the pause and that
 // block, and a caller that states nothing from no pod — the operator's `legion state`, `legion
-// controller start` — is served the new block. A tmux pane's plugin states its own contract, which
-// the boot gate and `legion probe-image` keep at this one.
+// controller start` — is served the new block. A tmux pane's plugin states its own contract,
+// which the boot gate and `legion probe-image` keep at this one.
 // The records of `contract-shapes.json` take the step as they take every band: 200's records hold
 // the new block's key paths, and every record below 200 keeps the older block's. One enumerated
-// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose five
-// words answers.go records at this contract (liveCacheStates), so every record of the state below
-// 200 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
+// field arrives with the block, the cache's `state` at `repositories.live.*.cache.state`, whose
+// five words answers.go records at this contract (liveCacheStates), so every record of the state
+// below 200 holds that key path's domain empty, as domainsOf writes it, and no other domain moves.
 // `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
 // `state-narrowed-repositories.json` is the body served a caller that states 199, which is served
 // at 193, the recorded contract below it: 193's keys, the pause and the block in 152's shape.
