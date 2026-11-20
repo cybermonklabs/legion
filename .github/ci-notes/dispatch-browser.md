@@ -14,7 +14,7 @@ first sections below.
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-over four shard machines, the three `-alone` projects get a machine each, the two-process job,
+over five shard machines, the three `-alone` projects get a machine each, the two-process job,
 the fake-embedder job and the containerised visual review take one each, and one merge job
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
@@ -142,7 +142,7 @@ the artifact this job uploaded on the attempt before.
 
 ## The shard job, its stacks and its container
 
-One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/4` over four
+One leg of the lane's rows. Each leg runs the lane's projects with `--shard=N/5` over four
 Playwright workers, and the run's `globalSetup` starts one stack per worker, each with a
 Postgres, a harness and a file-store bucket of its own (packages/dispatch/e2e/
 harness-pool.ts), so this job has no `postgres:` service and no job-level DATABASE_URL:
@@ -199,16 +199,28 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
-suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
-in shard order, in seconds:
+The browser step's budget, its `timeout-minutes: 9`, is measured. It was first measured on the two runs of the head that sharded this
+suite into four legs: 42334424798, the pull-request lane, and 42316487530, the full lane, in
+shard order, in seconds:
 
   step                                     pull-request lane        full lane
   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
   every other step summed                  76, 67, 72, 85      79, 76, 80, 77
 
-The rule is in this file's head. The browser step's maximum is the full lane's 419 s, so
-419 x 1.15 = 482 s -> 9 min, which is the bound this issue's R1 asks of the longest
+With five legs it is measured on two full-lane runs of one head, c1ea125d: 44455259784, a pull
+request's push, and 44455340996, a workflow_dispatch of ci.yaml, in shard order, in seconds:
+
+  step                                     pull request's push       workflow_dispatch
+  Browser-test dispatch dashboard         434, 383, 316, 403, 394  344, 325, 408, 298, 325
+  every other step summed                 116, 131, 132, 129, 127  126, 121, 121, 121, 120
+
+No run of that head took the pull-request lane, so its five legs are a computed reading and not
+a run: `playwright test --list` with that lane's projects, its `@pr` grep and `--shard=N/5` gives
+each leg's rows, and the push's own time of each row gives the legs 277, 160, 203, 154 and 147 s
+of rows, about 69 s on a leg's four workers at the most.
+
+The rule is in this file's head. The browser step's maximum is now the five-leg full lane's
+434 s, so 434 x 1.15 = 499 s -> 9 min, which is the bound this issue's R1 asks of the longest
 shard's browser step, and which the container does not move: it is the same rows in the
 same browsers.
 
@@ -312,9 +324,10 @@ wall-clock rows are the alone job's.
 
 ## Why the leg count stands in two places
 
-Four legs. The count is written here and in the `--shard` denominator of the browser step
-(`--shard=$shard/4` in .github/scripts/dispatch-browser-shard-suite.sh), and nowhere else, so the two move together: a denominator larger than the leg list
-would leave the rows of the missing legs unrun with nothing red.
+Five legs. The count is written here and in the `--shard` denominator of the browser step
+(`--shard=$shard/5` in .github/scripts/dispatch-browser-shard-suite.sh), and the two move together: a denominator larger than the leg list
+would leave the rows of the missing legs unrun with nothing red. The browser step's name holds it
+too, and .github/scripts/ci_job_reads.py's `BROWSER_SHARD_SPECS` spells that name again.
 
 ## What the shard job downloads in place of a Go build
 
@@ -1099,7 +1112,7 @@ Delete it as unused and `test-results` moves to the top of the archive, off that
 What the legs together ran. It joins every shard's and every alone leg's blob report into one
 report, publishes four readings of it - the rows, the flake rate, the legs that did not
 succeed and the row durations - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-and not seven.
+and not eight.
 
 This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
 `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It

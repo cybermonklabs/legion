@@ -235,7 +235,7 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
  * `api/query-refresh.ts`): a read never cancels one already out, and the tab reads at most once a
  * second, however its starts and the feed's batches fall.
  */
-function useCatchUp(issueKey: string, shown: boolean): void {
+export function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
   // Whether the page is shown, as TanStack reads `visibilitychange` for its own refetch on focus.
   const visible = useSyncExternalStore(focusManager.subscribe, () => focusManager.isFocused());

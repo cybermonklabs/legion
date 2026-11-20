@@ -25,6 +25,7 @@ import {
   useDialog,
   useMediaQuery,
 } from "../shell/useDialog";
+import { useDetailsFocusKeeper } from "./details-focus-keeper";
 import { MarginSheet, type MarginSheetModel } from "./MarginSheet";
 import { useMargin } from "./margin-context";
 import {
@@ -257,6 +258,7 @@ function DetailsDrawer({
   const closeButton = useRef<HTMLButtonElement>(null);
   const box = useRef<HTMLElement | null>(null);
   const { open, page, setOpen } = drawer;
+  useDetailsFocusKeeper(box, open);
   // The shell hands a new `setOpen` whenever its drawer changes - a new `page` among them - so
   // the effects below read the latest through this ref and run on `open` alone: a drawer that
   // stays open neither moves the focus nor records a new opener.

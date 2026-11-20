@@ -1,0 +1,229 @@
+import { type FormEvent, type ReactNode, useEffect, useRef } from "react";
+import { Link } from "react-router-dom";
+
+import type { IssueDetails } from "../../api/types";
+import {
+  pageFailedText,
+  pageField,
+  pageHeaderControl,
+  pageInkText,
+  pageQuietText,
+} from "../../theme/classes";
+import { buildIssuePath } from "../refs/routes";
+import { focusOnDocument } from "../shell/roving";
+import { FormActions } from "./IssueFieldForms";
+import { authorText, HELP_LINES, pageChrome } from "./page-structure";
+import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
+import { ROW_LINK } from "./row-references";
+import type { BlockedByWrite } from "./useIssueBlockedBy";
+
+/** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
+ *  what a reader types into the blocked-by editor as the model's own list. */
+function issueKeysIn(value: string): readonly string[] {
+  const keys = value
+    .split(/[\s,]+/u)
+    .map((key) => key.toUpperCase())
+    .filter((key) => key !== "");
+  return [...new Set(keys)];
+}
+
+/** The id of the editor's box, by which Details finds the box when it hands the box a focus
+ *  (`IssueMargin.tsx`). */
+export const BLOCKED_BY_INPUT_ID = "issue-blocked-by";
+
+/**
+ * The name the blocked-by control answers to: the word it shows and what it opens, in the words
+ * the box it opens is named by ("Issues CORE-1 waits on"), so a voice user saying what they read
+ * presses it (WCAG 2.5.3) and every reader hears one sentence: "Add issues CORE-1 waits on". The
+ * add menu reaches the control by this name rather than drawing a second copy of it, and calls
+ * this function for it (`IssueAddMenu.tsx`), so the two sides cannot drift apart: a word changed
+ * here changes both.
+ */
+export function blockedByControlName(issueKey: string, blockerCount: number): string {
+  const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;
+  return `${verb} issues ${issueKey} waits on`;
+}
+
+/**
+ * The issues this one waits on, in their row of Details beside the repository and the
+ * components, which carries the label: every blocker as a link to it with its title after it,
+ * and one control that opens the editor for them - the same control whether the issue waits on
+ * nothing or on five, so a set value can be changed and cleared and not only set once.
+ *
+ * The editor is here, where the value is, as the repository's and the components' are. It
+ * stays open until Dispatch answers and says there what it refused - a key it has no issue
+ * for, or the issue itself - in the page's own sentence with the key in it
+ * (`BLOCKED_BY_REFUSALS`), with the keys the reader typed still in the box, so a refused
+ * list is mended rather than retyped (`useIssueBlockedBy.ts`).
+ *
+ * While that save is out nothing closes the editor: Cancel is held, and drawn so, and Escape is
+ * refused, because a reader who closed it a moment before the refusal landed would be shown no
+ * refusal at all. Opening the editor forgets the last refusal, so the one drawn is always the
+ * one the reader is looking at.
+ *
+ * Whether the editor is open, the list typed into it and its write are the panel's
+ * (`IssueMarginPanel`), handed down here, and not this row's: a closed section of Details
+ * unmounts its rows, so a reader who closes Development while a save is out still finds the
+ * editor, the list they typed and the refusal that landed meanwhile when they open it again.
+ */
+export function BlockedByControl({
+  draft,
+  editing,
+  issue,
+  onDraft,
+  onEditing,
+  titleOf,
+  write,
+}: {
+  /** The list typed into the editor. */
+  draft: string;
+  /** Whether the editor is open. */
+  editing: boolean;
+  issue: IssueDetails;
+  onDraft: (draft: string) => void;
+  onEditing: (editing: boolean) => void;
+  /** The title of the issue `key`, once Details has read it. */
+  titleOf: (key: string) => string | undefined;
+  /** The write that saves the list (`useIssueBlockedBy`), which closes the editor on a landing. */
+  write: BlockedByWrite;
+}): ReactNode {
+  const blockers = issue.blocked_by ?? [];
+  const input = useRef<HTMLInputElement>(null);
+  const control = useRef<HTMLButtonElement>(null);
+  // Set by the reader's own open, so the box takes the focus then and not when Development is
+  // opened again over an editor that stayed open.
+  const focusBox = useRef(false);
+  // Whether the editor was open at the last commit, so that its close - by Cancel, by Escape or
+  // by a save that lands - is told apart from Development opening over a closed editor.
+  const wasEditing = useRef(editing);
+  const isClosed = issue.closed_at !== null;
+  // The editor opens with the issue's own list in it, and the focus in the box: the control
+  // that opened it is still on the page, so a reader on the keyboard would otherwise have to
+  // find the box themselves. It closes with the focus back on that control, where the focus
+  // fell to the document with the box, the one focus the page takes back (`shell/roving.ts`).
+  useEffect(() => {
+    const closed = wasEditing.current && !editing;
+    wasEditing.current = editing;
+    if (closed) {
+      if (focusOnDocument()) control.current?.focus();
+      return;
+    }
+    if (!editing || !focusBox.current) return;
+    focusBox.current = false;
+    input.current?.focus();
+  }, [editing]);
+  const open = () => {
+    write.forgetRefusal();
+    onDraft(blockers.join(" "));
+    focusBox.current = true;
+    onEditing(true);
+  };
+  // The save holds the editor open: the refusal it may bring is drawn in this form and nowhere
+  // else, so a close taken meanwhile would throw it away.
+  const close = () => {
+    if (!write.pending) onEditing(false);
+  };
+  const save = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    write.save(issueKeysIn(draft));
+  };
+  return (
+    <div className={`flex w-full min-w-0 flex-col gap-1 text-sm ${pageInkText}`}>
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        {blockers.length === 0 ? (
+          <span className={pageQuietText} {...pageChrome}>
+            {CONTROL_LABELS.none}
+          </span>
+        ) : (
+          blockers.map((key) => <IssueLine issueKey={key} key={key} title={titleOf(key)} />)
+        )}
+        {isClosed || editing ? null : (
+          <button
+            // The name is `blockedByControlName`'s, which the add menu reaches this control by
+            // rather than drawing a second copy of it (`IssueAddMenu.tsx`).
+            aria-label={blockedByControlName(issue.key, blockers.length)}
+            className={pageHeaderControl}
+            onClick={open}
+            ref={control}
+            type="button"
+            {...pageChrome}
+          >
+            {blockers.length === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit}
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <form className="flex min-w-0 flex-wrap items-center gap-2" onSubmit={save}>
+          <input
+            aria-describedby="issue-blocked-by-help"
+            aria-label={`Issues ${issue.key} waits on`}
+            className={`w-full rounded-[7px] border px-2 py-1 text-sm outline-none ${pageField}`}
+            id={BLOCKED_BY_INPUT_ID}
+            onChange={(event) => onDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              // The press is the editor's alone, marked as taken: the page's own Escape - the
+              // phone's Details sheet closes on it (`useDialog.ts`) - passes over a press a
+              // control has taken (`shell/keymap.ts`), so Details stays open.
+              event.preventDefault();
+              close();
+            }}
+            placeholder={`${issue.project}-12 ${issue.project}-13`}
+            ref={input}
+            value={draft}
+          />
+          <FormActions
+            cancel={close}
+            saveLabel={write.pending ? ANSWER_LINES.saving_field : CONTROL_LABELS.save_blocked_by}
+            saving={write.pending}
+            waiting={write.pending}
+          />
+          {/* What the box takes, drawn rather than left to a placeholder a reader on the
+              keyboard never hears. */}
+          <span className="sr-only" id="issue-blocked-by-help" {...pageChrome}>
+            {HELP_LINES.blocked_by}
+          </span>
+          {/* What Dispatch refused, where the reader is typing: the page's sentence, with the key
+              it is about as the reader's own text; a refusal the page has no sentence for is
+              Dispatch's own words. */}
+          {write.error === undefined ? null : typeof write.error === "string" ? (
+            <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...authorText}>
+              {write.error}
+            </span>
+          ) : (
+            <span className={`basis-full text-sm ${pageFailedText}`} role="alert" {...pageChrome}>
+              {BLOCKED_BY_REFUSALS[write.error.words].before}
+              {write.error.key === undefined ? null : (
+                <span {...authorText}>{write.error.key}</span>
+              )}
+              {BLOCKED_BY_REFUSALS[write.error.words].after}
+            </span>
+          )}
+        </form>
+      ) : null}
+    </div>
+  );
+}
+
+/** One issue in a row of Details: its key, bold, as the way to it, and its title after it (the
+ *  prototype's `.lnkrow`). */
+export function IssueLine({
+  issueKey,
+  title,
+}: {
+  issueKey: string;
+  title: string | undefined;
+}): ReactNode {
+  return (
+    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+      <Link
+        className={`dispatch-inline-link mr-1.5 font-semibold ${ROW_LINK} ${pageInkText}`}
+        to={buildIssuePath({ key: issueKey, kind: "issue" })}
+        {...authorText}
+      >
+        {issueKey}
+      </Link>
+      {title === undefined || title === "" ? null : <span {...authorText}>{title}</span>}
+    </span>
+  );
+}

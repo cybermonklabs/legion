@@ -1,0 +1,265 @@
+import { skipToken, useQuery } from "@tanstack/react-query";
+import { type ReactNode, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+
+import { api } from "../../../api/client";
+import { pageHeaderControl, pageInkText, pageQuietText } from "../../../theme/classes";
+import { drawsEdge } from "../../refs/ReferencedBy";
+import { referencesQuery } from "../../refs/reference-target";
+import { buildReferencePath, parseNodeReference } from "../../refs/routes";
+import { DetailsErrorLine } from "../details-error";
+import type { FocusedNode } from "../focused-node";
+import { useMarginDrawer } from "../margin-slot";
+import { shortDay } from "../node-time";
+import { authorText, pageChrome } from "../page-structure";
+import { ANSWER_LINES, CONTROL_LABELS, NODE_REFERENCES_WORDS } from "../page-words";
+import { useKnownReferenceNames } from "../reference-names";
+import { ROW_LINK } from "../row-references";
+import { issueItemWords, type ReferenceRow, referenceRows } from "./references-list";
+
+const EDGE_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.edges;
+const KIND_WORDS: Readonly<Record<string, string>> = NODE_REFERENCES_WORDS.kinds;
+
+/** The words of no item, while the list is shut. */
+const NO_ITEM_WORDS: ReadonlyMap<string, string> = new Map();
+
+/** The rows of no list, while the list is shut. */
+const NO_ROWS: readonly ReferenceRow[] = [];
+
+/**
+ * The words of the comments, messages and questions of the focused row's own issue, by their
+ * ids (`issueItemWords`), while the list is open. They come from the reads the outline is drawn
+ * from, under their own keys and with their own functions (`useIssueTree.ts`), watched and never
+ * asked for, so they cost no request; while a read has no answer its items have no words
+ * here. A row whose address names no issue has no items to read.
+ */
+function useIssueItemWords(
+  issueKey: string | undefined,
+  open: boolean
+): ReadonlyMap<string, string> {
+  const asks = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listIssueAsks(issueKey, "all"),
+    queryKey: ["asks", issueKey],
+  });
+  const comments = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listComments(issueKey),
+    queryKey: ["comments", issueKey],
+  });
+  const messages = useQuery({
+    enabled: false,
+    queryFn: issueKey === undefined ? skipToken : () => api.listIssueMessages(issueKey),
+    queryKey: ["issue-messages", issueKey],
+  });
+  return useMemo(
+    () =>
+      open
+        ? issueItemWords({ asks: asks.data, comments: comments.data, messages: messages.data })
+        : NO_ITEM_WORDS,
+    [asks.data, comments.data, messages.data, open]
+  );
+}
+
+/**
+ * What references the row the reader is on, in Details: the panel holds what references the
+ * issue or the focused node, and a block's old 'Referenced by' list now stands in the focused
+ * node's facts.
+ *
+ * One link per node that points at the focused one, mentions included, each landing on that
+ * node: a node of this issue opens focused in the outline, and a node of another issue or of a
+ * project document opens where that address opens (`buildReferencePath`). The outline
+ * already carries two of the three edges the old disclosure listed - what serves a node is its
+ * spine and what needs it is a chip - and nothing on the page points back from a node to what
+ * mentions it, so this is where a reader reads that.
+ *
+ * Each row names the citing node by words the page already holds for it: a comment, a message
+ * or a question of this issue by the first line of its words, beside its word, each reference in
+ * that line named from the page's one batched read of what references point at
+ * (`useKnownReferenceNames`), as the outline's row names it; and any other node by the word of its
+ * tie or of its kind alone, with its issue and its time. The read's excerpt is the node's stored
+ * text, the markdown its author typed with every address it cites, and is drawn nowhere.
+ *
+ * It costs no request on the first load and none per node. Two gates hold that: the
+ * reader opens the list, and Details is open around it, which on the issue page it is not when
+ * the page loads. The list closes again when the focus moves to another row, so a reader
+ * walking the outline with Details open reads one node's references and not every node's. The
+ * read is `referencesQuery`, under the key every other Referenced-by panel reads
+ * (`["references", "to", <address>]`), so a node read here and opened elsewhere is read once
+ * and an event that changes it refreshes both (`api/event-refresh.ts`). The items' words are
+ * the outline's reads, which this list never asks for (`useIssueItemWords`).
+ */
+export function NodeReferences({
+  node,
+  reference,
+}: {
+  /** The row the reader is on. The issue's own references are Details' References row, so the
+   *  issue draws no list of its own here and nothing is drawn twice (c-one-panel). */
+  node: Pick<FocusedNode, "id" | "type">;
+  /** The focused node's own `dispatch://` address (`TreeNode.reference`); `undefined` for a
+   *  node the model gives no address, which nothing can reference. */
+  reference: string | undefined;
+}): ReactNode {
+  const drawer = useMarginDrawer();
+  const panelId = useId();
+  // Which row the reader opened the list on. The focus moving to another row closes it, and a
+  // reader coming back to the row finds it closed: the row the list was opened on is let
+  // go of as the focus leaves it, in the render that moves it.
+  const [openedOn, setOpenedOn] = useState<string | undefined>(undefined);
+  if (openedOn !== undefined && openedOn !== node.id) setOpenedOn(undefined);
+  const addressed = node.type === "issue" ? undefined : reference;
+  const open = addressed !== undefined && openedOn === node.id;
+  // Outside the shell no drawer holds the panel and it is always open; on the issue page it is
+  // the Details drawer, which opens shut.
+  const reading = open && (drawer === undefined || drawer.open);
+  const query = useQuery({ ...referencesQuery(addressed), enabled: reading });
+  // The issue the focused row is of: a citing node of another issue, or of a project, says
+  // which, as the old panel's "Comment · LAY-9" did; a citing item of this issue is named
+  // by its words.
+  const here = addressed === undefined ? undefined : parseNodeReference(addressed);
+  const issueKey = here !== undefined && "key" in here ? here.key : undefined;
+  const itemWords = useIssueItemWords(issueKey, open);
+  // The names the page's one batched read gave what its references point at, which a reference in
+  // a citing item's line is named by: a context the page publishes, so no request.
+  const names = useKnownReferenceNames();
+  // An edge a newer build answers with, of a kind or to a node this page does not know, is left
+  // out, as every list of a node's references leaves it (`drawsEdge`): its kind's word would be
+  // the node kind's, which says it was only named. Built while the list is open, and again only
+  // when what they are read from changes, not on every move of the focus.
+  const rows = useMemo(
+    () =>
+      open ? referenceRows(itemWords, (query.data?.edges ?? []).filter(drawsEdge), names) : NO_ROWS,
+    [itemWords, names, open, query.data]
+  );
+  const toggle = useRef<HTMLButtonElement>(null);
+  // The control of the list the focus was last on (`onFocus` below). Retry goes with its line
+  // once the read it sent lands, under the reader's own press, and the focus would fall to the
+  // page with it: it goes back to the list's own control instead, as Unpin in Pinned hands it on
+  // (`IssuePins.tsx`). Retry is never disabled while it reads again, since Chromium drops the
+  // focus of a focused button that turns disabled to the page, so a read that fails again
+  // leaves the focus on it; it reads busy then, and a press while the list is read joins that
+  // read rather than ending it and sending another (`cancelRefetch: false`), which the query
+  // decides as the press lands: the render's `isFetching` can be older than a second press made
+  // before React draws the first one's read.
+  const held = useRef<Element | null>(null);
+  useLayoutEffect(() => {
+    if (held.current === null || held.current.isConnected) return;
+    held.current = null;
+    if (document.activeElement === null || document.activeElement === document.body) {
+      toggle.current?.focus();
+    }
+  });
+  // The line stays while the read its Retry sent is out, even where the list held no answer: a
+  // fetch of a read that holds none clears its failure and puts it back to pending as it starts,
+  // which would take the line, and its Retry with the focus, away at the press. A failure it
+  // counts (`errorUpdateCount`) is then one it still stands in. Each failure is drawn afresh by
+  // that count, so a read that fails again is said again, in the same words.
+  const failed = query.isError || (query.isPending && query.errorUpdateCount > 0);
+  if (addressed === undefined) {
+    return null;
+  }
+  return (
+    <section
+      aria-label={NODE_REFERENCES_WORDS.what_references}
+      className="mt-2"
+      data-node-references={node.id}
+      onFocus={(event) => {
+        held.current = event.target;
+      }}
+    >
+      <button
+        aria-controls={panelId}
+        aria-expanded={open}
+        className={pageHeaderControl}
+        onClick={() => setOpenedOn(open ? undefined : node.id)}
+        ref={toggle}
+        type="button"
+        {...pageChrome}
+      >
+        {NODE_REFERENCES_WORDS.what_references}
+      </button>
+      {open ? (
+        <div id={panelId}>
+          {reading && query.isPending && !failed ? (
+            <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
+              {ANSWER_LINES.references_loading}
+            </p>
+          ) : null}
+          {failed ? (
+            <div className="mt-1">
+              <DetailsErrorLine
+                error={query.error}
+                failure={query.errorUpdateCount}
+                message={ANSWER_LINES.references_unreadable}
+                onRetry={() => void query.refetch({ cancelRefetch: false })}
+                retrying={query.isFetching}
+              />
+            </div>
+          ) : null}
+          {query.isSuccess && rows.length === 0 ? (
+            <p className={`mt-1 text-xs ${pageQuietText}`} {...pageChrome}>
+              {CONTROL_LABELS.none}
+            </p>
+          ) : null}
+          {rows.length === 0 ? null : (
+            <ul className="mt-1 flex min-w-0 flex-col gap-0.5">
+              {rows.map((row) => {
+                const route = row.ref === undefined ? undefined : parseNodeReference(row.ref);
+                // The edge's own word where the model gives the tuple one, and the kind of
+                // node where it does not, which is every mention: the old panel's own rule.
+                const word = EDGE_WORDS[row.kind] ?? KIND_WORDS[row.nodeKind];
+                // A comment, a message or a question of this issue is named by its first line;
+                // every other node, and an item whose read has not answered, by its word alone,
+                // which is then the link: its stored text is markup, and an address, a slug or
+                // an id is no name.
+                const named = row.line !== "";
+                const elsewhere = row.source !== undefined && row.source !== issueKey;
+                const text = named ? row.line : (word ?? "");
+                return (
+                  <li className="flex min-w-0 items-baseline gap-2 text-sm" key={row.key}>
+                    {word === undefined || !named ? null : (
+                      <span className={`shrink-0 text-xs ${pageQuietText}`} {...pageChrome}>
+                        {word}
+                      </span>
+                    )}
+                    {text === "" ? null : route === undefined ? (
+                      <span className="min-w-0 truncate" {...(named ? authorText : pageChrome)}>
+                        {text}
+                      </span>
+                    ) : (
+                      <Link
+                        className={`dispatch-inline-link min-w-0 flex-1 truncate ${ROW_LINK} ${pageInkText}`}
+                        to={buildReferencePath(route)}
+                        {...(named ? authorText : pageChrome)}
+                      >
+                        {text}
+                      </Link>
+                    )}
+                    {/* Where the citing node is of another issue or of a project, which one;
+                        and when the reference was made. */}
+                    <span
+                      className={`shrink-0 text-xs whitespace-nowrap ${pageQuietText}`}
+                      data-reference-facts=""
+                    >
+                      {elsewhere ? (
+                        <>
+                          <span data-reference-source="" {...authorText}>
+                            {row.source}
+                          </span>
+                          <span {...pageChrome}> · </span>
+                        </>
+                      ) : null}
+                      <span data-reference-time="" {...authorText}>
+                        {shortDay(row.at)}
+                      </span>
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
