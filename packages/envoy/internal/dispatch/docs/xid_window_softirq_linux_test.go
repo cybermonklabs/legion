@@ -52,16 +52,9 @@ func loopbackBurstFor(t *testing.T, cpu time.Duration) {
 	}
 }
 
-// spinFor runs this thread for cpu of CPU time.
-func spinFor(t *testing.T, cpu time.Duration) {
-	t.Helper()
-	for from := threadCPU(t); threadCPU(t)-from < cpu; {
-	}
-}
-
 // A gap past the bound that is all its thread's CPU, while that CPU runs network receive softirqs,
 // is one the machine's interrupts may hold, so the rig measures its window again rather than
-// judging it, and the next attempt, a gap of a moment of Go, is judged and passes. The first
+// judging it, and the next attempt, its gap back to back, is judged and passes. The first
 // attempt's gap runs loopback sends, whose receives the kernel runs on the thread's CPU and
 // charges to it, as it charges the machine's own traffic. With the count read planted to read
 // nothing, the first attempt fails at once.
@@ -77,9 +70,7 @@ func TestXidWindowRigMeasuresAgainAGapItsCPUsSoftirqsMayHold(t *testing.T) {
 			runRigTransactionDoing(t, database, func() {
 				if attempt == 1 {
 					loopbackBurstFor(t, xidSoftirqBurst)
-					return
 				}
-				spinFor(t, xidCrowdedWork)
 			})
 		})
 		if len(report.Problems) > 0 || len(report.Windows) != 1 {

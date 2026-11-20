@@ -18,8 +18,8 @@ import (
 )
 
 // The rig reads the machine's load as the machine's, not as the code's gap (storetest.XidGap):
-// the gap after the write is spent running a moment of Go on a CPU that other processes crowd, so
-// it lasts several times the bound on the clock while the code makes a fraction of it, and the
+// the gap after the write is spent giving up its turn on a CPU that other processes crowd, so it
+// lasts several times the bound on the clock while the code makes a fraction of it, and the
 // window keeps D6. The same crowding with a sleep in the gap still breaks D6: a gap the code
 // makes is caught however busy the machine is. Each arm first holds that the crowding did open
 // the gap on the clock past the bound, so a run that loaded nothing cannot pass for one that read
@@ -40,7 +40,7 @@ func TestXidWindowRigReadsTheMachinesLoadAsTheMachines(t *testing.T) {
 				report := tracer.Measure(t, database.Pool, func() {
 					defer crowded.hold(t)()
 					runRigTransactionDoing(t, database, func() {
-						crowded.run(t, xidCrowdedWork)
+						crowded.run(t)
 						time.Sleep(probe.sleep)
 					})
 				})
@@ -73,17 +73,13 @@ func TestXidWindowRigReadsTheMachinesLoadAsTheMachines(t *testing.T) {
 	}
 }
 
-// xidCrowdedWork is the CPU time the crowded gap runs, a twentieth of storetest.XidMaxGap: short
-// enough that the gap the code makes stays under both rules, the bound and the statements' own
-// time. The rig's transaction's four statements can make as little as 1.14 ms between them, and
-// with a fifth of the bound, 1 ms of work in a gap that read 1.15 to 1.77 ms made, the code's own
-// gap broke rule 2 once in 1,200 forced runs (1.176 ms against 1.140 ms, on a 288-CPU machine at a
-// load of about 500, 2026-11-20), with no fault, no long step and no CPU time beyond its own.
-const xidCrowdedWork = storetest.XidMaxGap / 20
-
-// xidCrowdedTurns is how many pieces the crowded gap runs its work in, giving up its turn on the
-// CPU after each: each time it waits runnable while the crowding processes run their slices, so the
-// gap lasts several of the scheduler's slices on the clock.
+// xidCrowdedTurns is how many times the crowded gap gives up its turn on the CPU: each time it
+// waits runnable while the crowding processes run their slices, so the gap lasts several of the
+// scheduler's slices on the clock. The gap does no work of its own beyond its turns. Work there is
+// the code's own gap, which rule 2 holds against the statements, and the rig transaction's four
+// statements make as little as 0.35 ms on the crowded CPU: a quarter of a millisecond of work read
+// 0.385 ms made against statements of 0.347 ms once in 1,000 forced runs, and a millisecond 1.176
+// against 1.140 ms once in 1,200, on a 288-CPU machine at a load of about 500, 2026-11-20.
 const xidCrowdedTurns = 4
 
 // xidCrowdingProcesses is how many processes crowd the CPU.
@@ -168,17 +164,14 @@ func (crowded *crowdedCPU) hold(t *testing.T) (release func()) {
 	}
 }
 
-// run runs work of this thread's CPU time pinned to the crowded CPU, in xidCrowdedTurns pieces,
-// yielding its turn after each as a thread the scheduler preempts gives it up, so it waits
-// runnable behind the crowding processes however the scheduler placed it; and gives the thread
-// back its own CPUs. The rig locked the calling goroutine to this thread at its transaction's BEGIN.
-func (crowded *crowdedCPU) run(t *testing.T, work time.Duration) {
+// run gives up this thread's turn on the crowded CPU xidCrowdedTurns times, as a thread the
+// scheduler preempts gives it up, so it waits runnable behind the crowding processes however the
+// scheduler placed it; and gives the thread back its own CPUs. The rig locked the calling
+// goroutine to this thread at its transaction's BEGIN.
+func (crowded *crowdedCPU) run(t *testing.T) {
 	t.Helper()
 	defer crowded.pin(t)()
 	for range xidCrowdedTurns {
-		from := threadCPU(t)
-		for threadCPU(t)-from < work/xidCrowdedTurns {
-		}
 		if _, _, errno := unix.Syscall(unix.SYS_SCHED_YIELD, 0, 0, 0); errno != 0 {
 			t.Fatalf("yield this thread's turn: %v", errno)
 		}
