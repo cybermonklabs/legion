@@ -4256,6 +4256,26 @@ awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f &&
 case_result "a page carrying its Cost on two lines fails --landed, naming the page" \
     "landed-proof: the page .Structured metadata on an Envoy message. carries its Cost on 2 lines" "$(fixture_run "$dir" --landed)"
 
+# 142. A page whose first step is one engineer-day or less states its state, whatever way
+# its Cost writes the figure (test round 41). Case 136 made --landed read each page's Cost,
+# but only a figure in digits before "engineer-day": a Cost of "about one engineer-day" or
+# "half an engineer-day", which the judgement's own ranking writes costs like ("About three
+# engineer-days by our estimate"), reads as no cost, so such a page with no state line passed
+# every assertion, the PASS line saying only that one page "give no cost in engineer-days
+# written in digits, which is not read". Judgement v19 with the refusal page's Cost written
+# 'about one engineer-day, by our estimate' passed all 5. An author can write that by
+# accident. The case writes the fixture's Envoy page's Cost as "about one engineer-day",
+# leaves the page with no state line, and runs --landed, which must fail, naming the page,
+# whether it reads the words or refuses a Cost it cannot read.
+dir="$(fresh one-day-in-words)"
+sed -i '0,/^- \*\*Cost:\*\* 2 engineer-days$/s//- **Cost:** about one engineer-day/' "$dir/judgement.md"
+awk '/^### Structured metadata on an Envoy message/{f=1; next} /^### /{f=0} f && /\*\*(Landed|Not landed|Refuted by|Proven by):\*\*/{n++} f && /^- \*\*Cost:\*\* about one engineer-day$/{c++} END{exit !(c == 1 && n == 0)}' "$dir/judgement.md" || {
+    printf 'FAIL the fixture Envoy page could not be given a cost of one engineer-day in words with no state line\n'
+    exit 1
+}
+case_result "a page whose Cost is about one engineer-day in words and that states no landing fails --landed, naming the page" \
+    "landed-[a-z-]+: .*Structured metadata on an Envoy message" "$(fixture_run "$dir" --landed)"
+
 # ==== the summary of check.test.sh begins below this line, where cases_copy cuts it ====
 # The summary, by the three endings and their precedence (check.sh's header): run_ending
 # reads every case this file counted, the ones that could not run among them, and this
