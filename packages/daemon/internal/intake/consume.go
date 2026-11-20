@@ -985,7 +985,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 		// INFO (NoRecordedPullRequestLine), whatever the reason the record is missing — a pull
 		// request no Legion issue runs, or one whose opened event never reached the daemon — so a
 		// reader can tell such a drop from a lost settlement (dispatch://INFRA-4135 R6). The
-		// DEBUG line above is written for every event of such a pull request.
+		// DEBUG line above is written for each review and checks settlement of such a pull request.
 		if checks, ok := decoded.Fact.(PullRequestChecks); ok {
 			if identity := checks.Identity(); dropped.unrecorded.Add(identity) {
 				logMessage(spec.Logger, slog.LevelInfo, NoRecordedPullRequestLine, message, identity.Attributes()...)

@@ -297,14 +297,17 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 // A released worker woken by a settlement whose only checks that did not pass are skipped is told
 // they were skipped, each name quoted, in name order, and that a skipped check ran nothing on this
 // head, and never that the head passed every check (dispatch://INFRA-4135 R1). A run is skipped by
-// its conclusion or by GitHub's word: a settlement whose skipped group the decoder could not read
-// gives runs with the word skipped and no skipped conclusion, which the CI message names skipped,
-// and the task names them skipped too. With a check failed or cancelled, or a failed commit
-// status, the skipped checks follow the failed or cancelled ones, which stay unquoted, and come
-// before the statuses. A skipped run the settlement names failed or cancelled is that and not
-// skipped, which no listener sends, and a settlement with no skipped run gives the text it gave
-// before, whatever other word GitHub gave each run; one with no word either wakes the worker with
-// the task it gave before, word for word.
+// its conclusion or by GitHub's word: the listener as it stands sends a skipped group and no word,
+// which gives runs with the skipped conclusion and no word, and a settlement whose skipped group
+// the decoder could not read gives runs with the word skipped and no skipped conclusion; the CI
+// message names either skipped, and the task names them skipped too. With a check failed or
+// cancelled, or a failed commit status, the skipped checks follow the failed or cancelled ones,
+// which stay unquoted, and come before the statuses. A skipped run the settlement names failed or
+// cancelled is that and not skipped, which no listener sends, and a run it names failed or
+// cancelled with its own word (failure, timed_out or cancelled) is named failed or cancelled, as
+// before. A settlement with no skipped run gives the text it gave before, whatever other word
+// GitHub gave each run; one with no word either wakes the worker with the task it gave before,
+// word for word.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	const woken = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. " +
@@ -324,6 +327,8 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		{"only skipped checks did not pass", onlySkipped, onlySkippedDetail},
 		{"in name order", checks([]record.AttemptRun{skippedRun("envoy-smoke", 3), skippedRun("dispatch-memory", 2), wordedRun("build", 1, "success")}, nil, nil),
 			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-smoke": ` + skippedSaid},
+		{"a skipped group and no word", checks([]record.AttemptRun{{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2, Conclusion: record.RunSkipped}}, nil, nil),
+			`head1 had no failed or cancelled check; skipped "envoy-go": ` + skippedSaid},
 		{"a skipped group the decoder could not read", checks([]record.AttemptRun{wordedRun("build", 1, "success"),
 			wordedRun("envoy-go", 2, "skipped"), wordedRun("dispatch-memory", 3, "skipped")}, nil, nil),
 			`head1 had no failed or cancelled check; skipped "dispatch-memory", "envoy-go": ` + skippedSaid},
@@ -350,6 +355,9 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	}{
 		{"a skipped run the settlement names failed", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, []string{"envoy-go"}, nil), "head1 failed envoy-go"},
 		{"a skipped run it names cancelled", checks([]record.AttemptRun{skippedRun("envoy-go", 2)}, nil, []string{"envoy-go"}), "head1 had envoy-go cancelled"},
+		{"a failed run with its word failure", checks([]record.AttemptRun{wordedRun("unit", 1, "failure")}, []string{"unit"}, nil), "head1 failed unit"},
+		{"a failed run with its word timed_out", checks([]record.AttemptRun{wordedRun("unit", 1, "timed_out")}, []string{"unit"}, nil), "head1 failed unit"},
+		{"a cancelled run with its word cancelled", checks([]record.AttemptRun{wordedRun("e2e", 1, "cancelled")}, nil, []string{"e2e"}), "head1 had e2e cancelled"},
 		{"words and no skipped run", checks([]record.AttemptRun{wordedRun("advice", 1, "neutral"), wordedRun("build", 2, "success")}, nil, nil),
 			"head1 passed every check"},
 		{"no skipped run and no word", settlement("head1"), "head1 passed every check"},
