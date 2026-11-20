@@ -67,16 +67,25 @@ func approveRows(served *server) []apiRoute {
 	return rows
 }
 
+// newCredentialRelayRig is newBrokerTokenRig with the credential routes relaying to a fake secrets
+// broker, which records every call Dispatch relays to it.
+func newCredentialRelayRig(t *testing.T) (*fakeBrokerRig, *brokerTokenRig) {
+	t.Helper()
+	credentials := newFakeBrokerRig(t)
+	return credentials, newBrokerTokenRigOn(t, testServerOptions{
+		agentSecretsURL:       credentials.server.URL,
+		agentSecretsTokenFile: accountTokenFile(t, credentialTestAccountToken),
+	})
+}
+
 // TestNoBrokerTokenGetsApprove: each row of the route table that needs approve refuses every kind
 // of broker token 403 before its handler runs, the token that acts as its person refused for
 // approve itself, and nothing reaches the secrets broker's decision routes. The same person's
-// browser session is answered on each row: what it gets is the handler's answer to the probe's
-// placeholder ids, not a refusal of its credential. The rows are the table's own; a walk that found
-// none, or missed the three rows a stolen machine file would use (a credential approve, a machine
-// login's revoke and a personal token's mint), fails rather than passes.
+// browser session is not refused for its credential on any row. The rows are the table's own; a
+// walk that found none, or missed a row a stolen machine file would use (a credential approve, a
+// machine login's revoke, a personal token's mint, a decision's Keep), fails rather than passes.
 func TestNoBrokerTokenGetsApprove(t *testing.T) {
-	credentials := newFakeBrokerRig(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{agentSecretsURL: credentials.server.URL})
+	credentials, rig := newCredentialRelayRig(t)
 	caller := newBrokerCaller(t)
 	tokens := approveTestTokens(caller.jkt)
 	for _, token := range tokens {
@@ -92,6 +101,7 @@ func TestNoBrokerTokenGetsApprove(t *testing.T) {
 		"POST /api/v1/credential-requests/{id}/approve",
 		"POST /api/v1/machine-logins/{id}/revoke",
 		"POST /api/v1/me/agent-tokens",
+		"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep",
 	} {
 		if !slices.Contains(names, want) {
 			t.Fatalf("the route table's approve rows %v do not hold %s: the walk below cannot hold it to the rule", names, want)
@@ -177,8 +187,7 @@ func personalTokenCount(t *testing.T, rig *brokerTokenRig, login string) int {
 // machine login's revoke and a personal token's mint. The secrets broker is asked nothing and no
 // personal token is made.
 func TestAPersonScopedBrokerTokenCannotApproveRevokeOrMint(t *testing.T) {
-	credentials := newFakeBrokerRig(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{agentSecretsURL: credentials.server.URL})
+	credentials, rig := newCredentialRelayRig(t)
 	caller := newBrokerCaller(t)
 	const token = "a-dev-box-token-that-would-approve"
 	rig.broker.Says(token, personScopedTokenAnswer(caller.jkt))
@@ -207,8 +216,7 @@ func TestAPersonScopedBrokerTokenCannotApproveRevokeOrMint(t *testing.T) {
 // approve and the revoke relayed to the secrets broker naming that person as the approver, and the
 // mint answered with its token.
 func TestTheBrowserOfABrokerTokensPersonStillApprovesRevokesAndMints(t *testing.T) {
-	credentials := newFakeBrokerRig(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{agentSecretsURL: credentials.server.URL})
+	credentials, rig := newCredentialRelayRig(t)
 	for _, call := range approveCalls {
 		t.Run(call.name, func(t *testing.T) {
 			response := rig.asPerson(t, call.method, call.path, call.body)
@@ -220,8 +228,7 @@ func TestTheBrowserOfABrokerTokensPersonStillApprovesRevokesAndMints(t *testing.
 // TestAPersonalTokenWithApproveStillApprovesWhereABrokerTokenCannot: a personal token its person
 // gave approve makes the same three calls and is answered as the browser is.
 func TestAPersonalTokenWithApproveStillApprovesWhereABrokerTokenCannot(t *testing.T) {
-	credentials := newFakeBrokerRig(t)
-	rig := newBrokerTokenRigOn(t, testServerOptions{agentSecretsURL: credentials.server.URL})
+	credentials, rig := newCredentialRelayRig(t)
 	personal := personalTokenOwnedBy(t, rig.database, brokerTestPerson, model.ScopePerson, model.ScopeApprove)
 	for _, call := range approveCalls {
 		t.Run(call.name, func(t *testing.T) {

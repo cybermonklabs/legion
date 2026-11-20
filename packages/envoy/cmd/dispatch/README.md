@@ -215,9 +215,10 @@ Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` p
 
 No broker-issued token holds the OAuth scope `approve`, whatever its project scope: one acting for its person holds `person` alone, and every other holds none (`brokerTokenActor`).
 Each such token is made from a file on the machine that holds it, a machine login or a person's sign-in, so whoever copies that file holds it, and `approve` settles what only the person settles.
-So every route that needs `approve` — a document review, a credential approve, deny or machine lookup, a revoke of a credential grant, a machine login or a sign-in, and a personal token's mint, change or revoke — and the answer to an approval request refuse every broker-issued token before the handler runs and before anything is relayed to the broker:
+So every route that needs `approve` — a document review, a decision's Keep, a credential approve, deny or machine lookup, a revoke of a credential grant, a machine login or a sign-in, and a personal token's mint, change or revoke — and the answer to an approval request refuse every broker-issued token before the handler runs and before anything is relayed to the broker:
 `403 OAUTH_SCOPE_REQUIRED` naming `approve` for a token acting for its person, naming `person` for one that holds no scope, and `403 READ_ONLY_TOKEN` for a read-only token (below).
 The person makes those calls from their browser session, or with a personal token they gave `approve`.
+A decision's Keep (`POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`) needs `approve` because it records that the person agreed with the decision and takes it out of what waits on their review, so a personal token holding `person` alone is refused it too.
 
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.

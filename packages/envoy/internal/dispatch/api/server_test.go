@@ -84,6 +84,11 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *brokertoken.Verifier
+	// agentSecretsURL and agentSecretsTokenFile are Deps' broker relay for the credential pages
+	// (DISPATCH_AGENT_SECRETS_URL and the file holding Dispatch's own account token at that
+	// broker); empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL       string
+	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -161,10 +166,6 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
-	// agentSecretsURL points the credential routes' relay at a stand-in secrets broker
-	// (Deps.AgentSecrets), presenting credentialTestAccountToken; empty is the deployment with
-	// no broker, whose credential routes answer 404 FEATURE_OFF.
-	agentSecretsURL string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -233,17 +234,6 @@ func testEnvoyAccountTokenFile(t testing.TB, envoyURL string) string {
 		t.Fatalf("write Dispatch's test account token: %v", err)
 	}
 	return path
-}
-
-// testAgentSecretsAccountTokenFile is a file holding credentialTestAccountToken, the stand-in for
-// Dispatch's projected token at the secrets broker, for a server whose credential relay is
-// configured (agentSecretsURL set), and "" otherwise.
-func testAgentSecretsAccountTokenFile(t testing.TB, agentSecretsURL string) string {
-	t.Helper()
-	if agentSecretsURL == "" {
-		return ""
-	}
-	return accountTokenFile(t, credentialTestAccountToken)
 }
 
 // newTestServer builds the mux an API test drives and hands back the store behind it and the
@@ -322,26 +312,26 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// one it refuses every send for a role (envoy.ErrNoListenerIdentity). The tests' stand-in listeners
 		// check no bearer.
 		EnvoyAccountTokenFile:  testEnvoyAccountTokenFile(t, options.envoyURL),
-		AgentSecretsURL:        options.agentSecretsURL,
-		AgentSecretsTokenFile:  testAgentSecretsAccountTokenFile(t, options.agentSecretsURL),
 		ListenerTakeoverWindow: cmp.Or(options.takeoverWindow, testTakeoverWindow),
 		TestHookTimeout:        options.testHookTimeout,
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter: horizontest.StallWarning,
-		HorizonWarnEvery:  horizontest.StallWarning,
-		OIDC:              options.oidc,
-		BrokerTokens:      brokerTokens,
-		AgentStream:       options.agentStream,
-		AgentPublisher:    agentPublisher,
-		Embedder:          options.embedder,
-		Answerer:          options.answerer,
-		Files:             options.files,
-		DashboardEntry:    options.dashboardEntry,
-		BuildCommit:       options.buildCommit,
-		OutboxPublishes:   options.outboxPublishes,
-		Metrics:           options.metrics,
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: options.agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

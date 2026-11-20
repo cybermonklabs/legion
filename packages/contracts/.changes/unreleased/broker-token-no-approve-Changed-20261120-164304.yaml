@@ -1,0 +1,3 @@
+kind: Changed
+body: |-
+  `dispatch-openapi.json` lists `approve` beside `person` in the `x-oauth-scopes` of `POST /api/v1/artifacts/{id}/blocks/{block_id}/keep`: keeping a decision now needs both scopes.
