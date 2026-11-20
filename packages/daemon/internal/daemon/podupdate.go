@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -1368,9 +1369,11 @@ func operatorHoldReason(held []supervise.Claim) string {
 
 // refusedReason is the reason the late-round notice gives for a round whose pod replacement the
 // runtime refused past the bound, through a process or by issue (replacePodForRound,
-// replaceIssuePodForRound), naming the runtime's error.
+// replaceIssuePodForRound), naming the runtime's error. The notice is stored and read by the
+// controller, so the refusal is kept in it as any far side's error text is
+// (storetext.FarSideError); the caller's error line logs it whole.
 func refusedReason(err error) string {
-	return fmt.Sprintf(boundPastReason+"The runtime refused the pod replacement: %v", err)
+	return boundPastReason + "The runtime refused the pod replacement: " + storetext.FarSideError(err.Error())
 }
 
 // roundWithNoProcessInItsPod decides a round, before or past its bound, whose live claims record
@@ -3444,7 +3447,10 @@ func (r workspaceRead) found() string {
 		return strings.TrimSuffix(noProcessRead, ".") + ", so the daemon did not read it before the replacement. The daemon does not know if the workspace held work that no branch or tag at origin holds."
 	}
 	if r.err != nil {
-		return fmt.Sprintf("Before the replacement, the daemon tried to read the issue workspace. The read failed: %v. The daemon does not know if the workspace held work that no branch or tag at origin holds.", r.err)
+		// The message is stored and read by the issue's roles, so the read's error, which the
+		// shim's jj wrote, is kept in it as any far side's error text is (storetext.FarSideError).
+		return fmt.Sprintf("Before the replacement, the daemon tried to read the issue workspace. The read failed: %s. The daemon does not know if the workspace held work that no branch or tag at origin holds.",
+			storetext.FarSideError(r.err.Error()))
 	}
 	found := []string{"Before the replacement, the daemon read the issue workspace. The read found work that no branch or tag at origin holds."}
 	if r.work.Changed {

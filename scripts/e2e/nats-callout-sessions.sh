@@ -467,7 +467,7 @@ while IFS= read -r line; do
   [ "$name" = PATH ] && value="${value%%:*}:$PATH"
   printf -v "$name" '%s' "$value"
 done < <(sed -n 's/^\(  export [A-Z_0-9]*=.*\)$/\1/p' "$stack_log")
-for required in AGENT_SECRETS_URL ENVOY_URL NATS_URLS DEV_STACK_DIR DEV_STACK_PID \
+for required in AGENT_SECRETS_URL ENVOY_URL ENVOY_TOKEN NATS_URLS DEV_STACK_DIR DEV_STACK_PID \
   DEV_STACK_EXCHANGE_TOKEN_FILE DEV_STACK_POD_TOKEN_FILE DEV_STACK_REGISTRAR_TOKEN_FILE \
   DEV_STACK_NATS_MONITOR_URL; do
   [ -n "${!required:-}" ] || refuse "dev-stack.sh exported no $required"
@@ -567,8 +567,8 @@ if [ "$hosts" = plugins ]; then
 # The Oh My Pi session, told NATS_AUTH=broker in its environment.
 omp_home=$work/omp-home
 mkdir -p "$omp_home/cwd"
-jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
-  '{envoy: {url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
+jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" \
+  '{envoy: {url: $url, token: $token, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
   >"$omp_home/envoy.json"
 client_fifo omp
 # Every client closes the ends this shell holds of every client's fifo (close_held_fifos), so it
@@ -588,8 +588,8 @@ claude_config=$work/claude-config
 claude_state=$work/claude-state
 mkdir -p "$claude_config" "$claude_state"
 told claude
-jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
-  '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
+jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+  '{envoy: ({enabled: true, url: $url, token: $token, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
     dispatch: {enabled: false}}' >"$claude_config/envoy.json"
 printf '%s\n' "${broker_env[@]}" >"$work/claude.env"
 # The inbox socket goes in a short directory of its own: a unix socket path past 107 bytes is
@@ -613,8 +613,8 @@ else
   # NATS_AUTH=broker in its environment and its Envoy in ~/.config/legion/envoy.json.
   omp_home=$work/real/omp
   mkdir -p "$omp_home/home/.config/legion" "$omp_home/home/.omp" "$omp_home/cwd" "$omp_home/sessions" "$omp_home/tmp"
-  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" \
-    '{envoy: {url: $url, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
+  jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" \
+    '{envoy: {url: $url, token: $token, natsUrls: [$nats]}, dispatch: {enabled: false}, askgate: {enabled: false}}' \
     >"$omp_home/home/.config/legion/envoy.json"
   [ ! -d "$natives" ] || ln -sfT "$natives" "$omp_home/home/.omp/natives"
   mkfifo "$omp_home/stdin"
@@ -652,8 +652,8 @@ else
   # path past 107 bytes is refused, which a run's nested scratch directory can pass.
   claude_tmp=$(mktemp -d /tmp/ncs-claude.XXXXXX)
   told claude
-  jq -n --arg url "$ENVOY_URL" --arg nats "$NATS_URLS" --argjson named "$told_file" \
-    '{envoy: ({enabled: true, url: $url, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
+  jq -n --arg url "$ENVOY_URL" --arg token "$ENVOY_TOKEN" --arg nats "$NATS_URLS" --argjson named "$told_file" \
+    '{envoy: ({enabled: true, url: $url, token: $token, natsUrls: [$nats]} + (if $named then {natsAuth: "broker"} else {} end)),
       dispatch: {enabled: false}}' >"$claude_home/config/envoy.json"
   jq -n --arg bun "$(command -v bun)" --arg entry "$claude_plugin/dist/envoy-channel.js" \
     --arg data "$claude_home/config/envoy-plugin-data" \
@@ -680,7 +680,7 @@ else
   # channel server has registered it with the listener; a session whose connection the hub does not
   # admit (the seedless control) may never register, and its receives then say so.
   jq -cn '{type: "prompt", id: "ncs-first", message: "Reply with the one word: ready."}' >&"$claude_fd"
-  claude_registered() { curl -fs --max-time 5 -o /dev/null "$ENVOY_URL/v1/registry/$claude_session"; }
+  claude_registered() { printf 'Authorization: Bearer %s' "$ENVOY_TOKEN" | curl -fs --max-time 5 -o /dev/null -H @- "$ENVOY_URL/v1/registry/$claude_session"; }
   wait_for 240 claude_registered ||
     note "Claude Code's channel server has not registered $claude_session: $(tail -n 3 "$claude_home/stderr.log")"
   note "Claude Code session $claude_session"
@@ -815,6 +815,7 @@ message_each() {
     floor=$(delivered_through "$session")
     code=$(curl -sS --max-time 20 -o "$evidence/answers/$step-$label-send.json" -w '%{http_code}' \
       -X POST "$ENVOY_URL/v1/messages/send" -H 'Content-Type: application/json' \
+      -H @<(printf 'Authorization: Bearer %s' "$ENVOY_TOKEN") \
       -d "$(jq -cn --arg t "$session" --arg m "$marker" \
         '{source: "agent", source_session: "nats-callout-sessions", target_session: $t, message: $m}')") ||
       code="unreachable"

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   Agent,
   Artifact,
@@ -1253,10 +1254,12 @@ export function ConversationTab({
     resetKey: `${issueKey} ${newestId ?? ""} ${headSeq}`,
     shouldDwell: () => headSeq > Math.max(lastReadSeq, read?.seq ?? 0),
   });
+  // The mark's answer goes over any read of the state still out, which was asked before it and
+  // would put back the conversation's unread mark (`replaceQueryData`).
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
     onSuccess: (next, mark) =>
-      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
+      replaceQueryData<UserState>(queryClient, ["user-state"], (current) => ({
         ...current,
         [mark.issueKey]: next,
       })),
