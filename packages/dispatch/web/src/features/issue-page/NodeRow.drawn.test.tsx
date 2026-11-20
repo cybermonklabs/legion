@@ -1232,27 +1232,38 @@ test("more is drawn on a cut row and never beside words a body draws whole", asy
   }
 });
 
-// Decision 263: a row in view is cut before the page paints it, also where its words arrive
-// after the row. A statement is drawn from its document's blocks before the coverage read
-// brings its words, so its row mounts in view with none: the mount measures it whole, and the
-// batch its coming near starts holds it in view at that length. The commit that brings its words
-// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
-// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
-// whole for the 59 frames recorded after.
-test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
-  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
-  // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
-  const restore = layOut(9600, (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600));
+/** 3,000 words, which run 400 lines of 24 px where they are drawn whole. */
+const LONG_WORDS = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+
+/**
+ * What a row in view draws in the commit that draws it from `next`, before the page is painted:
+ * the row is drawn from `first` and measured as its coming near measures it, then, if `relaidOut`
+ * is given, laid out again by it and measured again as it stands in view, and then drawn from
+ * `next` with every animation frame held, so none runs. `words` is how tall the browser lays a
+ * row's words out (`layOut`). `cutBefore` is whether the row was cut before `next` was drawn.
+ */
+async function redrawnInView({
+  first,
+  next,
+  relaidOut,
+  words,
+}: {
+  readonly first: TreeNode;
+  readonly next: TreeNode;
+  readonly relaidOut?: () => void;
+  readonly words: (element: HTMLElement) => number;
+}): Promise<{ cutBefore: boolean; maxHeight: string | undefined; more: string | undefined }> {
+  const restore = layOut(9600, words);
   const near = installIntersectionObserver();
   try {
-    const statement = { id: "spec#b-r1", type: "requirement" } as const;
-    const row = renderRow(node({ ...statement, text: "" }), { body: false });
+    const row = renderRow(first, { body: false });
     try {
       await measureNearWords(near);
-      expect(
-        row.container.querySelector("[data-node-more]"),
-        "a row with no words was cut"
-      ).toBeNull();
+      if (relaidOut !== undefined) {
+        relaidOut();
+        await measureNearWords(near);
+      }
+      const cutBefore = row.container.querySelector("[data-node-more]") !== null;
       const frames: FrameRequestCallback[] = [];
       const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
         frames.push(callback);
@@ -1260,15 +1271,13 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
       });
       try {
         await act(async () => {
-          row.redraw(node({ ...statement, text, tree: displayTree(text) }));
+          row.redraw(next);
         });
-        expect(
-          row.container.querySelector("[data-node-more]")?.textContent,
-          "the words that arrived were drawn whole in view"
-        ).toBe(`${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`);
-        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-          "144px"
-        );
+        return {
+          cutBefore,
+          maxHeight: row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight,
+          more: row.container.querySelector("[data-node-more]")?.textContent ?? undefined,
+        };
       } finally {
         frame.mockRestore();
       }
@@ -1279,6 +1288,28 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
     near.restore();
     restore();
   }
+}
+
+// Decision 263: a row in view is cut before the page paints it, also where its words arrive
+// after the row. A statement is drawn from its document's blocks before the coverage read
+// brings its words, so its row mounts in view with none: the mount measures it whole, and the
+// batch its coming near starts holds it in view at that length. The commit that brings its words
+// measures it again as one that mounts, and it is drawn cut with no animation frame run. CI run
+// 44547033390 caught it otherwise at 390 px: the words were drawn whole, 472 px tall, and stayed
+// whole for the 59 frames recorded after.
+test("a row in view whose words arrive after it is drawn cut before the page is painted", async () => {
+  const statement = { id: "spec#b-r1", type: "requirement" } as const;
+  const drawn = await redrawnInView({
+    first: node({ ...statement, text: "" }),
+    next: node({ ...statement, text: LONG_WORDS, tree: displayTree(LONG_WORDS) }),
+    // Words not drawn yet run no height; drawn, they run 400 lines of 24 px.
+    words: (element) => ((element.textContent ?? "").trim() === "" ? 0 : 9600),
+  });
+  expect(drawn.cutBefore, "a row with no words was cut").toBe(false);
+  expect(drawn.more, "the words that arrived were drawn whole in view").toBe(
+    `${CONTROL_LABELS.read_more} · 2,955 ${CONTROL_LABELS.read_more_words}`
+  );
+  expect(drawn.maxHeight).toBe("144px");
 });
 
 // Decision 261: a row in view keeps its length unless it draws other words. A new comment on the
@@ -1288,52 +1319,26 @@ test("a row in view whose words arrive after it is drawn cut before the page is 
 // them, is held whole in view by the batch that measures it again; a new reading of the same
 // words draws nothing new, so the row stays whole, with no animation frame run.
 test("a row held whole in view stays whole when a later read draws the same words anew", async () => {
-  const text = Array.from({ length: 3000 }, (_unused, at) => `word${at + 1}`).join(" ");
+  const statement = { id: "spec#b-r1", text: LONG_WORDS, type: "requirement" } as const;
+  // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
+  // gives each block a new id, so the later read's answer is a copy of the first.
+  const reading = displayTree(LONG_WORDS);
   // Five lines of 24 px where the row is first measured, which six lines hold whole.
   let run = 120;
-  const restore = layOut(9600, () => run);
-  const near = installIntersectionObserver();
-  try {
-    const statement = { id: "spec#b-r1", text, type: "requirement" } as const;
-    // The server reads one text into one tree (`pmdoc.DisplayJSON`), where the page's own parse
-    // gives each block a new id, so the later read's answer is a copy of the first.
-    const reading = displayTree(text);
-    const row = renderRow(node({ ...statement, tree: reading }), { body: false });
-    try {
-      await measureNearWords(near);
-      // The words now run 400 lines, and the batch holds the row in view at its length.
+  const drawn = await redrawnInView({
+    first: node({ ...statement, tree: reading }),
+    next: node({ ...statement, tree: structuredClone(reading) }),
+    // The words now run 400 lines, and the batch holds the row in view at its length.
+    relaidOut: () => {
       run = 9600;
-      await measureNearWords(near);
-      expect(
-        row.container.querySelector("[data-node-more]"),
-        "the batch cut a row in view"
-      ).toBeNull();
-      const frames: FrameRequestCallback[] = [];
-      const frame = spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
-        frames.push(callback);
-        return frames.length;
-      });
-      try {
-        await act(async () => {
-          row.redraw(node({ ...statement, tree: structuredClone(reading) }));
-        });
-        expect(
-          row.container.querySelector("[data-node-more]"),
-          "a new reading of the same words cut the row held whole in view"
-        ).toBeNull();
-        expect(row.container.querySelector<HTMLElement>("[data-node-words]")?.style.maxHeight).toBe(
-          ""
-        );
-      } finally {
-        frame.mockRestore();
-      }
-    } finally {
-      row.unmount();
-    }
-  } finally {
-    near.restore();
-    restore();
-  }
+    },
+    words: () => run,
+  });
+  expect(drawn.cutBefore, "the batch cut a row in view").toBe(false);
+  expect(drawn.more, "a new reading of the same words cut the row held whole in view").toBe(
+    undefined
+  );
+  expect(drawn.maxHeight).toBe("");
 });
 
 // R16: an open question's options are the choices of its answer. A press on one leaves the
