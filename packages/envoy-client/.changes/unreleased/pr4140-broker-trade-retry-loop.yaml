@@ -62,14 +62,10 @@ body: |-
   sign-out, a sign-in or a session switch between two attempts) is never sent, and the write ends
   unsettled with its key. Dispatch keys a write per person or service, so a repeat as another
   person or as the machine could run it twice; the client's pin is stricter, holding the session
-  too, since it cannot tell whether another session trades as the same person. Before
-  anything of a write may have landed (a refused connection, a 408 or 429, a credential whose trade
-  goes on), it is asked again without asking `/healthz` first, since a repeat then is no second
-  write; before, the probe came first, and a fail-fast credential, which failed the probe's
-  presentation too, ended the write there. The `/healthz` probe now presents no credential, since
-  Dispatch serves it outside its API, so a credential failing at that moment no longer ends a
-  write the keyed layer could take again. No Dispatch or Envoy request follows a redirect any
-  more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
+  too, since it cannot tell whether another session trades as the same person. Before anything of a
+  write may have landed (a refused connection, a 408 or 429, a credential whose trade goes on), it is
+  asked again because its repeat is no second write. No Dispatch or Envoy request follows a redirect
+  any more (`redirect: "manual"`): a 301, 302 or 303 turned a write's POST into a GET whose 2xx read
   as the write's answer, and a 307 or 308 sent it again to another origin. A 3xx is now the
   answer, and its error names the origin its `Location` points at, never its path, query or user
   info; on a first attempt it says nothing reached Dispatch. Every body that is not the server's

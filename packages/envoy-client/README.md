@@ -697,10 +697,11 @@ Every Dispatch the client reaches runs the keyed layer on every `POST` and `PATC
 therefore always sends the same key and encoded body again, without reading a key echo, probing
 `/healthz`, or keeping process or session memory of a server capability. A transport failure, a
 silence cut, a gateway or Dispatch 5xx, a 408, a 429 and `409 KEY_IN_FLIGHT` each retry within the
-write's pacing and deadline. `dispatch-keyed-resend.test.ts` drives a Bun stand-in that stores a
-retry once even while `/healthz` is unavailable; `dispatch-keyed-resend-live.test.ts` proves that
-end to end against a real Dispatch server. `dispatch-write-outcomes.test.ts` drives every
-(state, event) pair and every sequence of events up to its limits.
+write's pacing and deadline. `dispatch-keyed-resend.test.ts` drives a Bun stand-in that stores one
+comment for a retry under its key while `/healthz` is unavailable.
+`dispatch-keyed-resend-live.test.ts` starts a real Dispatch whose first caller lookup answers 503
+before it stores anything, then proves the client's same-key resend stores one comment.
+`dispatch-write-outcomes.test.ts` drives every (state, event) pair and every sequence of events up to its limits.
 
 Before sessions use this client, move every Dispatch process to `b1c42d1d7d` or later: that build
 answers a caller it cannot resolve before its handler runs (cybermonklabs/legion#4350). An older
