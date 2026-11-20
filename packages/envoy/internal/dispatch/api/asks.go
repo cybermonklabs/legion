@@ -1113,13 +1113,13 @@ func (s *server) loadAskAnswers(ctx context.Context, q queryer, who model.Actor,
 }
 
 // loadAsk reads one ask for a response, as who may read it (access.ItemOwnerClause): an ask of a
-// project who does not see is pgx.ErrNoRows, as an id no ask holds is. Unlike
-// readAskForTransition, which feeds the ask.* event payloads, it carries WaitingOn for an open
-// ask.
+// project who does not see is pgx.ErrNoRows, as an id no ask holds is, and a document beside it of
+// a project who does not see is none (askRowFromSeenBy). Unlike readAskForTransition, which feeds
+// the ask.* event payloads, it carries WaitingOn for an open ask.
 func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
 		select `+askReadColumns+`
-		`+askReadFrom+`
+		`+askReadFromSeenBy("$2")+`
 		where a.id = $1 and `+access.ItemOwnerClause("a.issue_key", "a.artifact_id", "$2")+`
 	`, id, refs.VisibilityArg(who)))
 	if err != nil {
@@ -1139,20 +1139,21 @@ func (s *server) loadAsk(ctx context.Context, q queryer, who model.Actor, id str
 // asks_open_artifact, the partial index 0009 built for the open case, went unused for the nine
 // days the index audit measured and migration 20261101182440 drops it. An issue's asks with no
 // state filter read asks_issue_key (20261101182426). They are vars, not consts, because
-// askReadFrom builds its anchor join from store.CastableUUID. Each tests its owner once, for the
-// viewer bound at $2 (ownerClause): an owner of a project the viewer does not see lists nothing.
+// askReadFromSeenBy builds its anchor join from store.CastableUUID. Each tests its owner once, and
+// joins the documents beside each ask, for the viewer bound at $2 (ownerClause,
+// askRowFromSeenBy): an owner of a project the viewer does not see lists nothing.
 var (
-	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listIssueAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.issue_key = $1 and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
-	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listIssueAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.issue_key = $1 and a.state = 'open' and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
-	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listIssueAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.issue_key = $1 and a.state = 'answered' and ` + access.IssueProjectClause("$1", "$2") + ` order by a.created_at, a.id`
-	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listArtifactAsksQueryAll = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.artifact_id = $1 and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
-	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listArtifactAsksQueryOpen = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.artifact_id = $1 and a.state = 'open' and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
-	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFrom + `
+	listArtifactAsksQueryAnswered = `select ` + askReadColumns + ` ` + askReadFromSeenBy("$2") + `
 		where a.artifact_id = $1 and a.state = 'answered' and ` + access.ItemOwnerClause("null::text", "$1", "$2") + ` order by a.created_at, a.id`
 )
 

@@ -190,7 +190,7 @@ func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select `+askReadColumns+` `+askReadFrom+`
+		select `+askReadColumns+` `+askReadFromSeenBy("$3")+`
 		where a.issue_key = $1 and a.state = 'open' and a.block_artifact_id = $2::uuid and `+access.IssueProjectClause("$1", "$3")+`
 		order by a.created_at, a.id
 	`, key, specID, refs.VisibilityArg(who))
