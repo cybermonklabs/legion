@@ -227,6 +227,12 @@ func (c *Current) reload(ctx context.Context) (reads []valueRead, first bool, er
 	c.base = set
 	reads = c.list()
 	c.publish(c.withhold(), first)
+	// A full load, and only a full load, names its groups to the reader: a group it names for
+	// the first time is read at once, and a reread's new group (RefreshOne) waits for the next
+	// load, admitting nobody until then.
+	if c.loader.Groups != nil {
+		c.loader.Groups.Want(c.base.GroupNames())
+	}
 	return reads, first, nil
 }
 

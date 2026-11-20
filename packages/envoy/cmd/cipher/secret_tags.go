@@ -311,7 +311,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 		case policy.RequesterFaultOwnerNotPerson:
 			return usageErr{fmt.Errorf("%s secret mints a token acting as that account, so it is served to the one person who owns it, and %q is no person: own it with --owner me, or the broker refuses it as %s", withArticle(set.Type), set.Owner, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultServiceBelowHumanTier:
-			_, services := policy.SplitRequesters(set.Requesters)
+			_, services, _ := policy.SplitRequesters(set.Requesters)
 			return usageErr{fmt.Errorf("%s secret lists a registered service, here %q, only at %s tier, where a person approves each pod that asks: write --tier %s, or leave the service out of --requesters, or the broker refuses it as %s", withArticle(set.Type), services[0], policy.TierHuman, policy.TierHuman, policy.ReasonRequestersNotOwner)}
 		case policy.RequesterFaultNotTheOwnerOnce:
 			// One message for every way a list fails to name the owner exactly once — no list
@@ -319,7 +319,7 @@ func tagRefusal(reason string, set policy.TagSet, tags map[string]string) error 
 			// write fixes them all: the owner, beside the registered services the list already
 			// names, which a human-tier secret of this type may keep. A list the secret holds
 			// is quoted too, so the reader sees what the suggestion replaces.
-			_, services := policy.SplitRequesters(set.Requesters)
+			_, services, _ := policy.SplitRequesters(set.Requesters)
 			wanted := strings.Join(append([]string{set.Owner}, services...), " ")
 			held := ""
 			if set.Requesters != "" {

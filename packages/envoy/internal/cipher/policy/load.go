@@ -91,8 +91,8 @@ const (
 	ReasonNameMalformed = "name-malformed"
 	// ReasonOwnerTagMissing: the secret has no owner tag.
 	ReasonOwnerTagMissing = "owner-tag-missing"
-	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, or a registered
-	// service.
+	// ReasonOwnerTagMalformed: the owner tag is not shared, a lowercase email, a group as
+	// group:<lowercase email>, or a registered service.
 	ReasonOwnerTagMalformed = "owner-tag-malformed"
 	// ReasonTierTagMissing: the secret has no tier tag.
 	ReasonTierTagMissing = "tier-tag-missing"
@@ -182,6 +182,13 @@ var emailPattern = regexp.MustCompile(`^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)
 // ValidPersonOwner reports whether an owner tag names a person by lowercase email.
 func ValidPersonOwner(owner string) bool {
 	return emailPattern.MatchString(owner)
+}
+
+// ValidGroupOwner reports whether an owner tag, or a requesters entry, names a Google group:
+// record.GroupPrefix and the group's lowercase email, group:<address>.
+func ValidGroupOwner(owner string) bool {
+	address, ok := strings.CutPrefix(owner, record.GroupPrefix)
+	return ok && emailPattern.MatchString(address)
 }
 
 // Loader reads the policy from the secret store: every secret whose name starts with Prefix, with
@@ -395,6 +402,8 @@ func (l Loader) secret(ctx context.Context, slug string, ls secrets.Listing, now
 	switch {
 	case s.Owner == OwnerShared:
 		s.ownership = ownerShared
+	case ValidGroupOwner(s.Owner):
+		s.ownership = ownerGroup
 	case ValidPersonOwner(s.Owner):
 		s.ownership = ownerPerson
 	case slices.Contains(l.Services, s.Owner):
