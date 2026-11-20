@@ -1,7 +1,8 @@
 /**
  * The names of Details' controls that a test or another control finds them by, in a module that
- * imports only the page's words: the browser tests import these, and a control's own module
- * reaches the document schema's JSON, which Playwright's Node does not load.
+ * imports only the page's words: the browser tests import these, and `IssueMargin.tsx`, which
+ * draws Referenced by's count, reaches the document schema's JSON (through `ReferencedBy`),
+ * which Playwright's Node does not load.
  */
 
 import { PROPERTY_LABELS } from "./page-structure";

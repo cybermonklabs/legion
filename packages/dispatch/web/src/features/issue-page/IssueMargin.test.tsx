@@ -1783,8 +1783,8 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Ref
 });
 
 // The menu lists the properties with no value and presses the control that sets each one,
-// rather than drawing a second copy of it. It finds that control by the name the control
-// exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
+// rather than drawing a second copy of it. It finds that control by the name exported for it
+// (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
 // its own, a word changed in one made the entry disappear with no error anywhere.
 test("the add menu opens the control the panel draws, under the name exported for it", async () => {
   const user = userEvent.setup();
