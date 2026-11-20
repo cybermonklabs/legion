@@ -4,6 +4,15 @@
 // (askgate-new-asks.ts) opens an ask block only where the server opens one, and names it by the id
 // the server reads, so each rule here is the server's: a line the server refuses opens nothing.
 
+import { TYPED_BLOCK_ID_SHORTCUT_EXCLUDED } from "@legion/contracts";
+
+/** How many times `char` stands in a row in `text` from `index`. */
+export function runOf(text: string, index: number, char: string): number {
+  let end = index;
+  while (text.charAt(end) === char) end++;
+  return end - index;
+}
+
 /** directive.go's `directiveNameByte`. */
 function nameChar(char: string): boolean {
   return /^[A-Za-z0-9_-]$/.test(char);
@@ -18,13 +27,6 @@ function attributeSpace(char: string): boolean {
   return char === " " || (char >= "\t" && char <= "\r");
 }
 
-/**
- * Each character a typed block's written `#id` cannot hold: the shortcut runs to the first of
- * them. Go's twin is pmdoc's `typedBlockIDShortcutExcluded`, and `@legion/contracts`'
- * TYPED_BLOCK_ID_SHORTCUT_EXCLUDED another.
- */
-const SHORTCUT_EXCLUDED = "\t\n\r \"#&'.<=>`}";
-
 /** The key that holds a block's id among a directive's attributes (pmdoc's `BlockIDAttr`). */
 const BLOCK_ID_ATTRIBUTE = "blockId";
 
@@ -37,7 +39,7 @@ const BLOCK_ID_ATTRIBUTE = "blockId";
 export function typedOpener(
   text: string
 ): { name: string; id: string | undefined; colons: number } | undefined {
-  const colons = text.length - text.replace(/^:+/, "").length;
+  const colons = runOf(text, 0, ":");
   if (colons < 3) return undefined;
   const rest = text.slice(colons);
   let nameEnd = 0;
@@ -57,8 +59,9 @@ export function refusedDirective(text: string): boolean {
 
 /**
  * directive.go's `parseDirectiveAttributes`, for the block's id alone, undefined when the server
- * refuses the attributes. The id is written `#id`, which runs to the first SHORTCUT_EXCLUDED
- * character, or `id="…"`, which runs to the next quote, is decoded (decodedId) and may not be
+ * refuses the attributes. The id is written `#id`, which runs to the first character of
+ * TYPED_BLOCK_ID_SHORTCUT_EXCLUDED (@legion/contracts, pmdoc's `typedBlockIDShortcutExcluded`), or
+ * `id="…"`, which runs to the next quote, is decoded (decodedId) and may not be
  * empty; a block has one id at most. Every quoted value runs to the next quote, whatever stands
  * before it: a backslash escapes nothing, so `\"` ends the value. `blockId`, the tree's name for
  * the id, is no attribute of the markdown, and the server refuses it.
@@ -75,7 +78,11 @@ function directiveAttributes(value: string): { id: string | undefined } | undefi
     const start = sigil === "#" || sigil === "." ? offset + 1 : offset;
     offset = start;
     if (sigil === "#") {
-      while (offset < value.length && !SHORTCUT_EXCLUDED.includes(value.charAt(offset))) offset++;
+      while (
+        offset < value.length &&
+        !TYPED_BLOCK_ID_SHORTCUT_EXCLUDED.includes(value.charAt(offset))
+      )
+        offset++;
       if (offset === start || hasId) return undefined;
       hasId = true;
       id = value.slice(start, offset);

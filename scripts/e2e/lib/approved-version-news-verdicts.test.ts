@@ -48,7 +48,7 @@ const note = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("not
 const fail = scriptFunctions(join(import.meta.dir, "live-daemon-proof.sh"))("fail");
 const helperGuard = nameMissingHelpers(script);
 const dir = temporaryDirectory("approved-version-news-verdicts-test");
-const scratch = temporaryDirectories("approved-version-news-run-test");
+const scratch = temporaryDirectories("approved-version-news-verdicts-jj");
 
 let files = 0;
 /** A driver output file holding LINES, one a line; null writes no file at all. */

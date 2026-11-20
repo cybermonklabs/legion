@@ -55,7 +55,7 @@
 // (packages/envoy/internal/dispatch/api/testdata/decision-block-inserts.json) holds this reading
 // to the server's.
 
-import { refusedDirective, typedOpener } from "./askgate-typed-opener";
+import { refusedDirective, runOf, typedOpener } from "./askgate-typed-opener";
 
 /** A new ask a call opens for a person. */
 export interface NewAsk {
@@ -889,13 +889,6 @@ function thematicBreak(text: string): boolean {
 /** goldmark's `matchesSetextHeadingBar`: a run of `=` or of `-`, then spaces. */
 function setextUnderline(text: string): boolean {
   return /^(?:=+|-+)[ \t]*$/.test(text);
-}
-
-/** The number of `char` in a row from `index`. */
-function runOf(text: string, index: number, char: string): number {
-  let end = index;
-  while (text.charAt(end) === char) end++;
-  return end - index;
 }
 
 /** directive.go's `fenceColons`: the colons `text` holds when they are all it holds but spaces. */

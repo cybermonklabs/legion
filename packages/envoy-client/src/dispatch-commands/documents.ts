@@ -761,11 +761,7 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
         throw new Error(storedTextCheckFailed(error, name), { cause: error });
       }
     }
-    // The store ends a document with a line feed the writer's own text need not carry, and
-    // that one line feed is no other spelling: both sides lose at most one before they are
-    // compared. An attribute's position carries no meaning either, so a text whose typed
-    // blocks differ only in that is sent as Dispatch stores it, and the answer says so. Every
-    // other difference is refused.
+    // What goes up, and what is refused, is storedUpload's rule (stored-spelling.ts).
     if (stored !== undefined) {
       const upload = storedUpload(content, stored, name);
       if ("refusal" in upload) throw new ToolInputError(input.tool, [upload.refusal]);

@@ -392,8 +392,7 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
 
 // R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
 // merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search; the tester's prompt carries its own, which roles_test.go
-// pins.
+// procedure carries the class search.
 test("a forward merge searches the new head for each earlier finding's class", () => {
   expect(
     collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))

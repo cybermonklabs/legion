@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -90,21 +89,10 @@ func TestAReadGivenUpOnRecordsDispatchsErrorWithItsNULAsAFarSidesErrorAndLogsItW
 				t.Fatalf("the log holds the planted token")
 			}
 			var whole strings.Builder
-			for _, line := range strings.Split(logs.String(), "\n") {
-				if line == "" {
-					continue
-				}
-				var entry struct {
-					Msg   string `json:"msg"`
-					Row   int64  `json:"row"`
-					Issue string `json:"issue"`
-					Error string `json:"error"`
-				}
-				if err := json.Unmarshal([]byte(line), &entry); err != nil {
-					t.Fatalf("decode the log line %q: %v", line, err)
-				}
-				if entry.Msg == designReadErrorInFull && entry.Row == 1 && entry.Issue == reconcileRoot {
-					whole.WriteString(entry.Error)
+			for _, entry := range loggedMessages(t, logs.String(), designReadErrorInFull) {
+				if entry["row"] == float64(1) && entry["issue"] == reconcileRoot {
+					part, _ := entry["error"].(string)
+					whole.WriteString(part)
 				}
 			}
 			if !strings.HasPrefix(whole.String(), cleaned) || !strings.HasSuffix(whole.String(), "these are the last words") {

@@ -207,9 +207,13 @@ function commandAt(lines: string[], index: number): string {
   return command.replace(quotedText, "''").replace(commentText, "$1");
 }
 
-/** A control operator (`;`, `|`, `||`, `&&`, `&`) in a command commandAt reads: after a call on
- *  its line it runs more, and `>&` and `&>` are redirections, not operators. */
+/** A control operator (`;`, `|`, `||`, `&&`, `&`) in a command commandAt or commandsOf reads, its
+ *  quoted text and comments masked: after a call on its line it runs more, and `>&` and `&>` are
+ *  redirections, not operators. */
 const controlOperator = /;|\||&&|(?<![<>&])&(?!>)/;
+
+/** controlOperator for every operator of a command (matchAll, which runs a copy of it). */
+const controlOperators = new RegExp(controlOperator.source, "g");
 
 /** What a command may follow at its start on its line: a reserved word that opens or goes on with
  *  a compound command, `!`, a subshell's `(`, and a function's `name()` and `{`. */
@@ -235,7 +239,7 @@ function commandsOf(text: string): string[] {
     for (let at = 0; at < command.length; at++) kept += read[at] === masked[at] ? command[at] : " ";
     const commands: string[] = [];
     let start = 0;
-    for (const operator of read.matchAll(new RegExp(controlOperator.source, "g"))) {
+    for (const operator of read.matchAll(controlOperators)) {
       const at = operator.index ?? 0;
       commands.push(kept.slice(start, at));
       start = at + operator[0].length;
@@ -244,6 +248,9 @@ function commandsOf(text: string): string[] {
     return commands.map((simple) => simple.replace(leadingWords, "").trim()).filter(Boolean);
   });
 }
+
+// Every script's EXIT traps (exitTraps), read once, after the readers they use are declared.
+const trapsOf = new Map(scripts.map((path) => [path, exitTraps(path)]));
 
 /**
  * What runs after the command on line INDEX of the script at PATH, in the shell it runs in, read
@@ -371,7 +378,7 @@ describe("every script under scripts/e2e", () => {
   test("prints PASS from an EXIT trap only through run_verdict, from a file that sources the lib", () => {
     const wrong: string[] = [];
     for (const path of scripts) {
-      for (const { command, fn } of exitTraps(path)) {
+      for (const { command, fn } of trapsOf.get(path) ?? []) {
         if (/\bPASS\b/.test(command)) wrong.push(`${shown(path)}: trap '${command}' prints PASS`);
         if (fn === undefined) continue;
         for (const printed of printsPass(fn.body)) {
@@ -390,7 +397,7 @@ describe("every script under scripts/e2e", () => {
   test("whose EXIT trap prints its verdict through run_verdict reaches a run_end", () => {
     const wrong: string[] = [];
     for (const path of scripts) {
-      for (const { fn } of exitTraps(path)) {
+      for (const { fn } of trapsOf.get(path) ?? []) {
         if (fn === undefined || !fn.body.includes("run_verdict") || marks(fn.file)) continue;
         // A library's trap: each entry script that sources the library marks its own end.
         const callers = scripts.filter(
