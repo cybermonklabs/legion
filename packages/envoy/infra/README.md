@@ -81,6 +81,15 @@ needs nothing stopped.
   with the inventory, restore, run `envoy-infra buckets create` for any bucket the restore did not
   bring while they are still at zero, then start them. Nothing holds the checked state through the
   restore; that is the "unheld restore" the command warns of.
+- **A hub moving from a listener that created its buckets:** such a listener created
+  `envoy_known_sessions` the first time it opened it once its NATS user held that bucket's grant,
+  which `envoy-infra` 10.33.0 is the first release to render. So, while the hub still runs that
+  older listener, render and apply its users with `envoy-infra` 10.33.0 or later: the older
+  listener's known-session store retries its open (1 s doubling to 5 minutes, and at once after
+  each NATS reconnect) and creates the bucket. Then read it on the hub
+  (`nats stream info KV_envoy_known_sessions`), and roll out a listener that creates no bucket only
+  once that read answers. Where it does not, create the bucket with the break-glass create below
+  (`--bucket envoy_known_sessions`), which runs as a listener's user and so needs the same grant.
 
 Until the auth service's cutover gives the operator an identity the auth service admits, no
 hub has the buckets user's key, and a missing bucket is created with `envoy-infra buckets create
