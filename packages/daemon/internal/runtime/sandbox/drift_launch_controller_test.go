@@ -39,6 +39,9 @@ import (
 // identity for the pod's life. A deployment that comes to name one, under the same instance,
 // database and login, must not leave the controller signing in as the pod itself — and since no
 // round is opened over the controller's pod, that row holds its next launch to the replacement.
+// So does the writer audience the account is impersonated with, named or dropped: it changes the
+// credential the controller's launcher signs in with, and the form that launcher runs, the
+// roles-dir form with it and the single-role form without (controllerPod.launcherContainer).
 func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testing.T) {
 	const overlay = "/etc/legion-operator-roles/controller.yml"
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -64,6 +67,16 @@ func TestTheControllersPodIsNotLeftBehindByAConfigurationItCannotCarry(t *testin
 		}},
 		"the session store's service account": {
 			built:    func(o *Options) { o.SessionStore = cloudSQLStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			replaces: true,
+		},
+		"the session store's writer audience": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
+			now:      func(o *Options) { o.SessionStore = cloudSQLWriterStore },
+			replaces: true,
+		},
+		"the session store's writer audience dropped": {
+			built:    func(o *Options) { o.SessionStore = cloudSQLWriterStore },
 			now:      func(o *Options) { o.SessionStore = cloudSQLImpersonatingStore },
 			replaces: true,
 		},

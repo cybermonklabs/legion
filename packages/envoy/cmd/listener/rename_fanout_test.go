@@ -193,7 +193,6 @@ type renameCase struct {
 func startRenameCase(t *testing.T, machineID, renames string) *renameCase {
 	t.Helper()
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	seedDueCIRecord(t, client, "cybermonklabs", "legion", renamePR, renameSHA)
 
 	// Each subscriber is written as a client writes it: a client subscribing to topic X subscribes

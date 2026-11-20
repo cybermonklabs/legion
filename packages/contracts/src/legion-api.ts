@@ -1114,7 +1114,7 @@ const legionAppInstallations = z.object({
   review: z.boolean().optional(),
 });
 
-/** `api.LiveRepositoryView` — one repository a live record names (contract 200): `repo`, the name
+/** `api.LiveRepositoryView` — one repository a live record names (contract 202): `repo`, the name
  * the records keep it under; `servedAs`, the other name of its configured pair
  * (`repository_renames`) where the rename rule serves it under that one; and, from what GitHub last
  * answered for the name it is served under, `apps`, each role App's installation on it once GitHub
@@ -1132,7 +1132,7 @@ const legionLiveRepository = z.object({
 });
 
 /** `api.WebhookAppGapView` — an entry of `withoutWebhookApp` (contract 43, kept in contract 152's
- * shape by 200): a live repository Dispatch's GitHub App is not known to be installed on, under
+ * shape by 202): a live repository Dispatch's GitHub App is not known to be installed on, under
  * the name the records keep it under, with why (not installed, the check failed, or Dispatch does
  * not answer the check). The daemon works it all the same. No plugin code reads it
  * (`LEGION_ANSWER_READS`), so both keys are optional. */
@@ -1141,7 +1141,7 @@ const legionWebhookAppGap = z.object({
   reason: nonEmptyString.optional(),
 });
 
-/** `api.RepositoriesView` — the repositories the daemon works in (contract 200): `live`, one entry
+/** `api.RepositoriesView` — the repositories the daemon works in (contract 202): `live`, one entry
  * for each repository the project's live records name, read in the state's own snapshot and sorted
  * by its lowercased `<owner>/<name>`; `withoutWebhookApp`, each of those that Dispatch's GitHub App
  * is not known to be installed on, in `live`'s order; and `caches`, the repository caches of
@@ -1155,7 +1155,7 @@ const legionWebhookAppGap = z.object({
  * state` states no contract and asks from no pod, so the daemon serves it this block, and a
  * `legion state` of 152 reads its webhook App lines from that list. A plugin of an earlier
  * contract reads the block with that contract's own schema, which also requires `owners`, `mapped`
- * and `refused`, so the route serves a caller below 200 that older block, written from the same
+ * and `refused`, so the route serves a caller below 202 that older block, written from the same
  * entries: the contract its plugin states, else the highest its pod's claims record (`api.stateFor`,
  * `withoutRepositoriesLive`). That body is never served to a plugin of this contract, so this
  * schema reads only this block. */
@@ -1271,7 +1271,7 @@ const legionPaused = z.object({
  * every due lifecycle outbox row held behind its issue's running one, by when it came due and then
  * id, never null (contract 28); `repositories` is the repositories the project's live records
  * name, the ones of them Dispatch's webhook App is not known to be installed on, and the caches of
- * the rest (contracts 31, 43, 200); `settings` is the daemon's resolved
+ * the rest (contracts 31, 43, 202); `settings` is the daemon's resolved
  * legion.yaml with no credential, credential source or credential file path, required, and loose
  * like `payload` above, so a legion.yaml key added later is no contract change (contract 35);
  * being `z.looseObject` it keeps

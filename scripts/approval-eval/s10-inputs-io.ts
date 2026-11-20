@@ -396,8 +396,8 @@ export class AnswerLog {
   }
 }
 
-/** A JSON text read back, refused where it is not JSON. */
-function parsed(text: string, where: string): unknown {
+/** A JSON text read back, refused where it is not JSON (`s10-judged-io.ts` reads its files so too). */
+export function parsed(text: string, where: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
@@ -406,7 +406,7 @@ function parsed(text: string, where: string): unknown {
 }
 
 /** A count: a whole number, not below zero. */
-function countAt(value: unknown, where: string, field: string): number {
+export function countAt(value: unknown, where: string, field: string): number {
   const count = numberOf(value);
   if (count === null || !Number.isSafeInteger(count) || count < 0) {
     throw new CorpusError(`${where} holds a ${field} that is no count`);
@@ -424,14 +424,14 @@ function wholeAt(value: unknown, where: string, field: string): number {
 }
 
 /** A text a file names, refused where it is none. */
-function textAt(value: unknown, where: string, field: string): string {
+export function textAt(value: unknown, where: string, field: string): string {
   const text = stringOf(value);
   if (text === null) throw new CorpusError(`${where} holds a ${field} that is no text`);
   return text;
 }
 
 /** A sha256 a file names, as 64 hexadecimal digits. */
-function sha256At(value: unknown, where: string, field: string): string {
+export function sha256At(value: unknown, where: string, field: string): string {
   const sha256 = stringOf(value);
   if (sha256 === null || !/^[0-9a-f]{64}$/.test(sha256)) {
     throw new CorpusError(`${where} holds a ${field} that is no sha256`);

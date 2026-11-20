@@ -293,12 +293,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost: a caller one contract below the highest row, which states that contract
-	// in its header as every plugin from shapedAnswersContract on does, is served at the recorded
-	// contract below it, 193, so it stands below that row alone and the log holds that row's line
-	// and nothing else. This subtest does not catch a strip applied beside the loop, because it
-	// reads both its expectation and its answer from stateNarrowings; the subtests below, which
-	// name their lines as literals, are what catch that.
+	// told what it lost: a caller one contract below the highest row, 201, which states that
+	// contract in its header as every plugin from shapedAnswersContract on does, is served at the
+	// recorded contract below it, 199, so it stands below that row alone and the log holds that
+	// row's line and nothing else. This subtest does not catch a strip applied beside the loop,
+	// because it reads both its expectation and its answer from stateNarrowings; the subtests
+	// below, which name their lines as literals, are what catch that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowedStating(t, state, statePodAddr+":41000",
