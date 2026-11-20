@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"maps"
+	"math"
 	"math/rand/v2"
 	"os"
 	"slices"
@@ -18,7 +19,7 @@ import (
 // lands between two readings, between a reading and the guard's read of the grower at it, inside a
 // read, and between a kill and the guard's next read. Over a fixed list of seeds it checks the
 // three rules of R1 the probe has broken, from the guard's kills (the Sink's Kill values) and the
-// processes' true sizes, and a fourth, orphan:
+// processes' true sizes, a fourth, orphan, and a fifth, urgent:
 //
 //   - first: the first kill of a rise ends a process that grew over the window, where one the guard
 //     read at that reading did;
@@ -30,7 +31,16 @@ import (
 //   - orphan: no sleeping fork whose parent the guard has ended is ended by rule=grew-since-kill. It
 //     still runs its parent's program and holds what it held, and a process read as a fork stays
 //     one, its parent gone or not, until its executable or arguments differ from what that read
-//     found (INFRA-3368's architect's answer of 2026-11-20T09:24Z on its decision of 08:13Z).
+//     found (INFRA-3368's architect's answer of 2026-11-20T09:24Z on its decision of 08:13Z);
+//   - urgent: at a reading at or above the urgent share where the decision holds a process the
+//     guard may end that is not new to the stay, the guard ends each process it may end that started
+//     during the stay and holds memory of its own, and each that grew since the stay's first kill by
+//     more than growthNoise, also where no other reason to act holds in the wait after a kill; and
+//     by the urgent rule it ends neither a sleeping fork that ranks at nothing nor the parent, flat
+//     since before the stay's first kill (INFRA-3531 R1 of spec version 45; INFRA-3368's
+//     architect's ruling of 2026-11-20T13:55Z on `4g-r15latepool-r206` at 00405eb3, and decisions
+//     of 14:00Z and 14:06Z: a process started during the stay is one the stay's first table did not
+//     list). Its cases are started, since, fork and parent (checkUrgent).
 //
 // Growth since a kill is from a process's size as of the kill: its true size at the kill's reading,
 // where the guard read it running its program before that reading; the least of the guard's reads
@@ -103,10 +113,26 @@ import (
 // three readings have passed since then and since the guard's last kill, so a kill after the
 // growers have ended is judged at the readings after it. Where every seed runs, the test fails if
 // no seed ends the parent so, since rule orphan would then check nothing.
+//
+// Those are the first simSeeds seeds, which run as they did before the burst seeds. The
+// simBurstSeeds seeds after them are burst seeds (planBurst), r206's shape, by draws of their own
+// (INFRA-3368's architect's ruling of 2026-11-20T13:55Z: "a simulation case of a burst of growers
+// that start together inside the band and step together after an urgent reading"): the parent
+// fills its block over the band's first readings, its three sleeping forks start during the stay,
+// and the six growers start together, in the band or after its last reading, and step 64 MiB
+// together. At 00405eb3, which ends a grower read at more than one reading of the stay only where
+// it grew over the window or since the previous kill, 8 of the 100 burst seeds fail, each in rule
+// urgent, case started: in seeds 202, 206, 223, 236, 257, 259, 269 and 270 the guard left, at an
+// urgent reading, growers that started during the stay and were not new to it, and that grew
+// neither over the window nor, by its sizes, since the previous kill, as r206's guard left four at
+// 4109 ms. No seed fails in another rule or case there, and the first 200 pass. The guard ends the
+// parent while its sleeping forks live in 14 of the burst seeds, each by rule=largest below the
+// urgent share. Run alone, the 300 seeds took 39.9 s at 00405eb3, and the first 200 26.8 s before
+// the burst seeds were added.
 func TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants(t *testing.T) {
 	failed := map[string][]uint64{}
 	ran, orphaned := 0, 0
-	for seed := uint64(1); seed <= simSeeds; seed++ {
+	for seed := uint64(1); seed <= simSeeds+simBurstSeeds; seed++ {
 		var found []simFailure
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
 			run := newSimRun(t, seed).run()
@@ -134,14 +160,16 @@ func TestMemoryGuardKeepsTheRulesOfR1WhereGrowersStepAtRandomInstants(t *testing
 		t.Logf("%s: %d seeds %v", key, len(failed[key]), failed[key])
 	}
 	t.Logf("the guard ended the probe's parent while its sleeping forks lived in %d of %d seeds", orphaned, ran)
-	if ran == simSeeds && orphaned == 0 {
+	if ran == simSeeds+simBurstSeeds && orphaned == 0 {
 		t.Errorf("no seed ended the probe's parent while its sleeping forks lived, so rule orphan checked nothing")
 	}
 }
 
 const (
-	// simSeeds is how many seeds the simulation runs, from 1.
-	simSeeds = 200
+	// simSeeds is how many seeds the simulation runs from 1 with the six growers of the model
+	// above, and simBurstSeeds how many it runs after them with a burst (planBurst).
+	simSeeds      = 200
+	simBurstSeeds = 100
 	// simReadings is the most readings of one seed's run.
 	simReadings = 40
 	// simFailuresShown is how many failures of one seed the test prints.
@@ -164,6 +192,9 @@ const (
 type simProcess struct {
 	fp     fakeProcess
 	grower bool
+	// born is a sleeping fork of a burst seed, which forks from the parent during the run, as a
+	// grower does, rather than living from its start (planBurst).
+	born bool
 	// forkAt is when a grower forked, forked whether it has and execd whether it runs the grow
 	// program.
 	forkAt               time.Duration
@@ -253,6 +284,9 @@ type simRun struct {
 	// late are the late growers' changes, each at its time from their start (planLate), until
 	// startLate puts them on the model's time.
 	late []simEvent
+	// parentFull is when the probe's parent's block was last filled, during the band of a burst
+	// seed (planBurst), and 0 in every other seed, whose parent holds its block from the start.
+	parentFull time.Duration
 	// byPID are the reads by pid, in order, indexed once the run is done (readsOf).
 	byPID map[int][]simRead
 }
@@ -282,9 +316,13 @@ func newSimRun(t *testing.T, seed uint64) *simRun {
 		s.procs[pid] = &simProcess{fp: fp, alive: true, execd: true}
 		s.pod.add(fp)
 	}
-	s.schedule()
-	s.planLate(seed)
-	s.planRise(seed)
+	if seed > simSeeds {
+		s.planBurst(seed)
+	} else {
+		s.schedule()
+		s.planLate(seed)
+		s.planRise(seed)
+	}
 	s.pod.setAnon(s.total())
 	s.h = newHarness(t, s.pod, protect("tester", 100))
 	s.h.g.smapsRead = func(pid int) {
@@ -408,6 +446,82 @@ func (s *simRun) planRise(seed uint64) {
 	s.late = append(s.late, simEvent{at: at, pid: 100, kind: simRise, by: below + (1+rng.Uint64N(30))*mib})
 }
 
+// planBurst makes a burst seed's run, the shape of `4g-r15latepool-r206` at 00405eb3 (INFRA-3368's
+// architect's ruling of 2026-11-20T13:55Z: "a simulation case of a burst of growers that start
+// together inside the band and step together after an urgent reading"), by a stream of draws of
+// the seed's own. At the guard's first reading, in the band, the parent holds 60 MiB or more less
+// than its block, and it fills the block in three equal steps 30 to 400 ms into the run, as r206's
+// parent filled its 2.4 GB block over the band's first readings; the pod then reads 40 to 260 MiB
+// below the mark. Its three sleeping forks fork from it 50 to 400 ms after that, during the stay,
+// each with its program and its block, as r206's 7151 to 7153 did at 1773 ms. 200 to 700 ms after
+// the last of them the six growers start together, within 20 ms, each a child of the parent that
+// runs the grow program from its start, at 9 MiB: in half the seeds the first 64 MiB block of each
+// lands 5 to 40 ms after its start, so that the band's last reading came before them and the
+// reading at the mark is the first to read them at their block, as in r206; in the other half it
+// lands 150 to 350 ms after it, so that the band reads them first. Each then steps 64 MiB every 270
+// to 450 ms, the grow program's sleep of 250 ms and its allocation, so that the growers step
+// together, as r206's four did within one 131 ms gap after the urgent reading at 4109 ms.
+func (s *simRun) planBurst(seed uint64) {
+	rng := rand.New(rand.NewPCG(seed, 0x6275727374))
+	below := 40 + rng.Uint64N(221)
+	fill := 3 * (20 + rng.Uint64N((400-below)/3-19)) * mib
+	s.rest = share(podLimit, Defaults().ActPercent) - simAgent - latepoolBlock - below*mib
+	parent := s.procs[simBlockHolders[0]]
+	parent.fp.anon = latepoolBlock - fill
+	s.pod.add(parent.fp)
+	fills := make([]time.Duration, 3)
+	for i := range fills {
+		fills[i] = uniformIn(rng, 30*time.Millisecond, 400*time.Millisecond)
+	}
+	slices.Sort(fills)
+	for _, at := range fills {
+		s.events = append(s.events, simEvent{at: at, pid: parent.fp.pid, kind: simStepEnd, by: fill / 3})
+	}
+	s.parentFull = fills[len(fills)-1]
+	forks := make([]time.Duration, len(simBlockHolders)-1)
+	for i := range forks {
+		forks[i] = s.parentFull + uniformIn(rng, 50*time.Millisecond, 400*time.Millisecond)
+	}
+	slices.Sort(forks)
+	for i, pid := range simBlockHolders[1:] {
+		p := s.procs[pid]
+		p.alive, p.born = false, true
+		s.pod.remove(pid)
+		s.events = append(s.events, simEvent{at: forks[i], pid: pid, kind: simFork})
+	}
+	burst := forks[len(forks)-1] + uniformIn(rng, 200*time.Millisecond, 700*time.Millisecond)
+	first, last := 5*time.Millisecond, 40*time.Millisecond
+	if rng.IntN(2) == 0 {
+		first, last = 150*time.Millisecond, 350*time.Millisecond
+	}
+	starts := make([]time.Duration, len(simGrowers))
+	for i := range starts {
+		starts[i] = burst + uniformIn(rng, 0, 20*time.Millisecond)
+	}
+	slices.Sort(starts)
+	for i, pid := range simGrowers {
+		s.procs[pid] = &simProcess{
+			fp:     fakeProcess{pid: pid, ppid: 700, start: uint64(6000 + i), exe: "/usr/bin/python3.13", args: growArgs, anon: simGrowerBase},
+			grower: true,
+		}
+		s.events = append(s.events, simEvent{at: starts[i], pid: pid, kind: simStart})
+		s.events = appendBurstSteps(s.events, rng, pid, starts[i], starts[i]+uniformIn(rng, first, last))
+	}
+	s.lastFork = starts[len(starts)-1]
+	slices.SortStableFunc(s.events, func(x, y simEvent) int { return cmp.Compare(x.at, y.at) })
+}
+
+// appendBurstSteps appends to events the 64 MiB steps of the burst grower pid that started at from
+// until 8 s of the model's time: the first lands at first, and each next 270 to 450 ms after the
+// one before; each is under way 1 to 30 ms before it lands, never before from (planBurst).
+func appendBurstSteps(events []simEvent, rng *rand.Rand, pid int, from, first time.Duration) []simEvent {
+	for at := first; at < 8*time.Second; at += 250*time.Millisecond + uniformIn(rng, 20*time.Millisecond, 200*time.Millisecond) {
+		start := max(from, at-uniformIn(rng, time.Millisecond, 30*time.Millisecond))
+		events = append(events, simEvent{at: start, pid: pid, kind: simStepStart}, simEvent{at: at, pid: pid, kind: simStepEnd, by: 64 * mib})
+	}
+	return events
+}
+
 // uniform is a duration drawn evenly from [lo, hi) by the run's draws.
 func (s *simRun) uniform(lo, hi time.Duration) time.Duration { return uniformIn(s.rng, lo, hi) }
 
@@ -498,13 +612,18 @@ func (s *simRun) change(e simEvent) {
 }
 
 // total is the pod's reading: the agent, at what it holds after any rise of its own, what no
-// process holds, the block once while a process that holds it lives, and each grower's own memory
-// once it runs its program.
+// process holds, the block once while a process that holds it lives, at what its largest holder
+// holds, short of the block while a burst seed's parent fills it (planBurst), and each grower's own
+// memory once it runs its program.
 func (s *simRun) total() uint64 {
 	total := s.procs[100].fp.anon + s.rest
-	if slices.ContainsFunc(simBlockHolders, func(pid int) bool { return s.procs[pid].alive }) {
-		total += latepoolBlock
+	var block uint64
+	for _, pid := range simBlockHolders {
+		if p := s.procs[pid]; p.alive {
+			block = max(block, p.fp.anon)
+		}
 	}
+	total += block
 	for _, pid := range simGrowers {
 		if p := s.procs[pid]; p.alive && p.execd {
 			total += p.fp.anon
@@ -623,10 +742,10 @@ func (s *simRun) kept(pid, i int) (simRead, bool) {
 	return last, found
 }
 
-// aliveAt is whether pid lives at the model's instant at: it has forked by then and no kill before
-// it ended it.
+// aliveAt is whether pid lives at the model's instant at: it has forked by then, where it is a
+// grower or a burst seed's sleeping fork, and no kill before it ended it.
 func (s *simRun) aliveAt(pid int, at time.Duration) bool {
-	if p := s.procs[pid]; p.grower && (!p.forked || p.forkAt > at) {
+	if p := s.procs[pid]; (p.grower || p.born) && (!p.forked || p.forkAt > at) {
 		return false
 	}
 	return !slices.ContainsFunc(s.kills, func(k simKill) bool { return k.pid == pid && k.at <= at })
@@ -709,18 +828,29 @@ func (s *simRun) grownSince(k, i int, before time.Duration, fromNothing bool) (p
 	return pid, grown, read, from, cause
 }
 
-// check judges the run by the four rules, following the guard's phase in each rise and its stays
+// check judges the run by the five rules, following the guard's phase in each rise and its stays
 // in the band from the readings, the kills and the stopped lines.
 func (s *simRun) check() []simFailure {
 	d := Defaults()
 	mark, band, floor := share(podLimit, d.ActPercent), bandStart(podLimit, d.ActPercent), share(podLimit, d.FloorPercent)
+	urgent := urgentShare(podLimit, d.ActPercent)
 	var out []simFailure
-	phase, stayFirst, rise := armed, -1, -1
+	// stay is the stay's first reading, -1 outside a stay.
+	phase, stayFirst, rise, stay := armed, -1, -1, -1
 	for i, r := range s.readings {
 		kills := s.killsAt(i)
 		if phase != armed && r.reading < mark {
 			phase = armed
 		}
+		if phase == armed && r.reading < band {
+			stay = -1
+		} else if stay < 0 && phase != stopped && r.reading >= band {
+			stay = i
+		}
+		// acting is whether the guard decides at the reading, which it does not once it has given
+		// the rise up, and held whether it decides there on the band's held reads, as the first
+		// reading at the mark does.
+		acting, held := phase != stopped, phase == armed
 		switch {
 		case phase == armed && r.reading < band:
 			stayFirst = -1
@@ -749,6 +879,9 @@ func (s *simRun) check() []simFailure {
 					simMS(r.now), r.reading/mib, k.pid, k.rule, simMS(s.readings[rise].now), s.readings[rise].reading/mib, pid, grown/mib, read/mib, from/mib)})
 			}
 		}
+		if acting && r.reading >= urgent {
+			out = append(out, s.checkUrgent(i, stay, stayFirst, held)...)
+		}
 		if phase == waiting && stayFirst >= 0 && stayFirst < i {
 			for _, k := range kills {
 				if k.rule != ruleLargest {
@@ -776,10 +909,152 @@ func (s *simRun) check() []simFailure {
 			}
 		}
 		if r.stopped {
-			phase, stayFirst = stopped, -1
+			phase, stayFirst, stay = stopped, -1, -1
 		}
 	}
 	return out
+}
+
+// checkUrgent judges reading i, at or above the urgent share and one the guard decides at, by R1's
+// urgent clause of spec version 45 (INFRA-3368's architect's ruling of 2026-11-20T13:55Z on r206
+// and decisions of 14:00Z and 14:06Z), in the stay whose first reading is stay and whose first kill
+// was at reading stayFirst, -1 before it; held is whether the guard decides at i on the band's held
+// reads. Where the decision holds a process the guard may end that is not new to the stay, the
+// guard ends at that reading, by any rule, each process it may end that started during the stay and
+// holds memory of its own (case started) and each that grew since the stay's first kill by more
+// than growthNoise (case since); at a reading of the wait after a kill each is a reason to act, as
+// a process new to the stay is. By the urgent rule it ends neither a sleeping fork that ranks at
+// nothing beside its living parent (case fork) nor the parent where it has been flat since before
+// the stay's first kill and over the window and is not new to the stay (case parent).
+//
+// It judges by what the guard can know at i, so that it asks nothing the guard may not know:
+//   - the decision holds a process that is not new where a block holder, whose reads never fail
+//     and which the processes it may end then hold the floor by, was read at the two readings before
+//     i and at i;
+//   - a process counts only where it lives at the reading, every read of it at i read and, where
+//     held, a read of it at the reading before read, so that the decision did not leave it out; its
+//     size is the least of those reads, and it runs its own program where all of them did;
+//   - it started during the stay where it forked after the end of the stay's first reading, whose
+//     table so cannot list it, and it holds memory of its own where it is a grower that runs the
+//     grow program, which is no fork of its parent: a process that forked during that first
+//     reading, which its table may list, is not judged by case started;
+//   - its growth since the stay's first kill is from its size as of that kill (asOfKill), 0 where
+//     the guard never read it before that kill and its first read after it ran its own program, as
+//     the order's third tier counts it; that size is never below the guard's own.
+func (s *simRun) checkUrgent(i, stay, stayFirst int, held bool) []simFailure {
+	if stay < 0 || i < stay+2 {
+		return nil
+	}
+	r := s.readings[i]
+	kills := s.killsAt(i)
+	parent := simBlockHolders[0]
+	var out []simFailure
+	for _, k := range kills {
+		if k.rule != ruleUrgent {
+			continue
+		}
+		_, before := s.kept(parent, i-1)
+		_, at := s.kept(parent, i)
+		switch {
+		case slices.Contains(simBlockHolders[1:], k.pid) && s.aliveAt(parent, r.now) && (before || at):
+			out = append(out, simFailure{rule: "urgent", cause: "fork", what: fmt.Sprintf(
+				"at the reading at %s, %d MiB, the guard ended pid %d, a sleeping fork that ranks at nothing beside its living parent, by rule=urgent",
+				simMS(r.now), r.reading/mib, k.pid)})
+		case k.pid == parent && s.parentSpared(i, stay, stayFirst):
+			out = append(out, simFailure{rule: "urgent", cause: "parent", what: fmt.Sprintf(
+				"at the reading at %s, %d MiB, the guard ended pid %d, the probe's parent, flat since %s, before the stay's first kill and the window, and not new to the stay, by rule=urgent",
+				simMS(r.now), r.reading/mib, k.pid, simMS(s.parentFull))})
+		}
+	}
+	history := slices.ContainsFunc(simBlockHolders, func(q int) bool {
+		for j := i - 2; j <= i; j++ {
+			if _, ok := s.kept(q, j); !ok {
+				return false
+			}
+		}
+		return true
+	})
+	if !history {
+		return out
+	}
+	for _, q := range simEndable {
+		if !s.aliveAt(q, r.now) || slices.ContainsFunc(kills, func(k simKill) bool { return k.pid == q }) {
+			continue
+		}
+		size, own, ok := s.decided(q, i, held)
+		if !ok {
+			continue
+		}
+		p := s.procs[q]
+		if p.grower && own && p.forkAt > s.readings[stay].end {
+			out = append(out, simFailure{rule: "urgent", cause: "started", what: fmt.Sprintf(
+				"at the reading at %s, %d MiB, at or above the urgent share in a stay with history, the guard did not end pid %d, which started at %s, during the stay that began at %s, and holds memory of its own (read %d MiB)",
+				simMS(r.now), r.reading/mib, q, simMS(p.forkAt), simMS(s.readings[stay].now), size/mib)})
+			continue
+		}
+		if stayFirst < 0 || stayFirst >= i {
+			continue
+		}
+		if from, _, known := s.asOfKill(q, stayFirst, true); known && size > from+growthNoise {
+			first := s.killsAt(stayFirst)[0]
+			out = append(out, simFailure{rule: "urgent", cause: "since", what: fmt.Sprintf(
+				"at the reading at %s, %d MiB, at or above the urgent share in a stay with history, the guard did not end pid %d, which had grown %d MiB since the stay's first kill, of pid %d (rule=%s) at %s (read %d MiB, %d MiB as of that kill)",
+				simMS(r.now), r.reading/mib, q, (size-from)/mib, first.pid, first.rule, simMS(s.readings[stayFirst].now), size/mib, from/mib)})
+		}
+	}
+	return out
+}
+
+// decided is pid's size as the decision at reading i may have taken it, the least of its reads at
+// i and, where held, at the reading before, and whether each of those ran its own program; false
+// where it has no read at i, where a read of it at i failed, or where held and every read of it at
+// the reading before failed, so that the decision may have left it out (checkUrgent).
+func (s *simRun) decided(pid, i int, held bool) (size uint64, own, ok bool) {
+	atI, before, beforeOK := false, false, false
+	size, own = math.MaxUint64, true
+	for _, r := range s.readsOf(pid) {
+		switch {
+		case r.reading == i && !r.ok:
+			return 0, false, false
+		case r.reading == i:
+			atI = true
+		case held && r.reading == i-1:
+			before = true
+			if !r.ok {
+				continue
+			}
+			beforeOK = true
+		default:
+			continue
+		}
+		size, own = min(size, r.size), own && r.own
+	}
+	if !atI || before && !beforeOK {
+		return 0, false, false
+	}
+	return size, own, true
+}
+
+// parentSpared is whether the urgent rule may not end the probe's parent at reading i of the stay
+// whose first reading is stay and whose first kill was at reading stayFirst, -1 before it: the two
+// readings before i read it, so it is not new to the stay, and its block was last filled
+// (parentFull) more than growthWindow before i, so it did not grow over the window, and before the
+// reading before the stay's first kill, so it has not grown since that kill (checkUrgent). The
+// stay's first table lists it, since it lives from the run's start.
+func (s *simRun) parentSpared(i, stay, stayFirst int) bool {
+	if i < stay+2 {
+		return false
+	}
+	for j := i - 2; j < i; j++ {
+		if _, ok := s.kept(simBlockHolders[0], j); !ok {
+			return false
+		}
+	}
+	flat := s.readings[i].now - growthWindow
+	if stayFirst >= 0 && stayFirst < i {
+		flat = min(flat, s.readings[max(stay, stayFirst-1)].now)
+	}
+	return s.parentFull < flat
 }
 
 // orphaned is whether the guard ended the probe's parent while one of its sleeping forks lived, so
