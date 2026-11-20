@@ -57,6 +57,7 @@ function headerControl(selector: string): HTMLElement | null {
  * request of its document waits on the reader, or the document is approved, which draws no
  * Approve - or when the action refuses a press while its review is written: inside `NoTooltips`,
  * which holds the header, both are `aria-disabled` then and never `disabled`.
+ * Whether the action takes a press is the page's one rule (`usableControl`).
  * Like `headerControl`, the one fact a key's `run` and its `when` both read.
  */
 function focusedApprovalAction(action: keyof typeof ACTION_WORDS): HTMLButtonElement | null {
@@ -128,8 +129,9 @@ function outsideInputsAndAskCards(): boolean {
  * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
  * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
  * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
- * is busy (`aria-disabled`), `aria-hidden` or not drawn, except the pin, which is read up to the
- * shut actions menu (`headerControl`): `Shift+P` is offered while the shut menu hides the pin.
+ * is busy (`aria-disabled`), `aria-hidden` or not drawn. The pin is read only up to the shut
+ * actions menu (`headerControl`), so the menu's `hidden` does not refuse it, nor does its not
+ * being drawn there: `Shift+P` is offered while the shut menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [

@@ -86,7 +86,7 @@ export function usableControl(control: Element | null, within?: Element | null):
   );
 }
 
-/** The first of `candidates` that takes a press (`usableControl`), to hand a focus to. */
+/** The first of `candidates` that takes a press (`usableControl`), to hand a focus to or press. */
 export function firstUsable(
   ...candidates: (HTMLElement | null | undefined)[]
 ): HTMLElement | undefined {
