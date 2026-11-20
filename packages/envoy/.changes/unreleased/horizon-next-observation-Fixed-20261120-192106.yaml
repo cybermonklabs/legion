@@ -2,8 +2,8 @@ kind: Fixed
 body: |-
   Readers of the event horizon that ask while one observation runs no longer each run an
   observation of their own when they look late. A reader that finds an observation already ended
-  that started after its call takes the newest such one's answer, unless another reader's
-  cancellation abandoned it. This holds for a reader that waited out an observation from before
+  that started after its call takes the answer of the newest such one that no other reader's
+  cancellation abandoned. This holds for a reader that waited out an observation from before
   its call, for one that looks only after the next observation has ended, and for readers whose
   shared observation another reader's cancellation abandoned. Before, each such reader that looked
   late ran another, so on a loaded machine each late reader cost the horizon one more round trip

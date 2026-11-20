@@ -216,9 +216,10 @@ type Horizon struct {
 	// sets pauseFor and a test replaces it to see the waits Await takes.
 	pause func(ctx context.Context, d time.Duration)
 	// afterObservationParked runs, outside the lock, each time a caller finds an observation
-	// already in flight and parks on it rather than running one of its own. Nothing in
-	// production sets it; the package's own test of concurrent callers waits on it instead of
-	// sleeping for a share of them to arrive.
+	// already in flight and parks on it rather than running one of its own, before it waits on
+	// it. Nothing in production sets it; the package's tests wait on it instead of sleeping for
+	// callers to arrive, and some hold a caller in it, so that it waits only once later
+	// observations have ended.
 	afterObservationParked func()
 	// afterObservationBoundary runs, outside the lock, each time Safe or Await has read the count
 	// of observations started at its call (observationBoundary), before it looks for one. Nothing
@@ -386,9 +387,9 @@ func (h *Horizon) Persisted(ctx context.Context) (int64, error) {
 // Like Await, Safe never settles for an observation already in flight when it is called: that
 // one took its snapshot before the call and can miss an id committed just before it, and if its
 // A were at or below H it would leave no gap (Gap), so the reader would arm no re-read for that
-// id. Safe waits it out and joins or runs the next. Its own observation saw every id committed
-// before the call, so each such id is at or below H, or stands above it and keeps a gap open
-// until H reaches it.
+// id. Safe waits it out, then joins one in flight, takes one that ended after the call, or runs
+// one. Its own observation saw every id committed before the call, so each such id is at or below
+// H, or stands above it and keeps a gap open until H reaches it.
 func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 	after := h.observationBoundary()
 	if _, err := h.observe(ctx, after); err != nil {
@@ -415,11 +416,12 @@ func (h *Horizon) Safe(ctx context.Context) (int64, error) {
 // The observation has to start after the call: one already in flight took its snapshot before
 // the call and can miss an id committed just before it, so Await waits that one out rather than
 // share it. Each observation it takes after its first is numbered above the one it took before,
-// and may be one another caller ran meanwhile. An observation error is retried after the backoff,
-// like a held observation, until observations have failed for horizonAwaitFailFor with no
-// success between, measured from the first failure since the last success, and is then returned;
-// if ctx ends first, the last one is reported with ctx's error. A failure the caller's own ctx
-// caused counts for neither.
+// and above every one that had ended when it last read the gap, since that read already counted
+// them; it may be one another caller ran meanwhile. An observation error is retried after the
+// backoff, like a held observation, until observations have failed for horizonAwaitFailFor with
+// no success between, measured from the first failure since the last success, and is then
+// returned; if ctx ends first, the last one is reported with ctx's error. A failure the caller's
+// own ctx caused counts for neither.
 func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	after := h.observationBoundary()
 	taken := after
@@ -434,6 +436,9 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 			failed = nil
 			h.mu.Lock()
 			proven, safe, gap := h.safeThrough > after, h.safe, h.gapLocked()
+			if h.ended != nil {
+				taken = max(taken, h.ended.number)
+			}
 			h.mu.Unlock()
 			if proven {
 				return safe, nil
@@ -681,8 +686,9 @@ func (h *Horizon) observe(ctx context.Context, after uint64) (uint64, error) {
 	for {
 		h.mu.Lock()
 		if ended := h.ended; ended != nil && ended.number > after {
+			number, err := ended.number, ended.err
 			h.mu.Unlock()
-			return ended.number, ended.err
+			return number, err
 		}
 		flight := h.inFlight
 		run := flight == nil
