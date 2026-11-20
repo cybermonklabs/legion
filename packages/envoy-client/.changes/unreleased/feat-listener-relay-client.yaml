@@ -1,0 +1,25 @@
+kind: Added
+body: |-
+  A session can take its inbound messages through the Envoy listener's relay socket instead of
+  NATS, over HTTPS alone: `ENVOY_INBOUND=listener` (or `"inbound": "listener"` in the `envoy`
+  section of envoy.json; the variable wins, and `nats`, or nothing set, is NATS as before).
+  `envoySettings`' `inbound` then carries `{ relaySetting, relayCredential }`, the session's broker
+  credential, and the choice is refused, turning off inbound messages alone and naming why, beside
+  a NATS server (`ENVOY_NATS_URL` or `envoy.natsUrls`, naming both), with a bearer for the listener,
+  with no broker route, for a caller that names no session, and for any other value. The start
+  notice says the socket carries no live view. `connectListenerRelay`
+  (`@legion/envoy-client/listener-relay`) opens `<ENVOY_URL>/v1/sessions/<session>/relay`
+  (subprotocol `envoy-relay.v1`) with a fresh DPoP proof of the session's broker token and answers a
+  `ListenerRelay`, a connection of the shape a plugin holds over NATS (`InboundConnection`), so
+  consumer delivery runs on either. A `sub` the listener refuses (`subject_not_granted`) ends that
+  subscription alone and is logged once; `flush` waits on a WebSocket ping's pong, which the
+  listener sends after it handled every `sub` before it; a `msg`'s headers keep each name's case
+  and every value in order (`RelaySocketHeaders.values`). A close is opened again as the listener's
+  code says: 4401 and 1012 at once, 4403 after 1 s doubling to a minute and 1013 after 5 s doubling
+  to a minute, the first two codes of the credential with a fresh trade; a refused trade is told
+  to the session once per outage (`inboundUnavailable`). `test/relay-socket-stand-in`
+  (`@legion/envoy-client/test/relay-socket-stand-in`) serves the socket and a broker's token
+  exchange on one origin, for a plugin's tests.
+time: 2026-11-20T09:58:42Z
+custom:
+    Issue: feat-listener-relay-client
