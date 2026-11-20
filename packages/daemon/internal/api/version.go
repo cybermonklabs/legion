@@ -2464,7 +2464,7 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 191: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
+// 189: INFRA-4401 -- the daemon reads no repository mapping from Dispatch, and the `repositories`
 // block of `GET /legion/v1/state` becomes the repositories the project's live records name, read
 // in the state's own snapshot. The block is `{live, caches, withoutWebhookApp}`. `live` holds one
 // entry for each repository a live record names, under the name the records keep, sorted by its
@@ -2482,7 +2482,7 @@ package api
 // the live records hold. `owners`, `mapped` and `refused` are gone, and with them each entry's
 // `default`, which the daemon no longer knows. A plugin of 152 reads the block with a schema that
 // requires those three keys and would refuse the whole state without them, so a caller in a pod
-// whose claims record a contract below 191 is served the block in 152's shape, written from the
+// whose claims record a contract below 189 is served the block in 152's shape, written from the
 // same entries (api's repositoriesLiveContract and withoutRepositoriesLive): `owners` and `mapped`
 // are the entries both role Apps are installed on, under the name each is served under, every
 // `default` false; `refused` is each other entry with its `readError`, the App not installed on
@@ -2491,15 +2491,16 @@ package api
 // controller start`, a tmux pane — is served the new block whatever its plugin, and the boot gate
 // and `legion probe-image` keep a tmux pane's plugin at this contract.
 // `packages/contracts/src/legion-api.ts` mirrors the new block, and the fixture
-// `state-narrowed-repositories.json` is the body a pod at 190 is served: a pod from 178 to 190 is
+// `state-narrowed-repositories.json` is the body a pod at 188 is served: a pod from 178 to 188 is
 // served the pause and the block in 152's shape.
-// (This change takes 191, the lowest number above main's 188 that no open pull request declared
-// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 262 open pull requests
-// of cybermonklabs/legion, taken from 2026-11-20T10:11:45Z to 10:18:18Z, which named at or above
-// main's 188: 188 (#4581), 189 (#3831, #4592 and #4596) and 190 (#4578). This entry stood at 167,
-// 169, 173, 182 and 190 before, each the number it took at an earlier census and no head's for
-// good. Read main's own number and every open pull request's again at the next forward merge
-// rather than from this line, as
+// (This change takes 189, the lowest number above main's 188 that no open pull request declared
+// at the census of `const DaemonAPIVersion` at refs/pull/<n>/head over the 267 open pull requests
+// of cybermonklabs/legion, taken from 2026-11-20T12:18:03Z to 12:25:37Z, which named above main's
+// 188: 190 (#4578), 191 (#4049, #4495, #4573, #4592 and #4596), 192 (#3993, #4173, #4175, #4273,
+// #4392, #4580 and #4611), 193 (#3659, #3712, #4065, #4553 and #4581) and 194 (#3831 and #4030).
+// This entry stood at 167, 169, 173, 182, 190 and 191 before, each the number it took at an
+// earlier census and no head's for good. Read main's own number and every open pull request's
+// again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 191
+const DaemonAPIVersion = 189

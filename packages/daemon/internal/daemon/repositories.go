@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -519,7 +520,9 @@ func checkWebhookApp(ctx context.Context, client dispatch.Client, repo ghrepo.Re
 	case dispatch.Missing(err):
 		return "this Dispatch does not answer the webhook App check"
 	case err != nil:
-		return "the webhook App check failed: " + err.Error()
+		// legion state serves the gap's reason, so Dispatch's error is kept as any far side's
+		// error text is.
+		return "the webhook App check failed: " + storetext.FarSideError(err.Error())
 	case !installed:
 		return fmt.Sprintf("Dispatch's GitHub App is not installed on %s: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed", repo)
 	}
@@ -592,7 +595,10 @@ func (w *workflowRuntime) readInstallations(ctx context.Context, name ghrepo.Rep
 		case err == nil:
 			*apps.of(role) = appInstallation{answered: true, installed: answered}
 		case unread == "":
-			unread = fmt.Sprintf("the %s App's installation on %s could not be read: %v", role, name, err)
+			// The reason is served by legion state (repositories.live's readError) and fails a
+			// launch that prepares the name, so GitHub's error is kept as any far side's error
+			// text is.
+			unread = fmt.Sprintf("the %s App's installation on %s could not be read: %s", role, name, storetext.FarSideError(err.Error()))
 		}
 	}
 	return apps, unread
@@ -687,13 +693,14 @@ func (w *workflowRuntime) prepareName(ctx context.Context, under, named ghrepo.R
 // by installReadAttempt, as a preparation (prepareName) and the rename pass (renameTransfer) read
 // it: the read where it answered, and otherwise why it did not, in the words legion state and the
 // rename pass's line name it with, beside the read's own error for the caller's rule of a rate
-// limit (defaultBranchLimit).
+// limit (defaultBranchLimit). The reason legion state serves (repositories.live's readError) holds
+// err's text as the daemon keeps any far side's error text (storetext.FarSideError).
 func (w *workflowRuntime) readName(ctx context.Context, repo ghrepo.Repository) (read ghbranch.Repository, unread string, err error) {
 	attempt, cancel := context.WithTimeout(ctx, installReadAttempt)
 	defer cancel()
 	read, err = w.defaultBranches.Named(attempt, repo)
 	if err != nil {
-		unread = fmt.Sprintf("the name and default branch of %s could not be read: %v", repo, err)
+		unread = fmt.Sprintf("the name and default branch of %s could not be read: %s", repo, storetext.FarSideError(err.Error()))
 	}
 	return read, unread, err
 }
@@ -2619,7 +2626,10 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 		}
 		issue.Ancestry = chain
 	}
-	if !reread || recorded != nil && (issue.Parent == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
+	// The record holds what the store kept of a parent and a chain, so Dispatch's are compared as
+	// the store would keep them (storetext.Text, storetext.Strings); the walk itself reads Dispatch
+	// by the keys as Dispatch gave them.
+	if !reread || recorded != nil && (storetext.Text(issue.Parent) == parentKey(recorded.Parent) || issue.Seq != 0 && issue.Seq <= recorded.LastDispatchSeq) {
 		return issue, nil
 	}
 	var roots []record.Issue
@@ -2641,7 +2651,7 @@ func (w *workflowRuntime) withAncestry(ctx context.Context, issue intake.Dispatc
 				"root", root.Key, "event", issue.Key, "ancestry", root.Ancestry, "error", err)
 			continue
 		}
-		if slices.Equal(chain, root.Ancestry) {
+		if slices.Equal(storetext.Strings(chain), root.Ancestry) {
 			continue
 		}
 		if issue.Reread == nil {
@@ -2800,7 +2810,9 @@ func (w *workflowRuntime) prepareUnrecorded(ctx context.Context, issue intake.Di
 func (w *workflowRuntime) prepareRead(ctx context.Context, issue intake.DispatchIssue, boot bool) (intake.DispatchIssue, error) {
 	repo, err := ghrepo.Parse("the repository Dispatch resolves "+issue.Key+" to", issue.ResolvedRepo)
 	if err != nil {
-		issue.RepositoryRefusal = err.Error()
+		// The refusal is posted on the issue (intake.DispatchIssue.RepositoryRefusal), and the
+		// error quotes what Dispatch resolved the issue to, so it is kept as a far side's text is.
+		issue.RepositoryRefusal = storetext.FarSideError(err.Error())
 		return issue, nil
 	}
 	if boot {
