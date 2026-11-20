@@ -190,6 +190,23 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
 
+# real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
+# shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
+# children this leg starts under a HOME of their own have none, so they run the real programs.
+real_tools() {
+  local dir=$1 name found
+  shift
+  mkdir -p "$dir" || return
+  for name in "$@"; do
+    found=''
+    if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
+    [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
+    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
+  done
+}
+tools="$work/tools"
+[ -z "$work" ] || real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper
+
 emit "row${tab}want${tab}got${tab}verdict"
 
 # skip_rest REASON FROM: every row from FROM on (the names in `rest_rows`) UNKNOWN for REASON.
@@ -385,7 +402,7 @@ mkdir -p "$scratch/home" "$scratch/run" "$scratch/state" "$scratch/keys"
 chmod 700 "$scratch" "$scratch/home" "$scratch/run" "$scratch/state" "$scratch/keys"
 printf '%s\n' "$person" >"$scratch/operator"
 scratch_env=(
-  "PATH=$PATH"
+  "PATH=$tools:$PATH"
   "HOME=$scratch/home"
   "XDG_RUNTIME_DIR=$scratch/run"
   "XDG_STATE_HOME=$scratch/state"
@@ -434,6 +451,7 @@ while IFS= read -r name; do
 done <<EOF
 $(compgen -e)
 EOF
+probe_env+=("PATH=$tools:$PATH")
 # The peer of P4 is an Oh My Pi session of this box, OUTSIDE_PEER=omp (the default): the box's own
 # model profile, with only the envoy plugin OUTSIDE_PEER_PLUGIN_DIR names (default this checkout's
 # packages/pi-envoy, built) and no other extension, skill, rule or context file, its sessions kept
@@ -501,6 +519,7 @@ if [ -z "$peer_problem" ] && [ "$peer_kind" = omp ]; then
   peer_dir=$(cd "$peer_dir" && pwd -P)
   say "starting the peer, omp in tmux (tmux -S $peer_tmux attach -t outside-e2e-peer)"
   env -u ENVOY_NATS_URL -u ENVOY_TOKEN -u ENVOY_TOKEN_FILE -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE \
+    PATH="$tools:$PATH" \
     ENVOY_URL="$OUTSIDE_LISTENER_URL" ENVOY_INBOUND=listener AGENT_SECRETS_PROJECTS="$project" \
     tmux -S "$peer_tmux" new-session -d -s outside-e2e-peer -x 220 -y 50 -c "$peer_dir" \
     omp --no-extensions --plugin-dir "$plugin_dir" --no-skills --no-rules --no-context-files \
@@ -580,7 +599,7 @@ mkdir -p "$hold_dir/home"
 chmod 700 "$hold_dir" "$hold_dir/home"
 hold_file="$hold_dir/device-login.json"
 hold_env=(
-  "PATH=$PATH"
+  "PATH=$tools:$PATH"
   "HOME=$hold_dir/home"
   "TMPDIR=${TMPDIR:-/tmp}"
   "AGENT_SECRETS_URL=${OUTSIDE_TAILNET_BROKER_URL:-}"
@@ -699,9 +718,12 @@ want_t2="an enrollment through the scratch helper refused 403 RESTRICTED_MEMBER_
 if ! passed T1; then
   row T2 "$want_t2" "not run: T1 did not pass, so the scratch helper holds no login" UNKNOWN
 else
+  # Each register runs its own launcher (--exec), so the session it names is that process and not
+  # this leg's shell: a register with no --exec registers the shell it runs in, and every later
+  # agent-secrets call of this leg would then be refused IN_SESSION. Inside it, whoami reads the
+  # session's enrollment, which a refused one has none of.
   env -i "${scratch_env[@]}" agent-secrets register --session-id "outside-e2e-t2-$nonce" --wait 15 \
-    >"$work/t2.out" 2>"$work/t2.err" </dev/null
-  registered=$?
+    --exec -- agent-secrets whoami >"$work/t2.out" 2>"$work/t2.err" </dev/null
   said=$(tr '\n' ' ' <"$work/t2.out")
   refusal=$(tr '\n' ' ' <"$work/t2.err")
   lengths=$(env -i "${scratch_env[@]}" agent-secrets register --session-id "outside-e2e-t2b-$nonce" \
@@ -709,23 +731,23 @@ else
   length=${lengths##*request-exit }
   length=${length#* }
   length=${length// /}
-  case $refusal in
-    *'403 RESTRICTED_MEMBER_ENROLLS_NOTHING'*)
-      if [ "$registered" -ne 1 ]; then
-        row T2 "$want_t2" "register exited $registered: $said $refusal" FAIL
-      elif [ -n "$length" ] && [ "$length" != 0 ]; then
-        row T2 "$want_t2" "refused, and yet the canary reached the session: a value $length long" FAIL
-      else
-        row T2 "$want_t2" "refused by that code (${said% }); the canary asked for through it: ${lengths% } and no value" PASS
-      fi
-      ;;
-    *MEMBER_KIND_UNCHECKABLE*)
-      row T2 "$want_t2" "the broker could not ask Dispatch the member kind: $refusal" UNKNOWN
+  case $said in
+    *enrollment_id*)
+      row T2 "$want_t2" "the scratch helper's session enrolled: ${said:0:300}" FAIL
       ;;
     *)
-      case $said in
-        *enrolled*) row T2 "$want_t2" "the scratch helper's session enrolled: $said" FAIL ;;
-        *) row T2 "$want_t2" "register exited $registered with no RESTRICTED_MEMBER_ENROLLS_NOTHING: $said ${refusal:0:300}" FAIL ;;
+      case $refusal in
+        *'403 RESTRICTED_MEMBER_ENROLLS_NOTHING'*)
+          if [ -n "$length" ] && [ "$length" != 0 ]; then
+            row T2 "$want_t2" "refused, and yet the canary reached the session: a value $length long" FAIL
+          else
+            row T2 "$want_t2" "refused by that code, and whoami inside reads no enrollment; the canary asked for through it: ${lengths% } and no value" PASS
+          fi
+          ;;
+        *MEMBER_KIND_UNCHECKABLE*)
+          row T2 "$want_t2" "the broker could not ask Dispatch the member kind: ${refusal:0:300}" UNKNOWN
+          ;;
+        *) row T2 "$want_t2" "no RESTRICTED_MEMBER_ENROLLS_NOTHING: ${refusal:0:300}; the canary asked for through it: ${lengths% }" FAIL ;;
       esac
       ;;
   esac

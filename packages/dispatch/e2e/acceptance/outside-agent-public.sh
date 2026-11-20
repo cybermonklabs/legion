@@ -185,8 +185,24 @@ if [ -n "$work" ]; then
   session_dir=$(cd "$work/outside-e2e-$nonce" && pwd -P)
 fi
 
+# real_tools DIR NAME...: a link in DIR to the real program behind each NAME. A version manager's
+# shim (mise's, or a wrapper that calls mise) finds its program through the caller's HOME, and the
+# children this leg starts under a HOME of their own have none, so they run the real programs.
+real_tools() {
+  local dir=$1 name found
+  shift
+  mkdir -p "$dir" || return
+  for name in "$@"; do
+    found=''
+    if command -v mise >/dev/null 2>&1; then found=$(mise which "$name" 2>/dev/null </dev/null); fi
+    [ -n "$found" ] || found=$(command -v "$name" 2>/dev/null)
+    case $found in /*) ln -sf "$found" "$dir/$name" ;; esac
+  done
+}
+[ -z "$work" ] || real_tools "$work/tools" bun omp tmux
+
 session_env=(
-  "PATH=$PATH"
+  "PATH=$work/tools:$PATH"
   "HOME=$home"
   "TERM=${TERM:-xterm-256color}"
   "TMPDIR=${TMPDIR:-/tmp}"

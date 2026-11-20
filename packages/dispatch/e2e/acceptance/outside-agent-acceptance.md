@@ -67,9 +67,13 @@ The tailnet leg does these steps, in this order:
    XDG directories and `AGENT_SECRETS_*` paths, the test person in its operator file, and the
    broker's private origin as `AGENT_SECRETS_URL`. It runs `agent-secrets machine login` there and
    reads the code.
-4. It starts the peer session (`outside-agent-probe.ts peer`) at the edge listener with the box's
-   own identity and a token that names the project. It also keeps a session outside the project,
-   `<peer>-foreign`, registered at the private listener, for row P6.
+4. It starts the peer at the edge listener, with the box's own identity and a token that names the
+   project. By default (`OUTSIDE_PEER=omp`) the peer is an Oh My Pi session in tmux, run with the
+   box's own model profile and only the envoy plugin `OUTSIDE_PEER_PLUGIN_DIR` names (default this
+   checkout's `packages/pi-envoy`, built), its sessions kept in the scratch directory; its model
+   answers the public side. On a local stack with no model, `OUTSIDE_PEER=probe` runs the scripted
+   peer (`outside-agent-probe.ts peer`) instead; only with `OUTSIDE_ALLOW_HTTP=1`. It also keeps
+   a session outside the project, `<peer>-foreign`, registered at the private listener, for row P6.
 5. It starts P10's hold login: `dispatch login --device --person <person>` with the client of this
    checkout, its file in the scratch directory. It reads the code.
 6. It starts the public leg, within the codes' 15 minutes: `gh workflow run` of
@@ -80,8 +84,10 @@ The tailnet leg does these steps, in this order:
 7. It waits for the scratch login to be approved, and runs rows T1-T3.
 8. It waits for the public run to end, downloads its artifacts `outside-agent-public` and
    `outside-edge-revocations`, and runs row T4.
-9. It runs row P10, which asks the operator on this terminal to remove the test person from the
-   project's access list and waits for Enter. Re-adding the person is the operator's own act.
+9. It runs row P10. It asks the operator on this terminal to remove the test person from the
+   project's access list, and waits for Enter; with `OUTSIDE_OWNER_REMOVE_COMMAND` set, it runs that
+   command instead, as a harness acting as the owner's browser does on a local stack. Re-adding the
+   person is the operator's own act.
 10. It prints rows P1-P9 and the gate, and reads the pins again. A pin that moved during the run
     holds the gate.
 11. It stops the scratch helper, the peer and the hold login's probes, and removes its scratch
@@ -100,7 +106,9 @@ The workflow runs `outside-agent-public.sh` after its own sign-in, with:
 | `OUTSIDE_REPOSITORY` | The repository the scratch project's issue names. |
 | `OUTSIDE_PATH_TARGETS` | The target list of row P9. |
 | `OUTSIDE_AGENT_PUBLIC_TSV` | Where the leg writes its TSV. The workflow uploads it as artifact `outside-agent-public`. |
-| `OUTSIDE_P4_REPLY` | How row P4's two sends are made. `model` (the default): the Oh My Pi session's model calls `envoy_send`, which needs `ANTHROPIC_API_KEY` (or `ANTHROPIC_OAUTH_TOKEN`) and optionally `OUTSIDE_OMP_MODEL`; with neither key P4 reads UNKNOWN, and so does P8. `scripted`: the probe sends them as the session's own session id, through the same device login and edge, with no model. Either way the session receives through its own relay socket. |
+
+No model credential goes on the runner: the leg's two sends in P4 are scripted, and the model turn
+is the peer's, on the developer box.
 
 Programs on PATH: bash, curl, tmux, bun and `omp`. The step needs about 20 minutes: P5 waits up to
 15 minutes for a GitHub event, beside P4 and P8, and P8 waits for a token to expire (300 s).
@@ -124,7 +132,7 @@ Every process the leg starts runs with `env -i`, a HOME of its own, and these se
 | P1 | `omp plugin install @sjawhar/pi-envoy@<version>` installs that version. |
 | P2 | `dispatch login --device --person <person>` prints a code, the approve command approves it, the login exits 0, and `~/.config/legion/device-login.json` has mode 0600. |
 | P3 | Dispatch's `GET /api/v1/whoami` with the agent's token answers `kind` agent, `owner` the test person, `project` the scratch project and `scopes` `[]`. |
-| P4 | An Oh My Pi session in tmux registers at the edge listener. It sends the peer `outside-e2e ping <nonce>`, shows the peer's `pong` within 10 s of the peer's send, sends `ack`, and shows the peer's `done` within 10 s. The peer stamps each answer with its send time. The sends are the model's or the probe's, as `OUTSIDE_P4_REPLY` says. |
+| P4 | An Oh My Pi session in tmux registers at the edge listener, and the edge serves a relay socket. The probe, as that session's own session id, sends the peer `outside-e2e ping <nonce> at <ms>`. The session shows the peer's `pong` and then its `hello` within 10 s of the peer's sends. The probe sends `outside-e2e reply <nonce> at <ms>`, and the session shows the peer's `done` within 10 s. Each message carries its sender's clock. |
 | P5 | Interests in another project's Dispatch topic (403), in `notifications.slack.>`, `notifications.whatsapp.>` and `notifications.team.>` (403 `topic_not_in_project`), in another repository and in `notifications.github.>` (403 `repository_not_in_project`), and a publish of the project's own Dispatch event (403 `topic_not_published`) are refused. An interest in `OUTSIDE_REPOSITORY`'s events is admitted, and one of its events arrives within 15 minutes. |
 | P6 | `GET /v1/sessions` lists the peer, which is the control, and not `<peer>-foreign`. A relay-socket `sub` to the peer's subject is refused `subject_not_granted`. |
 | P7 | `POST /api/v1/me/agent-tokens` and a credential-request approve with the agent's token answer 403. |
@@ -144,10 +152,12 @@ Every process the leg starts runs with `env -i`, a HOME of its own, and these se
 | P10 | Before the prompt, which is the control: the test person is on the project's access list (read with this box's own credential at `OUTSIDE_TAILNET_DISPATCH_URL`), and a trade of the hold login is answered. After the operator removes the person and presses Enter: the list no longer names them (else UNKNOWN), a fresh trade of the hold login is refused, and a relay socket opened at the edge with the token traded at the removal is closed, each within 325 s. A restricted member's token lasts at most 300 s and the edge checks an open socket every 20 s plus a 5 s cache. No terminal, or no approved hold login, reads UNKNOWN. |
 | gate | Every row above and P1-P9 pass, and the pins read at the end are the pins read at the start. |
 
-The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did
-not start. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads UNKNOWN
-when the peer did not start or the private listener did not list `<peer>-foreign`. A FAIL of P5 or
-P6 stands, because a missing refusal or a listed foreign session is evidence by itself.
+The tailnet leg holds a public row to what it saw beside it. P4 reads UNKNOWN when the peer did not
+start. A PASS of P4 also needs the peer's own side: the peer was shown the ping and the reply within
+10 s of their stamps, read from its pane (or the scripted peer's log); not seen there, it reads
+UNKNOWN. A PASS of P5 reads UNKNOWN when the issue row did not pass. A PASS of P6 reads UNKNOWN when
+the peer did not start or the private listener did not list `<peer>-foreign`. A FAIL of P5 or P6
+stands, because a missing refusal or a listed foreign session is evidence by itself.
 
 ## The controls, run first and recorded
 
@@ -172,4 +182,9 @@ same check must fail on that copy.
 - P8's 300 s bound is read on the token that the trade answered, not on a revoke that a person
   makes.
 - P4's 10 s bounds compare the peer's clock with the runner's, so they hold only as well as both
-  machines keep time.
+  machines keep time. The model peer stamps its answers by running `date` just before each send, so
+  its stamps include the model's own time between the two calls: a lag can read longer than the
+  delivery took, never shorter.
+- P10 reads the access-list removal through the test person's live device login: its trade and
+  its socket. The parts that need the test person's browser, which lives on the runner and has
+  ended by then (their cookie answered 401, their passkey sign-in refused), are not read.
