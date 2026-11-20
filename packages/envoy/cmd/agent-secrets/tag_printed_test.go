@@ -78,3 +78,33 @@ func TestARefusedTagValueOrNameIsNotPrinted(t *testing.T) {
 		}
 	})
 }
+
+// TestARefusedGitHubNarrowingFlagIsNotPrinted: the exec form's --github-owner and --github-repo
+// refuse a value that is no GitHub login or repository name, naming the flag and its rule and no
+// part of the value, which the broker's parser (policy.ParseGitHubNarrowing) quotes. Control: a
+// login and a repository name still narrow.
+func TestARefusedGitHubNarrowingFlagIsNotPrinted(t *testing.T) {
+	const secret = "hunter2pw.narrow-77aa"
+	for _, row := range []struct {
+		name, owner string
+		repos       []string
+		says        string
+	}{
+		{"--github-owner that is no login", secret, nil, "--github-owner names one GitHub login (the value is not printed)"},
+		{"--github-repo that is no repository name", "ada", []string{secret + "/x"}, "--github-repo names at least one and at most 100 of the owner's repositories"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			_, err := githubNarrowing(row.owner, true, row.repos, false, false)
+			if err == nil {
+				t.Fatal("the flags narrowed")
+			}
+			wantNamedNotPrinted(t, "the refusal", err.Error(), []string{row.says}, secret, "hunter2pw", "77aa")
+		})
+	}
+	t.Run("control: a login and a repository name narrow", func(t *testing.T) {
+		got, err := githubNarrowing("Ada", true, []string{"proofs"}, true, false)
+		if err != nil || got == nil || got.Owner != "ada" || len(got.Repositories) != 1 || got.Repositories[0] != "proofs" {
+			t.Fatalf("githubNarrowing = %+v, %v; want ada's proofs", got, err)
+		}
+	})
+}
