@@ -126,37 +126,22 @@ function silentHub(): { url: string; pings(): number } {
   return { url: `nats://127.0.0.1:${server.port}`, pings: () => pings }
 }
 
-/** How long after the mute hub first sees the server a stop must have ended it. nats.js 2.29.3
- *  gives a dial 20,000 ms (`this.options.timeout || 20000`, `dial` in
- *  lib/nats-base-client/protocol.js), a timer it starts just before it connects, and
- *  `natsConnectionOptions` sets no `timeout`. So a stop that leaves the dial's wait alone ends when
- *  that timer does, about 20 s after the hub saw the connection; this margin stays 5 s short of it,
- *  and a correct stop has all the rest. */
-const DIAL_STOP_MARGIN_MS = 15_000
-
 /** A NATS server that takes the connection and never sends its INFO, so a client's dial waits on
- *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it, and
- *  `firstConnection()` is when the first did, on `performance.now()`'s clock. */
-function muteHub(): { url: string; connections(): number; firstConnection(): number | undefined } {
+ *  it until nats.js's own dial timeout. `connections()` counts the clients that reached it. */
+function muteHub(): { url: string; connections(): number } {
   let connections = 0
-  let first: number | undefined
   const server = Bun.listen({
     hostname: "127.0.0.1",
     port: 0,
     socket: {
       open() {
         connections += 1
-        first ??= performance.now()
       },
       data() {},
     },
   })
   cleanups.push(() => server.stop(true))
-  return {
-    url: `nats://127.0.0.1:${server.port}`,
-    connections: () => connections,
-    firstConnection: () => first,
-  }
+  return { url: `nats://127.0.0.1:${server.port}`, connections: () => connections }
 }
 
 /** The timer nats.js's protocol arms for a dial this test's server starts. `natsConnectionOptions`
@@ -221,14 +206,9 @@ async function dialTimerPreload(
   return { preload, record }
 }
 
-/** What the preloaded child recorded; no record means it was not preloaded and cannot pass the
- * row's timer observation by accident. */
-async function dialTimerStatus(started: Started): Promise<string> {
-  return (await readFile(started.dialTimerRecord, "utf8").catch(() => "none armed")).trim()
-}
-
 interface Started {
-  readonly dialTimerRecord: string
+  /** Where the server's dial-timer record goes, when the row asked for one (`recordDialTimer`). */
+  readonly dialTimerRecord: string | undefined
   readonly server: Subprocess<"pipe", "ignore", "pipe">
   readonly socketPath: string
   stderr(): string
@@ -236,10 +216,11 @@ interface Started {
 
 /** Starts the channel server from this checkout as Claude Code would, with `natsUrls` its Envoy's
  *  NATS servers (none: inbound off), its stdin held open as a live parent holds it, and sends the
- *  MCP initialize handshake. */
+ *  MCP initialize handshake. `recordDialTimer` preloads the server with `dialTimerPreload`, for the
+ *  one row that reads which way its NATS dial ended. */
 async function startServer(
   natsUrls: readonly string[],
-  options: { readonly preloadDialTimer?: boolean } = {},
+  options: { readonly recordDialTimer?: boolean } = {},
 ): Promise<Started> {
   const home = await mkdtemp(join(homeRoot(), HOME_PREFIX))
   cleanups.push(() => rm(home, { recursive: true, force: true }))
@@ -257,13 +238,13 @@ async function startServer(
     }),
   )
   const sessionID = `ses_fatal_${crypto.randomUUID().replaceAll("-", "")}`
-  const dialTimer = await dialTimerPreload(home)
+  const dialTimer = options.recordDialTimer === true ? await dialTimerPreload(home) : undefined
   // This process's own Bun, by its path: a `bun` looked up on PATH can be a version manager's
   // shim, which under this session's HOME finds no configuration and exits before the server runs.
   const server = Bun.spawn(
     [
       process.execPath,
-      ...(options.preloadDialTimer === false ? [] : ["--preload", dialTimer.preload]),
+      ...(dialTimer === undefined ? [] : ["--preload", dialTimer.preload]),
       channelEntry,
     ],
     {
@@ -313,7 +294,7 @@ async function startServer(
   if (socket.path === undefined)
     throw new Error(`the session names no mod socket: ${socket.refusal}`)
   const socketPath = socket.path
-  return { server, socketPath, dialTimerRecord: dialTimer.record, stderr: () => stderr }
+  return { server, socketPath, dialTimerRecord: dialTimer?.record, stderr: () => stderr }
 }
 
 /** The server's exit code once it exits, or undefined when it is still running after `ms`. */
@@ -330,14 +311,6 @@ function exitEvent(started: Started): string {
   return started.stderr().includes("channel server failed")
     ? `exit ${exitCode} after the start failed`
     : `exit ${exitCode}`
-}
-
-async function endedBy(started: Started, deadline: number): Promise<string> {
-  const late = Bun.sleep(Math.max(0, deadline - performance.now())).then(() => "late" as const)
-  if ((await Promise.race([started.server.exited, late])) === "late") {
-    return "still running at the deadline"
-  }
-  return exitEvent(started)
 }
 
 /**
@@ -403,29 +376,25 @@ test("a stop asked for while the start waits on a silent hub exits 0, its socket
 
 test("a stop asked for while the dial waits on a mute hub exits 0, its socket removed", async () => {
   const hub = muteHub()
-  const started = await startServer([hub.url])
+  const started = await startServer([hub.url], { recordDialTimer: true })
   await startedTo(
     started,
     () => hub.connections() >= 1 && existsSync(started.socketPath),
     "the hub's connection and its mod socket",
   )
   started.server.kill("SIGTERM")
-  const connected = hub.firstConnection()
-  if (connected === undefined) throw new Error("the hub counted a connection it never timed")
-  // The server ends through its own SIGTERM handler: the stop ends the dial's wait, and the process
-  // exits 0 by itself. One with no handler is killed by the signal. A start that failed exits 1
-  // after its failure line. And a stop that leaves the dial's wait alone ends only when nats.js's
-  // dial timeout does, about 20 s after the hub saw the connection, which the deadline
-  // (`DIAL_STOP_MARGIN_MS`) stays short of.
-  // The 15 s horizon is a guard against a wait that cannot be the dial's own 20 s timeout. If it
-  // passes, let the known dial path settle so the timer's event, rather than the clock, decides the
-  // verdict. The row's own 30 s timeout remains the guard for a process that never ends.
-  let event = await endedBy(started, connected + DIAL_STOP_MARGIN_MS)
-  if (event === "still running at the deadline") {
-    await started.server.exited
-    event = exitEvent(started)
-  }
-  expect(event, started.stderr()).toBe("exit 0")
-  expect(await dialTimerStatus(started), started.stderr()).toBe("armed and not fired")
+  await started.server.exited
+  // What decides the row is how the server ended, not when. A correct stop ends the start's wait
+  // on the dial, and the process exits 0 through its own SIGTERM handler while nats.js's dial
+  // timer is still armed. A server with no handler is killed by the signal. A stop that leaves the
+  // dial's wait alone also exits 0, but only after that timer fired. A server started without the
+  // preload records no timer at all. The row's own timeout is its only bound, against a process
+  // that never ends.
+  expect(exitEvent(started), started.stderr()).toBe("exit 0")
+  const timer =
+    started.dialTimerRecord === undefined
+      ? "none armed"
+      : (await readFile(started.dialTimerRecord, "utf8").catch(() => "none armed")).trim()
+  expect(timer, started.stderr()).toBe("armed and not fired")
   expect(existsSync(started.socketPath)).toBe(false)
 }, 30_000)
