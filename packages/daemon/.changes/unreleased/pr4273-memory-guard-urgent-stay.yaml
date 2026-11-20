@@ -7,10 +7,12 @@ body: |-
     not a fork that still runs its parent's program and holds memory of its own, each beside the
     first with its own `ended` line, `rule=urgent`. A stay begins at its first reading at or above
     the band below the mark, and a process started during it is one that reading's process table
-    did not list. In the wait after a kill such a process is a reason to act, and where it is the
-    only one, the first kill goes to the first such process in the order, not to a larger process
-    that never grew. So growers that started inside the band and step together after an urgent
-    reading no longer outrun one kill a reading, and a parent that grew before the stay's first kill
-    and has been flat since, or a sleeping fork, is not ended for this.
+    did not list. In the wait after a kill such a process is a reason to act, and where such
+    processes are the only reason to act, the first kill goes to the first process in the order
+    that the urgent rule ends, not to a larger process that has not grown since the stay's first
+    kill; this first kill's `ended` line names `rule=urgent` where the order put another process
+    before it. So growers that started inside the band and step together after an urgent reading no
+    longer outrun one kill a reading, and a parent that was running when the stay began, grew before
+    the stay's first kill and has been flat since, or a sleeping fork, is not ended for this.
 custom:
     Issue: pr4273

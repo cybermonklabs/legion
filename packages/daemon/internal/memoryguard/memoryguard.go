@@ -30,13 +30,11 @@
 // that stay's first process table did not list by its pid and start time (keepStayTable,
 // startedInStay). The sets of growth since the stay's first kill and of starts during the stay are
 // INFRA-3531 R1 of spec version 46, by INFRA-3368's architect's decisions of 2026-11-20T13:55Z,
-// 14:00Z, 14:05Z and 14:58Z: at 00405eb3, in `4g-r15latepool-r206`, four growers that started
-// together inside the band, read three times and not yet stepped at an urgent reading of 93.95%,
-// were ended by no rule there, which ended the one grower that had stepped; the four stepped
-// together within one 131 ms gap and brought the pod to 2.3 MiB from the kill point. A process that
-// grew in the band before the stay's first kill and has been flat since, as that run's 2.4 GB
-// parent, is in neither set, and nor is a sleeping fork that started during the stay, an orphaned
-// one included, since a process stays a fork while it runs the program its fork's read found.
+// 14:00Z, 14:05Z and 14:58Z (`4g-r15latepool-r206`; endsInStay). A process that the stay's first
+// table listed, grew in the band before the stay's first kill and has been flat since, as r206's
+// 2.4 GB parent, is in neither set, and nor is a sleeping fork that started during the stay, an
+// orphaned one included, since a process stays a fork while it runs the program its fork's read
+// found.
 // At the first reading at the mark the reads that choose the first kill share half an interval and
 // can reach only some of the processes new to the stay; where the decision holds one that is not
 // new, the guard reads on after its kills through the ones those reads did not reach, up to one
@@ -46,7 +44,8 @@
 // ended the pod (`4g-t4latepool-r3`). Where every process is new to the stay, as at the guard's
 // first reading or after a reading that crossed the band within one interval, being new tells no
 // burst from the rest of the pod, and the urgent share adds the window's growers alone, none of the
-// three sets of the stay. A fork whose parent's size covers its own is not ended for urgency. Then
+// three sets of the stay. A fork whose parent's size covers its own is not ended for being new to
+// the stay or for starting during it. Then
 // it takes a reading at each interval. The order (rank, INFRA-3531 R1 of spec version 31) is the
 // most grown first: a process's growth is its size at this read less its size at its oldest read
 // within the last growthWindow (300 ms), and growth under growthNoise
@@ -636,12 +635,7 @@ func anotherProgram(read, later bool) bool { return read && !later }
 // and whether one of them is growthNoise or more above an earlier one. A band reading that does
 // not read a process its table still lists leaves its stay as it was; one whose table no longer
 // lists it drops it (INFRA-3531 R1). A stay begins at its first reading at or above the band's
-// floor, whose table says which processes started during it (keepStayTable). Growth in the band
-// orders the reads again at the mark alone (rereadOrder): the urgent rule ends no process for it,
-// since growth since the stay's first kill decides there, so a process that grew in the band
-// before that kill and has been flat since, as r206's 2.4 GB parent at 00405eb3, is not ended for
-// urgency (endsInStay; INFRA-3531 R1 of spec version 46, by INFRA-3368's architect's decisions of
-// 2026-11-20T13:55Z, 14:00Z, 14:05Z and 14:58Z).
+// floor, whose table says which processes started during it (keepStayTable).
 type bandStay struct {
 	least uint64
 	grew  bool
@@ -790,14 +784,11 @@ type Guard struct {
 	// wherever the guard drops its reads (forgetSizes); the reads at and above the mark are none of
 	// these. They keep their storage from one reading to the next.
 	stays map[procKey]bandStay
-	// stayTable are the processes, by pid and start time, that the stay's first process table
-	// listed, the table of its first reading at or above the band's floor (keepStayTable): a
-	// process it does not list started during the stay (startedInStay, INFRA-3531 R1 of spec
-	// version 46). stayTableKept is whether the stay has taken that table. Both are let go of where
-	// the stay ends (forgetSizes), so they hold no more processes than the pod ran at that reading;
-	// the keys keep their storage from one stay to the next.
-	stayTable     map[procKey]bool
-	stayTableKept bool
+	// stayTable is the stay's first process table, the table of its first reading at or above the
+	// band's floor (keepStayTable): a process it does not list by its pid and start time started
+	// during the stay (startedInStay, INFRA-3531 R1 of spec version 46). It is nil until the stay
+	// takes that table, and again from where the stay ends (forgetSizes).
+	stayTable *Table
 	// atKill are the sizes, by process, as of the previous kill of the rise, each with whether the
 	// read it came from was a fork's read, from which growth since that kill is measured
 	// (grownSinceKill), which says whether the guard goes on after it: each process's that the
@@ -877,7 +868,6 @@ func New(cfg Config) *Guard {
 		atKill:       map[procKey]forkRead{},
 		atFirstKill:  map[procKey]forkRead{},
 		stays:        map[procKey]bandStay{},
-		stayTable:    map[procKey]bool{},
 		rereads:      map[procKey]uint64{},
 		scanMemfds:   map[memfdID]bool{},
 	}
@@ -1126,10 +1116,11 @@ func (g *Guard) sample() (reading, limit uint64, reason string) {
 // stay, so the sizes as of the stay's first kill (atFirstKill) are kept across it, and each band
 // reading after that kill measures growth since it (sinceStayKill), as the reading at the mark of
 // the next rise does before it decides (INFRA-3531 R1 of spec version 37). The stay begins at its
-// first reading at or above the band's floor, and the table of that reading's assessment, a band
-// reading's or, where the reading crossed the band within one interval, the reading at the mark's,
-// is the stay's first table (keepStayTable), which says which processes started during the stay
-// (startedInStay, INFRA-3531 R1 of spec version 46).
+// first reading at or above the band's floor, and its first table (keepStayTable), which says which
+// processes started during the stay (startedInStay, INFRA-3531 R1 of spec version 46), is the first
+// band reading's, or, where no armed reading in the band came before the reading at the mark (the
+// guard had just started or been turned on, or the reading crossed the whole band within one
+// interval), the reading at the mark's.
 func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64) {
 	mark := share(limit, s.ActPercent)
 	if !on {
@@ -1177,12 +1168,12 @@ func (g *Guard) decide(now time.Time, s Settings, on bool, reading, limit uint64
 		}
 	}
 	a, ok := g.assessAt(now)
-	if ok {
-		// Where this reading is the stay's first, its table is the stay's first (keepStayTable).
-		g.keepStayTable(a.table)
+	if !ok {
+		return
 	}
+	// Where this reading is the stay's first, its table is the stay's first (keepStayTable).
+	g.keepStayTable(a.table)
 	switch {
-	case !ok:
 	case reading < mark:
 		g.sinceStayKill(a.endable, a.table)
 		g.held, g.heldTable = a.endable, a.table
@@ -1999,9 +1990,11 @@ func (g *Guard) rereadOrder(c candidate) (tier int, growth uint64) {
 // the same floor (urgentFirst): the urgent rule ends it at that reading (endUrgent), though it has
 // not grown since the kill, and so the processes new to the stay that the read-on at the mark did
 // not reach end at the next such reading (INFRA-3531 R1 of spec versions 43 and 46, verification
-// version 36). Where those sets are the one reason, the first kill goes to the first process of
-// them in the order, not to a process the order puts before it that is in none of them, as a parent
-// flat since before the stay's first kill (urgentFirst; INFRA-3368's architect's decision of
+// version 36). Where those sets are the one reason, the first kill goes to the first process in
+// the order that the urgent rule ends at that reading, one that grew over the window or one of
+// those sets, and not to a process the rule does not end, as a parent flat since before the
+// stay's first kill; that kill's line names the urgent rule only where the order put such a
+// process before it, and its own tier otherwise (urgentFirst; INFRA-3368's architect's decision of
 // 2026-11-20T14:00Z). In the tester's replay of run `4g-t4latepool-r3` at 4d6665d5 with each read
 // 22 ms after the first kill too, the read-on reached one grower of the five left, and the run's
 // next reading, 92.55%, showed none of the other four grown since the kill; in
@@ -2158,10 +2151,11 @@ func (g *Guard) endKnown(now time.Time, s Settings, reading, limit uint64) bool 
 		kept = append(kept, c)
 		grown := keepGrowth(g.atKill, &c) > 0
 		switch {
-		case sent && (grown || settled && g.endsInStay(&c)):
-			g.sendUrgent(c)
-		case sent || !grown:
-		case sizeSum(kept)+sizeSum(known[i+1:]) >= floor:
+		case sent:
+			if grown || settled && g.endsInStay(&c) {
+				g.sendUrgent(c)
+			}
+		case grown && sizeSum(kept)+sizeSum(known[i+1:]) >= floor:
 			g.prior = append(g.prior[:0], g.wait.kills...)
 			sent = g.sendFirst(now, s, reading, c)
 		}
@@ -2195,25 +2189,24 @@ func (g *Guard) closePrior() {
 // share, where every process is new to the stay, and where none ends for the stay, it is -1. In
 // the wait after a kill such a process is a reason to act, as growth since the kill is, and the
 // first kill goes to that first one (watch, act; INFRA-3531 R1 of spec version 46: "a process of
-// these three sets is a reason to act, as a process new to the stay is"). The order puts the
-// window's growers, the new tier and the growth since the stay's first kill before the rest, so
-// that first one is the order's first, cs[0], but where a process that started during the stay, is
-// no fork and holds memory of its own is the one reason: the order can put before it a larger
-// process that never grew, such as r206's 2.4 GB parent, flat since before the stay's first kill,
-// which INFRA-3368's architect's decision of 2026-11-20T14:00Z keeps the urgent rule from ending.
+// these three sets is a reason to act, as a process new to the stay is"). It relies on the order:
+// rank puts every process that grew over the window first, so that first one is cs[0] where cs[0]
+// grew, and otherwise the first that ends for the stay. The order puts the new tier and the growth
+// since the stay's first kill before the rest, so that is cs[0] too, but where a process that
+// started during the stay, is no fork and holds memory of its own is the one reason: the order can
+// put before it a larger process that has not grown since the stay's first kill, such as r206's
+// 2.4 GB parent (`4g-r15latepool-r206`; endsInStay), which INFRA-3368's architect's decision of
+// 2026-11-20T14:00Z keeps the urgent rule from ending.
 func (g *Guard) urgentFirst(s Settings, reading, limit uint64, cs []candidate) int {
 	if reading < urgentShare(limit, s.ActPercent) || !withHistory(cs) {
 		return -1
 	}
-	first := -1
 	for i := range cs {
-		switch inStay := g.endsInStay(&cs[i]); {
-		case inStay && first < 0:
+		if g.endsInStay(&cs[i]) {
+			if cs[0].growth > 0 {
+				return 0
+			}
 			return i
-		case inStay:
-			return first
-		case first < 0 && cs[i].growth > 0:
-			first = i
 		}
 	}
 	return -1
@@ -2364,16 +2357,14 @@ func (g *Guard) sendFirst(now time.Time, s Settings, reading uint64, first candi
 // a82a9f2c six growers started between the band's last reading and the mark, so that the search
 // found each with one read and no growth over the window at the first reading at the mark, 93.95%,
 // which ended one of them, and the pod came 26.5 MiB from the kill point (`4g-latepool-4tpqx`); and
-// at 00405eb3, in `4g-r15latepool-r206`, four growers that started together inside the band, read
-// three times and not yet stepped at an urgent reading of 93.95%, were in no set it ended there,
-// which ended the one grower that had stepped, and they stepped together within one 131 ms gap and
-// brought the pod to 2.3 MiB from the kill point. A fork whose parent's size covers its own ranks
-// at nothing and is not ended for urgency, and the set of starts during the stay ends no fork,
-// whatever it ranks at. Below the urgent share it ends nothing. At the reading at the mark the
-// processes new to the stay that the reads of the decision did not reach are the read-on's, after
-// these kills (readOn). At an urgent reading of the wait where the reads again before the full read
-// sent kills (endKnown), cs is the full read's processes with those killed at that reading left
-// out, and these kills follow theirs.
+// at 00405eb3 four growers that started together inside the band and had not yet stepped were in
+// no set it ended at an urgent reading of the wait (`4g-r15latepool-r206`; endsInStay). A fork
+// whose parent's size covers its own ranks at nothing and is not ended for being new to the stay,
+// and the set of starts during the stay ends no fork, whatever it ranks at. Below the urgent share
+// it ends nothing. At the reading at the mark the processes new to the stay that the reads of the
+// decision did not reach are the read-on's, after these kills (readOn). At an urgent reading of
+// the wait where the reads again before the full read sent kills (endKnown), cs is the full read's
+// processes with those killed at that reading left out, and these kills follow theirs.
 //
 // Whether the decision holds a process that is not new to the stay, one read at two readings of it
 // in a row before the one decided on, is taken on cs, the set the decision is made on, once the
@@ -2450,12 +2441,13 @@ func (g *Guard) endsInStay(c *candidate) bool {
 
 // startedInStay is whether c started during this stay in the band: no process table of the stay
 // before c's listed it by its pid and start time, which holds where the stay's first table, the
-// table of its first reading at or above the band's floor, does not list it (stayTable; INFRA-3531
-// R1 of spec version 46, by INFRA-3368's architect's decision of 2026-11-20T14:05Z). A process that
-// started in the interval just before that reading is listed there, and did not start during the
-// stay (the architect's decision of 14:06Z).
+// table of its first reading at or above the band's floor (bandStart), does not list it (stayTable,
+// lists; INFRA-3531 R1 of spec version 46, by INFRA-3368's architect's decision of
+// 2026-11-20T14:05Z). A process that started in the interval just before that reading is listed
+// there, and did not start during the stay (the architect's decision of 14:06Z). It is false while
+// the stay has no first table.
 func (g *Guard) startedInStay(c *candidate) bool {
-	return g.stayTableKept && !g.stayTable[procKey{pid: c.PID, start: c.StartTime}]
+	return g.stayTable != nil && !lists(g.stayTable, procKey{pid: c.PID, start: c.StartTime})
 }
 
 // sendUrgent sends the kill of c beside the first kill of the reading, by the urgent rule
@@ -3029,22 +3021,18 @@ func (g *Guard) keepStays(cs []candidate, t *Table) {
 	}
 }
 
-// keepStayTable keeps t, the table of an armed guard's reading at or above the band's floor, as the
-// stay's first table where the stay has none (stayTable): the processes it lists, by pid and start
-// time, every one the scan read a stat of, protected ones among them. A stay begins at its first
-// reading at or above the band's floor (INFRA-3531 R1 of spec version 46), and decide asks for each
-// such reading's table: the stay's first, where the guard reads no size below the band, while off
-// and once it has given a rise up (forgetSizes), is a band reading's, or the reading at the mark's
-// where the reading crossed the whole band within one interval; no later reading of the stay,
-// above the mark or after a kill, replaces it. A process that table does not list started during
-// the stay (startedInStay).
+// keepStayTable keeps t, the table of an armed guard's reading at or above the band's floor
+// (bandStart), as the stay's first table where the stay has none (stayTable is nil): that table
+// lists, by pid and start time, every process the scan read a stat of, protected ones among them.
+// A stay begins at its first reading at or above the band's floor (INFRA-3531 R1 of spec version
+// 46), and its first table is the first band reading's, or, where no armed reading in the band came
+// before the reading at the mark (the guard had just started or been turned on, or the reading
+// crossed the whole band within one interval), the reading at the mark's. No later reading of the
+// stay, above the mark or after a kill, replaces it, and it goes where the stay ends (forgetSizes).
+// A process that table does not list started during the stay (startedInStay).
 func (g *Guard) keepStayTable(t *Table) {
-	if g.stayTableKept {
-		return
-	}
-	g.stayTableKept = true
-	for pid, p := range t.byPID {
-		g.stayTable[procKey{pid: pid, start: p.StartTime}] = true
+	if g.stayTable == nil {
+		g.stayTable = t
 	}
 }
 
@@ -3078,10 +3066,7 @@ func (g *Guard) forgetSizes() {
 	clear(g.sizes)
 	clear(g.stays)
 	g.held, g.heldTable = nil, nil
-	if g.stayTableKept {
-		clear(g.stayTable)
-		g.stayTableKept = false
-	}
+	g.stayTable = nil
 	if g.firstKillKept {
 		clear(g.atFirstKill)
 		g.firstKillKept = false

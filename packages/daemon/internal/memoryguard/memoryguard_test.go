@@ -7602,7 +7602,7 @@ func TestMemoryGuardReadsEachProcessOnceAtAnUrgentReadingOfTheWait(t *testing.T)
 // At a reading of the wait at or above the urgent share in a stay with history, a process new to
 // the stay is a reason to go on only where it holds memory of its own: a fork whose parent's size
 // covers its own ranks at nothing, and with nothing grown since the kill the guard ends nothing
-// for it (INFRA-3531 R1 of spec version 43, verification version 36; urgentNew). Pid 700, python3
+// for it (INFRA-3531 R1 of spec version 43, verification version 36; urgentFirst). Pid 700, python3
 // latepool, holds its block through the band; pid 800, python3 grow.py, grows 30 MiB at each band
 // reading, and the reading at the mark, 87%, below the urgent share, ends it. At the next reading,
 // 93%, at or above the urgent share, pid 701, a new fork of pid 700 that runs its program and
