@@ -123,7 +123,7 @@ metadata server counts only when it yields a token in an answer that says it is 
 the line reads `using the AWS profile NAME (AWS_PROFILE): ARN`,
 `using the AWS profile NAME (AWS_DEFAULT_PROFILE): ARN`,
 `using the access keys in AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY: ARN`,
-`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (PATH): ARN`, or
+`using the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names: ARN`, or
 `using the AWS SDK's default credential chain: ARN`; where keys or a token file are set beside a
 profile variable, the line adds that they outrank it. Where the profile holds no credential of
 its own, the SDK goes on to a container's credentials endpoint or the machine's instance role,

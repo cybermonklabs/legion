@@ -391,7 +391,7 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 		{"half a key pair is no source", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_PROFILE": "work"}, nil,
 			"the AWS profile work (AWS_PROFILE)", "choose another with AWS_PROFILE", "AWS_PROFILE=work "},
 		{"web identity outranks AWS_PROFILE", map[string]string{"AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile, "AWS_ROLE_ARN": "arn:aws:iam::111122223333:role/agent", "AWS_PROFILE": "admin"}, nil,
-			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + tokenFile + "), which outranks AWS_PROFILE",
+			"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names, which outranks AWS_PROFILE",
 			"choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			"AWS_WEB_IDENTITY_TOKEN_FILE=" + tokenFile + " AWS_ROLE_ARN=arn:aws:iam::111122223333:role/agent "},
 		{"keys outrank web identity", map[string]string{"AWS_ACCESS_KEY_ID": "AKIAEXAMPLE", "AWS_SECRET_ACCESS_KEY": "not-a-secret", "AWS_WEB_IDENTITY_TOKEN_FILE": tokenFile}, nil,

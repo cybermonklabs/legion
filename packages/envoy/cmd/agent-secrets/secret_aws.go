@@ -504,7 +504,7 @@ func awsFileReason(path string) string {
 // setting that names it, or by where the SDK looks with none set, never by the path itself, which
 // is a setting's value.
 func awsFileName(path string) string {
-	for _, setting := range []string{"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE"} {
+	for _, setting := range []string{"AWS_CONFIG_FILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE"} {
 		if value := os.Getenv(setting); value != "" && value == path {
 			return "the file " + setting + " names"
 		}
@@ -622,11 +622,13 @@ func firstSet(names ...string) (name, value string) {
 // source profile or credential source) chooses nothing either: the SDK goes on to a container's
 // credentials endpoint or the instance's role (resolveCredsFromProfile), and sources, the ones it
 // resolved, then start with that one (profileFellThrough), so the phrase names it too. The phrase
-// names no key and no token, only the variables and the file's path. The path, and the prefix
-// that carries it, print only once STS took the token the file holds (the "using" line and a
-// store's refusal follow requireAccount): the file was read and signed in with, so its path is no
-// token pasted in its place. A file that cannot be read is refused before then, naming the
-// variable alone (webIdentityToken).
+// names no key and no token, and no file's path: the web identity token file holds a token, so it
+// is named by its variable, as every file that holds a credential is, and AWS_WEB_IDENTITY_TOKEN_FILE
+// is where a person who pasted the token itself puts it. Only the prefix, the command a person
+// pastes to run again (signInPrefix), carries the path, once STS took the token the file holds
+// (the pasted commands follow requireAccount): the file was read and signed in with, so its path
+// is no token pasted in its place. A file that cannot be read is refused naming the variable alone
+// (webIdentityToken).
 func awsSourceOf(sources []aws.CredentialSource) awsSource {
 	profileVar, profile := firstSet("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
 	outranks := func(verb string) string {
@@ -652,7 +654,7 @@ func awsSourceOf(sources []aws.CredentialSource) awsSource {
 			}
 		}
 		return awsSource{
-			phrase:  "the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names (" + os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE") + ")" + outranks("outranks"),
+			phrase:  "the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names" + outranks("outranks"),
 			another: "choose another by unsetting AWS_WEB_IDENTITY_TOKEN_FILE, which outranks AWS_PROFILE, or by naming another token file and role in it and AWS_ROLE_ARN",
 			prefix:  prefix,
 		}

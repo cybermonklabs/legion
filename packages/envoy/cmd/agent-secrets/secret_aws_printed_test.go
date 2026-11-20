@@ -383,3 +383,23 @@ func TestTheAWSSDKsSignInFailurePrintsNoSetting(t *testing.T) {
 		})
 	}
 }
+
+// TestTheWebIdentityTokenFileIsNamedByItsVariable: the web identity token file holds a token, so
+// the using line and a store's refusal name it by AWS_WEB_IDENTITY_TOKEN_FILE, never by its path,
+// which here carries a made-up credential, and so does a later failed read of it (awsFileName).
+// Control: the command a person pastes to run again still names the file, which signed in.
+func TestTheWebIdentityTokenFileIsNamedByItsVariable(t *testing.T) {
+	planted := "hunter2pw-" + "webidpath-" + "31d0"
+	file := filepath.Join(t.TempDir(), planted, "token")
+	for _, name := range []string{"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY", "AWS_PROFILE", "AWS_DEFAULT_PROFILE"} {
+		t.Setenv(name, "")
+	}
+	t.Setenv("AWS_WEB_IDENTITY_TOKEN_FILE", file)
+	t.Setenv("AWS_ROLE_ARN", "arn:aws:iam::111122223333:role/agent")
+	source := awsSourceOf(nil)
+	wantNamedNotPrinted(t, "the source's words", source.phrase+"; "+source.another, []string{"the web identity token file AWS_WEB_IDENTITY_TOKEN_FILE names"}, planted)
+	wantNamedNotPrinted(t, "a later read's words", awsFileName(file), []string{"the file AWS_WEB_IDENTITY_TOKEN_FILE names"}, planted)
+	if !strings.Contains(source.prefix, file) {
+		t.Errorf("the command to paste %q does not name the file that signed in", source.prefix)
+	}
+}
