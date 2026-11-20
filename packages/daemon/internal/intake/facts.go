@@ -1127,10 +1127,11 @@ func (f CloseRoot) Message() string {
 // a running agent, each as the runtime said it and empty when the claim has none: the two answer
 // different questions — a worker that kept dying and a worker that could never start — and the
 // failure record a notice of this fact carries, where the fact names a Cause, holds both whole,
-// since the architect reading it has no other way to learn either (workflow's noticeFailure). A
-// worker-died's reason names neither whole: it names the first line of Death only where its notice
-// carries no failure record, Cause is supervise.CauseDied and no PodEnd was read, which is the tree
-// architect's notice alone, and StartFailure nowhere (workflow's deathReason).
+// since the architect reading it has no other way to learn either (dispatch://INFRA-714 R6;
+// workflow's noticeFailure). A worker-died's reason names neither whole: it names the first line
+// of Death only where its notice carries no failure record, Cause is supervise.CauseDied and no
+// PodEnd was read, which is the tree architect's notice alone, and StartFailure nowhere
+// (workflow's deathReason).
 //
 // PodEnd is the pod end the claim's process was last observed to have died of, as the runtime
 // read it off the pod itself and the claim kept it (supervise.Claim.PodEnd,
@@ -1532,11 +1533,10 @@ func PlanRatingUnexpected(what string) *Refusal {
 
 // Pool is the Postgres connection pool the intake applies facts on, keeps its consumers'
 // positions in and reads what it has already applied from, each through store.TransactWith. In
-// the daemon it is always the store's guarded pool (store.Pool), and that is the point of
-// the hand-over: a handler that asks the pool for a second connection while the fact's own
+// the daemon it is always the store's guarded pool (store.Pool), and that is the point of the
+// hand-over: a handler that asks the pool for a second connection while the fact's own
 // transaction holds one — under the global fact lock every other fact queues behind — is refused
-// at that call (store.ErrNestedAcquire) instead of waiting for a connection only it can give back
-// (INFRA-3169).
+// at that call (store.ErrNestedAcquire) instead of waiting for a connection only it can give back.
 //
 // It is named as the one method those transactions need because the packages that measure the
 // handlers against a real Postgres open pools of their own and apply facts straight on them.
