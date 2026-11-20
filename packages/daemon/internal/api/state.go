@@ -1239,8 +1239,8 @@ type GateView struct {
 	ApprovedVersion *int   `json:"approvedVersion"`
 }
 
-// GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
-// it: the four answers a record can give.
+// GatedStepStatus is where one step of a tree's design gate (record.TreeSteps) stands, as the
+// issue's gate records say it: the four answers a record can give.
 type GatedStepStatus string
 
 const (
@@ -1260,9 +1260,9 @@ const (
 	GatedStepChangesRequested GatedStepStatus = "changes_requested"
 )
 
-// GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
-// the document its architect registered for the step, that document's current version, the
-// version a person approved, where the step stands and, for a step whose reviewer asked for
+// GatedStepView is one step of a tree's design gate (record.TreeSteps) as its root stands in it:
+// the step, the document its architect registered for the step, that document's current version,
+// the version a person approved, where the step stands and, for a step whose reviewer asked for
 // changes, the reason they gave. A step nobody has registered carries no document, no version and
 // no approval.
 type GatedStepView struct {

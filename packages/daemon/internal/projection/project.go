@@ -38,8 +38,9 @@ type Inputs struct {
 	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
 	// state lists.
 	Project string
-	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-	// root's view answers its own state of; the empty list gates none.
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps). Each root's
+	// view answers the steps its tree is gated on, which these steps and the root's gate rows
+	// make (record.TreeSteps); the empty list gates none.
 	Steps []record.DesignStep
 	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order each issue's `assignments` ride in (assignmentViews); the empty list declares

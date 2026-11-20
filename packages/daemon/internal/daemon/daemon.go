@@ -2913,8 +2913,9 @@ type source struct {
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
 	caches func() []sandbox.CacheStatus
-	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
-	// root of the state answers its own state of; the empty list gates none.
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps). Every root
+	// of the state answers the steps its tree is gated on, which these steps and the root's gate
+	// rows make (record.TreeSteps); the empty list gates none.
 	gatedSteps []record.DesignStep
 	// experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
 	// whose order every issue's `assignments` ride in; the empty list declares none. It is read
