@@ -1,40 +1,59 @@
 import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
 import type { CaseRow } from "../build-corpus";
+import { CorpusError } from "../corpus-io";
 import type { DispatchActor, DispatchEvent } from "../dispatch-read";
+import { main as drawMain } from "../draw";
 import type { FinalTestTree } from "../draw-io";
+import type { AskModel } from "../never-decide";
 import { LeakError } from "../render";
-import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE, type Registration, runDigestOf } from "../reserve";
 import {
-  askDocsOf,
+  CLAIM_RUN_VARIABLE,
+  RESERVE_VARIABLE,
+  type Registration,
+  reserveOf,
+  runDigestOf,
+} from "../reserve";
+import {
   assertNoAnswer,
-  type CandidateCounts,
-  type CandidateInputs,
   CandidateLog,
+  closureDigestOf,
   InputsLog,
-  type InventoryLine,
+  importClosureOf,
   inventoryOf,
   main,
-  neighbourFault,
-  type RequestInputs,
+  RESERVE_ASK_CLOSURE,
   type ReserveVerdict,
   reserveAskDecision,
   S10InputsError,
-  type StageRecord,
+  spawnDecision,
   writeTimeAsk,
 } from "../s10-inputs";
+import {
+  AnswerLog,
+  type CandidateCounts,
+  INPUTS_VERSION,
+  type InventoryLine,
+  inventoryLinesOf,
+  pageRecordOf,
+  type RequestInputs,
+  requestInputsOf,
+  type StageRecord,
+  stageRecordOf,
+} from "../s10-inputs-io";
 
 /**
  * `s10-inputs.ts` against a fake Dispatch that serves the reads it makes in the shapes the real
  * routes answer: the event log (`/api/v1/events/log?after=&limit=`, rows with `id`, `type`,
  * `actor` and the payload, each ask payload with the fields the route adds when it is read), the
  * search (`/api/v1/search/results?q=&limit=&offset=`, `{results}`) and each document version
- * (`{markdown, sha256}`). The reserve's decision is handed in, as the command takes one, so no
+ * (`{markdown, sha256}`, or a 403 for a version a test has the fake refuse). The reserve's
+ * decision is handed in with a sha256 of this test's own, as the command takes one, so no
  * `reserve-ask.ts` runs; the registration is one made for this test's own digest over a bundle
  * root of its own, as `readCorpus`'s tests make one.
  *
@@ -43,15 +62,17 @@ import {
  * edited twice, a comment on one neighbour, then the person's answer, an edit after it, a change
  * of every field of its issue, and a second answer; ASK_B on ACME-3, answered first by the
  * person's approval of its one document, then edited, then answered; ASK_C on ACME-4, whose last
- * edit before the person's answer carries another user's answer; a question ASK_Q and an approval
- * ASK_F the draw put in fit; a neighbour NOAT whose answer names no time, and ASK_G, whose search
- * finds it; ASK_D, naming ASK_A's document version under another name; ASK_E, naming a document
- * with no name; ASK_R, on which the person first restores another user's answer, then edits, then
- * answers; ASK_H, the primary document of a `legion` root on the backlog, which S10's fact check
- * holds and whose title would find NOAT too; ASK_N, whose documents are `[null]` beside its own
- * lead document, which the person approves before answering; and, after the build's pin, a
- * comment on the neighbour PINNED, which only the drop scan reads. Every ask payload carries a
- * primary flag that disagrees with its document's creation.
+ * edit before the person's answer carries another user's answer; a new title of ACME-2, after the
+ * judged moments of ASK_A and ASK_B and before ASK_D's; a question ASK_Q and an approval ASK_F
+ * the draw put in fit; a neighbour NOAT whose answer names no time, and ASK_G, whose search finds
+ * it; ASK_D, naming ASK_A's document version under another name, whose title finds KEPT; ASK_E,
+ * naming a document with no name; ASK_R, on which the person first restores another user's
+ * answer, then edits, then answers; ASK_H, the primary document of a `legion` root on the
+ * backlog, which S10's fact check holds and whose title would find NOAT too; ASK_N, whose
+ * documents are `[null]` beside its own lead document, which the person approves before
+ * answering; and, after the build's pin, a comment on the neighbour PINNED, which only the drop
+ * scan reads. Every ask payload carries a primary flag that disagrees with its document's
+ * creation.
  */
 
 const TOKEN = "fake-bearer";
@@ -214,6 +235,8 @@ const NOAT_ANSWERED = {
   state: "answered",
   answer: { selected: ["Approve"], text: null, user: PERSON },
 };
+/** ACME-2's title from event 32: after ASK_A's and ASK_B's judged moments, before ASK_D's. */
+const RETITLED = "Neighbour issue retitled";
 
 const EVENTS: DispatchEvent[] = [
   event(
@@ -271,6 +294,7 @@ const EVENTS: DispatchEvent[] = [
   event(29, "ask.answered", answered(C_OPENED, 29, ["Approve"], null, OTHER), OTHER_USER),
   event(30, "ask.edited", answered(C_OPENED, 29, ["Approve"], null, OTHER)),
   event(31, "ask.answered", answered(C_OPENED, 31), USER),
+  event(32, "issue.updated", issue("ACME-2", { title: RETITLED })),
   event(33, "ask.opened", Q_OPENED),
   event(34, "ask.answered", answered(Q_OPENED, 34), USER),
   event(35, "ask.opened", F_OPENED),
@@ -334,6 +358,7 @@ const SEARCH: Record<string, Record<string, unknown>[]> = {
     ...Array.from({ length: 50 }, (_, index) => documentHit(index)),
     askHit(KEPT, 0.1),
   ],
+  "ACME-7 title": [askHit(KEPT, 0.3)],
   "ACME-9 title": [askHit(NOAT, 0.4)],
   // ASK_H's title: S10 never searches it, since its fact holds.
   "ACME-11 title": [askHit(NOAT, 0.4)],
@@ -341,6 +366,8 @@ const SEARCH: Record<string, Record<string, unknown>[]> = {
 
 /** Each request the fake served, by its path and query. */
 const seen: string[] = [];
+/** The document versions the fake refuses with a 403, each as `<artifact id>@<version>`. */
+const refusedVersions = new Set<string>();
 /** How many walks of the log from its start the fake has served. */
 let logWalks = 0;
 
@@ -378,7 +405,11 @@ beforeAll(async () => {
         return Response.json({ results: hits.slice(offset, offset + limit), total: hits.length });
       }
       const version = /^\/api\/v1\/artifacts\/([^/]+)\/versions\/(\d+)$/.exec(url.pathname);
-      const markdown = version === null ? undefined : DOCUMENTS[`${version[1]}@${version[2]}`];
+      const named = version === null ? undefined : `${version[1]}@${version[2]}`;
+      if (named !== undefined && refusedVersions.has(named)) {
+        return Response.json({ code: "FORBIDDEN", error: "forbidden" }, { status: 403 });
+      }
+      const markdown = named === undefined ? undefined : DOCUMENTS[named];
       if (markdown !== undefined) return Response.json({ markdown, sha256: sha256(markdown) });
       return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
     },
@@ -488,8 +519,15 @@ interface BuildHashes {
   treesSha256: string;
 }
 
+/** What a test changes of the build: fields of its snapshot, its rows, and its trees' groups. */
+interface BuildChange {
+  snapshot?: Record<string, unknown>;
+  rows?: readonly CaseRow[];
+  groups?: readonly unknown[];
+}
+
 /** The claim run's build, with the sha256 of each of its three files. */
-async function build(): Promise<{ corpus: string; hashes: BuildHashes }> {
+async function build(change: BuildChange = {}): Promise<{ corpus: string; hashes: BuildHashes }> {
   const corpus = await directory("build");
   const snapshot = `${JSON.stringify({
     person: PERSON,
@@ -499,11 +537,12 @@ async function build(): Promise<{ corpus: string; hashes: BuildHashes }> {
     readStartedAt: "2026-11-20T00:00:00Z",
     readFinishedAt: "2026-11-20T00:01:00Z",
     reserve: { leftOut: false, cases: 0, issues: 0, readUnder: CLAIM, claimRun: START },
+    ...change.snapshot,
   })}\n`;
-  const rows = [A1, A2, B1, C1, Q1, F1, G1, D1, E1, R1, H1, N1]
-    .map((row) => `${JSON.stringify(row)}\n`)
-    .join("");
-  const trees = `${JSON.stringify({ version: 1, throughEventId: THROUGH, groups: [] })}\n`;
+  const cases = change.rows ?? [A1, A2, B1, C1, Q1, F1, G1, D1, E1, R1, H1, N1];
+  const rows = cases.map((row) => `${JSON.stringify(row)}\n`).join("");
+  const groups = change.groups ?? [];
+  const trees = `${JSON.stringify({ version: 1, throughEventId: THROUGH, groups })}\n`;
   await writeFile(join(corpus, "snapshot.json"), snapshot, "utf8");
   await writeFile(join(corpus, "corpus.jsonl"), rows, "utf8");
   await writeFile(join(corpus, "trees.json"), trees, "utf8");
@@ -527,6 +566,8 @@ async function drawOf(
     corpus: "/the/build",
     cut: "2026-11-16T00:00:00.000Z",
     seed: 7,
+    backlogLegionRoots: null,
+    rule: null,
     neverDecideApplied: false,
     claimRun: { id: START, ...hashes },
     finalTest: { reference: CLAIM, trees: TREES },
@@ -572,23 +613,32 @@ function decisions(out: () => string): Decisions {
   };
 }
 
-/** One run of the command, quiet, with its exit status and what it printed to stderr. */
-async function run(
-  argv: string[],
-  decide: (askId: string) => Promise<ReserveVerdict>
-): Promise<{ status: number; errors: string }> {
+/** The sha256 the reserve's decision is handed in under, as a test's own decision is named. */
+const DECISION_SHA256 = sha256("the reserve's decision as these tests make it\n");
+
+/** What `work` exits with and what it printed to stderr, with nothing printed. */
+async function quietly(work: () => Promise<number>): Promise<{ status: number; errors: string }> {
   const errors: string[] = [];
   const error = spyOn(console, "error").mockImplementation((line?: unknown) => {
     errors.push(String(line));
   });
   const log = spyOn(console, "log").mockImplementation(() => {});
   try {
-    const status = await main(argv, { registration, root, decide });
+    const status = await work();
     return { status, errors: errors.join("\n") };
   } finally {
     error.mockRestore();
     log.mockRestore();
   }
+}
+
+/** One run of the command, quiet, with its exit status and what it printed to stderr. */
+async function run(
+  argv: string[],
+  decide: (askId: string) => Promise<ReserveVerdict>
+): Promise<{ status: number; errors: string }> {
+  const decision = { sha256: DECISION_SHA256, decide };
+  return quietly(() => main(argv, { registration, root, decision }));
 }
 
 async function inventoryAt(out: string): Promise<InventoryLine[]> {
@@ -860,6 +910,25 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     expect((await lineOf(out, ASK_A))?.counts).toEqual(counts);
   });
 
+  test("a candidate's issue carries its title as of the judged moment, not as the pin left it", async () => {
+    const before = await searchedAt(out, ASK_A);
+    for (const askId of [KEPT, NEXT]) {
+      expect(before.inputs.candidates[askId]).toMatchObject({
+        issue: { key: "ACME-2", title: "Neighbour issue" },
+      });
+    }
+    expect(before.text).not.toContain(RETITLED);
+    const kept = before.inputs.candidates[KEPT];
+    if (kept === undefined || !("ask" in kept)) throw new Error(`${KEPT} was not kept for ASK_A`);
+    // ASK_D is judged after ACME-2 took its new title, so its candidate on ACME-2 reads that one.
+    const after = await searchedAt(out, ASK_D);
+    expect(after.inputs.candidates[KEPT]).toEqual({
+      asOfEventId: 8,
+      ask: kept.ask,
+      issue: { key: "ACME-2", title: RETITLED },
+    });
+  });
+
   test("a candidate whose only later event is after the pin is dropped, with none of its fields", async () => {
     const { text, inputs } = await searchedAt(out, ASK_A);
     expect(inputs.candidates[PINNED]).toEqual({ dropped: "later-event", seen: "after-pin" });
@@ -953,8 +1022,8 @@ describe("the claim's inputs, as of each request's judged moment", () => {
 
   test("each page is kept as its hits and the sha256 of its bytes, and never its body", async () => {
     const pages = await readdir(join(out, "pages"));
-    // Four queries were answered with the same empty page, which is one record of four reads.
-    expect(pages).toHaveLength(6);
+    // Three queries were answered with the same empty page, which is one record of three reads.
+    expect(pages).toHaveLength(7);
     const reads: number[] = [];
     for (const name of pages) {
       const text = await readFile(join(out, "pages", name), "utf8");
@@ -964,27 +1033,50 @@ describe("the claim's inputs, as of each request's judged moment", () => {
       expect(text).not.toContain('"answer"');
       reads.push(page.reads.length);
     }
-    expect(reads.sort()).toEqual([1, 1, 1, 1, 1, 4]);
+    expect(reads.sort()).toEqual([1, 1, 1, 1, 1, 1, 3]);
   });
 
   test("the stage record chains the build, the draw and every file written, with summed counts", async () => {
     const record = await stageAt(out);
+    expect(Object.keys(record)).toEqual([
+      "stage",
+      "version",
+      "state",
+      "claimRun",
+      "reference",
+      "runDigest",
+      "person",
+      "throughEventId",
+      "draw",
+      "reserveAsk",
+      "directories",
+      "startedAt",
+      "finishedAt",
+      "dropScanThrough",
+      "counts",
+      "inventorySha256",
+      "requests",
+      "pages",
+    ]);
     expect(record).toMatchObject({
       stage: "s10-inputs",
+      version: 3,
       state: "written",
-      claimRun: START,
       reference: CLAIM,
       person: PERSON,
       throughEventId: THROUGH,
-      build: hashes,
-      draw: {
-        drawSha256: sha256(await readFile(join(draw, "draw.json"), "utf8")),
-        slicesSha256: sha256(await readFile(join(draw, "slices.json"), "utf8")),
-      },
-      reserveAsk: null,
+      reserveAsk: DECISION_SHA256,
       inventorySha256: sha256(await readFile(join(out, "inventory.jsonl"), "utf8")),
       dropScanThrough: 60,
     });
+    // The build's chain as the draw records it, the draw's two files by their bytes alone, and
+    // the directories each was read from beside them.
+    expect(record.claimRun).toEqual({ id: START, ...hashes });
+    expect(record.draw).toEqual({
+      drawSha256: sha256(await readFile(join(draw, "draw.json"), "utf8")),
+      slicesSha256: sha256(await readFile(join(draw, "slices.json"), "utf8")),
+    });
+    expect(record.directories).toEqual({ build: corpus, draw });
     expect(record.requests).toEqual({
       [ASK_A]: sha256((await requestAt(out, ASK_A)).text),
       [ASK_B]: sha256((await requestAt(out, ASK_B)).text),
@@ -996,18 +1088,74 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     }
     expect(record.counts).toEqual({
       ...countsWith({
-        askHits: 10,
-        candidates: 9,
+        askHits: 11,
+        candidates: 10,
         held: 1,
         droppedLaterEvent: { log: 2, "no-event-through-pin": 1, "after-pin": 1 },
-        kept: 4,
+        kept: 5,
       }),
       requests: 9,
       ready: 4,
       deviations: 5,
       cases: 10,
-      pages: 6,
+      pages: 7,
     });
+  });
+
+  test("every file the run wrote reads back through its parser as the JSON it holds", async () => {
+    const inventoryPath = join(out, "inventory.jsonl");
+    const inventory = await readFile(inventoryPath, "utf8");
+    const lines = inventory.split("\n").filter((line) => line !== "");
+    const written = lines.map((line) => JSON.parse(line));
+    expect(written).toHaveLength(9);
+    expect(inventoryLinesOf(inventory, inventoryPath)).toEqual(written);
+    const requests = await readdir(join(out, "requests"));
+    expect(requests).toHaveLength(4);
+    for (const name of requests) {
+      const path = join(out, "requests", name);
+      const text = await readFile(path, "utf8");
+      expect(requestInputsOf(text, path)).toEqual(JSON.parse(text));
+    }
+    const pages = await readdir(join(out, "pages"));
+    expect(pages).toHaveLength(7);
+    for (const name of pages) {
+      const path = join(out, "pages", name);
+      const text = await readFile(path, "utf8");
+      expect(pageRecordOf(text, path)).toEqual(JSON.parse(text));
+    }
+    const stagePath = join(out, "s10-inputs.json");
+    const stage = await readFile(stagePath, "utf8");
+    expect(stageRecordOf(stage, stagePath)).toEqual(JSON.parse(stage));
+  });
+
+  test("each parser refuses a file of another version, or in a shape the stage never writes", async () => {
+    const request: Record<string, unknown> = JSON.parse((await requestAt(out, ASK_A)).text);
+    const held: Record<string, unknown> = JSON.parse((await requestAt(out, ASK_H)).text);
+    /** The request `changed` would be, read back as a file. */
+    const reading = (changed: Record<string, unknown>): (() => RequestInputs) => {
+      const text = `${JSON.stringify(changed)}\n`;
+      return () => requestInputsOf(text, "the request");
+    };
+    const requests: Array<[Record<string, unknown>, string]> = [
+      [{ ...request, version: 2 }, "the request is no request of version 3 of these inputs"],
+      [{ ...request, factHold: true }, "the request records a factHold that is not its fact's"],
+      // A request the fact holds is searched for nothing.
+      [{ ...held, search: request.search }, "the request is a request whose fact holds, and its"],
+    ];
+    for (const [changed, words] of requests) {
+      expect(reading(changed)).toThrow(CorpusError);
+      expect(reading(changed)).toThrow(words);
+    }
+    const ready = `${JSON.stringify({ ...(await lineOf(out, ASK_A)), reason: "a reason" })}\n`;
+    expect(() => inventoryLinesOf(ready, "the inventory")).toThrow(CorpusError);
+    expect(() => inventoryLinesOf(ready, "the inventory")).toThrow(
+      "the inventory line 1 is ready with a reason and a request file"
+    );
+    const older = JSON.stringify({ ...(await stageAt(out)), version: 2 });
+    expect(() => stageRecordOf(older, "the record")).toThrow(CorpusError);
+    expect(() => stageRecordOf(older, "the record")).toThrow(
+      "the record is no record of version 3 of the S10 inputs"
+    );
   });
 
   test("a resume of a complete directory takes every file, its first scan, and the same counts", async () => {
@@ -1036,11 +1184,79 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     expect(after).toEqual(files);
     const record = await stageAt(out);
     expect(record.dropScanThrough).toBe(60);
+    // It searched nothing its first run did not, so it read the scan through the recorded end
+    // again, and not on from it.
+    expect(seen).toContain(`/api/v1/events/log?after=${THROUGH}&limit=1000`);
+    expect(seen.some((path) => path.startsWith("/api/v1/events/log?after=60&"))).toBe(false);
     expect(record.requests).toEqual(before.requests);
     expect(record.counts).toEqual(before.counts);
     expect((await lineOf(out, ASK_G))?.reason).toContain(`no answer.at of the ask ${NOAT}`);
     // Only the request with no file was worked on again.
     expect(again.asked).toEqual([NOAT]);
+  });
+
+  test("a resume that writes nothing new leaves s10-inputs.json byte for byte as it was", async () => {
+    const path = join(out, "s10-inputs.json");
+    const before = await readFile(path, "utf8");
+    const { status } = await run(
+      ["--corpus", corpus, "--draw", draw, "--out", out],
+      decisions(() => out).decide
+    );
+    expect(status).toBe(0);
+    expect(await readFile(path, "utf8")).toBe(before);
+    const finishedAt: string | null = JSON.parse(before).finishedAt;
+    expect(finishedAt).toEqual(expect.any(String));
+    expect((await stageAt(out)).finishedAt).toBe(finishedAt);
+  });
+
+  test("a resume that searches a request anew scans on from the recorded end, and records the new one", async () => {
+    const target = join(await directory("refused-read"), "inputs");
+    const argv = ["--corpus", corpus, "--draw", draw, "--out", target];
+    const refusedRun = decisions(() => target);
+    refusedVersions.add("doc-g@1");
+    seen.length = 0;
+    try {
+      expect((await run(argv, refusedRun.decide)).status).toBe(0);
+    } finally {
+      refusedVersions.delete("doc-g@1");
+    }
+    // The read of its document was refused, so G was never searched, and NOAT never asked about.
+    expect(await lineOf(target, ASK_G)).toMatchObject({
+      state: "deviation",
+      reason: "a document: 403 on GET /api/v1/artifacts/doc-g/versions/1",
+      counts: null,
+    });
+    const title = `q=${encodeURIComponent("ACME-9 title")}&`;
+    expect(seen.some((path) => path.includes(title))).toBe(false);
+    expect(refusedRun.asked).not.toContain(NOAT);
+    expect((await stageAt(target)).dropScanThrough).toBe(60);
+    // Now the read is answered, and NOAT, which only G's title finds, has an event after the end
+    // that first run's scan recorded.
+    EVENTS.push(event(61, "comment.created", { ask_id: NOAT, body: "after the first scan" }));
+    const again = decisions(() => target);
+    seen.length = 0;
+    try {
+      expect((await run(argv, again.decide)).status).toBe(0);
+    } finally {
+      EVENTS.pop();
+    }
+    expect(seen.some((path) => path.includes(title))).toBe(true);
+    expect(seen).toContain("/api/v1/events/log?after=60&limit=1000");
+    expect(again.asked).toEqual([NOAT]);
+    const { text, inputs } = await searchedAt(target, ASK_G);
+    expect(inputs.candidates[NOAT]).toEqual({ dropped: "later-event", seen: "after-pin" });
+    const dropped = { log: 0, "no-event-through-pin": 0, "after-pin": 1 };
+    const counts = countsWith({ askHits: 1, candidates: 1, droppedLaterEvent: dropped });
+    expect(inputs.counts).toEqual(counts);
+    expect(await lineOf(target, ASK_G)).toMatchObject({
+      state: "ready",
+      reason: null,
+      requestSha256: sha256(text),
+      counts,
+    });
+    const record = await stageAt(target);
+    expect(record.dropScanThrough).toBe(61);
+    expect(record.requests[ASK_G]).toBe(sha256(text));
   });
 
   /** A copy of the inputs, changed by `change`, resumed: its exit status and its refusal. */
@@ -1080,19 +1296,46 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     expect(refused.errors).toContain("is a file the stage record does not name");
   });
 
-  test("a resume refuses an --out holding another claim run's inputs, or files of no record", async () => {
-    const other = join(await directory("other"), "inputs");
-    await mkdir(other, { recursive: true });
+  test("a resume refuses an --out holding another run's inputs, an older record, or files of no record", async () => {
     const record = await stageAt(out);
-    await writeFile(
-      join(other, "s10-inputs.json"),
-      JSON.stringify({ ...record, claimRun: "start-0" }),
-      "utf8"
+    const another = "c".repeat(64);
+    const others: Array<[Record<string, unknown>, string]> = [
+      [
+        { claimRun: { ...record.claimRun, id: "start-0" } },
+        `its claim run is start-0, and this run's is ${START}`,
+      ],
+      [
+        { claimRun: { ...record.claimRun, treesSha256: another } },
+        `its trees.json is ${another}, and this run's is ${hashes.treesSha256}`,
+      ],
+      [
+        { reserveAsk: another },
+        `its reserve-ask.ts closure is ${another}, and this run's is ${DECISION_SHA256}`,
+      ],
+      [{ draw: { ...record.draw, slicesSha256: another } }, `its slices.json is ${another}`],
+    ];
+    for (const [change, words] of others) {
+      const other = join(await directory("other"), "inputs");
+      await mkdir(other, { recursive: true });
+      const text = JSON.stringify({ ...record, ...change });
+      await writeFile(join(other, "s10-inputs.json"), text, "utf8");
+      const argv = ["--corpus", corpus, "--draw", draw, "--out", other];
+      const refused = await run(argv, decisions(() => other).decide);
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(`${other} holds another run's inputs: ${words}`);
+    }
+    const older = join(await directory("older"), "inputs");
+    await mkdir(older, { recursive: true });
+    const olderText = JSON.stringify({ ...record, version: 2 });
+    await writeFile(join(older, "s10-inputs.json"), olderText, "utf8");
+    const olderRun = await run(
+      ["--corpus", corpus, "--draw", draw, "--out", older],
+      decisions(() => older).decide
     );
-    const argv = ["--corpus", corpus, "--draw", draw, "--out", other];
-    const refused = await run(argv, decisions(() => other).decide);
-    expect(refused.status).toBe(2);
-    expect(refused.errors).toContain("holds another run's inputs: its claim run is start-0");
+    expect(olderRun.status).toBe(2);
+    expect(olderRun.errors).toContain(
+      `CorpusError: ${join(older, "s10-inputs.json")} is no record of version 3 of the S10 inputs`
+    );
     const stray = join(await directory("stray"), "inputs");
     await mkdir(stray, { recursive: true });
     await writeFile(join(stray, "notes.txt"), "not this run's\n", "utf8");
@@ -1104,21 +1347,35 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     expect(strayRun.errors).toContain("holds files and no s10-inputs.json");
   });
 
-  test("refuses a draw from another claim run, from another build, or one that applied the rule", async () => {
+  /** What a refusal of a draw whose chain is not this run's says first. */
+  const OTHER_CHAIN = "is not this claim run's draw of the build it reads: ";
+
+  test("refuses a draw of another claim run or build, or one that records no rule left unapplied", async () => {
+    const other = "b".repeat(64);
     const cases: Array<[Record<string, unknown>, string]> = [
-      [{ claimRun: { ...hashes, id: "start-2" } }, "was drawn in the claim run start-2"],
       [
-        { claimRun: { ...hashes, id: START, snapshotSha256: "b".repeat(64) } },
-        "was drawn from the build whose snapshot.json has sha256",
+        { claimRun: { ...hashes, id: "start-2" } },
+        `${OTHER_CHAIN}its claim run is start-2, and this run's is ${START}`,
       ],
-      [{ claimRun: null }, "was drawn in the claim run of no record"],
-      [{ neverDecideApplied: true }, "does not record that it applied no never-decide rule"],
+      [
+        { claimRun: { id: START, ...hashes, snapshotSha256: other } },
+        `${OTHER_CHAIN}its snapshot.json is ${other}, and this run's is ${hashes.snapshotSha256}`,
+      ],
+      [
+        { claimRun: null },
+        `${OTHER_CHAIN}its claim run is of no record, and this run's is ${START}`,
+      ],
+      [{ neverDecideApplied: undefined }, "does not record that it applied no never-decide rule"],
+      [
+        { neverDecideApplied: true },
+        "holds a neverDecideApplied of true beside no rule and no backlog roots",
+      ],
     ];
     for (const [overrides, words] of cases) {
-      const other = await drawOf(hashes, overrides);
+      const changed = await drawOf(hashes, overrides);
       const target = join(await directory("refused"), "inputs");
       const refused = await run(
-        ["--corpus", corpus, "--draw", other, "--out", target],
+        ["--corpus", corpus, "--draw", changed, "--out", target],
         decisions(() => target).decide
       );
       expect(refused.status).toBe(2);
@@ -1142,7 +1399,8 @@ describe("the claim's inputs, as of each request's judged moment", () => {
         decisions(() => target).decide
       );
       expect(refused.status).toBe(2);
-      expect(refused.errors).toContain(`was drawn from the build whose ${file} has sha256`);
+      const was = file === "corpus.jsonl" ? hashes.corpusSha256 : hashes.treesSha256;
+      expect(refused.errors).toContain(`${OTHER_CHAIN}its ${file} is ${was}, and this run's is `);
       expect(existsSync(target)).toBe(false);
     }
   });
@@ -1160,6 +1418,120 @@ describe("the claim's inputs, as of each request's judged moment", () => {
     } finally {
       process.env[RESERVE_VARIABLE] = `read:${CLAIM}`;
     }
+  });
+
+  test("refuses a build whose snapshot records no events read, before it reads anything of Dispatch", async () => {
+    for (const eventsRead of [undefined, 0]) {
+      const unread = await build({ snapshot: { eventsRead } });
+      const unreadDraw = await drawOf(unread.hashes);
+      const target = join(await directory("no-events"), "inputs");
+      seen.length = 0;
+      const refused = await run(
+        ["--corpus", unread.corpus, "--draw", unreadDraw, "--out", target],
+        decisions(() => target).decide
+      );
+      expect(refused.status).toBe(2);
+      expect(refused.errors).toContain(
+        `${join(unread.corpus, "snapshot.json")} records no events read, so no walk of the log ` +
+          "here can show it is the log the build read"
+      );
+      expect(seen).toEqual([]);
+      expect(existsSync(target)).toBe(false);
+    }
+  });
+});
+
+/**
+ * A case of ASK_A as the reserve holds it, with the document version its request named, which
+ * the draw reads for the case's evidence and its rendering. Before version 3's cut the reserve
+ * holds a case whose root the rule's hash picks and no list released: it picks ACME-1.
+ */
+function heldRow(row: CaseRow): CaseRow {
+  return {
+    ...row,
+    askRootListed: false,
+    issueRootListed: false,
+    approval: {
+      documents: [{ artifactId: "doc-a", name: "spec.md", version: 2, requestedVersion: 2 }],
+      artifactSlug: "spec",
+      artifactPrimary: true,
+    },
+  };
+}
+
+/** ACME-1's tree as the build wrote it: ASK_A, opened after the reserve's cut, its one ask. */
+const TREE_OF_A = {
+  key: "ACME-1",
+  issues: ["ACME-1"],
+  asks: [{ askId: ASK_A, issueKey: "ACME-1", eventId: 16, openedAt: at(16), actors: [SESSION.id] }],
+  parentChanges: [],
+};
+
+describe("the claim's draw under the read, taken by this stage", () => {
+  test("draws the eligible tree into report, reads no roots and asks no model, and is taken whole", async () => {
+    const rows = [A1, A2].map(heldRow);
+    expect(rows.map((row) => reserveOf(row))).toEqual(["held", "held"]);
+    const reserve = { leftOut: false, cases: 2, issues: 1, readUnder: CLAIM, claimRun: START };
+    const built = await build({ snapshot: { reserve }, rows, groups: [TREE_OF_A] });
+    // Each names an id, as item 6 (c) and (d) take only a file that does, and neither ASK_A's.
+    const scorers = join(await directory("scorers"), "records.txt");
+    await writeFile(scorers, `a record of the ask ${ask("fe")}\n`, "utf8");
+    const sessions = join(await directory("sessions"), "sessions.txt");
+    await writeFile(sessions, `${ask("5e55")}\n`, "utf8");
+    const drawn = join(await directory("claim-draw"), "draw");
+    const argv = [
+      "--corpus",
+      built.corpus,
+      "--cut",
+      "2026-11-16T00:00:00Z",
+      "--seed",
+      "7",
+      "--scorer-records",
+      scorers,
+      "--round-sessions",
+      sessions,
+      "--out",
+      drawn,
+    ];
+    let asked = 0;
+    const model: AskModel = async () => {
+      asked += 1;
+      throw new Error("the claim's draw asked the never-decide rule's model");
+    };
+    seen.length = 0;
+    const drawRun = await quietly(() => drawMain(argv, { registration, root, ask: model }));
+    expect(drawRun.errors).not.toContain("Error");
+    expect(drawRun.status).toBe(0);
+    expect(asked).toBe(0);
+    // The version each case's request named, read for its evidence and again to render it, and
+    // no list of roots.
+    expect(seen).toEqual(Array.from({ length: 4 }, () => "/api/v1/artifacts/doc-a/versions/2"));
+    const text = await readFile(join(drawn, "draw.json"), "utf8");
+    const record = JSON.parse(text);
+    expect(record).toMatchObject({
+      backlogLegionRootsRead: null,
+      backlogLegionRoots: null,
+      rule: null,
+      neverDecideApplied: false,
+    });
+    expect(record.claimRun).toEqual({ id: START, ...built.hashes });
+    expect(record.finalTest.trees).toEqual([
+      { group: "tree:ACME-1", slice: "report", cases: [A1.caseId, A2.caseId].sort() },
+    ]);
+    const target = join(await directory("drawn-inputs"), "inputs");
+    const inputsRun = await run(
+      ["--corpus", built.corpus, "--draw", drawn, "--out", target],
+      decisions(() => target).decide
+    );
+    expect(inputsRun.errors).not.toContain("S10InputsError");
+    expect(inputsRun.status).toBe(0);
+    const lines = await inventoryAt(target);
+    expect(lines.map((line) => [line.askId, line.state, line.cases, line.group])).toEqual([
+      [ASK_A, "ready", 2, "tree:ACME-1"],
+    ]);
+    const stage = await stageAt(target);
+    expect(stage.claimRun).toEqual({ id: START, ...built.hashes });
+    expect(stage.draw.drawSha256).toBe(sha256(text));
   });
 });
 
@@ -1204,27 +1576,38 @@ describe("the inventory", () => {
   });
 });
 
-describe("the documents an approval names, as S10's ask_docs reads them", () => {
+describe("the answer rule", () => {
   const lead = { artifact_id: "doc-a", name: "spec.md", version: 2 };
 
-  test("reads every entry of a list it takes for true, and the lead document only where none", () => {
-    expect(askDocsOf({ ...lead, documents: [null] })).toEqual({ missing: "approval.documents[0]" });
-    const malformed = [
-      { artifact_id: "doc-b", name: "b.md", version: 1 },
-      { artifact_id: "doc-c", version: 1 },
-    ];
-    expect(askDocsOf({ ...lead, documents: malformed })).toEqual({
-      missing: "approval.documents[1].name",
-    });
-    expect(askDocsOf({ ...lead, documents: "doc-b" })).toEqual({ missing: "approval.documents" });
-    expect(askDocsOf({ ...lead, documents: [] })).toEqual({ documents: [lead] });
-    expect(askDocsOf(lead)).toEqual({ documents: [lead] });
-    expect(askDocsOf(null)).toEqual({ documents: [] });
+  test("AnswerLog alone places each request's answer and moment as the inputs' first walk does", () => {
+    const asks = [ASK_A, ASK_B, ASK_C, ASK_D, ASK_E, ASK_F, ASK_G, ASK_H, ASK_N, ASK_Q, ASK_R];
+    const alone = new AnswerLog(PERSON, asks);
+    const walked = new InputsLog(PERSON, asks);
+    for (const one of EVENTS.filter((each) => each.id <= THROUGH)) {
+      alone.note(one);
+      walked.note(one);
+    }
+    for (const askId of asks) {
+      expect(alone.judgingOf(askId)?.answer?.eventId).toBeGreaterThan(0);
+      expect(alone.judgingOf(askId)).toEqual(walked.judgingOf(askId));
+    }
+    const placed = (askId: string): [number | null, unknown] => {
+      const judging = alone.judgingOf(askId);
+      return [judging?.judged?.id ?? null, judging?.answer ?? null];
+    };
+    // The last edit before the answer; a settlement of the one document; the person's answer
+    // after another user's; a restored answer of another user; and, after a settlement of a
+    // document of a list S10 cannot read, the person's answer.
+    expect(placed(ASK_A)).toEqual([18, { eventId: 20, own: true }]);
+    expect(placed(ASK_B)).toEqual([24, { eventId: 25, own: true }]);
+    expect(placed(ASK_C)).toEqual([30, { eventId: 31, own: true }]);
+    expect(placed(ASK_R)).toEqual([49, { eventId: 50, own: false }]);
+    expect(placed(ASK_N)).toEqual([57, { eventId: 59, own: true }]);
   });
 
   test("a list it cannot read names no one document, so a settlement of the lead answers nothing", () => {
     const answerOf = (documents: unknown): number | null => {
-      const log = new InputsLog(PERSON, [ASK_N]);
+      const log = new AnswerLog(PERSON, [ASK_N]);
       const approval = { ...lead, documents };
       log.note(event(1, "ask.opened", whole(ASK_N, "ACME-12", 1, "doc-a@2", { approval })));
       log.note(
@@ -1236,36 +1619,11 @@ describe("the documents an approval names, as S10's ask_docs reads them", () => 
     expect(answerOf([])).toBe(2);
     expect(answerOf([lead])).toBe(2);
   });
-
-  test("a candidate whose list holds an entry that is no document is a deviation on its path", () => {
-    const candidate: CandidateInputs = {
-      asOfEventId: 8,
-      ask: {
-        state: "answered",
-        kind: "approval",
-        issue_key: "ACME-2",
-        question: "A neighbour",
-        approval: { ...lead, documents: [lead, null] },
-        answer: { user: PERSON, at: at(8), selected: ["Approve"], text: null },
-      },
-      issue: { key: "ACME-2", title: "Neighbour issue" },
-    };
-    const judged = {
-      person: PERSON,
-      issueKey: "ACME-1",
-      openedAt: 1_000 * Date.parse(at(16)) + 1,
-      documents: new Set(["doc-z"]),
-    };
-    expect(neighbourFault([KEPT], { [KEPT]: candidate }, judged)).toEqual({
-      askId: KEPT,
-      field: "approval.documents[1]",
-    });
-  });
 });
 
 describe("the guard over a request file", () => {
   const inputs = (markdown: string): RequestInputs => ({
-    version: 2,
+    version: INPUTS_VERSION,
     askId: ASK_A,
     issueKey: "ACME-1",
     group: "tree:ACME-1",
@@ -1326,11 +1684,105 @@ describe("the guard over a request file", () => {
   });
 });
 
+/**
+ * A stand-in for `reserve-ask.ts` that a decision runs: it exits 3 inside the claim's read, 4
+ * where the rest of the environment it was handed did not reach it, and else as its ask id
+ * (`Bun.argv[3]`) asks, the last by an error it does not catch.
+ */
+const STUB = [
+  `if (process.env.${RESERVE_VARIABLE} !== undefined) process.exit(3);`,
+  `if (process.env.${CLAIM_RUN_VARIABLE} !== undefined) process.exit(3);`,
+  'if (process.env.S10_STUB !== "handed on") process.exit(4);',
+  "const askId = Bun.argv[3];",
+  'if (askId === "kept") process.exit(0);',
+  'if (askId === "held") process.exit(1);',
+  'if (askId === "error") process.exit(2);',
+  'throw new Error("an error the stub does not catch");',
+  "",
+].join("\n");
+
 describe("the reserve's decision", () => {
-  test("refuses a reserve-ask.ts whose bytes are not commit 651db8d5's", async () => {
-    const path = join(await directory("reserve-ask"), "reserve-ask.ts");
-    await writeFile(path, "console.log('another rule');\n", "utf8");
-    await expect(reserveAskDecision(path)).rejects.toThrow(S10InputsError);
-    await expect(reserveAskDecision(path)).rejects.toThrow("651db8d5");
+  /** This directory, which holds `reserve-ask.ts` and the rest of its closure. */
+  const HERE = join(import.meta.dir, "..");
+
+  /** A directory holding a copy of each file of the pinned closure, and nothing else. */
+  async function closureCopy(): Promise<string> {
+    const copy = await realpath(await directory("closure"));
+    for (const name of Object.keys(RESERVE_ASK_CLOSURE)) {
+      await cp(join(HERE, name), join(copy, name));
+    }
+    return copy;
+  }
+
+  /** What a refusal of the decision at `entry` says before its reason. */
+  function refusalOf(entry: string): string {
+    return `${entry} is not the decision the claim names, reserve-ask.ts at 651db8d5: `;
+  }
+
+  test("the closure of this checkout's reserve-ask.ts is the pinned one, under its digest", async () => {
+    expect(await importClosureOf(join(HERE, "reserve-ask.ts"))).toEqual({ ...RESERVE_ASK_CLOSURE });
+    // As `sha256sum` prints the six files, hashed again.
+    expect(closureDigestOf(RESERVE_ASK_CLOSURE)).toBe(
+      "3d9b4789748828fe6ae4e8b9635ea2cc7b4c5714c369c982e4bcd45e4c1c0238"
+    );
+  });
+
+  test("a copy of the closure is that decision, named by the closure's digest", async () => {
+    const copy = await closureCopy();
+    const decision = await reserveAskDecision(join(copy, "reserve-ask.ts"));
+    expect(decision.sha256).toBe(closureDigestOf(RESERVE_ASK_CLOSURE));
+  });
+
+  test("refuses a closure one byte of whose stats.ts changed, naming the file and both sha256s", async () => {
+    const copy = await closureCopy();
+    const stats = join(copy, "stats.ts");
+    const bytes = await readFile(stats);
+    // The file ends its last line: a space in that newline's place changes one byte and no code.
+    bytes[bytes.length - 1] = 0x20;
+    await writeFile(stats, bytes);
+    const changed = createHash("sha256").update(bytes).digest("hex");
+    const pinned = RESERVE_ASK_CLOSURE["stats.ts"];
+    const why = `its stats.ts has sha256 ${changed}, and the pin names ${pinned}`;
+    const entry = join(copy, "reserve-ask.ts");
+    await expect(reserveAskDecision(entry)).rejects.toThrow(S10InputsError);
+    await expect(reserveAskDecision(entry)).rejects.toThrow(`${refusalOf(entry)}${why}.`);
+  });
+
+  test("refuses a closure that loads a file the pin does not name, naming that file", async () => {
+    const copy = await closureCopy();
+    // A name before every pinned one, so the refusal names it ahead of the stats.ts that loads it.
+    await writeFile(join(copy, "a-new.ts"), "export {};\n", "utf8");
+    const stats = join(copy, "stats.ts");
+    await writeFile(stats, `import "./a-new";\n${await readFile(stats, "utf8")}`, "utf8");
+    const entry = join(copy, "reserve-ask.ts");
+    const why = "it loads a-new.ts, which the pin does not name";
+    await expect(reserveAskDecision(entry)).rejects.toThrow(S10InputsError);
+    await expect(reserveAskDecision(entry)).rejects.toThrow(`${refusalOf(entry)}${why}.`);
+  });
+
+  test("refuses a reserve-ask.ts that loads no other file of the closure, naming the first", async () => {
+    const entry = join(await realpath(await directory("reserve-ask")), "reserve-ask.ts");
+    await writeFile(entry, "console.log('another rule');\n", "utf8");
+    const why = "it loads no claim.ts, which the pin names";
+    await expect(reserveAskDecision(entry)).rejects.toThrow(S10InputsError);
+    await expect(reserveAskDecision(entry)).rejects.toThrow(`${refusalOf(entry)}${why}.`);
+    await expect(reserveAskDecision(entry)).rejects.toThrow(
+      "A change to a file of its closure is refused until a reviewed pull request moves the pin"
+    );
+  });
+
+  test("each decision runs outside the read, and an error its child does not catch is no hold", async () => {
+    const stub = join(await directory("stub"), "decide.ts");
+    await writeFile(stub, STUB, "utf8");
+    const decide = spawnDecision(stub, {
+      PATH: process.env.PATH,
+      [RESERVE_VARIABLE]: `read:${CLAIM}`,
+      [CLAIM_RUN_VARIABLE]: START,
+      S10_STUB: "handed on",
+    });
+    const verdicts: ReserveVerdict[] = [];
+    for (const askId of ["kept", "held", "error", "uncaught"]) verdicts.push(await decide(askId));
+    // Bun alone exits 1 on an uncaught error, which would read as held; the preload makes it 70.
+    expect(verdicts).toEqual(["kept", "held", "error", "error"]);
   });
 });

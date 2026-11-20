@@ -6,6 +6,7 @@ import type { CaseKind, CaseRow } from "./build-corpus";
 import {
   answeredTime,
   CannotRunError,
+  type Corpus,
   cutTime,
   listOf,
   newSeed,
@@ -20,7 +21,9 @@ import {
 import { type DispatchConfig, dispatchConfig, readJson } from "./dispatch-read";
 import {
   type BacklogRoots,
-  type DrawClaimRun,
+  BUILD_CHAIN_NAMES,
+  type BuildChain,
+  chainRefusal,
   type DrawnSlices,
   type DrawRecord,
   type DrawRule,
@@ -35,6 +38,7 @@ import {
   slicesPath,
 } from "./draw-io";
 import {
+  type AskModel,
   DEFAULT_NEVER_DECIDE_MODEL,
   type IssueFacts,
   type NeverDecideAnswer,
@@ -45,7 +49,13 @@ import {
 } from "./never-decide";
 import { type RenderGuard, renderCase, renderChecked, renderDocument } from "./render";
 import { replayCase } from "./replay";
-import { RESERVE_TREE_CUT, RESERVE_VARIABLE, readReferenceOf, reserveOf } from "./reserve";
+import {
+  RESERVE_TREE_CUT,
+  RESERVE_VARIABLE,
+  type Registration,
+  readReferenceOf,
+  reserveOf,
+} from "./reserve";
 import {
   changesAfterAskOf,
   idsInFiles,
@@ -429,8 +439,8 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * Under `finalTest`, a draw over a registered read of the reserve, the groups are the issue trees
  * joined over near-duplicate evidence, and each carries its outcome under item 6, read over every
  * case of the corpus in it. A group whose outcome is `ask-before-cut` gives no case to any slice:
- * its cases are named in `finalTest.beforeCut`. No never-decide answer is read (the claim's point
- * 9): no case is held and none is left out as `rule-unreadable`, whatever its `hold` says, and no
+ * its cases are named in `finalTest.beforeCut`. No never-decide answer is asked for (the claim's
+ * point 9): no case is held and none is left out as `rule-unreadable`, and no
  * case of an eligible tree is left out as a question no arm can be scored on, so every case of
  * an eligible tree is drawn. An `eligible` group goes to report whole, whatever report's targets:
  * the final test is every eligible tree, which item 8 lets only never-decide and the run's own
@@ -443,8 +453,9 @@ const DEVELOPMENT_ORDER: readonly SliceName[] = SLICES.filter((slice) => slice !
  * cases, in `finalTest.trees`.
  *
  * It throws `DrawError` over an approval case whose answer names no option, which is the corpus
- * read wrongly rather than a case to leave out, and, outside a registered read, over a case that
- * carries no answer of the rule, which every such draw applies.
+ * read wrongly rather than a case to leave out, and over a case whose answer of the rule is not
+ * the draw's mode: one that carries none outside a registered read, which applies the rule to
+ * every case, and one that carries one under a read, which asks the rule for none.
  */
 export function drawSlices(
   cases: readonly DrawCase[],
@@ -471,21 +482,30 @@ export function drawSlices(
           "build cannot produce: the draw stops rather than passing over it"
       );
     }
+    // The draw's mode, read once for the case: under a registered read the outcome of its tree,
+    // and outside one the never-decide rule's answer, which only that draw asks for.
     const outcome = finalTest === null ? null : outcomeOf(groupKeyOf(row, finalTest));
+    const hold = drawCase.hold;
+    if ((outcome === null) !== (hold !== null)) {
+      throw new DrawError(
+        outcome === null
+          ? `the case ${row.caseId} carries no never-decide answer, which a draw that reads no ` +
+              "reserve applies to every case"
+          : `the case ${row.caseId} carries a never-decide answer, which a draw under a ` +
+              "registered read never asks for"
+      );
+    }
     if (outcome === "ask-before-cut") {
       // Item 6 (a): an ask of the tree opened before the cut, so a scorer may have read the tree
       // before any of its cases came; it gives no case to any slice of the claim's draw.
       beforeCut.push(row.caseId);
       continue;
     }
-    // Under a registered read no answer of the rule is read (the claim's point 9), so no case is
-    // held and none is left out as unreadable: S10's fact check and judges decide never-decide.
-    const hold = finalTest === null ? drawCase.hold : null;
-    if (finalTest === null && hold === null) {
-      throw new DrawError(
-        `the case ${row.caseId} carries no never-decide answer, which a draw that reads no ` +
-          "reserve applies to every case"
-      );
+    // Every eligible tree goes to report whole (the claim's point 9): no rule's answer is read
+    // under a read, and a question no arm can be scored on is left out only of the other groups.
+    if (outcome === "eligible") {
+      drawable.push(drawCase);
+      continue;
     }
     if (hold?.held === true) {
       const heldKind = hold.kind;
@@ -503,12 +523,6 @@ export function drawSlices(
       // Neither held nor decided: a rule about what must not be decided may not decide by
       // accident, so the case leaves the draw and is named with what came back.
       leaveOut(row, "rule-unreadable", `the never-decide answer could not be read: ${hold.fault}`);
-      continue;
-    }
-    // Every eligible tree goes to report whole (the claim's point 9): a question no arm can be
-    // scored on is left out of every other group, and of every group outside a read, as before.
-    if (outcome === "eligible") {
-      drawable.push(drawCase);
       continue;
     }
     if (row.kind === "question" && row.options.length < LEAST_OPTIONS) {
@@ -971,7 +985,7 @@ export function claimCutRefusal(cut: number): string | null {
  */
 export async function claimOutRefusal(
   directory: string,
-  claimRun: DrawClaimRun
+  claimRun: BuildChain
 ): Promise<string | null> {
   const entries = await readdir(directory).catch((): string[] => []);
   if (entries.length === 0) return null;
@@ -980,25 +994,145 @@ export async function claimOutRefusal(
   if (text === null) {
     return `${directory} holds files and no draw.json, so no run here can show they are its own`;
   }
-  const found = drawFactsOf(text, path).claimRun;
-  const wanted: Array<[string, string | undefined, string]> = [
-    ["claim run", found?.id, claimRun.id],
-    ["snapshot.json", found?.snapshotSha256, claimRun.snapshotSha256],
-    ["corpus.jsonl", found?.corpusSha256, claimRun.corpusSha256],
-    ["trees.json", found?.treesSha256, claimRun.treesSha256],
-  ];
-  for (const [what, was, is] of wanted) {
-    if (was === is) continue;
-    return (
-      `${directory} holds another run's draw: its ${what} is ${was ?? "of no record"}, and this ` +
-      `run's is ${is}. A draw that reads the reserve writes only into its own claim run's ` +
-      "directory, over the same build"
-    );
-  }
-  return null;
+  const refusal = chainRefusal(drawFactsOf(text, path).claimRun, claimRun, BUILD_CHAIN_NAMES);
+  if (refusal === null) return null;
+  return (
+    `${directory} holds another run's draw: ${refusal}. A draw that reads the reserve writes ` +
+    "only into its own claim run's directory, over the same build"
+  );
 }
 
-async function draw(flags: Flags): Promise<number> {
+/**
+ * The draw's mode, settled once from the corpus it read: the claim's draw under a registered read
+ * of the reserve, which groups by tree and applies no never-decide rule, or a draw the rule is
+ * applied to. Every later step of the command branches on this one value.
+ */
+type DrawMode =
+  | { kind: "claim"; finalTest: FinalTestSource; claimRun: BuildChain; toRender: CaseRow[] }
+  | {
+      kind: "ruled";
+      rule: RuleInputs & { definition: string };
+      roots: BacklogRoots;
+      toRender: CaseRow[];
+    };
+
+/**
+ * The claim's mode: the trees, the scorers' and round's records and every case's evidence read
+ * before any case is rendered, so a corpus or a file the claim cannot check stops the draw first,
+ * and the cases of a group with an ask before the cut (item 6 a) left out before any of them is
+ * rendered: their held cases stay held until the reserve ends. Their evidence is read only into
+ * shingles, which are numbers held in memory and never written. The claim run the build was and
+ * the sha256 of each of the build's three files it read are recorded, so the next stage of the
+ * run takes only this draw of those bytes, and an `--out` of another draw is refused before
+ * anything more is read.
+ */
+async function claimModeOf(
+  corpus: Corpus,
+  reference: string,
+  post: readonly CaseRow[],
+  flags: Flags,
+  directory: string,
+  config: DispatchConfig
+): Promise<DrawMode> {
+  const { trees, sha256: treesSha256 } = await readTrees(corpus.directory);
+  if (trees.throughEventId !== corpus.snapshot.throughEventId) {
+    throw new DrawError(
+      `the corpus's trees were written through event ${trees.throughEventId} and its cases ` +
+        `through ${corpus.snapshot.throughEventId}: they are not one build`
+    );
+  }
+  const id = corpus.snapshot.reserve?.claimRun;
+  if (id === undefined) {
+    throw new DrawError(
+      `${corpus.directory} records no claim run beside its read of the reserve, so no stage ` +
+        "after this draw could show it reads this build: build it again in the claim run"
+    );
+  }
+  const claimRun: BuildChain = {
+    id,
+    snapshotSha256: corpus.snapshotSha256,
+    corpusSha256: corpus.corpusSha256,
+    treesSha256,
+  };
+  const taken = await claimOutRefusal(directory, claimRun);
+  if (taken !== null) throw new DrawError(taken);
+  const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
+  const grouping = treeGroupingOf(
+    corpus.rows,
+    trees,
+    {
+      holds,
+      readAskIds: await idsInFiles(flags.scorerRecords),
+      roundSessions: await idsInFiles(
+        flags.roundSessions === undefined ? [] : [flags.roundSessions]
+      ),
+    },
+    await evidenceShinglesOf(corpus.rows, config)
+  );
+  const beforeCut = post.filter(
+    (row) => grouping.outcomes.get(grouping.groupOf(row)) === "ask-before-cut"
+  );
+  const left = new Set(beforeCut.map((row) => row.caseId));
+  console.log(
+    "the rule          not applied: under a registered read, S10's fact check and judges " +
+      "decide never-decide"
+  );
+  return {
+    kind: "claim",
+    finalTest: { reference, holds, grouping, beforeCut },
+    claimRun,
+    toRender: post.filter((row) => !left.has(row.caseId)),
+  };
+}
+
+/**
+ * The mode of a draw that reads no reserve: the labelled roots on the backlog or in icebox, read
+ * from Dispatch or pinned from a file, and the rule's prose, put to every post-cut case.
+ */
+async function ruledModeOf(
+  post: readonly CaseRow[],
+  flags: Flags,
+  config: DispatchConfig,
+  ask: AskModel | undefined
+): Promise<DrawMode> {
+  const roots =
+    flags.backlogRoots === undefined
+      ? await backlogLegionRoots(config)
+      : await pinnedBacklogRoots(flags.backlogRoots);
+  console.log(`legion roots on the backlog or in icebox  ${roots.issues.length}`);
+  console.log(
+    roots.source === "dispatch"
+      ? `                  from Dispatch at ${roots.readAt}`
+      : `                  pinned from ${roots.source}, read at ${roots.readAt}`
+  );
+  const definition = await neverDecideDefinition();
+  console.log(`the rule          ${DEFAULT_NEVER_DECIDE_MODEL}, one call per case`);
+  console.log(
+    `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
+  );
+  const options: NeverDecideOptions = {
+    model: DEFAULT_NEVER_DECIDE_MODEL,
+    cacheDirectory: flags.cache ?? null,
+    definition,
+    ...(ask === undefined ? {} : { ask }),
+  };
+  return {
+    kind: "ruled",
+    rule: { issues: rootFactsOf(roots.issues), options, definition },
+    roots,
+    toRender: [...post],
+  };
+}
+
+/** What a caller may hand the command beside its flags: a test's registration, root and model. */
+export interface DrawOptions {
+  registration?: Registration;
+  root?: string;
+  /** How the never-decide rule asks its model, where a draw applies the rule. */
+  ask?: AskModel;
+}
+
+async function draw(flags: Flags, options: DrawOptions): Promise<number> {
   const reading = Boolean(readReferenceOf(process.env[RESERVE_VARIABLE]));
   if (reading && flags.seed === undefined) {
     // The rule's item 6: the final test is drawn by a seed registered then, so a draw that asks to
@@ -1029,110 +1163,37 @@ async function draw(flags: Flags): Promise<number> {
   // Before the corpus is read: the reserve is read once, so a claim draw stops before any read.
   const refusal = reading ? claimCutRefusal(cutTime(flags.cut)) : null;
   if (refusal !== null) throw new UsageError(`${refusal}\n\n${USAGE}`);
-  const corpus = await readCorpus(flags.corpus);
+  const corpus = await readCorpus(flags.corpus, {
+    registration: options.registration,
+    root: options.root,
+  });
   const directory = await outDirectory(flags.out);
   const cut = cutTime(flags.cut);
   const config = await dispatchConfig();
   const post = corpus.rows.filter((row) => answeredTime(row) >= cut);
   const seed = flags.seed ?? newSeed();
-  // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
-  // claim's: it groups by tree joined over near-duplicate evidence, and its report slice is the
-  // final test item 6 allows. The trees, the scorers' and round's records and every case's
-  // evidence are read before any case is rendered, so a corpus or a file the claim cannot check
-  // stops the draw first, and the cases of a group with an ask before the cut (item 6 a) are left
-  // out before any of them is rendered: their held cases stay held until the reserve ends. Their
-  // evidence is read only into shingles, which are numbers held in memory and never written. The
-  // draw records the claim run the build was and the sha256 of each of the build's three files it
-  // read, so the next stage of the run takes only this draw of those bytes, and it refuses an
-  // `--out` of another draw before it reads anything more.
-  let finalTest: FinalTestSource | null = null;
-  let claimRun: DrawClaimRun | null = null;
-  let toRender = post;
-  if (corpus.reserve.readUnder !== null) {
-    const { trees, sha256: treesSha256 } = await readTrees(corpus.directory);
-    if (trees.throughEventId !== corpus.snapshot.throughEventId) {
-      throw new DrawError(
-        `the corpus's trees were written through event ${trees.throughEventId} and its cases ` +
-          `through ${corpus.snapshot.throughEventId}: they are not one build`
-      );
-    }
-    const id = corpus.snapshot.reserve?.claimRun;
-    if (id === undefined) {
-      throw new DrawError(
-        `${corpus.directory} records no claim run beside its read of the reserve, so no stage ` +
-          "after this draw could show it reads this build: build it again in the claim run"
-      );
-    }
-    claimRun = {
-      id,
-      snapshotSha256: corpus.snapshotSha256,
-      corpusSha256: corpus.corpusSha256,
-      treesSha256,
-    };
-    const taken = await claimOutRefusal(directory, claimRun);
-    if (taken !== null) throw new DrawError(taken);
-    const holds = (row: CaseRow): boolean => reserveOf(row) === "held";
-    const grouping = treeGroupingOf(
-      corpus.rows,
-      trees,
-      {
-        holds,
-        readAskIds: await idsInFiles(flags.scorerRecords),
-        roundSessions: await idsInFiles(
-          flags.roundSessions === undefined ? [] : [flags.roundSessions]
-        ),
-      },
-      await evidenceShinglesOf(corpus.rows, config)
-    );
-    const beforeCut = post.filter(
-      (row) => grouping.outcomes.get(grouping.groupOf(row)) === "ask-before-cut"
-    );
-    const left = new Set(beforeCut.map((row) => row.caseId));
-    toRender = post.filter((row) => !left.has(row.caseId));
-    finalTest = { reference: corpus.reserve.readUnder, holds, grouping, beforeCut };
-  }
   console.log(`corpus            ${corpus.directory}`);
   console.log(`cut               ${new Date(cut).toISOString()}`);
   console.log(`post-cut cases    ${post.length}`);
   console.log(`seed              ${seed} (--seed ${seed} draws these slices again)`);
-  // The claim's draw applies no never-decide rule (the claim's point 9): the rule reads Dispatch
-  // as it stands at the run, and S10's fact check and judges decide never-decide over the final
-  // test, as they decide it live. So it reads no backlog roots and asks no model.
-  let roots: BacklogRoots | null = null;
-  let rule: (RuleInputs & { definition: string }) | null = null;
-  if (finalTest === null) {
-    roots =
-      flags.backlogRoots === undefined
-        ? await backlogLegionRoots(config)
-        : await pinnedBacklogRoots(flags.backlogRoots);
-    console.log(`legion roots on the backlog or in icebox  ${roots.issues.length}`);
-    console.log(
-      roots.source === "dispatch"
-        ? `                  from Dispatch at ${roots.readAt}`
-        : `                  pinned from ${roots.source}, read at ${roots.readAt}`
-    );
-    const definition = await neverDecideDefinition();
-    rule = {
-      issues: rootFactsOf(roots.issues),
-      options: {
-        model: DEFAULT_NEVER_DECIDE_MODEL,
-        cacheDirectory: flags.cache ?? null,
-        definition,
-      },
-      definition,
-    };
-    console.log(`the rule          ${DEFAULT_NEVER_DECIDE_MODEL}, one call per case`);
-    console.log(
-      `cache             ${flags.cache ?? "none, so every case is asked of the model again"}`
-    );
-  } else {
-    console.log(
-      "the rule          not applied: under a registered read, S10's fact check and judges " +
-        "decide never-decide"
-    );
-  }
-  const rendered = await drawCasesOf(toRender, rule, config);
-  const drawn = drawSlices(rendered.cases, seed, finalTest);
+  // Only a registered read opens the reserve (`readCorpus`), so a corpus read under one is the
+  // claim's: it groups by tree joined over near-duplicate evidence, its report slice is the final
+  // test item 6 allows, and it applies no never-decide rule (the claim's point 9), which reads
+  // Dispatch as it stands at the run: S10's fact check and judges decide never-decide over the
+  // final test, as they decide it live, so it reads no backlog roots and asks no model.
+  const readUnder = corpus.reserve.readUnder;
+  const mode =
+    readUnder === null
+      ? await ruledModeOf(post, flags, config, options.ask)
+      : await claimModeOf(corpus, readUnder, post, flags, directory, config);
+  const claim = mode.kind === "claim" ? mode : null;
+  const ruled = mode.kind === "ruled" ? mode : null;
+  const rendered = await drawCasesOf(mode.toRender, ruled?.rule ?? null, config);
+  const drawn = drawSlices(rendered.cases, seed, claim?.finalTest ?? null);
+  const ruleRecord =
+    ruled === null
+      ? null
+      : ruleRecordOf(rendered.cases, rendered.checks, ruled.rule.definition, flags.cache ?? null);
   console.log("");
   console.log(countsTable(drawn));
   console.log("");
@@ -1140,7 +1201,7 @@ async function draw(flags: Flags): Promise<number> {
     `groups            ${drawn.groupCount} under the key ${drawn.groupKey}, of which ` +
       `${drawn.groups.approval} hold an approval case and ${drawn.groups.question} a question`
   );
-  if (rule !== null) {
+  if (ruleRecord !== null) {
     console.log(`held by the never-decide rule  ${drawn.held.length}`);
     for (const [kind, count] of Object.entries(drawn.heldByKind).sort()) {
       console.log(`  ${kind.padEnd(22)}${count}`);
@@ -1150,10 +1211,6 @@ async function draw(flags: Flags): Promise<number> {
   for (const kind of UNDRAWABLE_KINDS) {
     console.log(`  ${UNDRAWABLE_NAMES[kind].padEnd(35)}${drawn.undrawableByKind[kind]}`);
   }
-  const ruleRecord =
-    rule === null
-      ? null
-      : ruleRecordOf(rendered.cases, rendered.checks, rule.definition, flags.cache ?? null);
   if (ruleRecord !== null) {
     const settled = (ruleRecord.answers?.length ?? 0) - ruleRecord.asked - ruleRecord.cached;
     console.log(
@@ -1221,19 +1278,19 @@ async function draw(flags: Flags): Promise<number> {
     groups: drawn.groups,
     postCutCases: post.length,
     documentsUnread: rendered.unread,
-    // The one input of the draw that is not the corpus: the labelled roots on the backlog or in
-    // icebox, which the never-decide rule reads. The list is written whole, with the time it
+    // The one input of a ruled draw that is not the corpus: the labelled roots on the backlog or
+    // in icebox, which the never-decide rule reads. The list is written whole, with the time it
     // was read, so `--backlog-roots <this file>` draws these slices again whatever Dispatch
-    // shows later. A draw that applies no rule reads none.
-    backlogLegionRootsRead: roots === null ? null : roots.issues.length,
-    backlogLegionRoots: roots,
-    // What the rule was, for this draw: the prose it applied, what applying it cost, and what
+    // shows later. The claim's draw reads none.
+    backlogLegionRootsRead: ruled === null ? null : ruled.roots.issues.length,
+    backlogLegionRoots: ruled?.roots ?? null,
+    // What the rule was, for a ruled draw: the prose it applied, what applying it cost, and what
     // was checked of the text it was applied to. A change of one byte of that prose changes every
     // cache key, so a later draw over the same corpus and seed with another definition is a
     // different reading and says so here.
     rule: ruleRecord,
-    neverDecideApplied: rule !== null,
-    claimRun,
+    neverDecideApplied: ruled !== null,
+    claimRun: claim?.claimRun ?? null,
     excluded: {
       held: { total: drawn.held.length, byKind: drawn.heldByKind, cases: drawn.held },
       undrawable: {
@@ -1253,7 +1310,7 @@ async function draw(flags: Flags): Promise<number> {
 }
 
 /** The command: the flags, the draw, and the exit status it takes. */
-export async function main(argv: readonly string[]): Promise<number> {
+export async function main(argv: readonly string[], options: DrawOptions = {}): Promise<number> {
   let flags: Flags;
   try {
     flags = readFlags(argv);
@@ -1263,7 +1320,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     return 2;
   }
   try {
-    return await draw(flags);
+    return await draw(flags, options);
   } catch (error) {
     if (error instanceof CannotRunError) {
       console.error(`${error.name}: ${error.message}`);

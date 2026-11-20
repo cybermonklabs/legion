@@ -17,7 +17,7 @@ import {
   renderingCheckOf,
   TARGETS,
 } from "../draw";
-import { type DrawClaimRun, drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
+import { type BuildChain, drawPath, readDraw, rootFactsOf, SLICES } from "../draw-io";
 import { type AskModel, type NeverDecideAnswer, neverDecide } from "../never-decide";
 import type { TreeOutcome } from "../trees";
 
@@ -94,8 +94,11 @@ function caseRow(
   };
 }
 
-/** One case as the draw is given it. */
-function drawCase(row: CaseRow, hold: NeverDecideAnswer = DECIDED): DrawCase {
+/**
+ * One case as the draw is given it. `hold` is the rule's answer, which a draw outside a read asks
+ * for over every case, and null for a draw under a read, which asks for none.
+ */
+function drawCase(row: CaseRow, hold: NeverDecideAnswer | null = DECIDED): DrawCase {
   return {
     row,
     hold,
@@ -107,18 +110,19 @@ function drawCase(row: CaseRow, hold: NeverDecideAnswer = DECIDED): DrawCase {
 
 /**
  * A corpus of 420 approval cases over 140 issues and 120 question cases over 40 further issues,
- * each issue holding three cases, which is enough to fill every slice and leave a reserve.
+ * each issue holding three cases, which is enough to fill every slice and leave a reserve. Each
+ * case carries `hold` as `drawCase` reads it.
  */
-function corpus(): DrawCase[] {
+function corpus(hold: NeverDecideAnswer | null = DECIDED): DrawCase[] {
   const cases: DrawCase[] = [];
   for (let group = 0; group < 140; group += 1) {
     for (let at = 0; at < 3; at += 1) {
-      cases.push(drawCase(caseRow(`a-${group}-${at}`, "approval", `ISSUE-a-${group}`)));
+      cases.push(drawCase(caseRow(`a-${group}-${at}`, "approval", `ISSUE-a-${group}`), hold));
     }
   }
   for (let group = 0; group < 40; group += 1) {
     for (let at = 0; at < 3; at += 1) {
-      cases.push(drawCase(caseRow(`q-${group}-${at}`, "question", `ISSUE-q-${group}`)));
+      cases.push(drawCase(caseRow(`q-${group}-${at}`, "question", `ISSUE-q-${group}`), hold));
     }
   }
   return cases;
@@ -242,11 +246,16 @@ describe("drawSlices", () => {
     const cases = corpus();
     const first = cases[0];
     if (first === undefined) throw new Error("the corpus is empty");
-    cases[0] = { ...first, hold: null };
+    cases[0] = drawCase(first.row, null);
     expect(() => drawSlices(cases, 7)).toThrow(DrawError);
     expect(() => drawSlices(cases, 7)).toThrow(
-      `the case ${first.row.caseId} carries no never-decide`
+      `the case ${first.row.caseId} carries no never-decide answer, which a draw that reads no ` +
+        "reserve applies to every case"
     );
+    // A question the draw would leave out for its options is refused the same way, and first.
+    const question = [...corpus(), drawCase(caseRow("q-one", "question", "ISSUE-one", 1), null)];
+    expect(() => drawSlices(question, 7)).toThrow(DrawError);
+    expect(() => drawSlices(question, 7)).toThrow("the case q-one carries no never-decide answer");
   });
 
   test("writes an anchor descriptor for every anchor case", () => {
@@ -312,7 +321,8 @@ describe("drawSlices", () => {
  * item 6 leaves eligible (`trees.ts`). The outcomes are handed to the draw, so these cases need no
  * log: here each issue is its own tree, the reserve holds every case whose id starts `r-`, a tree
  * is eligible when it holds such cases alone, and the issues in `beforeCut` had an ask before the
- * cut.
+ * cut. Each case is handed with no answer of the never-decide rule, as the command hands it: a
+ * draw under a read asks the rule for none.
  */
 describe("drawSlices under a read of the reserve", () => {
   const holds = (row: CaseRow): boolean => row.caseId.startsWith("r-");
@@ -346,12 +356,15 @@ describe("drawSlices under a read of the reserve", () => {
     };
   }
 
+  /** One case as a draw under a read is given it: with no answer of the rule. */
+  const unruled = (row: CaseRow): DrawCase => drawCase(row, null);
+
   /** `count` issues the reserve holds whole, three approval cases each. */
   function reserved(count: number): DrawCase[] {
     const cases: DrawCase[] = [];
     for (let group = 0; group < count; group += 1) {
       for (let at = 0; at < 3; at += 1) {
-        cases.push(drawCase(caseRow(`r-${group}-${at}`, "approval", `RES-${group}`)));
+        cases.push(unruled(caseRow(`r-${group}-${at}`, "approval", `RES-${group}`)));
       }
     }
     return cases;
@@ -359,7 +372,7 @@ describe("drawSlices under a read of the reserve", () => {
 
   test("report takes every eligible tree, before fit, and no other tree", () => {
     const held = reserved(10);
-    const cases = [...corpus(), ...held];
+    const cases = [...corpus(null), ...held];
     const draw = drawSlices(cases, 7, source(cases));
     expect([...draw.slices.report].sort()).toEqual(held.map((one) => one.row.caseId).sort());
     expect(draw.groupKey).toBe("tree");
@@ -390,8 +403,8 @@ describe("drawSlices under a read of the reserve", () => {
   });
 
   test("a tree that is not eligible never reaches report, and its reserved cases are named", () => {
-    const cases = [...corpus(), ...reserved(10)];
-    cases.push(drawCase(caseRow("x-0", "approval", "RES-0")));
+    const cases = [...corpus(null), ...reserved(10)];
+    cases.push(unruled(caseRow("x-0", "approval", "RES-0")));
     const draw = drawSlices(cases, 7, source(cases));
     const where = placement(draw);
     expect(where.get("x-0")).not.toBe("report");
@@ -402,11 +415,15 @@ describe("drawSlices under a read of the reserve", () => {
   });
 
   test("a case the draw leaves out still keeps its tree out of report", () => {
-    const cases = [...corpus(), ...reserved(10)];
-    cases.push(drawCase(caseRow("x-1", "question", "RES-1", 1)));
+    const cases = [...corpus(null), ...reserved(10)];
+    cases.push(unruled(caseRow("x-1", "question", "RES-1", 1)));
     const draw = drawSlices(cases, 7, source(cases));
     const where = placement(draw);
+    // Its tree is not eligible, so its question no arm can be scored on is left out as ever.
     expect(where.has("x-1")).toBe(false);
+    expect(draw.undrawable.map((one) => [one.caseId, one.undrawableKind])).toEqual([
+      ["x-1", "too-few-options"],
+    ]);
     expect(where.get("r-1-0")).not.toBe("report");
     expect(draw.finalTest?.groups).toBe(9);
     expect(draw.finalTest?.heldOutsideReport.total).toBe(3);
@@ -417,7 +434,7 @@ describe("drawSlices under a read of the reserve", () => {
     // RES-2's cases were left out before rendering; ISSUE-a-0's reach the draw and are left out
     // there.
     const leftOut = held.filter((one) => one.row.issueKey === "RES-2");
-    const cases = [...corpus(), ...held.filter((one) => one.row.issueKey !== "RES-2")];
+    const cases = [...corpus(null), ...held.filter((one) => one.row.issueKey !== "RES-2")];
     const draw = drawSlices(cases, 7, source(cases, ["RES-2", "ISSUE-a-0"], leftOut));
     const where = placement(draw);
     for (const caseId of ["r-2-0", "r-2-1", "r-2-2", "a-0-0", "a-0-1", "a-0-2"]) {
@@ -447,8 +464,8 @@ describe("drawSlices under a read of the reserve", () => {
     // Sixty trees, each one approval request and one question: report's targets hold 50
     // questions, and the ten trees past them are the final test's all the same.
     const cases = Array.from({ length: 60 }, (_, group) => [
-      drawCase(caseRow(`r-${group}-a`, "approval", `RES-${group}`)),
-      drawCase(caseRow(`r-${group}-q`, "question", `RES-${group}`)),
+      unruled(caseRow(`r-${group}-a`, "approval", `RES-${group}`)),
+      unruled(caseRow(`r-${group}-q`, "question", `RES-${group}`)),
     ]).flat();
     const draw = drawSlices(cases, 7, source(cases));
     expect(draw.counts.report).toEqual({ approval: 60, question: 60 });
@@ -513,7 +530,7 @@ describe("drawSlices under a read of the reserve", () => {
     }
   });
 
-  test("reads no never-decide answer: a case the rule would hold, or could not read, reaches report", () => {
+  test("refuses a case carrying a never-decide answer, which no draw under a read asks for", () => {
     const held: NeverDecideAnswer = {
       ...DECIDED,
       held: true,
@@ -522,14 +539,23 @@ describe("drawSlices under a read of the reserve", () => {
       answer: "destructive-act\nThe change list asks for the spool directory to be removed.",
     };
     const unreadable: NeverDecideAnswer = { ...DECIDED, fault: "the answer named no kind" };
-    const cases = [...corpus(), ...reserved(3)].map((one) =>
-      one.row.issueKey === "RES-1"
-        ? drawCase(one.row, held)
-        : one.row.issueKey === "RES-2"
-          ? drawCase(one.row, unreadable)
-          : one
-    );
-    const draw = drawSlices(cases, 7, source(cases));
+    const unanswered = [...corpus(null), ...reserved(3)];
+    // Any answer, on a case of an eligible tree or of another, is not the draw's mode.
+    for (const caseId of ["r-1-0", "a-0-0"]) {
+      for (const hold of [DECIDED, held, unreadable]) {
+        const cases = unanswered.map((one) =>
+          one.row.caseId === caseId ? drawCase(one.row, hold) : one
+        );
+        expect(() => drawSlices(cases, 7, source(cases))).toThrow(DrawError);
+        expect(() => drawSlices(cases, 7, source(cases))).toThrow(
+          `the case ${caseId} carries a never-decide answer, which a draw under a registered ` +
+            "read never asks for"
+        );
+      }
+    }
+    // The same cases with no answer, as the command hands them: no case is held, none is left
+    // out as an answer that could not be read, and every eligible tree reaches report whole.
+    const draw = drawSlices(unanswered, 7, source(unanswered));
     expect(draw.held).toEqual([]);
     expect(draw.undrawableByKind["rule-unreadable"]).toBe(0);
     expect(draw.finalTest?.groups).toBe(3);
@@ -538,18 +564,24 @@ describe("drawSlices under a read of the reserve", () => {
       { group: "tree:RES-1", slice: "report", cases: ["r-1-0", "r-1-1", "r-1-2"] },
       { group: "tree:RES-2", slice: "report", cases: ["r-2-0", "r-2-1", "r-2-2"] },
     ]);
-    // The draw the command makes under a read hands the cases no answer at all.
-    const unruled = cases.map((one) => ({ ...one, hold: null }));
-    expect(drawSlices(unruled, 7, source(unruled)).slices).toEqual(draw.slices);
   });
 
   test("every case of an eligible tree reaches report, its questions no arm can be scored on too", () => {
     const unscorable = [
-      drawCase(caseRow("r-1-0", "question", "RES-1", 1)),
-      drawCase(caseRow("r-1-1", "question", "RES-1", 2, [])),
+      unruled(caseRow("r-1-0", "question", "RES-1", 1)),
+      unruled(caseRow("r-1-1", "question", "RES-1", 2, [])),
     ];
-    const cases = [...corpus(), ...reserved(3).filter((one) => one.row.issueKey !== "RES-1")];
-    cases.push(...unscorable);
+    // The same two questions in a tree the reserve does not hold, which is not eligible.
+    const elsewhere = [
+      unruled(caseRow("x-5-0", "question", "ISSUE-x-5", 1)),
+      unruled(caseRow("x-5-1", "question", "ISSUE-x-5", 2, [])),
+    ];
+    const cases = [
+      ...corpus(null),
+      ...reserved(3).filter((one) => one.row.issueKey !== "RES-1"),
+      ...unscorable,
+      ...elsewhere,
+    ];
     const draw = drawSlices(cases, 7, source(cases));
     expect(draw.finalTest?.groups).toBe(3);
     expect(draw.finalTest?.trees).toEqual([
@@ -559,16 +591,32 @@ describe("drawSlices under a read of the reserve", () => {
     ]);
     expect(draw.slices.report).toContain("r-1-0");
     expect(draw.slices.report).toContain("r-1-1");
-    expect(draw.undrawable.map((one) => one.caseId)).not.toContain("r-1-0");
-    // Outside a read the same two questions are left out, as they always were.
-    const outside = drawSlices(cases, 7);
-    expect(outside.undrawableByKind["too-few-options"]).toBe(1);
-    expect(outside.undrawableByKind["no-option-chosen"]).toBe(1);
+    // In a tree that is not eligible the same two questions are left out, as outside a read.
+    const where = placement(draw);
+    expect(where.has("x-5-0")).toBe(false);
+    expect(where.has("x-5-1")).toBe(false);
+    expect(draw.undrawable.map((one) => [one.caseId, one.undrawableKind])).toEqual([
+      ["x-5-0", "too-few-options"],
+      ["x-5-1", "no-option-chosen"],
+    ]);
+    // Outside a read, where the rule answers every case, all four are left out, as ever.
+    const outside = drawSlices(
+      cases.map((one) => drawCase(one.row)),
+      7
+    );
+    expect(outside.undrawable.map((one) => one.caseId)).toEqual(
+      [...unscorable, ...elsewhere].map((one) => one.row.caseId)
+    );
+    expect(outside.undrawableByKind).toEqual({
+      "too-few-options": 2,
+      "no-option-chosen": 2,
+      "rule-unreadable": 0,
+    });
   });
 
   test("an eligible tree holding one answered one-option question goes to report with it", () => {
-    const question = drawCase(caseRow("r-9-0", "question", "RES-9", 1));
-    const cases = [...corpus(), question];
+    const question = unruled(caseRow("r-9-0", "question", "RES-9", 1));
+    const cases = [...corpus(null), question];
     const draw = drawSlices(cases, 7, source(cases));
     expect(draw.slices.report).toEqual(["r-9-0"]);
     expect(draw.finalTest?.trees).toEqual([
@@ -582,7 +630,7 @@ describe("drawSlices under a read of the reserve", () => {
     afterEach(async () => {
       for (const directory of made.splice(0)) await rm(directory, { recursive: true, force: true });
     });
-    const run: DrawClaimRun = {
+    const run: BuildChain = {
       id: "start-1",
       snapshotSha256: "a".repeat(64),
       corpusSha256: "b".repeat(64),
@@ -606,32 +654,44 @@ describe("drawSlices under a read of the reserve", () => {
     });
 
     test("refuses another claim run's draw, a draw of another build's bytes, or files of no draw", async () => {
+      const other = "d".repeat(64);
       const others: Array<[unknown, string]> = [
-        [{ ...run, id: "start-2" }, "its claim run is start-2"],
-        [{ ...run, snapshotSha256: "d".repeat(64) }, "its snapshot.json is"],
-        [{ ...run, corpusSha256: "d".repeat(64) }, "its corpus.jsonl is"],
-        [{ ...run, treesSha256: "d".repeat(64) }, "its trees.json is"],
-        [null, "its claim run is of no record"],
+        [{ ...run, id: "start-2" }, "its claim run is start-2, and this run's is start-1"],
+        [{ ...run, snapshotSha256: other }, `its snapshot.json is ${other}, and this run's is`],
+        [{ ...run, corpusSha256: other }, `its corpus.jsonl is ${other}, and this run's is`],
+        [{ ...run, treesSha256: other }, `its trees.json is ${other}, and this run's is`],
+        // Of two fields that differ, the first in the chain's order is the one named.
+        [{ ...run, corpusSha256: other, treesSha256: other }, "its corpus.jsonl is"],
+        [{ ...run, id: "start-2", treesSha256: other }, "its claim run is start-2"],
+        [null, "its claim run is of no record, and this run's is start-1"],
       ];
       for (const [claimRun, words] of others) {
         expect(await claimOutRefusal(await drawn(claimRun), run)).toContain(words);
       }
+      const directory = await drawn({ ...run, id: "start-2" });
+      expect(await claimOutRefusal(directory, run)).toBe(
+        `${directory} holds another run's draw: its claim run is start-2, and this run's is ` +
+          "start-1. A draw that reads the reserve writes only into its own claim run's " +
+          "directory, over the same build"
+      );
       const stray = await mkdtemp(join(tmpdir(), "draw-out-"));
       made.push(stray);
       await writeFile(join(stray, "slices.json"), "{}\n", "utf8");
-      expect(await claimOutRefusal(stray, run)).toContain("holds files and no draw.json");
+      expect(await claimOutRefusal(stray, run)).toBe(
+        `${stray} holds files and no draw.json, so no run here can show they are its own`
+      );
     });
   });
 
   test("with no eligible tree, report stays empty", () => {
-    const cases = corpus();
+    const cases = corpus(null);
     const draw = drawSlices(cases, 7, source(cases));
     expect(draw.slices.report).toEqual([]);
     expect(draw.finalTest?.groups).toBe(0);
   });
 
   test("the registered seed draws the same final test whatever order the cases come in", () => {
-    const cases = [...corpus(), ...reserved(90)];
+    const cases = [...corpus(null), ...reserved(90)];
     const draw = drawSlices(cases, 12345, source(cases));
     expect(drawSlices([...cases].reverse(), 12345, source(cases)).slices).toEqual(draw.slices);
     expect(drawSlices(cases, 12346, source(cases)).slices.report).not.toEqual(draw.slices.report);

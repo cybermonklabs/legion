@@ -127,17 +127,48 @@ export interface FinalTestTree {
 }
 
 /**
- * The claim run a draw under a registered read was made in, and the build it read, so the next
- * stage of that run (`s10-inputs.ts`) takes only this draw of this build's bytes: the reply that
+ * The claim run a stage after the build was made in, and the build it read: the reply that
  * started the run (`claimRunOf` in `reserve.ts`) as the build's `snapshot.json` records it, and
- * the sha256 of the bytes the draw read of each of the build's three files (`Corpus` in
- * `corpus-io.ts`, `readTrees` in `trees.ts`).
+ * the sha256 of the bytes read of each of the build's three files (`Corpus` in `corpus-io.ts`,
+ * `readTrees` in `trees.ts`). A draw under a registered read records it (`DrawRecord.claimRun`),
+ * and every later stage of the run records the same chain and takes only the files it names
+ * (`s10-inputs.ts`), so no directory, and no file of one, can be put in another's place.
  */
-export interface DrawClaimRun {
+export interface BuildChain {
   id: string;
   snapshotSha256: string;
   corpusSha256: string;
   treesSha256: string;
+}
+
+/** What each field of a `BuildChain` is called where a refusal names it, in the order compared. */
+export const BUILD_CHAIN_NAMES: Readonly<Record<keyof BuildChain, string>> = {
+  id: "claim run",
+  snapshotSha256: "snapshot.json",
+  corpusSha256: "corpus.jsonl",
+  treesSha256: "trees.json",
+};
+
+/**
+ * The one comparison every stage of the claim run holds a record to the chain it runs in with:
+ * the first field `names` lists in which `found` (a record read back, whatever its shape) is not
+ * `wanted`, worded as the tail of a refusal, and null where every such field is the same. A field
+ * `found` does not hold is read as of no record.
+ */
+export function chainRefusal<T extends object>(
+  found: unknown,
+  wanted: T,
+  names: Readonly<Partial<Record<keyof T & string, string>>>
+): string | null {
+  const record = recordOf(found);
+  for (const [field, name] of Object.entries(names) as Array<[keyof T & string, string]>) {
+    const was = record?.[field];
+    const is = wanted[field];
+    if (was === is) continue;
+    const shown = was === undefined || was === null ? "of no record" : String(was);
+    return `its ${name} is ${shown}, and this run's is ${String(is)}`;
+  }
+  return null;
 }
 
 /**
@@ -211,10 +242,13 @@ export interface DrawFacts {
   finalTestTrees?: readonly FinalTestTree[];
   /** The reference `finalTest` records, for a draw under a registered read of the reserve. */
   finalTestReference?: string;
-  /** Whether the draw applied the never-decide rule, where the draw records it. */
+  /**
+   * Whether the draw applied the never-decide rule, where the draw records it, which is never
+   * other than whether it records the rule and the roots it was handed.
+   */
   neverDecideApplied?: boolean;
   /** The claim run and the build a draw under a registered read records. */
-  claimRun?: DrawClaimRun;
+  claimRun?: BuildChain;
 }
 
 /** What one draw recorded of itself, which is what `draw.json` holds. */
@@ -252,7 +286,7 @@ export interface DrawRecord {
    * The claim run a draw under a registered read was made in and the build it read; null for a
    * draw that read no reserve. A draw made before this was recorded carries none.
    */
-  claimRun?: DrawClaimRun | null;
+  claimRun?: BuildChain | null;
   excluded: DrawExcluded;
   /**
    * The final test's source, for a draw made under a registered read of the reserve. Null for a
@@ -485,7 +519,7 @@ function finalTestReferenceAt(value: unknown, path: string): string | null {
  * One that is there and names no reply id, or no sha256 of each of the build's three files, is
  * the file being no draw: a stage after it reads the claim run's chain from it.
  */
-function claimRunAt(value: unknown, path: string): DrawClaimRun | null {
+function claimRunAt(value: unknown, path: string): BuildChain | null {
   if (value === undefined || value === null) return null;
   const record = recordOf(value);
   const id = stringOf(record?.id);
@@ -560,6 +594,17 @@ export function drawFactsOf(text: string, path: string): DrawFacts {
   const applied = record.neverDecideApplied;
   if (applied !== undefined && typeof applied !== "boolean") {
     throw new CorpusError(`${path} holds a neverDecideApplied that is no boolean`);
+  }
+  // One fact written in three fields: a draw that says it applied the rule records the rule and
+  // the roots, and one that says it applied none records neither.
+  const ruled = [record.rule, record.backlogLegionRoots].map(
+    (one) => one !== null && one !== undefined
+  );
+  if (applied !== undefined && ruled.some((one) => one !== applied)) {
+    throw new CorpusError(
+      `${path} holds a neverDecideApplied of ${applied} beside ` +
+        `${ruled[0] ? "a" : "no"} rule and ${ruled[1] ? "" : "no "}backlog roots`
+    );
   }
   if (applied !== undefined) facts.neverDecideApplied = applied;
   const claimRun = claimRunAt(record.claimRun, path);
