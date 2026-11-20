@@ -214,11 +214,13 @@ func letterWord(length int) string {
 // issue, and a pass and a fail would carry them alike. A reading over the budget is cut at a
 // word boundary and marked, a short one prints whole, and a result with no reading says so. A
 // word that ends at the budget's last character is kept, and a reading of exactly the budget
-// prints whole. A first word longer than the budget is never cut in two, at any length: the line
-// keeps it whole, with all that leads into it, such as a parenthesis, a quote, a slash, a full
-// stop or a hyphen, however long that lead-in is, marked as cut only where more of the reading
-// follows it; a reading with no word of letters or numbers is cut inside the budget. Text in a
-// script written without spaces between its words is cut inside the budget at a UAX #29
+// prints whole. The first word of letters or numbers is never cut in two, at any length: where it
+// runs past the budget, the line keeps it whole with all that leads into it, such as a
+// parenthesis, a quote, a slash, a full stop or a hyphen, however long that lead-in is, marked as
+// cut only where more of the reading follows it. A reading with no letter or number is cut after
+// the last word that ends inside the budget, or, where none does, after its first word of any
+// kind, and one that holds no word at all, such as halfwidth sound marks alone, prints whole. Text
+// in a script written without spaces between its words is cut inside the budget at a UAX #29
 // boundary. A public address GitHub links with no scheme (`www.`) is one word, kept whole or left
 // out, and where it ends what the line keeps, a blank stands before the `…`, so the link does not
 // take the `…` into its address. Each row's words are plain, so #4517's filter keeps them and the
@@ -280,6 +282,16 @@ func TestThePullRequestLineCarriesTheReading(t *testing.T) {
 		lineRow{name: "spaced hyphens past the budget lead into the first word after them", observed: spaced + "Then the run passed.", want: spaced + "Then…"},
 		lineRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
 		lineRow{name: "spaced hyphens past the budget with no word of letters after them are cut inside the budget", observed: strings.Repeat("- ", 60), want: strings.Repeat("- ", checkResultReadingRunes/2-1) + "-…"},
+	)
+	// Halfwidth sound marks (U+FF9E, U+FF9F) are letters to the filter and marks to UAX #29, so a
+	// reading of them alone holds no word: the cut ends only after a word, so it writes them whole,
+	// with no `…`, since it leaves nothing out. Before a word of any kind they lead into it.
+	marks := strings.Repeat("\uff9e", checkResultReadingRunes)
+	rows = append(rows,
+		lineRow{name: "a reading of 81 halfwidth sound marks holds no word and prints whole", observed: marks + "\uff9e", want: marks + "\uff9e"},
+		lineRow{name: "a reading of 1,000 halfwidth sound marks holds no word and prints whole", observed: strings.Repeat("\uff9e", 1000), want: strings.Repeat("\uff9e", 1000)},
+		lineRow{name: "spaced halfwidth sound marks past the budget hold no word and print whole", observed: strings.Repeat("\uff9e ", 60), want: strings.TrimSuffix(strings.Repeat("\uff9e ", 60), " ")},
+		lineRow{name: "80 halfwidth sound marks lead into the first word of any kind after them", observed: marks + " . . . .", want: marks + " .…"},
 	)
 	for _, length := range []int{81, 110, 161, 1000} {
 		word := letterWord(length)
@@ -3214,8 +3226,9 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 // a reading (TestThePullRequestLineCarriesTheReading), after the same filter: words of exactly
 // the budget print whole, and a first word longer than the budget is kept whole, with all that
 // leads into it, however long that lead-in is, marked as cut where more words follow it and
-// printed whole where it is all the check says. The spaced lead-in is of slashes, since a check's
-// words are markdown and a line that opens with a hyphen and a blank is a list item.
+// printed whole where it is all the check says; halfwidth sound marks alone hold no word and print
+// whole. The spaced lead-in is of slashes, since a check's words are markdown and a line that
+// opens with a hyphen and a blank is a list item.
 func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issue := issueInRepository(t, handler, "RESCW", "acme/widgets", "Check words cut at a word")
@@ -3245,6 +3258,15 @@ func TestTheCILineCutsTheCheckWordsAtAWord(t *testing.T) {
 		ciRow{name: "a rule of 100 hyphens leads into the first word after it", words: rule + " Then the run passed.", want: rule + " Then…"},
 		ciRow{name: "spaced slashes past the budget lead into the first word after them", words: spaced + "Then the run passed.", want: spaced + "Then…"},
 		ciRow{name: "slashes past the budget with no word of letters after them are cut inside the budget", words: strings.Repeat("/", 100), want: strings.Repeat("/", checkResultReadingRunes) + "…"},
+	)
+	// Halfwidth sound marks alone hold no word, so the line writes them whole, as the recorded line
+	// does (TestThePullRequestLineCarriesTheReading).
+	marks := strings.Repeat("\uff9e", checkResultReadingRunes)
+	rows = append(rows,
+		ciRow{name: "81 halfwidth sound marks hold no word and print whole", words: marks + "\uff9e", want: marks + "\uff9e"},
+		ciRow{name: "1,000 halfwidth sound marks hold no word and print whole", words: strings.Repeat("\uff9e", 1000), want: strings.Repeat("\uff9e", 1000)},
+		ciRow{name: "spaced halfwidth sound marks past the budget hold no word and print whole", words: strings.Repeat("\uff9e ", 60), want: strings.TrimSuffix(strings.Repeat("\uff9e ", 60), " ")},
+		ciRow{name: "80 halfwidth sound marks lead into the first word of any kind after them", words: marks + " . . . .", want: marks + " .…"},
 	)
 	var document strings.Builder
 	for index, row := range rows {

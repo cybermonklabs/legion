@@ -44,22 +44,25 @@ func HeadRunes(value string, limit int) string {
 // that word whole and never ends with the lead-in alone, even where the lead-in itself runs past
 // the limit. A value with no word of letters or numbers is cut after the last word that ends
 // inside the limit; where none does, its first word, of any kind, such as a chain of pictographs
-// joined by zero-width joiners, is kept whole. A later word of letters or numbers that runs past
-// the limit is left out with the opening punctuation (openingPunctuation) before it from the start
-// of its run with no white space, so the answer does not end with a backtick or a bracket that
-// opens a word it leaves out. After a word of letters or numbers, other punctuation, such as a
-// slash, is a word boundary rather than a lead-in, and any word that runs past the limit is left
-// out.
+// joined by zero-width joiners, is kept whole with all that leads into it; and a value that holds
+// no word at all, such as white space or marks alone, has no end of a word to cut at, and is
+// returned whole. A later word of letters or numbers that runs past the limit is left out with the
+// opening punctuation (openingPunctuation) before it from the start of its run with no white
+// space, so the answer does not end with a backtick or a bracket that opens a word it leaves out.
+// After a word of letters or numbers, other punctuation, such as a slash, is a word boundary
+// rather than a lead-in, and any word that runs past the limit is left out.
 //
 // The answer is a prefix of value. It is a cut where it leaves out a character that is no white
 // space, a mark alone among them (leftOut), and no cut where it leaves out white space alone; a
-// value at or under the limit is returned unchanged and uncut. A caller that marks a cut (an
-// ellipsis) reads the second answer rather than comparing lengths, which white space the cut
-// removed would make wrong. Once a word of letters or numbers has ended inside the limit, the walk
-// stops at the first word that ends past it; before that, it stops at the first word of letters or
-// numbers. So a long value is read only to the end of the run with no white space that holds that
-// word, but a value whose lead-in runs past the limit is read on to its first word of letters or
-// numbers, or to its end where it holds none.
+// value at or under the limit is returned unchanged and uncut, and so is a value with no word. A
+// caller that marks a cut (an ellipsis) reads the second answer rather than comparing lengths,
+// which white space the cut removed would make wrong. Once a word of letters or numbers has ended
+// inside the limit, the walk stops at the first word that ends past it; before that, it stops at
+// the first word of letters or numbers. So a long value is read only to the end of the run with no
+// white space that holds that word, but a value whose lead-in runs past the limit is read on to its
+// first word of letters or numbers, or to its end where it holds none. The line's caller
+// (keepJudged in the api package) hands it no more than the words it judged, so this read is never
+// longer than the judging before it.
 func HeadWords(value string, limit int) (string, bool) {
 	// end is the byte offset after the last word that ends inside the limit, 0 while none has;
 	// where none has, a word before any letter word that runs past the limit sets it to that word's
@@ -205,8 +208,31 @@ func leftOut(rest string) bool {
 // (classOf), so whether a word of value can be the first word HeadWords keeps whole with all that
 // leads into it.
 func HoldsLetter(value string) bool {
+	return IndexLetter(value) >= 0
+}
+
+// IndexLetter is the byte offset in value of its first letter or number by the one rule of what a
+// word is (classOf), or -1 where it holds none. classOf reads a rune as a letter or a number only
+// where unicode.IsLetter or unicode.IsNumber does, so IndexLetter looks up the word-break value of
+// those runes alone, and reads any other rune at the cost of those two tests: a caller that reads a
+// long text only for its first letter pays little for each mark it passes.
+func IndexLetter(value string) int {
 	return strings.IndexFunc(value, func(r rune) bool {
+		if !unicode.IsLetter(r) && !unicode.IsNumber(r) {
+			return false
+		}
 		wb, _ := wordBreakOf(r)
 		return classOf(r, wb) == classLetter
+	})
+}
+
+// HoldsWord reports whether value holds a word of any kind by the one rule of what a word is
+// (classOf): a rune that is neither white space nor a mark, a joiner or a format character, such as
+// a letter, a digit, punctuation, a symbol or an emoji. A value of halfwidth sound marks alone
+// (U+FF9E, U+FF9F), which are letters to unicode.IsLetter and marks to UAX #29, holds none.
+func HoldsWord(value string) bool {
+	return strings.IndexFunc(value, func(r rune) bool {
+		wb, _ := wordBreakOf(r)
+		return classOf(r, wb) > classJoiner
 	}) >= 0
 }

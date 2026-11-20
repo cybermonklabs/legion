@@ -68,10 +68,11 @@ func TestHeadWordsEndsAWordAtWhiteSpace(t *testing.T) {
 // it whole with what leads into it, as a test's name in backticks or a path such as `./TestName`
 // is written, and never the lead-in alone, even where the lead-in itself runs past the limit, as a
 // rule of hyphens before a sentence does. A value with no word of letters or numbers is cut at the
-// last end of a word inside the limit. A later word that runs past the limit is left out with the
-// opening marks before it, so the answer never ends with a backtick or a bracket that opens a word
-// it left out. After a word of letters or numbers, a separator, such as a slash, stays a word
-// boundary.
+// last end of a word inside the limit, or after its first word of any kind where no word ends
+// inside it, and a value with no word at all is returned whole. A later word that runs past the
+// limit is left out with the opening marks before it, so the answer never ends with a backtick or
+// a bracket that opens a word it left out. After a word of letters or numbers, a separator, such
+// as a slash, stays a word boundary.
 func TestHeadWordsKeepsAnOpeningMarkWithTheWordItLeadsInto(t *testing.T) {
 	name := "TestA" + strings.Repeat("LongName", 12) // 101 characters, a test's name
 	var rows []headWordsRow
@@ -252,6 +253,106 @@ func TestEndsInURLReadsTheLastRunWithNoWhiteSpace(t *testing.T) {
 	} {
 		if got := EndsInURL(row.value); got != row.want {
 			t.Errorf("EndsInURL(%q) = %v, want %v", row.value, got, row.want)
+		}
+	}
+}
+
+// HoldsLetter reads a letter or a number by the one rule of what a word is (classOf), so it
+// agrees with HeadWords on which word can be the first word: a letter of any script, a digit or
+// another number, alone or with the marks after it, and never a mark, a joiner or a format
+// character alone. The halfwidth Katakana sound marks U+FF9E and U+FF9F are letters to
+// unicode.IsLetter and Extend marks to UAX #29, so they part the two rules: a word of them alone
+// holds no letter. Each row is also read by HeadWords after a lead-in of 81 slashes, which keeps
+// the value as the first word, and leaves out the word "tail" after it, exactly where the row
+// holds a letter, so the wants are HeadWords' own.
+func TestHoldsLetterReadsALetterAsClassOfDoes(t *testing.T) {
+	lead := strings.Repeat("/", 81)
+	for _, row := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"a Latin letter", "a", true},
+		{"a Latin letter with a combining mark after it", "e\u0301", true},
+		{"a digit", "1", true},
+		{"a letter number, the Roman numeral twelve", "\u216b", true},
+		{"another number, a superscript two", "\u00b2", true},
+		{"an ideograph", "日", true},
+		{"a Katakana letter", "テ", true},
+		{"a halfwidth Katakana letter with its voiced sound mark", "\uff76\uff9e", true},
+		{"a Thai letter", "ก", true},
+		{"a halfwidth voiced sound mark, then a letter", "\uff9ea", true},
+		{"the halfwidth voiced sound mark U+FF9E alone", "\uff9e", false},
+		{"the halfwidth semi-voiced sound mark U+FF9F alone", "\uff9f", false},
+		{"a run of joined halfwidth sound marks", "\uff9e\uff9f\uff9e", false},
+		{"a combining mark alone", "\u0301", false},
+		{"joined combining marks", "\u0301\u0302", false},
+		{"a zero-width joiner", "\u200d", false},
+		{"a soft hyphen, a format character", "\u00ad", false},
+		{"a slash", "/", false},
+		{"a rule of hyphens", "---", false},
+		{"an underscore", "_", false},
+		{"an emoji", "🛑", false},
+		{"white space", " ", false},
+		{"nothing", "", false},
+	} {
+		if got := HoldsLetter(row.value); got != row.want {
+			t.Errorf("%s: HoldsLetter(%q) = %v, want %v", row.name, row.value, got, row.want)
+		}
+		if got, _ := HeadWords(lead+row.value+" tail", 80); strings.Contains(got, "tail") == row.want {
+			t.Errorf("%s: HeadWords(81 slashes + %q + \" tail\", 80) = %q: the row's want is not HeadWords' rule", row.name, row.value, got)
+		}
+	}
+}
+
+// IndexLetter is where the first letter or number of a value stands, by the same rule as
+// HoldsLetter, past every mark, joiner and halfwidth sound mark before it.
+func TestIndexLetterFindsTheFirstLetterOrNumber(t *testing.T) {
+	for _, row := range []struct {
+		value string
+		want  int
+	}{
+		{"abc", 0},
+		{"--a", 2},
+		{"- - テ", 4},
+		{"\uff9e\uff9fa", 6},
+		{"\u0301e", 2},
+		{"/ \u216b", 2},
+		{"\uff9e\uff9f", -1},
+		{"- / ...", -1},
+		{"", -1},
+	} {
+		if got := IndexLetter(row.value); got != row.want {
+			t.Errorf("IndexLetter(%q) = %d, want %d", row.value, got, row.want)
+		}
+	}
+}
+
+// HoldsWord reads a word of any kind by the one rule of what a word is (classOf): a letter, a
+// number, punctuation, a symbol or an emoji, with or without marks after it, and never white
+// space, a mark, a joiner or a format character alone, nor a halfwidth sound mark, which UAX #29
+// reads as a mark though unicode.IsLetter reads it as a letter.
+func TestHoldsWordReadsAWordOfAnyKindAsClassOfDoes(t *testing.T) {
+	for _, row := range []struct {
+		name, value string
+		want        bool
+	}{
+		{"a letter", "a", true},
+		{"a digit", "1", true},
+		{"a hyphen", "-", true},
+		{"a slash with a halfwidth sound mark after it", "/\uff9e", true},
+		{"an underscore", "_", true},
+		{"an emoji", "🛑", true},
+		{"the halfwidth voiced sound mark U+FF9E alone", "\uff9e", false},
+		{"the halfwidth semi-voiced sound mark U+FF9F alone", "\uff9f", false},
+		{"joined halfwidth sound marks", "\uff9e\uff9f", false},
+		{"a combining mark alone", "\u0301", false},
+		{"a zero-width joiner", "\u200d", false},
+		{"a word joiner, a format character", "\u2060", false},
+		{"white space", " \t", false},
+		{"nothing", "", false},
+	} {
+		if got := HoldsWord(row.value); got != row.want {
+			t.Errorf("%s: HoldsWord(%q) = %v, want %v", row.name, row.value, got, row.want)
 		}
 	}
 }

@@ -1162,28 +1162,33 @@ func (w lineWords) keep(text string) string {
 	return w.keepThrough(text, math.MaxInt)
 }
 
-// keepThrough is keep stopped once it has kept one more word after what it kept grew longer
-// than budget runes and held a word with a letter or a number (text.HoldsLetter). cut reads no
-// more of a text than that: text.HeadWords keeps a first word longer than the budget whole, with
-// all that leads into it however far that runs, and then asks only whether any character follows
-// it, and every other cut ends inside the budget, so a second word past that point can change no
-// line, and judging it would cost work that grows with the text and changes nothing. Stopping
-// without that one word would print a long first word with no `…` although more of the reading
-// follows it, and stopping before a word with a letter or a number would print a long lead-in of
-// marks without the first word it leads into. So a text that holds no such word is judged to its
-// end.
+// keepThrough is keep stopped once no later word of value can change what cut makes of what it
+// kept, judging no word that cannot (keepJudged).
 func (w lineWords) keepThrough(value string, budget int) string {
+	return keepJudged(value, budget, w.drops)
+}
+
+// keepJudged is keepThrough with its judge, drops, given apart, so a test can count what it
+// judges. cut writes text.HeadWords' cut of the kept text at budget runes, and once the kept text
+// is longer than that, a later word can change what cut writes in two ways alone. A first word
+// with a letter or a number (text.HoldsLetter) that runs past the budget is kept whole with all
+// that leads into it, and whether a character follows it decides its `…`: once such a word is
+// kept, one more kept word is all cut reads. Until then, a later kept word with a letter or a
+// number is that first word, and every word before it leads into it. Where none comes, the cut
+// falls after the last word that ends inside the budget, or after the first word of any kind
+// (text.HoldsWord) where none does, and one kept word after that decides its `…`. So once the kept
+// text is longer than the budget, holds a word and has one more kept word after that, only a later
+// kept word with a letter or a number can change the line: keepJudged reads the rest only for its
+// next letter or number (text.IndexLetter) and judges no word before it. It then judges the word
+// that holds it, and where drops keeps that word, judges and keeps every word it passed over,
+// which lead into it. Stopping without the one more word would print a long first word with no
+// `…` although more of the reading follows it. A text of marks alone holds no word, and cut writes
+// it whole, so it is judged to its end; and a run with no white space is judged whole, as every
+// word is.
+func keepJudged(value string, budget int, drops func(string) bool) string {
 	var kept strings.Builder
-	runes, lettered, followed := 0, false, false
-	for word := range strings.FieldsSeq(value) {
-		if followed {
-			break
-		}
-		if w.drops(word) {
-			continue
-		}
-		followed = runes > budget && lettered
-		lettered = lettered || text.HoldsLetter(word)
+	runes := 0
+	add := func(word string) {
 		if kept.Len() > 0 {
 			kept.WriteByte(' ')
 			runes++
@@ -1191,7 +1196,79 @@ func (w lineWords) keepThrough(value string, budget int) string {
 		kept.WriteString(word)
 		runes += utf8.RuneCountInString(word)
 	}
+	// lettered and worded are whether kept holds a word with a letter or a number, and a word of
+	// any kind; settled is whether a word was kept after kept grew longer than budget runes and
+	// held a word; passed is the byte offset of the first word read only for a letter, -1 while
+	// there is none.
+	lettered, worded, settled, passed := false, false, false, -1
+	for at := 0; at < len(value); {
+		if settled && !lettered {
+			next := text.IndexLetter(value[at:])
+			if next < 0 {
+				break
+			}
+			if passed < 0 {
+				passed = at
+			}
+			at += runStart(value[at : at+next])
+		}
+		start, end := nextWord(value, at)
+		if start < 0 {
+			break
+		}
+		word := value[start:end]
+		at = end
+		if drops(word) {
+			continue
+		}
+		if passed >= 0 {
+			for lead := range strings.FieldsSeq(value[passed:start]) {
+				if !drops(lead) {
+					add(lead)
+				}
+			}
+			passed = -1
+		}
+		over := runes > budget
+		settled = settled || over && worded
+		stop := over && lettered
+		// A word with a letter or a number is a word of any kind, and once one is kept both are
+		// known; a word that holds no word holds no letter either, so a text of marks alone, judged
+		// to its end, asks each word one question.
+		if !lettered && text.HoldsWord(word) {
+			worded, lettered = true, text.HoldsLetter(word)
+		}
+		add(word)
+		if stop {
+			break
+		}
+	}
 	return kept.String()
+}
+
+// nextWord is the byte offsets of the first run with no white space of value at or after at, as
+// strings.Fields parts value; start is -1 where none is left.
+func nextWord(value string, at int) (start, end int) {
+	start = strings.IndexFunc(value[at:], func(r rune) bool { return !unicode.IsSpace(r) })
+	if start < 0 {
+		return -1, -1
+	}
+	start += at
+	if end = strings.IndexFunc(value[start:], unicode.IsSpace); end < 0 {
+		return start, len(value)
+	}
+	return start, start + end
+}
+
+// runStart is the byte offset in before just past its last white space, 0 where it holds none: the
+// start of the run with no white space that goes on after before.
+func runStart(before string) int {
+	at := strings.LastIndexFunc(before, unicode.IsSpace)
+	if at < 0 {
+		return 0
+	}
+	_, size := utf8.DecodeRuneInString(before[at:])
+	return at + size
 }
 
 // blockContent is a typed block's own content as markdown: what stands between its opening line
@@ -1229,11 +1306,11 @@ func blockContent(node *pmdoc.Node) string {
 // every reader of the pull request can read on the issue and which a pass and a fail would
 // carry alike: the line's whole purpose is to say what was seen. What words keeps of a reading
 // is cut, when it is longer than the budget, and marked with an ellipsis, so a reader can tell a
-// cut line from a short one; the cut falls at a word boundary, and a first word longer than the
-// budget is kept whole (cut). A result with no reading says so, since a line that simply stopped
-// after the role would read as a reading nobody recorded, and a reading of which nothing is left
-// after the cut says that, whether words kept nothing of it or the cut's privacy check dropped
-// what it kept.
+// cut line from a short one; the cut falls at a word boundary, and the first word, with all that
+// leads into it, is kept whole where it runs past the budget (cut). A result with no reading says
+// so, since a line that simply stopped after the role would read as a reading nobody recorded, and
+// a reading of which nothing is left after the cut says that, whether words kept nothing of it or
+// the cut's privacy check dropped what it kept.
 func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWords) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
 		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
@@ -1249,16 +1326,21 @@ func checkResultLine(check resolvedCheck, result model.CheckResult, words lineWo
 
 // cut is kept, the words w kept of a text, cut at a word boundary to checkResultReadingRunes with
 // an ellipsis where it was cut, so a reader can tell a cut line from a short one
-// (text.HeadWords): a first word longer than the budget is kept whole, with all that leads into
-// it however far that runs, and every other cut ends inside the budget. The budget's raw first
-// runes (text.HeadRunes) are a privacy check on a word cut writes in part, and are never written:
-// a cut can end a word where the raw prefix runs on into an issue key or a private host that
-// neither the whole word nor the written part holds, so of a word w drops as the raw prefix holds
-// it, cut writes nothing. Without that check, `////…ACME-12xyz` would leave `ACME-` in the public
-// line, although the raw prefix holds the key ACME-12. A word cut writes whole is judged whole, as
-// every other word the line writes is, so a first word whose raw prefix alone ends in a private
-// host is written. Where the last word written holds a URL GitHub links (text.EndsInURL), a blank
-// stands before the ellipsis, so the link does not take the ellipsis into its address. cut is
+// (text.HeadWords): the cut falls after the last word that ends inside the budget, but a first
+// word of letters or numbers that runs past the budget is kept whole with all that leads into it,
+// however far that runs; a text with no letter or number in which no word ends inside the budget
+// keeps its first word of any kind whole, and a text with no word at all, such as halfwidth sound
+// marks alone, is not cut. The budget's raw first runes (text.HeadRunes) are a privacy check on a
+// word where they run on past what cut writes of it, and are never written: a cut can end a word
+// where the raw prefix runs on into an issue key or a private host that neither the whole word nor
+// the written part holds, so of a word w drops as the raw prefix holds it, cut writes nothing.
+// Without that check, `////…ACME-12xyz` would leave `ACME-` in the public line, although the raw
+// prefix holds the key ACME-12. Where the raw prefix ends inside what cut writes of a word, it is
+// a part of the text the line writes, which w judges as it judges every other word the line
+// writes: a first word whose raw prefix alone ends in a private host is written, whether cut
+// writes it whole or up to a mark that goes on with no blank, such as the slash of
+// `….internalzzz/rest`. Where the last word written holds a URL GitHub links (text.EndsInURL), a
+// blank stands before the ellipsis, so the link does not take the ellipsis into its address. cut is
 // empty when nothing is left, when kept is or when w keeps nothing of the cut, so a caller decides
 // that nothing is left and never prints a bare ellipsis.
 func (w lineWords) cut(kept string) string {
@@ -1267,14 +1349,15 @@ func (w lineWords) cut(kept string) string {
 		return head
 	}
 	// kept is words joined by single blanks, so a word of head and the word of raw at the same
-	// place are prefixes of one word of kept. Only head's last word can be a part of its word of
-	// kept: it is where kept goes on after head with no blank.
+	// place are prefixes of one word of kept, and raw is kept's own first bytes: the filter drops a
+	// word with a byte that starts no rune, so kept is valid UTF-8 and HeadRunes writes no U+FFFD.
+	// A word of raw longer than the word of head runs on past what the line writes of that word of
+	// kept, which only head's last word can do, where kept goes on after head with no blank.
 	raw := strings.Fields(text.HeadRunes(kept, checkResultReadingRunes))
 	words := strings.Fields(head)
-	inPart := !strings.HasPrefix(kept[len(head):], " ")
 	var line strings.Builder
 	for index, word := range words {
-		if w.drops(word) || inPart && index == len(words)-1 && index < len(raw) && w.drops(raw[index]) {
+		if w.drops(word) || index < len(raw) && len(raw[index]) > len(word) && w.drops(raw[index]) {
 			continue
 		}
 		if line.Len() > 0 {
