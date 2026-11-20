@@ -251,7 +251,8 @@ func TestAWarmCommentListReadRunsOnlyItsValidatorsStatement(t *testing.T) {
 // sees, never from its person: the comments, their reply blocks and their mentions and deliveries
 // are read as everyReader. So alice and dana, open members who see PUB alone once PRIV is
 // private, read one answer, and the second read is the kept one. bob, who sees PRIV alone, is
-// filed apart and builds his own.
+// filed apart and builds his own. So is carol, who sees PUB and PRIV, on the very list alice and
+// dana keep: only the viewer part of the key (commentListViewOf) tells her read from theirs.
 func TestTwoReadersWhoSeeTheSameShareAKeptCommentList(t *testing.T) {
 	seed := seedPrivateProject(t)
 	seedPeople(t, seed.database, hiddenPerson)
@@ -277,6 +278,13 @@ func TestTwoReadersWhoSeeTheSameShareAKeptCommentList(t *testing.T) {
 	}
 	if kept := seed.server.listAnswers.answered() - answered; kept != 0 {
 		t.Errorf("bob's first read of PRIV's comments was answered from the cache %d times, want none", kept)
+	}
+	answered = seed.server.listAnswers.answered()
+	if carols := seed.request(t, callerCarol, http.MethodGet, target, nil); carols.Code != http.StatusOK {
+		t.Fatalf("carol reads %s: %d %s", target, carols.Code, carols.Body.String())
+	}
+	if kept := seed.server.listAnswers.answered() - answered; kept != 0 {
+		t.Errorf("carol's read of %s, which alice and dana keep, was answered from the cache %d times, want none: she sees PRIV too", target, kept)
 	}
 }
 

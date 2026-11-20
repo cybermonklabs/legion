@@ -267,18 +267,26 @@ test("the mint form names no project until the reader picks some, and sends the 
 });
 
 // A row's picker reads the projects its token names and writes the whole list back with the
-// scopes the token holds, since the edit names both. A project the token names that the reader no
-// longer sees is still offered, ticked, so it can be taken off; and taking every project off sends
-// the empty list, which makes the token one of the public projects only.
+// scopes the token holds, since the edit names both. A token that also names a project its reader
+// no longer sees arrives cut to the projects the reader sees and marked projects_hidden, as the
+// list answers it (`GET /api/v1/me/agent-tokens`): the hidden project is never offered, the row
+// says a change drops it, and the edit sends the list the reader sees, whose answer hides nothing.
+// Taking every project off sends the empty list, which makes the token one of the public projects
+// only.
 test("a token's row edits the projects it names, sent with the scopes it holds", async () => {
   const user = userEvent.setup();
   listProjects.mockResolvedValue([project("CORE", "Core"), project("PRIV", "Private work")]);
-  const naming: AgentToken = { ...token, projects: ["GONE", "PRIV"] };
+  // As the list answers a token listing GONE and PRIV to a reader who no longer sees GONE.
+  const naming: AgentToken = { ...token, projects: ["PRIV"], projects_hidden: true };
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([naming]);
   const updateAgentToken = spyOn(api, "updateAgentToken").mockImplementation(
     async (id: string, input: { projects?: string[] | null; scopes: DispatchScope[] }) => {
-      const { projects: named, ...rest } = naming;
-      const projects = [...(input.projects ?? named ?? [])].sort();
+      if (input.projects == null) {
+        return { ...naming, id, scopes: input.scopes };
+      }
+      // The edit names only projects the reader sees, so its answer hides none.
+      const { projects: _listed, projects_hidden: _hidden, ...rest } = naming;
+      const projects = [...input.projects].sort();
       return projects.length === 0 ? { ...rest, id } : { ...rest, id, projects };
     }
   );
@@ -292,10 +300,13 @@ test("a token's row edits the projects it names, sent with the scopes it holds",
     );
 
     await screen.findByRole("cell", { name: "dsp_AbCdEf12…" });
-    expect(projectsPicker("architect").textContent).toBe("GONE, PRIV");
+    expect(projectsPicker("architect").textContent).toBe("PRIV, and projects you cannot see");
+    expect(screen.getByText("A change here drops the projects you cannot see.")).toBeDefined();
     await user.click(projectsPicker("architect"));
-    expect(screen.getByRole("option", { name: "GONE" }).getAttribute("aria-selected")).toBe("true");
-    await user.click(screen.getByRole("option", { name: "GONE" }));
+    expect(screen.queryByRole("option", { name: "GONE" })).toBeNull();
+    expect(
+      screen.getByRole("option", { name: "PRIV, Private work" }).getAttribute("aria-selected")
+    ).toBe("true");
     await user.click(screen.getByRole("option", { name: "CORE, Core" }));
     // Nothing is written while the picker is open.
     expect(updateAgentToken).not.toHaveBeenCalled();
@@ -308,6 +319,7 @@ test("a token's row edits the projects it names, sent with the scopes it holds",
       )
     );
     await waitFor(() => expect(projectsPicker("architect").textContent).toBe("CORE, PRIV"));
+    expect(screen.queryByText("A change here drops the projects you cannot see.")).toBeNull();
 
     // A picker closed with the list it opened with writes nothing.
     await user.click(projectsPicker("architect"));

@@ -589,42 +589,56 @@ func TestAStepOfAnotherIssueIsRefused(t *testing.T) {
 }
 
 // A credential scoped to one project writes the records of that project's issues and no other's,
-// though it proves the session of that project's daemon. An issue of a project the credential does
-// not list is one it cannot see, so its write is answered as a write of a key no issue holds (404
+// though it proves the session of that project's daemon. While no project is private a write to
+// another project's issue is refused 403 PROJECT_SCOPE naming both projects, as before projects
+// could be private (R9). Once a project is private, an issue of a project the credential does not
+// list is one it cannot see, so its write is answered as a write of a key no issue holds (404
 // ISSUE_NOT_FOUND), naming its own daemon's session or the other project's: the second is refused
 // for its body first (403 ACTOR_SESSION_MISMATCH), as it is for a key no issue holds.
 func TestAProjectCredentialWritesOnlyItsProject(t *testing.T) {
-	rig := newBrokerTokenRig(t)
-	caller := newBrokerCaller(t)
-	const token = "a-daemon-token-of-one-project"
-	answer := liveNamedToken(caller.jkt)
-	answer.Session = legionDaemonSessionPrefix + brokerTestProject
-	rig.broker.Says(token, answer)
-	issueOf := func(project string) string {
-		if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
-			t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
-		}
-		issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "Steps of " + project})
-		if issue.Code != http.StatusCreated {
-			t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
-		}
-		return decodeBody[struct {
-			Key string `json:"key"`
-		}](t, issue).Key
-	}
-	own, other := issueOf(brokerTestProject), issueOf("OTH")
+	for _, private := range []bool{false, true} {
+		t.Run(map[bool]string{false: "while no project is private", true: "once a project is private"}[private], func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			caller := newBrokerCaller(t)
+			const token = "a-daemon-token-of-one-project"
+			answer := liveNamedToken(caller.jkt)
+			answer.Session = legionDaemonSessionPrefix + brokerTestProject
+			rig.broker.Says(token, answer)
+			issueOf := func(project string) string {
+				if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{"key": project, "name": project}); created.Code != http.StatusCreated {
+					t.Fatalf("create project %s: status=%d body=%s", project, created.Code, created.Body.String())
+				}
+				issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "Steps of " + project})
+				if issue.Code != http.StatusCreated {
+					t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
+				}
+				return decodeBody[struct {
+					Key string `json:"key"`
+				}](t, issue).Key
+			}
+			own, other := issueOf(brokerTestProject), issueOf("OTH")
 
-	for _, missing := range []string{other, "OTH-999"} {
-		refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
-			implementerStart(daemonSessionOf(brokerTestProject))))
-		expectRefusal(t, "a write to "+missing+" as its own daemon", refused, http.StatusNotFound, "ISSUE_NOT_FOUND", missing)
-		mismatched := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
-			implementerStart(daemonSessionOf("OTH"))))
-		expectRefusal(t, "a write to "+missing+" as OTH's daemon", mismatched, http.StatusForbidden, "ACTOR_SESSION_MISMATCH")
-	}
-	answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
-		implementerStart(daemonSessionOf(brokerTestProject))))
-	if answered.Code != http.StatusOK {
-		t.Fatalf("the same write to %s: status=%d body=%s, want 200", own, answered.Code, answered.Body.String())
+			if !private {
+				refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+other+"/steps/"+uuid.NewString(), token,
+					implementerStart(daemonSessionOf("OTH"))))
+				expectRefusal(t, "a write to "+other, refused, http.StatusForbidden, codeProjectScope, brokerTestProject, "OTH")
+			} else {
+				issueOf("HIDE")
+				makePrivate(t, rig.database, "HIDE")
+				for _, missing := range []string{other, "OTH-999"} {
+					refused := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
+						implementerStart(daemonSessionOf(brokerTestProject))))
+					expectRefusal(t, "a write to "+missing+" as its own daemon", refused, http.StatusNotFound, "ISSUE_NOT_FOUND", missing)
+					mismatched := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+missing+"/steps/"+uuid.NewString(), token,
+						implementerStart(daemonSessionOf("OTH"))))
+					expectRefusal(t, "a write to "+missing+" as OTH's daemon", mismatched, http.StatusForbidden, "ACTOR_SESSION_MISMATCH")
+				}
+			}
+			answered := rig.serve(caller.presenting(t, http.MethodPut, "/api/v1/issues/"+own+"/steps/"+uuid.NewString(), token,
+				implementerStart(daemonSessionOf(brokerTestProject))))
+			if answered.Code != http.StatusOK {
+				t.Fatalf("the same write to %s: status=%d body=%s, want 200", own, answered.Code, answered.Body.String())
+			}
+		})
 	}
 }

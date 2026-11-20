@@ -67,9 +67,9 @@ func seedFixedCost(t *testing.T, options testServerOptions) fixedCostSeed {
 	// Followers: an ask session-priv follows, and asks nobody follows.
 	followed, unfollowed, warmFollowers := ask(issue("Followed", nil)), ask(issue("Unfollowed", nil)), ask(issue("Unfollowed too", nil))
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/asks/"+followed+"/followers/"+sessionOfPrivate, map[string]any{}, http.StatusNoContent)
-	// Ask persons: an ask waiting on bob, whom a token that lists PUB does not see, and asks
-	// waiting on nobody.
-	waitingOnBob, waitingOnNobody, warmWaiting := ask(issue("Waits on bob", seedBob)), ask(issue("Waits on nobody", nil)), ask(issue("Waits on nobody too", nil))
+	// Ask persons: an ask waiting on bob, whom a token that lists PUB does not see, and asks of
+	// unassigned issues, which wait on the project's default assignee.
+	waitingOnBob, waitingOnDefault, warmWaiting := ask(issue("Waits on bob", seedBob)), ask(issue("Unassigned", nil)), ask(issue("Unassigned too", nil))
 	// Comment sessions: a comment mentioning session-priv, and plain comments.
 	mentionsHidden, mentionsNone, mentionsWarm := issue("Mentions session-priv", nil), issue("Mentions nobody", nil), issue("Mentions nobody too", nil)
 	comment(mentionsHidden, []map[string]string{{"target": "session:" + sessionOfPrivate}})
@@ -134,7 +134,7 @@ func seedFixedCost(t *testing.T, options testServerOptions) fixedCostSeed {
 
 	seed.pairs = []fixedCostPair{
 		{"followers", callerAlice, "/api/v1/asks/" + warmFollowers + "/followers", "/api/v1/asks/" + followed + "/followers", "/api/v1/asks/" + unfollowed + "/followers"},
-		{"ask persons", callerAlicePubToken, "/api/v1/asks/" + warmWaiting, "/api/v1/asks/" + waitingOnBob, "/api/v1/asks/" + waitingOnNobody},
+		{"ask persons", callerAlicePubToken, "/api/v1/asks/" + warmWaiting, "/api/v1/asks/" + waitingOnBob, "/api/v1/asks/" + waitingOnDefault},
 		{"comment sessions", callerAlice, "/api/v1/issues/" + mentionsWarm + "/comments", "/api/v1/issues/" + mentionsHidden + "/comments", "/api/v1/issues/" + mentionsNone + "/comments"},
 		{"message sessions", callerAlice, "/api/v1/issues/" + messagesWarm + "/messages", "/api/v1/issues/" + messagesHidden + "/messages", "/api/v1/issues/" + messagesNone + "/messages"},
 		{"event payloads", callerAlice, logOf(payloadWarm, false), logOf(payloadRouted, true), logOf(payloadNone, false)},

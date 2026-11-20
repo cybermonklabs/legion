@@ -98,7 +98,7 @@ func (s *server) readerAs(w http.ResponseWriter, r *http.Request, actor model.Ac
 	if !ok {
 		return model.Actor{}, false
 	}
-	actor.Credential = nil
+	actor = actor.Reader()
 	actor.Viewer = reader.Viewer
 	return actor, true
 }

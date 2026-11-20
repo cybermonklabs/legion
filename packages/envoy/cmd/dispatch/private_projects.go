@@ -168,13 +168,6 @@ func (s *privateProjectsState) header() string {
 	return "0"
 }
 
-// AnyPrivate reports what header reports: a project may be private (the list names one, or the
-// last read found one or failed), the closed direction. A nil state, a handler built with none,
-// answers false.
-func (s *privateProjectsState) AnyPrivate() bool {
-	return s != nil && s.header() == "1"
-}
-
 // unprovisionedPrivateProjectReason is the one reason /healthz's degraded field gives while the
 // database holds a private project the list does not name. It is fixed: /healthz answers a caller
 // with no credential, so it carries no key and no count, which would tell that caller of projects

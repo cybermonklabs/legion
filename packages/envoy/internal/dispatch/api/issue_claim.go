@@ -768,7 +768,11 @@ type claimIssueInput struct {
 	Force bool         `json:"force"`
 }
 
-// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue.
+// claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue. A holder
+// its caller may not see (access.SessionClause, access.PersonClause) is refused all the same,
+// with `claim: null` and a text that names no holder; the issue reads, the listing, the children
+// and the priority faults answer such a claim as none, and a route to a role of a private project
+// the reader does not see as no route.
 func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 	var input claimIssueInput
 	if err := decodeJSON(r, &input); err != nil {

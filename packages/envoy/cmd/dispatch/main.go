@@ -212,8 +212,9 @@ type bootConfig struct {
 	OIDCAudience string
 	// PrivateProjects is DISPATCH_PRIVATE_PROJECTS: the keys of the projects this deployment has
 	// provisioned as private, sorted and each once (privateProjectsSetting). Only these can be made
-	// private; the boot and the maintenance sweep report a private project it does not name, and
-	// /healthz names it (reportPrivateProjects, privateProjectsState).
+	// private; the boot and the maintenance sweep report a private project it does not name, by key,
+	// and /healthz says only that one exists, naming none (reportPrivateProjects,
+	// unprovisionedPrivateProjectReason).
 	PrivateProjects []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
@@ -2147,11 +2148,11 @@ func gitHubReadEntryOf(read githubreads.Read, runs, loaded bool, rows map[github
 	return gitHubReadEntry{State: gitHubReadFailed, At: &at, Cause: &class}
 }
 
-// gitHubStatus is the first HTTP status a GitHub read's cause names. The client words every answer
-// it notes as a failure with its status ahead of any body GitHub sent ("<METHOD> <target>: status
-// <n>: <body>", and "rate-limited by GitHub (status <n>)"; githubapp's failedAnswer), so the first
-// one is the answer's own.
-var gitHubStatus = regexp.MustCompile(`\bstatus ([1-5][0-9]{2})\b`)
+// gitHubStatus matches the first HTTP status a GitHub read's cause names, "status <n>", which is
+// the class itself. The client words every answer it notes as a failure with its status ahead of
+// any body GitHub sent ("<METHOD> <target>: status <n>: <body>", and "rate-limited by GitHub
+// (status <n>)"; githubapp's failedAnswer), so the first one is the answer's own.
+var gitHubStatus = regexp.MustCompile(`\bstatus [1-5][0-9]{2}\b`)
 
 // gitHubReadCauseClass is the class /healthz answers for a failed read's cause: "status <n>" for
 // the status GitHub answered, and "no status" for a failure that carries none (a request GitHub
@@ -2161,8 +2162,8 @@ var gitHubStatus = regexp.MustCompile(`\bstatus ([1-5][0-9]{2})\b`)
 // (R2). So /healthz answers the class alone, in every deployment, which can name no repository,
 // and the operator reads the cause itself in github_read_attempts.
 func gitHubReadCauseClass(cause string) string {
-	if status := gitHubStatus.FindStringSubmatch(cause); status != nil {
-		return "status " + status[1]
+	if status := gitHubStatus.FindString(cause); status != "" {
+		return status
 	}
 	return "no status"
 }

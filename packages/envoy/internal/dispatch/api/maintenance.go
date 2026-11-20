@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -70,13 +71,27 @@ func incompleteRowsError(incomplete []string, whose string) error {
 // written their marker row - backfill-session-projects (sessionProjectsFilled), then
 // scrub-access-events (accessEventsScrubbed) - and otherwise why, naming the first one missing and
 // its command. It is the one marker check of the store's report, at a process's start and hourly
-// (storeIncomplete), and of the switch's 409 PRIVATE_PROJECTS_INCOMPLETE.
+// (storeIncomplete), and of the switch's 409 PRIVATE_PROJECTS_INCOMPLETE (privateProjectIncomplete).
+// A marker missing answers an error errors.Is reads as errBackfillNotRun; a marker that could not
+// be read answers the read's own error, which is not.
 func backfillMarkersMissing(ctx context.Context, q graphstore.Queryer) error {
 	if err := sessionProjectsFilled(ctx, q); err != nil {
 		return err
 	}
 	return accessEventsScrubbed(ctx, q)
 }
+
+// errBackfillNotRun is a backfill a switch to private waits for that has not written its marker:
+// what each missing marker's error is (backfillNotRun), so a caller tells it from a failed read.
+var errBackfillNotRun = errors.New("a backfill a switch to private waits for has not run")
+
+// backfillNotRun is a missing marker's error: its message is the sentence the report and the
+// switch name it by, and it is errBackfillNotRun.
+type backfillNotRun string
+
+func (missing backfillNotRun) Error() string { return string(missing) }
+
+func (backfillNotRun) Is(target error) bool { return target == errBackfillNotRun }
 
 // sessionProjectsFilled answers nil when session_projects_filled holds its row: every older event's
 // session has its projects recorded, which an agent's visibility reads.
@@ -86,7 +101,7 @@ func sessionProjectsFilled(ctx context.Context, q graphstore.Queryer) error {
 		return fmt.Errorf("read session_projects_filled: %w", err)
 	}
 	if !filled {
-		return fmt.Errorf("session_projects_filled holds no row, so the projects the sessions of earlier events acted in are not all recorded: run envoy-dispatch backfill-session-projects")
+		return backfillNotRun("session_projects_filled holds no row, so the projects the sessions of earlier events acted in are not all recorded: run envoy-dispatch backfill-session-projects")
 	}
 	return nil
 }
@@ -99,7 +114,7 @@ func accessEventsScrubbed(ctx context.Context, q graphstore.Queryer) error {
 		return fmt.Errorf("read access_events_scrubbed: %w", err)
 	}
 	if !scrubbed {
-		return fmt.Errorf("access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events")
+		return backfillNotRun("access_events_scrubbed holds no row, so project.access_changed events stored before this release may still carry a project's access list: run envoy-dispatch scrub-access-events")
 	}
 	return nil
 }
